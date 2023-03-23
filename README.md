@@ -1,2 +1,7 @@
 # mapget
-The map feature cache everyone is talking about.
+
+`mapget` is a server-client solution for cached map feature data retrieval.
+
+## Architecture
+
+![arch](docs/mapget-arch.png)
