@@ -43,9 +43,12 @@ Implementing a data source could be as simple as the following example (C++):
 
 ```cpp
 #include "mapget/datasource.h"
+#include "nlohmann/json.h"
 
 char const* myFeatureType = "FancyLineFeature";
 char const* myFeatureId = "FancyLineFeatureId";
+
+int nextFeatureId = 0;
 
 /**
  * Function which describes the data source.
@@ -56,39 +59,41 @@ mapget::DataSourceInfo getDataSourceInfo()
 }
 
 /**
- * Function which adds a feature to a FeatureSet.
+ * Function which adds a feature to a TileLayer.
  */
-void addFeatures(std::shared_ptr<FeatureSet> featureSet)
+void addFeatures(TileLayer& tileLayer)
 {
     // Create a new feature.
-    auto feature = featureSet->addFeature(myFeatureType);
+    auto feature = tileLayer->newFeature(myFeatureType, nextFeatureId++);
 
     // Add a point to it to give it geometry.
-    feature->geom()->addPoint(featureSet->tileId->center());
+    feature->geom()->addPoint(tileLayer->tileId->center());
 
     // Set a simple key-value attribute.
     feature->attrs()->setField("name", "Darth Vader");
 
-    // We can also create nested attributes.
-    feature->attrs()->setField("greeting", featureSet->addObject()
+    // We can create nested attributes.
+    feature->attrs()->setField("greeting", tileLayer->newObject()
         ->setField("en", "Hello World!"),
         ->setField("es", "Hola Mundo!"));
+
+    // We can also use nlohmann::json for attributes
+    feature->attrs()->setField("greeting", json::object({
+        {"en", "Hello World!"},
+        {"es", "Hola Mundo!"},
+    }));
 }
 
 void main(int argc, char const *argv[])
 {
     auto myDataSource = DataSource(getDataSourceInfo());
 
-    myDataSource.run([&](auto tileId, auto layerId)
+    myDataSource.run([&](auto& tileLayer)
     {
-        // Lambda function which supplies a feature-set for the
+        // Lambda function which fills a feature-set for the
         // given tileId and layerId.
 
-        assert(layerId == "MyMapLayer");
-        auto featureSet = myDataSource.newFeatureSet();
-        addFeatures(featureSet);
-
-        return featureSet;
+        addFeatures(tileLayer);
     });
 
     return 0;
