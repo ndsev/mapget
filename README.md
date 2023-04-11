@@ -121,12 +121,117 @@ return mapget::DataSourceInfo("MyMap", {
 
 ## Retrieval Interface
 
-**TODO:** Describe C++/REST interface for feature cache.
+The `mapget` library provides simple C++ and HTT/REST interfaces, which may be
+used to satisfy the following use-cases:
+
+* Obtain streamed map feature tile data for given constraints.
+* Locate a feature by its ID within any of the connected sources.
+* Describe the available map data sources.
+* View a simple HTML server status page (only for REST API).
+* Instruct the cache to populate itself within given constraints from the connected sources.
+
+The HTTP interface implemented in `mapget::service` is a view on the C++ interface,
+which is implemented in `mapget::cache`. Detailed endpoint descriptions:
+
+```c++
+// Obtain a list of tile-layer combinations which provide a
+// feature that satisfies the given ID field constraints.
++ GET /locate(typeId, map<string, Scalar>)
+  list<pair<TileId, LayerId>>
+
+// Describe the connected Data Sources
++ GET /sources():  list<DataSourceInfo>
+
+// Get streamed features, according to hard constraints.
+// With Accept-Encoding text/jsonl or application/binary
++ GET /tiles(list<{
+    mapId: string,
+    layerId: string,
+    tileIds: list<TileId>,
+        maxKnownFieldIds*
+  }>, fil: optional<string>):
+  bytes<TileLayerStream>
+
+// Server status page
++ GET /status(): text/html
+
+// Instruct the cache to populate itself
++ POST /populate(
+    spatialConstraint*,
+    {mapId*, layerId*, featureType*, zoomLevel*}) 
+```
+
+For example, the following curl call could be used to stream GeoJSON feature objects
+from the `MyMap` data source defined previously:
+
+```bash
+curl -X GET "http://localhost/tiles?mapId=MyMap&layerId=MyMapLayer&tileIds=393AC,36D97" \
+     -H "Accept-Encoding: text/jsonl"
+```
+
+If we use `"Accept-Encoding: application/binary"` instead, we get a binary stream of
+tile data which we can parse in C++, Python or JS. Here is an example in C++, using
+the `TileLayerStream` class:
+
+```C++
+#include "mapget/tilestream.h"
+#include "httplib.h"  // Using cpp-httplib
+#include <iostream>
+
+void main(int argc, char const *argv[])
+{
+    mapget::TileLayerStream streamParser;
+    streamParser.onRead([](mapget::TileFeatureLayerPtr tileFeatureLayer){
+        std::cout << "Got tile feature layer for " << tileFeatureLayer->tileId.value();
+    });
+
+    httplib::Client cli("localhost", 1234);
+    auto res = cli.Get(
+        "/tiles?mapId=MyMap&layerId=MyMapLayer&tileIds=393AC,36D97",
+        [&](const char *data, size_t length) {
+            streamParser << std::string(data, length);
+            return true;
+        }
+    );
+
+    return 0;
+}
+```
+
+We can also use `mapget::Cache` instead of REST:
+
+```C++
+#include "mapget/tilestream.h"
+#include "httplib.h"  // Using cpp-httplib
+#include <iostream>
+
+void main(int argc, char const *argv[])
+{
+    // Reads MAPGET_CACHE_DB and MAPGET_CONFIG_FILE environment vars.
+    // You can override them in the constructor.
+    mapget::Cache cache;
+
+    cache.tiles({{"MyMap", "MyMapLayer", {0x393AC,0x36D97}}}).onRead([](mapget::TileFeatureLayerPtr tileFeatureLayer){
+        std::cout << "Got tile feature layer for " << tileFeatureLayer->tileId.value();
+    });
+
+    return 0;
+}
+```
 
 ## Configuration
 
-**TODO:** Describe structure of `datasourceconfig.yam`.
+The `mapget::Cache` class parses a config file, from which it knows about available data source
+endpoints. The path to this config file may be provided either via the `MAPGET_CONFIG_FILE` env.
+var, or via a constructor parameter. The file will be watched for changes, so you can update
+it, and the server will immediately know about newly added or removed sources. The structure of
+the file is as follows:
+
+```yaml
+sources:
+  - <url>  # e.g. http://localhost:12345
+```
 
 ## Architecture
 
-![arch](docs/mapget-arch.png)
+![arch](docs/mapget.svg)
