@@ -1,65 +1,81 @@
 #include "featureid.h"
+#include "featurelayer.h"
+
+#include <sstream>
 
 namespace mapget
 {
 
-FeatureId::FeatureId(FeatureId::Data& data, FeatureLayerConstPtr l, simfil::ModelNodeAddress a)
+FeatureId::FeatureId(FeatureId::Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
+    : simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>(std::move(l), a),
+      data_(data),
+      fields_(pool().resolveObject(Ptr::make(l, data_.idParts_)))
 {
-
 }
+
 std::string_view FeatureId::typeId() const
 {
-    return std::string_view();
+    if (auto s = pool().fieldNames()->resolve(data_.typeId_))
+        return *s;
+    return "err-unresolved-typename";
 }
 
 std::string FeatureId::toString() const
 {
-    return std::string();
-}
+    std::stringstream result;
+    result << typeId();
 
-size_t FeatureId::numParts() const
-{
-    return 0;
-}
+    auto addIdPart = [&result](auto&& v)
+    {
+        if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>)
+            result << "." << v;
+    };
 
-std::pair<simfil::FieldId, simfil::ModelNode::Ptr> FeatureId::part(size_t i) const
-{
-    return std::pair<simfil::FieldId, simfil::ModelNode::Ptr>();
+    // Add common id-part fields
+    if (data_.useCommonTilePrefix_)
+        for (auto const& [_, value] : pool().featureIdPrefix()->fields())
+            std::visit(addIdPart, value->value());
+
+    // Add specific id-part fields
+    for (auto const& [_, value] : fields())
+        std::visit(addIdPart, value->value());
+
+    return result.str();
 }
 
 simfil::ValueType FeatureId::type() const
 {
-    return ModelNodeBase::type();
+    return simfil::ValueType::String;
 }
 
 simfil::ScalarValueType FeatureId::value() const
 {
-    return ModelNodeBase::value();
+    return toString();
 }
 
-simfil::ModelNode::Ptr FeatureId::at(int64_t) const
+simfil::ModelNode::Ptr FeatureId::at(int64_t i) const
 {
-    return ModelNodeBase::at(<unnamed>);
+    return fields_->at(i);
 }
 
 uint32_t FeatureId::size() const
 {
-    return ModelNodeBase::size();
+    return fields_->size();
 }
 
-simfil::ModelNode::Ptr FeatureId::get(const simfil::FieldId&) const
+simfil::ModelNode::Ptr FeatureId::get(const simfil::FieldId& f) const
 {
-    return ModelNodeBase::get(<unnamed>);
+    return fields_->get(f);
 }
 
-simfil::FieldId FeatureId::keyAt(int64_t) const
+simfil::FieldId FeatureId::keyAt(int64_t i) const
 {
-    return ModelNodeBase::keyAt(<unnamed>);
+    return fields_->keyAt(i);
 }
 
-void FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
+bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
-    ModelNodeBase::iterate(cb);
+    return true;
 }
 
 }

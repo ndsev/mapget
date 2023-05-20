@@ -24,6 +24,7 @@ using Point = simfil::geo::Point<double>;
 class FeatureId : protected simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>
 {
     friend class TileFeatureLayer;
+    friend class Feature;
     friend class bitsery::Access;
 
 public:
@@ -34,12 +35,6 @@ public:
     [[nodiscard]] std::string_view typeId() const;
 
 protected:
-    /** Get the number of id parts (optionally combined with shared prefix from tile layer). */
-    [[nodiscard]] size_t numParts() const;
-
-    /** Get the feature ID's n-th id-part name and value. */
-    [[nodiscard]] std::pair<simfil::FieldId, simfil::ModelNode::Ptr> part(size_t i) const;
-
     /**
      * Internal Node Access APIs
      */
@@ -49,7 +44,7 @@ protected:
     [[nodiscard]] uint32_t size() const override;
     [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId &) const override;
     [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
-    void iterate(IterCallback const& cb) const override;
+    [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
     struct Data {
         bool useCommonTilePrefix_ = false;
@@ -57,9 +52,13 @@ protected:
         simfil::ModelNodeAddress idParts_;
     };
 
-    FeatureId(Data& data, FeatureLayerConstPtr l, simfil::ModelNodeAddress a);
+    FeatureId(Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
 
     Data& data_;
+
+    // Optional because resolve must be called, in
+    // the constructor body.
+    model_ptr<Object> fields_;
 };
 
 }

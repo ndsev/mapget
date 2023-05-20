@@ -1,108 +1,222 @@
 #include "feature.h"
+#include "featurelayer.h"
 
 namespace mapget
 {
 
-Feature::Feature(Feature::Data& d, FeatureLayerConstPtr l, simfil::ModelNodeAddress a)
+Feature::Feature(Feature::Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
+    : simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>(std::move(l), a), data_(d)
 {
-
+    updateFields();
 }
 
 model_ptr<FeatureId> Feature::id() const
 {
-    return {};
+    return pool().resolveFeatureId(*Ptr::make(pool_, data_.id_));
 }
 
-std::string mapget::Feature::typeId() const
+std::string_view mapget::Feature::typeId() const
 {
-    return std::string();
+    return pool().resolveFeatureId(*Ptr::make(pool_, data_.id_))->typeId();
 }
 
 model_ptr<simfil::GeometryCollection> Feature::geom()
 {
-    return model_ptr<GeometryCollection>();
+    if (data_.geom_.value_ == 0) {
+        auto result = pool().newGeometryCollection();
+        data_.geom_ = result->addr();
+        return result;
+    }
+    return pool().resolveGeometryCollection(*Ptr::make(pool_, data_.geom_));
 }
 
-model_ptr<AttributeLayers> Feature::attributeLayers()
+model_ptr<AttributeLayerList> Feature::attributeLayers()
 {
-    return mapget::model_ptr<AttributeLayers>();
+    if (data_.attrLayers_.value_ == 0) {
+        auto result = pool().newAttributeLayers();
+        data_.geom_ = result->addr();
+        return result;
+    }
+    return pool().resolveAttributeLayerList(*Ptr::make(pool_, data_.attrLayers_));
 }
 
 model_ptr<Object> Feature::attributes()
 {
-    return mapget::model_ptr<Object>();
+    if (data_.attrs_.value_ == 0) {
+        auto result = pool().newObject(8);
+        data_.attrs_ = result->addr();
+        return result;
+    }
+    return pool().resolveObject(*Ptr::make(pool_, data_.attrs_));
 }
 
 model_ptr<Array> Feature::children()
 {
-    return mapget::model_ptr<Array>();
+    if (data_.children_.value_ == 0) {
+        auto result = pool().newArray(8);
+        data_.children_ = result->addr();
+        return result;
+    }
+    return pool().resolveArray(*Ptr::make(pool_, data_.children_));
 }
 
 std::vector<simfil::Value> Feature::evaluate(const std::string_view& expression)
 {
-    return std::vector<simfil::Value>();
+    // Note: Here we rely on the assertion that the root_ collection
+    // contains only references to feature nodes, in the order
+    // of the feature node column.
+    return simfil::eval(
+        pool().evaluationEnvironment(),
+        *pool().compiledExpression(expression),
+        pool(),
+        addr().index());
 }
 
 simfil::ValueType Feature::type() const
 {
-    return ModelNodeBase::type();
+    return simfil::ValueType::Object;
 }
 
-simfil::ModelNode::Ptr Feature::at(int64_t) const
+simfil::ModelNode::Ptr Feature::at(int64_t i) const
 {
-    return ModelNodeBase::at(<unnamed>);
+    if (i < fields_.size())
+        return fields_[i].second;
+    return {};
 }
 
 uint32_t Feature::size() const
 {
-    return ModelNodeBase::size();
+    return fields_.size();
 }
 
-simfil::ModelNode::Ptr Feature::get(const simfil::FieldId&) const
+simfil::ModelNode::Ptr Feature::get(const simfil::FieldId& f) const
 {
-    return ModelNodeBase::get(<unnamed>);
+    for (auto const& [fieldName, fieldValue] : fields_)
+        if (fieldName == f)
+            return fieldValue;
+    return {};
 }
 
-simfil::FieldId Feature::keyAt(int64_t) const
+simfil::FieldId Feature::keyAt(int64_t i) const
 {
-    return ModelNodeBase::keyAt(<unnamed>);
+    if (i < fields_.size())
+        return fields_[i].first;
+    return {};
 }
 
-void Feature::iterate(const simfil::ModelNode::IterCallback& cb) const
+bool Feature::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
-    ModelNodeBase::iterate(cb);
+    auto& resolver = pool();
+    auto resolveAndCb = [&cb, &resolver](auto&& nodeNameAndValue){
+        bool cont = true;
+        resolver.resolve(*nodeNameAndValue.second, simfil::Model::Lambda([&cont, &cb](auto&& resolved){
+            cont = cb(resolved);
+        }));
+        return cont;
+    };
+    return std::all_of(fields_.begin(), fields_.end(), resolveAndCb);
 }
+
+void Feature::updateFields() {
+    fields_.clear();
+
+    // Add id field
+    fields_.emplace_back(Fields::IdStr, Ptr::make(pool_, data_.id_));
+    auto idNode = pool().resolveFeatureId(*fields_.back().second);
+
+    // Add type id field
+    fields_.emplace_back(
+        Fields::TypeIdStr,
+        model_ptr<simfil::ValueNode>::make(idNode->typeId(), pool_));
+
+    // Add common id-part fields
+    for (auto const& [idPartName, value] : pool().featureIdPrefix()->fields()) {
+        fields_.emplace_back(idPartName, value);
+    }
+
+    // Add feature-specific id-part fields
+    for (auto const& [idPartName, value] : idNode->fields()) {
+        fields_.emplace_back(idPartName, value);
+    }
+
+    // Add other fields
+    if (data_.geom_.value_)
+        fields_.emplace_back(Fields::Geometry, Ptr::make(pool_, data_.geom_));
+    if (data_.attrLayers_.value_ || data_.attrs_.value_)
+        fields_.emplace_back(
+            Fields::PropertiesStr,
+            Ptr::make(
+                pool_,
+                simfil::ModelNodeAddress{TileFeatureLayer::FeatureProperties, addr().index()}));
+    if (data_.children_.value_)
+        fields_.emplace_back(Fields::ChildrenStr, Ptr::make(pool_, data_.children_));
+}
+
+//////////////////////////////////////////
 
 Feature::FeaturePropertyView::FeaturePropertyView(
     Feature::Data& d,
-    FeatureLayerConstPtr l,
-    simfil::ModelNodeAddress a)
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a
+)
+    : simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>(std::move(l), a), data_(d)
 {
+    if (data_.attrs_.value_)
+        attrs_ = pool().resolveObject(Ptr::make(pool_, data_.attrs_));
 }
 
 simfil::ValueType Feature::FeaturePropertyView::type() const
 {
-    return ModelNodeBase::type();
+    return simfil::ValueType::Object;
 }
-simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t) const
+
+simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const
 {
-    return ModelNodeBase::at(<unnamed>);
+    if (data_.attrLayers_.value_) {
+        if (i == 0)
+            return Ptr::make(pool_, data_.attrLayers_);
+        i -= 1;
+    }
+    if (attrs_)
+        return (*attrs_)->at(i);
+    return {};
 }
+
 uint32_t Feature::FeaturePropertyView::size() const
 {
-    return ModelNodeBase::size();
+    return (data_.attrLayers_.value_ ? 1 : 0) + (attrs_ ? (*attrs_)->size() : 0);
 }
-simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::FieldId&) const
+
+simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::FieldId& f) const
 {
-    return ModelNodeBase::get(<unnamed>);
+    if (data_.attrLayers_.value_ && f == Fields::PropertiesStr)
+        return Ptr::make(pool_, data_.attrLayers_);
+    if (attrs_)
+        return (*attrs_)->get(f);
+    return {};
 }
-simfil::FieldId Feature::FeaturePropertyView::keyAt(int64_t) const
+
+simfil::FieldId Feature::FeaturePropertyView::keyAt(int64_t i) const
 {
-    return ModelNodeBase::keyAt(<unnamed>);
+    if (data_.attrLayers_.value_) {
+        if (i == 0)
+            return Fields::PropertiesStr;
+        i -= 1;
+    }
+    if (attrs_)
+        return (*attrs_)->keyAt(i);
+    return {};
 }
-void Feature::FeaturePropertyView::iterate(const simfil::ModelNode::IterCallback& cb) const
+
+bool Feature::FeaturePropertyView::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
-    ModelNodeBase::iterate(cb);
+    if (data_.attrLayers_.value_) {
+        if (!cb(*pool().resolveAttributeLayerList(*Ptr::make(pool_, data_.attrLayers_))))
+            return false;
+    }
+    if (attrs_)
+        return (*attrs_)->iterate(cb);
+    return true;
 }
 
 }

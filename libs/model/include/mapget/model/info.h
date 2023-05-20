@@ -31,6 +31,7 @@ struct FeatureTypeInfo {
     std::string name;              // Name of the feature type
 
     // List of allowed unique id compositions (each id composition is a list of id parts)
+    // A single id composition must never have more than 16 parts.
     std::vector<std::vector<UniqueIdPart>> uniqueIdCompositions;
 };
 

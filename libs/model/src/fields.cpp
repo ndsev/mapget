@@ -8,6 +8,8 @@ Fields::Fields() {
     addStaticKey(TypeIdStr, "typeId");
     addStaticKey(LayerStr, "layer");
     addStaticKey(ChildrenStr, "children");
+    addStaticKey(DirectionStr, "direction");
+    addStaticKey(ValidityStr, "validity");
 }
 
 }

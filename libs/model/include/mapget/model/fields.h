@@ -12,7 +12,10 @@ struct Fields : public simfil::Fields
         IdStr = NextStaticId,
         TypeIdStr,
         LayerStr,
-        ChildrenStr
+        ChildrenStr,
+        DirectionStr,
+        ValidityStr,
+        PropertiesStr,
     };
 
     Fields();
