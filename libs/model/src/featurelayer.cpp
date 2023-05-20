@@ -6,7 +6,7 @@ namespace mapget
 {
 
 struct TileFeatureLayer::Impl {
-    model_ptr<Object> featureIdPrefix_;
+    std::optional<model_ptr<Object>> featureIdPrefix_;
 
     sfl::segmented_vector<Feature::Data, simfil::detail::ColumnPageSize/4> features_;
     sfl::segmented_vector<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
@@ -20,9 +20,8 @@ struct TileFeatureLayer::Impl {
     // Compiled simfil expressions, by hash of expression string
     std::unordered_map<size_t, simfil::ExprPtr> simfilExpressions_;
 
-    Impl(model_ptr<Object> prefixObject, std::shared_ptr<Fields> fields)
-        : featureIdPrefix_(std::move(prefixObject)),
-          simfilEnv_(std::move(fields))
+    Impl(std::shared_ptr<Fields> fields)
+        : simfilEnv_(std::move(fields))
     {
     }
 };
@@ -32,20 +31,12 @@ TileFeatureLayer::TileFeatureLayer(
     std::string const& nodeId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    KeyValuePairs const& featureIdPrefix_,
-    std::shared_ptr<Fields> fields
+    std::shared_ptr<Fields> const& fields
 ) :
-    simfil::ModelPool(std::move(fields)),
-    impl_(std::make_unique<Impl>(newObject(2), fields)),
+    simfil::ModelPool(fields),
+    impl_(std::make_unique<Impl>(fields)),
     TileLayer(tileId, nodeId, mapId, layerInfo)
 {
-    auto idPrefix = newObject(featureIdPrefix_.size());
-    for (auto const& [k, v] : featureIdPrefix_) {
-        auto&& kk = k;
-        std::visit([&](auto&& x){
-            idPrefix->addField(kk, x);
-        }, v);
-    }
 }
 
 TileFeatureLayer::~TileFeatureLayer() {}  // NOLINT
@@ -56,11 +47,19 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
 {
     // TODO: Validate ID parts
     auto featureIdIndex = impl_->featureIds_.size();
+    auto featureIdObject = newObject(featureIdParts.size());
     impl_->featureIds_.emplace_back(FeatureId::Data{
         true,
         fieldNames()->emplace(typeId),
-        newObject(featureIdParts.size())->addr()
+        featureIdObject->addr()
     });
+    for (auto const& [k, v] : featureIdParts) {
+        auto&& kk = k;
+        std::visit([&](auto&& x){
+            featureIdObject->addField(kk, x);
+        }, v);
+    }
+
     auto featureIndex = impl_->features_.size();
     impl_->features_.emplace_back(Feature::Data{
         simfil::ModelNodeAddress{FeatureIds, (uint32_t)featureIdIndex},
@@ -96,7 +95,7 @@ TileFeatureLayer::newFeatureId(
     return FeatureId(impl_->featureIds_.back(), shared_from_this(), {FeatureIds, (uint32_t)featureIdIndex});
 }
 
-model_ptr<Object> TileFeatureLayer::featureIdPrefix()
+std::optional<model_ptr<Object>> TileFeatureLayer::featureIdPrefix()
 {
     return impl_->featureIdPrefix_;
 }
@@ -232,6 +231,18 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
         simfil::compile(impl_->simfilEnv_, expr)
     );
     return newIt->second;
+}
+
+void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
+{
+    auto idPrefix = newObject(prefix.size());
+    for (auto const& [k, v] : prefix) {
+        auto&& kk = k;
+        std::visit([&](auto&& x){
+            idPrefix->addField(kk, x);
+        }, v);
+    }
+    impl_->featureIdPrefix_ = idPrefix;
 }
 
 }

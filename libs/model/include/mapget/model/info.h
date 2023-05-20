@@ -11,7 +11,7 @@ namespace mapget
 {
 
 /// Enum to represent the possible data types
-enum class DataType {I32, U32, I64, U64, UUID128};
+enum class IdPartDataType {I32, U32, I64, U64, UUID128, STR};
 
 /// Enum to represent the possible layer types
 enum class LayerType {Features, Heightmap, OrthoImage, GLTF};
@@ -21,7 +21,7 @@ struct UniqueIdPart
 {
     std::string partId;            // Unique identifier part
     std::string description;       // Description of the unique identifier
-    DataType datatype;             // Datatype of the unique identifier
+    IdPartDataType datatype;             // Datatype of the unique identifier
     bool isSynthetic = false;      // Is the identifier synthetic or part of a map specification?
     bool isOptional = false;       // Is the identifier actually optional?
 };

@@ -24,6 +24,20 @@ endif()
 set (CMAKE_LIBRARY_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
 
+if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+  option(WITH_COVERAGE "Enable gcovr coverage" YES)
+else()
+  set(WITH_COVERAGE NO)
+endif()
+
+find_program(GCOVR_BIN gcovr)
+if (WITH_COVERAGE AND NOT GCOVR_BIN)
+  set(WITH_COVERAGE NO)
+  message(WARNING "Could not find gcovr binary. Disabling coverage report!")
+endif()
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/cmake-modules")
+
 ##############
 # deps
 
@@ -83,6 +97,10 @@ if (NOT TARGET bitsery)
   FetchContent_MakeAvailable(bitsery)
 endif()
 
+if (WITH_COVERAGE)
+  include(CodeCoverage)
+endif()
+
 ##############
 # libs
 
@@ -92,7 +110,16 @@ add_subdirectory(libs/model)
 # tests
 
 if (MAPGET_ENABLE_TESTING)
+  enable_testing()
   add_subdirectory(test)
+
+  if (WITH_COVERAGE)
+    setup_target_for_coverage_gcovr_html(
+      NAME coverage
+      EXECUTABLE test.mapget
+      BASE_DIRECTORY "${CMAKE_SOURCE_DIR}/src"
+      EXCLUDE "*catch2*")
+  endif()
 endif()
 
 ##############

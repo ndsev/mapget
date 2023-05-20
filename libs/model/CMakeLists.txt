@@ -43,3 +43,7 @@ if (MSVC)
   set_target_properties(mapget-model PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
+
+if (WITH_COVERAGE)
+  append_coverage_compiler_flags_to_target(mapget-model)
+endif()

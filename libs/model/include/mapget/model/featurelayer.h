@@ -40,18 +40,19 @@ public:
     /**
      * This constructor initializes a new TileFeatureLayer instance.
      * Each instance is associated with a specific TileId, nodeId, and mapId.
-     * The layerInfo shared_ptr parameter provides additional information about
-     * the layer, while the featureIdPrefix_ and fields parameters are used to
-     * construct features within this layer.
      */
     TileFeatureLayer(
         TileId tileId,
         std::string const& nodeId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
-        KeyValuePairs const& featureIdPrefix_,
-        std::shared_ptr<Fields> fields
+        std::shared_ptr<Fields> const& fields
     );
+
+    /**
+     * Set common id prefix for all features in this layer.
+     */
+    void setPrefix(KeyValuePairs const& prefix);
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer();
@@ -107,7 +108,7 @@ protected:
      * The featureIdPrefix function returns common ID parts,
      * which are shared by all features in this layer.
      */
-    model_ptr<Object> featureIdPrefix();
+    std::optional<model_ptr<Object>> featureIdPrefix();
 
     /**
      * Create a new attribute layer collection.

@@ -32,8 +32,8 @@ std::string FeatureId::toString() const
     };
 
     // Add common id-part fields
-    if (data_.useCommonTilePrefix_)
-        for (auto const& [_, value] : pool().featureIdPrefix()->fields())
+    if (data_.useCommonTilePrefix_ && pool().featureIdPrefix())
+        for (auto const& [_, value] : (*pool().featureIdPrefix())->fields())
             std::visit(addIdPart, value->value());
 
     // Add specific id-part fields
