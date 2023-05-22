@@ -10,7 +10,7 @@ namespace mapget
  * AttributeLayer, and may have typed `direction` and some
  * `validity` fields in addition to other arbitrary object fields.
  */
-class Attribute : public simfil::ProceduralObject<2>
+class Attribute : public simfil::ProceduralObject<2, Attribute>
 {
     friend class TileFeatureLayer;
 

@@ -5,17 +5,21 @@ namespace mapget
 {
 
 Attribute::Attribute(Attribute::Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<2>(data.fields_, std::move(l), a), data_(data)
+    : simfil::ProceduralObject<2, Attribute>(data.fields_, std::move(l), a), data_(data)
 {
     if (data_.direction_)
         fields_.emplace_back(
             Fields::DirectionStr,
-            [this] { return model_ptr<simfil::ValueNode>::make((int64_t)data_.direction_, pool_); });
+            [](Attribute const& self) {
+                return model_ptr<simfil::ValueNode>::make(
+                    (int64_t)self.data_.direction_,
+                    self.pool_);
+            });
     if (data_.validity_.value_)
         fields_.emplace_back(
             Fields::ValidityStr,
-            [this] {
-                return model_ptr<simfil::ModelNode>::make(pool_, data_.validity_);
+            [](Attribute const& self) {
+                return model_ptr<simfil::ModelNode>::make(self.pool_, self.data_.validity_);
             });
 }
 

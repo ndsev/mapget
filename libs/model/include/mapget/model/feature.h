@@ -4,6 +4,8 @@
 #include "attrlayer.h"
 #include "attr.h"
 
+#include "nlohmann/json.hpp"
+
 #include "sfl/small_vector.hpp"
 
 namespace mapget
@@ -26,7 +28,14 @@ public:
     /**
      * Evaluate a filter expression on this feature.
      */
-    std::vector<simfil::Value> evaluate(std::string_view const& expression);
+    std::vector<simfil::Value> evaluateAll(std::string_view const& expression);
+    simfil::Value evaluate(std::string_view const& expression);
+
+    /**
+     * Convert the Feature to GeoJSON.
+     */
+    nlohmann::json toGeoJson();
+
 
 protected:
     /**
@@ -60,6 +69,8 @@ protected:
     // of id-part fields is adopted from the feature id.
     sfl::small_vector<std::pair<simfil::FieldId, simfil::ModelNode::Ptr>, 32> fields_;
     void updateFields();
+
+    nlohmann::json toJsonPrivate(simfil::ModelNode const&);
 
     struct FeaturePropertyView : public simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>
     {

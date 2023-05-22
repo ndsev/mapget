@@ -25,6 +25,7 @@ model_ptr<simfil::GeometryCollection> Feature::geom()
     if (data_.geom_.value_ == 0) {
         auto result = pool().newGeometryCollection();
         data_.geom_ = result->addr();
+        updateFields();
         return result;
     }
     return pool().resolveGeometryCollection(*Ptr::make(pool_, data_.geom_));
@@ -34,7 +35,8 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
 {
     if (data_.attrLayers_.value_ == 0) {
         auto result = pool().newAttributeLayers();
-        data_.geom_ = result->addr();
+        data_.attrLayers_ = result->addr();
+        updateFields();
         return result;
     }
     return pool().resolveAttributeLayerList(*Ptr::make(pool_, data_.attrLayers_));
@@ -45,6 +47,7 @@ model_ptr<Object> Feature::attributes()
     if (data_.attrs_.value_ == 0) {
         auto result = pool().newObject(8);
         data_.attrs_ = result->addr();
+        updateFields();
         return result;
     }
     return pool().resolveObject(*Ptr::make(pool_, data_.attrs_));
@@ -55,21 +58,30 @@ model_ptr<Array> Feature::children()
     if (data_.children_.value_ == 0) {
         auto result = pool().newArray(8);
         data_.children_ = result->addr();
+        updateFields();
         return result;
     }
     return pool().resolveArray(*Ptr::make(pool_, data_.children_));
 }
 
-std::vector<simfil::Value> Feature::evaluate(const std::string_view& expression)
+std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expression)
 {
-    // Note: Here we rely on the assertion that the root_ collection
+    // Note: Here we rely on the assertion that the root_ column
     // contains only references to feature nodes, in the order
-    // of the feature node column.
+    // of the feature node column. We could think about protected inheritance
+    // of the ModelPool to safeguard this.
     return simfil::eval(
         pool().evaluationEnvironment(),
         *pool().compiledExpression(expression),
         pool(),
         addr().index());
+}
+
+simfil::Value Feature::evaluate(const std::string_view& expression) {
+    auto results = evaluateAll(expression);
+    if (results.empty())
+        return simfil::Value::null();
+    return std::move(results[0]);
 }
 
 simfil::ValueType Feature::type() const
@@ -153,6 +165,42 @@ void Feature::updateFields() {
         fields_.emplace_back(Fields::ChildrenStr, Ptr::make(pool_, data_.children_));
 }
 
+nlohmann::json Feature::toGeoJson()
+{
+    return toJsonPrivate(*this);
+}
+
+nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)  // NOLINT
+{
+    if (n.type() == simfil::ValueType::Object) {
+        auto j = nlohmann::json::object();
+        for (const auto& [fieldId, childNode] : n.fields()) {
+            if (auto resolvedField = pool().fieldNames()->resolve(fieldId))
+                j[*resolvedField] = toJsonPrivate(*childNode);
+        }
+        return j;
+    }
+    else if (n.type() == simfil::ValueType::Array) {
+        auto j = nlohmann::json::array();
+        for (const auto& i : n)
+            j.push_back(toJsonPrivate(*i));
+        return j;
+    }
+    else {
+        nlohmann::json j;
+        std::visit(
+            [&j](auto&& v)
+            {
+                if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>)
+                    j = v;
+                else
+                    j = nullptr;
+            },
+            n.value());
+        return j;
+    }
+}
+
 //////////////////////////////////////////
 
 Feature::FeaturePropertyView::FeaturePropertyView(
@@ -190,7 +238,7 @@ uint32_t Feature::FeaturePropertyView::size() const
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::FieldId& f) const
 {
-    if (data_.attrLayers_.value_ && f == Fields::PropertiesStr)
+    if (data_.attrLayers_.value_ && f == Fields::LayerStr)
         return Ptr::make(pool_, data_.attrLayers_);
     if (attrs_)
         return (*attrs_)->get(f);
@@ -201,7 +249,7 @@ simfil::FieldId Feature::FeaturePropertyView::keyAt(int64_t i) const
 {
     if (data_.attrLayers_.value_) {
         if (i == 0)
-            return Fields::PropertiesStr;
+            return Fields::LayerStr;
         i -= 1;
     }
     if (attrs_)

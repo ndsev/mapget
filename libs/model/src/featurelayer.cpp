@@ -228,7 +228,7 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
     }
     auto [newIt, _] = impl_->simfilExpressions_.emplace(
         exprHash,
-        simfil::compile(impl_->simfilEnv_, expr)
+        simfil::compile(impl_->simfilEnv_, expr, false)
     );
     return newIt->second;
 }

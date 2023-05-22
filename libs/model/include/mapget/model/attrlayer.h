@@ -19,6 +19,7 @@ class AttributeLayer : protected simfil::Object
     friend class bitsery::Access;
     friend struct simfil::shared_model_ptr<simfil::ModelNode>;
 
+public:
     /**
      * Create a new attribute and immediately insert it into the layer.
      */
@@ -45,6 +46,7 @@ class AttributeLayerList : protected simfil::Object
     friend class bitsery::Access;
     friend class Feature;
 
+public:
     /**
      * Create a new named layer and immediately insert it into the collection.
      */

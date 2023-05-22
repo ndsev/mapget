@@ -10,6 +10,7 @@ Fields::Fields() {
     addStaticKey(ChildrenStr, "children");
     addStaticKey(DirectionStr, "direction");
     addStaticKey(ValidityStr, "validity");
+    addStaticKey(PropertiesStr, "properties");
 }
 
 }
