@@ -12,7 +12,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     layerInfo->featureTypes.emplace_back(FeatureTypeInfo{
         "Way",
         {{
-            UniqueIdPart{"mapId", "String which identifies the map.", IdPartDataType::STR, false, false},
+            UniqueIdPart{"areaId", "String which identifies the map area.", IdPartDataType::STR, false, false},
             UniqueIdPart{"wayId", "Globally Unique 32b integer.",
               IdPartDataType::U32, false, false}
         }}});
@@ -21,11 +21,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
-        "TastyTomatoSalad",
-        "GarlicChicken",
+        "TastyTomatoSaladNode",
+        "GarlicChickenMap",
         layerInfo,
         fieldNames);
-    tile->setPrefix({{"mapId", "TheBestMap"}});
+    tile->setPrefix({{"areaId", "TheBestArea"}});
 
     // Create a feature with line geometry
     auto feature1 = tile->newFeature("Way", {{"wayId", 42}});
@@ -47,10 +47,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
     // Evaluate some simfil filters on the feature
     REQUIRE(feature1->typeId() == "Way");
-    REQUIRE(feature1->id()->toString() == "Way.TheBestMap.42");
+    REQUIRE(feature1->id()->toString() == "Way.TheBestArea.42");
     REQUIRE(feature1->evaluate("**.mozzarella.smell").toString() == "neutral");
     REQUIRE(feature1->evaluate("properties.main_ingredient").toString() == "Pepper");
-    REQUIRE(feature1->evaluate("geo(geometry.*.*) within bbox(40., 9., 45., 12.)").toString() == "true");
+    REQUIRE(feature1->evaluate("geo(geometry.geometries.*) within bbox(40., 9., 45., 12.)").toString() == "true");
 }
 
 TEST_CASE("TileId fromWgs84", "[TileId]") {

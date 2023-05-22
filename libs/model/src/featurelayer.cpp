@@ -76,7 +76,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     // Note: Here we rely on the assertion that the root_ collection
     // contains only references to feature nodes, in the order
     // of the feature node column.
-    addRoot(result);
+    addRoot(simfil::ModelNode::Ptr(result));
     return result;
 }
 

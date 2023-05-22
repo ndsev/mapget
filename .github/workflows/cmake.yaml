@@ -30,7 +30,7 @@ jobs:
           cmake --build .
 
       - name: Run CTest
-        working-directory: build/deploy
+        working-directory: build
         run: |
           ctest --verbose --output-junit result-junit.xml
       - name: Publish Test Results
@@ -39,7 +39,7 @@ jobs:
         if: always()
         with:
           files: |
-            build/deploy/*.xml
+            build/bin/*.xml
       - name: Set badge color
         shell: bash
         run: |
@@ -73,26 +73,26 @@ jobs:
       #     file: badge.svg
 
       - name: Run Valgrind Memcheck
-        working-directory: build/deploy
+        working-directory: build/bin
         run: |
           valgrind --tool=memcheck ./test.mapget
       - name: Run Valgrind Helgrind
-        working-directory: build/deploy
+        working-directory: build/bin
         run: |
           valgrind --tool=helgrind ./test.mapget
       - name: Run Valgrind Cachegrind
-        working-directory: build/deploy
+        working-directory: build/bin
         run: |
           valgrind --tool=cachegrind ./test.mapget | tee cachegrind-out.txt
       - name: Run Valgrind Callgrind
-        working-directory: build/deploy
+        working-directory: build/bin
         run: |
           valgrind --tool=callgrind --instr-atstart=no ./test.mapget
       - name: Publish Callgrind Output
         uses: actions/upload-artifact@v3
         with:
           name: Callgrind Output
-          path: build/deploy/callgrind.out.*
+          path: build/bin/callgrind.out.*
 
   build-windows:
     name: Windows

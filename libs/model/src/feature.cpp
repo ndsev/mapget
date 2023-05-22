@@ -28,7 +28,7 @@ model_ptr<simfil::GeometryCollection> Feature::geom()
         updateFields();
         return result;
     }
-    return pool().resolveGeometryCollection(*Ptr::make(pool_, data_.geom_));
+    return pool().resolveGeometryCollection(Ptr::make(pool_, data_.geom_));
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
@@ -50,7 +50,7 @@ model_ptr<Object> Feature::attributes()
         updateFields();
         return result;
     }
-    return pool().resolveObject(*Ptr::make(pool_, data_.attrs_));
+    return pool().resolveObject(Ptr::make(pool_, data_.attrs_));
 }
 
 model_ptr<Array> Feature::children()
@@ -61,7 +61,7 @@ model_ptr<Array> Feature::children()
         updateFields();
         return result;
     }
-    return pool().resolveArray(*Ptr::make(pool_, data_.children_));
+    return pool().resolveArray(Ptr::make(pool_, data_.children_));
 }
 
 std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expression)
