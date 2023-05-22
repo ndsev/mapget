@@ -39,7 +39,7 @@ jobs:
         if: always()
         with:
           files: |
-            build/bin/*.xml
+            build/test/*.xml
       - name: Set badge color
         shell: bash
         run: |
