@@ -85,7 +85,7 @@ void addFeatures(TileLayer& tileLayer)
     auto feature = tileLayer->newFeature(myFeatureType, nextFeatureId++);
 
     // Add a point to it to give it geometry.
-    feature->geom()->addPoint(tileLayer->tileId_->center());
+    feature->geom()->addPoint(tileLayer->tileId->center());
 
     // Get writable attribute root object.
     auto attributes = feature->attrs();
@@ -112,7 +112,7 @@ void main(int argc, char const *argv[])
     myDataSource.run([&](auto& tileLayer)
     {
         // Lambda function which fills a feature-set for the
-        // given tileId_ and layerId.
+        // given tileId and layerId.
 
         addFeatures(tileLayer);
     });
@@ -166,7 +166,7 @@ which is implemented in `mapget::cache`. Detailed endpoint descriptions:
 // Get streamed features, according to hard constraints.
 // With Accept-Encoding text/jsonl or application/binary
 + GET /tiles(list<{
-    mapId_: string,
+    mapId: string,
     layerId: string,
     tileIds: list<TileId>,
         maxKnownFieldIds*
@@ -181,14 +181,14 @@ which is implemented in `mapget::cache`. Detailed endpoint descriptions:
 // made as to the timeliness or completeness of this task.
 + POST /populate(
     spatialConstraint*,
-    {mapId_*, layerId*, featureType*, zoomLevel*}) 
+    {mapId*, layerId*, featureType*, zoomLevel*}) 
 
 // Write GeoJSON features for a tile back to a map data source
 // which has supportedOperations&WRITE.
 + POST /tile(
-    mapId_: string,
+    mapId: string,
     layerId: string,
-    tileId_: TileId,
+    tileId: TileId,
     features: list<object>): void
 ```
 
@@ -196,7 +196,7 @@ For example, the following curl call could be used to stream GeoJSON feature obj
 from the `MyMap` data source defined previously:
 
 ```bash
-curl -X GET "http://localhost/tiles?mapId_=MyMap&layerId=MyMapLayer&tileIds=393AC,36D97" \
+curl -X GET "http://localhost/tiles?mapId=MyMap&layerId=MyMapLayer&tileIds=393AC,36D97" \
      -H "Accept: application/jsonl"
 ```
 
@@ -212,12 +212,12 @@ void main(int argc, char const *argv[])
 {
     mapget::TileLayerStream streamParser;
     streamParser.onRead([](mapget::TileFeatureLayerPtr tileFeatureLayer){
-        std::cout << "Got tile feature layer for " << tileFeatureLayer->tileId_.value();
+        std::cout << "Got tile feature layer for " << tileFeatureLayer->tileId.value();
     });
 
     httplib::Client cli("localhost", 1234);
     auto res = cli.Get(
-        "/tiles?mapId_=MyMap&layerId=MyMapLayer&tileIds=393AC,36D97",
+        "/tiles?mapId=MyMap&layerId=MyMapLayer&tileIds=393AC,36D97",
         {{"Accept", "application/binary"}},
         [&](const char *data, size_t length) {
             streamParser << std::string(data, length);
@@ -245,7 +245,7 @@ void main(int argc, char const *argv[])
 
     cache.tiles({{"MyMap", "MyMapLayer", {0x393AC,0x36D97}}}).onRead(
         [](mapget::TileFeatureLayerPtr tileFeatureLayer){
-            std::cout << "Got tile feature layer for " << tileFeatureLayer->tileId_.value();
+            std::cout << "Got tile feature layer for " << tileFeatureLayer->tileId.value();
         }
     );
 
@@ -263,7 +263,7 @@ the file is as follows:
 
 ```yaml
 sources:
-  - <url>  # e.g. http://localhost:12345
+   - <url>  # e.g. http://localhost:12345
 ```
 
 ## Architecture
