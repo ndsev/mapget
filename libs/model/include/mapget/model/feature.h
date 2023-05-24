@@ -11,6 +11,31 @@
 namespace mapget
 {
 
+/**
+ * View onto a feature which belongs to a TileFeatureLayer.
+ * You can create a feature through the TileFeatureLayer::newFeature function.
+ * A Feature object maps to a GeoJSON feature object in the following way:
+ *
+ *   {
+ *     id: "<type-id>.<part-value-0>...<part-value-n>",
+ *     typeId: "<type-id>",
+ *     <part-name-n>: <part-value-n>, ...
+ *     geometry: <geojson-geometry>,
+ *     properties: {
+ *       layers: {
+ *         <attr-layer-name>: {
+ *           <attr-name>: {
+ *             <attr-fields> ...,
+ *             direction: <attr-direction>,
+ *             validity: <attr-validity-geometry>
+ *           }
+ *         }, ...
+ *       },
+ *       <non-layer-attr-name>: <non-layer-attr-value>, ...
+ *     },
+ *     children: [<child-id-list>]
+ *   }
+ */
 class Feature : protected simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>
 {
     friend class bitsery::Access;

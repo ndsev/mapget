@@ -40,6 +40,17 @@ public:
     /**
      * This constructor initializes a new TileFeatureLayer instance.
      * Each instance is associated with a specific TileId, nodeId, and mapId.
+     * @param tileId The tile id of the new feature layer. Features in this layer
+     *  should be roughly within the area indicated by the tile.
+     * @param nodeId Unique id of the data source node which produced this feature.
+     * @param mapId ID of the map which the layer belongs to.
+     * @param layerInfo Information about the map layer this feature is associated with.
+     *  Each feature in this layer must have a feature type which is also present in
+     *  the layer. Therefore, feature ids from this layer can be verified to conform
+     *  to one of the allowed feature id compositions for the allowed type.
+     * @param fields Shared field name dictionary, which allows compressed storage
+     *  of object field name strings. It is auto-filled, and one instance may be used
+     *  by multiple TileFeatureLayer instances.
      */
     TileFeatureLayer(
         TileId tileId,
