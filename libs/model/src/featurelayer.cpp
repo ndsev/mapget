@@ -39,7 +39,7 @@ TileFeatureLayer::TileFeatureLayer(
 {
 }
 
-TileFeatureLayer::~TileFeatureLayer() {}  // NOLINT
+TileFeatureLayer::~TileFeatureLayer() = default;
 
 simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const std::string_view& typeId,

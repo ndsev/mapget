@@ -24,8 +24,8 @@ public:
     /// and sets the timestamp_ to the current system time.
     TileLayer(
         const TileId& id,
-        const std::string& node_id,
-        const std::string& map_id,
+        std::string node_id,
+        std::string map_id,
         const std::shared_ptr<LayerInfo>& info);
 
     /// Getter and setter for layer's tileId. This controls the rough

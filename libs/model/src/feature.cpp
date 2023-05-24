@@ -170,7 +170,7 @@ nlohmann::json Feature::toGeoJson()
     return toJsonPrivate(*this);
 }
 
-nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)  // NOLINT
+nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)
 {
     if (n.type() == simfil::ValueType::Object) {
         auto j = nlohmann::json::object();

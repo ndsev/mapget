@@ -28,7 +28,7 @@ struct TileId
     /**
      * Constructor to initialize TileId with value
      */
-    TileId(uint64_t const& value);  // NOLINT
+    TileId(uint64_t value);  // NOLINT (allow implicit call)
 
     /**
      * Function to create a TileId from WGS84 longitude, latitude, and zoom level.

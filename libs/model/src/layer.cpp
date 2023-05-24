@@ -5,13 +5,13 @@ namespace mapget
 
 TileLayer::TileLayer(
     const TileId& id,
-    const std::string& node_id,  // NOLINT
-    const std::string& map_id,  // NOLINT
+    std::string node_id,
+    std::string map_id,
     const std::shared_ptr<LayerInfo>& info
 )
     : tileId_(id),
-      nodeId_(node_id),
-      mapId_(map_id),
+      nodeId_(std::move(node_id)),
+      mapId_(std::move(map_id)),
       layerInfo_(info),
       timestamp_(std::chrono::steady_clock::now())
 {

@@ -9,7 +9,7 @@ TileId::TileId(uint16_t x, uint16_t y, uint16_t z) {
     value_ = ((uint64_t)x << 32) | ((uint64_t)y << 16) | z;
 }
 
-TileId::TileId(uint64_t const& value) : value_(value) {
+TileId::TileId(uint64_t value) : value_(value) {
     // No extra work needed here as we directly assign the given value
 }
 
