@@ -2,12 +2,15 @@
 
 #include "mapget/model/featurelayer.h"
 #include "nlohmann/json.hpp"
-#include <iostream>
+
+#include <sstream>
 
 using namespace mapget;
 
 TEST_CASE("FeatureLayer", "[test.featurelayer]")
 {
+    // Create layer info which has a single feature type with
+    // a single allowed feature id composition.
     auto layerInfo = std::make_shared<LayerInfo>();
     layerInfo->featureTypes.emplace_back(FeatureTypeInfo{
         "Way",
@@ -16,6 +19,8 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             UniqueIdPart{"wayId", "Globally Unique 32b integer.",
               IdPartDataType::U32, false, false}
         }}});
+
+    // Create empty shared autofilled field-name dictionary
     auto fieldNames = std::make_shared<Fields>();
 
     // Create a basic TileFeatureLayer

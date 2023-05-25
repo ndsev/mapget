@@ -245,4 +245,14 @@ void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
     impl_->featureIdPrefix_ = idPrefix;
 }
 
+TileFeatureLayer::Iterator TileFeatureLayer::begin() const
+{
+    return TileFeatureLayer::Iterator{*this, 0};
+}
+
+TileFeatureLayer::Iterator TileFeatureLayer::end() const
+{
+    return TileFeatureLayer::Iterator{*this, numRoots()};
+}
+
 }

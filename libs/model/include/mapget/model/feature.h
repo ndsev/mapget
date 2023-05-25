@@ -17,6 +17,7 @@ namespace mapget
  * A Feature object maps to a GeoJSON feature object in the following way:
  *
  *   {
+ *     type: "Feature",  # Mandatory for GeoJSON compliance
  *     id: "<type-id>.<part-value-0>...<part-value-n>",
  *     typeId: "<type-id>",
  *     <part-name-n>: <part-value-n>, ...

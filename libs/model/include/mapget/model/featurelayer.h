@@ -30,6 +30,7 @@ using KeyValuePairs = std::vector<std::pair<
 /**
  * The TileFeatureLayer class represents a specific map layer
  * within a map tile. It is a container for map features.
+ * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
  */
 class TileFeatureLayer : public TileLayer, public simfil::ModelPool
 {
@@ -99,6 +100,41 @@ public:
      * Create a new attribute layer, which may be inserted into a feature.
      */
     model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8);
+
+    /**
+     * Return type for begin() and end() methods to support range-based
+     * for-loops to iterate over all features in a TileFeatureLayer.
+     */
+    struct Iterator
+    {
+        Iterator(TileFeatureLayer const& layer, size_t i) : layer_(layer), i_(i) {}
+        model_ptr<Feature> operator*() { return layer_.resolveFeature(*layer_.root(i_)); }
+        Iterator& operator++()
+        {
+            ++i_;
+            return *this;
+        }
+        bool operator==(const Iterator& other) const
+        {
+            return &layer_ == &other.layer_ && i_ == other.i_;
+        }
+        bool operator!=(const Iterator& other) const { return !(*this == other); }
+        using iterator_category = std::input_iterator_tag;
+        using value_type = model_ptr<Feature>;
+        using difference_type = std::ptrdiff_t;
+        using pointer = value_type*;
+        using reference = value_type&;
+    private:
+        TileFeatureLayer const& layer_;
+        size_t i_ = 0;
+    };
+
+    /**
+     * begin()/end() support range-based for-loops to iterate over all
+     * features in a TileFeatureLayer.
+     */
+    Iterator begin() const;
+    Iterator end() const;
 
 protected:
     /**

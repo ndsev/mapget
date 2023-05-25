@@ -132,6 +132,9 @@ bool Feature::iterate(const simfil::ModelNode::IterCallback& cb) const
 void Feature::updateFields() {
     fields_.clear();
 
+    // Add type field
+    fields_.emplace_back(Fields::Type, simfil::ValueNode(std::string_view("Feature"), pool_));
+
     // Add id field
     fields_.emplace_back(Fields::IdStr, Ptr::make(pool_, data_.id_));
     auto idNode = pool().resolveFeatureId(*fields_.back().second);
