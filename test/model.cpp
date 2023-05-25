@@ -47,52 +47,86 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     attr->setDirection(Attribute::Direction::Positive);
     attr->addField("smell", "neutral");
 
-    // Print the feature in GeoJSON format
-    std::cout << to_string(feature1->toGeoJson()) << std::endl;
+    SECTION("toGeoJSON")
+    {
+        constexpr auto expected = R"({"areaId":"TheBestArea","geometry":{"geometries":[{"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"}],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":1,"smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42})";
+        std::stringstream featureGeoJson;
+        featureGeoJson << feature1->toGeoJson();
+        REQUIRE(featureGeoJson.str() == expected);
+    }
 
-    // Evaluate some simfil filters on the feature
-    REQUIRE(feature1->typeId() == "Way");
-    REQUIRE(feature1->id()->toString() == "Way.TheBestArea.42");
-    REQUIRE(feature1->evaluate("**.mozzarella.smell").toString() == "neutral");
-    REQUIRE(feature1->evaluate("properties.main_ingredient").toString() == "Pepper");
-    REQUIRE(feature1->evaluate("geo(geometry.geometries.*) within bbox(40., 9., 45., 12.)").toString() == "true");
+    SECTION("Basic field access")
+    {
+        REQUIRE(feature1->typeId() == "Way");
+        REQUIRE(feature1->id()->toString() == "Way.TheBestArea.42");
+    }
+
+    SECTION("Evaluate simfil filter")
+    {
+        REQUIRE(feature1->evaluate("**.mozzarella.smell").toString() == "neutral");
+        REQUIRE(feature1->evaluate("properties.main_ingredient").toString() == "Pepper");
+        REQUIRE(
+            feature1->evaluate("geo(geometry.geometries.*) within bbox(40., 9., 45., 12.)")
+                .toString() == "true");
+    }
+
+    SECTION("Range-based for loop")
+    {
+        for (auto feature : *tile) {
+            REQUIRE(feature->id()->toString() == feature1->id()->toString());
+        }
+    }
 }
 
-TEST_CASE("TileId fromWgs84", "[TileId]") {
+// Helper function to compare two points with some tolerance
+void REQUIRE_EQUAL(const Point& p1, const Point& p2, double eps = 1e-6) {
+    REQUIRE(std::abs(p1.x - p2.x) < eps);
+    REQUIRE(std::abs(p1.y - p2.y) < eps);
+}
+
+TEST_CASE("TileId", "[TileId]") {
     using namespace mapget;
 
-    SECTION("zoom level 0") {
+    SECTION("fromWgs84: zoom level 0") {
         TileId tile = TileId::fromWgs84(0, 0, 0);
         REQUIRE(tile.x() == 1);
         REQUIRE(tile.y() == 0);
         REQUIRE(tile.z() == 0);
     }
 
-    SECTION("positive longitude, positive latitude") {
+    SECTION("fromWgs84: positive longitude, positive latitude") {
         TileId tile = TileId::fromWgs84(90, 45, 1);
         REQUIRE(tile.x() == 3);
         REQUIRE(tile.y() == 0);
         REQUIRE(tile.z() == 1);
     }
 
-    SECTION("negative longitude, positive latitude") {
+    SECTION("fromWgs84: negative longitude, positive latitude") {
         TileId tile = TileId::fromWgs84(-90, 45, 1);
         REQUIRE(tile.x() == 1);
         REQUIRE(tile.y() == 0);
         REQUIRE(tile.z() == 1);
     }
 
-    SECTION("positive longitude, negative latitude") {
+    SECTION("fromWgs84: positive longitude, negative latitude") {
         TileId tile = TileId::fromWgs84(90, -45, 1);
         REQUIRE(tile.x() == 3);
         REQUIRE(tile.y() == 1);
         REQUIRE(tile.z() == 1);
     }
 
-    SECTION("negative longitude, negative latitude") {
+    SECTION("fromWgs84: negative longitude, negative latitude") {
         TileId tile = TileId::fromWgs84(-90, -45, 1);
         REQUIRE(tile.x() == 1);
         REQUIRE(tile.y() == 1);
         REQUIRE(tile.z() == 1);
+    }
+
+    SECTION("Tile center/SW/NE/size calculation") {
+        TileId tile(0, 0, 0);
+        REQUIRE_EQUAL(tile.center(), {-90, 0});
+        REQUIRE_EQUAL(tile.sw(), {-180, -90});
+        REQUIRE_EQUAL(tile.ne(), {0, 90});
+        REQUIRE_EQUAL(tile.size(), {180, 180});
     }
 }

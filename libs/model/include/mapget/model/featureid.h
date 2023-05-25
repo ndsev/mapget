@@ -17,7 +17,6 @@ using Array = simfil::Array;
 using GeometryCollection = simfil::GeometryCollection;
 using Geometry = simfil::Geometry;
 using GeomType = simfil::Geometry::GeomType;
-using Point = simfil::geo::Point<double>;
 
 /**
  * Unique feature ID

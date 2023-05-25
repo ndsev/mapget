@@ -2,9 +2,12 @@
 
 #include <cstdint>
 
+#include "simfil/model/point.h"
+
 namespace mapget
 {
 
+using Point = simfil::geo::Point<double>;
 
 /**
  * TileId class - represents a rectangular area on the globe, according to
@@ -17,6 +20,8 @@ namespace mapget
  * The tile `x` coordinate indicates the column, and the `y` coordinate indicates the row.
  * On level zero, there are two columns and one row. In general, the number of rows is `2^z`,
  * and the number of columns is `2^(z+1)`.
+ *
+ * Note: Column 0 is at `lon=-180` and row 0 is at lat=`90` (the north pole).
  */
 struct TileId
 {
@@ -34,6 +39,26 @@ struct TileId
      * Function to create a TileId from WGS84 longitude, latitude, and zoom level.
      */
     static TileId fromWgs84(double longitude, double latitude, uint16_t zoomLevel);
+
+    /**
+     * Get the center of the tile in Wgs84.
+     */
+    [[nodiscard]] Point center() const;
+
+    /**
+     * Get the south-west (minimum) corner of the tile in Wgs84.
+     */
+    [[nodiscard]] Point sw() const;
+
+    /**
+     * Get the north-east (maximum) corner of the tile in Wgs84.
+     */
+    [[nodiscard]] Point ne() const;
+
+    /**
+     * Get the size of the tile in Wgs84.
+     */
+    [[nodiscard]] Point size() const;
 
     /**
      * Function to get x (column) component of the TileId
