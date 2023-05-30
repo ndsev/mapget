@@ -21,7 +21,7 @@ using GeomType = simfil::Geometry::GeomType;
 /**
  * Unique feature ID
  */
-class FeatureId : protected simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>
+class FeatureId : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class Feature;

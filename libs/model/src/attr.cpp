@@ -13,19 +13,19 @@ Attribute::Attribute(Attribute::Data& data, simfil::ModelConstPtr l, simfil::Mod
             [](Attribute const& self) {
                 return model_ptr<simfil::ValueNode>::make(
                     (int64_t)self.data_.direction_,
-                    self.pool_);
+                    self.model_);
             });
     if (data_.validity_.value_)
         fields_.emplace_back(
             Fields::ValidityStr,
             [](Attribute const& self) {
-                return model_ptr<simfil::ModelNode>::make(self.pool_, self.data_.validity_);
+                return model_ptr<simfil::ModelNode>::make(self.model_, self.data_.validity_);
             });
 }
 
 model_ptr<Geometry> Attribute::validity()
 {
-    return pool().resolveGeometry(model_ptr<simfil::ModelNode>::make(pool_, data_.validity_));
+    return model().resolveGeometry(model_ptr<simfil::ModelNode>::make(model_, data_.validity_));
 }
 
 void Attribute::setDirection(const Attribute::Direction& v)
@@ -40,7 +40,7 @@ Attribute::Direction Attribute::direction() const
 
 std::string_view Attribute::name()
 {
-    if (auto s = pool().fieldNames()->resolve(data_.name_))
+    if (auto s = model().fieldNames()->resolve(data_.name_))
         return *s;
     throw std::runtime_error("Attribute name is not known to string pool.");
 }

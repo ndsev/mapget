@@ -37,7 +37,7 @@ namespace mapget
  *     children: [<child-id-list>]
  *   }
  */
-class Feature : protected simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>
+class Feature : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
     friend class bitsery::Access;
     friend class TileFeatureLayer;
@@ -98,7 +98,7 @@ protected:
 
     nlohmann::json toJsonPrivate(simfil::ModelNode const&);
 
-    struct FeaturePropertyView : public simfil::MandatoryDerivedModelPoolNodeBase<TileFeatureLayer>
+    struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;

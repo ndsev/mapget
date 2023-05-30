@@ -40,20 +40,20 @@ jobs:
       #   with:
       #     files: |
       #       build/test/*.xml
-      - name: Set badge color
-        shell: bash
-        run: |
-          case ${{ fromJSON( steps.test-results.outputs.json ).conclusion }} in
-            success)
-              echo "BADGE_COLOR=31c653" >> $GITHUB_ENV
-              ;;
-            failure)
-              echo "BADGE_COLOR=800000" >> $GITHUB_ENV
-              ;;
-            neutral)
-              echo "BADGE_COLOR=696969" >> $GITHUB_ENV
-              ;;
-          esac
+      # - name: Set badge color
+      #   shell: bash
+      #   run: |
+      #     case ${{ fromJSON( steps.test-results.outputs.json ).conclusion }} in
+      #       success)
+      #         echo "BADGE_COLOR=31c653" >> $GITHUB_ENV
+      #         ;;
+      #       failure)
+      #         echo "BADGE_COLOR=800000" >> $GITHUB_ENV
+      #         ;;
+      #       neutral)
+      #         echo "BADGE_COLOR=696969" >> $GITHUB_ENV
+      #         ;;
+      #     esac
       # - name: Create badge
       #   uses: emibcn/badge-action@d6f51ff11b5c3382b3b88689ae2d6db22d9737d1
       #   with:

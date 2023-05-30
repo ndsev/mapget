@@ -16,7 +16,7 @@ AttributeLayer::AttributeLayer(
 model_ptr<Attribute>
 AttributeLayer::newAttribute(const std::string_view& name, size_t initialCapacity)
 {
-    auto result = reinterpret_cast<TileFeatureLayer&>(pool()).newAttribute(name, initialCapacity);
+    auto result = reinterpret_cast<TileFeatureLayer&>(model()).newAttribute(name, initialCapacity);
     addAttribute(result);
     return result;
 }
@@ -38,7 +38,7 @@ AttributeLayerList::AttributeLayerList(
 model_ptr<AttributeLayer>
 AttributeLayerList::newLayer(const std::string_view& name, size_t initialCapacity)
 {
-    auto result = reinterpret_cast<TileFeatureLayer&>(pool()).newAttributeLayer(initialCapacity);
+    auto result = modelPtr<TileFeatureLayer>()->newAttributeLayer(initialCapacity);
     addLayer(name, result);
     return result;
 }
