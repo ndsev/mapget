@@ -33,13 +33,13 @@ jobs:
         working-directory: build
         run: |
           ctest --verbose --output-junit result-junit.xml
-      - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        id: test-results
-        if: always()
-        with:
-          files: |
-            build/test/*.xml
+      # - name: Publish Test Results
+      #   uses: EnricoMi/publish-unit-test-result-action@v2
+      #   id: test-results
+      #   if: always()
+      #   with:
+      #     files: |
+      #       build/test/*.xml
       - name: Set badge color
         shell: bash
         run: |

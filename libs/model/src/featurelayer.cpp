@@ -1,6 +1,7 @@
 #include "featurelayer.h"
 
-#include <unordered_map>
+#include <map>
+#include <shared_mutex>
 
 namespace mapget
 {
@@ -18,9 +19,12 @@ struct TileFeatureLayer::Impl {
     simfil::Environment simfilEnv_;
 
     // Compiled simfil expressions, by hash of expression string
-    std::unordered_map<size_t, simfil::ExprPtr> simfilExpressions_;
+    std::map<std::string, simfil::ExprPtr> simfilExpressions_;
 
-    Impl(std::shared_ptr<Fields> fields)
+    // Mutex to manage access to the expression cache
+    std::shared_mutex expressionCacheLock_;
+
+    explicit Impl(std::shared_ptr<Fields> fields)
         : simfilEnv_(std::move(fields))
     {
     }
@@ -220,14 +224,16 @@ simfil::Environment& TileFeatureLayer::evaluationEnvironment()
 
 simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_view& expr)
 {
-    // TODO: Make thread-safe!
-    auto exprHash = std::hash<std::string_view>{}(expr);
-    auto it = impl_->simfilExpressions_.find(exprHash);
+    std::shared_lock sharedLock(impl_->expressionCacheLock_);
+    std::string exprString{expr};
+    auto it = impl_->simfilExpressions_.find(exprString);
     if (it != impl_->simfilExpressions_.end()) {
         return it->second;
     }
+    sharedLock.unlock();
+    std::unique_lock uniqueLock(impl_->expressionCacheLock_);
     auto [newIt, _] = impl_->simfilExpressions_.emplace(
-        exprHash,
+        std::move(exprString),
         simfil::compile(impl_->simfilEnv_, expr, false)
     );
     return newIt->second;
