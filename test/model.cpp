@@ -12,13 +12,14 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     // Create layer info which has a single feature type with
     // a single allowed feature id composition.
     auto layerInfo = std::make_shared<LayerInfo>();
-    layerInfo->featureTypes.emplace_back(FeatureTypeInfo{
+    layerInfo->featureTypes_.emplace_back(FeatureTypeInfo{
         "Way",
         {{
             UniqueIdPart{"areaId", "String which identifies the map area.", IdPartDataType::STR, false, false},
             UniqueIdPart{"wayId", "Globally Unique 32b integer.",
               IdPartDataType::U32, false, false}
         }}});
+    layerInfo->layerId_ = "WayLayer";
 
     // Create empty shared autofilled field-name dictionary
     auto fieldNames = std::make_shared<Fields>();
@@ -73,6 +74,40 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("Range-based for loop")
     {
         for (auto feature : *tile) {
+            REQUIRE(feature->id()->toString() == feature1->id()->toString());
+        }
+    }
+
+    SECTION("Serialization")
+    {
+        std::stringstream tileBytes;
+        tile->write(tileBytes);
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBytes,
+            [&](auto&& mapName, auto&& layerName){
+                REQUIRE(mapName == "GarlicChickenMap");
+                REQUIRE(layerName == "WayLayer");
+                return layerInfo;
+            },
+            [&](auto&& nodeId){
+                REQUIRE(nodeId == "TastyTomatoSaladNode");
+                return fieldNames;
+            }
+        );
+
+        REQUIRE(deserializedTile->tileId() == tile->tileId());
+        REQUIRE(deserializedTile->nodeId() == tile->nodeId());
+        REQUIRE(deserializedTile->mapId() == tile->mapId());
+        REQUIRE(deserializedTile->layerInfo() == tile->layerInfo());
+        REQUIRE(deserializedTile->error() == tile->error());
+        REQUIRE(deserializedTile->timestamp().time_since_epoch() == tile->timestamp().time_since_epoch());
+        REQUIRE(deserializedTile->ttl() == tile->ttl());
+        REQUIRE(deserializedTile->mapVersion() == tile->mapVersion());
+        REQUIRE(deserializedTile->info() == tile->info());
+
+        REQUIRE(deserializedTile->fieldNames() == tile->fieldNames());
+        for (auto feature : *deserializedTile) {
             REQUIRE(feature->id()->toString() == feature1->id()->toString());
         }
     }

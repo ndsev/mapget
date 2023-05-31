@@ -44,15 +44,25 @@ public:
 
 protected:
 
+    /** Actual per-attribute data that is stored in the model's attributes-column. */
     struct Data {
         Direction direction_ = Empty;
         simfil::ModelNodeAddress validity_;
         simfil::ArrayIndex fields_ = -1;
         simfil::FieldId name_ = 0;
+
+        template<typename S>
+        void serialize(S& s) {
+            s.value1b(direction_);
+            s.value4b(validity_.value_);
+            s.value4b(fields_);
+            s.value2b(name_);
+        }
     };
 
     Attribute(Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
 
+    /** Reference to the actual stored data for the attribute. */
     Data& data_;
 };
 

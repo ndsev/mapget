@@ -10,6 +10,7 @@ add_library(mapget-model STATIC
   include/mapget/model/attrlayer.h
   include/mapget/model/tileid.h
   include/mapget/model/featureid.h
+  include/mapget/model/stream.h
 
   src/fields.cpp
   src/layer.cpp
@@ -19,7 +20,8 @@ add_library(mapget-model STATIC
   src/attr.cpp
   src/attrlayer.cpp
   src/tileid.cpp
-  src/featureid.cpp)
+  src/featureid.cpp
+  src/stream.cpp)
 
 target_include_directories(mapget-model
   PUBLIC
