@@ -1,0 +1,146 @@
+name: Build
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ '**' ]
+
+jobs:
+  build-linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Install dependencies
+        run: |
+          sudo apt-get install gcovr ninja-build valgrind
+      - name: Setup
+        run: |
+          mkdir build
+      - name: Configure
+        working-directory: build
+        run: |
+          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=YES -GNinja ..
+      - name: Build
+        working-directory: build
+        run: |
+          cmake --build .
+
+      - name: Run CTest
+        working-directory: build
+        run: |
+          ctest --verbose --output-junit result-junit.xml
+      # - name: Publish Test Results
+      #   uses: EnricoMi/publish-unit-test-result-action@v2
+      #   id: test-results
+      #   if: always()
+      #   with:
+      #     files: |
+      #       build/test/*.xml
+      # - name: Set badge color
+      #   shell: bash
+      #   run: |
+      #     case ${{ fromJSON( steps.test-results.outputs.json ).conclusion }} in
+      #       success)
+      #         echo "BADGE_COLOR=31c653" >> $GITHUB_ENV
+      #         ;;
+      #       failure)
+      #         echo "BADGE_COLOR=800000" >> $GITHUB_ENV
+      #         ;;
+      #       neutral)
+      #         echo "BADGE_COLOR=696969" >> $GITHUB_ENV
+      #         ;;
+      #     esac
+      # - name: Create badge
+      #   uses: emibcn/badge-action@d6f51ff11b5c3382b3b88689ae2d6db22d9737d1
+      #   with:
+      #     label: Tests
+      #     status: '${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.tests }} tests, ${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.runs }} runs: ${{ fromJSON( steps.test-results.outputs.json ).conclusion }}'
+      #     color: ${{ env.BADGE_COLOR }}
+      #     path: badge.svg
+      # - name: Upload badge to Gist
+      #   # Upload only for main branch
+      #   if: >
+      #     github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' ||
+      #     github.event_name != 'workflow_run' && github.ref == 'refs/heads/main'
+      #   uses: andymckay/append-gist-action@1fbfbbce708a39bd45846f0955ed5521f2099c6d
+      #   with:
+      #     token: ${{ secrets.GIST_TOKEN }}
+      #     gistURL: https://gist.githubusercontent.com/johannes-wolf/61e57af50757b03e0c7cd119ec2d2f4b
+      #     file: badge.svg
+
+      - name: Run Valgrind Memcheck
+        working-directory: build/bin
+        run: |
+          valgrind --tool=memcheck ./test.mapget
+      - name: Run Valgrind Helgrind
+        working-directory: build/bin
+        run: |
+          valgrind --tool=helgrind ./test.mapget
+      - name: Run Valgrind Cachegrind
+        working-directory: build/bin
+        run: |
+          valgrind --tool=cachegrind ./test.mapget | tee cachegrind-out.txt
+      - name: Run Valgrind Callgrind
+        working-directory: build/bin
+        run: |
+          valgrind --tool=callgrind --instr-atstart=no ./test.mapget
+      - name: Publish Callgrind Output
+        uses: actions/upload-artifact@v3
+        with:
+          name: Callgrind Output
+          path: build/bin/callgrind.out.*
+
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Setup
+        run: |
+          mkdir build
+      - name: Configure
+        working-directory: build
+        run: |
+          cmake ..
+        shell: cmd
+      - name: Build
+        working-directory: build
+        run: |
+          cmake --build .
+        shell: cmd
+      - name: Run CTest
+        working-directory: build/test
+        run: |
+          ctest -C Debug --verbose
+        shell: cmd
+
+  build-macos:
+    name: MacOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Setup
+        run: |
+          brew install openssl        
+          mkdir build
+      - name: Configure
+        working-directory: build
+        run: |
+          export OPENSSL_ROOT_DIR=$(brew --prefix openssl)
+          cmake ..
+      - name: Build
+        working-directory: build
+        run: |
+          cmake --build .
+      - name: Run CTest
+        working-directory: build/test
+        run: |
+          ctest --verbose

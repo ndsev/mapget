@@ -1,0 +1,83 @@
+name: Coverage
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ '**' ]
+
+jobs:
+  coverage-linux:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: true
+    - name: Install dependencies
+      run: |
+        sudo apt-get install ninja-build
+        pip install gcovr
+        gcovr --version
+    - name: Setup
+      run: |
+        mkdir build
+    - name: Configure
+      working-directory: build
+      run: |
+        cmake -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
+              -DWITH_COVERAGE=YES -GNinja ..
+    - name: Build
+      working-directory: build
+      run: |
+        cmake --build .
+    - name: Run Test
+      working-directory: build/
+      run: |
+        ctest
+    - name: Run Gcovr
+      run: |
+        mkdir coverage
+        gcovr --html-details coverage/coverage.html \
+              --filter libs/
+        gcovr --cobertura coverage.xml \
+              --html coverage.html \
+              --filter libs/
+
+    - name: Publish Coverage HTML
+      uses: actions/upload-artifact@v3
+      with:
+        name: Test Coverage
+        path: coverage
+
+    # - name: Upload coverage HTML to Gist
+    #   # Upload only for main branch
+    #   if: >
+    #     github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' ||
+    #     github.event_name != 'workflow_run' && github.ref == 'refs/heads/main'
+    #   uses: andymckay/append-gist-action@1fbfbbce708a39bd45846f0955ed5521f2099c6d
+    #   with:
+    #     token: ${{ secrets.GIST_TOKEN }}
+    #     gistURL: https://gist.githubusercontent.com/johannes-wolf/61e57af50757b03e0c7cd119ec2d2f4b
+    #     file: coverage.html
+
+    - name: Code Coverage Report
+      uses: irongut/CodeCoverageSummary@v1.3.0
+      with:
+        filename: coverage.xml
+        badge: false
+        fail_below_min: true
+        format: markdown
+        hide_branch_rate: false
+        hide_complexity: true
+        indicators: true
+        output: both
+        thresholds: '50 80'
+
+    - name: Add Coverage PR Comment
+      uses: marocchino/sticky-pull-request-comment@v2
+      if: github.event_name == 'pull_request'
+      with:
+        recreate: true
+        path: code-coverage-results.md

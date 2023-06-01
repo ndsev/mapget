@@ -263,7 +263,7 @@ the file is as follows:
 
 ```yaml
 sources:
-  - <url>  # e.g. http://localhost:12345
+   - <url>  # e.g. http://localhost:12345
 ```
 
 ## Architecture
