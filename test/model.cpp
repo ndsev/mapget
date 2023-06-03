@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
 
 #include <sstream>
@@ -22,7 +23,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     layerInfo->layerId_ = "WayLayer";
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>();
+    auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -110,6 +111,61 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         for (auto feature : *deserializedTile) {
             REQUIRE(feature->id()->toString() == feature1->id()->toString());
         }
+    }
+
+    SECTION("Stream")
+    {
+        // We will write the same tile into the stream twice,
+        // but expect the Fields object to be sent only once.
+        // Then we add another feature with a yet unseen field, send it,
+        // and expect an update for the fields dictionary to be sent along.
+
+        auto messageCount = 0;
+        std::stringstream byteStream;
+        TileLayerStream::FieldOffsetMap fieldOffsets;
+        TileLayerStream::Writer layerWriter{[&](auto&& msg){
+            ++messageCount;
+            byteStream << msg;
+        }, fieldOffsets};
+
+        layerWriter.write(tile);
+        REQUIRE(messageCount == 2);
+        layerWriter.write(tile);
+        REQUIRE(messageCount == 3);
+
+        // Create another Feature
+        auto feature2 = tile->newFeature("Way", {{"wayId", 43}});
+        feature1->attributes()->addField("new_shiny_attr_name", "Salsa");
+
+        layerWriter.write(tile);
+        REQUIRE(messageCount == 5);
+
+        // Now, read the stream in small chunks to verify that the Reader
+        // always waits until the full message is received before trying
+        // to parse an object.
+
+        std::vector<std::shared_ptr<TileFeatureLayer>> readTiles;
+        TileLayerStream::Reader reader{
+            [&](auto&& mapId, auto&& layerId) { return layerInfo; },
+            [&](auto&& layerPtr) { readTiles.push_back(layerPtr); },
+        };
+
+        std::string byteStreamData = byteStream.str();
+        for (auto i = 0; i < byteStreamData.size(); i += 2) {
+            // Read two-byte chunks, except if only one byte is left
+            if (i < byteStreamData.size() - 1)
+                reader.read({(uint8_t)byteStreamData[i], (uint8_t)byteStreamData[i+1]});
+            else
+                reader.read({(uint8_t)byteStreamData[i]});
+        }
+
+        REQUIRE(reader.eos());
+        REQUIRE(readTiles.size() == 3);
+        REQUIRE(readTiles[0]->fieldNames() == readTiles[1]->fieldNames());
+        REQUIRE(readTiles[1]->fieldNames() == readTiles[2]->fieldNames());
+        REQUIRE(readTiles[0]->numRoots() == 1);
+        REQUIRE(readTiles[1]->numRoots() == 1);
+        REQUIRE(readTiles[2]->numRoots() == 2);
     }
 }
 
