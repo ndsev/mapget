@@ -97,6 +97,14 @@ if (NOT TARGET bitsery)
   FetchContent_MakeAvailable(bitsery)
 endif()
 
+if (NOT TARGET yaml-cpp)
+  FetchContent_Declare(yaml-cpp
+    GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
+    GIT_TAG        "master"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(yaml-cpp)
+endif()
+
 if (WITH_COVERAGE)
   include(CodeCoverage)
 endif()
@@ -105,6 +113,7 @@ endif()
 # libs
 
 add_subdirectory(libs/model)
+add_subdirectory(libs/datasource)
 
 ##############
 # tests
