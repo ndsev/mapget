@@ -10,7 +10,8 @@ if (NOT TARGET Catch2)
 endif()
 
 add_executable(test.mapget
-  model.cpp)
+  model.cpp
+  info.cpp)
 
 target_link_libraries(test.mapget
   PUBLIC

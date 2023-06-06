@@ -12,15 +12,29 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 {
     // Create layer info which has a single feature type with
     // a single allowed feature id composition.
-    auto layerInfo = std::make_shared<LayerInfo>();
-    layerInfo->featureTypes_.emplace_back(FeatureTypeInfo{
-        "Way",
-        {{
-            UniqueIdPart{"areaId", "String which identifies the map area.", IdPartDataType::STR, false, false},
-            UniqueIdPart{"wayId", "Globally Unique 32b integer.",
-              IdPartDataType::U32, false, false}
-        }}});
-    layerInfo->layerId_ = "WayLayer";
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "areaId",
+                            "description": "String which identifies the map area.",
+                            "datatype": "STR"
+                        },
+                        {
+                            "partId": "wayId",
+                            "description": "Globally Unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
 
     // Create empty shared autofilled field-name dictionary
     auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
