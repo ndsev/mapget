@@ -28,6 +28,12 @@ using KeyValuePairs = std::vector<std::pair<
     std::variant<int64_t, std::string_view>>>;
 
 /**
+ * Callback type for a function which returns a field name cache instance
+ * for a given node identifier.
+ */
+using FieldNameResolveFun = std::function<std::shared_ptr<Fields>(std::string_view const&)>;
+
+/**
  * The TileFeatureLayer class represents a specific map layer
  * within a map tile. It is a container for map features.
  * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
@@ -59,6 +65,20 @@ public:
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<Fields> const& fields
+    );
+
+    /**
+     * Constructor which parses a TileFeatureLayer from a binary stream.
+     * @param inputStream The binary stream to parse.
+     * @param layerInfoResolveFun Function which will be called to retrieve
+     *  a layerInfo object for the layer name stored for the tile.
+     * @param fieldNameResolveFun Function which will be called to retrieve
+     *  a Fields dictionary object for the node name for the tile.
+     */
+    TileFeatureLayer(
+        std::istream& inputStream,
+        LayerInfoResolveFun const& layerInfoResolveFun,
+        FieldNameResolveFun const& fieldNameResolveFun
     );
 
     /**
@@ -135,6 +155,9 @@ public:
      */
     Iterator begin() const;
     Iterator end() const;
+
+    /** (De-)Serialization */
+   void write(std::ostream& outputStream) override;
 
 protected:
     /**

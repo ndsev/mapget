@@ -3,11 +3,17 @@
 #include <map>
 #include <shared_mutex>
 
+#include <bitsery/bitsery.h>
+#include <bitsery/adapter/stream.h>
+#include <bitsery/traits/string.h>
+
+#include "simfil/model/bitsery-traits.h"
+
 namespace mapget
 {
 
 struct TileFeatureLayer::Impl {
-    std::optional<model_ptr<Object>> featureIdPrefix_;
+    simfil::ModelNodeAddress featureIdPrefix_;
 
     sfl::segmented_vector<Feature::Data, simfil::detail::ColumnPageSize/4> features_;
     sfl::segmented_vector<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
@@ -23,6 +29,18 @@ struct TileFeatureLayer::Impl {
 
     // Mutex to manage access to the expression cache
     std::shared_mutex expressionCacheLock_;
+
+    // (De-)Serialization
+    template<typename S>
+    void readWrite(S& s) {
+        constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
+        s.container(features_, maxColumnSize);
+        s.container(attributes_, maxColumnSize);
+        s.container(featureIds_, maxColumnSize);
+        s.container(attrLayers_, maxColumnSize);
+        s.container(attrLayerLists_, maxColumnSize);
+        s.value4b(featureIdPrefix_.value_);
+    }
 
     explicit Impl(std::shared_ptr<Fields> fields)
         : simfilEnv_(std::move(fields))
@@ -41,6 +59,25 @@ TileFeatureLayer::TileFeatureLayer(
     impl_(std::make_unique<Impl>(fields)),
     TileLayer(tileId, nodeId, mapId, layerInfo)
 {
+}
+
+TileFeatureLayer::TileFeatureLayer(
+    std::istream& inputStream,
+    const LayerInfoResolveFun& layerInfoResolveFun,
+    const FieldNameResolveFun& fieldNameResolveFun
+) :
+    TileLayer(inputStream, layerInfoResolveFun),
+    simfil::ModelPool(fieldNameResolveFun(nodeId_)),
+    impl_(std::make_unique<Impl>(fieldNameResolveFun(nodeId_)))
+{
+    bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
+    impl_->readWrite(s);
+    if (s.adapter().error() != bitsery::ReaderError::NoError) {
+        throw std::runtime_error(stx::format(
+            "Failed to read TileFeatureLayer: Error {}",
+            static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
+    }
+    ModelPool::read(inputStream);
 }
 
 TileFeatureLayer::~TileFeatureLayer() = default;
@@ -101,7 +138,9 @@ TileFeatureLayer::newFeatureId(
 
 std::optional<model_ptr<Object>> TileFeatureLayer::featureIdPrefix()
 {
-    return impl_->featureIdPrefix_;
+    if (impl_->featureIdPrefix_.value_)
+        return resolveObject(simfil::ModelNode::Ptr::make(shared_from_this(), impl_->featureIdPrefix_));
+    return {};
 }
 
 model_ptr<Attribute>
@@ -248,7 +287,7 @@ void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
             idPrefix->addField(kk, x);
         }, v);
     }
-    impl_->featureIdPrefix_ = idPrefix;
+    impl_->featureIdPrefix_ = idPrefix->addr();
 }
 
 TileFeatureLayer::Iterator TileFeatureLayer::begin() const
@@ -259,6 +298,14 @@ TileFeatureLayer::Iterator TileFeatureLayer::begin() const
 TileFeatureLayer::Iterator TileFeatureLayer::end() const
 {
     return TileFeatureLayer::Iterator{*this, numRoots()};
+}
+
+void TileFeatureLayer::write(std::ostream& outputStream)
+{
+    TileLayer::write(outputStream);
+    bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
+    impl_->readWrite(s);
+    ModelPool::write(outputStream);
 }
 
 }

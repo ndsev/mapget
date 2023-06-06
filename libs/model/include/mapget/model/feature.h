@@ -84,6 +84,15 @@ protected:
         simfil::ModelNodeAddress attrLayers_;
         simfil::ModelNodeAddress attrs_;
         simfil::ModelNodeAddress children_;
+
+        template<typename S>
+        void serialize(S& s) {
+            s.value4b(id_.value_);
+            s.value4b(geom_.value_);
+            s.value4b(attrLayers_.value_);
+            s.value4b(attrs_.value_);
+            s.value4b(children_.value_);
+        }
     };
 
     Feature(Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);

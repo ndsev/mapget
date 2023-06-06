@@ -50,6 +50,13 @@ protected:
         bool useCommonTilePrefix_ = false;
         simfil::FieldId typeId_ = 0;
         simfil::ModelNodeAddress idParts_;
+
+        template<typename S>
+        void serialize(S& s) {
+            s.value1b(useCommonTilePrefix_);
+            s.value2b(typeId_);
+            s.value4b(idParts_.value_);
+        }
     };
 
     FeatureId(Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
 
 #include <sstream>
@@ -12,16 +13,17 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     // Create layer info which has a single feature type with
     // a single allowed feature id composition.
     auto layerInfo = std::make_shared<LayerInfo>();
-    layerInfo->featureTypes.emplace_back(FeatureTypeInfo{
+    layerInfo->featureTypes_.emplace_back(FeatureTypeInfo{
         "Way",
         {{
             UniqueIdPart{"areaId", "String which identifies the map area.", IdPartDataType::STR, false, false},
             UniqueIdPart{"wayId", "Globally Unique 32b integer.",
               IdPartDataType::U32, false, false}
         }}});
+    layerInfo->layerId_ = "WayLayer";
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>();
+    auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -75,6 +77,95 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         for (auto feature : *tile) {
             REQUIRE(feature->id()->toString() == feature1->id()->toString());
         }
+    }
+
+    SECTION("Serialization")
+    {
+        std::stringstream tileBytes;
+        tile->write(tileBytes);
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBytes,
+            [&](auto&& mapName, auto&& layerName){
+                REQUIRE(mapName == "GarlicChickenMap");
+                REQUIRE(layerName == "WayLayer");
+                return layerInfo;
+            },
+            [&](auto&& nodeId){
+                REQUIRE(nodeId == "TastyTomatoSaladNode");
+                return fieldNames;
+            }
+        );
+
+        REQUIRE(deserializedTile->tileId() == tile->tileId());
+        REQUIRE(deserializedTile->nodeId() == tile->nodeId());
+        REQUIRE(deserializedTile->mapId() == tile->mapId());
+        REQUIRE(deserializedTile->layerInfo() == tile->layerInfo());
+        REQUIRE(deserializedTile->error() == tile->error());
+        REQUIRE(deserializedTile->timestamp().time_since_epoch() == tile->timestamp().time_since_epoch());
+        REQUIRE(deserializedTile->ttl() == tile->ttl());
+        REQUIRE(deserializedTile->mapVersion() == tile->mapVersion());
+        REQUIRE(deserializedTile->info() == tile->info());
+
+        REQUIRE(deserializedTile->fieldNames() == tile->fieldNames());
+        for (auto feature : *deserializedTile) {
+            REQUIRE(feature->id()->toString() == feature1->id()->toString());
+        }
+    }
+
+    SECTION("Stream")
+    {
+        // We will write the same tile into the stream twice,
+        // but expect the Fields object to be sent only once.
+        // Then we add another feature with a yet unseen field, send it,
+        // and expect an update for the fields dictionary to be sent along.
+
+        auto messageCount = 0;
+        std::stringstream byteStream;
+        TileLayerStream::FieldOffsetMap fieldOffsets;
+        TileLayerStream::Writer layerWriter{[&](auto&& msg){
+            ++messageCount;
+            byteStream << msg;
+        }, fieldOffsets};
+
+        layerWriter.write(tile);
+        REQUIRE(messageCount == 2);
+        layerWriter.write(tile);
+        REQUIRE(messageCount == 3);
+
+        // Create another Feature
+        auto feature2 = tile->newFeature("Way", {{"wayId", 43}});
+        feature1->attributes()->addField("new_shiny_attr_name", "Salsa");
+
+        layerWriter.write(tile);
+        REQUIRE(messageCount == 5);
+
+        // Now, read the stream in small chunks to verify that the Reader
+        // always waits until the full message is received before trying
+        // to parse an object.
+
+        std::vector<std::shared_ptr<TileFeatureLayer>> readTiles;
+        TileLayerStream::Reader reader{
+            [&](auto&& mapId, auto&& layerId) { return layerInfo; },
+            [&](auto&& layerPtr) { readTiles.push_back(layerPtr); },
+        };
+
+        std::string byteStreamData = byteStream.str();
+        for (auto i = 0; i < byteStreamData.size(); i += 2) {
+            // Read two-byte chunks, except if only one byte is left
+            if (i < byteStreamData.size() - 1)
+                reader.read({(uint8_t)byteStreamData[i], (uint8_t)byteStreamData[i+1]});
+            else
+                reader.read({(uint8_t)byteStreamData[i]});
+        }
+
+        REQUIRE(reader.eos());
+        REQUIRE(readTiles.size() == 3);
+        REQUIRE(readTiles[0]->fieldNames() == readTiles[1]->fieldNames());
+        REQUIRE(readTiles[1]->fieldNames() == readTiles[2]->fieldNames());
+        REQUIRE(readTiles[0]->numRoots() == 1);
+        REQUIRE(readTiles[1]->numRoots() == 1);
+        REQUIRE(readTiles[2]->numRoots() == 2);
     }
 }
 
