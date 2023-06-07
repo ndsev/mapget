@@ -36,7 +36,8 @@ public:
     /**
      * Launch a DataSource - feel free to launch the source in a thread
      * of its own, and use the stop-function to stop the thread. Note,
-     * that an exception will be thrown this instance is already running.
+     * that an exception will be thrown this instance is already running,
+     * or if the server fails to launch within waitMs.
      *
      * @param interface Network interface to bind to.
      * @param port Port which the DataSource HTTP server shall bind to.
@@ -48,8 +49,9 @@ public:
      *  A parent supervisor process may parse this message to determine
      *  the chosen port, and enter the DataSource's network address into
      *  the mapget data source configuration file.
+     * @param waitMs Number of milliseconds to wait for the server to start up.
      */
-    void go(std::string const& interfaceAddr="0.0.0.0", uint16_t port=0);
+    void go(std::string const& interfaceAddr="0.0.0.0", uint16_t port=0, uint32_t waitMs=100);
     
     /**
      * Returns true if this instance is currently running (go() was called

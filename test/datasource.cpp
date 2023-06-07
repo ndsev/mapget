@@ -6,8 +6,8 @@
 
 using namespace mapget;
 
-TEST_CASE("DataSource Test", "[DataSource]") {
-
+TEST_CASE("DataSource", "[DataSource]")
+{
     // Create DataSourceInfo
     auto info = DataSourceInfo::fromJson(R"(
     {
@@ -52,45 +52,51 @@ TEST_CASE("DataSource Test", "[DataSource]") {
     });
 
     // Launch the DataSource on a separate thread
-    ds.go("localhost", 0);
-
-    // Wait for the server to start
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    ds.go();
 
     // Ensure the DataSource is running
     REQUIRE(ds.isRunning() == true);
 
-    // Initialize a httplib client
-    httplib::Client cli("localhost", ds.port());
+    SECTION("Fetch /info")
+    {
+        // Initialize an httplib client
+        httplib::Client cli("localhost", ds.port());
 
-    // Send a GET info request
-    auto fetchedInfoJson = cli.Get("/info");
-    auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
-    REQUIRE(fetchedInfo.toJson() == info.toJson());
+        // Send a GET info request
+        auto fetchedInfoJson = cli.Get("/info");
+        auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
+        REQUIRE(fetchedInfo.toJson() == info.toJson());
+    }
 
-    // Send a GET tile request
-    auto tileResponse = cli.Get("/tile?layer=WayLayer&tileId=1");
+    SECTION("Fetch /tile")
+    {
+        // Initialize an httplib client
+        httplib::Client cli("localhost", ds.port());
 
-    // Check that the response is OK
-    REQUIRE(tileResponse != nullptr);
-    REQUIRE(tileResponse->status == 200);
+        // Send a GET tile request
+        auto tileResponse = cli.Get("/tile?layer=WayLayer&tileId=1");
 
-    // Check the response body for expected content
-    auto receivedTileCount = 0;
-    TileLayerStream::Reader reader(
-        [&](auto&& mapId, auto&& layerId)
-        {
-            REQUIRE(mapId == fetchedInfo.mapId_);
-            return fetchedInfo.layers_[std::string(layerId)];
-        },
-        [&](auto&& tile) { receivedTileCount++; });
-    reader.read({tileResponse->body.begin(), tileResponse->body.end()});
+        // Check that the response is OK
+        REQUIRE(tileResponse != nullptr);
+        REQUIRE(tileResponse->status == 200);
 
-    REQUIRE(receivedTileCount == 1);
+        // Check the response body for expected content
+        auto receivedTileCount = 0;
+        TileLayerStream::Reader reader(
+            [&](auto&& mapId, auto&& layerId)
+            {
+                REQUIRE(mapId == info.mapId_);
+                return info.layers_[std::string(layerId)];
+            },
+            [&](auto&& tile) { receivedTileCount++; });
+        reader.read({tileResponse->body.begin(), tileResponse->body.end()});
 
-    // Stop the DataSource
-    ds.stop();
+        REQUIRE(receivedTileCount == 1);
+    }
 
-    // Ensure the DataSource is not running
-    REQUIRE(ds.isRunning() == false);
+    SECTION("Stop the data source")
+    {
+        ds.stop();
+        REQUIRE(ds.isRunning() == false);
+    }
 }

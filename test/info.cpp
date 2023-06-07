@@ -5,7 +5,7 @@
 
 using namespace mapget;
 
-TEST_CASE("DataSourceInfo JSON Serialization", "[DataSourceInfo]")
+TEST_CASE("InfoToJson", "[DataSourceInfo]")
 {
     // Create a DataSourceInfo object
     std::map<std::string, std::shared_ptr<LayerInfo>> layers;
@@ -37,7 +37,7 @@ TEST_CASE("DataSourceInfo JSON Serialization", "[DataSourceInfo]")
     REQUIRE(j == j2);
 }
 
-TEST_CASE("DataSourceInfo JSON Deserialization", "[DataSourceInfo]")
+TEST_CASE("InfoFromJson", "[DataSourceInfo]")
 {
     // create a JSON object with some mandatory fields missing
     nlohmann::json j = R"({
