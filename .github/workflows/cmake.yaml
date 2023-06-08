@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 on:
   push:
@@ -7,140 +7,84 @@ on:
     branches: [ '**' ]
 
 jobs:
-  build-linux:
-    name: Linux
+  build-manylinux:
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
     runs-on: ubuntu-latest
+    container: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}:2023.1
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v2
         with:
-          submodules: true
-      - name: Install dependencies
-        run: |
-          sudo apt-get install gcovr ninja-build valgrind
-      - name: Setup
-        run: |
-          mkdir build
+          submodules: recursive
       - name: Configure
-        working-directory: build
         run: |
-          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=YES -GNinja ..
+          python3 -m venv venv && . ./venv/bin/activate
+          pip install -U setuptools wheel pip
+          mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release ..
       - name: Build
         working-directory: build
         run: |
+          . ../venv/bin/activate
           cmake --build .
-
-      - name: Run CTest
+          mv bin/wheel bin/wheel-auditme
+          auditwheel repair bin/wheel-auditme/mapget*.whl -w bin/wheel
+      - name: Test
         working-directory: build
         run: |
-          ctest --verbose --output-junit result-junit.xml
-      # - name: Publish Test Results
-      #   uses: EnricoMi/publish-unit-test-result-action@v2
-      #   id: test-results
-      #   if: always()
-      #   with:
-      #     files: |
-      #       build/test/*.xml
-      # - name: Set badge color
-      #   shell: bash
-      #   run: |
-      #     case ${{ fromJSON( steps.test-results.outputs.json ).conclusion }} in
-      #       success)
-      #         echo "BADGE_COLOR=31c653" >> $GITHUB_ENV
-      #         ;;
-      #       failure)
-      #         echo "BADGE_COLOR=800000" >> $GITHUB_ENV
-      #         ;;
-      #       neutral)
-      #         echo "BADGE_COLOR=696969" >> $GITHUB_ENV
-      #         ;;
-      #     esac
-      # - name: Create badge
-      #   uses: emibcn/badge-action@d6f51ff11b5c3382b3b88689ae2d6db22d9737d1
-      #   with:
-      #     label: Tests
-      #     status: '${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.tests }} tests, ${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.runs }} runs: ${{ fromJSON( steps.test-results.outputs.json ).conclusion }}'
-      #     color: ${{ env.BADGE_COLOR }}
-      #     path: badge.svg
-      # - name: Upload badge to Gist
-      #   # Upload only for main branch
-      #   if: >
-      #     github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' ||
-      #     github.event_name != 'workflow_run' && github.ref == 'refs/heads/main'
-      #   uses: andymckay/append-gist-action@1fbfbbce708a39bd45846f0955ed5521f2099c6d
-      #   with:
-      #     token: ${{ secrets.GIST_TOKEN }}
-      #     gistURL: https://gist.githubusercontent.com/johannes-wolf/61e57af50757b03e0c7cd119ec2d2f4b
-      #     file: badge.svg
-
-      - name: Run Valgrind Memcheck
-        working-directory: build/bin
-        run: |
-          valgrind --tool=memcheck ./test.mapget
-      - name: Run Valgrind Helgrind
-        working-directory: build/bin
-        run: |
-          valgrind --tool=helgrind ./test.mapget
-      - name: Run Valgrind Cachegrind
-        working-directory: build/bin
-        run: |
-          valgrind --tool=cachegrind ./test.mapget | tee cachegrind-out.txt
-      - name: Run Valgrind Callgrind
-        working-directory: build/bin
-        run: |
-          valgrind --tool=callgrind --instr-atstart=no ./test.mapget
-      - name: Publish Callgrind Output
-        uses: actions/upload-artifact@v3
+          . ../venv/bin/activate
+          ctest -C Release --verbose --no-test=fail
+      - name: Deploy
+        uses: actions/upload-artifact@v2
         with:
-          name: Callgrind Output
-          path: build/bin/callgrind.out.*
-
-  build-windows:
-    name: Windows
-    runs-on: windows-latest
+          name: mapget-py${{ matrix.python-version }}-ubuntu-latest
+          path: build/bin/wheel/*.whl
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v2
         with:
-          submodules: true
-      - name: Setup
-        run: |
-          mkdir build
-      - name: Configure
-        working-directory: build
-        run: |
-          cmake ..
-        shell: cmd
-      - name: Build
-        working-directory: build
-        run: |
-          cmake --build .
-        shell: cmd
-      - name: Run CTest
-        working-directory: build/test
-        run: |
-          ctest -C Debug --verbose
-        shell: cmd
-
-  build-macos:
-    name: MacOS
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v3
+          submodules: recursive
+      - uses: actions/setup-python@v2
         with:
-          submodules: true
-      - name: Setup
-        run: |
-          brew install openssl        
-          mkdir build
-      - name: Configure
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+      - run: python -m pip install setuptools wheel
+      - run: mkdir build
+      - name: Build (macOS)
+        if: matrix.os == 'macos-latest' || matrix.os == 'macos-10.15'
         working-directory: build
         run: |
+          python -m pip install delocate
+          brew install openssl
           export OPENSSL_ROOT_DIR=$(brew --prefix openssl)
-          cmake ..
-      - name: Build
+          cmake -DPython3_ROOT_DIR=$pythonLocation \
+                -DPython3_FIND_FRAMEWORK=LAST \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DHTTPLIB_USE_BROTLI_IF_AVAILABLE=OFF ..
+          cmake --build .
+          mv bin/wheel bin/wheel-auditme  # Same as on Linux
+          ../deps/python-cmake-wheel/repair-wheel-macos.bash \
+                "$(pwd)"/bin/wheel-auditme/mapget*.whl \
+                "$(pwd)"/bin/wheel mapget
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
         working-directory: build
         run: |
-          cmake --build .
-      - name: Run CTest
-        working-directory: build/test
+          choco install --no-progress -y openssl
+          echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
+          cmake "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build . --config Release
+      - name: Deploy
+        uses: actions/upload-artifact@v2
+        with:
+          name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
+          path: build/bin/wheel/*.whl
+      - name: Test
+        working-directory: build
         run: |
-          ctest --verbose
+          ctest -C Release --verbose --no-test=fail
