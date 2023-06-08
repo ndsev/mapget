@@ -99,4 +99,12 @@ TEST_CASE("DataSource", "[DataSource]")
         ds.stop();
         REQUIRE(ds.isRunning() == false);
     }
+
+    SECTION("Wait for data source")
+    {
+        auto waitThread = std::thread([&]{ds.waitForSignal();});
+        ds.stop();
+        waitThread.join();
+        REQUIRE(ds.isRunning() == false);
+    }
 }

@@ -5,9 +5,13 @@
 #include "datasource.h"
 
 #include <utility>
+#include <csignal>
+#include <atomic>
 
 namespace mapget
 {
+
+static std::atomic<DataSource*> activeDataSource;
 
 struct DataSource::Impl
 {
@@ -64,6 +68,16 @@ struct DataSource::Impl
                 nlohmann::json j = info_.toJson();
                 res.set_content(j.dump(), "application/json");
             });
+
+    }
+
+    static void handleSignal(int signal)
+    {
+        // Stop the active instance when a signal is received.
+        if (activeDataSource != nullptr) {
+            (*activeDataSource).stop();
+            activeDataSource = nullptr;
+        }
     }
 };
 
@@ -131,6 +145,23 @@ DataSource::~DataSource()
 {
     if (isRunning())
         stop();
+}
+
+void DataSource::waitForSignal()
+{
+    // So the signal handler knows what to call
+    activeDataSource = this;
+
+    // Set the signal handler for SIGINT and SIGTERM.
+    std::signal(SIGINT, Impl::handleSignal);
+    std::signal(SIGTERM, Impl::handleSignal);
+
+    // Wait for the signal handler to stop us, or the server to shut down on its own.
+    while (isRunning()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds (200));
+    }
+
+    activeDataSource = nullptr;
 }
 
 }  // namespace mapget

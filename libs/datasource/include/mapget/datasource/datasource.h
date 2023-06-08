@@ -34,9 +34,10 @@ public:
     DataSource& onTileRequest(std::function<void(TileFeatureLayer&)> const&);
 
     /**
-     * Launch a DataSource - feel free to launch the source in a thread
-     * of its own, and use the stop-function to stop the thread. Note,
-     * that an exception will be thrown this instance is already running,
+     * Launch the DataSource server in it's own thread.
+     * Use the stop-function to stop the thread.
+     * The server will also be stopped automatically, if the DataSource object is destroyed.
+     * An exception will be thrown if this instance is already running,
      * or if the server fails to launch within waitMs.
      *
      * @param interface Network interface to bind to.
@@ -63,6 +64,13 @@ public:
      * Stop this instance. Will be a no-op if this instance is not running.
      */
     void stop();
+
+    /**
+     * Blocks until SIGINT or SIGTERM is received, then shuts down the server.
+     * Note: You can never run this function in parallel for multiple sources
+     *  within the same process!
+     */
+    void waitForSignal();
 
     /**
      * Get the port currently used by the instance, or 0 if go() has never been called.
