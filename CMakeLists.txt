@@ -1,17 +1,24 @@
 cmake_minimum_required(VERSION 3.14)
 
+option(MAPGET_BUILD_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY." OFF)
+option(MAPGET_BUILD_DATASOURCE "Enable mapget-datasource library." OFF)
+option(MAPGET_BUILD_SERVICE "Enable mapget-cache library and mapget-service app." OFF)
+
 if (NOT PROJECT_NAME)
   set (MAPGET_ENABLE_TESTING ON)
+  set (MAPGET_BUILD_WHEEL ON)
+  set (MAPGET_BUILD_DATASOURCE ON)
+  set (MAPGET_BUILD_SERVICE ON)
 endif()
 
 project(mapget)
 include(FetchContent)
 
+set(MAPGET_VERSION 0.1.0)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(MAPGET_VERSION 0.0.1)
-
-option(MAPGET_BUILD_WHEEL "Enable mapget whl-output to WHEEL_DEPLOY_DIRECTORY." ON)
 
 if (NOT MSVC)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -41,17 +48,6 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/cmake-modules")
 ##############
 # deps
 
-find_package(OpenSSL REQUIRED)
-
-# if (MAPGET_BUILD_WHEEL)
-#   if (NOT TARGET wheel)
-#     set(Python3_FIND_STRATEGY LOCATION)
-#     set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/deps/python-cmake-wheel")
-#     include(python-wheel)
-#     set(WHEEL_DEPLOY_DIRECTORY "${MAPGET_DEPLOY_DIR}/wheel")
-#   endif()
-# endif()
-
 if (NOT TARGET stx)
   FetchContent_Declare(stx
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/stx.git"
@@ -77,18 +73,6 @@ if (NOT TARGET simfil)
   FetchContent_MakeAvailable(simfil)
 endif()
 
-if (NOT TARGET httplib)
-  FetchContent_Declare(httplib
-    GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-    GIT_TAG        "master"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(httplib)
-  target_compile_definitions(httplib
-    INTERFACE
-      CPPHTTPLIB_OPENSSL_SUPPORT)
-  target_link_libraries(httplib INTERFACE OpenSSL::SSL)
-endif()
-
 if (NOT TARGET bitsery)
   FetchContent_Declare(bitsery
     GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
@@ -97,12 +81,50 @@ if (NOT TARGET bitsery)
   FetchContent_MakeAvailable(bitsery)
 endif()
 
-if (NOT TARGET yaml-cpp)
-  FetchContent_Declare(yaml-cpp
-    GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
-    GIT_TAG        "master"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(yaml-cpp)
+if (MAPGET_BUILD_DATASOURCE OR MAPGET_BUILD_SERVICE)
+  if (NOT TARGET httplib)
+    FetchContent_Declare(httplib
+      GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
+      GIT_TAG        "master"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(httplib)
+    find_package(OpenSSL REQUIRED)
+    target_compile_definitions(httplib
+      INTERFACE
+        CPPHTTPLIB_OPENSSL_SUPPORT)
+    target_link_libraries(httplib INTERFACE OpenSSL::SSL)
+  endif()
+
+  if (NOT TARGET yaml-cpp)
+    FetchContent_Declare(yaml-cpp
+      GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
+      GIT_TAG        "master"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(yaml-cpp)
+  endif()
+endif()
+
+if (MAPGET_BUILD_WHEEL)
+  if (NOT TARGET wheel)
+    set(Python3_FIND_STRATEGY LOCATION)
+    FetchContent_Declare(python-cmake-wheel
+      GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
+      GIT_TAG        "main"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(python-cmake-wheel)
+    list(APPEND CMAKE_MODULE_PATH "${python-cmake-wheel_SOURCE_DIR}")
+    include(python-wheel)
+    set(WHEEL_DEPLOY_DIRECTORY "${MAPGET_DEPLOY_DIR}/wheel")
+  endif()
+
+  if (NOT TARGET pybind11)
+    FetchContent_Declare(
+      pybind11
+      GIT_REPOSITORY https://github.com/pybind/pybind11.git
+      GIT_TAG        v2.10.4
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(pybind11)
+  endif()
 endif()
 
 if (WITH_COVERAGE)
@@ -114,6 +136,10 @@ endif()
 
 add_subdirectory(libs/model)
 add_subdirectory(libs/datasource)
+
+if (MAPGET_BUILD_WHEEL)
+  add_subdirectory(libs/pymapget)
+endif()
 
 ##############
 # tests
@@ -130,10 +156,3 @@ if (MAPGET_ENABLE_TESTING)
       EXCLUDE "*catch2*")
   endif()
 endif()
-
-##############
-# wheels
-
-# if (MAPGET_BUILD_WHEEL)
-#   add_subdirectory(wheel)
-# endif()
