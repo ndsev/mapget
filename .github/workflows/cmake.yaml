@@ -68,7 +68,7 @@ jobs:
                 -DHTTPLIB_USE_BROTLI_IF_AVAILABLE=OFF ..
           cmake --build .
           mv bin/wheel bin/wheel-auditme  # Same as on Linux
-          ../deps/python-cmake-wheel/repair-wheel-macos.bash \
+          ./_deps/python-cmake-wheel-src/repair-wheel-macos.bash \
                 "$(pwd)"/bin/wheel-auditme/mapget*.whl \
                 "$(pwd)"/bin/wheel mapget
       - name: Build (Windows)
