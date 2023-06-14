@@ -4,7 +4,7 @@ option(MAPGET_BUILD_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DI
 option(MAPGET_BUILD_DATASOURCE "Enable mapget-datasource library." OFF)
 option(MAPGET_BUILD_SERVICE "Enable mapget-cache library and mapget-service app." OFF)
 
-if (NOT PROJECT_NAME)
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set (MAPGET_ENABLE_TESTING ON)
   set (MAPGET_BUILD_WHEEL ON)
   set (MAPGET_BUILD_DATASOURCE ON)
