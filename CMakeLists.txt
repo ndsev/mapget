@@ -135,7 +135,10 @@ endif()
 # libs
 
 add_subdirectory(libs/model)
-add_subdirectory(libs/datasource)
+
+if (MAPGET_BUILD_DATASOURCE)
+  add_subdirectory(libs/datasource)
+endif()
 
 if (MAPGET_BUILD_WHEEL)
   add_subdirectory(libs/pymapget)
