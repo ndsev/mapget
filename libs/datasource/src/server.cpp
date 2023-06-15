@@ -30,6 +30,9 @@ struct DataSourceServer::Impl
             [this](const httplib::Request& req, httplib::Response& res)
             {
                 auto layerIdParam = req.get_param_value("layer");
+                std::cout << layerIdParam << std::endl;
+                for (auto const& [k, _] : info_.layers_)
+                    std::cout << k << std::endl;
                 auto layerIt = info_.layers_.find(layerIdParam);
                 if (layerIt == info_.layers_.end())
                     throw std::runtime_error(stx::format("Unknown layer id `{}`!", layerIdParam));

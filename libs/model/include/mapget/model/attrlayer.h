@@ -18,6 +18,7 @@ class AttributeLayer : protected simfil::Object
     friend class TileFeatureLayer;
     friend class bitsery::Access;
     friend struct simfil::shared_model_ptr<simfil::ModelNode>;
+    friend ModelNode::Ptr;
 
 public:
     /**
@@ -45,6 +46,7 @@ class AttributeLayerList : protected simfil::Object
     friend class TileFeatureLayer;
     friend class bitsery::Access;
     friend class Feature;
+    friend ModelNode::Ptr;
 
 public:
     /**

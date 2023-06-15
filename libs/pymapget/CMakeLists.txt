@@ -2,7 +2,11 @@ project(pymapget)
 
 pybind11_add_module(mapget
   MODULE
-    py-mapget.cpp)
+    py-mapget.cpp
+    binding/py-model.h
+    binding/py-tileid.h
+    binding/py-layer.h
+    binding/py-datasource.h)
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
   target_compile_options(mapget PUBLIC /permissive-)
@@ -13,9 +17,13 @@ target_link_libraries(mapget
     mapget-model
     mapget-datasource)
 
+target_include_directories(mapget
+  PRIVATE
+    binding)
+
 target_compile_features(mapget
   INTERFACE
-  cxx_std_17)
+    cxx_std_17)
 
 if (MSVC)
   # Required because cpp-httplib speaks https via OpenSSL

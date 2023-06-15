@@ -41,6 +41,7 @@ class Feature : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer
 {
     friend class bitsery::Access;
     friend class TileFeatureLayer;
+    friend ModelNode::Ptr;
 
 public:
     [[nodiscard]] std::string_view typeId() const;
