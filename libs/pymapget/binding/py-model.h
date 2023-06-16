@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/model/feature.h"
+#include "mapget/model/featurelayer.h"
 #include "simfil/value.h"
 
 #include <pybind11/functional.h>
@@ -42,7 +43,7 @@ struct BoundModelNodeBase : public BoundModelNode
 };
 
 template <typename Function>
-void dispatch_py_value(py::object const& py_value, Function&& func)
+void dispatch_py_value(py::object const& py_value, Function&& func, TileFeatureLayer& model)
 {
     if (py::isinstance<py::bool_>(py_value)) {
         func(py_value.cast<bool>());
@@ -64,6 +65,41 @@ void dispatch_py_value(py::object const& py_value, Function&& func)
     }
     else if (py::isinstance<BoundModelNode>(py_value)) {
         func(py_value.cast<BoundModelNode&>().node());
+    }
+    else if (py::isinstance<py::list>(py_value))
+    {
+        // Recursively convert Python list to array.
+        auto list = py_value.cast<py::list>();
+        auto arr = model.newArray(list.size());
+
+        for (auto const& item : list) {
+            dispatch_py_value(item, [&arr](auto&& value) {
+                arr->append(value);
+            }, model);
+        }
+
+        func(arr);
+    }
+    else if (py::isinstance<py::dict>(py_value))
+    {
+        // Recursively convert Python dict to object.
+        auto dict = py_value.cast<py::dict>();
+        auto obj = model.newObject(dict.size());
+
+        for (auto const& [anyKey, anyValue] : dict) {
+            std::string key = py::str(anyKey);
+            dispatch_py_value(
+                anyValue,
+                [&obj, &key](auto&& value) {
+                    if constexpr (std::is_same<std::decay_t<decltype(value)>, bool>::value)
+                        obj->addBool(key, value);
+                    else
+                        obj->addField(key, value);
+                },
+                model);
+        }
+
+        func(obj);
     }
     else {
         throw std::runtime_error("Unsupported Python type");
@@ -90,7 +126,8 @@ struct BoundObject : public BoundModelNode
                         else {
                             self.modelNodePtr_->addField(name, value);
                         }
-                    });
+                    },
+                    self.node()->model_);
             },
             py::arg("name"),
             py::arg("value"),
@@ -99,7 +136,7 @@ struct BoundObject : public BoundModelNode
 
     static void bind(py::module_& m)
     {
-        auto boundClass = py::class_<BoundObject<>, BoundModelNode>(m, "Object");
+        auto boundClass = py::class_<BoundObject, BoundModelNode>(m, "Object");
         bindObjectMethods(boundClass);
     }
 
@@ -314,7 +351,7 @@ struct BoundFeature : public BoundModelNode
                 [](BoundFeature& self) { return BoundObject(self.modelNodePtr_->attributes()); },
                 "Access this feature's arbitrary attributes.")
             .def(
-                "attributeLayers",
+                "attribute_layers",
                 [](BoundFeature& self) { return BoundAttributeLayerList(self.modelNodePtr_->attributeLayers()); },
                 "Access this feature's attribute layer collection.")
             .def(

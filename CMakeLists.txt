@@ -14,11 +14,10 @@ endif()
 project(mapget)
 include(FetchContent)
 
-set(MAPGET_VERSION 0.1.0rc0)
+set(MAPGET_VERSION 0.0.2)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(MAPGET_VERSION 0.0.1)
 
 if (NOT MSVC)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)

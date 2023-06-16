@@ -17,11 +17,21 @@ def handle_tile_request(tile: mapget.TileFeatureLayer):
     fixed_attrs: mapget.Object = feature.attributes()
     fixed_attrs.add_field("isBridge", False)
 
+    # Add an attribute which has a compound value
+    attr_obj = tile.new_object()
+    attr_obj.set_field("name", "Main St.")
+    attr_obj.set_field("houseNumber", 5)
+    attr_arr = tile.new_array()
+    attr_arr.append(attr_obj)
+    attr_arr.append(attr_obj)
+    fixed_attrs.add_field("address", attr_obj)
+    fixed_attrs.add_field("addresses", attr_arr)
+
     # Add an attribute layer
     attr_layer: mapget.Object = feature.attributeLayers().new_layer("rules")
     attr: mapget.Attribute = attr_layer.new_attribute("SPEED_LIMIT")
     attr.set_direction(mapget.Direction.POSITIVE)
-    attr.add_field("speedLimit", "50")
+    attr.add_field("speedLimit", 50)
 
 
 # Instantiate a data source with a minimal mandatory set

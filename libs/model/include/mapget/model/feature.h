@@ -44,25 +44,41 @@ class Feature : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer
     friend ModelNode::Ptr;
 
 public:
+
+    /** Get the name of this feature's type. */
     [[nodiscard]] std::string_view typeId() const;
 
+    /** Get this feature's ID. */
     [[nodiscard]] model_ptr<FeatureId> id() const;
+
+    /** Get this feature's GeometryCollection. */
     [[nodiscard]] model_ptr<GeometryCollection> geom();
+
+    /** Get this feature's Attribute layers. */
     [[nodiscard]] model_ptr<AttributeLayerList> attributeLayers();
+
+    /** Get this feature's un-layered attributes. */
     [[nodiscard]] model_ptr<Object> attributes();
+
+    /** Get this feature's child ID list. */
     [[nodiscard]] model_ptr<Array> children();
 
+    /** Add a line to the feature. */
+
     /**
-     * Evaluate a filter expression on this feature.
+     * Evaluate a filter expression on this feature, get the first (or Null) result.
+     */
+    simfil::Value evaluate(std::string_view const& expression);
+
+    /**
+     * Evaluate a filter expression on this feature, get all (or no) results.
      */
     std::vector<simfil::Value> evaluateAll(std::string_view const& expression);
-    simfil::Value evaluate(std::string_view const& expression);
 
     /**
      * Convert the Feature to GeoJSON.
      */
     nlohmann::json toGeoJson();
-
 
 protected:
     /**
