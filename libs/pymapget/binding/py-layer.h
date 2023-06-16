@@ -15,73 +15,80 @@ using namespace simfil;
 
 void bindTileLayer(py::module_& m)
 {
-    py::class_<TileLayer, std::shared_ptr<TileLayer>>(m, "TileLayer")
-        .def(
-            "tile_id",
-            &TileLayer::tileId,
-            R"pbdoc(
-            Get the layer's tileId. This controls the rough geographic extent
-            of the contained tile data.
-        )pbdoc")
-        .def(
-            "map_id",
-            &TileLayer::mapId,
-            R"pbdoc(
-            Get the identifier of the map which this tile layer belongs to.
-        )pbdoc")
-        .def(
-            "layer_id",
-            [](TileLayer& self) { return self.layerInfo()->layerId_; },
-            R"pbdoc(
-            Get the layer name for this TileLayer.
-        )pbdoc")
-        .def(
-            "error",
-            &TileLayer::error,
-            R"pbdoc(
-            Get the error occurred while the tile was filled.
-        )pbdoc")
-        .def(
-            "set_error",
-            &TileLayer::setError,
-            py::arg("err"),
-            R"pbdoc(
-            Set the error occurred while the tile was filled.
-        )pbdoc")
-        .def(
-            "timestamp",
-            &TileLayer::timestamp,
-            R"pbdoc(
-            Get when this layer was created.
-        )pbdoc")
-        .def(
-            "ttl",
-            &TileLayer::ttl,
-            R"pbdoc(
-            Get how long this layer should live.
-        )pbdoc")
-        .def(
-            "set_ttl",
-            &TileLayer::setTtl,
-            py::arg("time_to_live"),
-            R"pbdoc(
-            Set how long this layer should live.
-        )pbdoc")
-        .def(
-            "set_info",
-            &TileLayer::setInfo,
-            py::arg("info"),
-            R"pbdoc(
-            Set the extra JSON document to store sizes, construction times,
-            and other arbitrary meta-information.
-        )pbdoc");
-
-    py::class_<TileFeatureLayer, TileLayer, std::shared_ptr<TileFeatureLayer>>(
+    py::class_<TileFeatureLayer, std::shared_ptr<TileFeatureLayer>>(
         m,
         "TileFeatureLayer")
         .def(
+            "tile_id",
+            [](TileFeatureLayer const& self){return self.tileId();},
+            R"pbdoc(
+            Get the layer's tileId. This controls the rough geographic extent
+            of the contained tile data.
+            )pbdoc")
+        .def(
+            "map_id",
+            [](TileFeatureLayer const& self){return self.mapId();},
+            R"pbdoc(
+            Get the identifier of the map which this tile layer belongs to.
+            )pbdoc")
+        .def(
+            "layer_id",
+            [](TileFeatureLayer const& self) { return self.layerInfo()->layerId_; },
+            R"pbdoc(
+            Get the layer name for this TileLayer.
+            )pbdoc")
+        .def(
+            "error",
+            [](TileFeatureLayer const& self) { return self.error(); },
+            R"pbdoc(
+            Get the error occurred while the tile was filled.
+            )pbdoc")
+        .def(
+            "set_error",
+            [](TileFeatureLayer& self, std::string const& e) { self.setError(e); },
+            py::arg("err"),
+            R"pbdoc(
+            Set the error occurred while the tile was filled.
+            )pbdoc")
+        .def(
+            "timestamp",
+            [](TileFeatureLayer const& self) {return self.timestamp(); },
+            R"pbdoc(
+            Get when this layer was created.
+            )pbdoc")
+        .def(
+            "ttl",
+            [](TileFeatureLayer const& self) {return self.ttl() ? self.ttl()->count() : -1; },
+            R"pbdoc(
+            Get how long this layer should live, or -1 if unset.
+            )pbdoc")
+        .def(
+            "set_ttl",
+            [](TileFeatureLayer& self, int64_t ms) {
+                if (ms >= 0)
+                    self.setTtl(std::chrono::milliseconds(ms));
+                else
+                    self.setTtl(std::nullopt);
+            },
+            py::arg("time_to_live_in_ms"),
+            R"pbdoc(
+            Set how long this layer should live, in ms, or -1 for unset.
+            )pbdoc")
+        .def(
+            "set_info",
+            [](TileFeatureLayer& self, std::string const& k, simfil::ScalarValueType const& v) {
+                self.setInfo(k, v);
+            },
+            py::arg("key"),
+            py::arg("value"),
+            R"pbdoc(
+            Set a JSON field to store sizes, construction times,
+            and other arbitrary meta-information. The value may be
+            bool, int, double or string.
+        )pbdoc")
+        .def(
             "set_prefix",
-            &TileFeatureLayer::setPrefix,
+            [](TileFeatureLayer& self, KeyValuePairs const& v) {self.setPrefix(v); },
             py::arg("prefix"),
             R"pbdoc(
             Set common id prefix for all features in this layer.

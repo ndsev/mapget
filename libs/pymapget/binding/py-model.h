@@ -78,7 +78,7 @@ struct BoundObject : public BoundModelNode
     {
         c.def(
             "add_field",
-            [](BoundObject& self, std::string_view const& name, py::object const& py_value)
+            [](ObjClass& self, std::string_view const& name, py::object const& py_value)
             {
                 dispatch_py_value(
                     py_value,
@@ -141,17 +141,16 @@ struct BoundGeometry : public BoundModelNode
             .value("LINE", Geometry::GeomType::Line)
             .value("MESH", Geometry::GeomType::Mesh)
             .value("POINTS", Geometry::GeomType::Points)
-            .value("POLYGON", Geometry::GeomType::Polygon)
-            .export_values();
+            .value("POLYGON", Geometry::GeomType::Polygon);
 
         py::class_<BoundGeometry, BoundModelNode>(m, "Geometry")
             .def(
                 "append",
-                [](shared_model_ptr<Geometry>& node,
+                [](BoundGeometry& node,
                    double const& lon,
                    double const& lat,
                    double const& alt) {
-                    return node->append({lon, lat, alt});
+                    node.modelNodePtr_->append({lon, lat, alt});
                 },
                 py::arg("lon"),
                 py::arg("lat"),
@@ -172,7 +171,14 @@ struct BoundGeometryCollection : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundGeometryCollection, BoundModelNode>(m, "GeometryCollection");
+        py::class_<BoundGeometryCollection, BoundModelNode>(m, "GeometryCollection")
+            .def(
+                "new_geometry",
+                [](BoundGeometryCollection& self, Geometry::GeomType const& geomType)
+                { return BoundGeometry(self.modelNodePtr_->newGeometry(geomType)); },
+                py::arg("geom_type"),
+                "Create and insert a new geometry into the collection.")
+            ;
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -193,8 +199,7 @@ struct BoundAttribute : public BoundObject<Attribute>
             .value("POSITIVE", Attribute::Direction::Positive)
             .value("NEGATIVE", Attribute::Direction::Negative)
             .value("BOTH", Attribute::Direction::Both)
-            .value("NONE", Attribute::Direction::None)
-            .export_values();
+            .value("NONE", Attribute::Direction::None);
 
         auto boundClass =
             py::class_<BoundAttribute, BoundModelNode>(m, "Attribute")
@@ -230,10 +235,9 @@ struct BoundAttributeLayer : public BoundModelNode
         py::class_<BoundAttributeLayer, BoundModelNode>(m, "AttributeLayer")
             .def(
                 "new_attribute",
-                [](BoundAttributeLayer& self, std::string_view const& name, size_t initialCapacity)
-                { return BoundAttribute{self.modelNodePtr_->newAttribute(name, initialCapacity)}; },
+                [](BoundAttributeLayer& self, std::string_view const& name)
+                { return BoundAttribute{self.modelNodePtr_->newAttribute(name)}; },
                 py::arg("name"),
-                py::arg("initial_capacity") = 8,
                 "Create and insert a new attribute into the layer.")
             .def(
                 "add_attribute",
@@ -241,8 +245,6 @@ struct BoundAttributeLayer : public BoundModelNode
                 { self.modelNodePtr_->addAttribute(a.modelNodePtr_); },
                 py::arg("a"),
                 "Add an existing attribute to the layer.");
-
-        // Other methods of AttributeLayer class
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -261,7 +263,7 @@ struct BoundAttributeLayerList : public BoundModelNode
                 "new_layer",
                 [](BoundAttributeLayerList& self,
                    std::string_view const& name)
-                { return self.modelNodePtr_->newLayer(name); },
+                { return BoundAttributeLayer(self.modelNodePtr_->newLayer(name)); },
                 py::arg("name"),
                 "Create and insert a new layer into the collection.")
             .def(
@@ -273,8 +275,6 @@ struct BoundAttributeLayerList : public BoundModelNode
                 py::arg("name"),
                 py::arg("layer"),
                 "Add an existing layer to the collection.");
-
-        // Other methods of AttributeLayerList class
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -304,9 +304,24 @@ struct BoundFeature : public BoundModelNode
             .def(
                 "to_geo_json",
                 [](BoundFeature& self) { return self.modelNodePtr_->toGeoJson(); },
-                "Convert the Feature to GeoJSON.");
-
-        // TODO: Additional feature field accessors
+                "Convert the Feature to GeoJSON.")
+            .def(
+                "geom",
+                [](BoundFeature& self) { return BoundGeometryCollection(self.modelNodePtr_->geom()); },
+                "Access this feature's geometry collection.")
+            .def(
+                "attributes",
+                [](BoundFeature& self) { return BoundObject(self.modelNodePtr_->attributes()); },
+                "Access this feature's arbitrary attributes.")
+            .def(
+                "attributeLayers",
+                [](BoundFeature& self) { return BoundAttributeLayerList(self.modelNodePtr_->attributeLayers()); },
+                "Access this feature's attribute layer collection.")
+            .def(
+                "children",
+                [](BoundFeature& self) { return BoundArray(self.modelNodePtr_->children()); },
+                "Access this feature's child feature id list.")
+            ;
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }

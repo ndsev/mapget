@@ -17,7 +17,7 @@ struct DataSourceServer::Impl
 {
     httplib::Server server_;
     DataSourceInfo info_;
-    std::function<void(TileFeatureLayer&)> tileCallback_;
+    std::function<void(std::shared_ptr<TileFeatureLayer>)> tileCallback_;
     uint16_t port_ = 0;
     std::thread serverThread_;
     std::shared_ptr<Fields> fields_;
@@ -30,9 +30,6 @@ struct DataSourceServer::Impl
             [this](const httplib::Request& req, httplib::Response& res)
             {
                 auto layerIdParam = req.get_param_value("layer");
-                std::cout << layerIdParam << std::endl;
-                for (auto const& [k, _] : info_.layers_)
-                    std::cout << k << std::endl;
                 auto layerIt = info_.layers_.find(layerIdParam);
                 if (layerIt == info_.layers_.end())
                     throw std::runtime_error(stx::format("Unknown layer id `{}`!", layerIdParam));
@@ -95,7 +92,7 @@ DataSourceServer::DataSourceServer(DataSourceInfo const& info)
 }
 
 DataSourceServer&
-DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer&)> const& callback)
+DataSourceServer::onTileRequest(std::function<void(std::shared_ptr<TileFeatureLayer>)> const& callback)
 {
     impl_->tileCallback_ = callback;
     return *this;

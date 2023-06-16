@@ -4,6 +4,7 @@
 #include "tileid.h"
 
 #include "nlohmann/json.hpp"
+#include "simfil/model/nodes.h"
 
 #include <string>
 #include <chrono>

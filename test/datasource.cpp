@@ -44,8 +44,10 @@ TEST_CASE("DataSource", "[DataSource]")
     // Initialize a DataSource
     DataSourceServer ds(info);
 
-    ds.onTileRequest([](TileFeatureLayer& tile) {
-        auto f = tile.newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
+    ds.onTileRequest([](std::shared_ptr<TileFeatureLayer> tile) {
+        constexpr auto ExpectingThisTileId = 1;
+        REQUIRE(tile->tileId() == ExpectingThisTileId);
+        auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
         auto g = f->geom()->newGeometry(GeomType::Line);
         g->append({42., 11});
         g->append({42., 12});
