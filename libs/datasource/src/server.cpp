@@ -40,6 +40,10 @@ struct DataSourceServer::Impl
                     fieldsOffsetParam = (simfil::FieldId)
                         std::stoul(req.get_param_value("fieldsOffset"));
 
+                std::string responseType = "binary";
+                if (req.has_param("responseType"))
+                    responseType = req.get_param_value("responseType");
+
                 auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
                     tileIdParam,
                     info_.nodeId_,
@@ -47,17 +51,22 @@ struct DataSourceServer::Impl
                     layerIt->second,
                     fields_);
                 if (tileCallback_)
-                    tileCallback_(*tileFeatureLayer);
+                    tileCallback_(tileFeatureLayer);
 
                 // Serialize TileFeatureLayer using TileLayerStream
-                std::stringstream content;
-                TileLayerStream::FieldOffsetMap fieldOffsets{{info_.nodeId_, fieldsOffsetParam}};
-                TileLayerStream::Writer layerWriter{
-                    [&](auto&& msg) { content << msg; },
-                    fieldOffsets};
-                layerWriter.write(tileFeatureLayer);
-
-                res.set_content(content.str(), "application/binary");
+                if (responseType == "binary") {
+                    std::stringstream content;
+                    TileLayerStream::FieldOffsetMap fieldOffsets{
+                        {info_.nodeId_, fieldsOffsetParam}};
+                    TileLayerStream::Writer layerWriter{
+                        [&](auto&& msg) { content << msg; },
+                        fieldOffsets};
+                    layerWriter.write(tileFeatureLayer);
+                    res.set_content(content.str(), "application/binary");
+                }
+                else {
+                    res.set_content(nlohmann::to_string(tileFeatureLayer->toGeoJson()), "application/json");
+                }
             });
 
         // Set up GET /info endpoint

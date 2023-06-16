@@ -140,8 +140,11 @@ void TileLayer::setProtocolVersion(Version version) {
     mapVersion_ = version;
 }
 
-void TileLayer::setInfo(const nlohmann::json& info) {
-    this->info_ = info;
+void TileLayer::setInfo(std::string const& k, simfil::ScalarValueType const& v) {
+    std::visit([this, &k](auto&& vv){
+       if constexpr (!std::is_same_v<std::decay_t<decltype(vv)>, std::monostate>)
+            info_[k] = vv;
+    }, v);
 }
 
 void TileLayer::write(std::ostream& outputStream)
