@@ -2,7 +2,7 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 
-#include "datasource.h"
+#include "server.h"
 
 #include <utility>
 #include <csignal>
@@ -11,9 +11,9 @@
 namespace mapget
 {
 
-static std::atomic<DataSource*> activeDataSource;
+static std::atomic<DataSourceServer*> activeDataSource;
 
-struct DataSource::Impl
+struct DataSourceServer::Impl
 {
     httplib::Server server_;
     DataSourceInfo info_;
@@ -73,26 +73,32 @@ struct DataSource::Impl
 
     static void handleSignal(int signal)
     {
+        // Temporarily holds the current active data source
+        auto* expected = activeDataSource.load();
+
         // Stop the active instance when a signal is received.
-        if (activeDataSource != nullptr) {
-            (*activeDataSource).stop();
-            activeDataSource = nullptr;
+        // We use compare_exchange_strong to make the operation atomic.
+        if (activeDataSource.compare_exchange_strong(expected, nullptr)) {
+            if (expected) {
+                expected->stop();
+            }
         }
     }
 };
 
-DataSource::DataSource(DataSourceInfo const& info)
+DataSourceServer::DataSourceServer(DataSourceInfo const& info)
     : impl_(new Impl(info))
 {
 }
 
-DataSource& DataSource::onTileRequest(std::function<void(TileFeatureLayer&)> const& callback)
+DataSourceServer&
+DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer&)> const& callback)
 {
     impl_->tileCallback_ = callback;
     return *this;
 }
 
-void DataSource::go(std::string const& interfaceAddr, uint16_t port, uint32_t waitMs)
+void DataSourceServer::go(std::string const& interfaceAddr, uint16_t port, uint32_t waitMs)
 {
     if (impl_->server_.is_running() || impl_->serverThread_.joinable())
         throw std::runtime_error("DataSource is already running");
@@ -106,7 +112,7 @@ void DataSource::go(std::string const& interfaceAddr, uint16_t port, uint32_t wa
     }
 
     impl_->serverThread_ = std::thread(
-        [this, interfaceAddr, port]
+        [this, interfaceAddr]
         {
             std::cout << "====== Running on port " << impl_->port_ << " ======" << std::endl;
             impl_->server_.listen_after_bind();
@@ -117,12 +123,12 @@ void DataSource::go(std::string const& interfaceAddr, uint16_t port, uint32_t wa
         throw std::runtime_error(stx::format("Could not start DataSource on {}:{}", interfaceAddr, port));
 }
 
-bool DataSource::isRunning()
+bool DataSourceServer::isRunning()
 {
     return impl_->server_.is_running();
 }
 
-void DataSource::stop()
+void DataSourceServer::stop()
 {
     if (!impl_->server_.is_running())
         return;
@@ -131,23 +137,23 @@ void DataSource::stop()
     impl_->serverThread_.join();
 }
 
-uint16_t DataSource::port() const
+uint16_t DataSourceServer::port() const
 {
     return impl_->port_;
 }
 
-DataSourceInfo const& DataSource::info()
+DataSourceInfo const& DataSourceServer::info()
 {
     return impl_->info_;
 }
 
-DataSource::~DataSource()
+DataSourceServer::~DataSourceServer()
 {
     if (isRunning())
         stop();
 }
 
-void DataSource::waitForSignal()
+void DataSourceServer::waitForSignal()
 {
     // So the signal handler knows what to call
     activeDataSource = this;

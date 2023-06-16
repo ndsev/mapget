@@ -1,8 +1,8 @@
 project(mapget-datasource)
 
 add_library(mapget-datasource STATIC
-  include/mapget/datasource/datasource.h
-  src/datasource.cpp)
+  include/mapget/datasource/server.h
+  src/server.cpp)
 
 target_include_directories(mapget-datasource
   PUBLIC

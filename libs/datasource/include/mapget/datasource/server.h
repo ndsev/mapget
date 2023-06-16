@@ -11,18 +11,18 @@ namespace mapget
  * DataSourceInfo metadata instance, which describes the map data that
  * is provided by the source.
  */
-class DataSource
+class DataSourceServer
 {
 public:
     /**
      * Construct a DataSource with a DataSourceInfo metadata instance.
      */
-    DataSource(DataSourceInfo const& info);
+    explicit DataSourceServer(DataSourceInfo const& info);
 
     /**
      * Destructor, also stops the server if it is running.
      */
-    ~DataSource();
+    ~DataSourceServer();
 
     /**
      * Set the Callback which will be invoked when a `/tile`-request is received.
@@ -31,7 +31,7 @@ public:
      * If an error occurs while filling the tile, the callback can use
      * TileFeatureLayer::setError(...) to singal the error downstream.
      */
-    DataSource& onTileRequest(std::function<void(TileFeatureLayer&)> const&);
+    DataSourceServer& onTileRequest(std::function<void(TileFeatureLayer&)> const&);
 
     /**
      * Launch the DataSource server in it's own thread.

@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "mapget/datasource/datasource.h"
 #include "httplib.h"
+#include "mapget/datasource/server.h"
 #include "mapget/model/stream.h"
 
 using namespace mapget;
@@ -42,7 +42,7 @@ TEST_CASE("DataSource", "[DataSource]")
     // configure info
 
     // Initialize a DataSource
-    DataSource ds(info);
+    DataSourceServer ds(info);
 
     ds.onTileRequest([](TileFeatureLayer& tile) {
         auto f = tile.newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});

@@ -82,7 +82,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(feature1->evaluate("**.mozzarella.smell").toString() == "neutral");
         REQUIRE(feature1->evaluate("properties.main_ingredient").toString() == "Pepper");
         REQUIRE(
-            feature1->evaluate("geo(geometry.geometries.*) within bbox(40., 9., 45., 12.)")
+            feature1->evaluate("geo() within bbox(40., 9., 45., 12.)")
                 .toString() == "true");
     }
 
