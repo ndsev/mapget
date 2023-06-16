@@ -8,7 +8,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11"]
-        os: [macos-10.15, macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ubuntu-latest
     steps:
       - name: Fetch
@@ -16,8 +16,8 @@ jobs:
         # https://github.com/actions/download-artifact/issues/3
         uses: dawidd6/action-download-artifact@v2
         with:
-          workflow: cmake.yml
-          name: zswag-py${{ matrix.python-version }}-${{ matrix.os }}
+          workflow: cmake.yaml
+          name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
           path: dist/
       - name: Upload
         env:
