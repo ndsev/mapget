@@ -21,7 +21,17 @@ struct BoundModelNode
 
     virtual ModelNode::Ptr node() = 0;
 
-    ScalarValueType value() { return node()->value(); }
+    TileFeatureLayer::Ptr model()
+    {
+        struct GetTileFeatureLayer : public simfil::ModelNode {
+            explicit GetTileFeatureLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
+            TileFeatureLayer::Ptr operator()() {
+                return std::reinterpret_pointer_cast<TileFeatureLayer>(
+                    std::const_pointer_cast<simfil::Model>(model_));
+            }
+        };
+        return GetTileFeatureLayer(*node())();
+    }
 };
 
 struct BoundModelNodeBase : public BoundModelNode
@@ -42,69 +52,75 @@ struct BoundModelNodeBase : public BoundModelNode
     shared_model_ptr<ModelNode> modelNodePtr_;
 };
 
-template <typename Function>
-void dispatch_py_value(py::object const& py_value, Function&& func, TileFeatureLayer& model)
+namespace
+{
+
+using ModelVariant =
+    std::variant<bool, int16_t, int64_t, double, std::string_view, ModelNode::Ptr >;
+
+ModelVariant py_value_to_model(py::object const& py_value, TileFeatureLayer& model)
 {
     if (py::isinstance<py::bool_>(py_value)) {
-        func(py_value.cast<bool>());
+        return py_value.cast<bool>();
     }
     else if (py::isinstance<py::int_>(py_value)) {
         auto value = py_value.cast<int64_t>();
         if (value >= INT16_MIN && value <= INT16_MAX) {
-            func(static_cast<int16_t>(value));
+            return static_cast<int16_t>(value);
         }
         else {
-            func(value);
+            return value;
         }
     }
     else if (py::isinstance<py::float_>(py_value)) {
-        func(py_value.cast<double>());
+        return py_value.cast<double>();
     }
     else if (py::isinstance<py::str>(py_value)) {
-        func(py_value.cast<std::string_view>());
+        return py_value.cast<std::string_view>();
     }
     else if (py::isinstance<BoundModelNode>(py_value)) {
-        func(py_value.cast<BoundModelNode&>().node());
+        return py_value.cast<BoundModelNode&>().node();
     }
-    else if (py::isinstance<py::list>(py_value))
-    {
+    else if (py::isinstance<py::list>(py_value)) {
         // Recursively convert Python list to array.
         auto list = py_value.cast<py::list>();
         auto arr = model.newArray(list.size());
 
         for (auto const& item : list) {
-            dispatch_py_value(item, [&arr](auto&& value) {
-                arr->append(value);
-            }, model);
+            auto value = py_value_to_model(py::reinterpret_borrow<py::object>(item), model);
+            std::visit([&arr](auto&& vv){
+                arr->append(vv);
+            }, value);
         }
 
-        func(arr);
+        return ModelNode::Ptr(arr);
     }
-    else if (py::isinstance<py::dict>(py_value))
-    {
+    else if (py::isinstance<py::dict>(py_value)) {
         // Recursively convert Python dict to object.
         auto dict = py_value.cast<py::dict>();
         auto obj = model.newObject(dict.size());
 
         for (auto const& [anyKey, anyValue] : dict) {
             std::string key = py::str(anyKey);
-            dispatch_py_value(
-                anyValue,
-                [&obj, &key](auto&& value) {
+            auto vv = py_value_to_model(py::reinterpret_borrow<py::object>(anyValue), model);
+            std::visit(
+                [&obj, &key](auto&& value)
+                {
                     if constexpr (std::is_same<std::decay_t<decltype(value)>, bool>::value)
                         obj->addBool(key, value);
                     else
                         obj->addField(key, value);
                 },
-                model);
+                vv);
         }
 
-        func(obj);
+        return ModelNode::Ptr(obj);
     }
     else {
         throw std::runtime_error("Unsupported Python type");
     }
 }
+}  // namespace
 
 template <typename NodeType = Object>
 struct BoundObject : public BoundModelNode
@@ -116,8 +132,8 @@ struct BoundObject : public BoundModelNode
             "add_field",
             [](ObjClass& self, std::string_view const& name, py::object const& py_value)
             {
-                dispatch_py_value(
-                    py_value,
+                auto vv = py_value_to_model(py_value, *self.model());
+                std::visit(
                     [&self, &name](auto&& value)
                     {
                         if constexpr (std::is_same<std::decay_t<decltype(value)>, bool>::value) {
@@ -127,7 +143,7 @@ struct BoundObject : public BoundModelNode
                             self.modelNodePtr_->addField(name, value);
                         }
                     },
-                    self.node()->model_);
+                    vv);
             },
             py::arg("name"),
             py::arg("value"),
@@ -155,9 +171,10 @@ struct BoundArray : public BoundModelNode
             .def(
                 "append",
                 [](BoundArray& self, py::object const& py_value) {
-                    dispatch_py_value(
+                    auto vv = py_value_to_model(
                         py_value,
-                        [&self](auto&& value) { self.modelNodePtr_->append(value); });
+                        *self.model());
+                    std::visit([&self](auto&& value) { self.modelNodePtr_->append(value); }, vv);
                 },
                 py::arg("value"),
                 "Append a value to the array.");
@@ -183,10 +200,7 @@ struct BoundGeometry : public BoundModelNode
         py::class_<BoundGeometry, BoundModelNode>(m, "Geometry")
             .def(
                 "append",
-                [](BoundGeometry& node,
-                   double const& lon,
-                   double const& lat,
-                   double const& alt) {
+                [](BoundGeometry& node, double const& lon, double const& lat, double const& alt) {
                     node.modelNodePtr_->append({lon, lat, alt});
                 },
                 py::arg("lon"),
