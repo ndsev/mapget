@@ -194,6 +194,15 @@ struct BoundGeometry : public BoundModelNode
                 py::arg("elevation") = .0,
                 R"pbdoc(
                 Append a point to the geometry.
+            )pbdoc")
+            .def(
+                "append",
+                [](BoundGeometry& node, Point const& p) {
+                    node.modelNodePtr_->append(p);
+                },
+                py::arg("point"),
+                R"pbdoc(
+                Append a point to the geometry.
             )pbdoc");
     }
 
@@ -214,8 +223,7 @@ struct BoundGeometryCollection : public BoundModelNode
                 [](BoundGeometryCollection& self, Geometry::GeomType const& geomType)
                 { return BoundGeometry(self.modelNodePtr_->newGeometry(geomType)); },
                 py::arg("geom_type"),
-                "Create and insert a new geometry into the collection.")
-            ;
+                "Create and insert a new geometry into the collection.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -298,8 +306,7 @@ struct BoundAttributeLayerList : public BoundModelNode
         py::class_<BoundAttributeLayerList, BoundModelNode>(m, "AttributeLayerList")
             .def(
                 "new_layer",
-                [](BoundAttributeLayerList& self,
-                   std::string_view const& name)
+                [](BoundAttributeLayerList& self, std::string_view const& name)
                 { return BoundAttributeLayer(self.modelNodePtr_->newLayer(name)); },
                 py::arg("name"),
                 "Create and insert a new layer into the collection.")
@@ -344,7 +351,8 @@ struct BoundFeature : public BoundModelNode
                 "Convert the Feature to GeoJSON.")
             .def(
                 "geom",
-                [](BoundFeature& self) { return BoundGeometryCollection(self.modelNodePtr_->geom()); },
+                [](BoundFeature& self)
+                { return BoundGeometryCollection(self.modelNodePtr_->geom()); },
                 "Access this feature's geometry collection.")
             .def(
                 "attributes",
@@ -352,13 +360,48 @@ struct BoundFeature : public BoundModelNode
                 "Access this feature's arbitrary attributes.")
             .def(
                 "attribute_layers",
-                [](BoundFeature& self) { return BoundAttributeLayerList(self.modelNodePtr_->attributeLayers()); },
+                [](BoundFeature& self)
+                { return BoundAttributeLayerList(self.modelNodePtr_->attributeLayers()); },
                 "Access this feature's attribute layer collection.")
             .def(
                 "children",
                 [](BoundFeature& self) { return BoundArray(self.modelNodePtr_->children()); },
                 "Access this feature's child feature id list.")
-            ;
+                .def(
+                    "add_point",
+                    [](BoundFeature& self, Point const& p) {
+                        self.modelNodePtr_->addPoint(p);
+                    },
+                    py::arg("p"),
+                    "Add a point to the feature.")
+                .def(
+                    "add_points",
+                    [](BoundFeature& self, std::vector<Point> const& points) {
+                        self.modelNodePtr_->addPoints(points);
+                    },
+                    py::arg("points"),
+                    "Add multiple points to the feature.")
+                .def(
+                    "add_line",
+                    [](BoundFeature& self, std::vector<Point> const& points) {
+                        self.modelNodePtr_->addLine(points);
+                    },
+                    py::arg("points"),
+                    "Add a line to the feature.")
+                .def(
+                    "add_mesh",
+                    [](BoundFeature& self, std::vector<Point> const& points) {
+                        self.modelNodePtr_->addMesh(points);
+                    },
+                    py::arg("points"),
+                    "Add a mesh to the feature, len(points) must be multiple of three.")
+                .def(
+                    "add_poly",
+                    [](BoundFeature& self, std::vector<Point> const& points) {
+                        self.modelNodePtr_->addPoly(points);
+                    },
+                    py::arg("points"),
+                    "Add a polygon to the feature.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -390,7 +433,7 @@ struct BoundFeatureId : public BoundModelNode
     shared_model_ptr<FeatureId> modelNodePtr_;
 };
 
-}
+}  // namespace mapget
 
 void bindModel(py::module& m)
 {

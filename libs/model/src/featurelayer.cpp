@@ -307,6 +307,7 @@ void TileFeatureLayer::write(std::ostream& outputStream)
     impl_->readWrite(s);
     ModelPool::write(outputStream);
 }
+
 nlohmann::json TileFeatureLayer::toGeoJson() const
 {
     auto features = nlohmann::json::array();

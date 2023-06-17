@@ -5,6 +5,7 @@
 #include "nlohmann/json.hpp"
 
 #include <sstream>
+#include <iostream>
 
 using namespace mapget;
 
@@ -54,6 +55,13 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     line->append({41., 10.});
     line->append({43., 11.});
 
+    // Use high-level geometry API
+    feature1->addPoint({41.5, 10.5, 0});
+    feature1->addPoints({{41.5, 10.5, 0}, {41.6, 10.7}});
+    feature1->addLine({{41.5, 10.5, 0}, {41.6, 10.7}});
+    feature1->addMesh({{41.5, 10.5, 0}, {41.6, 10.7}, {41.5, 10.3}});
+    feature1->addPoly({{41.5, 10.5, 0}, {41.6, 10.7}, {41.5, 10.3}, {41.8, 10.9}});
+
     // Add a fixed attribute
     feature1->attributes()->addField("main_ingredient", "Pepper");
 
@@ -65,9 +73,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
     SECTION("toGeoJSON")
     {
-        constexpr auto expected = R"({"areaId":"TheBestArea","geometry":{"geometries":[{"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"}],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":1,"smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42})";
+        constexpr auto expected = R"({"areaId":"TheBestArea","geometry":{"geometries":[{"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0]],"type":"MultiPolygon"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0]],"type":"Polygon"}],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":1,"smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42})";
         std::stringstream featureGeoJson;
         featureGeoJson << feature1->toGeoJson();
+        std::cout << featureGeoJson.str() << std::endl;
         REQUIRE(featureGeoJson.str() == expected);
     }
 
@@ -82,7 +91,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(feature1->evaluate("**.mozzarella.smell").toString() == "neutral");
         REQUIRE(feature1->evaluate("properties.main_ingredient").toString() == "Pepper");
         REQUIRE(
-            feature1->evaluate("geo() within bbox(40., 9., 45., 12.)")
+            feature1->evaluate("any(geo() within bbox(40., 9., 45., 12.))")
                 .toString() == "true");
     }
 

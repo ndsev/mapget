@@ -1,4 +1,5 @@
 import mapget
+from mapget import Point as Pt
 
 
 def handle_tile_request(tile: mapget.TileFeatureLayer):
@@ -8,10 +9,17 @@ def handle_tile_request(tile: mapget.TileFeatureLayer):
     # Create a new feature
     feature: mapget.Feature = tile.new_feature("Way", [("wayId", 0)])
 
-    # Assign geometry
+    # Assign geometry (low-level)
     geom: mapget.Geometry = feature.geom().new_geometry(mapget.GeomType.LINE)
     geom.append(41., 11.)
-    geom.append(42., 12.)
+    geom.append(Pt(x=42., y=12., z=506))
+
+    # Assign geometry (high-level)
+    feature.add_point(Pt(42.5, 11.6))
+    feature.add_points([Pt(42.5, 11.6), Pt(42.5, 11.8)])
+    feature.add_line([Pt(42.5, 11.6), Pt(42.5, 11.7)])
+    feature.add_mesh([Pt(42.5, 11.6), Pt(42.5, 11.7), Pt(42.2, 11.7)])
+    feature.add_poly([Pt(42.5, 11.6), Pt(42.5, 11.7), Pt(42.2, 11.7), Pt(42.2, 11.3)])
 
     # Add an attribute
     fixed_attrs: mapget.Object = feature.attributes()
