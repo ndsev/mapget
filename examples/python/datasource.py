@@ -54,7 +54,7 @@ def handle_tile_request(tile: mapget.TileFeatureLayer):
 
 # Instantiate a data source with a minimal mandatory set
 # of meta-information.
-ds = mapget.DataSource({
+ds = mapget.DataSourceServer({
     "layers": {
         "WayLayer": {
             "featureTypes": [

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mapget/datasource/datasource.h"
+#include "mapget/datasource/server.h"
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -13,7 +13,7 @@ using namespace simfil;
 
 void bindDataSource(py::module_& m)
 {
-    py::class_<DataSource, std::shared_ptr<DataSource>>(m, "DataSource")
+    py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer")
         .def(
             py::init(
                 [](py::dict const& dict)
@@ -29,7 +29,7 @@ void bindDataSource(py::module_& m)
                     nlohmann::json j = nlohmann::json::parse(json_str);
 
                     // construct DataSource
-                    return std::make_unique<DataSource>(DataSourceInfo::fromJson(j));
+                    return std::make_unique<DataSourceServer>(DataSourceInfo::fromJson(j));
                 }),
             R"pbdoc(
                 Construct a DataSource with a DataSourceInfo metadata instance.
@@ -37,7 +37,7 @@ void bindDataSource(py::module_& m)
             py::arg("info_dict"))
         .def(
             "on_tile_request",
-            &DataSource::onTileRequest,
+            &DataSourceServer::onTileRequest,
             py::arg("callback"),
             py::call_guard<py::gil_scoped_acquire>(),
             R"pbdoc(
@@ -49,7 +49,7 @@ void bindDataSource(py::module_& m)
         )pbdoc")
         .def(
             "go",
-            &DataSource::go,
+            &DataSourceServer::go,
             py::arg("interfaceAddr") = "0.0.0.0",
             py::arg("port") = 0,
             py::arg("waitMs") = 100,
@@ -61,19 +61,19 @@ void bindDataSource(py::module_& m)
         )pbdoc")
         .def(
             "is_running",
-            &DataSource::isRunning,
+            &DataSourceServer::isRunning,
             R"pbdoc(
             Returns true if this instance is currently running (go() was called and not stopped).
         )pbdoc")
         .def(
             "stop",
-            &DataSource::stop,
+            &DataSourceServer::stop,
             R"pbdoc(
             Stop this instance. Will be a no-op if this instance is not running.
         )pbdoc")
         .def(
             "wait_for_signal",
-            &DataSource::waitForSignal,
+            &DataSourceServer::waitForSignal,
             py::call_guard<py::gil_scoped_release>(),
             R"pbdoc(
             Blocks until SIGINT or SIGTERM is received, then shuts down the server.
@@ -82,13 +82,13 @@ void bindDataSource(py::module_& m)
         )pbdoc")
         .def(
             "port",
-            &DataSource::port,
+            &DataSourceServer::port,
             R"pbdoc(
             Get the port currently used by the instance, or 0 if go() has never been called.
         )pbdoc")
         .def(
             "info",
-            &DataSource::info,
+            &DataSourceServer::info,
             R"pbdoc(
             Get the DataSourceInfo metadata which this instance was constructed with.
         )pbdoc");
