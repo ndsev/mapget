@@ -167,7 +167,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         // always waits until the full message is received before trying
         // to parse an object.
 
-        std::vector<std::shared_ptr<TileFeatureLayer>> readTiles;
+        std::vector<TileFeatureLayer::Ptr> readTiles;
         TileLayerStream::Reader reader{
             [&](auto&& mapId, auto&& layerId) { return layerInfo; },
             [&](auto&& layerPtr) { readTiles.push_back(layerPtr); },

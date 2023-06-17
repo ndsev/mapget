@@ -162,6 +162,9 @@ public:
    /** Convert to GeoJSON geometry collection. */
    nlohmann::json toGeoJson() const;
 
+   /** Shared pointer type */
+   using Ptr = std::shared_ptr<TileFeatureLayer>;
+
 protected:
     /**
      * The FeatureTileColumnId enum provides identifiers for different

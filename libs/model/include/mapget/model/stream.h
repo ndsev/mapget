@@ -47,7 +47,7 @@ public:
          */
         Reader(
             LayerInfoResolveFun layerInfoProvider,
-            std::function<void(std::shared_ptr<TileFeatureLayer>)> onParsedLayer,
+            std::function<void(TileFeatureLayer::Ptr)> onParsedLayer,
             std::shared_ptr<CachedFieldsProvider> fieldCacheProvider = nullptr);
 
         /**
@@ -71,7 +71,7 @@ public:
         std::stringstream buffer_;
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<CachedFieldsProvider> fieldCacheProvider_;
-        std::function<void(std::shared_ptr<TileFeatureLayer>)> onParsedLayer_;
+        std::function<void(TileFeatureLayer::Ptr)> onParsedLayer_;
     };
 
     /**
@@ -93,7 +93,7 @@ public:
             FieldOffsetMap& fieldsOffsets);
 
         /** Serialize a tile feature layer and the required part of a Fields cache. */
-        void write(std::shared_ptr<TileFeatureLayer> const& tileFeatureLayer);
+        void write(TileFeatureLayer::Ptr const& tileFeatureLayer);
 
     private:
         void sendMessage(std::string const& bytes, MessageType msgType);

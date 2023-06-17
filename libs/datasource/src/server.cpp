@@ -17,7 +17,7 @@ struct DataSourceServer::Impl
 {
     httplib::Server server_;
     DataSourceInfo info_;
-    std::function<void(std::shared_ptr<TileFeatureLayer>)> tileCallback_;
+    std::function<void(TileFeatureLayer::Ptr)> tileCallback_;
     uint16_t port_ = 0;
     std::thread serverThread_;
     std::shared_ptr<Fields> fields_;
@@ -101,7 +101,7 @@ DataSourceServer::DataSourceServer(DataSourceInfo const& info)
 }
 
 DataSourceServer&
-DataSourceServer::onTileRequest(std::function<void(std::shared_ptr<TileFeatureLayer>)> const& callback)
+DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback)
 {
     impl_->tileCallback_ = callback;
     return *this;

@@ -15,7 +15,7 @@ using namespace simfil;
 
 void bindTileLayer(py::module_& m)
 {
-    py::class_<TileFeatureLayer, std::shared_ptr<TileFeatureLayer>>(
+    py::class_<TileFeatureLayer, TileFeatureLayer::Ptr>(
         m,
         "TileFeatureLayer")
         .def(

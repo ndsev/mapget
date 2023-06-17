@@ -44,7 +44,7 @@ TEST_CASE("DataSource", "[DataSource]")
     // Initialize a DataSource
     DataSourceServer ds(info);
 
-    ds.onTileRequest([](std::shared_ptr<TileFeatureLayer> tile) {
+    ds.onTileRequest([](TileFeatureLayer::Ptr tile) {
         constexpr auto ExpectingThisTileId = 1;
         REQUIRE(tile->tileId() == ExpectingThisTileId);
         auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
