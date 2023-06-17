@@ -127,12 +127,19 @@ TileFeatureLayer::newFeatureId(
     const KeyValuePairs& featureIdParts)
 {
     // TODO: Validate ID parts
+    auto featureIdObject = newObject(featureIdParts.size());
     auto featureIdIndex = impl_->featureIds_.size();
     impl_->featureIds_.emplace_back(FeatureId::Data{
-        true,
+        false,
         fieldNames()->emplace(typeId),
-        newObject(featureIdParts.size())->addr()
+        featureIdObject->addr()
     });
+    for (auto const& [k, v] : featureIdParts) {
+        auto&& kk = k;
+        std::visit([&](auto&& x){
+            featureIdObject->addField(kk, x);
+        }, v);
+    }
     return FeatureId(impl_->featureIds_.back(), shared_from_this(), {FeatureIds, (uint32_t)featureIdIndex});
 }
 

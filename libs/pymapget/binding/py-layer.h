@@ -140,7 +140,7 @@ void bindTileLayer(py::module_& m)
         .def(
             "new_array",
             [](TileFeatureLayer& self)
-            { return BoundObject(self.newArray()); },
+            { return BoundArray(self.newArray()); },
             R"pbdoc(
             Adopt members from the given vector and obtain a new array model index which has these members.
         )pbdoc")
