@@ -4,6 +4,8 @@
 #include <set>
 #include <atomic>
 #include <condition_variable>
+#include <thread>
+#include <list>
 
 namespace mapget
 {
