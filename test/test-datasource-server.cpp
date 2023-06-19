@@ -91,7 +91,7 @@ TEST_CASE("DataSource", "[DataSource]")
                 return info.layers_[std::string(layerId)];
             },
             [&](auto&& tile) { receivedTileCount++; });
-        reader.read({tileResponse->body.begin(), tileResponse->body.end()});
+        reader.read(tileResponse->body);
 
         REQUIRE(receivedTileCount == 1);
     }

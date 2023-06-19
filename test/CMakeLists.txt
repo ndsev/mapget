@@ -10,9 +10,9 @@ if (NOT TARGET Catch2)
 endif()
 
 add_executable(test.mapget
-  model.cpp
-  info.cpp
-  datasource.cpp)
+  test-model.cpp
+  test-info.cpp
+  test-datasource-server.cpp)
 
 target_link_libraries(test.mapget
   PUBLIC
