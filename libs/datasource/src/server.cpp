@@ -59,7 +59,7 @@ struct DataSourceServer::Impl
                     TileLayerStream::FieldOffsetMap fieldOffsets{
                         {info_.nodeId_, fieldsOffsetParam}};
                     TileLayerStream::Writer layerWriter{
-                        [&](auto&& msg) { content << msg; },
+                        [&](auto&& msg, auto&& msgType) { content << msg; },
                         fieldOffsets};
                     layerWriter.write(tileFeatureLayer);
                     res.set_content(content.str(), "application/binary");

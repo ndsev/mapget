@@ -19,10 +19,9 @@ TileLayerStream::Reader::Reader(
 {
 }
 
-void TileLayerStream::Reader::read(const std::vector<uint8_t>& bytes)
+void TileLayerStream::Reader::read(const std::string_view& bytes)
 {
-    std::string_view strBytes((char const*)bytes.data(), bytes.size());
-    buffer_ << strBytes;
+    buffer_ << bytes;
     while (continueReading());
 }
 
@@ -79,7 +78,7 @@ bool TileLayerStream::Reader::continueReading()
 }
 
 TileLayerStream::Writer::Writer(
-    std::function<void(std::string)> onMessage,
+    std::function<void(std::string, MessageType)> onMessage,
     FieldOffsetMap& fieldsOffsets)
     : onMessage_(std::move(onMessage)),
       fieldsOffsets_(fieldsOffsets)
@@ -125,7 +124,7 @@ void TileLayerStream::Writer::sendMessage(std::string const& bytes, TileLayerStr
     message << bytes;
 
     // Notify result
-    onMessage_(message.str());
+    onMessage_(message.str(), msgType);
 }
 
 std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::operator()(const std::string_view& nodeId)
