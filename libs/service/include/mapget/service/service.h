@@ -46,7 +46,7 @@ public:
     std::function<void(TileFeatureLayer::Ptr)> onResult_;
 
 protected:
-    // So the hub can track which tileId index from tiles_
+    // So the service can track which tileId index from tiles_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
 };
@@ -54,14 +54,14 @@ protected:
 /**
  * Class which serves to unify multiple data sources for multiple maps,
  * and a cache which may store/restore the output of any of these sources.
- * The hub maintains a number of worker threads for each source, depending
+ * The service maintains a number of worker threads for each source, depending
  * on the source's maxParallelJobs_.
  */
 class Service
 {
 public:
     /**
-     * Construct a hub with a shared Cache instance. Note: The Cache must not
+     * Construct a service with a shared Cache instance. Note: The Cache must not
      * be null. For a simple default cache implementation, you can use the
      * MemCache.
      */
@@ -79,7 +79,7 @@ public:
     void add(DataSource::Ptr const& dataSource);
 
     /**
-     * Remove a data source from the hub. Requests for data which
+     * Remove a data source from the service. Requests for data which
      * can only be satisfied by the given source will not be processed anymore.
      * TODO: Any such ongoing request will be forcefully marked as done.
      */
@@ -89,7 +89,7 @@ public:
      * Request some map data tiles. Will throw an exception if
      * there is no worker which is able to process the request.
      * Note: The same request object should only ever be passed
-     *  to one hub. Otherwise, there is undefined behavior.
+     *  to one service. Otherwise, there is undefined behavior.
      */
     void request(Request::Ptr r);
 
@@ -99,7 +99,7 @@ public:
      */
     void abort(Request::Ptr const& r);
 
-    /** DataSourceInfo for all data sources which have been added to this Hub. */
+    /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info();
 
 private:

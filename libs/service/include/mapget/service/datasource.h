@@ -7,7 +7,7 @@ namespace mapget
 
 /**
  * Abstract class which defines the behavior of a mapget data source,
- * as expected by the mapget Hub. Any derived data source must implement
+ * as expected by the mapget Service. Any derived data source must implement
  * the info() and fill() methods.
  */
 class DataSource
@@ -16,7 +16,7 @@ public:
     using Ptr = std::shared_ptr<DataSource>;
 
     /**
-     * Method which is called by a hub to determine which map layers
+     * Method which is called by a service to determine which map layers
      * can be served by this DataSource, and how many layers this
      * data source can process in parallel (i.e. how many threads may
      * run this->fill(...) in parallel).
@@ -25,7 +25,7 @@ public:
 
     /**
      * Method which is called up to DataSourceInfo::maxParallelJobs_
-     * times in parallel to satisfy data requests for a mapget Hub.
+     * times in parallel to satisfy data requests for a mapget Service.
      * @param featureTile A TileFeatureLayer object which this data source
      *  should fill according the available data. If any error occurs
      *  while dong so, the data source may use TileLayer::setError.
@@ -34,7 +34,7 @@ public:
      */
     virtual void fill(TileFeatureLayer::Ptr const& featureTile) = 0;
 
-    /** Called by mapget::Hub worker. Dispatches to Cache or fill(...) on miss. */
+    /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
     virtual TileFeatureLayer::Ptr get(MapTileKey const& k, Cache& cache, DataSourceInfo const& info);
 };
 

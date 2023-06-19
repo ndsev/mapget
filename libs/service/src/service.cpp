@@ -86,7 +86,7 @@ struct Service::Impl
     std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;  // Map of data sources and their corresponding info
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_; // Map of data sources and their corresponding workers
     std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
-    Cache::Ptr cache_;                       // The cache for the hub
+    Cache::Ptr cache_;                       // The cache for the service
     std::list<Request::Ptr> requests_;       // List of requests currently being processed
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
