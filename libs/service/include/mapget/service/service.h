@@ -41,7 +41,7 @@ public:
     std::vector<TileId> tiles_;
 
     /**
-     * The callback function which is called when a
+     * The callback function which is called when a result tile is available.
      */
     std::function<void(TileFeatureLayer::Ptr)> onResult_;
 

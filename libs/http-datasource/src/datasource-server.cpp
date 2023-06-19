@@ -2,7 +2,7 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 
-#include "server.h"
+#include "datasource-server.h"
 
 #include <utility>
 #include <csignal>

@@ -20,5 +20,5 @@ PYBIND11_MODULE(mapget, m)
     bindTileId(m);
     bindModel(m);
     bindTileLayer(m);
-    bindDataSource(m);
+    bindDataSourceServer(m);
 }

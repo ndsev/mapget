@@ -15,7 +15,7 @@ target_include_directories(mapget-service
   PUBLIC
     include
   PRIVATE
-  include/mapget/service)
+    include/mapget/service)
 
 target_link_libraries(mapget-service
   PUBLIC

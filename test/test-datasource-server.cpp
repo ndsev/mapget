@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "httplib.h"
-#include "mapget/datasource/server.h"
+#include "mapget/http-datasource/datasource-server.h"
 #include "mapget/model/stream.h"
 
 using namespace mapget;

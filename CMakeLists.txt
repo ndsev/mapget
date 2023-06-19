@@ -137,7 +137,7 @@ add_subdirectory(libs/model)
 add_subdirectory(libs/service)
 
 if (MAPGET_BUILD_DATASOURCE)
-  add_subdirectory(libs/datasource)
+  add_subdirectory(libs/http-datasource)
 endif()
 
 if (MAPGET_BUILD_WHEEL)

@@ -17,7 +17,7 @@ add_executable(test.mapget
 target_link_libraries(test.mapget
   PUBLIC
     mapget-model
-    mapget-datasource
+    mapget-http-datasource
     Catch2::Catch2WithMain)
 
 include(Catch)

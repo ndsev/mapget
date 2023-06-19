@@ -15,7 +15,7 @@ endif ()
 target_link_libraries(mapget
   PRIVATE
     mapget-model
-    mapget-datasource)
+    mapget-http-datasource)
 
 target_include_directories(mapget
   PRIVATE
@@ -37,6 +37,6 @@ add_wheel(mapget
   URL "https://github.com/klebert-engineering/mapget"
   VERSION "${MAPGET_VERSION}"
   DESCRIPTION "Python bindings for the mapget library."
-  TARGET_DEPENDENCIES mapget-model mapget-datasource
+  TARGET_DEPENDENCIES mapget-model mapget-http-datasource
   LICENSE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE"
   DEPLOY_FILES ${DEPLOY_FILES})

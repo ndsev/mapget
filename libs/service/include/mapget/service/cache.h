@@ -66,13 +66,13 @@ public:
     /** Abstract: Retrieve a TileLayer blob for a MapTileKey. */
     virtual std::optional<std::string> getTileLayer(MapTileKey const& k) = 0;
 
-    /** Abstract: Upsert a TileLayer blob. */
+    /** Abstract: Upsert (Update or Insert) a TileLayer blob. */
     virtual void putTileLayer(MapTileKey const& k, std::string const& v) = 0;
 
     /** Abstract: Retrieve a Fields-dict-blob for a sourceNodeId. */
     virtual std::optional<std::string> getFields(std::string const& sourceNodeId) = 0;
 
-    /** Abstract: Upsert a Fields-dict blob. */
+    /** Abstract: Upsert (Update or Insert) a Fields-dict blob. */
     virtual void putFields(std::string const& sourceNodeId, std::string const& v) = 0;
 
     // The following methods are already implemented,
