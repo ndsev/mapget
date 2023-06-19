@@ -36,13 +36,37 @@ struct Version {
         s.value2b(minor_);
         s.value2b(patch_);
     }
+
+    /** Create Version from JSON. */
+    static Version fromJson(const nlohmann::json& j);
+
+    /** Serialize Version to JSON. */
+    [[nodiscard]] nlohmann::json toJson() const;
 };
 
 /** Enum to represent the possible data types */
 enum class IdPartDataType {I32, U32, I64, U64, UUID128, STR};
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    IdPartDataType,
+    {
+        {IdPartDataType::I32, "I32"},
+        {IdPartDataType::U32, "U32"},
+        {IdPartDataType::I64, "I64"},
+        {IdPartDataType::U64, "U64"},
+        {IdPartDataType::UUID128, "UUID128"},
+        {IdPartDataType::STR, "STR"},
+    })
 
 /** Enum to represent the possible layer types */
 enum class LayerType {Features, Heightmap, OrthoImage, GLTF};
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    LayerType,
+    {
+        {LayerType::Features, "Features"},
+        {LayerType::Heightmap, "Heightmap"},
+        {LayerType::OrthoImage, "OrthoImage"},
+        {LayerType::GLTF, "GLTF"},
+    })
 
 /** Structure to represent a part of a unique feature id composition. */
 struct UniqueIdPart
@@ -61,6 +85,12 @@ struct UniqueIdPart
 
     /** Is the identifier actually optional? */
     bool isOptional_ = false;
+
+    /** Create UniqueIdPart from JSON. */
+    static UniqueIdPart fromJson(const nlohmann::json& j);
+
+    /** Serialize UniqueIdPart to JSON. */
+    [[nodiscard]] nlohmann::json toJson() const;
 };
 
 /** Structure to represent the feature type info */
@@ -74,6 +104,37 @@ struct FeatureTypeInfo
      * A single id composition must never have more than 16 parts.
      */
     std::vector<std::vector<UniqueIdPart>> uniqueIdCompositions_;
+
+    /**
+     * Deserializes a FeatureTypeInfo object from JSON.
+     *
+     * The JSON is expected to have the following structure:
+     *
+     * {
+     *   "name": <string>,                  // Mandatory: The name of the feature type.
+     *   "uniqueIdCompositions": [          // Mandatory: A list of unique ID compositions.
+     *     [                                // A list of UniqueIdPart objects, each having the following structure:
+     *       {
+     *         "partId": <string>,          // Mandatory: The ID of the unique ID part.
+     *         "description": <string>,     // Optional: The description of the unique ID part.
+     *         "datatype": <IdPartDataType>,// Optional: The data type of the unique ID part, must be one of the enum values from IdPartDataType. Defaults to I64.
+     *         "isSynthetic": <bool>,       // Optional: A flag indicating if the unique ID part is synthetic. Defaults to false.
+     *         "isOptional": <bool>         // Optional: A flag indicating if the unique ID part is optional. Defaults to false.
+     *       },
+     *       ...
+     *     ],
+     *     ...
+     *   ]
+     * }
+     *
+     * @param j The JSON to deserialize.
+     * @return The deserialized FeatureTypeInfo object.
+     * @throws std::runtime_error if any mandatory field is missing.
+     */
+    static FeatureTypeInfo fromJson(const nlohmann::json& j);
+
+    /** Serialize FeatureTypeInfo to JSON. */
+    [[nodiscard]] nlohmann::json toJson() const;
 };
 
 /**
@@ -82,10 +143,10 @@ struct FeatureTypeInfo
  */
 struct Coverage
 {
-    /** Minimum tile id */
+    /** Minimum tile id (north-west AABB corner). */
     TileId min_;
 
-    /** Maximum tile id. Must have same zoom level as min. */
+    /** Maximum tile id (south-east AABB corner). Must have same zoom level as min. */
     TileId max_;
 
     /**
@@ -96,6 +157,26 @@ struct Coverage
      * to be fully filled.
      */
     std::vector<bool> filled_;
+
+    /**
+     * Deserializes a Coverage object from JSON.
+     *
+     * The JSON is expected to have the following structure:
+     *
+     * {
+     *   "min": <uint64_t>,                // Mandatory: The minimum tile ID.
+     *   "max": <uint64_t>,                // Mandatory: The maximum tile ID.
+     *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled tiles. Defaults to an empty list.
+     * }
+     *
+     * @param j The JSON to deserialize.
+     * @return The deserialized Coverage object.
+     * @throws std::runtime_error if any mandatory field is missing.
+     */
+    static Coverage fromJson(const nlohmann::json& j);
+
+    /** Serialize Coverage to JSON. */
+    [[nodiscard]] nlohmann::json toJson() const;
 };
 
 /**
@@ -129,6 +210,12 @@ struct LayerInfo
 
     /** Version of the map layer. */
     Version version_;
+
+    /** Create LayerInfo from JSON. */
+    static std::shared_ptr<LayerInfo> fromJson(const nlohmann::json& j, std::string const& layerId="");
+
+    /** Serialize LayerInfo to JSON. */
+    [[nodiscard]] nlohmann::json toJson() const;
 };
 
 /**
@@ -153,6 +240,52 @@ struct DataSourceInfo
 
     /** Used mapget protocol version */
     Version protocolVersion_;
+
+    /**
+     * Deserializes a DataSourceInfo object from JSON.
+     *
+     * The JSON is expected to have the following structure:
+     *
+     * {
+     *   "mapId": <string>,                   // Mandatory: A unique identifier for the map.
+     *   "layers": {                          // Mandatory: A dictionary mapping layer names to LayerInfo objects.
+     *     <layerId>: {
+     *       "type": <LayerType>,             // Optional: The type of the layer. Defaults to "Features".
+     *       "featureTypes": [<FeatureTypeInfo>...], // Mandatory: A list of feature type information.
+     *       "zoomLevels": [<int>...],        // Optional: A list of zoom levels. Defaults to empty list.
+     *       "coverage": [<Coverage>...],     // Optional: A list of coverage objects. Defaults to empty list.
+     *       "canRead": <bool>,               // Optional: Whether the layer can be read. Defaults to true.
+     *       "canWrite": <bool>,              // Optional: Whether the layer can be written. Defaults to false.
+     *       "version": {                     // Optional: The version of the layer.
+     *         "major": <int>,                // Mandatory: The major version number.
+     *         "minor": <int>,                // Mandatory: The minor version number.
+     *         "patch": <int>                 // Mandatory: The patch version number.
+     *       }
+     *     },
+     *     ...
+     *   },
+     *   "maxParallelJobs": <int>,            // Optional: The maximum number of parallel jobs allowed. Defaults to 8.
+     *   "extraJsonAttachment": <JSON object>,// Optional: Any extra JSON data attached. Defaults to an empty object.
+     *   "protocolVersion": {                 // Optional: The version of the protocol. Defaults to the current protocol version.
+     *     "major": <int>,                    // Mandatory: The major version number.
+     *     "minor": <int>,                    // Mandatory: The minor version number.
+     *     "patch": <int>                     // Mandatory: The patch version number.
+     *   },
+     *   "nodeId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
+     *                                        // Note: Only provide this if you have a good reason.
+     * }
+     *
+     * Each LayerType, FeatureTypeInfo, and Coverage object has its own specific JSON structure,
+     * as defined by the corresponding class's fromJson() method.
+     *
+     * @param j The JSON to deserialize.
+     * @return The deserialized DataSourceInfo object.
+     * @throws std::runtime_error if any mandatory field is missing.
+     */
+    static DataSourceInfo fromJson(const nlohmann::json& j);
+
+    /** Serialize DataSourceInfo to JSON. */
+    [[nodiscard]] nlohmann::json toJson() const;
 };
 
 }  // End of namespace mapget
