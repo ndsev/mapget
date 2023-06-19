@@ -77,7 +77,13 @@ void bindTileLayer(py::module_& m)
         .def(
             "set_info",
             [](TileFeatureLayer& self, std::string const& k, simfil::ScalarValueType const& v) {
-                self.setInfo(k, v);
+                std::visit(
+                    [&](auto&& vv)
+                    {
+                        if constexpr (!std::is_same_v<std::decay_t<decltype(vv)>, std::monostate>)
+                            self.setInfo(k, vv);
+                    },
+                    v);
             },
             py::arg("key"),
             py::arg("value"),

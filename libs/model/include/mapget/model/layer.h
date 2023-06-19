@@ -109,7 +109,7 @@ public:
      * and other arbitrary meta-information.
      */
     [[nodiscard]] nlohmann::json info() const;
-    void setInfo(std::string const& k, simfil::ScalarValueType const& v);
+    void setInfo(std::string const& k, nlohmann::json const& v);
 
 protected:
     Version mapVersion_{0, 0, 0};
