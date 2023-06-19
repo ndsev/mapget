@@ -134,6 +134,7 @@ endif()
 # libs
 
 add_subdirectory(libs/model)
+add_subdirectory(libs/service)
 
 if (MAPGET_BUILD_DATASOURCE)
   add_subdirectory(libs/datasource)
