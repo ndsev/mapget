@@ -91,13 +91,7 @@ std::shared_ptr<TileFeatureLayer> Cache::getTileFeatureLayer(const MapTileKey& k
                 throw std::runtime_error(stx::format(
                     "Encountered unexpected map id '{}' in cache for tile {:x}, expected '{}'",
                     mapId, k.tileId_.value_, i.mapId_));
-            auto layerIt = i.layers_.find(std::string(layerId));
-            if (layerIt == i.layers_.end())
-                throw std::runtime_error(stx::format(
-                    "Could not find layer info '{}/{}'!",
-                    mapId,
-                    layerId));
-            return layerIt->second;
+            return i.getLayer(std::string(layerId));
         },
         [&](auto&& nodeId){return (*this)(nodeId);});
 }
@@ -115,6 +109,15 @@ void Cache::putTileFeatureLayer(std::shared_ptr<TileFeatureLayer> const& l)
         },
         fieldCacheOffsets_);
     tileWriter.write(l);
+}
+
+simfil::FieldId Cache::cachedFieldsOffset(std::string const& nodeId)
+{
+    std::unique_lock fieldsOffsetLock(fieldCacheOffsetMutex_);
+    auto it = fieldCacheOffsets_.find(nodeId);
+    if (it != fieldCacheOffsets_.end())
+        return it->second;
+    return 0;
 }
 
 }

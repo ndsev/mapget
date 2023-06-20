@@ -88,6 +88,9 @@ protected:
     // Override for CachedFieldsProvider::operator()
     std::shared_ptr<Fields> operator() (std::string_view const&) override;
 
+    // Used by DataSource::cachedFieldsOffset()
+    simfil::FieldId cachedFieldsOffset(std::string const& nodeId);
+
     // Mutex for the inherited fieldsPerNodeId_
     std::shared_mutex fieldCacheMutex_;
 

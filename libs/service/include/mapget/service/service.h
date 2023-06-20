@@ -105,6 +105,7 @@ public:
 private:
     struct Impl;
     struct Worker;
+    struct Controller;
     std::unique_ptr<Impl> impl_;
 };
 

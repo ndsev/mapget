@@ -27,69 +27,151 @@ bool Request::isDone() const
     return nextTileIndex_ == tiles_.size();
 }
 
-struct Service::Worker
+struct Service::Controller
 {
-    using Ptr = std::shared_ptr<Worker>;
     using Job = std::pair<MapTileKey, Request::Ptr>;
-    using NewJobCallback = std::function<std::optional<Worker::Job>()>;
 
-    Cache::Ptr cache_;             // Cache used by the worker
-    DataSource::Ptr dataSource_;   // Data source the worker is responsible for
-    DataSourceInfo info_;          // Information about the data source
-    NewJobCallback nextJobFun_;    // Function to get the next job for this worker
-    bool shouldTerminate_ = false; // Flag indicating whether the worker thread should terminate
-    std::condition_variable& cv_;  // Condition variable to signal job availability or thread termination
-    std::mutex& cvMutex_;          // Mutex used with the condition variable
-    std::thread thread_;           // The worker thread
-
-    Worker(
-        Cache::Ptr cache,
-        DataSource::Ptr dataSource,
-        DataSourceInfo info,
-        NewJobCallback nextJobFun,
-        std::condition_variable& cv,
-        std::mutex& cvMutex)
-        : cache_(std::move(cache)),
-          dataSource_(std::move(dataSource)),
-          info_(std::move(info)),
-          nextJobFun_(std::move(nextJobFun)),
-          cv_(cv),
-          cvMutex_(cvMutex)
-    {
-        thread_ = std::thread(
-            [this]()
-            {
-                while (true) {
-                    std::unique_lock<std::mutex> lock(cvMutex_);
-                    cv_.wait(lock, [this]() { return shouldTerminate_ || nextJobFun_(); });
-
-                    if (shouldTerminate_)
-                        return;
-
-                    auto nextKeyAndCallback = nextJobFun_();
-                    if (!nextKeyAndCallback)
-                        continue;
-
-                    auto& [mapTileKey, request] = *nextKeyAndCallback;
-                    auto result = dataSource_->get(mapTileKey, *cache_, info_);
-                    if (request->onResult_)
-                        request->onResult_(result);
-                }
-            });
-    }
-};
-
-struct Service::Impl
-{
-    explicit Impl(Cache::Ptr cache) : cache_(std::move(cache)) {}
-
-    std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;  // Map of data sources and their corresponding info
-    std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_; // Map of data sources and their corresponding workers
     std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
     Cache::Ptr cache_;                       // The cache for the service
     std::list<Request::Ptr> requests_;       // List of requests currently being processed
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
+
+    explicit Controller(Cache::Ptr cache) : cache_(std::move(cache)) {}
+
+    std::optional<Job> nextJob(DataSourceInfo const& i)
+    {
+        std::unique_lock lock(jobsMutex_);
+        std::optional<Job> result;
+
+        // Return next job if available
+        for (auto reqIt = requests_.begin(); reqIt != requests_.end(); ++reqIt)
+        {
+            auto& request = *reqIt;
+            auto layerIt = i.layers_.find(request->layerId_);
+
+            if (request->mapId_ == i.mapId_ && layerIt != i.layers_.end())
+            {
+                auto tileId = request->tiles_[request->nextTileIndex_++];
+                result = {MapTileKey(), request};
+                result->first.layer_ = layerIt->second->type_;
+                result->first.mapId_ = request->mapId_;
+                result->first.layerId_ = request->layerId_;
+                result->first.tileId_ = tileId;
+
+                // Move this request to the end of the list, so others gain priority
+                requests_.splice(requests_.end(), requests_, reqIt);
+
+                // Cache lookup
+                auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
+                if (cachedResult) {
+                    // TODO: Consider TTL
+                    if (request->onResult_)
+                        request->onResult_(cachedResult);
+                    continue;
+                }
+
+                if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
+                    // Don't work on something that is already being worked on. Instead,
+                    // wait for the work to finish, then send the (hopefully ached) result.
+                    --request->nextTileIndex_;
+                    continue;
+                }
+
+                // Enter into the jobs-in-progress set
+                jobsInProgress_.insert(result->first);
+
+                break;
+            }
+        }
+
+        // Clean up done requests.
+        requests_.remove_if([](auto&& r) { return r->isDone(); });
+
+        // No job available
+        return result;
+    }
+};
+
+struct Service::Worker
+{
+    using Ptr = std::shared_ptr<Worker>;
+
+    DataSource::Ptr dataSource_;   // Data source the worker is responsible for
+    DataSourceInfo info_;          // Information about the data source
+    std::atomic_bool shouldTerminate_ = false; // Flag indicating whether the worker thread should terminate
+    Controller& controller_;            // Reference to Service::Impl which owns this worker
+    std::thread thread_;           // The worker thread
+
+    Worker(
+        DataSource::Ptr dataSource,
+        DataSourceInfo info,
+        Controller& controller)
+        : dataSource_(std::move(dataSource)),
+          info_(std::move(info)),
+          controller_(controller)
+    {
+        thread_ = std::thread([this]{while (work()) {}});
+    }
+
+    bool work()
+    {
+        std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
+        controller_.jobsAvailable_.wait(lock, [this]() { return shouldTerminate_.load(); });
+
+        if (shouldTerminate_)
+            return false;
+
+        auto nextKeyAndCallback = controller_.nextJob(info_);
+        if (!nextKeyAndCallback)
+            return true;
+
+        auto& [mapTileKey, request] = *nextKeyAndCallback;
+        auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
+
+        controller_.cache_->putTileFeatureLayer(result);
+
+        {
+            std::unique_lock jobsLock(controller_.jobsMutex_);
+            controller_.jobsInProgress_.erase(mapTileKey);
+        }
+
+        if (request->onResult_)
+            request->onResult_(result);
+
+        // As we have now entered a tile into the cache, it
+        // is time to notify other workers that this tile can
+        // now be served.
+        controller_.jobsAvailable_.notify_all();
+
+        return true;
+    }
+};
+
+struct Service::Impl : public Service::Controller
+{
+    std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;  // Map of data sources and their corresponding info
+    std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_; // Map of data sources and their corresponding workers
+
+    explicit Impl(Cache::Ptr cache) : Controller(std::move(cache)) {}
+
+    ~Impl()
+    {
+        for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
+            for (auto& worker : dataSourceAndWorkers.second) {
+                worker->shouldTerminate_ = true;
+            }
+        }
+        jobsAvailable_.notify_all();  // Wake up all workers to check shouldTerminate_
+
+        for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
+            for (auto& worker : dataSourceAndWorkers.second) {
+                if (worker->thread_.joinable()) {
+                    worker->thread_.join();
+                }
+            }
+        }
+    }
 
     void addDataSource(DataSource::Ptr const& dataSource)
     {
@@ -100,46 +182,14 @@ struct Service::Impl
         // Create workers for this DataSource
         for (auto i = 0; i < info.maxParallelJobs_; ++i)
             workers.emplace_back(std::make_shared<Worker>(
-                cache_,
                 dataSource,
                 info,
-                [this, info]() { return nextJob(info); },
-                jobsAvailable_,
-                jobsMutex_));
-    }
-
-    std::optional<Worker::Job> nextJob(DataSourceInfo const& i)
-    {
-        std::lock_guard<std::mutex> lock(jobsMutex_);
-        std::optional<Worker::Job> result;
-
-        // Return next job if available
-        for (auto requestIt = requests_.begin(); requestIt != requests_.end(); ++requestIt) {
-            auto& request = *requestIt;
-            auto layerIt = i.layers_.find(request->layerId_);
-            if (request->mapId_ == i.mapId_ && layerIt != i.layers_.end()) {
-                auto tileId = request->tiles_[request->nextTileIndex_++];
-                result = {{}, request};
-                result->first.layer_ = layerIt->second->type_;
-                result->first.mapId_ = request->mapId_;
-                result->first.layerId_ = request->layerId_;
-                result->first.tileId_ = tileId;
-
-                // Move this request to the end of the list, so it loses priority
-                requests_.splice(requests_.end(), requests_, requestIt);
-            }
-        }
-
-        // Clean up done requests.
-        requests_.remove_if([](auto&& r) { return r->isDone(); });
-
-        // No job available
-        return result;
+                *this));
     }
 
     void removeDataSource(DataSource::Ptr const& dataSource)
     {
-        std::lock_guard<std::mutex> lock(jobsMutex_);
+        std::unique_lock lock(jobsMutex_);
         dataSourceInfo_.erase(dataSource);
         auto workers = dataSourceWorkers_.find(dataSource);
 
@@ -166,7 +216,7 @@ struct Service::Impl
     void addRequest(Request::Ptr r)
     {
         {
-            std::lock_guard<std::mutex> lock(jobsMutex_);
+            std::unique_lock lock(jobsMutex_);
             requests_.push_back(std::move(r));
         }
         jobsAvailable_.notify_all();
@@ -174,14 +224,13 @@ struct Service::Impl
 
     void abortRequest(Request::Ptr const& r)
     {
-        std::lock_guard<std::mutex> lock(jobsMutex_);
+        std::unique_lock lock(jobsMutex_);
         // Simply Remove the request from the list of requests
         requests_.remove_if([r](auto&& request) { return r == request; });
     }
 
     std::vector<DataSourceInfo> getDataSourceInfos()
     {
-        std::lock_guard<std::mutex> lock(jobsMutex_);
         std::vector<DataSourceInfo> infos;
         infos.reserve(dataSourceInfo_.size());
         for (const auto& [dataSource, info] : dataSourceInfo_) {
@@ -193,23 +242,7 @@ struct Service::Impl
 
 Service::Service(Cache::Ptr cache) : impl_(std::make_unique<Impl>(std::move(cache))) {}
 
-Service::~Service()
-{
-    for (auto& dataSourceAndWorkers : impl_->dataSourceWorkers_) {
-        for (auto& worker : dataSourceAndWorkers.second) {
-            worker->shouldTerminate_ = true;
-        }
-    }
-    impl_->jobsAvailable_.notify_all();  // Wake up all workers to check shouldTerminate_
-
-    for (auto& dataSourceAndWorkers : impl_->dataSourceWorkers_) {
-        for (auto& worker : dataSourceAndWorkers.second) {
-            if (worker->thread_.joinable()) {
-                worker->thread_.join();
-            }
-        }
-    }
-}
+Service::~Service() = default;
 
 void Service::add(DataSource::Ptr const& dataSource)
 {

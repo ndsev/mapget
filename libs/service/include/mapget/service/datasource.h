@@ -35,7 +35,10 @@ public:
     virtual void fill(TileFeatureLayer::Ptr const& featureTile) = 0;
 
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
-    virtual TileFeatureLayer::Ptr get(MapTileKey const& k, Cache& cache, DataSourceInfo const& info);
+    virtual TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);
+
+protected:
+    static simfil::FieldId cachedFieldsOffset(std::string const& nodeId, Cache::Ptr const& cache);
 };
 
 }
