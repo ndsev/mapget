@@ -44,7 +44,7 @@ TEST_CASE("DataSource", "[DataSource]")
     // Initialize a DataSource
     DataSourceServer ds(info);
 
-    ds.onTileRequest([](TileFeatureLayer::Ptr tile) {
+    ds.onTileRequest([](auto&& tile) {
         constexpr auto ExpectingThisTileId = 1;
         REQUIRE(tile->tileId() == ExpectingThisTileId);
         auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
@@ -88,7 +88,7 @@ TEST_CASE("DataSource", "[DataSource]")
             [&](auto&& mapId, auto&& layerId)
             {
                 REQUIRE(mapId == info.mapId_);
-                return info.layers_[std::string(layerId)];
+                return info.getLayer(std::string(layerId));
             },
             [&](auto&& tile) { receivedTileCount++; });
         reader.read(tileResponse->body);

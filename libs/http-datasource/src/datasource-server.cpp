@@ -30,9 +30,7 @@ struct DataSourceServer::Impl
             [this](const httplib::Request& req, httplib::Response& res)
             {
                 auto layerIdParam = req.get_param_value("layer");
-                auto layerIt = info_.layers_.find(layerIdParam);
-                if (layerIt == info_.layers_.end())
-                    throw std::runtime_error(stx::format("Unknown layer id `{}`!", layerIdParam));
+                auto layer = info_.getLayer(layerIdParam);
 
                 auto tileIdParam = TileId{std::stoull(req.get_param_value("tileId"))};
                 auto fieldsOffsetParam = (simfil::FieldId)0;
@@ -48,7 +46,7 @@ struct DataSourceServer::Impl
                     tileIdParam,
                     info_.nodeId_,
                     info_.mapId_,
-                    layerIt->second,
+                    layer,
                     fields_);
                 if (tileCallback_)
                     tileCallback_(tileFeatureLayer);

@@ -54,7 +54,7 @@ struct MapTileKey
  *   optional<string> getFields(string const& sourceNodeId)
  *   void putFields(string const& sourceNodeId, std::string v)
  */
-class Cache : protected TileLayerStream::CachedFieldsProvider
+class Cache : public TileLayerStream::CachedFieldsProvider
 {
     friend class DataSource;
 

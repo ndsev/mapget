@@ -241,6 +241,9 @@ struct DataSourceInfo
     /** Used mapget protocol version */
     Version protocolVersion_;
 
+    /** Get the layer, or a runtime error, if no such layer exists. */
+    [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId) const;
+
     /**
      * Deserializes a DataSourceInfo object from JSON.
      *

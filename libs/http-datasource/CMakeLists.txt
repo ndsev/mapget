@@ -2,19 +2,23 @@ project(mapget-http-datasource)
 
 add_library(mapget-http-datasource STATIC
   include/mapget/http-datasource/datasource-server.h
-  src/datasource-server.cpp)
+  include/mapget/http-datasource/datasource-client.h
+
+  src/datasource-server.cpp
+  src/datasource-client.cpp)
 
 target_include_directories(mapget-http-datasource
   PUBLIC
     include
   PRIVATE
-  include/mapget/http-datasource)
+    include/mapget/http-datasource)
 
 target_link_libraries(mapget-http-datasource
   PUBLIC
     httplib::httplib
     yaml-cpp
-    mapget-model)
+    mapget-model
+    mapget-service)
 
 if (MSVC)
   target_compile_definitions(mapget-http-datasource
