@@ -31,7 +31,7 @@ public:
      * If an error occurs while filling the tile, the callback can use
      * TileFeatureLayer::setError(...) to singal the error downstream.
      */
-    DataSourceServer& onTileRequest(std::function<void(TileFeatureLayer&)> const&);
+    DataSourceServer& onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const&);
 
     /**
      * Launch the DataSource server in it's own thread.

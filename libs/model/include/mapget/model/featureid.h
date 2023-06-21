@@ -26,6 +26,7 @@ class FeatureId : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLay
     friend class TileFeatureLayer;
     friend class Feature;
     friend class bitsery::Access;
+    friend ModelNode::Ptr;
 
 public:
     /** Convert the FeatureId to a string like `<type-id>.<part-value-0>...<part-value-n>` */

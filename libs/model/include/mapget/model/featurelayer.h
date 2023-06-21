@@ -159,6 +159,12 @@ public:
     /** (De-)Serialization */
    void write(std::ostream& outputStream) override;
 
+   /** Convert to GeoJSON geometry collection. */
+   nlohmann::json toGeoJson() const;
+
+   /** Shared pointer type */
+   using Ptr = std::shared_ptr<TileFeatureLayer>;
+
 protected:
     /**
      * The FeatureTileColumnId enum provides identifiers for different

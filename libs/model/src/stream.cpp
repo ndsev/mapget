@@ -9,7 +9,7 @@ namespace mapget
 
 TileLayerStream::Reader::Reader(
     LayerInfoResolveFun layerInfoProvider,
-    std::function<void(std::shared_ptr<TileFeatureLayer>)> onParsedLayer,
+    std::function<void(TileFeatureLayer::Ptr)> onParsedLayer,
     std::shared_ptr<CachedFieldsProvider> fieldCacheProvider)
     : layerInfoProvider_(std::move(layerInfoProvider)),
       fieldCacheProvider_(
@@ -86,7 +86,7 @@ TileLayerStream::Writer::Writer(
 {
 }
 
-void TileLayerStream::Writer::write(std::shared_ptr<TileFeatureLayer> const& tileFeatureLayer)
+void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLayer)
 {
     auto fields = tileFeatureLayer->fieldNames();
     auto& highestFieldKnownToClient = fieldsOffsets_[tileFeatureLayer->nodeId()];
