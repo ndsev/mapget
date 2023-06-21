@@ -25,10 +25,12 @@ Request::Request(
 
 bool Request::isDone() const
 {
+    std::unique_lock l(resultCheckMutex_);
     return results_ == tiles_.size();
 }
 
 void Request::notifyResult(TileFeatureLayer::Ptr r) {
+    std::unique_lock l(resultCheckMutex_);
     ++results_;
     if (onResult_)
         onResult_(std::move(r));
@@ -75,15 +77,13 @@ struct Service::Controller
                 result->first.layerId_ = request->layerId_;
                 result->first.tileId_ = tileId;
 
-                // Move this request to the end of the list, so others gain priority
-                requests_.splice(requests_.end(), requests_, reqIt);
-
                 // Cache lookup
                 auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
                 if (cachedResult) {
                     // TODO: Consider TTL
                     std::cout << "Serving cached tile: " << result->first.toString() << std::endl;
                     request->notifyResult(cachedResult);
+                    result.reset();
                     continue;
                 }
 
@@ -92,11 +92,15 @@ struct Service::Controller
                     // wait for the work to finish, then send the (hopefully cached) result.
                     std::cout << "Delaying tile, is currently in progress: " << result->first.toString() << std::endl;
                     --request->nextTileIndex_;
+                    result.reset();
                     continue;
                 }
 
                 // Enter into the jobs-in-progress set
                 jobsInProgress_.insert(result->first);
+
+                // Move this request to the end of the list, so others gain priority
+                requests_.splice(requests_.end(), requests_, reqIt);
 
                 std::cout << "Now working on tile: " << result->first.toString() << std::endl;
                 break;
@@ -117,7 +121,7 @@ struct Service::Worker
     DataSource::Ptr dataSource_;   // Data source the worker is responsible for
     DataSourceInfo info_;          // Information about the data source
     std::atomic_bool shouldTerminate_ = false; // Flag indicating whether the worker thread should terminate
-    Controller& controller_;            // Reference to Service::Impl which owns this worker
+    Controller& controller_;       // Reference to Service::Impl which owns this worker
     std::thread thread_;           // The worker thread
 
     Worker(
@@ -133,20 +137,22 @@ struct Service::Worker
 
     bool work()
     {
-        std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
         std::optional<Controller::Job> nextJob;
 
-        controller_.jobsAvailable_.wait(
-            lock,
-            [&, this]()
-            {
-                if (shouldTerminate_)
-                    return true;
-                nextJob = controller_.nextJob(info_);
-                if (nextJob)
-                    return true;
-                return false;
-            });
+        {
+            std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
+            controller_.jobsAvailable_.wait(
+                lock,
+                [&, this]()
+                {
+                    if (shouldTerminate_)
+                        return true;
+                    nextJob = controller_.nextJob(info_);
+                    if (nextJob)
+                        return true;
+                    return false;
+                });
+        }
 
         if (shouldTerminate_)
             return false;
@@ -159,15 +165,16 @@ struct Service::Worker
             if (!result)
                 throw std::runtime_error("DataSource::get() returned null.");
 
-            controller_.cache_->putTileFeatureLayer(result);
-            controller_.jobsInProgress_.erase(mapTileKey);
-
-            request->notifyResult(result);
-
-            // As we have now entered a tile into the cache, it
-            // is time to notify other workers that this tile can
-            // now be served.
-            controller_.jobsAvailable_.notify_all();
+            {
+                std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
+                controller_.cache_->putTileFeatureLayer(result);
+                controller_.jobsInProgress_.erase(mapTileKey);
+                request->notifyResult(result);
+                // As we have now entered a tile into the cache, it
+                // is time to notify other workers that this tile can
+                // now be served.
+                controller_.jobsAvailable_.notify_all();
+            }
         }
         catch (std::exception& e) {
             // TODO: Proper logging

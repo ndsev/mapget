@@ -55,6 +55,9 @@ protected:
 
     // So the requester can track how many results have been received.
     size_t results_ = 0;
+
+    // We need to make sure that notifyResult is atomic.
+    mutable std::mutex resultCheckMutex_;
 };
 
 /**
@@ -87,7 +90,7 @@ public:
     /**
      * Remove a data source from the service. Requests for data which
      * can only be satisfied by the given source will not be processed anymore.
-     * TODO: Any such ongoing request will be forcefully marked as done.
+     * TODO: Any such ongoing requests should be forcefully marked as done.
      */
     void remove(DataSource::Ptr const& dataSource);
 
