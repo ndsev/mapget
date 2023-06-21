@@ -8,7 +8,7 @@
 
 using namespace mapget;
 
-TEST_CASE("DataSource", "[DataSource]")
+TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
     // Create DataSourceInfo
     auto info = DataSourceInfo::fromJson(R"(
@@ -45,12 +45,13 @@ TEST_CASE("DataSource", "[DataSource]")
 
     // Initialize a DataSource
     DataSourceServer ds(info);
-
-    ds.onTileRequest([](auto&& tile) {
+    auto dataSourceRequestCount = 0;
+    ds.onTileRequest([&](auto&& tile) {
         auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
         auto g = f->geom()->newGeometry(GeomType::Line);
         g->append({42., 11});
         g->append({42., 12});
+        ++dataSourceRequestCount;
     });
 
     // Launch the DataSource on a separate thread
@@ -127,7 +128,7 @@ TEST_CASE("DataSource", "[DataSource]")
                 {
                     "mapId": "GarlicChickenMap",
                     "layerId": "WayLayer",
-                    "tileIds": [1234, 5678, 9112]
+                    "tileIds": [1234, 5678, 9112, 1234]
                 }
             ]
         })json", "application/json");
@@ -149,7 +150,8 @@ TEST_CASE("DataSource", "[DataSource]")
             [&](auto&& tile) { receivedTileCount++; });
         reader.read(tileResponse->body);
 
-        REQUIRE(receivedTileCount == 3);
+        REQUIRE(receivedTileCount == 4);
+        REQUIRE(dataSourceRequestCount == 3); // One tile requested twice, so the cache was used.
         service.stop();
     }
 }

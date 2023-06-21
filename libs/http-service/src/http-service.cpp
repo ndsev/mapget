@@ -77,6 +77,10 @@ struct HttpService::Impl
         // Parse the JSON request
         nlohmann::json j = nlohmann::json::parse(req.body);
         auto requestsJson = j["requests"];
+        // TODO: Sanity-check length of requests-array. The user is expected
+        //  to create one map-layer request object per map-layer combination.
+        //  Pumping up the number of nested per-map-layer requests (extreme: one map-layer
+        //  request object per tile) would be a great way to stall the server for other users.
         auto state = std::make_shared<TileLayerRequestState>();
         for (auto& requestJson : requestsJson) {
             state->addRequestFromJson(requestJson);

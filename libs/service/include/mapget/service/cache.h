@@ -54,7 +54,7 @@ struct MapTileKey
  *   optional<string> getFields(string const& sourceNodeId)
  *   void putFields(string const& sourceNodeId, std::string v)
  */
-class Cache : public TileLayerStream::CachedFieldsProvider
+class Cache : public TileLayerStream::CachedFieldsProvider, public std::enable_shared_from_this<Cache>
 {
     friend class DataSource;
 
@@ -79,10 +79,10 @@ public:
     // they forward to the above methods on-demand.
 
     /** Used by DataSource to retrieve a cached TileFeatureLayer. */
-    std::shared_ptr<TileFeatureLayer> getTileFeatureLayer(MapTileKey const& k, DataSourceInfo const& i);
+    TileFeatureLayer::Ptr getTileFeatureLayer(MapTileKey const& k, DataSourceInfo const& i);
 
     /** Used by DataSource to upsert a cached TileFeatureLayer. */
-    void putTileFeatureLayer(std::shared_ptr<TileFeatureLayer> const& l);
+    void putTileFeatureLayer(TileFeatureLayer::Ptr const& l);
 
 protected:
     // Override for CachedFieldsProvider::operator()

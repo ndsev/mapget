@@ -3,6 +3,8 @@
 #include "stx/format.h"
 #include "stx/string.h"
 
+#include <iostream>
+
 namespace mapget
 {
 
@@ -77,26 +79,27 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
     }
 }
 
-std::shared_ptr<TileFeatureLayer> Cache::getTileFeatureLayer(const MapTileKey& k, DataSourceInfo const& i)
+TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& k, DataSourceInfo const& i)
 {
     auto tileBlob = getTileLayer(k);
     if (!tileBlob)
         return nullptr;
-    std::stringstream inputStream;
-    inputStream << *tileBlob;
-    return std::make_shared<TileFeatureLayer>(
-        inputStream,
+    TileFeatureLayer::Ptr result;
+    TileLayerStream::Reader tileReader(
         [&i, &k](auto&& mapId, auto&& layerId){
             if (i.mapId_ != mapId)
                 throw std::runtime_error(stx::format(
-                    "Encountered unexpected map id '{}' in cache for tile {:x}, expected '{}'",
+                    "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
                     mapId, k.tileId_.value_, i.mapId_));
             return i.getLayer(std::string(layerId));
         },
-        [&](auto&& nodeId){return (*this)(nodeId);});
+        [&](auto&& parsedLayer){result = parsedLayer;},
+        shared_from_this());
+    tileReader.read(*tileBlob);
+    return result;
 }
 
-void Cache::putTileFeatureLayer(std::shared_ptr<TileFeatureLayer> const& l)
+void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
 {
     std::unique_lock fieldsOffsetLock(fieldCacheOffsetMutex_);
     TileLayerStream::Writer tileWriter(
@@ -108,6 +111,7 @@ void Cache::putTileFeatureLayer(std::shared_ptr<TileFeatureLayer> const& l)
                 putFields(l->nodeId(), msg);
         },
         fieldCacheOffsets_);
+    std::cout << "Writing tile layer to cache: " << MapTileKey(*l).toString() << std::endl;
     tileWriter.write(l);
 }
 
