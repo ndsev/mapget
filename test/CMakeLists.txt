@@ -18,6 +18,7 @@ target_link_libraries(test.mapget
   PUBLIC
     mapget-model
     mapget-http-datasource
+    mapget-http-service
     Catch2::Catch2WithMain)
 
 include(Catch)

@@ -1,7 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
-
 #include "httplib.h"
+
 #include "mapget/http-datasource/datasource-server.h"
+#include "mapget/http-datasource/datasource-client.h"
+#include "mapget/http-service/http-service.h"
 #include "mapget/model/stream.h"
 
 using namespace mapget;
@@ -45,8 +47,6 @@ TEST_CASE("DataSource", "[DataSource]")
     DataSourceServer ds(info);
 
     ds.onTileRequest([](auto&& tile) {
-        constexpr auto ExpectingThisTileId = 1;
-        REQUIRE(tile->tileId() == ExpectingThisTileId);
         auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
         auto g = f->geom()->newGeometry(GeomType::Line);
         g->append({42., 11});
@@ -108,5 +108,48 @@ TEST_CASE("DataSource", "[DataSource]")
         ds.stop();
         waitThread.join();
         REQUIRE(ds.isRunning() == false);
+    }
+
+    SECTION("Contact through HTTP service")
+    {
+        HttpService service;
+        service.add(std::make_shared<RemoteDataSource>("localhost", ds.port()));
+        service.go();
+
+        // Initialize an httplib client
+        httplib::Client cli("localhost", service.port());
+        cli.set_connection_timeout(60);
+        cli.set_read_timeout(60);
+
+        // Send a GET tile request
+        auto tileResponse = cli.Post("/tiles", R"json({
+            "requests": [
+                {
+                    "mapId": "GarlicChickenMap",
+                    "layerId": "WayLayer",
+                    "tileIds": [1234, 5678, 9112]
+                }
+            ]
+        })json", "application/json");
+
+        // Check that the response is OK
+        REQUIRE(tileResponse != nullptr);
+        REQUIRE(tileResponse->status == 200);
+
+        std::cout << "Got " << tileResponse->body.size() << " bytes." << std::endl;
+
+        // Check the response body for expected content
+        auto receivedTileCount = 0;
+        TileLayerStream::Reader reader(
+            [&](auto&& mapId, auto&& layerId)
+            {
+                REQUIRE(mapId == info.mapId_);
+                return info.getLayer(std::string(layerId));
+            },
+            [&](auto&& tile) { receivedTileCount++; });
+        reader.read(tileResponse->body);
+
+        REQUIRE(receivedTileCount == 3);
+        service.stop();
     }
 }
