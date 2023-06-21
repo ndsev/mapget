@@ -28,7 +28,7 @@ MapTileKey::MapTileKey(const TileLayer& data)
 std::string MapTileKey::toString() const
 {
     return stx::format(
-        "{}:{}:{}:{:x}",
+        "{}:{}:{}:{:0x}",
         nlohmann::json(layer_).get<std::string>(),
         mapId_,
         layerId_,

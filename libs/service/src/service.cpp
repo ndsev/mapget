@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <thread>
 #include <list>
+#include <iostream>
 
 namespace mapget
 {
@@ -24,7 +25,13 @@ Request::Request(
 
 bool Request::isDone() const
 {
-    return nextTileIndex_ == tiles_.size();
+    return results_ == tiles_.size();
+}
+
+void Request::notifyResult(TileFeatureLayer::Ptr r) {
+    ++results_;
+    if (onResult_)
+        onResult_(std::move(r));
 }
 
 struct Service::Controller
@@ -37,11 +44,17 @@ struct Service::Controller
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
 
-    explicit Controller(Cache::Ptr cache) : cache_(std::move(cache)) {}
+    explicit Controller(Cache::Ptr cache) : cache_(std::move(cache))
+    {
+        if (!cache_)
+            throw std::runtime_error("Cache must not be null!");
+    }
 
     std::optional<Job> nextJob(DataSourceInfo const& i)
     {
-        std::unique_lock lock(jobsMutex_);
+        // Note: For thread safety, jobsMutex_ must be held
+        //  when calling this function.
+
         std::optional<Job> result;
 
         // Return next job if available
@@ -52,6 +65,9 @@ struct Service::Controller
 
             if (request->mapId_ == i.mapId_ && layerIt != i.layers_.end())
             {
+                if (request->nextTileIndex_ >= request->tiles_.size())
+                    continue;
+
                 auto tileId = request->tiles_[request->nextTileIndex_++];
                 result = {MapTileKey(), request};
                 result->first.layer_ = layerIt->second->type_;
@@ -66,14 +82,15 @@ struct Service::Controller
                 auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
                 if (cachedResult) {
                     // TODO: Consider TTL
-                    if (request->onResult_)
-                        request->onResult_(cachedResult);
+                    std::cout << "Serving cached tile: " << result->first.toString() << std::endl;
+                    request->notifyResult(cachedResult);
                     continue;
                 }
 
                 if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
                     // Don't work on something that is already being worked on. Instead,
-                    // wait for the work to finish, then send the (hopefully ached) result.
+                    // wait for the work to finish, then send the (hopefully cached) result.
+                    std::cout << "Delaying tile, is currently in progress: " << result->first.toString() << std::endl;
                     --request->nextTileIndex_;
                     continue;
                 }
@@ -81,14 +98,14 @@ struct Service::Controller
                 // Enter into the jobs-in-progress set
                 jobsInProgress_.insert(result->first);
 
+                std::cout << "Now working on tile: " << result->first.toString() << std::endl;
                 break;
             }
         }
 
         // Clean up done requests.
-        requests_.remove_if([](auto&& r) { return r->isDone(); });
+        requests_.remove_if([](auto&& r) { return r->nextTileIndex_ == r->tiles_.size(); });
 
-        // No job available
         return result;
     }
 };
@@ -117,32 +134,49 @@ struct Service::Worker
     bool work()
     {
         std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
-        controller_.jobsAvailable_.wait(lock, [this]() { return shouldTerminate_.load(); });
+        std::optional<Controller::Job> nextJob;
+
+        controller_.jobsAvailable_.wait(
+            lock,
+            [&, this]()
+            {
+                if (shouldTerminate_)
+                    return true;
+                nextJob = controller_.nextJob(info_);
+                if (nextJob)
+                    return true;
+                return false;
+            });
 
         if (shouldTerminate_)
             return false;
 
-        auto nextKeyAndCallback = controller_.nextJob(info_);
-        if (!nextKeyAndCallback)
-            return true;
+        auto& [mapTileKey, request] = *nextJob;
 
-        auto& [mapTileKey, request] = *nextKeyAndCallback;
-        auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
-
-        controller_.cache_->putTileFeatureLayer(result);
-
+        try
         {
-            std::unique_lock jobsLock(controller_.jobsMutex_);
+            auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
+            if (!result)
+                throw std::runtime_error("DataSource::get() returned null.");
+
+            controller_.cache_->putTileFeatureLayer(result);
             controller_.jobsInProgress_.erase(mapTileKey);
+
+            request->notifyResult(result);
+
+            // As we have now entered a tile into the cache, it
+            // is time to notify other workers that this tile can
+            // now be served.
+            controller_.jobsAvailable_.notify_all();
         }
-
-        if (request->onResult_)
-            request->onResult_(result);
-
-        // As we have now entered a tile into the cache, it
-        // is time to notify other workers that this tile can
-        // now be served.
-        controller_.jobsAvailable_.notify_all();
+        catch (std::exception& e) {
+            // TODO: Proper logging
+            std::cerr
+                << "ERROR: Could not load tile "
+                << mapTileKey.toString()
+                << " due to exception: "
+                << e.what();
+        }
 
         return true;
     }
@@ -215,6 +249,8 @@ struct Service::Impl : public Service::Controller
 
     void addRequest(Request::Ptr r)
     {
+        if (!r)
+            throw std::runtime_error("Attempt to call Service::addRequestFromJson(nullptr).");
         {
             std::unique_lock lock(jobsMutex_);
             requests_.push_back(std::move(r));
@@ -267,6 +303,11 @@ void Service::abort(const Request::Ptr& r)
 std::vector<DataSourceInfo> Service::info()
 {
     return impl_->getDataSourceInfos();
+}
+
+Cache::Ptr Service::cache()
+{
+    return impl_->cache_;
 }
 
 }  // namespace mapget

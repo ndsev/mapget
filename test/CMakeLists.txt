@@ -12,7 +12,7 @@ endif()
 add_executable(test.mapget
   test-model.cpp
   test-info.cpp
-  test-datasource-server.cpp)
+  test-http-datasource.cpp)
 
 target_link_libraries(test.mapget
   PUBLIC

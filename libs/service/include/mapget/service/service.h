@@ -2,6 +2,7 @@
 
 #include "cache.h"
 #include "datasource.h"
+#include "memcache.h"
 
 namespace mapget
 {
@@ -46,9 +47,14 @@ public:
     std::function<void(TileFeatureLayer::Ptr)> onResult_;
 
 protected:
+    void notifyResult(TileFeatureLayer::Ptr);
+
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
+
+    // So the requester can track how many results have been received.
+    size_t results_ = 0;
 };
 
 /**
@@ -65,7 +71,7 @@ public:
      * be null. For a simple default cache implementation, you can use the
      * MemCache.
      */
-    explicit Service(Cache::Ptr cache);
+    explicit Service(Cache::Ptr cache = std::make_shared<MemCache>());
 
     /** Destructor. Stops all workers of the present data sources. */
     ~Service();
@@ -101,6 +107,9 @@ public:
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info();
+
+    /** Get the Cache which this service was constructed with. */
+    [[nodiscard]] Cache::Ptr cache();
 
 private:
     struct Impl;
