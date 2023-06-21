@@ -46,6 +46,11 @@ public:
      */
     std::function<void(TileFeatureLayer::Ptr)> onResult_;
 
+    /**
+     * The callback function which is called when all tiles have been processed.
+     */
+    std::function<void()> onDone_;
+
 protected:
     void notifyResult(TileFeatureLayer::Ptr);
 
@@ -54,10 +59,7 @@ protected:
     size_t nextTileIndex_ = 0;
 
     // So the requester can track how many results have been received.
-    size_t results_ = 0;
-
-    // We need to make sure that notifyResult is atomic.
-    mutable std::mutex resultCheckMutex_;
+    size_t resultCount_ = 0;
 };
 
 /**

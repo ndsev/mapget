@@ -102,6 +102,10 @@ struct HttpService::Impl
             {
                 state->addResult(tileFeatureLayer);
             };
+            request->onDone_ = [state]
+            {
+                state->resultEvent_.notify_one();
+            };
             self_.request(request);
         }
 

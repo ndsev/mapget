@@ -25,15 +25,15 @@ Request::Request(
 
 bool Request::isDone() const
 {
-    std::unique_lock l(resultCheckMutex_);
-    return results_ == tiles_.size();
+    return resultCount_ == tiles_.size();
 }
 
 void Request::notifyResult(TileFeatureLayer::Ptr r) {
-    std::unique_lock l(resultCheckMutex_);
-    ++results_;
     if (onResult_)
         onResult_(std::move(r));
+    ++resultCount_;
+    if (isDone() && onDone_)
+        onDone_();
 }
 
 struct Service::Controller
@@ -108,7 +108,7 @@ struct Service::Controller
         }
 
         // Clean up done requests.
-        requests_.remove_if([](auto&& r) { return r->nextTileIndex_ == r->tiles_.size(); });
+        requests_.remove_if([](auto&& r) {return r->nextTileIndex_ == r->tiles_.size(); });
 
         return result;
     }
@@ -258,6 +258,13 @@ struct Service::Impl : public Service::Controller
     {
         if (!r)
             throw std::runtime_error("Attempt to call Service::addRequestFromJson(nullptr).");
+        if (r->isDone()) {
+            // Nothing to do
+            if (r->onDone_)
+                r->onDone_();
+            return;
+        }
+
         {
             std::unique_lock lock(jobsMutex_);
             requests_.push_back(std::move(r));
