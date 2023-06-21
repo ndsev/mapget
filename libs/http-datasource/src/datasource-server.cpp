@@ -1,180 +1,92 @@
-#include "httplib.h"
+#include "datasource-server.h"
+#include "mapget/detail/http-server.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 
-#include "datasource-server.h"
-
+#include "httplib.h"
 #include <utility>
-#include <csignal>
-#include <atomic>
 
-namespace mapget
-{
-
-static std::atomic<DataSourceServer*> activeDataSource;
+namespace mapget {
 
 struct DataSourceServer::Impl
 {
-    httplib::Server server_;
     DataSourceInfo info_;
     std::function<void(TileFeatureLayer::Ptr)> tileCallback_;
-    uint16_t port_ = 0;
-    std::thread serverThread_;
     std::shared_ptr<Fields> fields_;
 
-    explicit Impl(DataSourceInfo info) : info_(std::move(info)), fields_(std::make_shared<Fields>(info_.nodeId_))
+    explicit Impl(DataSourceInfo info)
+        : info_(std::move(info)), fields_(std::make_shared<Fields>(info_.nodeId_))
     {
-        // Set up GET /tile endpoint
-        server_.Get(
-            "/tile",
-            [this](const httplib::Request& req, httplib::Response& res)
-            {
-                auto layerIdParam = req.get_param_value("layer");
-                auto layer = info_.getLayer(layerIdParam);
-
-                auto tileIdParam = TileId{std::stoull(req.get_param_value("tileId"))};
-                auto fieldsOffsetParam = (simfil::FieldId)0;
-                if (req.has_param("fieldsOffset"))
-                    fieldsOffsetParam = (simfil::FieldId)
-                        std::stoul(req.get_param_value("fieldsOffset"));
-
-                std::string responseType = "binary";
-                if (req.has_param("responseType"))
-                    responseType = req.get_param_value("responseType");
-
-                auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
-                    tileIdParam,
-                    info_.nodeId_,
-                    info_.mapId_,
-                    layer,
-                    fields_);
-                if (tileCallback_)
-                    tileCallback_(tileFeatureLayer);
-
-                // Serialize TileFeatureLayer using TileLayerStream
-                if (responseType == "binary") {
-                    std::stringstream content;
-                    TileLayerStream::FieldOffsetMap fieldOffsets{
-                        {info_.nodeId_, fieldsOffsetParam}};
-                    TileLayerStream::Writer layerWriter{
-                        [&](auto&& msg, auto&& msgType) { content << msg; },
-                        fieldOffsets};
-                    layerWriter.write(tileFeatureLayer);
-                    res.set_content(content.str(), "application/binary");
-                }
-                else {
-                    res.set_content(nlohmann::to_string(tileFeatureLayer->toGeoJson()), "application/json");
-                }
-            });
-
-        // Set up GET /info endpoint
-        server_.Get(
-            "/info",
-            [this](const httplib::Request&, httplib::Response& res)
-            {
-                nlohmann::json j = info_.toJson();
-                res.set_content(j.dump(), "application/json");
-            });
-
-    }
-
-    static void handleSignal(int signal)
-    {
-        // Temporarily holds the current active data source
-        auto* expected = activeDataSource.load();
-
-        // Stop the active instance when a signal is received.
-        // We use compare_exchange_strong to make the operation atomic.
-        if (activeDataSource.compare_exchange_strong(expected, nullptr)) {
-            if (expected) {
-                expected->stop();
-            }
-        }
     }
 };
 
 DataSourceServer::DataSourceServer(DataSourceInfo const& info)
-    : impl_(new Impl(info))
-{
+    : HttpServer(), impl_(new Impl(info)) {
 }
 
+DataSourceServer::~DataSourceServer() = default;
+
 DataSourceServer&
-DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback)
-{
+DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback) {
     impl_->tileCallback_ = callback;
     return *this;
 }
 
-void DataSourceServer::go(std::string const& interfaceAddr, uint16_t port, uint32_t waitMs)
-{
-    if (impl_->server_.is_running() || impl_->serverThread_.joinable())
-        throw std::runtime_error("DataSource is already running");
-
-    if (port == 0) {
-        impl_->port_ = impl_->server_.bind_to_any_port(interfaceAddr);
-    }
-    else {
-        impl_->port_ = port;
-        impl_->server_.bind_to_port(interfaceAddr, port);
-    }
-
-    impl_->serverThread_ = std::thread(
-        [this, interfaceAddr]
-        {
-            std::cout << "====== Running on port " << impl_->port_ << " ======" << std::endl;
-            impl_->server_.listen_after_bind();
-        });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
-    if (!impl_->server_.is_running() || !impl_->server_.is_valid())
-        throw std::runtime_error(stx::format("Could not start DataSource on {}:{}", interfaceAddr, port));
-}
-
-bool DataSourceServer::isRunning()
-{
-    return impl_->server_.is_running();
-}
-
-void DataSourceServer::stop()
-{
-    if (!impl_->server_.is_running())
-        return;
-
-    impl_->server_.stop();
-    impl_->serverThread_.join();
-}
-
-uint16_t DataSourceServer::port() const
-{
-    return impl_->port_;
-}
-
-DataSourceInfo const& DataSourceServer::info()
-{
+DataSourceInfo const& DataSourceServer::info() {
     return impl_->info_;
 }
 
-DataSourceServer::~DataSourceServer()
+void DataSourceServer::setup(httplib::Server& server)
 {
-    if (isRunning())
-        stop();
-}
+    // Set up GET /tile endpoint
+    server.Get(
+        "/tile",
+        [this](const httplib::Request& req, httplib::Response& res) {
+            auto layerIdParam = req.get_param_value("layer");
+            auto layer = impl_->info_.getLayer(layerIdParam);
 
-void DataSourceServer::waitForSignal()
-{
-    // So the signal handler knows what to call
-    activeDataSource = this;
+            auto tileIdParam = TileId{std::stoull(req.get_param_value("tileId"))};
+            auto fieldsOffsetParam = (simfil::FieldId)0;
+            if (req.has_param("fieldsOffset"))
+                fieldsOffsetParam = (simfil::FieldId)
+                    std::stoul(req.get_param_value("fieldsOffset"));
 
-    // Set the signal handler for SIGINT and SIGTERM.
-    std::signal(SIGINT, Impl::handleSignal);
-    std::signal(SIGTERM, Impl::handleSignal);
+            std::string responseType = "binary";
+            if (req.has_param("responseType"))
+                responseType = req.get_param_value("responseType");
 
-    // Wait for the signal handler to stop us, or the server to shut down on its own.
-    while (isRunning()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds (200));
-    }
+            auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
+                tileIdParam,
+                impl_->info_.nodeId_,
+                impl_->info_.mapId_,
+                layer,
+                impl_->fields_);
+            if (impl_->tileCallback_)
+                impl_->tileCallback_(tileFeatureLayer);
 
-    activeDataSource = nullptr;
+            // Serialize TileFeatureLayer using TileLayerStream
+            if (responseType == "binary") {
+                std::stringstream content;
+                TileLayerStream::FieldOffsetMap fieldOffsets{
+                    {impl_->info_.nodeId_, fieldsOffsetParam}};
+                TileLayerStream::Writer layerWriter{
+                    [&](auto&& msg, auto&& msgType) { content << msg; },
+                    fieldOffsets};
+                layerWriter.write(tileFeatureLayer);
+                res.set_content(content.str(), "application/binary");
+            }
+            else {
+                res.set_content(nlohmann::to_string(tileFeatureLayer->toGeoJson()), "application/json");
+            }
+        });
+
+    // Set up GET /info endpoint
+    server.Get(
+        "/info",
+        [this](const httplib::Request&, httplib::Response& res) {
+            nlohmann::json j = impl_->info_.toJson();
+            res.set_content(j.dump(), "application/json");
+        });
 }
 
 }  // namespace mapget

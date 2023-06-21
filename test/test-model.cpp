@@ -173,6 +173,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             [&](auto&& layerPtr) { readTiles.push_back(layerPtr); },
         };
 
+        // Reading an empty buffer should not result in any tiles.
+        reader.read("");
+        REQUIRE(readTiles.empty());
+
         std::string byteStreamData = byteStream.str();
         for (auto i = 0; i < byteStreamData.size(); i += 2) {
             // Read two-byte chunks, except if only one byte is left

@@ -3,9 +3,11 @@ project(mapget-http-datasource)
 add_library(mapget-http-datasource STATIC
   include/mapget/http-datasource/datasource-server.h
   include/mapget/http-datasource/datasource-client.h
+  include/mapget/detail/http-server.h
 
   src/datasource-server.cpp
-  src/datasource-client.cpp)
+  src/datasource-client.cpp
+  src/http-server.cpp)
 
 target_include_directories(mapget-http-datasource
   PUBLIC
@@ -16,7 +18,6 @@ target_include_directories(mapget-http-datasource
 target_link_libraries(mapget-http-datasource
   PUBLIC
     httplib::httplib
-    yaml-cpp
     mapget-model
     mapget-service)
 

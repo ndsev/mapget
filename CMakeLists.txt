@@ -1,14 +1,12 @@
 cmake_minimum_required(VERSION 3.14)
 
-option(MAPGET_BUILD_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY." OFF)
-option(MAPGET_BUILD_DATASOURCE "Enable mapget-datasource library." OFF)
-option(MAPGET_BUILD_SERVICE "Enable mapget-cache library and mapget-service app." OFF)
+option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY." OFF)
+option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries." OFF)
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set (MAPGET_ENABLE_TESTING ON)
-  set (MAPGET_BUILD_WHEEL ON)
-  set (MAPGET_BUILD_DATASOURCE ON)
-  set (MAPGET_BUILD_SERVICE ON)
+  set (MAPGET_WITH_WHEEL ON)
+  set (MAPGET_WITH_HTTPLIB ON)
 endif()
 
 project(mapget)
@@ -80,7 +78,7 @@ if (NOT TARGET bitsery)
   FetchContent_MakeAvailable(bitsery)
 endif()
 
-if (MAPGET_BUILD_DATASOURCE OR MAPGET_BUILD_SERVICE)
+if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB)
   if (NOT TARGET httplib)
     FetchContent_Declare(httplib
       GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
@@ -103,7 +101,7 @@ if (MAPGET_BUILD_DATASOURCE OR MAPGET_BUILD_SERVICE)
   endif()
 endif()
 
-if (MAPGET_BUILD_WHEEL)
+if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
     set(Python3_FIND_STRATEGY LOCATION)
     FetchContent_Declare(python-cmake-wheel
@@ -136,11 +134,12 @@ endif()
 add_subdirectory(libs/model)
 add_subdirectory(libs/service)
 
-if (MAPGET_BUILD_DATASOURCE)
+if (MAPGET_WITH_HTTPLIB)
   add_subdirectory(libs/http-datasource)
+  add_subdirectory(libs/http-service)
 endif()
 
-if (MAPGET_BUILD_WHEEL)
+if (MAPGET_WITH_WHEEL)
   add_subdirectory(libs/pymapget)
 endif()
 
