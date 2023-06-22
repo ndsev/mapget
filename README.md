@@ -46,10 +46,6 @@ The tile `x` coordinate indicates the column, and the `y` coordinate indicates t
 On level zero, there are two columns and one row. In general, the number of rows is `2^z`,
 and the number of columns is `2^(z+1)`.
 
-**TODO**: We may decide to alternatively use the [OSM](https://wiki.openstreetmap.org/wiki/File:Tiled_web_map_numbering.png)
-or [HERE](https://developer.here.com/documentation/here-lanes/dev_guide/topics/tile-tiling-scheme.html)
-tiling schemes.
-
 The content of a tile is (leniently) coupled to the geographic extent of its tile id,
 but also to the map layer it belongs to. When a data source creates a tile, it associates
 the created tile with the name of the map - e.g. *"Europe-HD"*, and a map data layer,
@@ -57,88 +53,19 @@ e.g. *"Roads"* or *Lanes*.
 
 ## Implementing a Data Source
 
-Implementing a data source could be as simple as the following example (C++):
+#### [`examples/cpp/local-datasource`](examples/cpp/local-datasource/main.cpp)
 
-```cpp
-#include "mapget/datasource.h"
-#include "nlohmann/json.h"
+This example shows, how you can use the basic non-networked `mapget::Service`
+in conjunction with a custom data source class which implements the `mapget::DataSource` interface.
 
-char const* myFeatureType = "FancyLineFeature";
-char const* myFeatureId = "FancyLineFeatureId";
+#### [`examples/cpp/http-datasource`](examples/cpp/http-datasource/main.cpp)
 
-int nextFeatureId = 0;
+This example shows how you can write a minimal networked data source service.
 
-/**
- * Function which describes the data source.
- */
-mapget::DataSourceInfo getDataSourceInfo()
-{
-    return mapget::SimpleDataSourceInfo("MyMap", "MyMapLayer", myFeatureType);
-}
+#### [`examples/python/datasource.py`](examples/python/datasource.py)
 
-/**
- * Function which adds a feature to a TileLayer.
- */
-void addFeatures(TileLayer& tileLayer)
-{
-    // Create a new feature.
-    auto feature = tileLayer->newFeature(myFeatureType, nextFeatureId++);
-
-    // Add a point to it to give it geometry.
-    feature->geom()->addPoint(tileLayer->tileId->center());
-
-    // Get writable attribute root object.
-    auto attributes = feature->attrs();
-    
-    // Set a simple key-value attribute.
-    attributes->setField("name", "Darth Vader");
-
-    // We can create nested attributes.
-    attributes->setField("greeting", tileLayer->newObject()
-        ->setField("en", "Hello World!"),
-        ->setField("es", "Hola Mundo!"));
-
-    // We can also use json objects for attributes
-    attributes->setField("greeting", json::object({
-        {"en", "Hello World!"},
-        {"es", "Hola Mundo!"},
-    }));
-}
-
-void main(int argc, char const *argv[])
-{
-    auto myDataSource = DataSource(getDataSourceInfo());
-
-    myDataSource.run([&](auto& tileLayer)
-    {
-        // Lambda function which fills a feature-set for the
-        // given tileId and layerId.
-
-        addFeatures(tileLayer);
-    });
-
-    return 0;
-}
-```
-
-**Note:** The referenced `SimpleDataSourceInfo` function is short for:
-
-```cpp
-return mapget::DataSourceInfo("MyMap", {
-    mapget::LayerInfo(
-        "MyMapLayer", // Name of our layer
-        {
-            mapget::FeatureTypeInfo(myFeatureType,
-            {                             
-                mapget::IdComponent(
-                    myFeatureId,
-                    mapget::IdType::U32
-                )
-            })
-        }
-    )
-})
-```
+This example shows, how you can write a data source service in Python.
+You can simply `pip install mapget` to get access to the mapget Python API.
 
 ## Retrieval Interface
 
@@ -151,21 +78,16 @@ used to satisfy the following use-cases:
 * View a simple HTML server status page (only for REST API).
 * Instruct the cache to populate itself within given constraints from the connected sources.
 
-The HTTP interface implemented in `mapget::service` is a view on the C++ interface,
-which is implemented in `mapget::cache`. Detailed endpoint descriptions:
+The HTTP interface implemented in `mapget::HttpService` is a view on the C++ interface,
+which is implemented in `mapget::Service`. Detailed endpoint descriptions:
 
 ```c++
-// Obtain a list of tile-layer combinations which provide a
-// feature that satisfies the given ID field constraints.
-+ GET /locate(typeId, map<string, Scalar>)
-  list<pair<TileId, LayerId>>
-
 // Describe the connected Data Sources
 + GET /sources():  list<DataSourceInfo>
 
 // Get streamed features, according to hard constraints.
 // With Accept-Encoding text/jsonl or application/binary
-+ GET /tiles(list<{
++ POST /tiles(list<{
     mapId: string,
     layerId: string,
     tileIds: list<TileId>,
@@ -176,15 +98,23 @@ which is implemented in `mapget::cache`. Detailed endpoint descriptions:
 // Server status page
 + GET /status(): text/html
 
+// Obtain a list of tile-layer combinations which provide a
+// feature that satisfies the given ID field constraints.
+// TODO: Not implemented
++ GET /locate(typeId, map<string, Scalar>)
+  list<pair<TileId, LayerId>>
+
 // Instruct the cache to *try* to fill itself with map data
 // according to the provided constraints. No guarantees are
 // made as to the timeliness or completeness of this task.
+// TODO: Not implemented
 + POST /populate(
     spatialConstraint*,
     {mapId*, layerId*, featureType*, zoomLevel*}) 
 
 // Write GeoJSON features for a tile back to a map data source
 // which has supportedOperations&WRITE.
+// TODO: Not implemented
 + POST /tile(
     mapId: string,
     layerId: string,
@@ -196,8 +126,19 @@ For example, the following curl call could be used to stream GeoJSON feature obj
 from the `MyMap` data source defined previously:
 
 ```bash
-curl -X GET "http://localhost/tiles?mapId=MyMap&layerId=MyMapLayer&tileIds=393AC,36D97" \
-     -H "Accept: application/jsonl"
+curl -X POST \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/jsonl" \
+    -H "Connection: close" \
+    -d '{
+    "requests": [
+        {
+            "mapId": "MyFancyMap",
+            "layerId": "MyFancyLayer",
+            "tileIds": [1, 2, 3]
+        }
+    ]
+}' "http://localhost:8080/tiles"
 ```
 
 If we use `"Accept: application/binary"` instead, we get a binary stream of
@@ -205,12 +146,14 @@ tile data which we can parse in C++, Python or JS. Here is an example in C++, us
 the `TileLayerStream` class:
 
 ```C++
-#include "mapget/tilestream.h"
+// TODO: Outdated
+
+#include "mapget/model/stream.h"
 #include <iostream>
 
 void main(int argc, char const *argv[])
 {
-    mapget::TileLayerStream streamParser;
+    mapget::TileLayerStream::Reader streamParser;
     streamParser.onRead([](mapget::TileFeatureLayerPtr tileFeatureLayer){
         std::cout << "Got tile feature layer for " << tileFeatureLayer->tileId.value();
     });
@@ -229,9 +172,11 @@ void main(int argc, char const *argv[])
 }
 ```
 
-We can also use `mapget::Cache` instead of REST:
+We can also use `mapget::Service` instead of REST:
 
 ```C++
+// TODO: Outdated
+
 #include "mapget/tilestream.h"
 #include "httplib.h"  // Using cpp-httplib
 #include <iostream>
@@ -255,10 +200,9 @@ void main(int argc, char const *argv[])
 
 ## Configuration
 
-The `mapget::Cache` class parses a config file, from which it knows about available data source
+The `mapget::HttpService` class can parse a config file, from which it knows about available data source
 endpoints. The path to this config file may be provided either via the `MAPGET_CONFIG_FILE` env.
-var, or via a constructor parameter. The file will be watched for changes, so you can update
-it, and the server will immediately know about newly added or removed sources. The structure of
+var, or via a constructor parameter. The structure of
 the file is as follows:
 
 ```yaml
