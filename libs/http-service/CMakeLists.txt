@@ -29,3 +29,7 @@ endif()
 if (WITH_COVERAGE)
   append_coverage_compiler_flags_to_target(mapget-http-service)
 endif()
+
+if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
+  target_link_libraries(mapget-http-service PUBLIC Threads::Threads)
+endif()

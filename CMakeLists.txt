@@ -35,6 +35,11 @@ else()
   set(WITH_COVERAGE NO)
 endif()
 
+if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
+  set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+  find_package(Threads REQUIRED)
+endif()
+
 find_program(GCOVR_BIN gcovr)
 if (WITH_COVERAGE AND NOT GCOVR_BIN)
   set(WITH_COVERAGE NO)
