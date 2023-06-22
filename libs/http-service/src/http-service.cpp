@@ -17,7 +17,7 @@ struct HttpService::Impl
     struct TileLayerRequestState
     {
         static constexpr auto binaryMimeType = "application/binary";
-        static constexpr auto jsonlMimeType = "text/jsonl";
+        static constexpr auto jsonlMimeType = "application/jsonl";
         static constexpr auto anyMimeType = "*/*";
 
         std::mutex mutex_;
@@ -138,8 +138,9 @@ struct HttpService::Impl
                 }
 
                 // Call sink.done() when all requests are done
-                if (allDone)
+                if (allDone) {
                     sink.done();
+                }
 
                 return true;
             },

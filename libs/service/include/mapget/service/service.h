@@ -29,6 +29,9 @@ public:
     /** Check if the request has been fully satisfied. */
     [[nodiscard]] bool isDone() const;
 
+    /** Wait for the request to be done. */
+    void wait();
+
     /** The map id for which this request is dedicated. */
     std::string mapId_;
 
@@ -53,6 +56,7 @@ public:
 
 protected:
     void notifyResult(TileFeatureLayer::Ptr);
+    void notifyDone();
 
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.
@@ -60,6 +64,10 @@ protected:
 
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;
+
+    // Mutex/Condition variable for done-signal
+    std::mutex doneMutex_;
+    std::condition_variable doneConditionVariable_;
 };
 
 /**
@@ -101,8 +109,9 @@ public:
      * there is no worker which is able to process the request.
      * Note: The same request object should only ever be passed
      *  to one service. Otherwise, there is undefined behavior.
+     * @return The `r` parameter value is returned.
      */
-    void request(Request::Ptr r);
+    Request::Ptr request(Request::Ptr r);
 
     /**
      * Abort the given request. The request will be removed from

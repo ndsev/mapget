@@ -121,6 +121,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         httplib::Client cli("localhost", service.port());
         cli.set_connection_timeout(60);
         cli.set_read_timeout(60);
+        cli.set_keep_alive(false);
 
         // Send a GET tile request
         auto tileResponse = cli.Post("/tiles", R"json({
