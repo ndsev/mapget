@@ -5,6 +5,7 @@ option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-servic
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set (MAPGET_ENABLE_TESTING ON)
+  set (MAPGET_BUILD_EXAMPLES ON)
   set (MAPGET_WITH_WHEEL ON)
   set (MAPGET_WITH_HTTPLIB ON)
 endif()
@@ -157,4 +158,13 @@ if (MAPGET_ENABLE_TESTING)
       BASE_DIRECTORY "${CMAKE_SOURCE_DIR}/src"
       EXCLUDE "*catch2*")
   endif()
+endif()
+
+##############
+# examples
+
+if (MAPGET_BUILD_EXAMPLES)
+  add_subdirectory(examples/cpp/http-datasource)
+  add_subdirectory(examples/cpp/minimal-http-service)
+  add_subdirectory(examples/cpp/local-datasource)
 endif()
