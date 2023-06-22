@@ -4,6 +4,9 @@
 #include "datasource.h"
 #include "memcache.h"
 
+#include <condition_variable>
+#include <mutex>
+
 namespace mapget
 {
 
