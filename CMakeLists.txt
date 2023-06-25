@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY." OFF)
+option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads." OFF)
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries." OFF)
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
@@ -8,12 +9,13 @@ if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set (MAPGET_BUILD_EXAMPLES ON)
   set (MAPGET_WITH_WHEEL ON)
   set (MAPGET_WITH_HTTPLIB ON)
+  set (MAPGET_WITH_SERVICE ON)
 endif()
 
 project(mapget)
 include(FetchContent)
 
-set(MAPGET_VERSION 0.0.2)
+set(MAPGET_VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,8 +38,10 @@ else()
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
-  set(THREADS_PREFER_PTHREAD_FLAG TRUE)
-  find_package(Threads REQUIRED)
+  if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB)
+    set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+    find_package(Threads REQUIRED)
+  endif()
 endif()
 
 find_program(GCOVR_BIN gcovr)
@@ -71,7 +75,7 @@ set(SIMFIL_WITH_MODEL_JSON YES)
 if (NOT TARGET simfil)
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "main"
+    GIT_TAG        "add-missing-virtual-destructors"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()
@@ -138,7 +142,10 @@ endif()
 # libs
 
 add_subdirectory(libs/model)
-add_subdirectory(libs/service)
+
+if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB)
+  add_subdirectory(libs/service)
+endif()
 
 if (MAPGET_WITH_HTTPLIB)
   add_subdirectory(libs/http-datasource)
