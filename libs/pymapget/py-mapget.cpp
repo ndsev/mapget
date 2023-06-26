@@ -12,6 +12,7 @@ using namespace std::string_literals;
 #include "binding/py-model.h"
 #include "binding/py-layer.h"
 #include "binding/py-datasource.h"
+#include "binding/py-service.h"
 
 PYBIND11_MODULE(mapget, m)
 {
@@ -21,4 +22,5 @@ PYBIND11_MODULE(mapget, m)
     bindModel(m);
     bindTileLayer(m);
     bindDataSourceServer(m);
+    bindHttpService(m);
 }

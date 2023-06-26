@@ -15,7 +15,8 @@ endif ()
 target_link_libraries(mapget
   PRIVATE
     mapget-model
-    mapget-http-datasource)
+    mapget-http-datasource
+    mapget-http-service)
 
 target_include_directories(mapget
   PRIVATE
@@ -29,7 +30,10 @@ if (MSVC)
   # Required because cpp-httplib speaks https via OpenSSL
   set(DEPLOY_FILES
     "${OPENSSL_INCLUDE_DIR}/../libcrypto-1_1-x64.dll"
-    "${OPENSSL_INCLUDE_DIR}/../libssl-1_1-x64.dll")
+    "${OPENSSL_INCLUDE_DIR}/../libssl-1_1-x64.dll"
+    "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
+else()
+  set(DEPLOY_FILES "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
 endif ()
 
 add_wheel(mapget
