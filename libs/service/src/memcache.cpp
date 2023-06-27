@@ -1,7 +1,10 @@
 #include "memcache.h"
+#include <iostream>
 
 namespace mapget
 {
+
+MemCache::MemCache(uint32_t maxCachedTiles) : maxCachedTiles_(maxCachedTiles) {}
 
 std::optional<std::string> MemCache::getTileLayer(const MapTileKey& k)
 {
@@ -15,7 +18,15 @@ std::optional<std::string> MemCache::getTileLayer(const MapTileKey& k)
 void MemCache::putTileLayer(const MapTileKey& k, const std::string& v)
 {
     std::unique_lock cacheLock(cacheMutex_);
-    cachedTiles_.emplace(k.toString(), v);
+    auto ks = k.toString();
+    fifo_.push_front(ks);
+    cachedTiles_.emplace(ks, v);
+    while (fifo_.size() > maxCachedTiles_) {
+        auto oldestTileKey = fifo_.back();
+        fifo_.pop_back();
+        std::cout << "Evicting tile from cache: " << oldestTileKey << std::endl;
+        cachedTiles_.erase(oldestTileKey);
+    }
 }
 
 }

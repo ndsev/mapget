@@ -40,7 +40,7 @@ public:
 
     /**
      * Parse a tile layer from an input stream. Will throw if
-     * the resolved major-minor of the TileLayer is not the same
+     * the resolved major-minor version of the TileLayer is not the same
      * as the one read from the stream.
      */
     TileLayer(
@@ -98,10 +98,10 @@ public:
 
     /**
      * Getter and setter for 'mapVersion_' member variable.
-     * It represents the protocol version that was used to serialize this layer.
+     * It represents the map layer version that was used to serialize this layer.
      */
     [[nodiscard]] Version mapVersion() const;
-    void setProtocolVersion(Version v);
+    void setMapVersion(Version v);
 
     /**
      * Getter and setter for 'info' member variable.

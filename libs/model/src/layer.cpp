@@ -136,8 +136,8 @@ void TileLayer::setTtl(const std::optional<std::chrono::milliseconds>& timeToLiv
     ttl_ = timeToLive;
 }
 
-void TileLayer::setProtocolVersion(Version version) {
-    mapVersion_ = version;
+void TileLayer::setMapVersion(Version v) {
+    mapVersion_ = v;
 }
 
 void TileLayer::setInfo(std::string const& k, nlohmann::json const& v) {
