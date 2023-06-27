@@ -9,10 +9,12 @@
 
 namespace py = pybind11;
 using namespace py::literals;
-using namespace mapget;
 
 void bindHttpService(py::module_& m)
 {
+    using mapget::HttpService;
+    using mapget::RemoteDataSource;
+
     py::class_<HttpService>(m, "Service")
         .def(py::init<>(), R"pbdoc(
             Construct a Service with a default Cache instance.

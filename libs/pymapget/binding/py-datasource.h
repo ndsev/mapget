@@ -8,11 +8,12 @@
 
 namespace py = pybind11;
 using namespace py::literals;
-using namespace mapget;
-using namespace simfil;
 
 void bindDataSourceServer(py::module_& m)
 {
+    using namespace mapget;
+    using namespace simfil;
+
     py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer")
         .def(
             py::init(

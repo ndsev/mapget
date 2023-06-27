@@ -10,11 +10,12 @@
 
 namespace py = pybind11;
 using namespace py::literals;
-using namespace mapget;
-using namespace simfil;
 
 void bindTileLayer(py::module_& m)
 {
+    using namespace mapget;
+    using namespace simfil;
+
     py::class_<TileFeatureLayer, TileFeatureLayer::Ptr>(
         m,
         "TileFeatureLayer")
