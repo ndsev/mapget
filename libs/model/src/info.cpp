@@ -131,6 +131,12 @@ nlohmann::json FeatureTypeInfo::toJson() const
 Coverage Coverage::fromJson(const nlohmann::json& j)
 {
     try {
+        if (j.is_number_unsigned())
+            return {
+                j.get<uint64_t>(),
+                j.get<uint64_t>(),
+                std::vector<bool>()
+            };
         return {
             TileId(j.at("min").get<uint64_t>()),
             TileId(j.at("max").get<uint64_t>()),
@@ -143,6 +149,8 @@ Coverage Coverage::fromJson(const nlohmann::json& j)
 
 nlohmann::json Coverage::toJson() const
 {
+    if (min_ == max_ && filled_.empty())
+        return min_.value_;
     return nlohmann::json{{"min", min_.value_}, {"max", max_.value_}, {"filled", filled_}};
 }
 

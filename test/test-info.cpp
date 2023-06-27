@@ -3,6 +3,8 @@
 #include "mapget/model/info.h"
 #include "mapget/model/stream.h"
 
+#include <iostream>
+
 using namespace mapget;
 
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
@@ -14,7 +16,7 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
         LayerType::Features,
         std::vector<FeatureTypeInfo>(),
         std::vector<int>{0, 1, 2},
-        std::vector<Coverage>(),
+        std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
         true,
         false,
         Version{1, 0, 0}});
@@ -29,6 +31,7 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
 
     // Serialize it to JSON
     nlohmann::json j = info.toJson();
+    std::cout << j << std::endl;
 
     // Deserialize it back into a DataSourceInfo object, then serialize it again.
     auto j2 = DataSourceInfo::fromJson(j).toJson();

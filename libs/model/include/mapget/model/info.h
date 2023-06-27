@@ -169,6 +169,9 @@ struct Coverage
      *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled tiles. Defaults to an empty list.
      * }
      *
+     * Alternatively, an single integer is interpreted as a Coverage
+     * where min=max, and `filled` is empty.
+     *
      * @param j The JSON to deserialize.
      * @return The deserialized Coverage object.
      * @throws std::runtime_error if any mandatory field is missing.
