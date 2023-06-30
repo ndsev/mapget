@@ -5,11 +5,11 @@
 **Main Capabilities:**
 
 * Coordinating requests for map data to various map data source processes.
-* Integrated map data cache based on RocksDB.
+* Integrated map data cache based on sqlite or RocksDB (TODO: Evaluate best cache DB solution).
 * Simple data-source API with bindings for C++, Python and JS.
-* Compact GeoJSON feature storage model - x times smaller than BSON.
-* Integrated deep feature filter language based on (a subset of) *JSONata*
-* Containerized server component.
+* Compact GeoJSON feature storage model - [25 to 50% smaller than BSON/msgpack](docs/size-comparison/table.md).
+* Integrated deep [feature filter language](https://github.com/klebert-engineering/simfil) based on (a subset of) *JSONata*
+* PIP-installable server and client component.
 
 ## Map Data Sources
 
