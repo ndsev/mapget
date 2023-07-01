@@ -15,7 +15,7 @@ endif()
 project(mapget)
 include(FetchContent)
 
-set(MAPGET_VERSION 0.1.0)
+set(MAPGET_VERSION 0.1.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,7 +75,7 @@ set(SIMFIL_WITH_MODEL_JSON YES)
 if (NOT TARGET simfil)
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "add-missing-virtual-destructors"
+    GIT_TAG        "main"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()
