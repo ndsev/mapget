@@ -18,6 +18,7 @@ namespace mapget
 class Request
 {
     friend class Service;
+    friend class HttpClient;
 
 public:
     using Ptr = std::shared_ptr<Request>;
@@ -60,6 +61,7 @@ public:
 protected:
     void notifyResult(TileFeatureLayer::Ptr);
     void notifyDone();
+    nlohmann::json toJson();
 
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.

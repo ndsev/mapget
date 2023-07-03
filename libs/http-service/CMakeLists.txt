@@ -2,7 +2,10 @@ project(mapget-http-service)
 
 add_library(mapget-http-service STATIC
   include/mapget/http-service/http-service.h
-  src/http-service.cpp)
+  include/mapget/http-service/http-client.h
+
+  src/http-service.cpp
+  src/http-client.cpp)
 
 target_include_directories(mapget-http-service
   PUBLIC

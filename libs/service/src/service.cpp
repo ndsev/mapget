@@ -49,6 +49,18 @@ void Request::wait()
     doneConditionVariable_.wait(doneLock, [this]{return isDone();});
 }
 
+nlohmann::json Request::toJson()
+{
+    auto tileIds = nlohmann::json::array();
+    for (auto const& tid : tiles_)
+        tileIds.emplace_back(tid.value_);
+    return nlohmann::json::object({
+        {"mapId", mapId_},
+        {"layerId", layerId_},
+        {"tileIds", tileIds}
+    });
+}
+
 struct Service::Controller
 {
     using Job = std::pair<MapTileKey, Request::Ptr>;

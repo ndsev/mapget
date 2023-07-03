@@ -64,7 +64,7 @@ bool TileLayerStream::Reader::continueReading()
         onParsedLayer_(std::make_shared<TileFeatureLayer>(
             buffer_,
             layerInfoProvider_,
-            *fieldCacheProvider_));
+            [this](auto&& nodeId){return (*fieldCacheProvider_)(nodeId);}));
     }
     else if (nextValueType_ == MessageType::Fields)
     {
@@ -129,12 +129,23 @@ void TileLayerStream::Writer::sendMessage(std::string const& bytes, TileLayerStr
 
 std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::operator()(const std::string_view& nodeId)
 {
-    auto it = fieldsPerNodeId_.find(std::string(nodeId));
-    if (it != fieldsPerNodeId_.end()) {
-        return it->second;
+    {
+        std::shared_lock fieldCacheReadLock(fieldCacheMutex_);
+        auto it = fieldsPerNodeId_.find(std::string(nodeId));
+        if (it != fieldsPerNodeId_.end()) {
+            return it->second;
+        }
     }
-    auto [newIt, _] = fieldsPerNodeId_.emplace(nodeId, std::make_shared<Fields>(std::string(nodeId)));
-    return newIt->second;
+    {
+        std::unique_lock fieldCacheWriteLock(fieldCacheMutex_, std::defer_lock);
+        // Was it inserted already now?
+        auto it = fieldsPerNodeId_.find(std::string(nodeId));
+        if (it != fieldsPerNodeId_.end())
+            return it->second;
+        auto [newIt, _] =
+            fieldsPerNodeId_.emplace(nodeId, std::make_shared<Fields>(std::string(nodeId)));
+        return newIt->second;
+    }
 }
 
 }

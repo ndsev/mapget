@@ -91,9 +91,6 @@ protected:
     // Used by DataSource::cachedFieldsOffset()
     simfil::FieldId cachedFieldsOffset(std::string const& nodeId);
 
-    // Mutex for the inherited fieldsPerNodeId_
-    std::shared_mutex fieldCacheMutex_;
-
     // Mutex for fieldCacheOffsets_
     std::mutex fieldCacheOffsetMutex_;
     TileLayerStream::FieldOffsetMap fieldCacheOffsets_;

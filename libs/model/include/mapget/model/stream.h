@@ -4,6 +4,7 @@
 
 #include <map>
 #include <sstream>
+#include <shared_mutex>
 
 namespace mapget
 {
@@ -113,7 +114,9 @@ public:
     struct CachedFieldsProvider
     {
         virtual std::shared_ptr<Fields> operator() (std::string_view const&);
+
     protected:
+        std::shared_mutex fieldCacheMutex_;
         std::map<std::string, std::shared_ptr<Fields>> fieldsPerNodeId_;
     };
 };
