@@ -154,8 +154,8 @@ curl -X POST \
     -d '{
     "requests": [
        {
-           "mapId": "MyFancyMap",
-           "layerId": "MyFancyLayer",
+           "mapId": "Tropico",
+           "layerId": "WayLayer",
            "tileIds": [1, 2, 3]
        }
     ]
