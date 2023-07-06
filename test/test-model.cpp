@@ -44,7 +44,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     auto tile = std::make_shared<TileFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "TastyTomatoSaladNode",
-        "GarlicChickenMap",
+        "Tropico",
         layerInfo,
         fieldNames);
     tile->setPrefix({{"areaId", "TheBestArea"}});
@@ -110,7 +110,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         auto deserializedTile = std::make_shared<TileFeatureLayer>(
             tileBytes,
             [&](auto&& mapName, auto&& layerName){
-                REQUIRE(mapName == "GarlicChickenMap");
+                REQUIRE(mapName == "Tropico");
                 REQUIRE(layerName == "WayLayer");
                 return layerInfo;
             },

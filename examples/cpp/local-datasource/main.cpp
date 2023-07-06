@@ -9,7 +9,7 @@ public:
     DataSourceInfo info() override {
         return DataSourceInfo::fromJson(R"(
         {
-            "mapId": "GarlicChickenMap",
+            "mapId": "Tropico",
             "layers": {
                 "WayLayer": {
                     "featureTypes":
@@ -77,7 +77,7 @@ int main(int argc, char** argv)
 
     // Create a request. The request will immediately start to be worked on.
     service.request(std::make_shared<Request>(
-        "GarlicChickenMap",
+        "Tropico",
         "WayLayer",
         std::vector<TileId>{TileId(12345), TileId(67689)},
         [](auto&& result){std::cout << "Got " << MapTileKey(*result).toString() << std::endl;})

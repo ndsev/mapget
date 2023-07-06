@@ -178,7 +178,7 @@ void main(int argc, char const *argv[])
 
      auto receivedTileCount = 0;
      client.request(std::make_shared<Request>(
-         "GarlicChickenMap",
+         "Tropico",
          "WayLayer",
          std::vector<TileId>{{1234, 5678, 9112, 1234}},
          [&](auto&& tile) { receivedTileCount++; }

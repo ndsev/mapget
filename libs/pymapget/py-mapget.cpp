@@ -13,8 +13,9 @@ using namespace std::string_literals;
 #include "binding/py-layer.h"
 #include "binding/py-datasource.h"
 #include "binding/py-service.h"
+#include "binding/py-client.h"
 
-PYBIND11_MODULE(mapget, m)
+PYBIND11_MODULE(pymapget, m)
 {
     m.doc() = "";
 
