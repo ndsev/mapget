@@ -9,6 +9,10 @@ def serve(args):
         for ds in args.datasource:
             host, port = ds.split(":")
             srv.add_remote_datasource(host, int(port))
+    if args.webapp:
+        if not srv.mount(args.webapp):
+            print(f"Failed to mount web app {args.webapp}.")
+            exit(1)
     srv.go(port=args.port)
     srv.wait_for_signal()
 
@@ -30,12 +34,13 @@ def main():
     server_parser = subparsers.add_parser('serve', help="Starts the server.")
     server_parser.add_argument('-p', '--port', type=int, default=0, help="Port to start the server on. Default is 0.")
     server_parser.add_argument('-d', '--datasource', action='append', help="Datasources for the server in format <host:port>. Can be specified multiple times.")
+    server_parser.add_argument('-w', '--webapp', help="Serve a static web application, in the format `[<url-scope>:]<filesystem-path>`.")
     server_parser.set_defaults(func=serve)
 
     client_parser = subparsers.add_parser('fetch', help="Connects to the server to fetch tiles.")
     client_parser.add_argument('-s', '--server', required=True, help="Server to connect to in format <host:port>.")
     client_parser.add_argument('-m', '--map', required=True, help="Map to retrieve.")
-    client_parser.add_argument('-l', '--layer', help="Layer of the map to retrieve.")
+    client_parser.add_argument('-l', '--layer', required=True, help="Layer of the map to retrieve.")
     client_parser.add_argument('-t', '--tile', type=int, required=True, action='append', help="Tile of the map to retrieve. Can be specified multiple times.")
     client_parser.set_defaults(func=fetch)
 

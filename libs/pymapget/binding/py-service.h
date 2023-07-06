@@ -51,5 +51,10 @@ void bindHttpService(py::module_& m)
         .def("port", &HttpService::port,
              R"pbdoc(
                 Get the port currently used by the instance, or 0 if go() has never been called.
-            )pbdoc");
+             )pbdoc")
+        .def("mount", &HttpService::mountFileSystem,
+             R"pbdoc(
+                Add a filesystem mount point in the format `<url-path-prefix>:<filesystem-path>`.
+                Returns true if successful, false otherwise.
+             )pbdoc");
 }

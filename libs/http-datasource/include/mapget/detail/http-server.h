@@ -31,7 +31,9 @@ public:
      *  "====== Running on port <port> ======"
      * @param waitMs Number of milliseconds to wait for the server to start up.
      */
-    void go(std::string const& interfaceAddr="0.0.0.0", uint16_t port=0, uint32_t waitMs=100);
+    void go(std::string const& interfaceAddr = "0.0.0.0",
+       uint16_t port = 0,
+       uint32_t waitMs = 100);
 
     /**
      * Returns true if the server is currently running.
@@ -52,6 +54,12 @@ public:
      * Wait until SIGINT or SIGTERM is received, then shuts down the server.
      */
     void waitForSignal();
+
+    /**
+     * Add a filesystem mount point in the format `<url-path-prefix>:<filesystem-path>`.
+     * Returns true if successful, false otherwise.
+     */
+    bool mountFileSystem(std::string const& pathFromTo);
 
 protected:
     /**

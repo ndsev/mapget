@@ -3,7 +3,9 @@
 #include "httplib.h"
 #include <csignal>
 #include <atomic>
+
 #include "stx/format.h"
+#include "stx/string.h"
 
 namespace mapget
 {
@@ -40,7 +42,10 @@ HttpServer::~HttpServer() {
         stop();
 }
 
-void HttpServer::go(std::string const& interfaceAddr, uint16_t port, uint32_t waitMs)
+void HttpServer::go(
+    std::string const& interfaceAddr,
+    uint16_t port,
+    uint32_t waitMs)
 {
     if (!impl_->setupWasCalled_) {
         // Allow derived class to set up the server
@@ -101,6 +106,14 @@ void HttpServer::waitForSignal() {
     }
 
     activeHttpServer = nullptr;
+}
+
+bool HttpServer::mountFileSystem(const std::string& pathFromTo)
+{
+    auto parts = stx::split(pathFromTo, ":");
+    if (parts.size() == 1)
+        return impl_->server_.set_mount_point("/", parts[0]);
+    return impl_->server_.set_mount_point(parts[0], parts[1]);
 }
 
 }  // namespace mapget
