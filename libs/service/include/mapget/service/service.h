@@ -59,7 +59,7 @@ public:
     std::function<void()> onDone_;
 
 protected:
-    void notifyResult(TileFeatureLayer::Ptr);
+    virtual void notifyResult(TileFeatureLayer::Ptr);
     void notifyDone();
     nlohmann::json toJson();
 

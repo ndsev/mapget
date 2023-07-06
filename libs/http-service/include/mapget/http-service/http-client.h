@@ -21,7 +21,7 @@ public:
     /**
      * Get the sources as they were retrieved when the Client was instantiated.
      */
-    std::vector<DataSourceInfo> sources() const;
+    [[nodiscard]] std::vector<DataSourceInfo> sources() const;
 
     /**
      * Post a Request for a number of tiles from a particular map layer.

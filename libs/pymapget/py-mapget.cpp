@@ -23,4 +23,5 @@ PYBIND11_MODULE(mapget, m)
     bindTileLayer(m);
     bindDataSourceServer(m);
     bindHttpService(m);
+    bindHttpClient(m);
 }

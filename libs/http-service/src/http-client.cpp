@@ -56,8 +56,8 @@ Request::Ptr HttpClient::request(const Request::Ptr& request)
 
     using namespace nlohmann;
 
-    // TODO: Currently, cpp-httplib POST does not support async responses
-    //  this is only supported by GET.
+    // TODO: Currently, cpp-httplib POST does not support async responses.
+    //  Those are only supported by GET.
     auto tileResponse = impl_->client_.Post(
         "/tiles",
         json::object({{"requests", json::array({request->toJson()})}}).dump(),

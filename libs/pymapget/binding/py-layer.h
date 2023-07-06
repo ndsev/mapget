@@ -165,5 +165,12 @@ void bindTileLayer(py::module_& m)
             py::arg("geom_type"),
             R"pbdoc(
             Create a new geometry of the given type.
+        )pbdoc")
+        .def(
+            "geojson",
+            [](TileFeatureLayer& self)
+            { return self.toGeoJson().dump(); },
+            R"pbdoc(
+            Convert this tile to a GeoJSON feature collection.
         )pbdoc");
 }
