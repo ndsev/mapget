@@ -71,18 +71,13 @@ jobs:
           ./_deps/python-cmake-wheel-src/repair-wheel-macos.bash \
                 "$(pwd)"/bin/wheel-auditme/mapget*.whl \
                 "$(pwd)"/bin/wheel mapget
-      - name: Add msbuild to PATH
-        if: matrix.os == 'windows-latest'
-        uses: microsoft/setup-msbuild@v1.1
-        with:
-          msbuild-architecture: x64
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: build
         run: |
-          choco install --no-progress -y openssl ninja
+          choco install --no-progress -y openssl
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
-          cmake -GNinja -DCMAKE_CXX_COMPILER=cl -DCMAKE_C_COMPILER=cl "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
+          cmake "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
           cmake --build . --config Release
       - name: Deploy
         uses: actions/upload-artifact@v2
