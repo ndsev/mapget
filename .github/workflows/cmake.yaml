@@ -75,9 +75,9 @@ jobs:
         if: matrix.os == 'windows-latest'
         working-directory: build
         run: |
-          choco install --no-progress -y openssl
+          choco install --no-progress -y openssl ninja
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
-          cmake "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
+          cmake -GNinja "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
           cmake --build . --config Release
       - name: Deploy
         uses: actions/upload-artifact@v2

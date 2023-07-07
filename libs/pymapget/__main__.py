@@ -3,13 +3,15 @@ import mapget
 
 
 def serve(args):
-    print(f'Starting server on port {args.port} with datasources {args.datasource}')
+    print(f'Starting server on port {args.port}.')
     srv = mapget.Service()
     if args.datasource:
         for ds in args.datasource:
             host, port = ds.split(":")
+            print("Connecting to datasource on host/port:", host, port)
             srv.add_remote_datasource(host, int(port))
     if args.webapp:
+        print("Webapp:", args.webapp)
         if not srv.mount(args.webapp):
             print(f"Failed to mount web app {args.webapp}.")
             exit(1)
