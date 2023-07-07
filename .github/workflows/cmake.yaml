@@ -71,6 +71,11 @@ jobs:
           ./_deps/python-cmake-wheel-src/repair-wheel-macos.bash \
                 "$(pwd)"/bin/wheel-auditme/mapget*.whl \
                 "$(pwd)"/bin/wheel mapget
+      - name: Add msbuild to PATH
+        if: matrix.os == 'windows-latest'
+        uses: microsoft/setup-msbuild@v1.1
+        with:
+          msbuild-architecture: x64
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: build
