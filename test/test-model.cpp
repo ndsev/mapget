@@ -44,7 +44,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     auto tile = std::make_shared<TileFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "TastyTomatoSaladNode",
-        "GarlicChickenMap",
+        "Tropico",
         layerInfo,
         fieldNames);
     tile->setPrefix({{"areaId", "TheBestArea"}});
@@ -110,7 +110,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         auto deserializedTile = std::make_shared<TileFeatureLayer>(
             tileBytes,
             [&](auto&& mapName, auto&& layerName){
-                REQUIRE(mapName == "GarlicChickenMap");
+                REQUIRE(mapName == "Tropico");
                 REQUIRE(layerName == "WayLayer");
                 return layerInfo;
             },
@@ -146,7 +146,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         auto messageCount = 0;
         std::stringstream byteStream;
         TileLayerStream::FieldOffsetMap fieldOffsets;
-        TileLayerStream::Writer layerWriter{[&](auto&& msg){
+        TileLayerStream::Writer layerWriter{[&](auto&& msg, auto&& type){
             ++messageCount;
             byteStream << msg;
         }, fieldOffsets};
@@ -173,13 +173,14 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             [&](auto&& layerPtr) { readTiles.push_back(layerPtr); },
         };
 
+        // Reading an empty buffer should not result in any tiles.
+        reader.read("");
+        REQUIRE(readTiles.empty());
+
         std::string byteStreamData = byteStream.str();
         for (auto i = 0; i < byteStreamData.size(); i += 2) {
             // Read two-byte chunks, except if only one byte is left
-            if (i < byteStreamData.size() - 1)
-                reader.read({(uint8_t)byteStreamData[i], (uint8_t)byteStreamData[i+1]});
-            else
-                reader.read({(uint8_t)byteStreamData[i]});
+            reader.read(byteStreamData.substr(i, (i < byteStreamData.size() - 1) ? 2 : 1));
         }
 
         REQUIRE(reader.eos());

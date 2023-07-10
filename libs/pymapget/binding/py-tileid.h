@@ -6,10 +6,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-using namespace mapget;
-
 void bindTileId(py::module_& m)
 {
+    using namespace mapget;
+
     py::class_<Point>(m, "Point", R"pbdoc(
             The Point class represents a point in 3D space with x, y, and z components.
         )pbdoc")

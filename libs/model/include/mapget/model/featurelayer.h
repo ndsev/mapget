@@ -14,11 +14,6 @@ namespace mapget
 {
 
 /**
- * Forward declaration for the Feature class
- */
-class Feature;
-
-/**
  * The KeyValuePairs type is a vector of pairs, where each pair
  * consists of a string_view key and a variant value that can be
  * either an int64_t or a string_view.

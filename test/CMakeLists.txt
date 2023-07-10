@@ -10,14 +10,15 @@ if (NOT TARGET Catch2)
 endif()
 
 add_executable(test.mapget
-  model.cpp
-  info.cpp
-  datasource.cpp)
+  test-model.cpp
+  test-info.cpp
+  test-http-datasource.cpp)
 
 target_link_libraries(test.mapget
   PUBLIC
     mapget-model
-    mapget-datasource
+    mapget-http-datasource
+    mapget-http-service
     Catch2::Catch2WithMain)
 
 include(Catch)

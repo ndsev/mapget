@@ -1,20 +1,21 @@
 cmake_minimum_required(VERSION 3.14)
 
-option(MAPGET_BUILD_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY." OFF)
-option(MAPGET_BUILD_DATASOURCE "Enable mapget-datasource library." OFF)
-option(MAPGET_BUILD_SERVICE "Enable mapget-cache library and mapget-service app." OFF)
+option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY." OFF)
+option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads." OFF)
+option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries." OFF)
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set (MAPGET_ENABLE_TESTING ON)
-  set (MAPGET_BUILD_WHEEL ON)
-  set (MAPGET_BUILD_DATASOURCE ON)
-  set (MAPGET_BUILD_SERVICE ON)
+  set (MAPGET_BUILD_EXAMPLES ON)
+  set (MAPGET_WITH_WHEEL ON)
+  set (MAPGET_WITH_HTTPLIB ON)
+  set (MAPGET_WITH_SERVICE ON)
 endif()
 
 project(mapget)
 include(FetchContent)
 
-set(MAPGET_VERSION 0.0.2)
+set(MAPGET_VERSION 0.1.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,11 +30,22 @@ if (NOT MAPGET_DEPLOY_DIR)
 endif()
 set (CMAKE_LIBRARY_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
+set (CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${MAPGET_DEPLOY_DIR}")
+set (CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${MAPGET_DEPLOY_DIR}")
+set (CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${MAPGET_DEPLOY_DIR}")
+set (CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${MAPGET_DEPLOY_DIR}")
 
 if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   option(WITH_COVERAGE "Enable gcovr coverage" YES)
 else()
   set(WITH_COVERAGE NO)
+endif()
+
+if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
+  if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB)
+    set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+    find_package(Threads REQUIRED)
+  endif()
 endif()
 
 find_program(GCOVR_BIN gcovr)
@@ -80,7 +92,7 @@ if (NOT TARGET bitsery)
   FetchContent_MakeAvailable(bitsery)
 endif()
 
-if (MAPGET_BUILD_DATASOURCE OR MAPGET_BUILD_SERVICE)
+if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB)
   if (NOT TARGET httplib)
     FetchContent_Declare(httplib
       GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
@@ -101,14 +113,32 @@ if (MAPGET_BUILD_DATASOURCE OR MAPGET_BUILD_SERVICE)
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(yaml-cpp)
   endif()
+
+  if (NOT TARGET cli11)
+    include(FetchContent)
+    FetchContent_Declare(cli11
+      GIT_REPOSITORY https://github.com/CLIUtils/CLI11
+      GIT_TAG        v2.3.2
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(cli11)
+  endif()
+
+  if (NOT TARGET tiny-process-library)
+    set(BUILD_TESTING OFF)
+    FetchContent_Declare(tiny-process-library
+      GIT_REPOSITORY https://gitlab.com/eidheim/tiny-process-library
+      GIT_TAG        v2.0.4
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(tiny-process-library)
+  endif()
 endif()
 
-if (MAPGET_BUILD_WHEEL)
+if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
     set(Python3_FIND_STRATEGY LOCATION)
     FetchContent_Declare(python-cmake-wheel
       GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
-      GIT_TAG        "main"
+      GIT_TAG        "wheel-name-override"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(python-cmake-wheel)
     list(APPEND CMAKE_MODULE_PATH "${python-cmake-wheel_SOURCE_DIR}")
@@ -135,11 +165,17 @@ endif()
 
 add_subdirectory(libs/model)
 
-if (MAPGET_BUILD_DATASOURCE)
-  add_subdirectory(libs/datasource)
+if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB)
+  add_subdirectory(libs/service)
 endif()
 
-if (MAPGET_BUILD_WHEEL)
+if (MAPGET_WITH_HTTPLIB)
+  add_subdirectory(libs/http-datasource)
+  add_subdirectory(libs/http-service)
+  add_subdirectory(apps/mapget)
+endif()
+
+if (MAPGET_WITH_WHEEL)
   add_subdirectory(libs/pymapget)
 endif()
 
@@ -157,4 +193,11 @@ if (MAPGET_ENABLE_TESTING)
       BASE_DIRECTORY "${CMAKE_SOURCE_DIR}/src"
       EXCLUDE "*catch2*")
   endif()
+endif()
+
+##############
+# examples
+
+if (MAPGET_BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()

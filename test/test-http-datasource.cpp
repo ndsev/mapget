@@ -1,17 +1,20 @@
 #include <catch2/catch_test_macros.hpp>
-
 #include "httplib.h"
-#include "mapget/datasource/server.h"
+
+#include "mapget/http-datasource/datasource-server.h"
+#include "mapget/http-datasource/datasource-client.h"
+#include "mapget/http-service/http-service.h"
+#include "mapget/http-service/http-client.h"
 #include "mapget/model/stream.h"
 
 using namespace mapget;
 
-TEST_CASE("DataSource", "[DataSource]")
+TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
     // Create DataSourceInfo
     auto info = DataSourceInfo::fromJson(R"(
     {
-        "mapId": "GarlicChickenMap",
+        "mapId": "Tropico",
         "layers": {
             "WayLayer": {
                 "featureTypes":
@@ -43,14 +46,13 @@ TEST_CASE("DataSource", "[DataSource]")
 
     // Initialize a DataSource
     DataSourceServer ds(info);
-
-    ds.onTileRequest([](TileFeatureLayer::Ptr tile) {
-        constexpr auto ExpectingThisTileId = 1;
-        REQUIRE(tile->tileId() == ExpectingThisTileId);
+    auto dataSourceRequestCount = 0;
+    ds.onTileRequest([&](auto&& tile) {
         auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
         auto g = f->geom()->newGeometry(GeomType::Line);
         g->append({42., 11});
         g->append({42., 12});
+        ++dataSourceRequestCount;
     });
 
     // Launch the DataSource on a separate thread
@@ -88,10 +90,10 @@ TEST_CASE("DataSource", "[DataSource]")
             [&](auto&& mapId, auto&& layerId)
             {
                 REQUIRE(mapId == info.mapId_);
-                return info.layers_[std::string(layerId)];
+                return info.getLayer(std::string(layerId));
             },
             [&](auto&& tile) { receivedTileCount++; });
-        reader.read({tileResponse->body.begin(), tileResponse->body.end()});
+        reader.read(tileResponse->body);
 
         REQUIRE(receivedTileCount == 1);
     }
@@ -108,5 +110,26 @@ TEST_CASE("DataSource", "[DataSource]")
         ds.stop();
         waitThread.join();
         REQUIRE(ds.isRunning() == false);
+    }
+
+    SECTION("Contact through HTTP service")
+    {
+        HttpService service;
+        service.add(std::make_shared<RemoteDataSource>("localhost", ds.port()));
+        service.go();
+
+        HttpClient client("localhost", service.port());
+
+        auto receivedTileCount = 0;
+        client.request(std::make_shared<Request>(
+            "Tropico",
+            "WayLayer",
+            std::vector<TileId>{{1234, 5678, 9112, 1234}},
+            [&](auto&& tile) { receivedTileCount++; }
+        ))->wait();
+
+        REQUIRE(receivedTileCount == 4);
+        REQUIRE(dataSourceRequestCount == 3); // One tile requested twice, so the cache was used.
+        service.stop();
     }
 }

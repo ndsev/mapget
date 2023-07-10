@@ -12,13 +12,21 @@ using namespace std::string_literals;
 #include "binding/py-model.h"
 #include "binding/py-layer.h"
 #include "binding/py-datasource.h"
+#include "binding/py-service.h"
+#include "binding/py-client.h"
 
-PYBIND11_MODULE(mapget, m)
+#include "mapget/http-service/cli.h"
+
+PYBIND11_MODULE(pymapget, m)
 {
     m.doc() = "";
 
     bindTileId(m);
     bindModel(m);
     bindTileLayer(m);
-    bindDataSource(m);
+    bindDataSourceServer(m);
+    bindHttpService(m);
+    bindHttpClient(m);
+
+    m.def("run", &mapget::runFromCommandLine, "Run the mapget command-line interface.");
 }
