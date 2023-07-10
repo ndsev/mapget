@@ -22,7 +22,7 @@ if (MAPGET_ENABLE_TESTING AND MAPGET_WITH_WHEEL)
       -b "./cpp-sample-http-datasource 56732"
 
       # Run service on 56733
-      -b "./mapget serve --port 56733 --datasource 127.0.0.1:56731 --datasource 127.0.0.1:56732"
+      -b "./mapget serve --port 56733 --datasource-host 127.0.0.1:56731 --datasource-host 127.0.0.1:56732"
       # Request from cpp datasource
       -f "./mapget fetch -s 127.0.0.1:56733 -m Tropico -l WayLayer -t 12345"
       # Request from py datasource

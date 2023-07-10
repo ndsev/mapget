@@ -124,7 +124,7 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB)
   endif()
 
   if (NOT TARGET tiny-process-library)
-    include(FetchContent)
+    set(BUILD_TESTING OFF)
     FetchContent_Declare(tiny-process-library
       GIT_REPOSITORY https://gitlab.com/eidheim/tiny-process-library
       GIT_TAG        v2.0.4
