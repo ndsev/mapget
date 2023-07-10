@@ -113,6 +113,15 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB)
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(yaml-cpp)
   endif()
+
+  if (NOT TARGET cli11)
+    include(FetchContent)
+    FetchContent_Declare(cli11
+      GIT_REPOSITORY https://github.com/CLIUtils/CLI11
+      GIT_TAG        v2.3.2
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(cli11)
+  endif()
 endif()
 
 if (MAPGET_WITH_WHEEL)
@@ -154,6 +163,7 @@ endif()
 if (MAPGET_WITH_HTTPLIB)
   add_subdirectory(libs/http-datasource)
   add_subdirectory(libs/http-service)
+  add_subdirectory(apps/mapget)
 endif()
 
 if (MAPGET_WITH_WHEEL)

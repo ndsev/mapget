@@ -75,7 +75,7 @@ ds.on_tile_request(handle_tile_request)
 
 # Run the data source - you may also set port=0 to select a
 # port automatically.
-ds.go(port=54544)
+ds.go(port=56731)
 
 # Wait until Ctrl-C is hit. Navigate e.g. to
 #  http://localhost:54544/tile?layer=WayLayer&tileId=2&responseType=json

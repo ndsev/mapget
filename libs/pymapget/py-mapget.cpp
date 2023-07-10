@@ -15,6 +15,8 @@ using namespace std::string_literals;
 #include "binding/py-service.h"
 #include "binding/py-client.h"
 
+#include "mapget/http-service/cli.h"
+
 PYBIND11_MODULE(pymapget, m)
 {
     m.doc() = "";
@@ -25,4 +27,6 @@ PYBIND11_MODULE(pymapget, m)
     bindDataSourceServer(m);
     bindHttpService(m);
     bindHttpClient(m);
+
+    m.def("run", &mapget::runFromCommandLine, "Run the mapget command-line interface.");
 }
