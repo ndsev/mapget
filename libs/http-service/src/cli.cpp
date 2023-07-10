@@ -12,77 +12,107 @@
 namespace mapget
 {
 
-void serve(int port, std::vector<std::string> const& datasources, std::string const& webapp)
+struct ServeCommand
 {
-    std::cout << "Starting server on port " << port << "." << std::endl;
-    HttpService srv;
-    if (!datasources.empty()){
-        for (auto& ds : datasources){
-            auto delimiterPos = ds.find(':');
-            std::string dsHost = ds.substr(0, delimiterPos);
-            int dsPort = std::stoi(ds.substr(delimiterPos+1, ds.size()));
-            std::cout << "Connecting to datasource on host/port: " << dsHost << " " << dsPort << std::endl;
-            try {
-                srv.add(std::make_shared<RemoteDataSource>(dsHost, dsPort));
-            }
-            catch(std::exception const& e) {
-                std::cout << "  ...failed: " << e.what() << std::endl;
+    int port_ = 0;
+    std::vector<std::string> datasourceHosts_;
+    std::vector<std::string> datasourceExecutables_;
+    std::string webapp_;
+
+    explicit ServeCommand(CLI::App& app) {
+        auto serveCmd = app.add_subcommand("serve", "Starts the server.");
+        serveCmd->add_option("-p,--port", port_, "Port to start the server on. Default is 0.")->default_val("0");
+        serveCmd->add_option("-d,--datasource-host", datasourceHosts_, "Datasources for the server in format <host:port>. Can be specified multiple times.");
+        serveCmd->add_option("-e,--datasource-exe", datasourceExecutables_, "Datasource executable paths, including arguments, for the server. Can be specified multiple times.");
+        serveCmd->add_option("-w,--webapp", webapp_, "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
+        serveCmd->callback([this]() { serve(); });
+    }
+
+    void serve()
+    {
+        std::cout << "Starting server on port " << port_ << "." << std::endl;
+        HttpService srv;
+
+        if (!datasourceHosts_.empty()){
+            for (auto& ds : datasourceHosts_){
+                auto delimiterPos = ds.find(':');
+                std::string dsHost = ds.substr(0, delimiterPos);
+                int dsPort = std::stoi(ds.substr(delimiterPos+1, ds.size()));
+                std::cout << "Connecting to datasource on host/port: " << dsHost << " " << dsPort << std::endl;
+                try {
+                    srv.add(std::make_shared<RemoteDataSource>(dsHost, dsPort));
+                }
+                catch(std::exception const& e) {
+                    std::cout << "  ...failed: " << e.what() << std::endl;
+                }
             }
         }
-    }
-    if (!webapp.empty()){
-        std::cout << "Webapp: " << webapp << std::endl;
-        if (!srv.mountFileSystem(webapp)){
-            std::cout << "Failed to mount web app " << webapp << "." << std::endl;
-            exit(1);
+
+        if (!datasourceExecutables_.empty()){
+            for (auto& ds : datasourceExecutables_){
+                std::cout << "Launching datasource exe: " << ds << std::endl;
+                try {
+                    srv.add(std::make_shared<RemoteDataSourceProcess>(ds));
+                }
+                catch(std::exception const& e) {
+                    std::cout << "  ...failed: " << e.what() << std::endl;
+                }
+            }
         }
+
+        if (!webapp_.empty()){
+            std::cout << "Webapp: " << webapp_ << std::endl;
+            if (!srv.mountFileSystem(webapp_)){
+                std::cout << "Failed to mount web app " << webapp_ << "." << std::endl;
+                exit(1);
+            }
+        }
+        srv.go("0.0.0.0", port_);
+        srv.waitForSignal();
     }
-    srv.go("0.0.0.0", port);
-    srv.waitForSignal();
-}
+};
 
-void fetch(std::string const& server, std::string const& map, std::string const&  layer, std::vector<int> const& tiles)
+struct FetchCommand
 {
-    std::cout << "Connecting client to server " << server << " for map " << map << " and layer " << layer << " with tiles ";
-    for(auto& tile : tiles)
-        std::cout << tile << " ";
-    std::cout << std::endl;
+    std::string server_, map_, layer_;
+    std::vector<int> tiles_;
 
-    auto delimiterPos = server.find(':');
-    std::string host = server.substr(0, delimiterPos);
-    int port = std::stoi(server.substr(delimiterPos+1, server.size()));
+    explicit FetchCommand(CLI::App& app) {
+        auto fetchCmd = app.add_subcommand("fetch", "Connects to the server to fetch tiles.");
+        fetchCmd->add_option("-s,--server", server_, "Server to connect to in format <host:port>.")->required();
+        fetchCmd->add_option("-m,--map", map_, "Map to retrieve.")->required();
+        fetchCmd->add_option("-l,--layer", layer_, "Layer of the map to retrieve.")->required();
+        fetchCmd->add_option("-t,--tile", tiles_, "Tile of the map to retrieve. Can be specified multiple times.")->required();
+        fetchCmd->callback([this]() { fetch(); });
+    }
 
-    mapget::HttpClient cli(host, port);
-    auto request = std::make_shared<Request>(
-        map, layer, std::vector<TileId>{tiles.begin(), tiles.end()},
-        [](auto&& tile){
-            std::cout << tile->toGeoJson() << std::endl;
-        });
-    cli.request(request)->wait();
-}
+    void fetch() {
+        std::cout << "Connecting client to server " << server_ << " for map " << map_ << " and layer " << layer_ << " with tiles ";
+        for(auto& tile : tiles_)
+            std::cout << tile << " ";
+        std::cout << std::endl;
+
+        auto delimiterPos = server_.find(':');
+        std::string host = server_.substr(0, delimiterPos);
+        int port = std::stoi(server_.substr(delimiterPos+1, server_.size()));
+
+        mapget::HttpClient cli(host, port);
+        auto request = std::make_shared<Request>(
+            map_, layer_, std::vector<TileId>{tiles_.begin(), tiles_.end()},
+            [](auto&& tile){
+                std::cout << tile->toGeoJson() << std::endl;
+            });
+        cli.request(request)->wait();
+    }
+};
 
 int runFromCommandLine(std::vector<std::string> args)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     app.require_subcommand(1); // Require at least one subcommand
 
-    auto serve_cmd = app.add_subcommand("serve", "Starts the server.");
-    int port;
-    std::vector<std::string> datasources;
-    std::string webapp;
-    serve_cmd->add_option("-p,--port", port, "Port to start the server on. Default is 0.")->default_val("0");
-    serve_cmd->add_option("-d,--datasource", datasources, "Datasources for the server in format <host:port>. Can be specified multiple times.");
-    serve_cmd->add_option("-w,--webapp", webapp, "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
-    serve_cmd->callback([&]() { serve(port, datasources, webapp); });
-
-    auto fetch_cmd = app.add_subcommand("fetch", "Connects to the server to fetch tiles.");
-    std::string server, map, layer;
-    std::vector<int> tiles;
-    fetch_cmd->add_option("-s,--server", server, "Server to connect to in format <host:port>.")->required();
-    fetch_cmd->add_option("-m,--map", map, "Map to retrieve.")->required();
-    fetch_cmd->add_option("-l,--layer", layer, "Layer of the map to retrieve.")->required();
-    fetch_cmd->add_option("-t,--tile", tiles, "Tile of the map to retrieve. Can be specified multiple times.")->required();
-    fetch_cmd->callback([&]() { fetch(server, map, layer, tiles); });
+    ServeCommand serveCommand(app);
+    FetchCommand fetchCommand(app);
 
     try {
         std::reverse(args.begin(), args.end());

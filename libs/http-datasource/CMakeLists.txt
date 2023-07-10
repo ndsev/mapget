@@ -19,7 +19,8 @@ target_link_libraries(mapget-http-datasource
   PUBLIC
     httplib::httplib
     mapget-model
-    mapget-service)
+    mapget-service
+    tiny-process-library)
 
 if (MSVC)
   target_compile_definitions(mapget-http-datasource

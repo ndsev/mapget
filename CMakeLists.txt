@@ -122,6 +122,15 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB)
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(cli11)
   endif()
+
+  if (NOT TARGET tiny-process-library)
+    include(FetchContent)
+    FetchContent_Declare(tiny-process-library
+      GIT_REPOSITORY https://gitlab.com/eidheim/tiny-process-library
+      GIT_TAG        v2.0.4
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(tiny-process-library)
+  endif()
 endif()
 
 if (MAPGET_WITH_WHEEL)
