@@ -13,6 +13,41 @@
 namespace mapget
 {
 
+MapTileKey::MapTileKey(const std::string& str)
+{
+    auto parts = stx::split(str, ":", false);
+    if (parts.size() < 4)
+        throw std::runtime_error(stx::format("Invalid cache tile id: {}", str));
+    layer_ = nlohmann::json(parts[0]).get<LayerType>();
+    mapId_ = parts[1];
+    layerId_ = parts[2];
+    tileId_ = TileId(std::stoull(str, nullptr, 16));
+}
+
+MapTileKey::MapTileKey(const TileLayer& data)
+{
+    layer_ = data.layerInfo()->type_;
+    mapId_ = data.mapId();
+    layerId_ = data.layerInfo()->layerId_;
+    tileId_ = data.tileId();
+}
+
+std::string MapTileKey::toString() const
+{
+    return stx::format(
+        "{}:{}:{}:{:0x}",
+        nlohmann::json(layer_).get<std::string>(),
+        mapId_,
+        layerId_,
+        tileId_.value_);
+}
+
+bool MapTileKey::operator<(const MapTileKey& other) const
+{
+    return std::tie(layer_, mapId_, layerId_, tileId_) <
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+}
+
 TileLayer::TileLayer(
     const TileId& id,
     std::string nodeId,
@@ -160,6 +195,11 @@ void TileLayer::write(std::ostream& outputStream)
     if (ttl_)
         s.value8b(ttl_->count());
     s.text1b(info_.dump(), std::numeric_limits<uint32_t>::max());
+}
+
+MapTileKey TileLayer::id() const
+{
+    return MapTileKey(*this);
 }
 
 } // namespace mapget

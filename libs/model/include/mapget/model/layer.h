@@ -21,6 +21,39 @@ namespace mapget
  */
 using LayerInfoResolveFun = std::function<std::shared_ptr<LayerInfo>(std::string_view const&, std::string_view const&)>;
 
+class TileLayer;
+
+/** Struct which represents the unique id of a tile layer.*/
+struct MapTileKey
+{
+    // The tile's data type
+    LayerType layer_ = LayerType::Features;
+
+    // The tile's associated map
+    std::string mapId_;
+
+    // The tile's associated map layer id
+    std::string layerId_;
+
+    // The tile's associated map tile id
+    TileId tileId_;
+
+    /** Constructor to parse the key from a string, as returned by toString. */
+    explicit MapTileKey(std::string const& str);
+
+    /** Constructor to create the cache key for any TileLayer object. */
+    explicit MapTileKey(TileLayer const& data);
+
+    /** Allow default ctor. */
+    MapTileKey() = default;
+
+    /** Convert the key to a string. */
+    [[nodiscard]] std::string toString() const;
+
+    /** Operator <, allows this struct to be used as an std::map key. */
+    bool operator<(MapTileKey const& other) const;
+};
+
 /**
  * Tile Layer base class. Used by TileFeatureLayer class and other
  * tile-specific data containers.
@@ -46,6 +79,9 @@ public:
     TileLayer(
         std::istream& inputStream,
         LayerInfoResolveFun const& layerInfoResolveFun);
+
+    /** Get a global identifier for this tile layer. */
+    [[nodiscard]] MapTileKey id() const;
 
     /**
      * Getter and setter for layer's tileId. This controls the rough

@@ -12,37 +12,6 @@
 namespace mapget
 {
 
-/** Struct which represents the id of a unique cached map tile layer.*/
-struct MapTileKey
-{
-    // The tile's data type
-    LayerType layer_ = LayerType::Features;
-
-    // The tile's associated map
-    std::string mapId_;
-
-    // The tile's associated map layer id
-    std::string layerId_;
-
-    // The tile's associated map tile id
-    TileId tileId_;
-
-    /** Constructor to parse the key from a string, as returned by toString. */
-    explicit MapTileKey(std::string const& str);
-
-    /** Constructor to create the cache key for any TileLayer object. */
-    explicit MapTileKey(TileLayer const& data);
-
-    /** Allow default ctor. */
-    MapTileKey() = default;
-
-    /** Convert the key to a string. */
-    [[nodiscard]] std::string toString() const;
-
-    /** Operator <, allows this struct to be used as an std::map key. */
-    bool operator<(MapTileKey const& other) const;
-};
-
 /**
  * Abstract class which defines the behavior of a mapget cache,
  * which can store and recover the output of any mapget DataSource
