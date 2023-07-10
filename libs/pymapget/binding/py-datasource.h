@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mapget/datasource/server.h"
+#include "mapget/http-datasource/datasource-server.h"
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -8,11 +8,12 @@
 
 namespace py = pybind11;
 using namespace py::literals;
-using namespace mapget;
-using namespace simfil;
 
-void bindDataSource(py::module_& m)
+void bindDataSourceServer(py::module_& m)
 {
+    using namespace mapget;
+    using namespace simfil;
+
     py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer")
         .def(
             py::init(

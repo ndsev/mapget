@@ -4,6 +4,7 @@
 
 #include <map>
 #include <sstream>
+#include <shared_mutex>
 
 namespace mapget
 {
@@ -21,13 +22,13 @@ namespace mapget
  */
 class TileLayerStream
 {
+public:
     enum class MessageType : uint8_t {
         None = 0,
         Fields = 1,
         TileFeatureLayer = 2,
     };
 
-public:
     struct CachedFieldsProvider;
 
     /** Protocol Version which parsed blobs must be compatible with. */
@@ -54,7 +55,7 @@ public:
          * Add some bytes to parse. The next object will be parsed once
          * sufficient bytes are available.
          */
-        void read(std::vector<uint8_t> const& bytes);
+        void read(std::string_view const& bytes);
 
         /** end-of-stream: Returns true if the internal buffer is exhausted. */
         [[nodiscard]] bool eos();
@@ -85,11 +86,11 @@ public:
          * and a reference to a dict which stores the current highest
          * sent FieldId offset per data source node id. Note, that this
          * dictionary will be updated as Fields dictionary updates are sent.
-         * Using the same FieldId offset map for to Writer objects will
+         * Using the same FieldId offset map for two Writer objects will
          * lead to undefined behavior.
          */
         Writer(
-            std::function<void(std::string)> onMessage,
+            std::function<void(std::string, MessageType)> onMessage,
             FieldOffsetMap& fieldsOffsets);
 
         /** Serialize a tile feature layer and the required part of a Fields cache. */
@@ -98,7 +99,7 @@ public:
     private:
         void sendMessage(std::string const& bytes, MessageType msgType);
 
-        std::function<void(std::string)> onMessage_;
+        std::function<void(std::string, MessageType)> onMessage_;
         FieldOffsetMap& fieldsOffsets_;
     };
 
@@ -113,7 +114,9 @@ public:
     struct CachedFieldsProvider
     {
         virtual std::shared_ptr<Fields> operator() (std::string_view const&);
-    private:
+
+    protected:
+        std::shared_mutex fieldCacheMutex_;
         std::map<std::string, std::shared_ptr<Fields>> fieldsPerNodeId_;
     };
 };

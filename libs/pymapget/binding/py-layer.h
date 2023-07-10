@@ -10,11 +10,12 @@
 
 namespace py = pybind11;
 using namespace py::literals;
-using namespace mapget;
-using namespace simfil;
 
 void bindTileLayer(py::module_& m)
 {
+    using namespace mapget;
+    using namespace simfil;
+
     py::class_<TileFeatureLayer, TileFeatureLayer::Ptr>(
         m,
         "TileFeatureLayer")
@@ -77,7 +78,13 @@ void bindTileLayer(py::module_& m)
         .def(
             "set_info",
             [](TileFeatureLayer& self, std::string const& k, simfil::ScalarValueType const& v) {
-                self.setInfo(k, v);
+                std::visit(
+                    [&](auto&& vv)
+                    {
+                        if constexpr (!std::is_same_v<std::decay_t<decltype(vv)>, std::monostate>)
+                            self.setInfo(k, vv);
+                    },
+                    v);
             },
             py::arg("key"),
             py::arg("value"),
@@ -158,5 +165,12 @@ void bindTileLayer(py::module_& m)
             py::arg("geom_type"),
             R"pbdoc(
             Create a new geometry of the given type.
+        )pbdoc")
+        .def(
+            "geojson",
+            [](TileFeatureLayer& self)
+            { return self.toGeoJson().dump(); },
+            R"pbdoc(
+            Convert this tile to a GeoJSON feature collection.
         )pbdoc");
 }

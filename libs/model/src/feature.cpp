@@ -170,6 +170,9 @@ void Feature::updateFields() {
 
 nlohmann::json Feature::toGeoJson()
 {
+    // Ensure that properties and geometry exist
+    attributes();
+    geom();
     return toJsonPrivate(*this);
 }
 

@@ -1,0 +1,28 @@
+{
+  "mapId": "Tropico",
+  "layers": {
+    "WayLayer": {
+      "featureTypes":
+      [
+        {
+          "name": "Way",
+          "uniqueIdCompositions":
+          [
+            [
+              {
+                "partId": "areaId",
+                "description": "String which identifies the map area.",
+                "datatype": "STR"
+              },
+              {
+                "partId": "wayId",
+                "description": "Globally Unique 32b integer.",
+                "datatype": "U32"
+              }
+            ]
+          ]
+        }
+      ]
+    }
+  }
+}

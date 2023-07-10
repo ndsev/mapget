@@ -52,13 +52,13 @@ public:
     [[nodiscard]] model_ptr<FeatureId> id() const;
 
     /** Get this feature's GeometryCollection. */
-    [[nodiscard]] model_ptr<GeometryCollection> geom();
+    model_ptr<GeometryCollection> geom();
 
     /** Get this feature's Attribute layers. */
     [[nodiscard]] model_ptr<AttributeLayerList> attributeLayers();
 
     /** Get this feature's un-layered attributes. */
-    [[nodiscard]] model_ptr<Object> attributes();
+    model_ptr<Object> attributes();
 
     /** Get this feature's child ID list. */
     [[nodiscard]] model_ptr<Array> children();
