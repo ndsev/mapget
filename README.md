@@ -15,7 +15,7 @@
 
 The `mapget` package is deployed to PyPI for any Python version between 3.8 and 3.11. Simply running `pip install mapget` is enough to get you started:
 
-* **`python -m mapget serve`** will run a server. Check out `--help` for further assistence.
+* **`python -m mapget serve`** will run a server. Check out `--help` for further assistance.
 * **`python -m mapget fetch`** allows you to talk to a remote server. Check out `--help` for further assistance.
 * You can also use the Python package to write a data source, as documented [here](#implementing-a-data-source).
 

@@ -157,7 +157,7 @@ struct HttpService::Impl
 
     void handleSourcesRequest(const httplib::Request&, httplib::Response& res)
     {
-        nlohmann::json sourcesInfo;
+        auto sourcesInfo = nlohmann::json::array();
         for (auto& source : self_.info()) {
             sourcesInfo.push_back(source.toJson());
         }
