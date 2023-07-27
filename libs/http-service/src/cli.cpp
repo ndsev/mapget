@@ -75,7 +75,7 @@ struct ServeCommand
 struct FetchCommand
 {
     std::string server_, map_, layer_;
-    std::vector<int> tiles_;
+    std::vector<uint64_t> tiles_;
 
     explicit FetchCommand(CLI::App& app) {
         auto fetchCmd = app.add_subcommand("fetch", "Connects to the server to fetch tiles.");
