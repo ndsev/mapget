@@ -1,4 +1,5 @@
 #include "service.h"
+#include "log.h"
 
 #include <optional>
 #include <set>
@@ -6,7 +7,6 @@
 #include <condition_variable>
 #include <thread>
 #include <list>
-#include <iostream>
 
 namespace mapget
 {
@@ -107,8 +107,7 @@ struct Service::Controller
                     auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
                     if (cachedResult) {
                         // TODO: Consider TTL
-                        std::cout << "Serving cached tile: " << result->first.toString()
-                                  << std::endl;
+                        spdlog::debug("Serving cached tile: {}", result->first.toString());
                         request->notifyResult(cachedResult);
                         result.reset();
                         cachedTilesServed = true;
@@ -118,8 +117,8 @@ struct Service::Controller
                     if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
                         // Don't work on something that is already being worked on. Instead,
                         // wait for the work to finish, then send the (hopefully cached) result.
-                        std::cout << "Delaying tile, is currently in progress: "
-                                  << result->first.toString() << std::endl;
+                        spdlog::debug("Delaying tile with job in progress: {}",
+                                     result->first.toString());
                         --request->nextTileIndex_;
                         result.reset();
                         continue;
@@ -131,7 +130,7 @@ struct Service::Controller
                     // Move this request to the end of the list, so others gain priority
                     requests_.splice(requests_.end(), requests_, reqIt);
 
-                    std::cout << "Now working on tile: " << result->first.toString() << std::endl;
+		    spdlog::debug("Working on tile: {}", result->first.toString());
                     break;
                 }
             }
@@ -208,12 +207,9 @@ struct Service::Worker
             }
         }
         catch (std::exception& e) {
-            // TODO: Proper logging
-            std::cerr
-                << "ERROR: Could not load tile "
-                << mapTileKey.toString()
-                << " due to exception: "
-                << e.what();
+		spdlog::error("Could not load tile {}: {}",
+				mapTileKey.toString(),
+				e.what());
         }
 
         return true;

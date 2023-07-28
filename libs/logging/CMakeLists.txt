@@ -3,8 +3,6 @@ project(mapget-log)
 
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
-# find_package(spdlog CONFIG REQUIRED)
-
 add_library(mapget-log STATIC
   include/log.h
   src/log.cpp)
