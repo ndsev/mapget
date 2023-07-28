@@ -138,7 +138,7 @@ if (MAPGET_WITH_WHEEL)
     set(Python3_FIND_STRATEGY LOCATION)
     FetchContent_Declare(python-cmake-wheel
       GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
-      GIT_TAG        "wheel-name-override"
+      GIT_TAG        "v0.9.0"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(python-cmake-wheel)
     list(APPEND CMAKE_MODULE_PATH "${python-cmake-wheel_SOURCE_DIR}")
@@ -163,6 +163,7 @@ endif()
 ##############
 # libs
 
+add_subdirectory(libs/logging)
 add_subdirectory(libs/model)
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB)
