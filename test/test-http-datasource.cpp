@@ -6,11 +6,13 @@
 #include "mapget/http-service/http-service.h"
 #include "mapget/http-service/http-client.h"
 #include "mapget/model/stream.h"
+#include "log.h"
 
 using namespace mapget;
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
+    spdlog::set_level(spdlog::level::debug);
     // Create DataSourceInfo
     auto info = DataSourceInfo::fromJson(R"(
     {

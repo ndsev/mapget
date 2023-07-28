@@ -2,13 +2,13 @@
 
 #include "mapget/model/info.h"
 #include "mapget/model/stream.h"
-
-#include <iostream>
+#include "log.h"
 
 using namespace mapget;
 
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
 {
+    spdlog::set_level(spdlog::level::debug);
     // Create a DataSourceInfo object
     std::map<std::string, std::shared_ptr<LayerInfo>> layers;
     layers["testLayer"] = std::make_shared<LayerInfo>(LayerInfo{
@@ -31,7 +31,7 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
 
     // Serialize it to JSON
     nlohmann::json j = info.toJson();
-    std::cout << j << std::endl;
+    spdlog::debug("Serialized data source info: {}", to_string(j));
 
     // Deserialize it back into a DataSourceInfo object, then serialize it again.
     auto j2 = DataSourceInfo::fromJson(j).toJson();

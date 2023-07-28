@@ -3,6 +3,7 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
+#include "log.h"
 
 #include <sstream>
 #include <iostream>
@@ -11,6 +12,7 @@ using namespace mapget;
 
 TEST_CASE("FeatureLayer", "[test.featurelayer]")
 {
+    spdlog::set_level(spdlog::level::debug);
     // Create layer info which has a single feature type with
     // a single allowed feature id composition.
     auto layerInfo = LayerInfo::fromJson(R"({
@@ -201,6 +203,7 @@ void REQUIRE_EQUAL(const Point& p1, const Point& p2, double eps = 1e-6) {
 
 TEST_CASE("TileId", "[TileId]") {
     using namespace mapget;
+    spdlog::set_level(spdlog::level::debug);
 
     SECTION("fromWgs84: zoom level 0") {
         TileId tile = TileId::fromWgs84(0, 0, 0);

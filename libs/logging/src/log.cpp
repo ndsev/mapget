@@ -8,14 +8,19 @@
 
 spdlog::logger& mapget::log()
 {
-    static std::shared_ptr<spdlog::logger> httpLogger;
+    static std::shared_ptr<spdlog::logger> logInstance;
     static std::shared_mutex loggerAccess;
+
+    static auto ENVVAR_LOG_LEVEL = "MAPGET_LOG_LEVEL";
+    static auto ENVVAR_LOG_FILE = "MAPGET_LOG_FILE";
+    static auto ENVVAR_LOG_FILE_MAXSIZE = "MAPGET_LOG_FILE_MAXSIZE";
+    static auto LOG_MARKER = "mapget";
 
     {
         // Check if the logger is already initialized - read-only lock
         std::shared_lock<std::shared_mutex> readLock(loggerAccess);
-        if (httpLogger)
-            return *httpLogger;
+        if (logInstance)
+            return *logInstance;
     }
 
     {
@@ -23,8 +28,8 @@ spdlog::logger& mapget::log()
         std::lock_guard<std::shared_mutex> readLock(loggerAccess);
 
         // Check again, another thread might have initialized now
-        if (httpLogger)
-            return *httpLogger;
+        if (logInstance)
+            return *logInstance;
 
         // Initialize the logger
         auto getEnvSafe = [](char const* env){
@@ -33,42 +38,43 @@ spdlog::logger& mapget::log()
                 return std::string(value);
             return std::string();
         };
-        std::string logLevel = getEnvSafe("HTTP_LOG_LEVEL");
-        std::string logFile = getEnvSafe("HTTP_LOG_FILE");
-        std::string logFileMaxSize = getEnvSafe("HTTP_LOG_FILE_MAXSIZE");
+        std::string logLevel = getEnvSafe(ENVVAR_LOG_LEVEL);
+        std::string logFile = getEnvSafe(ENVVAR_LOG_FILE);
+        std::string logFileMaxSize = getEnvSafe(ENVVAR_LOG_FILE_MAXSIZE);
         uint64_t logFileMaxSizeInt = 1024ull*1024*1024; // 1GB
 
         // File logger on demand, otherwise console logger
         if (!logFile.empty()) {
-            std::cerr << "Logging OpenAPI HTTP events to '" << logFile << "'!" << std::endl;
+            std::cerr << "Logging mapget events to '" << logFile << "'!" << std::endl;
             if (!logFileMaxSize.empty()) {
                 try {
                     logFileMaxSizeInt = std::stoull(logFileMaxSize);
                 }
                 catch (std::exception& e) {
-                    std::cerr << "Could not parse value of HTTP_LOG_FILE_MAXSIZE." << std::endl;
+                    std::cerr << "Could not parse value of "
+                              << ENVVAR_LOG_FILE_MAXSIZE << " ." << std::endl;
                 }
             }
             std::cerr << "Maximum logfile size is " << logFileMaxSizeInt << " bytes!" << std::endl;
-            httpLogger = spdlog::rotating_logger_mt("openapi-http", logFile, logFileMaxSizeInt, 2);
+            logInstance = spdlog::rotating_logger_mt(LOG_MARKER, logFile, logFileMaxSizeInt, 2);
         }
         else
-            httpLogger = spdlog::stderr_color_mt("openapi-http");
+            logInstance = spdlog::stderr_color_mt(LOG_MARKER);
 
         // Parse/set log level
         for (auto& ch : logLevel)
             ch = std::tolower(ch);
         if (logLevel == "error" || logLevel == "err")
-            httpLogger->set_level(spdlog::level::err);
+            logInstance->set_level(spdlog::level::err);
         else if (logLevel == "warning" || logLevel == "warn")
-            httpLogger->set_level(spdlog::level::warn);
+            logInstance->set_level(spdlog::level::warn);
         else if (logLevel == "info")
-            httpLogger->set_level(spdlog::level::info);
+            logInstance->set_level(spdlog::level::info);
         else if (logLevel == "debug" || logLevel == "dbg")
-            httpLogger->set_level(spdlog::level::debug);
+            logInstance->set_level(spdlog::level::debug);
         else if (logLevel == "trace")
-            httpLogger->set_level(spdlog::level::trace);
+            logInstance->set_level(spdlog::level::trace);
     }
 
-    return *httpLogger;
+    return *logInstance;
 }
