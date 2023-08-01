@@ -8,6 +8,7 @@
 #include <CLI/CLI.hpp>
 #include <vector>
 #include <string>
+#include <iostream>
 
 namespace mapget
 {
@@ -30,7 +31,7 @@ struct ServeCommand
 
     void serve()
     {
-        spdlog::info("Starting server on port {}.", port_);
+        log().info("Starting server on port {}.", port_);
         HttpService srv;
 
         if (!datasourceHosts_.empty()){
@@ -38,32 +39,32 @@ struct ServeCommand
                 auto delimiterPos = ds.find(':');
                 std::string dsHost = ds.substr(0, delimiterPos);
                 int dsPort = std::stoi(ds.substr(delimiterPos+1, ds.size()));
-                spdlog::info("Connecting to datasource at {}:{}.", dsHost, dsPort);
+                log().info("Connecting to datasource at {}:{}.", dsHost, dsPort);
                 try {
                     srv.add(std::make_shared<RemoteDataSource>(dsHost, dsPort));
                 }
                 catch(std::exception const& e) {
-                    spdlog::error("  ...failed: {}", e.what());
+                    log().error("  ...failed: {}", e.what());
                 }
             }
         }
 
         if (!datasourceExecutables_.empty()){
             for (auto& ds : datasourceExecutables_){
-                spdlog::info("Launching datasource exe: {}", ds);
+                log().info("Launching datasource exe: {}", ds);
                 try {
                     srv.add(std::make_shared<RemoteDataSourceProcess>(ds));
                 }
                 catch(std::exception const& e) {
-                    spdlog::error("  ...failed: {}", e.what());
+                    log().error("  ...failed: {}", e.what());
                 }
             }
         }
 
         if (!webapp_.empty()){
-            spdlog::info("Webapp: {}", webapp_);
+            log().info("Webapp: {}", webapp_);
             if (!srv.mountFileSystem(webapp_)){
-                spdlog::error("  ...failed to mount!");
+                log().error("  ...failed to mount!");
                 exit(1);
             }
         }
@@ -87,17 +88,18 @@ struct FetchCommand
     }
 
     void fetch() {
-        if (spdlog::get_level() <= spdlog::level::debug) {
+        if (log().level() <= spdlog::level::debug) {
             // Skips building the tile list string if it will not be logged.
             std::string tileList = "";
             for (auto& tile : tiles_) {
                 tileList += std::to_string(tile) + " ";
             }
-            spdlog::debug(
-                "Connecting client to server {} for map {} and layer {} with tiles:",
+            log().debug(
+                "Connecting client to server {} for map {} and layer {} with tiles: {}",
                 server_,
                 map_,
-                layer_);
+                layer_,
+                tileList);
         }
 
         auto delimiterPos = server_.find(':');
@@ -108,7 +110,9 @@ struct FetchCommand
         auto request = std::make_shared<Request>(
             map_, layer_, std::vector<TileId>{tiles_.begin(), tiles_.end()},
             [](auto&& tile){
-                std::cout << tile->toGeoJson() << std::endl;
+                if (log().level() == spdlog::level::trace) {
+                    log().trace(tile->toGeoJson().dump());
+                }
             });
         cli.request(request)->wait();
     }

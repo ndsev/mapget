@@ -1,19 +1,23 @@
 #include <catch2/catch_test_macros.hpp>
 #include "httplib.h"
+#include "log.h"
 
 #include "mapget/http-datasource/datasource-server.h"
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/http-service/http-service.h"
 #include "mapget/http-service/http-client.h"
 #include "mapget/model/stream.h"
-#include "log.h"
 
 using namespace mapget;
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
-    spdlog::set_level(spdlog::level::debug);
-    // Create DataSourceInfo
+    // Log all messages to the console if MAPGET_LOG_FILE is not specified.
+    if (getenv("MAPGET_LOG_FILE") == nullptr) {
+        setenv("MAPGET_LOG_LEVEL", "trace", 1);
+    }
+
+    // Create DataSourceInfo.
     auto info = DataSourceInfo::fromJson(R"(
     {
         "mapId": "Tropico",
@@ -44,9 +48,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         }
     }
     )"_json);
-    // configure info
 
-    // Initialize a DataSource
+    // Initialize a DataSource.
     DataSourceServer ds(info);
     auto dataSourceRequestCount = 0;
     ds.onTileRequest([&](auto&& tile) {
@@ -57,18 +60,18 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         ++dataSourceRequestCount;
     });
 
-    // Launch the DataSource on a separate thread
+    // Launch the DataSource on a separate thread.
     ds.go();
 
-    // Ensure the DataSource is running
+    // Ensure the DataSource is running.
     REQUIRE(ds.isRunning() == true);
 
     SECTION("Fetch /info")
     {
-        // Initialize an httplib client
+        // Initialize an httplib client.
         httplib::Client cli("localhost", ds.port());
 
-        // Send a GET info request
+        // Send a GET info request.
         auto fetchedInfoJson = cli.Get("/info");
         auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
         REQUIRE(fetchedInfo.toJson() == info.toJson());
@@ -76,17 +79,17 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     SECTION("Fetch /tile")
     {
-        // Initialize an httplib client
+        // Initialize an httplib client.
         httplib::Client cli("localhost", ds.port());
 
-        // Send a GET tile request
+        // Send a GET tile request.
         auto tileResponse = cli.Get("/tile?layer=WayLayer&tileId=1");
 
-        // Check that the response is OK
+        // Check that the response is OK.
         REQUIRE(tileResponse != nullptr);
         REQUIRE(tileResponse->status == 200);
 
-        // Check the response body for expected content
+        // Check the response body for expected content.
         auto receivedTileCount = 0;
         TileLayerStream::Reader reader(
             [&](auto&& mapId, auto&& layerId)

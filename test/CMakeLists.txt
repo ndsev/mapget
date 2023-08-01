@@ -14,13 +14,23 @@ add_executable(test.mapget
   test-info.cpp
   test-http-datasource.cpp)
 
+add_executable(test.mapget.filelog
+  test-file-logging.cpp)
+
 target_link_libraries(test.mapget
   PUBLIC
+    mapget-log
     mapget-model
     mapget-http-datasource
     mapget-http-service
     Catch2::Catch2WithMain)
 
+target_link_libraries(test.mapget.filelog
+  PUBLIC
+  mapget-log
+  Catch2::Catch2WithMain)
+
 include(Catch)
 include(CTest)
 catch_discover_tests(test.mapget)
+catch_discover_tests(test.mapget.filelog)

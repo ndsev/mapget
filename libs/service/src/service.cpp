@@ -107,7 +107,7 @@ struct Service::Controller
                     auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
                     if (cachedResult) {
                         // TODO: Consider TTL
-                        spdlog::debug("Serving cached tile: {}", result->first.toString());
+                        log().debug("Serving cached tile: {}", result->first.toString());
                         request->notifyResult(cachedResult);
                         result.reset();
                         cachedTilesServed = true;
@@ -117,20 +117,20 @@ struct Service::Controller
                     if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
                         // Don't work on something that is already being worked on. Instead,
                         // wait for the work to finish, then send the (hopefully cached) result.
-                        spdlog::debug("Delaying tile with job in progress: {}",
+                        log().debug("Delaying tile with job in progress: {}",
                                      result->first.toString());
                         --request->nextTileIndex_;
                         result.reset();
                         continue;
                     }
 
-                    // Enter into the jobs-in-progress set
+                    // Enter into the jobs-in-progress set.
                     jobsInProgress_.insert(result->first);
 
-                    // Move this request to the end of the list, so others gain priority
+                    // Move this request to the end of the list, so others gain priority.
                     requests_.splice(requests_.end(), requests_, reqIt);
 
-		    spdlog::debug("Working on tile: {}", result->first.toString());
+		    log().debug("Working on tile: {}", result->first.toString());
                     break;
                 }
             }
@@ -207,7 +207,7 @@ struct Service::Worker
             }
         }
         catch (std::exception& e) {
-		spdlog::error("Could not load tile {}: {}",
+		log().error("Could not load tile {}: {}",
 				mapTileKey.toString(),
 				e.what());
         }

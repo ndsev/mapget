@@ -1,16 +1,17 @@
 cmake_minimum_required(VERSION 3.14)
 
-option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY." OFF)
-option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads." OFF)
-option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries." OFF)
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-  set (MAPGET_ENABLE_TESTING ON)
-  set (MAPGET_BUILD_EXAMPLES ON)
-  set (MAPGET_WITH_WHEEL ON)
-  set (MAPGET_WITH_HTTPLIB ON)
-  set (MAPGET_WITH_SERVICE ON)
+  set (MAPGET_WITH_WHEEL ON CACHE BOOL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
+  set (MAPGET_WITH_SERVICE ON CACHE BOOL "Enable mapget-service library. Requires threads.")
+  set (MAPGET_WITH_HTTPLIB ON CACHE BOOL "Enable mapget-http-datasource and mapget-http-service libraries.")
+  set (MAPGET_ENABLE_TESTING ON CACHE BOOL "Enable testing.")
+  set (MAPGET_BUILD_EXAMPLES ON CACHE BOOL "Build examples.")
 endif()
+
+option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
+option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
+option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
 
 project(mapget)
 include(FetchContent)
@@ -42,7 +43,7 @@ else()
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
-  if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB)
+  if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     set(THREADS_PREFER_PTHREAD_FLAG TRUE)
     find_package(Threads REQUIRED)
   endif()
@@ -92,7 +93,7 @@ if (NOT TARGET bitsery)
   FetchContent_MakeAvailable(bitsery)
 endif()
 
-if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB)
+if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   if (NOT TARGET httplib)
     FetchContent_Declare(httplib
       GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
@@ -166,11 +167,11 @@ endif()
 add_subdirectory(libs/logging)
 add_subdirectory(libs/model)
 
-if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB)
+if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   add_subdirectory(libs/service)
 endif()
 
-if (MAPGET_WITH_HTTPLIB)
+if (MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   add_subdirectory(libs/http-datasource)
   add_subdirectory(libs/http-service)
   add_subdirectory(apps/mapget)

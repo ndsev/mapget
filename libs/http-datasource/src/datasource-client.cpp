@@ -2,6 +2,7 @@
 #include "process.hpp"
 #include <chrono>
 #include <regex>
+#include "log.h"
 
 namespace mapget
 {
@@ -61,7 +62,7 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& command_line
           [this](const char* bytes, size_t n)
           {
               auto output = std::string(bytes, n);
-              std::cout << "Process output: " << output;
+              log().debug("Process output: {}", output);
               // Extract port number from the message "Running on port <port>"
               std::regex port_regex(R"(Running on port (\d+))");
               std::smatch matches;

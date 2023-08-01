@@ -1,6 +1,7 @@
 #pragma once
 
 #include "http-service.h"
+#include "log.h"
 
 #include "httplib.h"
 
@@ -57,7 +58,7 @@ struct HttpService::Impl
         void addResult(TileFeatureLayer::Ptr const& result)
         {
             std::unique_lock lock(mutex_);
-            std::cout << "Response ready: " << MapTileKey(*result).toString() << std::endl;
+            log().debug("Response ready: {}", MapTileKey(*result).toString());
             if (responseType_ == binaryMimeType) {
                 // Binary response
                 TileLayerStream::Writer writer{
@@ -132,7 +133,7 @@ struct HttpService::Impl
                     });
 
                 if (!strBuf.empty()) {
-                    std::cout << "Streaming bytes: " << strBuf.size() << std::endl;
+                    log().debug("Streaming {} bytes...", strBuf.size());
                     sink.write(strBuf.data(), strBuf.size());
                     state->buffer_.str("");  // Clear buffer after reading
                 }

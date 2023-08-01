@@ -1,5 +1,5 @@
 #include "mapget/service/service.h"
-#include <iostream>
+#include "log.h"
 
 using namespace mapget;
 
@@ -76,11 +76,13 @@ int main(int argc, char** argv)
     service.add(std::make_shared<MyLocalDataSource>());
 
     // Create a request. The request will immediately start to be worked on.
-    service.request(std::make_shared<Request>(
-        "Tropico",
-        "WayLayer",
-        std::vector<TileId>{TileId(12345), TileId(67689)},
-        [](auto&& result){std::cout << "Got " << MapTileKey(*result).toString() << std::endl;})
-    )->wait();
+    service
+        .request(std::make_shared<Request>(
+            "Tropico",
+            "WayLayer",
+            std::vector<TileId>{TileId(12345), TileId(67689)},
+            [](auto&& result)
+            { log().info("Got {}", MapTileKey(*result).toString()); }))
+        ->wait();
     return 0;
 }

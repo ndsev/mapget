@@ -1,9 +1,7 @@
 #include "cache.h"
+#include "log.h"
 
 #include "stx/format.h"
-#include "stx/string.h"
-
-#include <iostream>
 
 namespace mapget
 {
@@ -76,7 +74,7 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
                 putFields(l->nodeId(), msg);
         },
         fieldCacheOffsets_);
-    std::cout << "Writing tile layer to cache: " << MapTileKey(*l).toString() << std::endl;
+    log().debug("Writing tile layer to cache: {}", MapTileKey(*l).toString());
     tileWriter.write(l);
 }
 

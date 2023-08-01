@@ -24,7 +24,7 @@ void MemCache::putTileLayer(const MapTileKey& k, const std::string& v)
     while (fifo_.size() > maxCachedTiles_) {
         auto oldestTileKey = fifo_.back();
         fifo_.pop_back();
-        spdlog::debug("Evicting tile from cache: {}", oldestTileKey);
+        log().debug("Evicting tile from cache: {}", oldestTileKey);
         cachedTiles_.erase(oldestTileKey);
     }
 }

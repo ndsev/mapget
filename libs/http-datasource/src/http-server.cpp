@@ -1,4 +1,5 @@
 #include "mapget/detail/http-server.h"
+#include "log.h"
 
 #include "httplib.h"
 #include <csignal>
@@ -67,7 +68,7 @@ void HttpServer::go(
     impl_->serverThread_ = std::thread(
         [this, interfaceAddr]
         {
-            std::cout << "====== Running on port " << impl_->port_ << " ======" << std::endl;
+            log().info("====== Running on port {} ======", impl_->port_);
             impl_->server_.listen_after_bind();
         });
 

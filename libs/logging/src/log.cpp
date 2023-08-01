@@ -17,21 +17,21 @@ spdlog::logger& mapget::log()
     static auto LOG_MARKER = "mapget";
 
     {
-        // Check if the logger is already initialized - read-only lock
+        // Check if the logger is already initialized - read-only lock.
         std::shared_lock<std::shared_mutex> readLock(loggerAccess);
         if (logInstance)
             return *logInstance;
     }
 
     {
-        // Get write lock
+        // Get write lock.
         std::lock_guard<std::shared_mutex> readLock(loggerAccess);
 
-        // Check again, another thread might have initialized now
+        // Check again, another thread might have initialized now.
         if (logInstance)
             return *logInstance;
 
-        // Initialize the logger
+        // Initialize the logger.
         auto getEnvSafe = [](char const* env){
             auto value = std::getenv(env);
             if (value)
@@ -43,9 +43,9 @@ spdlog::logger& mapget::log()
         std::string logFileMaxSize = getEnvSafe(ENVVAR_LOG_FILE_MAXSIZE);
         uint64_t logFileMaxSizeInt = 1024ull*1024*1024; // 1GB
 
-        // File logger on demand, otherwise console logger
+        // File logger on demand, otherwise console logger.
         if (!logFile.empty()) {
-            std::cerr << "Logging mapget events to '" << logFile << "'!" << std::endl;
+            std::cout << "Logging mapget events to: " << logFile << std::endl;
             if (!logFileMaxSize.empty()) {
                 try {
                     logFileMaxSizeInt = std::stoull(logFileMaxSize);
@@ -55,7 +55,7 @@ spdlog::logger& mapget::log()
                               << ENVVAR_LOG_FILE_MAXSIZE << " ." << std::endl;
                 }
             }
-            std::cerr << "Maximum logfile size is " << logFileMaxSizeInt << " bytes!" << std::endl;
+            std::cout << "Maximum logfile size: " << logFileMaxSizeInt << " bytes" << std::endl;
             logInstance = spdlog::rotating_logger_mt(LOG_MARKER, logFile, logFileMaxSizeInt, 2);
         }
         else
@@ -64,7 +64,9 @@ spdlog::logger& mapget::log()
         // Parse/set log level
         for (auto& ch : logLevel)
             ch = std::tolower(ch);
-        if (logLevel == "error" || logLevel == "err")
+        if (logLevel == "critical")
+            logInstance->set_level(spdlog::level::critical);
+        else if (logLevel == "error" || logLevel == "err")
             logInstance->set_level(spdlog::level::err);
         else if (logLevel == "warning" || logLevel == "warn")
             logInstance->set_level(spdlog::level::warn);
@@ -74,6 +76,8 @@ spdlog::logger& mapget::log()
             logInstance->set_level(spdlog::level::debug);
         else if (logLevel == "trace")
             logInstance->set_level(spdlog::level::trace);
+        else
+            std::cerr << "Log level not recognized: " << logLevel << std::endl;
     }
 
     return *logInstance;
