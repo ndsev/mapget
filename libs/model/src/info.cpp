@@ -1,5 +1,6 @@
 #include "info.h"
 #include "stream.h"
+#include "mapget/log.h"
 
 #include <tuple>
 #include <random>
@@ -211,10 +212,11 @@ nlohmann::json LayerInfo::toJson() const
 std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId) const
 {
     auto it = layers_.find(layerId);
-    if (it == layers_.end())
-        throw std::runtime_error(stx::format(
-            "Could not find info for layer '{}'/'{}'",
-            mapId_, layerId));
+    if (it == layers_.end()) {
+        throw logRuntimeError(
+            stx::format("Could not find info for layer '{}'/'{}'", mapId_, layerId)
+        );
+    }
     return it->second;
 }
 

@@ -81,7 +81,7 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& command_line
     std::unique_lock<std::mutex> lock(mutex_);
     if (!cv_.wait_for(lock, std::chrono::seconds(10), [this] { return remoteSource_ != nullptr; }))
     {
-        throw std::runtime_error(
+        throw logRuntimeError(
             "Timeout waiting for the child process to initialize the remote data source.");
     }
 }
@@ -97,14 +97,14 @@ RemoteDataSourceProcess::~RemoteDataSourceProcess()
 DataSourceInfo RemoteDataSourceProcess::info()
 {
     if (!remoteSource_)
-        throw std::runtime_error("Remote data source is not initialized.");
+        throw logRuntimeError("Remote data source is not initialized.");
     return remoteSource_->info();
 }
 
 void RemoteDataSourceProcess::fill(TileFeatureLayer::Ptr const& featureTile)
 {
     if (!remoteSource_)
-        throw std::runtime_error("Remote data source is not initialized.");
+        throw logRuntimeError("Remote data source is not initialized.");
     remoteSource_->fill(featureTile);
 }
 
@@ -112,7 +112,7 @@ TileFeatureLayer::Ptr
 RemoteDataSourceProcess::get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info)
 {
     if (!remoteSource_)
-        throw std::runtime_error("Remote data source is not initialized.");
+        throw logRuntimeError("Remote data source is not initialized.");
     return remoteSource_->get(k, cache, info);
 }
 

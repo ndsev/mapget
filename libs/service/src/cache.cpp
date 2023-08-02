@@ -51,7 +51,7 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& k, DataSource
     TileLayerStream::Reader tileReader(
         [&i, &k](auto&& mapId, auto&& layerId){
             if (i.mapId_ != mapId)
-                throw std::runtime_error(stx::format(
+                throw logRuntimeError(stx::format(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
                     mapId, k.tileId_.value_, i.mapId_));
             return i.getLayer(std::string(layerId));

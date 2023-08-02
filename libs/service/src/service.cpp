@@ -74,7 +74,7 @@ struct Service::Controller
     explicit Controller(Cache::Ptr cache) : cache_(std::move(cache))
     {
         if (!cache_)
-            throw std::runtime_error("Cache must not be null!");
+            throw logRuntimeError("Cache must not be null!");
     }
 
     std::optional<Job> nextJob(DataSourceInfo const& i)
@@ -193,7 +193,7 @@ struct Service::Worker
         {
             auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
             if (!result)
-                throw std::runtime_error("DataSource::get() returned null.");
+                throw logRuntimeError("DataSource::get() returned null.");
 
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
@@ -284,7 +284,7 @@ struct Service::Impl : public Service::Controller
     void addRequest(Request::Ptr r)
     {
         if (!r)
-            throw std::runtime_error("Attempt to call Service::addRequestFromJson(nullptr).");
+            throw logRuntimeError("Attempt to call Service::addRequestFromJson(nullptr).");
         if (r->isDone()) {
             // Nothing to do
             r->notifyDone();

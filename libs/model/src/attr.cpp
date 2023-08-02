@@ -1,5 +1,6 @@
 #include "attr.h"
 #include "featurelayer.h"
+#include "mapget/log.h"
 
 namespace mapget
 {
@@ -42,7 +43,7 @@ std::string_view Attribute::name()
 {
     if (auto s = model().fieldNames()->resolve(data_.name_))
         return *s;
-    throw std::runtime_error("Attribute name is not known to string pool.");
+    throw logRuntimeError("Attribute name is not known to string pool.");
 }
 
 }

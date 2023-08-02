@@ -31,6 +31,7 @@ target_include_directories(mapget-model
 
 target_link_libraries(mapget-model
   PUBLIC
+    mapget-log
     sfl::sfl
     stx::stx
     Bitsery::bitsery

@@ -50,7 +50,7 @@ struct HttpService::Impl
                 responseType_ = binaryMimeType;
                 return;
             }
-            throw std::runtime_error(stx::format("Unknown Accept-Header value {}", responseType_));
+            throw logRuntimeError(stx::format("Unknown Accept-Header value {}", responseType_));
         }
 
         void addResult(TileFeatureLayer::Ptr const& result)

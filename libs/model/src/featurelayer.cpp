@@ -1,4 +1,5 @@
 #include "featurelayer.h"
+#include "mapget/log.h"
 
 #include <map>
 #include <shared_mutex>
@@ -73,7 +74,7 @@ TileFeatureLayer::TileFeatureLayer(
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
-        throw std::runtime_error(stx::format(
+        throw logRuntimeError(stx::format(
             "Failed to read TileFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
