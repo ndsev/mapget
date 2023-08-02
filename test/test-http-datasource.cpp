@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "httplib.h"
-#include "log.h"
+#include "mapget/log.h"
 
 #include "mapget/http-datasource/datasource-server.h"
 #include "mapget/http-datasource/datasource-client.h"

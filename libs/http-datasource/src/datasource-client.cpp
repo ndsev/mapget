@@ -2,7 +2,7 @@
 #include "process.hpp"
 #include <chrono>
 #include <regex>
-#include "log.h"
+#include "mapget/log.h"
 
 namespace mapget
 {

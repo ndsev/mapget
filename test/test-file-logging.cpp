@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 #include <iostream>
-#include "log.h"
+#include "mapget/log.h"
 
 TEST_CASE("FileLogging", "[Logging]")
 {

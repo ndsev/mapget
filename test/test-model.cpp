@@ -3,7 +3,7 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
-#include "log.h"
+#include "mapget/log.h"
 
 #include <sstream>
 #include <iostream>

@@ -4,7 +4,7 @@ project(mapget-log)
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 add_library(mapget-log STATIC
-  include/log.h
+  include/mapget/log.h
   src/log.cpp)
 
 target_link_libraries(mapget-log
@@ -13,7 +13,7 @@ target_link_libraries(mapget-log
 )
 
 target_include_directories(mapget-log
-  PRIVATE
-  src
   PUBLIC
-  include)
+    include
+  PRIVATE
+    src)

@@ -2,7 +2,7 @@
 
 #include "mapget/model/info.h"
 #include "mapget/model/stream.h"
-#include "log.h"
+#include "mapget/log.h"
 
 using namespace mapget;
 

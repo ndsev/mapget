@@ -1,5 +1,5 @@
 #include "service.h"
-#include "log.h"
+#include "mapget/log.h"
 
 #include <optional>
 #include <set>

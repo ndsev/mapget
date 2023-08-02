@@ -2,7 +2,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include "mapget/http-datasource/datasource-server.h"
-#include "log.h"
+#include "mapget/log.h"
 
 using namespace mapget;
 using json = nlohmann::json;

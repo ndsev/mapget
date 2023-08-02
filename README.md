@@ -79,12 +79,14 @@ The following diagram provides an overview over the libraries, their contents, a
 - CMake 3.14+
 - Python3
 - Ninja build system (not required, but recommended)
-
-If you wish to build the mapget wheel, first install the Python wheel package:
-
-```bash
-pip install wheel
-```
+- gcovr, if you wish to run coverage tests:
+  ```
+  pip install gcovr
+  ```
+- Python wheel package, if you wish to build the mapget wheel:
+  ```
+  pip install wheel
+  ```
 
 Build `mapget` with the following command:
 

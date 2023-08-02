@@ -1,5 +1,5 @@
 #include "mapget/detail/http-server.h"
-#include "log.h"
+#include "mapget/log.h"
 
 #include "httplib.h"
 #include <csignal>

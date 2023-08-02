@@ -1,7 +1,5 @@
-#pragma once
-
 #include "http-service.h"
-#include "log.h"
+#include "mapget/log.h"
 
 #include "httplib.h"
 

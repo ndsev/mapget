@@ -1,5 +1,5 @@
 #include "memcache.h"
-#include "log.h"
+#include "mapget/log.h"
 
 namespace mapget
 {

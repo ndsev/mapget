@@ -4,7 +4,7 @@
 #include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 
-#include "log.h"
+#include "mapget/log.h"
 
 spdlog::logger& mapget::log()
 {

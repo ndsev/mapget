@@ -1,5 +1,5 @@
 #include "mapget/service/service.h"
-#include "log.h"
+#include "mapget/log.h"
 
 using namespace mapget;
 

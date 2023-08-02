@@ -1,5 +1,5 @@
 #include "cache.h"
-#include "log.h"
+#include "mapget/log.h"
 
 #include "stx/format.h"
 

@@ -1,7 +1,7 @@
 #include "cli.h"
 #include "http-service.h"
 #include "http-client.h"
-#include "log.h"
+#include "mapget/log.h"
 
 #include "mapget/http-datasource/datasource-client.h"
 
