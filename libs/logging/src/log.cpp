@@ -76,6 +76,10 @@ spdlog::logger& mapget::log()
             logInstance->set_level(spdlog::level::debug);
         else if (logLevel == "trace")
             logInstance->set_level(spdlog::level::trace);
+        else if (logLevel == "") {
+            logInstance->set_level(spdlog::level::info);
+            std::cout << "spdlog level set to [info]." << std::endl;
+        }
         else
             std::cerr << "Log level not recognized: " << logLevel << std::endl;
     }

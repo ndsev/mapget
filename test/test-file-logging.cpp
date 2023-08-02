@@ -20,10 +20,8 @@ TEST_CASE("FileLogging", "[Logging]")
     std::filesystem::path test_log_file = std::filesystem::current_path() / file_name;
     std::cout << "Using test log file: " << test_log_file << std::endl;
     auto test_log_size = 0;
-    try {
+    if (std::filesystem::exists(test_log_file)) {
         test_log_size = std::filesystem::file_size(test_log_file);
-    } catch(std::filesystem::filesystem_error& e) {
-        // The log file does not exist yet, and that's okay.
     }
 
     mapget::log().trace("Hello from logging test!");
@@ -31,5 +29,12 @@ TEST_CASE("FileLogging", "[Logging]")
     auto new_test_log_size = std::filesystem::file_size(test_log_file);
     REQUIRE(test_log_size < new_test_log_size);
 
-    std::filesystem::remove(test_log_file);
+    try {
+        std::filesystem::remove(test_log_file);
+    } catch(std::filesystem::filesystem_error& e) {
+        // Under Windows, we can get an exception that the file is
+        // being used by another process - skip deletion, as the
+        // test should work without removal (only problematic when log
+        // is filled to maxsize, but that takes a lot of test runs).
+    }
 }
