@@ -13,9 +13,15 @@ using namespace mapget;
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
     // Log all messages to the console if MAPGET_LOG_FILE is not specified.
+#ifdef _WIN32
+    if (getenv("MAPGET_LOG_FILE") == nullptr) {
+        _putenv_s("MAPGET_LOG_LEVEL", "trace");
+    }
+#else
     if (getenv("MAPGET_LOG_FILE") == nullptr) {
         setenv("MAPGET_LOG_LEVEL", "trace", 1);
     }
+#endif
 
     // Create DataSourceInfo.
     auto info = DataSourceInfo::fromJson(R"(
