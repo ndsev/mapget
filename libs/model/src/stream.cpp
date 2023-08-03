@@ -1,4 +1,5 @@
 #include "stream.h"
+#include "mapget/log.h"
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
@@ -45,7 +46,7 @@ bool TileLayerStream::Reader::continueReading()
         Version protocolVersion;
         s.object(protocolVersion);
         if (!protocolVersion.isCompatible(CurrentProtocolVersion)) {
-            throw std::runtime_error(stx::format(
+            throw logRuntimeError(stx::format(
                 "Unable to read message with version {} using version {}.",
                 protocolVersion.toString(),
                 CurrentProtocolVersion.toString()));

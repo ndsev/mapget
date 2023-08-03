@@ -1,4 +1,5 @@
 #include "service.h"
+#include "mapget/log.h"
 
 #include <optional>
 #include <set>
@@ -6,7 +7,6 @@
 #include <condition_variable>
 #include <thread>
 #include <list>
-#include <iostream>
 
 namespace mapget
 {
@@ -74,7 +74,7 @@ struct Service::Controller
     explicit Controller(Cache::Ptr cache) : cache_(std::move(cache))
     {
         if (!cache_)
-            throw std::runtime_error("Cache must not be null!");
+            throw logRuntimeError("Cache must not be null!");
     }
 
     std::optional<Job> nextJob(DataSourceInfo const& i)
@@ -107,8 +107,7 @@ struct Service::Controller
                     auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
                     if (cachedResult) {
                         // TODO: Consider TTL
-                        std::cout << "Serving cached tile: " << result->first.toString()
-                                  << std::endl;
+                        log().debug("Serving cached tile: {}", result->first.toString());
                         request->notifyResult(cachedResult);
                         result.reset();
                         cachedTilesServed = true;
@@ -118,20 +117,20 @@ struct Service::Controller
                     if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
                         // Don't work on something that is already being worked on. Instead,
                         // wait for the work to finish, then send the (hopefully cached) result.
-                        std::cout << "Delaying tile, is currently in progress: "
-                                  << result->first.toString() << std::endl;
+                        log().debug("Delaying tile with job in progress: {}",
+                                     result->first.toString());
                         --request->nextTileIndex_;
                         result.reset();
                         continue;
                     }
 
-                    // Enter into the jobs-in-progress set
+                    // Enter into the jobs-in-progress set.
                     jobsInProgress_.insert(result->first);
 
-                    // Move this request to the end of the list, so others gain priority
+                    // Move this request to the end of the list, so others gain priority.
                     requests_.splice(requests_.end(), requests_, reqIt);
 
-                    std::cout << "Now working on tile: " << result->first.toString() << std::endl;
+		    log().debug("Working on tile: {}", result->first.toString());
                     break;
                 }
             }
@@ -194,7 +193,7 @@ struct Service::Worker
         {
             auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
             if (!result)
-                throw std::runtime_error("DataSource::get() returned null.");
+                throw logRuntimeError("DataSource::get() returned null.");
 
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
@@ -208,12 +207,9 @@ struct Service::Worker
             }
         }
         catch (std::exception& e) {
-            // TODO: Proper logging
-            std::cerr
-                << "ERROR: Could not load tile "
-                << mapTileKey.toString()
-                << " due to exception: "
-                << e.what();
+		log().error("Could not load tile {}: {}",
+				mapTileKey.toString(),
+				e.what());
         }
 
         return true;
@@ -288,7 +284,7 @@ struct Service::Impl : public Service::Controller
     void addRequest(Request::Ptr r)
     {
         if (!r)
-            throw std::runtime_error("Attempt to call Service::addRequestFromJson(nullptr).");
+            throw logRuntimeError("Attempt to call Service::addRequestFromJson(nullptr).");
         if (r->isDone()) {
             // Nothing to do
             r->notifyDone();

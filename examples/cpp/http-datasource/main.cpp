@@ -1,8 +1,8 @@
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <nlohmann/json.hpp>
 #include "mapget/http-datasource/datasource-server.h"
+#include "mapget/log.h"
 
 using namespace mapget;
 using json = nlohmann::json;
@@ -64,7 +64,7 @@ public:
     static DataSourceInfo loadDataSourceInfoFromJson(const std::string& filename)
     {
         std::string full_path = fs::current_path().string() + "/" + filename;
-        std::cout << "Reading info from " << full_path << std::endl;
+        log().info("Reading info from {}", full_path);
         std::ifstream i(full_path);
         json j;
         i >> j;
@@ -75,7 +75,7 @@ public:
     void run()
     {
         ds.go("0.0.0.0", port);
-        std::cout << "Running... " << std::endl;
+        log().info("Running...");
         ds.waitForSignal();
     }
 };
@@ -83,7 +83,7 @@ public:
 int main(int argc, char** argv)
 {
     int port = (argc > 1) ? std::stoi(argv[1]) : 0;  // get port from command line argument
-    std::cout << "Running on port " << port << std::endl;
+    log().info("Running on port {}", port);
     MyRemoteDataSource ds("sample_datasource_info.json", port);
     ds.run();
     return 0;

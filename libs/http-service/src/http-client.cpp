@@ -1,5 +1,6 @@
 #include "http-client.h"
 #include "httplib.h"
+#include "mapget/log.h"
 
 namespace mapget
 {
@@ -15,7 +16,7 @@ struct HttpClient::Impl {
         client_.set_keep_alive(false);
         auto sourcesJson = client_.Get("/sources");
         if (!sourcesJson || sourcesJson->status != 200)
-            throw std::runtime_error("Failed to fetch sources.");
+            throw logRuntimeError("Failed to fetch sources.");
         for (auto const& info : nlohmann::json::parse(sourcesJson->body)) {
             auto parsedInfo = DataSourceInfo::fromJson(info);
             sources_.emplace(parsedInfo.mapId_, parsedInfo);
@@ -27,7 +28,7 @@ struct HttpClient::Impl {
     {
         auto mapIt = sources_.find(std::string(map));
         if (mapIt == sources_.end())
-            throw std::runtime_error("Could nto find map data source info");
+            throw logRuntimeError("Could nto find map data source info");
         return mapIt->second.getLayer(std::string(layer));
     }
 };

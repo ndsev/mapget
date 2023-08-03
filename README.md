@@ -72,6 +72,59 @@ The following diagram provides an overview over the libraries, their contents, a
 * The `mapget-http-service` library binds a mapget service to an HTTP server interface, as described [here](#retrieval-interface).
 * The `mapget-http-datasource` library provides a `RemoteDataSource` which can connect to a `DataSourceServer`. This allows running a data source in an external process, which may be written using any programming language.
 
+## Developer Setup
+
+*mapget* has the following prerequisites:
+- C++17 toolchain
+- CMake 3.14+
+- Python3
+- Ninja build system (not required, but recommended)
+- gcovr, if you wish to run coverage tests:
+  ```
+  pip install gcovr
+  ```
+- Python wheel package, if you wish to build the mapget wheel:
+  ```
+  pip install wheel
+  ```
+
+Build `mapget` with the following command:
+
+```bash
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -G Ninja
+cmake  --build .
+```
+
+If you wish to skip building _mapget_ wheel, deactivate the `MAPGET_WITH_WHEEL` CMake 
+option in the second command:
+```bash
+cmake .. -DCMAKE_BUILD_TYPE=Release -DMAPGET_WITH_WHEEL=OFF -G Ninja
+```
+
+### CMake Build Options
+
+_mapget_ build can be configured using the following variables:
+
+| Variable Name | Details   |
+| ------------- | --------- |
+| `MAPGET_WITH_WHEEL` | Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY). |
+| `MAPGET_WITH_SERVICE` | Enable mapget-service library. Requires threads. |
+| `MAPGET_WITH_HTTPLIB` | Enable mapget-http-datasource and mapget-http-service libraries. |
+| `MAPGET_ENABLE_TESTING` | Enable testing. |
+| `MAPGET_BUILD_EXAMPLES` | Build examples. |
+
+### Environment Settings
+
+The logging behavior of _mapget_ can be customized with the following environment variables:
+
+| Variable Name | Details                            | Value                                               |
+| ------------- |------------------------------------|-----------------------------------------------------|
+| `MAPGET_LOG_LEVEL` | Set the spdlog output level.       | "trace", "debug", "info", "warn", "err", "critical" |
+| `MAPGET_LOG_FILE` | Optional file path to write the log. | string                                              |
+| `MAPGET_LOG_FILE_MAXSIZE` | Max size for the logfile in bytes. | string with unsigned integer                        |
+
+
 ## Implementing a Data Source
 
 ### [`examples/cpp/local-datasource`](examples/cpp/local-datasource/main.cpp)

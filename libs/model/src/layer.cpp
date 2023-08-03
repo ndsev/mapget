@@ -1,4 +1,5 @@
 #include "layer.h"
+#include "mapget/log.h"
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
@@ -17,7 +18,7 @@ MapTileKey::MapTileKey(const std::string& str)
 {
     auto parts = stx::split(str, ":", false);
     if (parts.size() < 4)
-        throw std::runtime_error(stx::format("Invalid cache tile id: {}", str));
+        throw logRuntimeError(stx::format("Invalid cache tile id: {}", str));
     layer_ = nlohmann::json(parts[0]).get<LayerType>();
     mapId_ = parts[1];
     layerId_ = parts[2];
@@ -79,7 +80,7 @@ TileLayer::TileLayer(
 
     s.object(mapVersion_);
     if (!mapVersion_.isCompatible(layerInfo_->version_)) {
-        throw std::runtime_error(stx::format(
+        throw logRuntimeError(stx::format(
             "Read map layer '{}' version {} "
             "is incompatible with present version {}.",
             layerName,

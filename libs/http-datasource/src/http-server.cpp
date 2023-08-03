@@ -1,4 +1,5 @@
 #include "mapget/detail/http-server.h"
+#include "mapget/log.h"
 
 #include "httplib.h"
 #include <csignal>
@@ -54,7 +55,7 @@ void HttpServer::go(
     }
 
     if (impl_->server_.is_running() || impl_->serverThread_.joinable())
-        throw std::runtime_error("HttpServer is already running");
+        throw logRuntimeError("HttpServer is already running");
 
     if (port == 0) {
         impl_->port_ = impl_->server_.bind_to_any_port(interfaceAddr);
@@ -67,13 +68,13 @@ void HttpServer::go(
     impl_->serverThread_ = std::thread(
         [this, interfaceAddr]
         {
-            std::cout << "====== Running on port " << impl_->port_ << " ======" << std::endl;
+            log().info("====== Running on port {} ======", impl_->port_);
             impl_->server_.listen_after_bind();
         });
 
     std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
     if (!impl_->server_.is_running() || !impl_->server_.is_valid())
-        throw std::runtime_error(stx::format("Could not start HttpServer on {}:{}", interfaceAddr, port));
+        throw logRuntimeError(stx::format("Could not start HttpServer on {}:{}", interfaceAddr, port));
 }
 
 bool HttpServer::isRunning() {

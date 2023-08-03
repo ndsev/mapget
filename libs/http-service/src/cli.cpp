@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "http-service.h"
 #include "http-client.h"
+#include "mapget/log.h"
 
 #include "mapget/http-datasource/datasource-client.h"
 
@@ -30,7 +31,7 @@ struct ServeCommand
 
     void serve()
     {
-        std::cout << "Starting server on port " << port_ << "." << std::endl;
+        log().info("Starting server on port {}.", port_);
         HttpService srv;
 
         if (!datasourceHosts_.empty()){
@@ -38,32 +39,32 @@ struct ServeCommand
                 auto delimiterPos = ds.find(':');
                 std::string dsHost = ds.substr(0, delimiterPos);
                 int dsPort = std::stoi(ds.substr(delimiterPos+1, ds.size()));
-                std::cout << "Connecting to datasource on host/port: " << dsHost << " " << dsPort << std::endl;
+                log().info("Connecting to datasource at {}:{}.", dsHost, dsPort);
                 try {
                     srv.add(std::make_shared<RemoteDataSource>(dsHost, dsPort));
                 }
                 catch(std::exception const& e) {
-                    std::cout << "  ...failed: " << e.what() << std::endl;
+                    log().error("  ...failed: {}", e.what());
                 }
             }
         }
 
         if (!datasourceExecutables_.empty()){
             for (auto& ds : datasourceExecutables_){
-                std::cout << "Launching datasource exe: " << ds << std::endl;
+                log().info("Launching datasource exe: {}", ds);
                 try {
                     srv.add(std::make_shared<RemoteDataSourceProcess>(ds));
                 }
                 catch(std::exception const& e) {
-                    std::cout << "  ...failed: " << e.what() << std::endl;
+                    log().error("  ...failed: {}", e.what());
                 }
             }
         }
 
         if (!webapp_.empty()){
-            std::cout << "Webapp: " << webapp_ << std::endl;
+            log().info("Webapp: {}", webapp_);
             if (!srv.mountFileSystem(webapp_)){
-                std::cout << "Failed to mount web app " << webapp_ << "." << std::endl;
+                log().error("  ...failed to mount!");
                 exit(1);
             }
         }
@@ -87,10 +88,19 @@ struct FetchCommand
     }
 
     void fetch() {
-        std::cout << "Connecting client to server " << server_ << " for map " << map_ << " and layer " << layer_ << " with tiles ";
-        for(auto& tile : tiles_)
-            std::cout << tile << " ";
-        std::cout << std::endl;
+        if (log().level() <= spdlog::level::debug) {
+            // Skips building the tile list string if it will not be logged.
+            std::string tileList = "";
+            for (auto& tile : tiles_) {
+                tileList += std::to_string(tile) + " ";
+            }
+            log().debug(
+                "Connecting client to server {} for map {} and layer {} with tiles: {}",
+                server_,
+                map_,
+                layer_,
+                tileList);
+        }
 
         auto delimiterPos = server_.find(':');
         std::string host = server_.substr(0, delimiterPos);
@@ -100,7 +110,9 @@ struct FetchCommand
         auto request = std::make_shared<Request>(
             map_, layer_, std::vector<TileId>{tiles_.begin(), tiles_.end()},
             [](auto&& tile){
-                std::cout << tile->toGeoJson() << std::endl;
+                if (log().level() == spdlog::level::trace) {
+                    log().trace(tile->toGeoJson().dump());
+                }
             });
         cli.request(request)->wait();
     }

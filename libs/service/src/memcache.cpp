@@ -1,5 +1,5 @@
 #include "memcache.h"
-#include <iostream>
+#include "mapget/log.h"
 
 namespace mapget
 {
@@ -24,7 +24,7 @@ void MemCache::putTileLayer(const MapTileKey& k, const std::string& v)
     while (fifo_.size() > maxCachedTiles_) {
         auto oldestTileKey = fifo_.back();
         fifo_.pop_back();
-        std::cout << "Evicting tile from cache: " << oldestTileKey << std::endl;
+        log().debug("Evicting tile from cache: {}", oldestTileKey);
         cachedTiles_.erase(oldestTileKey);
     }
 }

@@ -2,14 +2,17 @@
 
 #include "mapget/model/info.h"
 #include "mapget/model/stream.h"
-
-#include <iostream>
+#include "mapget/log.h"
 
 using namespace mapget;
 
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
 {
-    // Create a DataSourceInfo object
+    // Log all messages to the console.
+    log().set_level(spdlog::level::trace);
+
+
+    // Create a DataSourceInfo object.
     std::map<std::string, std::shared_ptr<LayerInfo>> layers;
     layers["testLayer"] = std::make_shared<LayerInfo>(LayerInfo{
         "testLayer",
@@ -29,20 +32,20 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 
-    // Serialize it to JSON
+    // Serialize it to JSON.
     nlohmann::json j = info.toJson();
-    std::cout << j << std::endl;
+    log().trace("Serialized data source info: {}", to_string(j));
 
     // Deserialize it back into a DataSourceInfo object, then serialize it again.
     auto j2 = DataSourceInfo::fromJson(j).toJson();
 
-    // Check that the two DataSourceInfo objects are equal
+    // Check that the two DataSourceInfo objects are equal.
     REQUIRE(j == j2);
 }
 
 TEST_CASE("InfoFromJson", "[DataSourceInfo]")
 {
-    // create a JSON object with some mandatory fields missing
+    // Create a JSON object with some mandatory fields missing.
     nlohmann::json j = R"({
         "nodeId": "testNodeId",
         "protocolVersion": {

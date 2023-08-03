@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mapget/log.h"
 #include "mapget/model/feature.h"
 #include "mapget/model/featurelayer.h"
 #include "simfil/value.h"
@@ -117,7 +118,7 @@ ModelVariant py_value_to_model(py::object const& py_value, TileFeatureLayer& mod
         return ModelNode::Ptr(obj);
     }
     else {
-        throw std::runtime_error("Unsupported Python type");
+        throw mapget::logRuntimeError("Unsupported Python type");
     }
 }
 }  // namespace
