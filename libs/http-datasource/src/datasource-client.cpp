@@ -16,7 +16,7 @@ DataSourceInfo RemoteDataSource::info()
 {
     auto fetchedInfoJson = httpClient_.Get("/info");
     if (!fetchedInfoJson || fetchedInfoJson->status >= 300)
-        throw std::runtime_error("Failed to fetch datasource info.");
+        throw logRuntimeError("Failed to fetch datasource info.");
     auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
     return fetchedInfo;
 }
@@ -62,7 +62,7 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
     auto stderrCallback = [this](const char* bytes, size_t n)
     {
         auto output = std::string(bytes, n);
-        // Trim trailing newline/whitespace
+        // Trim trailing newline/whitespace.
         output.erase(output.find_last_not_of(" \n\r\t")+1);
         std::cerr << output << std::endl;
     };
@@ -70,10 +70,10 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
     auto stdoutCallback = [this](const char* bytes, size_t n)
     {
         auto output = std::string(bytes, n);
-        // Trim trailing newline/whitespace
+        // Trim trailing newline/whitespace.
         output.erase(output.find_last_not_of(" \n\r\t")+1);
         if (!remoteSource_) {
-            // Extract port number from the message "Running on port <port>"
+            // Extract port number from the message "Running on port <port>".
             std::regex port_regex(R"(Running on port (\d+))");
             std::smatch matches;
             if (std::regex_search(output, matches, port_regex)) {
