@@ -8,8 +8,7 @@ using namespace mapget;
 
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
 {
-    // Log all messages to the console.
-    log().set_level(spdlog::level::trace);
+    mapget::setLogLevel("trace", log());
 
 
     // Create a DataSourceInfo object.

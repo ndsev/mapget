@@ -12,8 +12,7 @@ using namespace mapget;
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
-    // Log all messages to the console.
-    log().set_level(spdlog::level::trace);
+    mapget::setLogLevel("trace", log());
 
     // Create DataSourceInfo.
     auto info = DataSourceInfo::fromJson(R"(

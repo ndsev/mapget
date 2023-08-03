@@ -15,6 +15,14 @@ namespace mapget
 spdlog::logger& log();
 
 /**
+ * Set the level of the log instance to corresponding string.
+ * If the string is empty, set to info.
+ * @param logLevel String representation of the log level.
+ * @param logInstance spdlog logger instance.
+ */
+void setLogLevel(std::string logLevel, spdlog::logger& logInstance);
+
+/**
  * Log a runtime error and return the throwable object.
  * @param what Runtime error message.
  * @return std::runtime_error to throw.
