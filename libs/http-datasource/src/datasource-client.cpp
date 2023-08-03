@@ -87,7 +87,7 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
             }
         }
 
-        log().debug("Subprocess stdout: ", output);
+        log().debug("datasource stdout: {}", output);
     };
 
     process_ = std::make_unique<TinyProcessLib::Process>(
