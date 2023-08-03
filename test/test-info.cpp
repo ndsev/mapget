@@ -8,16 +8,8 @@ using namespace mapget;
 
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
 {
-    // Log all messages to the console if MAPGET_LOG_FILE is not specified.
-#ifdef _WIN32
-    if (getenv("MAPGET_LOG_FILE") == nullptr) {
-        _putenv_s("MAPGET_LOG_LEVEL", "trace");
-    }
-#else
-    if (getenv("MAPGET_LOG_FILE") == nullptr) {
-        setenv("MAPGET_LOG_LEVEL", "trace", 1);
-    }
-#endif
+    // Log all messages to the console.
+    log().set_level(spdlog::level::trace);
 
 
     // Create a DataSourceInfo object.
