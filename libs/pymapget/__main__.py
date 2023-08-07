@@ -1,5 +1,7 @@
 import mapget
 import sys
+import time
 
 if __name__ == "__main__":
-    mapget.run(sys.argv[1:])
+    ret_code = mapget.run(sys.argv[1:])
+    exit(ret_code)

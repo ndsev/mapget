@@ -11,8 +11,7 @@ using namespace mapget;
 
 TEST_CASE("FeatureLayer", "[test.featurelayer]")
 {
-    // Log all messages to the console.
-    log().set_level(spdlog::level::trace);
+    mapget::setLogLevel("trace", log());
 
     // Create layer info which has a single feature type with
     // a single allowed feature id composition.

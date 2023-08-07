@@ -22,11 +22,11 @@ if (MAPGET_ENABLE_TESTING AND MAPGET_WITH_WHEEL)
       -b "./cpp-sample-http-datasource 56732"
 
       # Run service on 56733
-      -b "./mapget serve --port 56733 --datasource-host 127.0.0.1:56731 --datasource-host 127.0.0.1:56732"
+      -b "./mapget --log-level trace serve --port 56733 --datasource-host 127.0.0.1:56731 --datasource-host 127.0.0.1:56732"
       # Request from cpp datasource
-      -f "./mapget fetch -s 127.0.0.1:56733 -m Tropico -l WayLayer -t 12345"
+      -f "./mapget --log-level trace fetch -s 127.0.0.1:56733 -m Tropico -l WayLayer -t 12345"
       # Request from py datasource
-      -f "./mapget fetch -s 127.0.0.1:56733 -m TestMap -l WayLayer -t 12345"
+      -f "./mapget --log-level trace fetch -s 127.0.0.1:56733 -m TestMap -l WayLayer -t 12345"
   )
 
   add_wheel_test(test-cli-python
@@ -38,9 +38,9 @@ if (MAPGET_ENABLE_TESTING AND MAPGET_WITH_WHEEL)
       # Run C++ datasource on 56732
       -b "./cpp-sample-http-datasource 56732"
       # Run service on 56733
-      -b "python -m mapget serve -p 56733 -d 127.0.0.1:56731 -d 127.0.0.1:56732"
+      -b "python -m mapget --log-level trace serve -p 56733 -d 127.0.0.1:56731 -d 127.0.0.1:56732"
       # Request from py datasource
-      -f "python -m mapget fetch -s 127.0.0.1:56733 -m TestMap -l WayLayer -t 12345"
+      -f "python -m mapget --log-level trace fetch -s 127.0.0.1:56733 -m TestMap -l WayLayer -t 12345"
   )
 
 endif()

@@ -61,28 +61,38 @@ spdlog::logger& mapget::log()
         else
             logInstance = spdlog::stderr_color_mt(LOG_MARKER);
 
-        // Parse/set log level
-        for (auto& ch : logLevel)
-            ch = std::tolower(ch);
-        if (logLevel == "critical")
-            logInstance->set_level(spdlog::level::critical);
-        else if (logLevel == "error" || logLevel == "err")
-            logInstance->set_level(spdlog::level::err);
-        else if (logLevel == "warning" || logLevel == "warn")
-            logInstance->set_level(spdlog::level::warn);
-        else if (logLevel == "info")
-            logInstance->set_level(spdlog::level::info);
-        else if (logLevel == "debug" || logLevel == "dbg")
-            logInstance->set_level(spdlog::level::debug);
-        else if (logLevel == "trace")
-            logInstance->set_level(spdlog::level::trace);
-        else if (logLevel == "") {
-            logInstance->set_level(spdlog::level::info);
-            std::cout << "spdlog level set to [info]." << std::endl;
-        }
-        else
-            std::cerr << "Log level not recognized: " << logLevel << std::endl;
+        mapget::setLogLevel(logLevel, *logInstance);
     }
 
     return *logInstance;
+}
+
+
+void mapget::setLogLevel(std::string logLevel, spdlog::logger& logInstance) {
+    for (auto& ch : logLevel)
+        ch = std::tolower(ch);
+    if (logLevel == "critical")
+        logInstance.set_level(spdlog::level::critical);
+    else if (logLevel == "error" || logLevel == "err")
+        logInstance.set_level(spdlog::level::err);
+    else if (logLevel == "warning" || logLevel == "warn")
+        logInstance.set_level(spdlog::level::warn);
+    else if (logLevel == "info")
+        logInstance.set_level(spdlog::level::info);
+    else if (logLevel == "debug" || logLevel == "dbg")
+        logInstance.set_level(spdlog::level::debug);
+    else if (logLevel == "trace") {
+        logInstance.set_level(spdlog::level::trace);
+        // If you set log to trace and do not get this message,
+        // something went wrong with level processing or output.
+        logInstance.trace("spdlog level set to [{}].", logLevel);
+    }
+    else if (logLevel == "") {
+        logInstance.set_level(spdlog::level::info);
+        logLevel = "info";
+    }
+    else {
+        std::cerr << "Log level not recognized: " << logLevel << std::endl;
+        return;
+    }
 }

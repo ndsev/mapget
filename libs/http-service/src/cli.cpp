@@ -121,7 +121,17 @@ struct FetchCommand
 int runFromCommandLine(std::vector<std::string> args)
 {
     CLI::App app{"A client/server application for map data retrieval."};
-    app.require_subcommand(1); // Require at least one subcommand
+    std::string log_level_;
+    app.add_option(
+        "--log-level",
+        log_level_,
+        "From: trace, debug, info, warn, error, critical. Overrides MAPGET_LOG_LEVEL."
+    )->default_val("");
+    app.require_subcommand(1); // Require at least one subcommand.
+
+    if (!log_level_.empty()) {
+        mapget::setLogLevel(log_level_, log());
+    }
 
     ServeCommand serveCommand(app);
     FetchCommand fetchCommand(app);
