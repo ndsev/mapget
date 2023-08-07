@@ -1,5 +1,8 @@
+#!python
+
 import mapget
 from mapget import Point as Pt
+import sys
 
 
 def handle_tile_request(tile: mapget.TileFeatureLayer):
@@ -73,9 +76,14 @@ ds = mapget.DataSourceServer({
 # Set the callback which is invoked when a tile is requested.
 ds.on_tile_request(handle_tile_request)
 
+# Parse port as optional first argument
+port = 0  # Pick random free port
+if len(sys.argv) > 1:
+    port = int(sys.argv[1])
+
 # Run the data source - you may also set port=0 to select a
 # port automatically.
-ds.go(port=56731)
+ds.go(port=port)
 
 # Wait until Ctrl-C is hit. Navigate e.g. to
 #  http://localhost:54544/tile?layer=WayLayer&tileId=2&responseType=json

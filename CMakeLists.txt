@@ -186,7 +186,11 @@ endif()
 
 if (MAPGET_ENABLE_TESTING)
   enable_testing()
-  add_subdirectory(test)
+  add_subdirectory(test/unit)
+
+  if (MAPGET_WITH_WHEEL)
+    add_subdirectory(test/integration)
+  endif ()
 
   if (WITH_COVERAGE)
     setup_target_for_coverage_gcovr_html(
@@ -200,6 +204,6 @@ endif()
 ##############
 # examples
 
-if (MAPGET_BUILD_EXAMPLES)
+if (MAPGET_BUILD_EXAMPLES OR MAPGET_ENABLE_TESTING)
   add_subdirectory(examples)
 endif()
