@@ -27,11 +27,9 @@ trap '
 ' EXIT
 
 port_to_launch_on=$1
-port_of_running_datasource=$2
 
 ./mapget --log-level trace serve \
   --port $port_to_launch_on \
-  --datasource-host 127.0.0.1:$port_of_running_datasource \
   --datasource-exe "python $example_dir/python/datasource.py" &
 
 # Capture the PID of mapget
