@@ -2,7 +2,7 @@
 
 set -euo
 
-src_dir="$(realpath ${BASH_SOURCE[0]} | xargs -I{} dirname {})/../.."
+src_dir="$(cd "$(dirname "$0")" && pwd)/../.."
 example_dir="$src_dir/examples"
 
 if [[ "$OSTYPE" == "msys" ]]; then
