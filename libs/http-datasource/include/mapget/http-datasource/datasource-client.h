@@ -48,7 +48,7 @@ public:
      * Construct a remote data source with a command-line command.
      * Throws if the connection fails for any reason or times out after 10 seconds.
      */
-    RemoteDataSourceProcess(std::string const& command_line);
+    RemoteDataSourceProcess(std::string const& commandLine);
 
     /**
      * Destructor ensures that the server process is terminated.

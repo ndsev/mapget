@@ -1,4 +1,4 @@
-project(test.mapget)
+project(test.mapget.unit)
 
 if (NOT TARGET Catch2)
   FetchContent_Declare(Catch2
@@ -34,3 +34,4 @@ include(Catch)
 include(CTest)
 catch_discover_tests(test.mapget)
 catch_discover_tests(test.mapget.filelog)
+

@@ -20,6 +20,7 @@ struct HttpServer::Impl
     std::thread serverThread_;
     uint16_t port_ = 0;
     bool setupWasCalled_ = false;
+    bool printPortToStdout_ = false;
 
     static void handleSignal(int)
     {
@@ -68,7 +69,10 @@ void HttpServer::go(
     impl_->serverThread_ = std::thread(
         [this, interfaceAddr]
         {
-            log().info("====== Running on port {} ======", impl_->port_);
+            if (impl_->printPortToStdout_)
+                std::cout << "====== Running on port " << impl_->port_ << "======" << std::endl;
+            else
+                log().info("====== Running on port {} ======", impl_->port_);
             impl_->server_.listen_after_bind();
         });
 
@@ -115,6 +119,10 @@ bool HttpServer::mountFileSystem(const std::string& pathFromTo)
     if (parts.size() == 1)
         return impl_->server_.set_mount_point("/", parts[0]);
     return impl_->server_.set_mount_point(parts[0], parts[1]);
+}
+
+void HttpServer::printPortToStdOut(bool enabled) {
+    impl_->printPortToStdout_ = enabled;
 }
 
 }  // namespace mapget

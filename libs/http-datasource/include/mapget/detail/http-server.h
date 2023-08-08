@@ -78,6 +78,12 @@ protected:
      */
     virtual void setup(httplib::Server&) = 0;
 
+    /**
+     * Derived servers can use this to control whether
+     * the port should be printed to stdout in go.
+     */
+    void printPortToStdOut(bool enabled);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

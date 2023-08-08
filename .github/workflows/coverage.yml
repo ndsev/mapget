@@ -35,7 +35,7 @@ jobs:
     - name: Run Test
       working-directory: build/
       run: |
-        ctest
+        ctest --verbose
     - name: Run Gcovr
       run: |
         mkdir coverage

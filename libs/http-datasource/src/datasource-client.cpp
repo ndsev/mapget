@@ -15,6 +15,8 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
 DataSourceInfo RemoteDataSource::info()
 {
     auto fetchedInfoJson = httpClient_.Get("/info");
+    if (!fetchedInfoJson || fetchedInfoJson->status >= 300)
+        throw logRuntimeError("Failed to fetch datasource info.");
     auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
     return fetchedInfo;
 }
@@ -55,29 +57,46 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     return result;
 }
 
-RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& command_line)
-    : process_(std::make_unique<TinyProcessLib::Process>(
-          command_line,
-          "",
-          [this](const char* bytes, size_t n)
-          {
-              auto output = std::string(bytes, n);
-              log().debug("Process output: {}", output);
-              // Extract port number from the message "Running on port <port>"
-              std::regex port_regex(R"(Running on port (\d+))");
-              std::smatch matches;
-              if (std::regex_search(output, matches, port_regex)) {
-                  if (matches.size() > 1) {
-                      std::lock_guard<std::mutex> lock(mutex_);
-                      uint16_t port = std::stoi(matches.str(1));
-                      remoteSource_ = std::make_unique<RemoteDataSource>("127.0.0.1", port);
-                      cv_.notify_all();
-                  }
-              }
-          },
-          nullptr,
-          true))
+RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
 {
+    auto stderrCallback = [this](const char* bytes, size_t n)
+    {
+        auto output = std::string(bytes, n);
+        // Trim trailing newline/whitespace.
+        output.erase(output.find_last_not_of(" \n\r\t")+1);
+        std::cerr << output << std::endl;
+    };
+
+    auto stdoutCallback = [this](const char* bytes, size_t n)
+    {
+        auto output = std::string(bytes, n);
+        // Trim trailing newline/whitespace.
+        output.erase(output.find_last_not_of(" \n\r\t")+1);
+        if (!remoteSource_) {
+            // Extract port number from the message "Running on port <port>".
+            std::regex port_regex(R"(Running on port (\d+))");
+            std::smatch matches;
+            if (std::regex_search(output, matches, port_regex)) {
+                if (matches.size() > 1) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    uint16_t port = std::stoi(matches.str(1));
+                    remoteSource_ = std::make_unique<RemoteDataSource>("127.0.0.1", port);
+                    cv_.notify_all();
+                }
+                return;
+            }
+        }
+
+        log().debug("datasource stdout: {}", output);
+    };
+
+    process_ = std::make_unique<TinyProcessLib::Process>(
+        commandLine,
+        "",
+        stdoutCallback,
+        stderrCallback,
+        true);
+
     std::unique_lock<std::mutex> lock(mutex_);
     if (!cv_.wait_for(lock, std::chrono::seconds(10), [this] { return remoteSource_ != nullptr; }))
     {
@@ -89,7 +108,8 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& command_line
 RemoteDataSourceProcess::~RemoteDataSourceProcess()
 {
     if (process_) {
-        process_->kill();
+        process_->kill(true);
+        process_->get_exit_status();
     }
 }
 

@@ -21,7 +21,9 @@ struct DataSourceServer::Impl
 };
 
 DataSourceServer::DataSourceServer(DataSourceInfo const& info)
-    : HttpServer(), impl_(new Impl(info)) {
+    : HttpServer(), impl_(new Impl(info))
+{
+    printPortToStdOut(true);
 }
 
 DataSourceServer::~DataSourceServer() = default;
