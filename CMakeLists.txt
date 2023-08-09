@@ -55,7 +55,7 @@ if (WITH_COVERAGE AND NOT GCOVR_BIN)
   message(WARNING "Could not find gcovr binary. Disabling coverage report!")
 endif()
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/cmake-modules")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-modules")
 
 ##############
 # deps
