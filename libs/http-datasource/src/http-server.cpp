@@ -70,7 +70,7 @@ void HttpServer::go(
         [this, interfaceAddr]
         {
             if (impl_->printPortToStdout_)
-                std::cout << "====== Running on port " << impl_->port_ << "======" << std::endl;
+                std::cout << "====== Running on port " << impl_->port_ << " ======" << std::endl;
             else
                 log().info("====== Running on port {} ======", impl_->port_);
             impl_->server_.listen_after_bind();

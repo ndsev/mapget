@@ -61,25 +61,7 @@ add_wheel_test(test-cli-python
   -f "python -m mapget --log-level trace fetch -s 127.0.0.1:${MAPGET_SERVER_PORT} -m TestMap -l WayLayer -t 12345"
   )
 
-
 add_wheel_test(test-config-cpp
-  WORKING_DIRECTORY
-  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
-  COMMANDS
-  # Run C++ datasource
-  -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
-
-  # Run service with auto-launched python datasource
-  -b "${CMAKE_CURRENT_LIST_DIR}/run-mapget-with-auto-launched-source.bash ${MAPGET_SERVER_PORT} ${DATASOURCE_CPP_PORT}"
-
-  # Request from cpp datasource
-  -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-serve.ini"
-
-  # Request from py datasource
-  -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-fetch.ini"
-  )
-
-add_wheel_test(test-config-python
   WORKING_DIRECTORY
   "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
   COMMANDS
@@ -90,8 +72,31 @@ add_wheel_test(test-config-python
   -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
 
   # Run service
-  -b "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-serve.ini"
+  -b "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-service.toml serve"
 
   # Request from py datasource
-  -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-fetch.ini"
+  -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-py-datasource.toml fetch"
+
+  # Request from cpp datasource
+  -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-cpp-datasource.toml fetch"
   )
+
+add_wheel_test(test-config-py
+  WORKING_DIRECTORY
+  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS
+  # Run Python datasource
+  -b "python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py ${DATASOURCE_PY_PORT}"
+
+  # Run C++ datasource
+  -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
+
+  # Run service
+  -b "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-service.toml serve"
+
+  # Request from py datasource
+  -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-py-datasource.toml fetch"
+
+  # Request from cpp datasource
+  -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../config/sample-cpp-datasource.toml fetch"
+)
