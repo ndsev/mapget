@@ -305,7 +305,7 @@ TileFeatureLayer::Iterator TileFeatureLayer::begin() const
 
 TileFeatureLayer::Iterator TileFeatureLayer::end() const
 {
-    return TileFeatureLayer::Iterator{*this, numRoots()};
+    return TileFeatureLayer::Iterator{*this, size()};
 }
 
 void TileFeatureLayer::write(std::ostream& outputStream)
@@ -325,6 +325,16 @@ nlohmann::json TileFeatureLayer::toGeoJson() const
         {"type", "FeatureCollection"},
         {"features", features},
     });
+}
+
+size_t TileFeatureLayer::size() const
+{
+    return numRoots();
+}
+
+model_ptr<Feature> TileFeatureLayer::at(size_t i) const
+{
+    return resolveFeature(*root(i));
 }
 
 }
