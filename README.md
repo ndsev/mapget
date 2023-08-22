@@ -15,9 +15,30 @@
 
 The `mapget` package is deployed to PyPI for any Python version between 3.8 and 3.11. Simply running `pip install mapget` is enough to get you started:
 
-* **`python -m mapget serve`** will run a server. Check out `--help` for further assistance.
-* **`python -m mapget fetch`** allows you to talk to a remote server. Check out `--help` for further assistance.
-* You can also use the Python package to write a data source, as documented [here](#implementing-a-data-source).
+* **`python -m mapget serve`** will run a server,
+* **`python -m mapget fetch`** allows you to talk to a remote server,
+* you can also use the Python package to write a data source, as documented [here](#implementing-a-data-source).
+
+If you build `mapget` from source as described below, you obtain an executable that can be used analogously to the Python package with `mapget serve` or `mapget fetch`. 
+
+## Configuration
+
+The command line parameters for `mapget` and its subcommands can be viewed with:
+
+```bash
+mapget --help
+mapget fetch --help
+mapget serve --help
+```
+
+(or `python -m mapget --help` for the Python package).
+
+The `mapget` executable can parse a config file with arguments supported by the command line interface. The path to the config file can be provided to `mapget` via command line by specifying the `--config` parameter.
+
+Sample configuration files can be found under `examples/config`:
+
+- [sample-first-datasource.toml](examples/sample-first-datasource.toml) and [sample-second-datasource.toml](examples/sample-second-datasource.toml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
+- [sample-service.toml](examples/sample-service.toml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
 
 ## Map Data Sources
 
@@ -243,16 +264,3 @@ void main(int argc, char const *argv[])
 ```
 
 Keep in mind, that you can also run a `mapget` service without any RPCs in your application. Check out [`examples/cpp/local-datasource`](examples/cpp/local-datasource/main.cpp) on how to do that.
-
-## Configuration
-
-*TODO: Implement*
-
-The `mapget::HttpService` class can parse a config file, from which it knows about available data source
-endpoints. The path to this config file may be provided either via the `MAPGET_CONFIG_FILE` env.
-var, or via a service command-line/constructor parameter. The structure of the file is as follows:
-
-```yaml
-sources:
-   - <url>  # e.g. http://localhost:12345
-```
