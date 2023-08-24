@@ -82,7 +82,7 @@ public:
     void setPrefix(KeyValuePairs const& prefix);
 
     /** Destructor for the TileFeatureLayer class. */
-    ~TileFeatureLayer();
+    ~TileFeatureLayer() override;
 
     /**
      * Creates a new feature and insert it into this tile layer.
@@ -123,7 +123,7 @@ public:
     struct Iterator
     {
         Iterator(TileFeatureLayer const& layer, size_t i) : layer_(layer), i_(i) {}
-        model_ptr<Feature> operator*() { return layer_.resolveFeature(*layer_.root(i_)); }
+        model_ptr<Feature> operator*() { return layer_.at(i_); }
         Iterator& operator++()
         {
             ++i_;
@@ -156,6 +156,12 @@ public:
 
    /** Convert to GeoJSON geometry collection. */
    nlohmann::json toGeoJson() const;
+
+   /** Access number of stored features */
+   size_t size() const;
+
+   /** Access feature at index i */
+   model_ptr<Feature> at(size_t i) const;
 
    /** Shared pointer type */
    using Ptr = std::shared_ptr<TileFeatureLayer>;
