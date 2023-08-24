@@ -60,3 +60,43 @@ add_wheel_test(test-cli-python
     # Request from py datasource
     -f "python -m mapget --log-level trace fetch -s 127.0.0.1:${MAPGET_SERVER_PORT} -m TestMap -l WayLayer -t 12345"
   )
+
+add_wheel_test(test-config-cpp
+  WORKING_DIRECTORY
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS
+    # Run Python datasource
+    -b "python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py ${DATASOURCE_PY_PORT}"
+
+    # Run C++ datasource
+    -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
+
+    # Run service
+    -b "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.toml serve"
+
+    # Request from py datasource
+    -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.toml fetch"
+
+    # Request from cpp datasource
+    -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.toml fetch"
+  )
+
+add_wheel_test(test-config-py
+  WORKING_DIRECTORY
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS
+    # Run Python datasource
+    -b "python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py ${DATASOURCE_PY_PORT}"
+
+    # Run C++ datasource
+    -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
+
+    # Run service
+    -b "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.toml serve"
+
+    # Request from py datasource
+    -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.toml fetch"
+
+    # Request from cpp datasource
+    -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.toml fetch"
+)

@@ -127,7 +127,9 @@ int runFromCommandLine(std::vector<std::string> args)
         log_level_,
         "From: trace, debug, info, warn, error, critical. Overrides MAPGET_LOG_LEVEL."
     )->default_val("");
-    app.require_subcommand(1); // Require at least one subcommand.
+    app.set_config("--config", "", "Optional path to a file with configuration arguments for mapget.");
+
+    app.require_subcommand(1);
 
     if (!log_level_.empty()) {
         mapget::setLogLevel(log_level_, log());
