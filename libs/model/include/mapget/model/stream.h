@@ -14,7 +14,7 @@ namespace mapget
  * Fields dictionary objects. The general stream encoding is a simple
  * Version-Type-Length-Value one:
  * - The version (6b) indicates the protocol version which was used to
- *   serialise the blob. This must be comatible with the current version
+ *   serialise the blob. This must be compatible with the current version
  *   which is used by the mapget library.
  * - The type (1B) must be either Fields (1) or TileFeatureLayer (2).
  * - The length (4b)  indicates the byte-length of the serialized object,
@@ -59,6 +59,9 @@ public:
 
         /** end-of-stream: Returns true if the internal buffer is exhausted. */
         [[nodiscard]] bool eos();
+
+        /** Obtain the fields dict provider used by this Reader. */
+        std::shared_ptr<CachedFieldsProvider> fieldDictCache();
 
     private:
         enum class Phase { ReadHeader, ReadValue };
@@ -113,7 +116,21 @@ public:
      */
     struct CachedFieldsProvider
     {
-        virtual std::shared_ptr<Fields> operator() (std::string_view const&);
+        /** Virtual destructor for memory-safe inheritance */
+        virtual ~CachedFieldsProvider() = default;
+
+        /**
+         * This operator is called by the Reader to obtain the fields
+         * dictionary for a particular node id.
+         */
+        virtual std::shared_ptr<Fields> operator() (std::string_view const& nodeIf);
+
+        /**
+         * Obtain the highest known field id for each data source node id,
+         * as currently present in the cache. The resulting dict may be
+         * used by a mapget http client to set the `maxKnownFieldIds` info.
+         */
+        virtual FieldOffsetMap fieldDictOffsets();
 
     protected:
         std::shared_mutex fieldCacheMutex_;

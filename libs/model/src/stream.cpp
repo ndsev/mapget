@@ -78,6 +78,11 @@ bool TileLayerStream::Reader::continueReading()
     return true;
 }
 
+std::shared_ptr<TileLayerStream::CachedFieldsProvider> TileLayerStream::Reader::fieldDictCache()
+{
+    return fieldCacheProvider_;
+}
+
 TileLayerStream::Writer::Writer(
     std::function<void(std::string, MessageType)> onMessage,
     FieldOffsetMap& fieldsOffsets)
@@ -147,6 +152,14 @@ std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::operator()(const 
             fieldsPerNodeId_.emplace(nodeId, std::make_shared<Fields>(std::string(nodeId)));
         return newIt->second;
     }
+}
+
+TileLayerStream::FieldOffsetMap TileLayerStream::CachedFieldsProvider::fieldDictOffsets()
+{
+    auto result = FieldOffsetMap();
+    for (auto const& [nodeId, fieldsDict] : fieldsPerNodeId_)
+        result.emplace(nodeId, fieldsDict->highest());
+    return result;
 }
 
 }
