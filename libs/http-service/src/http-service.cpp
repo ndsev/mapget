@@ -172,6 +172,7 @@ struct HttpService::Impl
             // cleanup callback to abort the requests.
             [state, this](bool success)
             {
+                log().debug("Request finished, success: {}", success);
                 if (!success) {
                     for (auto& request : state->requests_) {
                         self_.abort(request);
