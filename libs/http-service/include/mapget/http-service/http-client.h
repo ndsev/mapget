@@ -7,7 +7,9 @@
 
 namespace mapget {
 
-/** Client class, which implements asynchronous fetching from a mapget HTTP service.*/
+/**
+ * Client class, which implements asynchronous fetching from a mapget HTTP service.
+ */
 class HttpClient
 {
 public:

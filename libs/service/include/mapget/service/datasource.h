@@ -28,7 +28,7 @@ public:
      * times in parallel to satisfy data requests for a mapget Service.
      * @param featureTile A TileFeatureLayer object which this data source
      *  should fill according the available data. If any error occurs
-     *  while dong so, the data source may use TileLayer::setError.
+     *  while doing so, the data source may use TileLayer::setError.
      *  To store any extra information of interest such as timings or sizes,
      *  TileLayer::setInfo() may be used.
      */
