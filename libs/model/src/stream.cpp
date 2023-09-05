@@ -154,7 +154,7 @@ std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::operator()(const 
     }
 }
 
-TileLayerStream::FieldOffsetMap TileLayerStream::CachedFieldsProvider::fieldDictOffsets()
+TileLayerStream::FieldOffsetMap TileLayerStream::CachedFieldsProvider::fieldDictOffsets() const
 {
     auto result = FieldOffsetMap();
     for (auto const& [nodeId, fieldsDict] : fieldsPerNodeId_)

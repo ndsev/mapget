@@ -130,7 +130,7 @@ public:
          * as currently present in the cache. The resulting dict may be
          * used by a mapget http client to set the `maxKnownFieldIds` info.
          */
-        virtual FieldOffsetMap fieldDictOffsets();
+        virtual FieldOffsetMap fieldDictOffsets() const;
 
     protected:
         std::shared_mutex fieldCacheMutex_;

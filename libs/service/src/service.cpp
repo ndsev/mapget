@@ -415,4 +415,13 @@ bool Service::hasLayer(std::string const& mapId, std::string const& layerId)
     return false;
 }
 
+nlohmann::json Service::getStatistics() const
+{
+    return {
+        {"workers", impl_->dataSourceWorkers_.size()},
+        {"datasources", impl_->dataSourceInfo_.size()},
+        {"active-requests", impl_->requests_.size()}
+    };
+}
+
 }  // namespace mapget

@@ -35,6 +35,9 @@ public:
     /** Upsert a Fields-dict blob. -> No-Op */
     void putFields(std::string const& sourceNodeId, std::string const& v) override {}
 
+    /** Enriches the statistics with info about the number of cached tiles. */
+    nlohmann::json getStatistics() const override;
+
 private:
     // Cached tile blobs.
     std::shared_mutex cacheMutex_;

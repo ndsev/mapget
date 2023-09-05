@@ -42,11 +42,21 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
     }
 }
 
+nlohmann::json Cache::getStatistics() const {
+    return {
+        {"cache-hits", cacheHits_},
+        {"cache-misses", cacheMisses_},
+        {"loaded-field-dicts", (int64_t)fieldDictOffsets().size()}
+    };
+}
+
 TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& k, DataSourceInfo const& i)
 {
     auto tileBlob = getTileLayer(k);
-    if (!tileBlob)
+    if (!tileBlob) {
+        ++cacheMisses_;
         return nullptr;
+    }
     TileFeatureLayer::Ptr result;
     TileLayerStream::Reader tileReader(
         [&i, &k](auto&& mapId, auto&& layerId){
@@ -59,6 +69,7 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& k, DataSource
         [&](auto&& parsedLayer){result = parsedLayer;},
         shared_from_this());
     tileReader.read(*tileBlob);
+    ++cacheHits_;
     return result;
 }
 

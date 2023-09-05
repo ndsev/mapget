@@ -144,6 +144,15 @@ public:
     /** Checks if a DataSource can serve the requested map+layer combination. */
     bool hasLayer(std::string const& mapId, std::string const& layerId);
 
+    /**
+     * Get Statistics about the operation of this service.
+     * Returns the following values:
+     * - `workers`: Number of active workers.
+     * - `datasources`: Number of active data sources.
+     * - `active-requests`: Number of in-flight requests.
+     */
+    [[nodiscard]] nlohmann::json getStatistics() const;
+
     /** Get the Cache which this service was constructed with. */
     [[nodiscard]] Cache::Ptr cache();
 

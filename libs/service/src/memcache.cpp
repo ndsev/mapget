@@ -29,4 +29,11 @@ void MemCache::putTileLayer(const MapTileKey& k, const std::string& v)
     }
 }
 
+nlohmann::json MemCache::getStatistics() const {
+    auto result = Cache::getStatistics();
+    result["memcache-map-size"] = (int64_t)cachedTiles_.size();
+    result["memcache-fifo-size"] = (int64_t)fifo_.size();
+    return result;
+}
+
 }

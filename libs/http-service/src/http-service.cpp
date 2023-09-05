@@ -192,10 +192,21 @@ struct HttpService::Impl
 
     void handleStatusRequest(const httplib::Request&, httplib::Response& res)
     {
+        auto serviceStats = self_.getStatistics();
+        auto cacheStats = self_.cache()->getStatistics();
+
         std::ostringstream oss;
         oss << "<html><body>";
         oss << "<h1>Status Information</h1>";
-        oss << "<h2>Data Sources: " << self_.info().size() << "</h2>";
+
+        // Output serviceStats
+        oss << "<h2>Service Statistics</h2>";
+        oss << "<pre>" << serviceStats.dump(4) << "</pre>";  // Indentation of 4 for pretty printing
+
+        // Output cacheStats
+        oss << "<h2>Cache Statistics</h2>";
+        oss << "<pre>" << cacheStats.dump(4) << "</pre>";  // Indentation of 4 for pretty printing
+
         oss << "</body></html>";
         res.set_content(oss.str(), "text/html");
     }

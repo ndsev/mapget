@@ -44,6 +44,16 @@ public:
     /** Abstract: Upsert (Update or Insert) a Fields-dict blob. */
     virtual void putFields(std::string const& sourceNodeId, std::string const& v) = 0;
 
+    // Override this method if your cache implementation has special stats
+
+    /**
+     * Get diagnostic statistics. The default implementation returns the following:
+     * `cache-hits`: Number of fulfilled cache requests.
+     * `cache-misses`: Number of cache misses (unfulfilled cache requests).
+     * `loaded-field-dicts`: Number of fields-dictionaries currently held in memory.
+     */
+    virtual nlohmann::json getStatistics() const;
+
     // The following methods are already implemented,
     // they forward to the above methods on-demand.
 
@@ -63,6 +73,10 @@ protected:
     // Mutex for fieldCacheOffsets_
     std::mutex fieldCacheOffsetMutex_;
     TileLayerStream::FieldOffsetMap fieldCacheOffsets_;
+
+    // Statistics
+    int64_t cacheHits_ = 0;
+    int64_t cacheMisses_ = 0;
 };
 
 }
