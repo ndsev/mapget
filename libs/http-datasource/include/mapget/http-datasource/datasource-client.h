@@ -32,7 +32,12 @@ public:
     TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
 
 private:
-    httplib::Client httpClient_;
+    // DataSourceInfo is fetched in the constructor
+    DataSourceInfo info_;
+
+    // Multiple http clients allow parallel GET requests
+    std::vector<httplib::Client> httpClients_;
+    std::atomic_uint64_t nextClient_{0};
 };
 
 /**

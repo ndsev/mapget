@@ -8,17 +8,22 @@ namespace mapget
 {
 
 RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
-    : httpClient_(host, port)
 {
+    // Fetch data source info
+    httplib::Client client(host, port);
+    auto fetchedInfoJson = client.Get("/info");
+    if (!fetchedInfoJson || fetchedInfoJson->status >= 300)
+        throw logRuntimeError("Failed to fetch datasource info.");
+    info_ = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
+
+    // Create as many clients as parallel requests are allowed
+    for (auto i = 0; i < std::max(info_.maxParallelJobs_, 1); ++i)
+        httpClients_.emplace_back(host, port);
 }
 
 DataSourceInfo RemoteDataSource::info()
 {
-    auto fetchedInfoJson = httpClient_.Get("/info");
-    if (!fetchedInfoJson || fetchedInfoJson->status >= 300)
-        throw logRuntimeError("Failed to fetch datasource info.");
-    auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
-    return fetchedInfo;
+    return info_;
 }
 
 void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
@@ -30,8 +35,11 @@ void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
 TileFeatureLayer::Ptr
 RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceInfo& info)
 {
+    // Round-robin usage of http clients to facilitate parallel requests
+    auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
+
     // Send a GET tile request
-    auto tileResponse = httpClient_.Get(stx::format(
+    auto tileResponse = client.Get(stx::format(
         "/tile?layer={}&tileId={}&fieldsOffset={}",
         k.layerId_,
         k.tileId_.value_,
