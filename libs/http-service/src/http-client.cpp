@@ -28,7 +28,7 @@ struct HttpClient::Impl {
     {
         auto mapIt = sources_.find(std::string(map));
         if (mapIt == sources_.end())
-            throw logRuntimeError("Could nto find map data source info");
+            throw logRuntimeError("Could not find map data source info");
         return mapIt->second.getLayer(std::string(layer));
     }
 };

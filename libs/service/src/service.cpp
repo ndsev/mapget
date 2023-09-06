@@ -79,12 +79,13 @@ struct Service::Controller
 
     std::optional<Job> nextJob(DataSourceInfo const& i)
     {
+        // Workers call the nextJob function when they are free.
         // Note: For thread safety, jobsMutex_ must be held
         //  when calling this function.
 
         std::optional<Job> result;
 
-        // Return next job if available
+        // Return next job, if available.
         bool cachedTilesServed = false;
         do {
             cachedTilesServed = false;
@@ -92,10 +93,13 @@ struct Service::Controller
                 auto& request = *reqIt;
                 auto layerIt = i.layers_.find(request->layerId_);
 
+                // Are there tiles left to be processed in the request?
                 if (request->mapId_ == i.mapId_ && layerIt != i.layers_.end()) {
-                    if (request->nextTileIndex_ >= request->tiles_.size())
+                    if (request->nextTileIndex_ >= request->tiles_.size()) {
                         continue;
+                    }
 
+                    // Create result wrapper object.
                     auto tileId = request->tiles_[request->nextTileIndex_++];
                     result = {MapTileKey(), request};
                     result->first.layer_ = layerIt->second->type_;
@@ -103,10 +107,10 @@ struct Service::Controller
                     result->first.layerId_ = request->layerId_;
                     result->first.tileId_ = tileId;
 
-                    // Cache lookup
+                    // Cache lookup.
                     auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
                     if (cachedResult) {
-                        // TODO: Consider TTL
+                        // TODO: Consider TTL.
                         log().debug("Serving cached tile: {}", result->first.toString());
                         request->notifyResult(cachedResult);
                         result.reset();
@@ -115,11 +119,11 @@ struct Service::Controller
                     }
 
                     if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
-                        // Don't work on something that is already being worked on. Instead,
-                        // wait for the work to finish, then send the (hopefully cached) result.
+                        // Don't work on something that is already being worked on.
+                        // Wait for the work to finish, then send the (hopefully cached) result.
                         log().debug("Delaying tile with job in progress: {}",
                                      result->first.toString());
-                        --request->nextTileIndex_;
+                        --(request->nextTileIndex_);
                         result.reset();
                         continue;
                     }
@@ -175,12 +179,13 @@ struct Service::Worker
                 lock,
                 [&, this]()
                 {
-                    if (shouldTerminate_)
+                    if (shouldTerminate_) {
+                        // Set by the controller at shutdown or if a data source
+                        // is removed. All worker instances are expected to terminate.
                         return true;
+                    }
                     nextJob = controller_.nextJob(info_);
-                    if (nextJob)
-                        return true;
-                    return false;
+                    return nextJob.has_value();
                 });
         }
 
@@ -200,9 +205,8 @@ struct Service::Worker
                 controller_.cache_->putTileFeatureLayer(result);
                 controller_.jobsInProgress_.erase(mapTileKey);
                 request->notifyResult(result);
-                // As we have now entered a tile into the cache, it
-                // is time to notify other workers that this tile can
-                // now be served.
+                // As we entered a tile into the cache, notify other workers
+                // that this tile can be served.
                 controller_.jobsAvailable_.notify_all();
             }
         }
@@ -263,20 +267,20 @@ struct Service::Impl : public Service::Controller
 
         if (workers != dataSourceWorkers_.end())
         {
-            // Signal each worker thread to terminate
+            // Signal each worker thread to terminate.
             for (auto& worker : workers->second) {
                 worker->shouldTerminate_ = true;
             }
             jobsAvailable_.notify_all();
 
-            // Wait for each worker thread to terminate
+            // Wait for each worker thread to terminate.
             for (auto& worker : workers->second) {
                 if (worker->thread_.joinable()) {
                     worker->thread_.join();
                 }
             }
 
-            // Remove workers
+            // Remove workers.
             dataSourceWorkers_.erase(workers);
         }
     }
@@ -301,7 +305,7 @@ struct Service::Impl : public Service::Controller
     void abortRequest(Request::Ptr const& r)
     {
         std::unique_lock lock(jobsMutex_);
-        // Simply Remove the request from the list of requests
+        // Remove the request from the list of requests.
         requests_.remove_if([r](auto&& request) { return r == request; });
     }
 

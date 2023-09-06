@@ -214,7 +214,7 @@ std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId) 
     auto it = layers_.find(layerId);
     if (it == layers_.end()) {
         throw logRuntimeError(
-            stx::format("Could not find info for layer '{}'/'{}'", mapId_, layerId)
+            stx::format("Could not find layer '{}' in map '{}'", layerId, mapId_)
         );
     }
     return it->second;

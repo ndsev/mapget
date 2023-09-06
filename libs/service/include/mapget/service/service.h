@@ -44,7 +44,7 @@ public:
 
     /**
      * The map tile ids for which this request is dedicated.
-     * Must not be empty. Result tiles will be processed in the given order
+     * Must not be empty. Result tiles will be processed in the given order.
      */
     std::vector<TileId> tiles_;
 
@@ -70,7 +70,7 @@ protected:
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;
 
-    // Mutex/Condition variable for done-signal
+    // Mutex/condition variable for done-signal.
     std::mutex doneMutex_;
     std::condition_variable doneConditionVariable_;
 };
