@@ -46,7 +46,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     // Initialize a DataSource.
     mapget::DataSourceServer ds(info);
-    auto dataSourceRequestCount = 0;
+    std::atomic_uint32_t dataSourceRequestCount = 0;
     ds.onTileRequest(
         [&](auto&& tile)
         {
