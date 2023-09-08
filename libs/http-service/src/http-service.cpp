@@ -158,6 +158,7 @@ struct HttpService::Impl
                 if (!strBuf.empty()) {
                     log().debug("Streaming {} bytes...", strBuf.size());
                     sink.write(strBuf.data(), strBuf.size());
+                    sink.os.flush();
                     state->buffer_.str("");  // Clear buffer after reading.
                 }
 

@@ -100,7 +100,7 @@ public:
         void write(TileFeatureLayer::Ptr const& tileFeatureLayer);
 
     private:
-        void sendMessage(std::string const& bytes, MessageType msgType);
+        void sendMessage(std::string&& bytes, MessageType msgType);
 
         std::function<void(std::string, MessageType)> onMessage_;
         FieldOffsetMap& fieldsOffsets_;
