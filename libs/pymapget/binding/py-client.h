@@ -73,7 +73,8 @@ public:
 
     TileFeatureLayer::Ptr next() {
         std::unique_lock lock(bufferMutex_);
-        bufferSignal_.wait(lock, [this](){ return !buffer_.empty() || isDone(); });
+        bufferSignal_.wait(lock, [this](){ return !buffer_.empty() ||
+                                 this->getStatus() != RequestStatus::Open; });
         if (buffer_.empty()) {
             throw py::stop_iteration();
         } else {

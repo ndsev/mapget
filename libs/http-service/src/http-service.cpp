@@ -27,7 +27,7 @@ struct HttpService::Impl
         std::vector<Request::Ptr> requests_;
         TileLayerStream::FieldOffsetMap fieldsOffsets_;
 
-        void addRequestFromJson(nlohmann::json const& requestJson)
+        void parseRequestFromJson(nlohmann::json const& requestJson)
         {
             std::string mapId = requestJson["mapId"];
             std::string layerId = requestJson["layerId"];
@@ -82,11 +82,24 @@ struct HttpService::Impl
         auto requestsJson = j["requests"];
         // TODO: Limit number of requests to avoid DoS to other users.
         auto state = std::make_shared<TileLayerRequestState>();
+        bool canProcessAllRequests = true;
         for (auto& requestJson : requestsJson) {
-            state->addRequestFromJson(requestJson);
+            std::string mapId = requestJson["mapId"];
+            std::string layerId = requestJson["layerId"];
+            if (!self_.canProcess(mapId, layerId)) {
+                canProcessAllRequests = false;
+                break;
+            }
+            state->parseRequestFromJson(requestJson);
         }
 
-        // Parse maxKnownFieldIds
+        if (!canProcessAllRequests) {
+            // TODO set response content?
+            res.status = 400;
+            return;
+        }
+
+        // Parse maxKnownFieldIds.
         if (j.contains("maxKnownFieldIds")) {
             for (auto& item : j["maxKnownFieldIds"].items()) {
                 state->fieldsOffsets_[item.key()] = item.value().get<simfil::FieldId>();
@@ -128,7 +141,7 @@ struct HttpService::Impl
                         allDone = std::all_of(
                             state->requests_.begin(),
                             state->requests_.end(),
-                            [](const auto& r) { return r->isDone(); });
+                            [](const auto& r) { return r->getStatus() == RequestStatus::Done; });
                         return !strBuf.empty() || allDone;
                     });
 

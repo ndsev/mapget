@@ -2,20 +2,18 @@
 #include "httplib.h"
 #include "mapget/log.h"
 
-#include "mapget/http-datasource/datasource-server.h"
 #include "mapget/http-datasource/datasource-client.h"
-#include "mapget/http-service/http-service.h"
+#include "mapget/http-datasource/datasource-server.h"
 #include "mapget/http-service/http-client.h"
+#include "mapget/http-service/http-service.h"
 #include "mapget/model/stream.h"
-
-using namespace mapget;
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
-    mapget::setLogLevel("trace", log());
+    mapget::setLogLevel("trace", mapget::log());
 
     // Create DataSourceInfo.
-    auto info = DataSourceInfo::fromJson(R"(
+    auto info = mapget::DataSourceInfo::fromJson(R"(
     {
         "mapId": "Tropico",
         "layers": {
@@ -47,15 +45,17 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
     )"_json);
 
     // Initialize a DataSource.
-    DataSourceServer ds(info);
+    mapget::DataSourceServer ds(info);
     auto dataSourceRequestCount = 0;
-    ds.onTileRequest([&](auto&& tile) {
-        auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
-        auto g = f->geom()->newGeometry(GeomType::Line);
-        g->append({42., 11});
-        g->append({42., 12});
-        ++dataSourceRequestCount;
-    });
+    ds.onTileRequest(
+        [&](auto&& tile)
+        {
+            auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
+            auto g = f->geom()->newGeometry(mapget::GeomType::Line);
+            g->append({42., 11});
+            g->append({42., 12});
+            ++dataSourceRequestCount;
+        });
 
     // Launch the DataSource on a separate thread.
     ds.go();
@@ -70,7 +70,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
         // Send a GET info request.
         auto fetchedInfoJson = cli.Get("/info");
-        auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
+        auto fetchedInfo =
+            mapget::DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
         REQUIRE(fetchedInfo.toJson() == info.toJson());
     }
 
@@ -88,7 +89,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
         // Check the response body for expected content.
         auto receivedTileCount = 0;
-        TileLayerStream::Reader reader(
+        mapget::TileLayerStream::Reader reader(
             [&](auto&& mapId, auto&& layerId)
             {
                 REQUIRE(mapId == info.mapId_);
@@ -100,38 +101,63 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(receivedTileCount == 1);
     }
 
-    SECTION("Stop the data source")
+    SECTION("Query mapget HTTP service")
     {
-        ds.stop();
-        REQUIRE(ds.isRunning() == false);
+        mapget::HttpService service;
+        service.add(std::make_shared<mapget::RemoteDataSource>("localhost", ds.port()));
+
+        service.go();
+
+        SECTION("Query through mapget HTTP service")
+        {
+            mapget::HttpClient client("localhost", service.port());
+
+            auto receivedTileCount = 0;
+            client.request(std::make_shared<mapget::Request>(
+                               "Tropico",
+                               "WayLayer",
+                               std::vector<mapget::TileId>{{1234, 5678, 9112, 1234}},
+                               [&](auto&& tile) { receivedTileCount++; }))
+                ->wait();
+
+            REQUIRE(receivedTileCount == 4);
+            // One tile requested twice, so the cache was used.
+            REQUIRE(dataSourceRequestCount == 3);
+        }
+
+        SECTION("Trigger 400 responses")
+        {
+            mapget::HttpClient client("localhost", service.port());
+
+            auto unknownMapRequest = std::make_shared<mapget::Request>(
+                "UnknownMap",
+                "WayLayer",
+                std::vector<mapget::TileId>{{1234}},
+                [&](auto&& tile) { /* TODO check something? */ });
+            client.request(unknownMapRequest)->wait();
+            REQUIRE(unknownMapRequest->getStatus() == mapget::RequestStatus::NoDataSource);
+
+            auto unknownLayerRequest = std::make_shared<mapget::Request>(
+                "Tropico",
+                "UnknownLayer",
+                std::vector<mapget::TileId>{{1234}},
+                [&](auto&& tile) { /* TODO check something? */ });
+            client.request(unknownLayerRequest)->wait();
+            REQUIRE(unknownLayerRequest->getStatus() == mapget::RequestStatus::NoDataSource);
+        }
+
+        service.stop();
+        REQUIRE(service.isRunning() == false);
     }
 
     SECTION("Wait for data source")
     {
-        auto waitThread = std::thread([&]{ds.waitForSignal();});
+        auto waitThread = std::thread([&] { ds.waitForSignal(); });
         ds.stop();
         waitThread.join();
         REQUIRE(ds.isRunning() == false);
     }
 
-    SECTION("Contact through HTTP service")
-    {
-        HttpService service;
-        service.add(std::make_shared<RemoteDataSource>("localhost", ds.port()));
-        service.go();
-
-        HttpClient client("localhost", service.port());
-
-        auto receivedTileCount = 0;
-        client.request(std::make_shared<Request>(
-            "Tropico",
-            "WayLayer",
-            std::vector<TileId>{{1234, 5678, 9112, 1234}},
-            [&](auto&& tile) { receivedTileCount++; }
-        ))->wait();
-
-        REQUIRE(receivedTileCount == 4);
-        REQUIRE(dataSourceRequestCount == 3); // One tile requested twice, so the cache was used.
-        service.stop();
-    }
+    ds.stop();
+    REQUIRE(ds.isRunning() == false);
 }

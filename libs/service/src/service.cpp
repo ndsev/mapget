@@ -23,30 +23,37 @@ Request::Request(
 {
 }
 
-bool Request::isDone() const
-{
-    return resultCount_ == tiles_.size();
-}
-
 void Request::notifyResult(TileFeatureLayer::Ptr r) {
     if (onResult_)
         onResult_(std::move(r));
     ++resultCount_;
-    if (isDone())
-        notifyDone();
+    if (resultCount_ == tiles_.size()) {
+        setStatus(RequestStatus::Done);
+    }
 }
 
-void Request::notifyDone()
+void Request::setStatus(RequestStatus s)
 {
-    if (onDone_)
+    {
+        std::unique_lock doneLock(statusMutex_);
+        this->status_ = s;
+    }
+    notifyStatus();
+}
+
+void Request::notifyStatus()
+{
+    // Run the final callback function.
+    if (onDone_) {
         onDone_();
-    doneConditionVariable_.notify_all();
+    }
+    statusConditionVariable_.notify_all();
 }
 
 void Request::wait()
 {
-    std::unique_lock doneLock(doneMutex_);
-    doneConditionVariable_.wait(doneLock, [this]{return isDone();});
+    std::unique_lock doneLock(statusMutex_);
+    statusConditionVariable_.wait(doneLock, [this]{return this->getStatus() != Open;});
 }
 
 nlohmann::json Request::toJson()
@@ -59,6 +66,11 @@ nlohmann::json Request::toJson()
         {"layerId", layerId_},
         {"tileIds", tileIds}
     });
+}
+
+RequestStatus Request::getStatus()
+{
+    return this->status_;
 }
 
 struct Service::Controller
@@ -222,8 +234,8 @@ struct Service::Worker
 
 struct Service::Impl : public Service::Controller
 {
-    std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;  // Map of data sources and their corresponding info
-    std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_; // Map of data sources and their corresponding workers
+    std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;
+    std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
 
     explicit Impl(Cache::Ptr cache) : Controller(std::move(cache)) {}
 
@@ -234,7 +246,8 @@ struct Service::Impl : public Service::Controller
                 worker->shouldTerminate_ = true;
             }
         }
-        jobsAvailable_.notify_all();  // Wake up all workers to check shouldTerminate_
+        // Wake up all workers to check shouldTerminate_.
+        jobsAvailable_.notify_all();
 
         for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
             for (auto& worker : dataSourceAndWorkers.second) {
@@ -285,13 +298,14 @@ struct Service::Impl : public Service::Controller
         }
     }
 
+    // All requests must be validated with canProcess before adding them!
     void addRequest(Request::Ptr r)
     {
         if (!r)
-            throw logRuntimeError("Attempt to call Service::addRequestFromJson(nullptr).");
-        if (r->isDone()) {
-            // Nothing to do
-            r->notifyDone();
+            throw logRuntimeError("Attempt to call Service::parseRequestFromJson(nullptr).");
+        if (r->getStatus() == RequestStatus::Done) {
+            // Nothing to do.
+            r->notifyStatus();
             return;
         }
 
@@ -353,6 +367,23 @@ std::vector<DataSourceInfo> Service::info()
 Cache::Ptr Service::cache()
 {
     return impl_->cache_;
+}
+
+bool Service::canProcess(std::string const& mapId, std::string const& layerId)
+{
+    {
+        std::unique_lock lock(impl_->jobsMutex_);
+        // Check that one of the data sources can fulfill the request.
+        for (auto& dataSourceAndInfo : impl_->dataSourceInfo_) {
+            auto& info = dataSourceAndInfo.second;
+            if (mapId != info.mapId_)
+                continue;
+            if (info.layers_.find(layerId) != info.layers_.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
 }
 
 }  // namespace mapget

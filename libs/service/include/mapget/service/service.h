@@ -10,6 +10,12 @@
 namespace mapget
 {
 
+enum RequestStatus {
+    Open = 0x0,
+    Done = 0x1, /** The request has been fully satisfied. */
+    NoDataSource = 0x2 /** No data source could provide the requested map + layer. */
+};
+
 /**
  * Client request for map data, which consists of a map id,
  * a map layer id, an array of tile ids, and a callback function
@@ -30,8 +36,8 @@ public:
         std::vector<TileId> tiles,
         std::function<void(TileFeatureLayer::Ptr)> onResult);
 
-    /** Check if the request has been fully satisfied. */
-    [[nodiscard]] bool isDone() const;
+    /** Get the current status of the request. */
+    RequestStatus getStatus();
 
     /** Wait for the request to be done. */
     void wait();
@@ -60,9 +66,11 @@ public:
 
 protected:
     virtual void notifyResult(TileFeatureLayer::Ptr);
-    void notifyDone();
+    void setStatus(RequestStatus s);
+    void notifyStatus();
     nlohmann::json toJson();
 
+private:
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
@@ -70,9 +78,10 @@ protected:
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;
 
-    // Mutex/condition variable for done-signal.
-    std::mutex doneMutex_;
-    std::condition_variable doneConditionVariable_;
+    // Mutex/condition variable for reading/setting request status.
+    std::mutex statusMutex_;
+    std::condition_variable statusConditionVariable_;
+    RequestStatus status_ = Open;
 };
 
 /**
@@ -126,6 +135,9 @@ public:
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info();
+
+    /** Checks if a DataSource can serve the requested map+layer combination. */
+    bool canProcess(std::string const& mapId, std::string const& layerId);
 
     /** Get the Cache which this service was constructed with. */
     [[nodiscard]] Cache::Ptr cache();

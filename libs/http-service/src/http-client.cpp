@@ -47,8 +47,10 @@ std::vector<DataSourceInfo> HttpClient::sources() const
 
 Request::Ptr HttpClient::request(const Request::Ptr& request)
 {
-    if (request->isDone())
-        request->notifyDone();
+    // TODO why is this at the beginning of the request function?
+    // When is a request created as done?
+    if (request->getStatus() == RequestStatus::Done)
+        request->notifyStatus();
 
     auto reader = std::make_unique<TileLayerStream::Reader>(
         [this](auto&& mapId, auto&& layerId){return impl_->resolve(mapId, layerId);},
@@ -64,8 +66,12 @@ Request::Ptr HttpClient::request(const Request::Ptr& request)
         json::object({{"requests", json::array({request->toJson()})}}).dump(),
         "application/json");
 
-    if (tileResponse && tileResponse->status == 200)
-        reader->read(tileResponse->body);
+    if (tileResponse) {
+        if (tileResponse->status == 200)
+            reader->read(tileResponse->body);
+        else if (tileResponse->status == 400)
+            request->setStatus(mapget::RequestStatus::NoDataSource);
+    }
 
     return request;
 }
