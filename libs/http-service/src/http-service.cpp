@@ -13,7 +13,7 @@ struct HttpService::Impl
     explicit Impl(HttpService& self) : self_(self) {}
 
     // Use a shared buffer for the responses and a mutex for thread safety.
-    struct TileLayerRequestState
+    struct HttpTilesRequestState
     {
         static constexpr auto binaryMimeType = "application/binary";
         static constexpr auto jsonlMimeType = "application/jsonl";
@@ -42,11 +42,11 @@ struct HttpService::Impl
         void setResponseType(std::string const& s)
         {
             responseType_ = s;
-            if (responseType_ == TileLayerRequestState::binaryMimeType)
+            if (responseType_ == HttpTilesRequestState::binaryMimeType)
                 return;
-            if (responseType_ == TileLayerRequestState::jsonlMimeType)
+            if (responseType_ == HttpTilesRequestState::jsonlMimeType)
                 return;
-            if (responseType_ == TileLayerRequestState::anyMimeType) {
+            if (responseType_ == HttpTilesRequestState::anyMimeType) {
                 responseType_ = binaryMimeType;
                 return;
             }
@@ -81,7 +81,7 @@ struct HttpService::Impl
         nlohmann::json j = nlohmann::json::parse(req.body);
         auto requestsJson = j["requests"];
         // TODO: Limit number of requests to avoid DoS to other users.
-        auto state = std::make_shared<TileLayerRequestState>();
+        auto state = std::make_shared<HttpTilesRequestState>();
         bool canProcessAllRequests = true;
         for (auto& requestJson : requestsJson) {
             std::string mapId = requestJson["mapId"];
