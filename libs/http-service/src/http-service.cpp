@@ -24,7 +24,7 @@ struct HttpService::Impl
 
         std::stringstream buffer_;
         std::string responseType_;
-        std::vector<Request::Ptr> requests_;
+        std::vector<LayerTilesRequest::Ptr> requests_;
         TileLayerStream::FieldOffsetMap fieldsOffsets_;
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
@@ -36,7 +36,7 @@ struct HttpService::Impl
             for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>())
                 tileIds.emplace_back(tid);
             requests_.push_back(
-                std::make_shared<Request>(mapId, layerId, std::move(tileIds), nullptr));
+                std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds), nullptr));
         }
 
         void setResponseType(std::string const& s)

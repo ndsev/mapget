@@ -28,7 +28,7 @@ public:
     /**
      * Post a Request for a number of tiles from a particular map layer.
      */
-    Request::Ptr request(Request::Ptr const& request);
+    LayerTilesRequest::Ptr request(LayerTilesRequest::Ptr const& request);
 
 private:
     struct Impl;

@@ -113,7 +113,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             mapget::HttpClient client("localhost", service.port());
 
             auto receivedTileCount = 0;
-            client.request(std::make_shared<mapget::Request>(
+            client.request(std::make_shared<mapget::LayerTilesRequest>(
                                "Tropico",
                                "WayLayer",
                                std::vector<mapget::TileId>{{1234, 5678, 9112, 1234}},
@@ -129,7 +129,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         {
             mapget::HttpClient client("localhost", service.port());
 
-            auto unknownMapRequest = std::make_shared<mapget::Request>(
+            auto unknownMapRequest = std::make_shared<mapget::LayerTilesRequest>(
                 "UnknownMap",
                 "WayLayer",
                 std::vector<mapget::TileId>{{1234}},
@@ -137,7 +137,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             client.request(unknownMapRequest)->wait();
             REQUIRE(unknownMapRequest->getStatus() == mapget::RequestStatus::NoDataSource);
 
-            auto unknownLayerRequest = std::make_shared<mapget::Request>(
+            auto unknownLayerRequest = std::make_shared<mapget::LayerTilesRequest>(
                 "Tropico",
                 "UnknownLayer",
                 std::vector<mapget::TileId>{{1234}},

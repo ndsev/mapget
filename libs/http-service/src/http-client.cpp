@@ -45,7 +45,7 @@ std::vector<DataSourceInfo> HttpClient::sources() const
     return result;
 }
 
-Request::Ptr HttpClient::request(const Request::Ptr& request)
+LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request)
 {
     // TODO why is this at the beginning of the request function?
     // When is a request created as done?

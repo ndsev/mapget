@@ -11,7 +11,7 @@
 namespace mapget
 {
 
-Request::Request(
+LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
     std::vector<TileId> tiles,
@@ -23,7 +23,7 @@ Request::Request(
 {
 }
 
-void Request::notifyResult(TileFeatureLayer::Ptr r) {
+void LayerTilesRequest::notifyResult(TileFeatureLayer::Ptr r) {
     if (onResult_)
         onResult_(std::move(r));
     ++resultCount_;
@@ -32,7 +32,7 @@ void Request::notifyResult(TileFeatureLayer::Ptr r) {
     }
 }
 
-void Request::setStatus(RequestStatus s)
+void LayerTilesRequest::setStatus(RequestStatus s)
 {
     {
         std::unique_lock doneLock(statusMutex_);
@@ -41,7 +41,7 @@ void Request::setStatus(RequestStatus s)
     notifyStatus();
 }
 
-void Request::notifyStatus()
+void LayerTilesRequest::notifyStatus()
 {
     // Run the final callback function.
     if (onDone_) {
@@ -50,13 +50,13 @@ void Request::notifyStatus()
     statusConditionVariable_.notify_all();
 }
 
-void Request::wait()
+void LayerTilesRequest::wait()
 {
     std::unique_lock doneLock(statusMutex_);
     statusConditionVariable_.wait(doneLock, [this]{return this->getStatus() != Open;});
 }
 
-nlohmann::json Request::toJson()
+nlohmann::json LayerTilesRequest::toJson()
 {
     auto tileIds = nlohmann::json::array();
     for (auto const& tid : tiles_)
@@ -68,18 +68,18 @@ nlohmann::json Request::toJson()
     });
 }
 
-RequestStatus Request::getStatus()
+RequestStatus LayerTilesRequest::getStatus()
 {
     return this->status_;
 }
 
 struct Service::Controller
 {
-    using Job = std::pair<MapTileKey, Request::Ptr>;
+    using Job = std::pair<MapTileKey, LayerTilesRequest::Ptr>;
 
     std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
     Cache::Ptr cache_;                       // The cache for the service
-    std::list<Request::Ptr> requests_;       // List of requests currently being processed
+    std::list<LayerTilesRequest::Ptr> requests_;       // List of requests currently being processed
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
 
@@ -299,7 +299,7 @@ struct Service::Impl : public Service::Controller
     }
 
     // All requests must be validated with canProcess before adding them!
-    void addRequest(Request::Ptr r)
+    void addRequest(LayerTilesRequest::Ptr r)
     {
         if (!r)
             throw logRuntimeError("Attempt to call Service::parseRequestFromJson(nullptr).");
@@ -316,7 +316,7 @@ struct Service::Impl : public Service::Controller
         jobsAvailable_.notify_all();
     }
 
-    void abortRequest(Request::Ptr const& r)
+    void abortRequest(LayerTilesRequest::Ptr const& r)
     {
         std::unique_lock lock(jobsMutex_);
         // Remove the request from the list of requests.
@@ -348,13 +348,13 @@ void Service::remove(const DataSource::Ptr& dataSource)
     impl_->removeDataSource(dataSource);
 }
 
-Request::Ptr Service::request(Request::Ptr r)
+LayerTilesRequest::Ptr Service::request(LayerTilesRequest::Ptr r)
 {
     impl_->addRequest(r);
     return r;
 }
 
-void Service::abort(const Request::Ptr& r)
+void Service::abort(const LayerTilesRequest::Ptr& r)
 {
     impl_->abortRequest(r);
 }

@@ -77,7 +77,7 @@ int main(int argc, char** argv)
 
     // Create a request. The request will immediately start to be worked on.
     service
-        .request(std::make_shared<Request>(
+        .request(std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
             std::vector<TileId>{TileId(12345), TileId(67689)},
