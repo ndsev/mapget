@@ -75,6 +75,8 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         else if (tileResponse->status == 400) {
             request->setStatus(mapget::RequestStatus::NoDataSource);
         }
+        // TODO if multiple LayerTileRequests are ever sent by this client,
+        //  additionally handle RequestStatus::Aborted.
     }
 
     return request;

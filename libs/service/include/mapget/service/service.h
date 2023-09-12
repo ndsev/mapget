@@ -66,7 +66,7 @@ public:
     /**
      * The callback function which is called when all tiles have been processed.
      */
-    std::function<void()> onDone_;
+    std::function<void(RequestStatus)> onDone_;
 
 protected:
     virtual void notifyResult(TileFeatureLayer::Ptr);

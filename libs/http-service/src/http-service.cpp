@@ -105,7 +105,7 @@ struct HttpService::Impl
             {
                 state->addResult(tileFeatureLayer);
             };
-            request->onDone_ = [state]
+            request->onDone_ = [state](RequestStatus r)
             {
                 state->resultEvent_.notify_one();
             };
@@ -126,8 +126,14 @@ struct HttpService::Impl
             return;
         }
 
-        // Set up the streaming response.
-        // TODO explanation: what is this streaming response?
+        // For efficiency, set up httplib to stream tile layer responses to client:
+        // (1) Lambda continuously supplies response data to httplib's DataSink,
+        //     picking up data from state->buffer_ until all tile requests are done.
+        //     Then, signal sink->done() to close the stream with a 200 status.
+        //     See httplib::write_content_without_length(...) too.
+        // (2) Lambda acts as a cleanup routine, triggered by httplib upon request wrap-up.
+        //     The success flag indicates if wrap-up was due to sink->done() or external factors
+        //     like network errors or request aborts in lengthy tile requests (e.g., map-viewer).
         res.set_content_provider(
             state->responseType_,
             [state](size_t offset, httplib::DataSink& sink)

@@ -50,7 +50,7 @@ void LayerTilesRequest::notifyStatus()
 {
     if (isDone() && onDone_) {
         // Run the final callback function.
-        onDone_();
+        onDone_(this->status_);
     }
     statusConditionVariable_.notify_all();
 }
@@ -317,7 +317,7 @@ struct Service::Impl : public Service::Controller
     {
         if (!r)
             throw logRuntimeError("Attempt to call Service::addRequest(nullptr).");
-        if (r->getStatus() == RequestStatus::Success) {
+        if (r->isDone()) {
             // Nothing to do.
             r->notifyStatus();
             return;
@@ -402,19 +402,17 @@ Cache::Ptr Service::cache()
 
 bool Service::canProcess(std::string const& mapId, std::string const& layerId)
 {
-    {
-        std::unique_lock lock(impl_->jobsMutex_);
-        // Check that one of the data sources can fulfill the request.
-        for (auto& dataSourceAndInfo : impl_->dataSourceInfo_) {
-            auto& info = dataSourceAndInfo.second;
-            if (mapId != info.mapId_)
-                continue;
-            if (info.layers_.find(layerId) != info.layers_.end()) {
-                return true;
-            }
+    std::unique_lock lock(impl_->jobsMutex_);
+    // Check that one of the data sources can fulfill the request.
+    for (auto& dataSourceAndInfo : impl_->dataSourceInfo_) {
+        auto& info = dataSourceAndInfo.second;
+        if (mapId != info.mapId_)
+            continue;
+        if (info.layers_.find(layerId) != info.layers_.end()) {
+            return true;
         }
-        return false;
     }
+    return false;
 }
 
 }  // namespace mapget
