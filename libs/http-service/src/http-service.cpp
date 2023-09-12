@@ -80,23 +80,13 @@ struct HttpService::Impl
         // Parse the JSON request.
         nlohmann::json j = nlohmann::json::parse(req.body);
         auto requestsJson = j["requests"];
-        // TODO: Limit number of requests to avoid DoS to other users.
-        auto state = std::make_shared<HttpTilesRequestState>();
-        bool canProcessAllRequests = true;
-        for (auto& requestJson : requestsJson) {
-            std::string mapId = requestJson["mapId"];
-            std::string layerId = requestJson["layerId"];
-            if (!self_.canProcess(mapId, layerId)) {
-                canProcessAllRequests = false;
-                break;
-            }
-            state->parseRequestFromJson(requestJson);
-        }
 
-        if (!canProcessAllRequests) {
-            // TODO set response content?
-            res.status = 400;
-            return;
+        // TODO: Limit number of requests to avoid DoS to other users.
+        // Within one HTTP request, all requested tiles from the same map+layer
+        // combination should be in a single LayerTilesRequest.
+        auto state = std::make_shared<HttpTilesRequestState>();
+        for (auto& requestJson : requestsJson) {
+            state->parseRequestFromJson(requestJson);
         }
 
         // Parse maxKnownFieldIds.
@@ -119,7 +109,21 @@ struct HttpService::Impl
             {
                 state->resultEvent_.notify_one();
             };
-            self_.request(request);
+        }
+        auto canProcess = self_.request(state->requests_);
+
+        if (!canProcess) {
+            // Send a status report detailing for each request
+            // whether its data source is unavailable or it was aborted.
+            res.status = 400;
+            std::vector<int> requestStatuses{};
+            for (const auto& r : state->requests_) {
+                requestStatuses.push_back(r->getStatus());
+            }
+            res.set_content(
+                nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
+                "application/json");
+            return;
         }
 
         // Set up the streaming response.
@@ -141,7 +145,7 @@ struct HttpService::Impl
                         allDone = std::all_of(
                             state->requests_.begin(),
                             state->requests_.end(),
-                            [](const auto& r) { return r->getStatus() == RequestStatus::Done; });
+                            [](const auto& r) { return r->isDone(); });
                         return !strBuf.empty() || allDone;
                     });
 

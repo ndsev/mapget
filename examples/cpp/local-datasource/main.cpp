@@ -76,13 +76,13 @@ int main(int argc, char** argv)
     service.add(std::make_shared<MyLocalDataSource>());
 
     // Create a request. The request will immediately start to be worked on.
-    service
-        .request(std::make_shared<LayerTilesRequest>(
+    auto r = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
             std::vector<TileId>{TileId(12345), TileId(67689)},
             [](auto&& result)
-            { log().info("Got {}", MapTileKey(*result).toString()); }))
-        ->wait();
+            { log().info("Got {}", MapTileKey(*result).toString()); });
+    service.request({r});
+    r->wait();
     return 0;
 }

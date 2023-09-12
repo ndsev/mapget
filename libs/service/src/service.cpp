@@ -21,6 +21,11 @@ LayerTilesRequest::LayerTilesRequest(
       tiles_(std::move(tiles)),
       onResult_(std::move(onResult))
 {
+    if (tiles_.empty()) {
+        // An empty request is always set to success, but the client/service
+        // is responsible for triggering notifyStatus() in that case.
+        status_ = RequestStatus::Success;
+    }
 }
 
 void LayerTilesRequest::notifyResult(TileFeatureLayer::Ptr r) {
@@ -28,14 +33,14 @@ void LayerTilesRequest::notifyResult(TileFeatureLayer::Ptr r) {
         onResult_(std::move(r));
     ++resultCount_;
     if (resultCount_ == tiles_.size()) {
-        setStatus(RequestStatus::Done);
+        setStatus(RequestStatus::Success);
     }
 }
 
 void LayerTilesRequest::setStatus(RequestStatus s)
 {
     {
-        std::unique_lock doneLock(statusMutex_);
+        std::unique_lock statusLock(statusMutex_);
         this->status_ = s;
     }
     notifyStatus();
@@ -43,8 +48,8 @@ void LayerTilesRequest::setStatus(RequestStatus s)
 
 void LayerTilesRequest::notifyStatus()
 {
-    // Run the final callback function.
-    if (onDone_) {
+    if (isDone() && onDone_) {
+        // Run the final callback function.
         onDone_();
     }
     statusConditionVariable_.notify_all();
@@ -53,7 +58,11 @@ void LayerTilesRequest::notifyStatus()
 void LayerTilesRequest::wait()
 {
     std::unique_lock doneLock(statusMutex_);
-    statusConditionVariable_.wait(doneLock, [this]{return this->getStatus() != Open;});
+    // Extra doneness check is to avoid infinite locking, e.g.
+    // because empty requests were not considered by calling method.
+    if (!isDone()) {
+        statusConditionVariable_.wait(doneLock, [this]{ return isDone(); });
+    }
 }
 
 nlohmann::json LayerTilesRequest::toJson()
@@ -71,6 +80,11 @@ nlohmann::json LayerTilesRequest::toJson()
 RequestStatus LayerTilesRequest::getStatus()
 {
     return this->status_;
+}
+
+bool LayerTilesRequest::isDone()
+{
+    return status_ != RequestStatus::Open;
 }
 
 struct Service::Controller
@@ -302,8 +316,8 @@ struct Service::Impl : public Service::Controller
     void addRequest(LayerTilesRequest::Ptr r)
     {
         if (!r)
-            throw logRuntimeError("Attempt to call Service::parseRequestFromJson(nullptr).");
-        if (r->getStatus() == RequestStatus::Done) {
+            throw logRuntimeError("Attempt to call Service::addRequest(nullptr).");
+        if (r->getStatus() == RequestStatus::Success) {
             // Nothing to do.
             r->notifyStatus();
             return;
@@ -348,10 +362,27 @@ void Service::remove(const DataSource::Ptr& dataSource)
     impl_->removeDataSource(dataSource);
 }
 
-LayerTilesRequest::Ptr Service::request(LayerTilesRequest::Ptr r)
+bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
 {
-    impl_->addRequest(r);
-    return r;
+    bool dataSourcesAvailable = true;
+    for (const auto& r : requests) {
+        if (!canProcess(r->mapId_, r->layerId_)) {
+            dataSourcesAvailable = false;
+            r->setStatus(RequestStatus::NoDataSource);
+        }
+    }
+    // Second pass either aborts requests or add all to job queue.
+    for (const auto& r : requests) {
+        if (!dataSourcesAvailable) {
+            if (r->getStatus() != RequestStatus::NoDataSource){
+                r->setStatus(RequestStatus::Aborted);
+            }
+        }
+        else {
+            impl_->addRequest(r);
+        }
+    }
+    return dataSourcesAvailable;
 }
 
 void Service::abort(const LayerTilesRequest::Ptr& r)

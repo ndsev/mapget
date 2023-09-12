@@ -12,8 +12,9 @@ namespace mapget
 
 enum RequestStatus {
     Open = 0x0,
-    Done = 0x1, /** The request has been fully satisfied. */
-    NoDataSource = 0x2 /** No data source could provide the requested map + layer. */
+    Success = 0x1, /** The request has been fully satisfied. */
+    NoDataSource = 0x2, /** No data source could provide the requested map + layer. */
+    Aborted = 0x3 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
 };
 
 /**
@@ -41,6 +42,9 @@ public:
 
     /** Wait for the request to be done. */
     void wait();
+
+    /** Check whether the request is done or still running. */
+    bool isDone();
 
     /** The map id for which this request is dedicated. */
     std::string mapId_;
@@ -119,13 +123,14 @@ public:
     void remove(DataSource::Ptr const& dataSource);
 
     /**
-     * Request some map data tiles. Will throw an exception if
-     * there is no worker which is able to process the request.
-     * Note: The same request object should only ever be passed
-     *  to one service. Otherwise, there is undefined behavior.
-     * @return The `r` parameter value is returned.
+     * Request some map data tiles. If the requested map+layer
+     * combination is available, will schedule a job to retrieve
+     * the tiles. A request object should only ever be passed
+     * to one service. Otherwise, there is undefined behavior.
+     * @return false if the requested map+layer is not available
+     * from any connected DataSource, true otherwise.
      */
-    LayerTilesRequest::Ptr request(LayerTilesRequest::Ptr r);
+    bool request(std::vector<LayerTilesRequest::Ptr> requests);
 
     /**
      * Abort the given request. The request will be removed from

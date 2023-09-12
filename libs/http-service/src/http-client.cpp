@@ -47,10 +47,11 @@ std::vector<DataSourceInfo> HttpClient::sources() const
 
 LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request)
 {
-    // TODO why is this at the beginning of the request function?
-    // When is a request created as done?
-    if (request->getStatus() == RequestStatus::Done)
+    // Finalize requests that did not contain any tiles.
+    if (request->isDone()) {
         request->notifyStatus();
+        return request;
+    }
 
     auto reader = std::make_unique<TileLayerStream::Reader>(
         [this](auto&& mapId, auto&& layerId){return impl_->resolve(mapId, layerId);},
@@ -67,10 +68,13 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         "application/json");
 
     if (tileResponse) {
-        if (tileResponse->status == 200)
+        if (tileResponse->status == 200) {
             reader->read(tileResponse->body);
-        else if (tileResponse->status == 400)
+            request->setStatus(mapget::RequestStatus::Success);
+        }
+        else if (tileResponse->status == 400) {
             request->setStatus(mapget::RequestStatus::NoDataSource);
+        }
     }
 
     return request;
