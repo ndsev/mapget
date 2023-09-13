@@ -70,7 +70,6 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     if (tileResponse) {
         if (tileResponse->status == 200) {
             reader->read(tileResponse->body);
-            request->setStatus(mapget::RequestStatus::Success);
         }
         else if (tileResponse->status == 400) {
             request->setStatus(mapget::RequestStatus::NoDataSource);
