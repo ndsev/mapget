@@ -93,6 +93,58 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     // parts match one of the uniqueIdComposition specs?
     // And that the values in KeyValuePairs have the right type?
     // Must the order of values in KeyValuePairs match the composition order?
+    if (featureIdParts.empty()) {
+        // TODO return nullptr or something.
+        // return simfil::shared_model_ptr<Feature>(); does not work.
+    }
+
+    for (auto& type : this->layerInfo_->featureTypes_) {
+        if (type.name_ != typeId) // TODO check how to compare strings.
+            continue;
+
+        // TODO turn into function returning the right ID composition or bool.
+        std::vector<UniqueIdPart>* matchingComposition = nullptr;
+        for (auto& candidateComposition : type.uniqueIdCompositions_) {
+
+            auto featureIdIter = featureIdParts.begin();
+            bool idCompositionFound = true;
+            bool prefixSkipped = false;
+
+            for (auto& part : candidateComposition) {
+                auto& nextKeyValuePair = *featureIdIter;
+                if (!prefixSkipped && this->featureIdPrefix().has_value()) {
+                    // TODO handle ID prefix.
+                    prefixSkipped = true;
+                    continue;
+                }
+
+                if (featureIdIter == featureIdParts.end() & !part.isOptional_) {
+                    idCompositionFound = false;
+                    break;
+                }
+                if (part.isOptional_) {
+                    // TODO can there be several optional fields? At any position?
+                    // Nested checking for optional fields will be computationally expensive.
+                }
+                if (part.partId_ != nextKeyValuePair.first) {
+                    idCompositionFound = false;
+                    break;
+                }
+                // TODO type match check.
+
+                ++featureIdIter;
+            }
+            if (idCompositionFound && featureIdIter == featureIdParts.end()) {
+                matchingComposition = &candidateComposition;
+                break;
+            }
+        }
+        if (!matchingComposition) {
+            // Just for development.
+            throw logRuntimeError("Failed to find ID composition.");
+        }
+    }
+
     auto featureIdIndex = impl_->featureIds_.size();
     auto featureIdObject = newObject(featureIdParts.size());
     impl_->featureIds_.emplace_back(FeatureId::Data{
