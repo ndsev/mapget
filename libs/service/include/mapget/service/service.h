@@ -142,7 +142,7 @@ public:
     std::vector<DataSourceInfo> info();
 
     /** Checks if a DataSource can serve the requested map+layer combination. */
-    bool canProcess(std::string const& mapId, std::string const& layerId);
+    bool hasLayer(std::string const& mapId, std::string const& layerId);
 
     /** Get the Cache which this service was constructed with. */
     [[nodiscard]] Cache::Ptr cache();

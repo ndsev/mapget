@@ -366,7 +366,7 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
 {
     bool dataSourcesAvailable = true;
     for (const auto& r : requests) {
-        if (!canProcess(r->mapId_, r->layerId_)) {
+        if (!hasLayer(r->mapId_, r->layerId_)) {
             dataSourcesAvailable = false;
             r->setStatus(RequestStatus::NoDataSource);
         }
@@ -400,7 +400,7 @@ Cache::Ptr Service::cache()
     return impl_->cache_;
 }
 
-bool Service::canProcess(std::string const& mapId, std::string const& layerId)
+bool Service::hasLayer(std::string const& mapId, std::string const& layerId)
 {
     std::unique_lock lock(impl_->jobsMutex_);
     // Check that one of the data sources can fulfill the request.
