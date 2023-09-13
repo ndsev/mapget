@@ -11,13 +11,12 @@ namespace mapget
 {
 
 /**
- * Version Definition - This is used to recognize whether
- * a stored blob of a TileFeatureLayer should be parsed by this
- * version of the mapget library. When a TileFeatureLayer is serialized,
- * the current Version value for the map layer and and the stream protocol are
- * also stored. Upon deserialization, the Major-Minor version values
- * must match the parsed version Major-Minor value, for both the for the map layer
- * and and the stream protocol.
+ * Version Definition - This is used to recognize whether a stored blob of a
+ * TileFeatureLayer should be parsed by this version of the mapget library.
+ * When a TileFeatureLayer is serialized, the current Version value for the
+ * map layer and the stream protocol are also stored. Upon deserialization,
+ * the Major-Minor version values must match the parsed version Major-Minor
+ * values, for both the map layer and the stream protocol.
  */
 struct Version {
     uint16_t major_ = 0;
@@ -118,6 +117,7 @@ struct FeatureTypeInfo
      *         "partId": <string>,          // Mandatory: The ID of the unique ID part.
      *         "description": <string>,     // Optional: The description of the unique ID part.
      *         "datatype": <IdPartDataType>,// Optional: The data type of the unique ID part, must be one of the enum values from IdPartDataType. Defaults to I64.
+     *         TODO why "datatype"  and not "dataType" to match other fields?
      *         "isSynthetic": <bool>,       // Optional: A flag indicating if the unique ID part is synthetic. Defaults to false.
      *         "isOptional": <bool>         // Optional: A flag indicating if the unique ID part is optional. Defaults to false.
      *       },

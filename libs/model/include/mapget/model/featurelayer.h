@@ -50,6 +50,7 @@ public:
      *  Each feature in this layer must have a feature type which is also present in
      *  the layer. Therefore, feature ids from this layer can be verified to conform
      *  to one of the allowed feature id compositions for the allowed type.
+     * TODO "for the allowed type" -> "for the feature type" ?
      * @param fields Shared field name dictionary, which allows compressed storage
      *  of object field name strings. It is auto-filled, and one instance may be used
      *  by multiple TileFeatureLayer instances.
@@ -101,6 +102,7 @@ public:
      * Create a new feature id. Use this function to create a reference to another
      * feature. The created feature id will not use the common feature id prefix from
      * this tile feature layer.
+     * TODO what is the common feature id prefix? Why is this skipped here?
      */
     model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,

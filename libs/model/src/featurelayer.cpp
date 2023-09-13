@@ -87,7 +87,12 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const std::string_view& typeId,
     const KeyValuePairs& featureIdParts)
 {
-    // TODO: Validate ID parts
+    // TODO: Validate ID parts.
+    // For the feature type requested, retrieve possible uniqueIdCompositions.
+    // Then go through the list and check that keys in the provided feature ID
+    // parts match one of the uniqueIdComposition specs?
+    // And that the values in KeyValuePairs have the right type?
+    // Must the order of values in KeyValuePairs match the composition order?
     auto featureIdIndex = impl_->featureIds_.size();
     auto featureIdObject = newObject(featureIdParts.size());
     impl_->featureIds_.emplace_back(FeatureId::Data{
