@@ -100,3 +100,5 @@ add_wheel_test(test-config-py
     # Request from cpp datasource
     -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.toml fetch"
 )
+
+# TODO should there be a Python test for the 400 response?

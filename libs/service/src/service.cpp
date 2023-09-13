@@ -11,7 +11,7 @@
 namespace mapget
 {
 
-Request::Request(
+LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
     std::vector<TileId> tiles,
@@ -21,35 +21,51 @@ Request::Request(
       tiles_(std::move(tiles)),
       onResult_(std::move(onResult))
 {
+    if (tiles_.empty()) {
+        // An empty request is always set to success, but the client/service
+        // is responsible for triggering notifyStatus() in that case.
+        status_ = RequestStatus::Success;
+    }
 }
 
-bool Request::isDone() const
-{
-    return resultCount_ == tiles_.size();
-}
-
-void Request::notifyResult(TileFeatureLayer::Ptr r) {
+void LayerTilesRequest::notifyResult(TileFeatureLayer::Ptr r) {
     if (onResult_)
         onResult_(std::move(r));
     ++resultCount_;
-    if (isDone())
-        notifyDone();
+    if (resultCount_ == tiles_.size()) {
+        setStatus(RequestStatus::Success);
+    }
 }
 
-void Request::notifyDone()
+void LayerTilesRequest::setStatus(RequestStatus s)
 {
-    if (onDone_)
-        onDone_();
-    doneConditionVariable_.notify_all();
+    {
+        std::unique_lock statusLock(statusMutex_);
+        this->status_ = s;
+    }
+    notifyStatus();
 }
 
-void Request::wait()
+void LayerTilesRequest::notifyStatus()
 {
-    std::unique_lock doneLock(doneMutex_);
-    doneConditionVariable_.wait(doneLock, [this]{return isDone();});
+    if (isDone() && onDone_) {
+        // Run the final callback function.
+        onDone_(this->status_);
+    }
+    statusConditionVariable_.notify_all();
 }
 
-nlohmann::json Request::toJson()
+void LayerTilesRequest::wait()
+{
+    std::unique_lock doneLock(statusMutex_);
+    // Extra doneness check is to avoid infinite locking, e.g.
+    // because empty requests were not considered by calling method.
+    if (!isDone()) {
+        statusConditionVariable_.wait(doneLock, [this]{ return isDone(); });
+    }
+}
+
+nlohmann::json LayerTilesRequest::toJson()
 {
     auto tileIds = nlohmann::json::array();
     for (auto const& tid : tiles_)
@@ -61,13 +77,23 @@ nlohmann::json Request::toJson()
     });
 }
 
+RequestStatus LayerTilesRequest::getStatus()
+{
+    return this->status_;
+}
+
+bool LayerTilesRequest::isDone()
+{
+    return status_ != RequestStatus::Open;
+}
+
 struct Service::Controller
 {
-    using Job = std::pair<MapTileKey, Request::Ptr>;
+    using Job = std::pair<MapTileKey, LayerTilesRequest::Ptr>;
 
     std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
     Cache::Ptr cache_;                       // The cache for the service
-    std::list<Request::Ptr> requests_;       // List of requests currently being processed
+    std::list<LayerTilesRequest::Ptr> requests_;       // List of requests currently being processed
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
 
@@ -79,12 +105,13 @@ struct Service::Controller
 
     std::optional<Job> nextJob(DataSourceInfo const& i)
     {
+        // Workers call the nextJob function when they are free.
         // Note: For thread safety, jobsMutex_ must be held
         //  when calling this function.
 
         std::optional<Job> result;
 
-        // Return next job if available
+        // Return next job, if available.
         bool cachedTilesServed = false;
         do {
             cachedTilesServed = false;
@@ -92,10 +119,13 @@ struct Service::Controller
                 auto& request = *reqIt;
                 auto layerIt = i.layers_.find(request->layerId_);
 
+                // Are there tiles left to be processed in the request?
                 if (request->mapId_ == i.mapId_ && layerIt != i.layers_.end()) {
-                    if (request->nextTileIndex_ >= request->tiles_.size())
+                    if (request->nextTileIndex_ >= request->tiles_.size()) {
                         continue;
+                    }
 
+                    // Create result wrapper object.
                     auto tileId = request->tiles_[request->nextTileIndex_++];
                     result = {MapTileKey(), request};
                     result->first.layer_ = layerIt->second->type_;
@@ -103,10 +133,10 @@ struct Service::Controller
                     result->first.layerId_ = request->layerId_;
                     result->first.tileId_ = tileId;
 
-                    // Cache lookup
+                    // Cache lookup.
                     auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
                     if (cachedResult) {
-                        // TODO: Consider TTL
+                        // TODO: Consider TTL.
                         log().debug("Serving cached tile: {}", result->first.toString());
                         request->notifyResult(cachedResult);
                         result.reset();
@@ -115,11 +145,11 @@ struct Service::Controller
                     }
 
                     if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
-                        // Don't work on something that is already being worked on. Instead,
-                        // wait for the work to finish, then send the (hopefully cached) result.
+                        // Don't work on something that is already being worked on.
+                        // Wait for the work to finish, then send the (hopefully cached) result.
                         log().debug("Delaying tile with job in progress: {}",
                                      result->first.toString());
-                        --request->nextTileIndex_;
+                        --(request->nextTileIndex_);
                         result.reset();
                         continue;
                     }
@@ -175,12 +205,13 @@ struct Service::Worker
                 lock,
                 [&, this]()
                 {
-                    if (shouldTerminate_)
+                    if (shouldTerminate_) {
+                        // Set by the controller at shutdown or if a data source
+                        // is removed. All worker instances are expected to terminate.
                         return true;
+                    }
                     nextJob = controller_.nextJob(info_);
-                    if (nextJob)
-                        return true;
-                    return false;
+                    return nextJob.has_value();
                 });
         }
 
@@ -200,9 +231,8 @@ struct Service::Worker
                 controller_.cache_->putTileFeatureLayer(result);
                 controller_.jobsInProgress_.erase(mapTileKey);
                 request->notifyResult(result);
-                // As we have now entered a tile into the cache, it
-                // is time to notify other workers that this tile can
-                // now be served.
+                // As we entered a tile into the cache, notify other workers
+                // that this tile can be served.
                 controller_.jobsAvailable_.notify_all();
             }
         }
@@ -218,8 +248,8 @@ struct Service::Worker
 
 struct Service::Impl : public Service::Controller
 {
-    std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;  // Map of data sources and their corresponding info
-    std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_; // Map of data sources and their corresponding workers
+    std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;
+    std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
 
     explicit Impl(Cache::Ptr cache) : Controller(std::move(cache)) {}
 
@@ -230,7 +260,8 @@ struct Service::Impl : public Service::Controller
                 worker->shouldTerminate_ = true;
             }
         }
-        jobsAvailable_.notify_all();  // Wake up all workers to check shouldTerminate_
+        // Wake up all workers to check shouldTerminate_.
+        jobsAvailable_.notify_all();
 
         for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
             for (auto& worker : dataSourceAndWorkers.second) {
@@ -263,31 +294,32 @@ struct Service::Impl : public Service::Controller
 
         if (workers != dataSourceWorkers_.end())
         {
-            // Signal each worker thread to terminate
+            // Signal each worker thread to terminate.
             for (auto& worker : workers->second) {
                 worker->shouldTerminate_ = true;
             }
             jobsAvailable_.notify_all();
 
-            // Wait for each worker thread to terminate
+            // Wait for each worker thread to terminate.
             for (auto& worker : workers->second) {
                 if (worker->thread_.joinable()) {
                     worker->thread_.join();
                 }
             }
 
-            // Remove workers
+            // Remove workers.
             dataSourceWorkers_.erase(workers);
         }
     }
 
-    void addRequest(Request::Ptr r)
+    // All requests must be validated with canProcess before adding them!
+    void addRequest(LayerTilesRequest::Ptr r)
     {
         if (!r)
-            throw logRuntimeError("Attempt to call Service::addRequestFromJson(nullptr).");
+            throw logRuntimeError("Attempt to call Service::addRequest(nullptr).");
         if (r->isDone()) {
-            // Nothing to do
-            r->notifyDone();
+            // Nothing to do.
+            r->notifyStatus();
             return;
         }
 
@@ -298,10 +330,10 @@ struct Service::Impl : public Service::Controller
         jobsAvailable_.notify_all();
     }
 
-    void abortRequest(Request::Ptr const& r)
+    void abortRequest(LayerTilesRequest::Ptr const& r)
     {
         std::unique_lock lock(jobsMutex_);
-        // Simply Remove the request from the list of requests
+        // Remove the request from the list of requests.
         requests_.remove_if([r](auto&& request) { return r == request; });
     }
 
@@ -330,13 +362,30 @@ void Service::remove(const DataSource::Ptr& dataSource)
     impl_->removeDataSource(dataSource);
 }
 
-Request::Ptr Service::request(Request::Ptr r)
+bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
 {
-    impl_->addRequest(r);
-    return r;
+    bool dataSourcesAvailable = true;
+    for (const auto& r : requests) {
+        if (!hasLayer(r->mapId_, r->layerId_)) {
+            dataSourcesAvailable = false;
+            r->setStatus(RequestStatus::NoDataSource);
+        }
+    }
+    // Second pass either aborts requests or add all to job queue.
+    for (const auto& r : requests) {
+        if (!dataSourcesAvailable) {
+            if (r->getStatus() != RequestStatus::NoDataSource){
+                r->setStatus(RequestStatus::Aborted);
+            }
+        }
+        else {
+            impl_->addRequest(r);
+        }
+    }
+    return dataSourcesAvailable;
 }
 
-void Service::abort(const Request::Ptr& r)
+void Service::abort(const LayerTilesRequest::Ptr& r)
 {
     impl_->abortRequest(r);
 }
@@ -349,6 +398,21 @@ std::vector<DataSourceInfo> Service::info()
 Cache::Ptr Service::cache()
 {
     return impl_->cache_;
+}
+
+bool Service::hasLayer(std::string const& mapId, std::string const& layerId)
+{
+    std::unique_lock lock(impl_->jobsMutex_);
+    // Check that one of the data sources can fulfill the request.
+    for (auto& dataSourceAndInfo : impl_->dataSourceInfo_) {
+        auto& info = dataSourceAndInfo.second;
+        if (mapId != info.mapId_)
+            continue;
+        if (info.layers_.find(layerId) != info.layers_.end()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace mapget

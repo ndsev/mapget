@@ -60,20 +60,22 @@ namespace mapget
 
 namespace py = pybind11;
 
-class PyRequest : public Request {
+class PyRequest : public LayerTilesRequest
+{
 public:
-    using Request::Request;
+    using LayerTilesRequest::LayerTilesRequest;
 
     void notifyResult(TileFeatureLayer::Ptr result) override {
         std::unique_lock lock(bufferMutex_);
         buffer_.push(result);
         bufferSignal_.notify_one();  // Signal that a new result is available
-        Request::notifyResult(result);
+        LayerTilesRequest::notifyResult(result);
     }
 
     TileFeatureLayer::Ptr next() {
         std::unique_lock lock(bufferMutex_);
-        bufferSignal_.wait(lock, [this](){ return !buffer_.empty() || isDone(); });
+        bufferSignal_.wait(lock, [this](){ return !buffer_.empty() ||
+                                 this->getStatus() != RequestStatus::Open; });
         if (buffer_.empty()) {
             throw py::stop_iteration();
         } else {

@@ -251,7 +251,7 @@ void main(int argc, char const *argv[])
      HttpClient client("localhost", service.port());
 
      auto receivedTileCount = 0;
-     client.request(std::make_shared<Request>(
+     client.request(std::make_shared<LayerTilesRequest>(
          "Tropico",
          "WayLayer",
          std::vector<TileId>{{1234, 5678, 9112, 1234}},
@@ -264,3 +264,16 @@ void main(int argc, char const *argv[])
 ```
 
 Keep in mind, that you can also run a `mapget` service without any RPCs in your application. Check out [`examples/cpp/local-datasource`](examples/cpp/local-datasource/main.cpp) on how to do that.
+
+### erdblick-mapget-datasource communication pattern
+
+TODO: expand and polish this section stub.
+
+1. Client (`erdblick` etc.) sends a composite list of requests to `mapget`. Requests are batched because browsers limit the number of concurrent requests to one domain, but we want to stream potentially hundreds of tiles.
+
+2. `mapget` checks if all requested map+layer combinations can be fulfilled with data sources
+   - yes: create tile requests, stream responses back to client,
+   - no: return 400 Bad Request (client needs to refresh its info on map availability).
+
+3. A data source drops offline / `mapget` request fails during processing?
+   - `cpp-httplib` cleanup callback returns timeout response (probably status code 408).

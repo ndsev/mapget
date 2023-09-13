@@ -153,6 +153,7 @@ protected:
     std::string nodeId_;
     std::string mapId_;
     std::shared_ptr<LayerInfo> layerInfo_;
+    // TODO what is the error string for? Does it follow some standard?
     std::optional<std::string> error_;
     std::chrono::time_point<std::chrono::system_clock> timestamp_;
     std::optional<std::chrono::milliseconds> ttl_;

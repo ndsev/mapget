@@ -12,8 +12,8 @@ struct HttpService::Impl
 
     explicit Impl(HttpService& self) : self_(self) {}
 
-    // Use a shared buffer for the responses and a mutex for thread safety
-    struct TileLayerRequestState
+    // Use a shared buffer for the responses and a mutex for thread safety.
+    struct HttpTilesRequestState
     {
         static constexpr auto binaryMimeType = "application/binary";
         static constexpr auto jsonlMimeType = "application/jsonl";
@@ -24,10 +24,10 @@ struct HttpService::Impl
 
         std::stringstream buffer_;
         std::string responseType_;
-        std::vector<Request::Ptr> requests_;
+        std::vector<LayerTilesRequest::Ptr> requests_;
         TileLayerStream::FieldOffsetMap fieldsOffsets_;
 
-        void addRequestFromJson(nlohmann::json const& requestJson)
+        void parseRequestFromJson(nlohmann::json const& requestJson)
         {
             std::string mapId = requestJson["mapId"];
             std::string layerId = requestJson["layerId"];
@@ -36,17 +36,17 @@ struct HttpService::Impl
             for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>())
                 tileIds.emplace_back(tid);
             requests_.push_back(
-                std::make_shared<Request>(mapId, layerId, std::move(tileIds), nullptr));
+                std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds), nullptr));
         }
 
         void setResponseType(std::string const& s)
         {
             responseType_ = s;
-            if (responseType_ == TileLayerRequestState::binaryMimeType)
+            if (responseType_ == HttpTilesRequestState::binaryMimeType)
                 return;
-            if (responseType_ == TileLayerRequestState::jsonlMimeType)
+            if (responseType_ == HttpTilesRequestState::jsonlMimeType)
                 return;
-            if (responseType_ == TileLayerRequestState::anyMimeType) {
+            if (responseType_ == HttpTilesRequestState::anyMimeType) {
                 responseType_ = binaryMimeType;
                 return;
             }
@@ -71,51 +71,76 @@ struct HttpService::Impl
         }
     };
 
+    /**
+     * Wraps around the generic mapget service's request() function
+     * to include httplib request decoding and response encoding.
+     */
     void handleTilesRequest(const httplib::Request& req, httplib::Response& res)
     {
-        // Parse the JSON request
+        // Parse the JSON request.
         nlohmann::json j = nlohmann::json::parse(req.body);
         auto requestsJson = j["requests"];
-        // TODO: Sanity-check length of requests-array. The user is expected
-        //  to create one map-layer request object per map-layer combination.
-        //  Pumping up the number of nested per-map-layer requests (extreme: one map-layer
-        //  request object per tile) would be a great way to stall the server for other users.
-        auto state = std::make_shared<TileLayerRequestState>();
+
+        // TODO: Limit number of requests to avoid DoS to other users.
+        // Within one HTTP request, all requested tiles from the same map+layer
+        // combination should be in a single LayerTilesRequest.
+        auto state = std::make_shared<HttpTilesRequestState>();
         for (auto& requestJson : requestsJson) {
-            state->addRequestFromJson(requestJson);
+            state->parseRequestFromJson(requestJson);
         }
 
-        // Parse maxKnownFieldIds
+        // Parse maxKnownFieldIds.
         if (j.contains("maxKnownFieldIds")) {
             for (auto& item : j["maxKnownFieldIds"].items()) {
                 state->fieldsOffsets_[item.key()] = item.value().get<simfil::FieldId>();
             }
         }
 
-        // Determine response type
+        // Determine response type.
         state->setResponseType(req.get_header_value("Accept"));
 
-        // Process requests
+        // Process requests.
         for (auto& request : state->requests_) {
             request->onResult_ = [state](auto&& tileFeatureLayer)
             {
                 state->addResult(tileFeatureLayer);
             };
-            request->onDone_ = [state]
+            request->onDone_ = [state](RequestStatus r)
             {
                 state->resultEvent_.notify_one();
             };
-            self_.request(request);
+        }
+        auto canProcess = self_.request(state->requests_);
+
+        if (!canProcess) {
+            // Send a status report detailing for each request
+            // whether its data source is unavailable or it was aborted.
+            res.status = 400;
+            std::vector<int> requestStatuses{};
+            for (const auto& r : state->requests_) {
+                requestStatuses.push_back(r->getStatus());
+            }
+            res.set_content(
+                nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
+                "application/json");
+            return;
         }
 
-        // Set up the streaming response
+        // For efficiency, set up httplib to stream tile layer responses to client:
+        // (1) Lambda continuously supplies response data to httplib's DataSink,
+        //     picking up data from state->buffer_ until all tile requests are done.
+        //     Then, signal sink->done() to close the stream with a 200 status.
+        //     See httplib::write_content_without_length(...) too.
+        // (2) Lambda acts as a cleanup routine, triggered by httplib upon request wrap-up.
+        //     The success flag indicates if wrap-up was due to sink->done() or external factors
+        //     like network errors or request aborts in lengthy tile requests (e.g., map-viewer).
         res.set_content_provider(
             state->responseType_,
             [state](size_t offset, httplib::DataSink& sink)
             {
                 std::unique_lock lock(state->mutex_);
 
-                // Wait until there is data to be read
+                // Wait until there is data to be read.
                 std::string strBuf;
                 bool allDone = false;
                 state->resultEvent_.wait(
@@ -133,17 +158,18 @@ struct HttpService::Impl
                 if (!strBuf.empty()) {
                     log().debug("Streaming {} bytes...", strBuf.size());
                     sink.write(strBuf.data(), strBuf.size());
-                    state->buffer_.str("");  // Clear buffer after reading
+                    state->buffer_.str("");  // Clear buffer after reading.
                 }
 
-                // Call sink.done() when all requests are done
+                // Call sink.done() when all requests are done.
                 if (allDone) {
                     sink.done();
                 }
 
                 return true;
             },
-            // Cleanup callback to abort the requests
+            // Network error/timeout of request to datasource:
+            // cleanup callback to abort the requests.
             [state, this](bool success)
             {
                 if (!success) {

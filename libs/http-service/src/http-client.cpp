@@ -28,7 +28,7 @@ struct HttpClient::Impl {
     {
         auto mapIt = sources_.find(std::string(map));
         if (mapIt == sources_.end())
-            throw logRuntimeError("Could nto find map data source info");
+            throw logRuntimeError("Could not find map data source info");
         return mapIt->second.getLayer(std::string(layer));
     }
 };
@@ -45,10 +45,13 @@ std::vector<DataSourceInfo> HttpClient::sources() const
     return result;
 }
 
-Request::Ptr HttpClient::request(const Request::Ptr& request)
+LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request)
 {
-    if (request->isDone())
-        request->notifyDone();
+    // Finalize requests that did not contain any tiles.
+    if (request->isDone()) {
+        request->notifyStatus();
+        return request;
+    }
 
     auto reader = std::make_unique<TileLayerStream::Reader>(
         [this](auto&& mapId, auto&& layerId){return impl_->resolve(mapId, layerId);},
@@ -64,8 +67,16 @@ Request::Ptr HttpClient::request(const Request::Ptr& request)
         json::object({{"requests", json::array({request->toJson()})}}).dump(),
         "application/json");
 
-    if (tileResponse && tileResponse->status == 200)
-        reader->read(tileResponse->body);
+    if (tileResponse) {
+        if (tileResponse->status == 200) {
+            reader->read(tileResponse->body);
+        }
+        else if (tileResponse->status == 400) {
+            request->setStatus(mapget::RequestStatus::NoDataSource);
+        }
+        // TODO if multiple LayerTileRequests are ever sent by this client,
+        //  additionally handle RequestStatus::Aborted.
+    }
 
     return request;
 }

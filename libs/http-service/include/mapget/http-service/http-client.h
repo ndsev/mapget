@@ -7,7 +7,9 @@
 
 namespace mapget {
 
-/** Client class, which implements asynchronous fetching from a mapget HTTP service.*/
+/**
+ * Client class, which implements asynchronous fetching from a mapget HTTP service.
+ */
 class HttpClient
 {
 public:
@@ -26,7 +28,7 @@ public:
     /**
      * Post a Request for a number of tiles from a particular map layer.
      */
-    Request::Ptr request(Request::Ptr const& request);
+    LayerTilesRequest::Ptr request(LayerTilesRequest::Ptr const& request);
 
 private:
     struct Impl;

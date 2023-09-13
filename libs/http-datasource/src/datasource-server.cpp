@@ -44,6 +44,8 @@ void DataSourceServer::setup(httplib::Server& server)
     server.Get(
         "/tile",
         [this](const httplib::Request& req, httplib::Response& res) {
+
+            // Extract parameters from request.
             auto layerIdParam = req.get_param_value("layer");
             auto layer = impl_->info_.getLayer(layerIdParam);
 
@@ -57,6 +59,7 @@ void DataSourceServer::setup(httplib::Server& server)
             if (req.has_param("responseType"))
                 responseType = req.get_param_value("responseType");
 
+            // Create response TileFeatureLayer.
             auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
                 tileIdParam,
                 impl_->info_.nodeId_,
@@ -66,7 +69,7 @@ void DataSourceServer::setup(httplib::Server& server)
             if (impl_->tileCallback_)
                 impl_->tileCallback_(tileFeatureLayer);
 
-            // Serialize TileFeatureLayer using TileLayerStream
+            // Serialize TileFeatureLayer using TileLayerStream.
             if (responseType == "binary") {
                 std::stringstream content;
                 TileLayerStream::FieldOffsetMap fieldOffsets{

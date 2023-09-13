@@ -10,31 +10,41 @@
 namespace mapget
 {
 
+enum RequestStatus {
+    Open = 0x0,
+    Success = 0x1, /** The request has been fully satisfied. */
+    NoDataSource = 0x2, /** No data source could provide the requested map + layer. */
+    Aborted = 0x3 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
+};
+
 /**
  * Client request for map data, which consists of a map id,
  * a map layer id, an array of tile ids, and a callback function
  * which signals results.
  */
-class Request
+class LayerTilesRequest
 {
     friend class Service;
     friend class HttpClient;
 
 public:
-    using Ptr = std::shared_ptr<Request>;
+    using Ptr = std::shared_ptr<LayerTilesRequest>;
 
     /** Construct a request with the relevant parameters. */
-    Request(
+    LayerTilesRequest(
         std::string mapId,
         std::string layerId,
         std::vector<TileId> tiles,
         std::function<void(TileFeatureLayer::Ptr)> onResult);
 
-    /** Check if the request has been fully satisfied. */
-    [[nodiscard]] bool isDone() const;
+    /** Get the current status of the request. */
+    RequestStatus getStatus();
 
     /** Wait for the request to be done. */
     void wait();
+
+    /** Check whether the request is done or still running. */
+    bool isDone();
 
     /** The map id for which this request is dedicated. */
     std::string mapId_;
@@ -44,7 +54,7 @@ public:
 
     /**
      * The map tile ids for which this request is dedicated.
-     * Must not be empty. Result tiles will be processed in the given order
+     * Must not be empty. Result tiles will be processed in the given order.
      */
     std::vector<TileId> tiles_;
 
@@ -56,13 +66,15 @@ public:
     /**
      * The callback function which is called when all tiles have been processed.
      */
-    std::function<void()> onDone_;
+    std::function<void(RequestStatus)> onDone_;
 
 protected:
     virtual void notifyResult(TileFeatureLayer::Ptr);
-    void notifyDone();
+    void setStatus(RequestStatus s);
+    void notifyStatus();
     nlohmann::json toJson();
 
+private:
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
@@ -70,9 +82,10 @@ protected:
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;
 
-    // Mutex/Condition variable for done-signal
-    std::mutex doneMutex_;
-    std::condition_variable doneConditionVariable_;
+    // Mutex/condition variable for reading/setting request status.
+    std::mutex statusMutex_;
+    std::condition_variable statusConditionVariable_;
+    RequestStatus status_ = Open;
 };
 
 /**
@@ -110,22 +123,26 @@ public:
     void remove(DataSource::Ptr const& dataSource);
 
     /**
-     * Request some map data tiles. Will throw an exception if
-     * there is no worker which is able to process the request.
-     * Note: The same request object should only ever be passed
-     *  to one service. Otherwise, there is undefined behavior.
-     * @return The `r` parameter value is returned.
+     * Request some map data tiles. If the requested map+layer
+     * combination is available, will schedule a job to retrieve
+     * the tiles. A request object should only ever be passed
+     * to one service. Otherwise, there is undefined behavior.
+     * @return false if the requested map+layer is not available
+     * from any connected DataSource, true otherwise.
      */
-    Request::Ptr request(Request::Ptr r);
+    bool request(std::vector<LayerTilesRequest::Ptr> requests);
 
     /**
      * Abort the given request. The request will be removed from
      * the processing queue, and forcefully marked as done.
      */
-    void abort(Request::Ptr const& r);
+    void abort(LayerTilesRequest::Ptr const& r);
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info();
+
+    /** Checks if a DataSource can serve the requested map+layer combination. */
+    bool hasLayer(std::string const& mapId, std::string const& layerId);
 
     /** Get the Cache which this service was constructed with. */
     [[nodiscard]] Cache::Ptr cache();

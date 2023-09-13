@@ -107,7 +107,7 @@ struct FetchCommand
         int port = std::stoi(server_.substr(delimiterPos+1, server_.size()));
 
         mapget::HttpClient cli(host, port);
-        auto request = std::make_shared<Request>(
+        auto request = std::make_shared<LayerTilesRequest>(
             map_, layer_, std::vector<TileId>{tiles_.begin(), tiles_.end()},
             [](auto&& tile){
                 if (log().level() == spdlog::level::trace) {
