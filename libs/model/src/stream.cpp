@@ -62,10 +62,15 @@ bool TileLayerStream::Reader::continueReading()
 
     if (nextValueType_ == MessageType::TileFeatureLayer)
     {
-        onParsedLayer_(std::make_shared<TileFeatureLayer>(
+        auto start = std::chrono::system_clock::now();
+        auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
             buffer_,
             layerInfoProvider_,
-            [this](auto&& nodeId){return (*fieldCacheProvider_)(nodeId);}));
+            [this](auto&& nodeId){return (*fieldCacheProvider_)(nodeId);});
+        // Calculate duration
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
+        log().debug("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
+        onParsedLayer_(tileFeatureLayer);
     }
     else if (nextValueType_ == MessageType::Fields)
     {
@@ -76,6 +81,11 @@ bool TileLayerStream::Reader::continueReading()
 
     currentPhase_ = Phase::ReadHeader;
     return true;
+}
+
+std::shared_ptr<TileLayerStream::CachedFieldsProvider> TileLayerStream::Reader::fieldDictCache()
+{
+    return fieldCacheProvider_;
 }
 
 TileLayerStream::Writer::Writer(
@@ -103,11 +113,15 @@ void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLaye
 
     // Send actual tileFeatureLayer
     std::stringstream serializedFeatureLayer;
+    auto start = std::chrono::system_clock::now();
     tileFeatureLayer->write(serializedFeatureLayer);
-    sendMessage(serializedFeatureLayer.str(), MessageType::TileFeatureLayer);
+    auto bytes = serializedFeatureLayer.str();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
+    log().debug("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
+    sendMessage(std::move(bytes), MessageType::TileFeatureLayer);
 }
 
-void TileLayerStream::Writer::sendMessage(std::string const& bytes, TileLayerStream::MessageType msgType)
+void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::MessageType msgType)
 {
     std::stringstream message;
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(message);
@@ -147,6 +161,14 @@ std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::operator()(const 
             fieldsPerNodeId_.emplace(nodeId, std::make_shared<Fields>(std::string(nodeId)));
         return newIt->second;
     }
+}
+
+TileLayerStream::FieldOffsetMap TileLayerStream::CachedFieldsProvider::fieldDictOffsets() const
+{
+    auto result = FieldOffsetMap();
+    for (auto const& [nodeId, fieldsDict] : fieldsPerNodeId_)
+        result.emplace(nodeId, fieldsDict->highest());
+    return result;
 }
 
 }

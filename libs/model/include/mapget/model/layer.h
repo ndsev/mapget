@@ -47,7 +47,13 @@ struct MapTileKey
     /** Allow default ctor. */
     MapTileKey() = default;
 
-    /** Convert the key to a string. */
+    /** Convert the key to a string. The string will be in the form of
+     *  "(0):(1):(2):(3)", with
+     *   (0) being the layer type enum name,
+     *   (1) being the map id,
+     *   (2) being the layer id,
+     *   (3) being the hexadecimal tile id.
+     */
     [[nodiscard]] std::string toString() const;
 
     /** Operator <, allows this struct to be used as an std::map key. */

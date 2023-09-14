@@ -60,11 +60,16 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
 
     using namespace nlohmann;
 
-    // TODO: Currently, cpp-httplib POST does not support async responses.
-    //  Those are only supported by GET.
+    // TODO: Currently, cpp-httplib client-POST does not support async responses.
+    //  Those are only supported by GET. So, currently, this HttpClient
+    //  does not profit from the streaming response. However, erdblick is
+    //  is fully able to process async responses as it uses the browser fetch()-API.
     auto tileResponse = impl_->client_.Post(
         "/tiles",
-        json::object({{"requests", json::array({request->toJson()})}}).dump(),
+        json::object({
+            {"requests", json::array({request->toJson()})},
+            {"maxKnownFieldIds", reader->fieldDictCache()->fieldDictOffsets()}
+        }).dump(),
         "application/json");
 
     if (tileResponse) {
