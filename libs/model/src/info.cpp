@@ -71,7 +71,7 @@ nlohmann::json Version::toJson() const
     return nlohmann::json{{"major", major_}, {"minor", minor_}, {"patch", patch_}};
 }
 
-UniqueIdPart UniqueIdPart::fromJson(const nlohmann::json& j)
+IdPart IdPart::fromJson(const nlohmann::json& j)
 {
     try {
         return {
@@ -86,10 +86,10 @@ UniqueIdPart UniqueIdPart::fromJson(const nlohmann::json& j)
     }
 }
 
-nlohmann::json UniqueIdPart::toJson() const
+nlohmann::json IdPart::toJson() const
 {
     return nlohmann::json{
-        {"partId", partId_},
+        {"partId", idPartLabel_},
         {"description", description_},
         {"datatype", datatype_},
         {"isSynthetic", isSynthetic_},
@@ -99,11 +99,11 @@ nlohmann::json UniqueIdPart::toJson() const
 FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
 {
     try {
-        std::vector<std::vector<UniqueIdPart>> idCompositions;
+        std::vector<std::vector<IdPart>> idCompositions;
         for (auto& item : j.at("uniqueIdCompositions")) {
-            std::vector<UniqueIdPart> idParts;
+            std::vector<IdPart> idParts;
             for (auto& idPart : item) {
-                idParts.push_back(UniqueIdPart::fromJson(idPart));
+                idParts.push_back(IdPart::fromJson(idPart));
             }
             idCompositions.push_back(idParts);
         }

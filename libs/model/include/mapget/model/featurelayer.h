@@ -101,12 +101,20 @@ public:
     /**
      * Create a new feature id. Use this function to create a reference to another
      * feature. The created feature id will not use the common feature id prefix from
-     * this tile feature layer.
-     * TODO what is the common feature id prefix? Why is this skipped here?
+     * this tile feature layer, since the reference may be to a feature stored in a
+     * different tile.
      */
     model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,
         KeyValuePairs const& featureIdParts);
+
+    /**
+     * TODO description.
+     */
+    bool validFeatureId(
+        FeatureTypeInfo const& typeId,
+        KeyValuePairs const& featureIdParts,
+        bool includeTilePrefix);
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.

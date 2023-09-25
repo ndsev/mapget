@@ -67,28 +67,29 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {LayerType::GLTF, "GLTF"},
     })
 
-/** Structure to represent a part of a unique feature id composition. */
-struct UniqueIdPart
+/** Structure to represent a part of a feature id composition. */
+struct IdPart
 {
-    /** Unique identifier part */
-    std::string partId_;
+    /** Label/identifier for this ID part.
+     * Unique under all ID parts of a feature. */
+    std::string idPartLabel_;
 
-    /** Description of the unique identifier */
+    /** Description of the identifier. */
     std::string description_;
 
-    /** Datatype of the unique identifier */
+    /** Data type of the identifier. */
     IdPartDataType datatype_;
 
     /** Is the identifier synthetic or part of a map specification? */
     bool isSynthetic_ = false;
 
-    /** Is the identifier actually optional? */
+    /** Is the identifier optional in feature queries? */
     bool isOptional_ = false;
 
-    /** Create UniqueIdPart from JSON. */
-    static UniqueIdPart fromJson(const nlohmann::json& j);
+    /** Create IdPart from JSON. */
+    static IdPart fromJson(const nlohmann::json& j);
 
-    /** Serialize UniqueIdPart to JSON. */
+    /** Serialize IdPart to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
 };
 
@@ -102,7 +103,7 @@ struct FeatureTypeInfo
      * List of allowed unique id compositions (each id composition is a list of id parts)
      * A single id composition must never have more than 16 parts.
      */
-    std::vector<std::vector<UniqueIdPart>> uniqueIdCompositions_;
+    std::vector<std::vector<IdPart>> uniqueIdCompositions_;
 
     /**
      * Deserializes a FeatureTypeInfo object from JSON.

@@ -83,66 +83,110 @@ TileFeatureLayer::TileFeatureLayer(
 
 TileFeatureLayer::~TileFeatureLayer() = default;
 
+/*
+ * Checks if featureIdParts match one of the uniqueIdComposition specifications.
+ * The order of values in KeyValuePairs must be the same as in the composition!
+ */
+bool TileFeatureLayer::validFeatureId(
+    FeatureTypeInfo const& typeId,
+    KeyValuePairs const& featureIdParts,
+    bool includeTilePrefix) {
+
+    auto featureIdIter = featureIdParts.begin();
+    bool idCompositionMatches = true;
+    bool prefixSkipped = false;
+
+    if (!this->featureIdPrefix().has_value()) {
+        // TODO define what to do in this case.
+        // Must a feature ID prefix exist if includeTilePrefix is set to true?
+        prefixSkipped = true;
+    }
+
+    if (!prefixSkipped && includeTilePrefix) {
+        // TODO do featureIdPrefix and candidateComposition have the same structure?
+        // Then create separate function for matching these to a list of key value pairs,
+        // with option that it's ok to not exhaust key value pairs in case we're matching
+        // featureIdPrefix.
+        // Also need to pass the index from which to continue matching? Pointer to pointer?
+
+        auto& nextKeyValuePair = *featureIdIter;
+
+        for (auto const& [fieldNameId, fieldValue] :
+             this->featureIdPrefix().value()->fields()) {
+
+            if (featureIdIter == featureIdParts.end()) {
+                // The feature ID should be longer than the tile prefix.
+                return false;
+            }
+
+            // Check that the field name matches.
+            auto fieldNameStr = *fieldNames()->resolve(fieldNameId);
+            if (fieldNameStr != nextKeyValuePair.first) {
+                return false;
+            }
+
+            // TODO validate value types.
+            // Values are variants with one out of the predefined types:
+            // check which one via getIndex()/index() call or something like that).
+            // Also check that values in fields of type
+            // {IdPartDataType::I32, "I32"},
+            // {IdPartDataType::U32, "U32"},
+            // are not bigger than the specified int size.
+            // And that {IdPartDataType::UUID128, "UUID128"} is exactly 16 bytes.
+
+            ++featureIdIter;
+        }
+    }
+
+    for (auto& candidateComposition : typeId.uniqueIdCompositions_) {
+        // TODO validate that it's intentional in FeatureLayer test
+        //  that the tile prefix is a part of composite specification.
+
+        for (auto& part : candidateComposition) {
+
+            // Need a new iterator for each candidate composition we're checking.
+            auto tempIdIterator = featureIdIter;
+            auto& nextKeyValuePair = *tempIdIterator;
+
+            if (tempIdIterator == featureIdParts.end()) {
+                idCompositionMatches = false;
+                break;
+            }
+
+            if (part.idPartLabel_ != nextKeyValuePair.first) {
+                idCompositionMatches = false;
+                break;
+            }
+            // TODO validate value types, see above.
+
+            ++tempIdIterator;
+        }
+
+        if (idCompositionMatches && featureIdIter == featureIdParts.end()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const std::string_view& typeId,
     const KeyValuePairs& featureIdParts)
 {
-    // TODO: Validate ID parts.
-    // For the feature type requested, retrieve possible uniqueIdCompositions.
-    // Then go through the list and check that keys in the provided feature ID
-    // parts match one of the uniqueIdComposition specs?
-    // And that the values in KeyValuePairs have the right type?
-    // Must the order of values in KeyValuePairs match the composition order?
     if (featureIdParts.empty()) {
-        // TODO return nullptr or something.
-        // return simfil::shared_model_ptr<Feature>(); does not work.
+        // TODO throw exception and document said exception.
     }
 
     for (auto& type : this->layerInfo_->featureTypes_) {
-        if (type.name_ != typeId) // TODO check how to compare strings.
+        if (type.name_ != typeId) {
             continue;
-
-        // TODO turn into function returning the right ID composition or bool.
-        std::vector<UniqueIdPart>* matchingComposition = nullptr;
-        for (auto& candidateComposition : type.uniqueIdCompositions_) {
-
-            auto featureIdIter = featureIdParts.begin();
-            bool idCompositionFound = true;
-            bool prefixSkipped = false;
-
-            for (auto& part : candidateComposition) {
-                auto& nextKeyValuePair = *featureIdIter;
-                if (!prefixSkipped && this->featureIdPrefix().has_value()) {
-                    // TODO handle ID prefix.
-                    prefixSkipped = true;
-                    continue;
-                }
-
-                if (featureIdIter == featureIdParts.end() & !part.isOptional_) {
-                    idCompositionFound = false;
-                    break;
-                }
-                if (part.isOptional_) {
-                    // TODO can there be several optional fields? At any position?
-                    // Nested checking for optional fields will be computationally expensive.
-                }
-                if (part.partId_ != nextKeyValuePair.first) {
-                    idCompositionFound = false;
-                    break;
-                }
-                // TODO type match check.
-
-                ++featureIdIter;
-            }
-            if (idCompositionFound && featureIdIter == featureIdParts.end()) {
-                matchingComposition = &candidateComposition;
-                break;
-            }
         }
-        if (!matchingComposition) {
-            // Just for development.
-            throw logRuntimeError("Failed to find ID composition.");
+
+        if (!validFeatureId(type, featureIdParts, false)) {
+            throw logRuntimeError("Could not find a matching ID composition.");
         }
+        break;
     }
 
     auto featureIdIndex = impl_->featureIds_.size();
