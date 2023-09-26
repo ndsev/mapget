@@ -103,6 +103,7 @@ public:
      * feature. The created feature id will not use the common feature id prefix from
      * this tile feature layer, since the reference may be to a feature stored in a
      * different tile.
+     * TODO bool parameter to specify whether to add the feature id prefix?
      */
     model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,
@@ -114,7 +115,7 @@ public:
     bool validFeatureId(
         FeatureTypeInfo const& typeId,
         KeyValuePairs const& featureIdParts,
-        bool includeTilePrefix);
+        bool excludeTilePrefix);
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.

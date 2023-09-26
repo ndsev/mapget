@@ -90,39 +90,43 @@ TileFeatureLayer::~TileFeatureLayer() = default;
 bool TileFeatureLayer::validFeatureId(
     FeatureTypeInfo const& typeId,
     KeyValuePairs const& featureIdParts,
-    bool includeTilePrefix) {
+    bool excludeTilePrefix) {
 
-    auto featureIdIter = featureIdParts.begin();
-    bool idCompositionMatches = true;
-    bool prefixSkipped = false;
+    for (auto& candidateComposition : typeId.uniqueIdCompositions_) {
+        auto compositionPart = candidateComposition.begin();
 
-    if (!this->featureIdPrefix().has_value()) {
-        // TODO define what to do in this case.
-        // Must a feature ID prefix exist if includeTilePrefix is set to true?
-        prefixSkipped = true;
-    }
+        if (this->featureIdPrefix().has_value() && excludeTilePrefix) {
 
-    if (!prefixSkipped && includeTilePrefix) {
-        // TODO do featureIdPrefix and candidateComposition have the same structure?
-        // Then create separate function for matching these to a list of key value pairs,
-        // with option that it's ok to not exhaust key value pairs in case we're matching
-        // featureIdPrefix.
-        // Also need to pass the index from which to continue matching? Pointer to pointer?
+            // Iterate past the prefix in the unique id composition.
+            auto featureIdPrefixSize = this->featureIdPrefix().value()->size();
 
-        auto& nextKeyValuePair = *featureIdIter;
+            if (featureIdPrefixSize >= candidateComposition.size()) {
+                // TODO raise error somewhere else.
+                throw logRuntimeError("Tile prefix is longer than a composition.");
+            }
+            while (featureIdPrefixSize > 0) {
+                ++compositionPart;
+                --featureIdPrefixSize;
+            }
+        }
 
-        for (auto const& [fieldNameId, fieldValue] :
-             this->featureIdPrefix().value()->fields()) {
+        bool idCompositionMatches = true;
+        // Need a new iterator for each candidate composition we're checking.
+        auto featureIdIter = featureIdParts.begin();
 
+        while (compositionPart != candidateComposition.end()) {
+            auto& featureKeyValuePair = *featureIdIter;
+
+            // Have we exhausted feature ID parts?
             if (featureIdIter == featureIdParts.end()) {
-                // The feature ID should be longer than the tile prefix.
-                return false;
+                idCompositionMatches = false;
+                break;
             }
 
-            // Check that the field name matches.
-            auto fieldNameStr = *fieldNames()->resolve(fieldNameId);
-            if (fieldNameStr != nextKeyValuePair.first) {
-                return false;
+            // Does this ID part's field name match?
+            if (compositionPart->idPartLabel_ != featureKeyValuePair.first) {
+                idCompositionMatches = false;
+                break;
             }
 
             // TODO validate value types.
@@ -135,33 +139,10 @@ bool TileFeatureLayer::validFeatureId(
             // And that {IdPartDataType::UUID128, "UUID128"} is exactly 16 bytes.
 
             ++featureIdIter;
-        }
-    }
-
-    for (auto& candidateComposition : typeId.uniqueIdCompositions_) {
-        // TODO validate that it's intentional in FeatureLayer test
-        //  that the tile prefix is a part of composite specification.
-
-        for (auto& part : candidateComposition) {
-
-            // Need a new iterator for each candidate composition we're checking.
-            auto tempIdIterator = featureIdIter;
-            auto& nextKeyValuePair = *tempIdIterator;
-
-            if (tempIdIterator == featureIdParts.end()) {
-                idCompositionMatches = false;
-                break;
-            }
-
-            if (part.idPartLabel_ != nextKeyValuePair.first) {
-                idCompositionMatches = false;
-                break;
-            }
-            // TODO validate value types, see above.
-
-            ++tempIdIterator;
+            ++compositionPart;
         }
 
+        // Have we checked the entire length of the feature ID?
         if (idCompositionMatches && featureIdIter == featureIdParts.end()) {
             return true;
         }
@@ -178,12 +159,14 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
         // TODO throw exception and document said exception.
     }
 
-    for (auto& type : this->layerInfo_->featureTypes_) {
+    auto typesIterator = this->layerInfo_->featureTypes_.begin();
+    while (typesIterator != this->layerInfo_->featureTypes_.end()) {
+        auto& type = *typesIterator;
         if (type.name_ != typeId) {
             continue;
         }
 
-        if (!validFeatureId(type, featureIdParts, false)) {
+        if (!validFeatureId(type, featureIdParts, true)) {
             throw logRuntimeError("Could not find a matching ID composition.");
         }
         break;
