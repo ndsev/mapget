@@ -101,7 +101,7 @@ bool TileFeatureLayer::validFeatureId(
             auto featureIdPrefixSize = this->featureIdPrefix().value()->size();
 
             if (featureIdPrefixSize >= candidateComposition.size()) {
-                // TODO raise error somewhere else.
+                // TODO check and raise error when the tile prefix is set?
                 throw logRuntimeError("Tile prefix is longer than a composition.");
             }
             while (featureIdPrefixSize > 0) {
@@ -129,14 +129,46 @@ bool TileFeatureLayer::validFeatureId(
                 break;
             }
 
-            // TODO validate value types.
-            // Values are variants with one out of the predefined types:
-            // check which one via getIndex()/index() call or something like that).
-            // Also check that values in fields of type
-            // {IdPartDataType::I32, "I32"},
-            // {IdPartDataType::U32, "U32"},
-            // are not bigger than the specified int size.
-            // And that {IdPartDataType::UUID128, "UUID128"} is exactly 16 bytes.
+            // Does the ID part's value match?
+            auto& compositionDataType = compositionPart->datatype_;
+
+            if (std::holds_alternative<int64_t>(featureKeyValuePair.second)) {
+                auto value = std::get<int64_t>(featureKeyValuePair.second);
+                switch (compositionDataType) {
+                case IdPartDataType::I32:
+                    // Value must fit an I32.
+                    if (value < INT32_MIN || value > INT32_MAX) {
+                        idCompositionMatches = false;
+                    }
+                    break;
+                case IdPartDataType::U32:
+                    if (value < 0 || value > UINT32_MAX) {
+                        idCompositionMatches = false;
+                    }
+                    break;
+                case IdPartDataType::U64:
+                    if (value < 0 || value > UINT64_MAX) {
+                        idCompositionMatches = false;
+                    }
+                    break;
+                default:;
+                }
+            }
+            else if (std::holds_alternative<std::string_view>(featureKeyValuePair.second)) {
+                auto value = std::get<std::string_view>(featureKeyValuePair.second);
+                // UUID128 should be a 128 bit sequence.
+                if (compositionDataType == IdPartDataType::UUID128 &&
+                        value.size() != 16) {
+                    idCompositionMatches = false;
+                }
+            }
+            else {
+                throw logRuntimeError("Id part data type not supported!");
+            }
+
+            if (!idCompositionMatches) {
+                break;
+            }
 
             ++featureIdIter;
             ++compositionPart;
@@ -156,7 +188,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const KeyValuePairs& featureIdParts)
 {
     if (featureIdParts.empty()) {
-        // TODO throw exception and document said exception.
+        throw logRuntimeError("Tried to create an empty feature ID!");
     }
 
     auto typesIterator = this->layerInfo_->featureTypes_.begin();

@@ -87,12 +87,12 @@ public:
 
     /**
      * Creates a new feature and insert it into this tile layer.
-     * The unique identifying information, prepended with the featureIdPrefix,
+     * The featureIdParts (which do not include the featureIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
-     * within the associated layer.
+     * within the associated layer, or a rutime error will be raised.
      * @param typeId Specifies the type of the feature.
      * @param featureIdParts Uniquely identifying information for the feature,
-     * according to the requirements of typeId.
+     * according to the requirements of typeId. Must not be empty.
      */
     model_ptr<Feature> newFeature(
         std::string_view const& typeId,
