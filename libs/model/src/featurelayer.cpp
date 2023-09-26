@@ -95,7 +95,7 @@ bool TileFeatureLayer::validFeatureId(
     for (auto& candidateComposition : typeId.uniqueIdCompositions_) {
         auto compositionPart = candidateComposition.begin();
 
-        if (this->featureIdPrefix().has_value() && excludeTilePrefix) {
+        if (excludeTilePrefix && this->featureIdPrefix().has_value()) {
 
             // Iterate past the prefix in the unique id composition.
             auto featureIdPrefixSize = this->featureIdPrefix().value()->size();

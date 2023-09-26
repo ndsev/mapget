@@ -92,7 +92,7 @@ public:
      * within the associated layer, or a rutime error will be raised.
      * @param typeId Specifies the type of the feature.
      * @param featureIdParts Uniquely identifying information for the feature,
-     * according to the requirements of typeId. Must not be empty.
+     * according to the requirements of typeId. If empty, an error will be thrown.
      */
     model_ptr<Feature> newFeature(
         std::string_view const& typeId,
@@ -103,14 +103,18 @@ public:
      * feature. The created feature id will not use the common feature id prefix from
      * this tile feature layer, since the reference may be to a feature stored in a
      * different tile.
-     * TODO bool parameter to specify whether to add the feature id prefix?
      */
     model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,
         KeyValuePairs const& featureIdParts);
 
     /**
-     * TODO description.
+     * Validate that a unique id composition exists that matches this feature id,
+     * The field values must match the limitations of the IdPartDataType.
+     * Used by newFeatureId to check featureIdParts before creation.
+     * @param typeId Specifies the type of the feature.
+     * @param featureIdParts Uniquely identifying information for the feature.
+     * @param excludeTilePrefix False if featureIdParts includes prefix components.
      */
     bool validFeatureId(
         FeatureTypeInfo const& typeId,
