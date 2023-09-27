@@ -109,18 +109,18 @@ bool idPartsMatchComposition(
             return false;
         }
 
-        auto& featureKeyValuePair = *featureIdIter;
+        auto& [idPartKey, idPartValue] = *featureIdIter;
 
         // Does this ID part's field name match?
-        if (compositionIter->idPartLabel_ != featureKeyValuePair.first) {
+        if (compositionIter->idPartLabel_ != idPartKey) {
             return false;
         }
 
         // Does the ID part's value match?
         auto& compositionDataType = compositionIter->datatype_;
 
-        if (std::holds_alternative<int64_t>(featureKeyValuePair.second)) {
-            auto value = std::get<int64_t>(featureKeyValuePair.second);
+        if (std::holds_alternative<int64_t>(idPartValue)) {
+            auto value = std::get<int64_t>(idPartValue);
             switch (compositionDataType) {
             case IdPartDataType::I32:
                 // Value must fit an I32.
@@ -141,8 +141,8 @@ bool idPartsMatchComposition(
             default:;
             }
         }
-        else if (std::holds_alternative<std::string_view>(featureKeyValuePair.second)) {
-            auto value = std::get<std::string_view>(featureKeyValuePair.second);
+        else if (std::holds_alternative<std::string_view>(idPartValue)) {
+            auto value = std::get<std::string_view>(idPartValue);
             // UUID128 should be a 128 bit sequence.
             if (compositionDataType == IdPartDataType::UUID128 && value.size() != 16) {
                 return false;
@@ -418,7 +418,16 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
 
 void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
 {
-    // TODO check that the prefix is compatible with all id composites.
+    // Check that the prefix is compatible with all existing id composites.
+    for (auto& featureType : this->layerInfo_->featureTypes_) {
+        for (auto& candidateComposition : featureType.uniqueIdCompositions_) {
+            if (!idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size())) {
+                throw logRuntimeError(stx::format(
+                    "Prefix not compatible with an id composite in type: {}",
+                    featureType.name_));
+            }
+        }
+    }
 
     auto idPrefix = newObject(prefix.size());
     for (auto const& [k, v] : prefix) {
