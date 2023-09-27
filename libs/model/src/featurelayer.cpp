@@ -86,7 +86,8 @@ TileFeatureLayer::~TileFeatureLayer() = default;
 namespace
 {
 
-/* Check that starting from a given index, the parts of an id composition
+/**
+ * Check that starting from a given index, the parts of an id composition
  * match the featureIdParts segment from start for the given length.
  */
 bool idPartsMatchComposition(
@@ -163,10 +164,6 @@ bool idPartsMatchComposition(
 
 }  // namespace
 
-/*
- * Checks if featureIdParts match one of the uniqueIdComposition specifications.
- * The order of values in KeyValuePairs must be the same as in the composition!
- */
 bool TileFeatureLayer::validFeatureId(
     const std::string_view& typeId,
     KeyValuePairs const& featureIdParts,
