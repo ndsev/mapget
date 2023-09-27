@@ -112,12 +112,12 @@ public:
      * Validate that a unique id composition exists that matches this feature id,
      * The field values must match the limitations of the IdPartDataType.
      * Used by newFeatureId to check featureIdParts before creation.
-     * @param typeId Specifies the type of the feature.
+     * @param typeId Feature type id, throws error if the type was not registered.
      * @param featureIdParts Uniquely identifying information for the feature.
      * @param excludeTilePrefix False if featureIdParts includes prefix components.
      */
     bool validFeatureId(
-        FeatureTypeInfo const& typeId,
+        const std::string_view& typeId,
         KeyValuePairs const& featureIdParts,
         bool excludeTilePrefix);
 

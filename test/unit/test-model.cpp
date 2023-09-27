@@ -93,6 +93,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         "Tropico",
         layerInfo,
         fieldNames);
+
+    // Test creating a feature while tile prefix is not set
+    auto feature0 = tile->newFeature("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
+
+    // Set the tile feature id prefix
     tile->setPrefix({{"areaId", "TheBestArea"}});
 
     // Create a feature with line geometry
@@ -265,9 +270,9 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(readTiles.size() == 3);
         REQUIRE(readTiles[0]->fieldNames() == readTiles[1]->fieldNames());
         REQUIRE(readTiles[1]->fieldNames() == readTiles[2]->fieldNames());
-        REQUIRE(readTiles[0]->numRoots() == 3);
-        REQUIRE(readTiles[1]->numRoots() == 3);
-        REQUIRE(readTiles[2]->numRoots() == 4);
+        REQUIRE(readTiles[0]->numRoots() == 4);
+        REQUIRE(readTiles[1]->numRoots() == 4);
+        REQUIRE(readTiles[2]->numRoots() == 5);
     }
 }
 
