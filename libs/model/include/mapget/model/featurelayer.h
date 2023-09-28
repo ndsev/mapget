@@ -115,12 +115,12 @@ public:
      * The order of values in KeyValuePairs must be the same as in the composition!
      * @param typeId Feature type id, throws error if the type was not registered.
      * @param featureIdParts Uniquely identifying information for the feature.
-     * @param excludeTilePrefix False if featureIdParts includes prefix components.
+     * @param includeTilePrefix True if the id should be evaluated with this tile's prefix prepended.
      */
     bool validFeatureId(
         const std::string_view& typeId,
         KeyValuePairs const& featureIdParts,
-        bool excludeTilePrefix);
+        bool includeTilePrefix);
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.

@@ -167,7 +167,7 @@ bool idPartsMatchComposition(
 bool TileFeatureLayer::validFeatureId(
     const std::string_view& typeId,
     KeyValuePairs const& featureIdParts,
-    bool excludeTilePrefix) {
+    bool includeTilePrefix) {
 
     auto typesIterator = this->layerInfo_->featureTypes_.begin();
     while (typesIterator != this->layerInfo_->featureTypes_.end()) {
@@ -182,7 +182,7 @@ bool TileFeatureLayer::validFeatureId(
 
     for (auto& candidateComposition : typesIterator->uniqueIdCompositions_) {
         uint32_t compositionMatchStartIndex = 0;
-        if (excludeTilePrefix && this->featureIdPrefix().has_value()) {
+        if (includeTilePrefix && this->featureIdPrefix().has_value()) {
             // Iterate past the prefix in the unique id composition.
             compositionMatchStartIndex = this->featureIdPrefix().value()->size();
         }
@@ -251,7 +251,7 @@ TileFeatureLayer::newFeatureId(
     const std::string_view& typeId,
     const KeyValuePairs& featureIdParts)
 {
-    if (!validFeatureId(typeId, featureIdParts, true)) {
+    if (!validFeatureId(typeId, featureIdParts, false)) {
         throw logRuntimeError("Could not find a matching ID composition.");
     }
 
