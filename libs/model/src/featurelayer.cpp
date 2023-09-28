@@ -169,18 +169,17 @@ bool TileFeatureLayer::validFeatureId(
     KeyValuePairs const& featureIdParts,
     bool includeTilePrefix) {
 
-    auto typesIterator = this->layerInfo_->featureTypes_.begin();
-    while (typesIterator != this->layerInfo_->featureTypes_.end()) {
-        auto& type = *typesIterator;
-        if (type.name_ == typeId) {
+    auto typeIt = this->layerInfo_->featureTypes_.begin();
+    while (typeIt != this->layerInfo_->featureTypes_.end()) {
+        if (typeIt->name_ == typeId)
             break;
-        }
+        ++typeIt;
     }
-    if (typesIterator == this->layerInfo_->featureTypes_.end()) {
+    if (typeIt == this->layerInfo_->featureTypes_.end()) {
         throw logRuntimeError(stx::format("Could not find feature type {}", typeId));
     }
 
-    for (auto& candidateComposition : typesIterator->uniqueIdCompositions_) {
+    for (auto& candidateComposition : typeIt->uniqueIdCompositions_) {
         uint32_t compositionMatchStartIndex = 0;
         if (includeTilePrefix && this->featureIdPrefix().has_value()) {
             // Iterate past the prefix in the unique id composition.
