@@ -76,7 +76,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         working-directory: build
         run: |
-          choco install --no-progress -y openssl
+          choco install --no-progress -y openssl --version=1.1.1.2100
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
           cmake "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
           cmake --build . --config Release

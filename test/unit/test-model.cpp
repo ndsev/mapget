@@ -33,6 +33,50 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
                             "description": "Globally Unique 32b integer.",
                             "datatype": "U32"
                         }
+                    ],
+                    [
+                        {
+                            "partId": "areaId",
+                            "description": "String which identifies the map area.",
+                            "datatype": "STR"
+                        },
+                        {
+                            "partId": "wayIdU32",
+                            "description": "A 32b uinteger.",
+                            "datatype": "U32"
+                        },
+                        {
+                            "partId": "wayIdU64",
+                            "description": "A 64b uinteger.",
+                            "datatype": "U64"
+                        },
+                        {
+                            "partId": "wayIdUUID128",
+                            "description": "A UUID128, must have 16 bytes.",
+                            "datatype": "UUID128"
+                        }
+                    ],
+                    [
+                        {
+                            "partId": "areaId",
+                            "description": "String which identifies the map area.",
+                            "datatype": "STR"
+                        },
+                        {
+                            "partId": "wayIdI32",
+                            "description": "A 32b integer.",
+                            "datatype": "I32"
+                        },
+                        {
+                            "partId": "wayIdI64",
+                            "description": "A 64b integer.",
+                            "datatype": "I64"
+                        },
+                        {
+                            "partId": "wayIdUUID128",
+                            "description": "A UUID128, must have 16 bytes.",
+                            "datatype": "UUID128"
+                        }
                     ]
                 ]
             }
@@ -49,6 +93,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         "Tropico",
         layerInfo,
         fieldNames);
+
+    // Test creating a feature while tile prefix is not set
+    auto feature0 = tile->newFeature("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
+
+    // Set the tile feature id prefix
     tile->setPrefix({{"areaId", "TheBestArea"}});
 
     // Create a feature with line geometry
@@ -72,6 +121,14 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     auto attr = attrLayer->newAttribute("mozzarella");
     attr->setDirection(Attribute::Direction::Positive);
     attr->addField("smell", "neutral");
+
+    // Add other features using different ID compositions
+    auto featureForId1 = tile->newFeature(
+        "Way",
+        {{"wayIdU32", 42}, {"wayIdU64", 84}, {"wayIdUUID128", "0123456789abcdef"}});
+    auto featureForId2 = tile->newFeature(
+        "Way",
+        {{"wayIdI32", -42}, {"wayIdI64", -84}, {"wayIdUUID128", "0123456789abcdef"}});
 
     SECTION("toGeoJSON")
     {
@@ -100,8 +157,32 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("Range-based for loop")
     {
         for (auto feature : *tile) {
-            REQUIRE(feature->id()->toString() == feature1->id()->toString());
+            REQUIRE(feature->id()->toString().substr(0, 16) == "Way.TheBestArea.");
         }
+    }
+
+    SECTION("Create feature ID with negative value in uint") {
+        CHECK_THROWS(tile->newFeature(
+            "Way",
+            {{"wayIdU32", -4},
+             {"wayIdU64", -2},
+             {"wayIdUUID128", "0123456789abcdef"}}));
+    }
+
+    SECTION("Create feature ID with non-16-byte UUID128") {
+        CHECK_THROWS(tile->newFeature(
+            "Way",
+            {{"wayIdU32", 4},
+             {"wayIdU64", 2},
+             {"wayIdUUID128", "not what you would expect"}}));
+    }
+
+    SECTION("Create feature ID with no matching composition") {
+        CHECK_THROWS(tile->newFeature(
+            "Way",
+            {{"wayIdI32", -4},
+             {"wayIdU64", 2},
+             {"wayIdUUID128", "0123456789abcdef"}}));
     }
 
     SECTION("Serialization")
@@ -134,7 +215,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         REQUIRE(deserializedTile->fieldNames() == tile->fieldNames());
         for (auto feature : *deserializedTile) {
-            REQUIRE(feature->id()->toString() == feature1->id()->toString());
+            REQUIRE(feature->id()->toString().substr(0, 16) == "Way.TheBestArea.");
         }
     }
 
@@ -189,9 +270,9 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(readTiles.size() == 3);
         REQUIRE(readTiles[0]->fieldNames() == readTiles[1]->fieldNames());
         REQUIRE(readTiles[1]->fieldNames() == readTiles[2]->fieldNames());
-        REQUIRE(readTiles[0]->numRoots() == 1);
-        REQUIRE(readTiles[1]->numRoots() == 1);
-        REQUIRE(readTiles[2]->numRoots() == 2);
+        REQUIRE(readTiles[0]->numRoots() == 4);
+        REQUIRE(readTiles[1]->numRoots() == 4);
+        REQUIRE(readTiles[2]->numRoots() == 5);
     }
 }
 

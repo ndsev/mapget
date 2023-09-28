@@ -50,6 +50,7 @@ public:
      *  Each feature in this layer must have a feature type which is also present in
      *  the layer. Therefore, feature ids from this layer can be verified to conform
      *  to one of the allowed feature id compositions for the allowed type.
+     * TODO "for the allowed type" -> "for the feature type" ?
      * @param fields Shared field name dictionary, which allows compressed storage
      *  of object field name strings. It is auto-filled, and one instance may be used
      *  by multiple TileFeatureLayer instances.
@@ -86,12 +87,13 @@ public:
 
     /**
      * Creates a new feature and insert it into this tile layer.
-     * The unique identifying information, prepended with the featureIdPrefix,
+     * The featureIdParts (which do not include the featureIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
-     * within the associated layer.
+     * within the associated layer, or a runtime error will be raised.
      * @param typeId Specifies the type of the feature.
      * @param featureIdParts Uniquely identifying information for the feature,
-     * according to the requirements of typeId.
+     * according to the requirements of typeId. Do not include the tile feature
+     * prefix. If empty, an error will be thrown.
      */
     model_ptr<Feature> newFeature(
         std::string_view const& typeId,
@@ -100,11 +102,25 @@ public:
     /**
      * Create a new feature id. Use this function to create a reference to another
      * feature. The created feature id will not use the common feature id prefix from
-     * this tile feature layer.
+     * this tile feature layer, since the reference may be to a feature stored in a
+     * different tile.
      */
     model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,
         KeyValuePairs const& featureIdParts);
+
+    /**
+     * Validate that a unique id composition exists that matches this feature id,
+     * The field values must match the limitations of the IdPartDataType, and
+     * The order of values in KeyValuePairs must be the same as in the composition!
+     * @param typeId Feature type id, throws error if the type was not registered.
+     * @param featureIdParts Uniquely identifying information for the feature.
+     * @param includeTilePrefix True if the id should be evaluated with this tile's prefix prepended.
+     */
+    bool validFeatureId(
+        const std::string_view& typeId,
+        KeyValuePairs const& featureIdParts,
+        bool includeTilePrefix);
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.

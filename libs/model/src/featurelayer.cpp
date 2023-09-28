@@ -83,11 +83,135 @@ TileFeatureLayer::TileFeatureLayer(
 
 TileFeatureLayer::~TileFeatureLayer() = default;
 
+namespace
+{
+
+/**
+ * Check that starting from a given index, the parts of an id composition
+ * match the featureIdParts segment from start for the given length.
+ */
+bool idPartsMatchComposition(
+    std::vector<IdPart> const& candidateComposition,
+    uint32_t compositionMatchStartIdx,
+    KeyValuePairs const& featureIdParts,
+    unsigned long matchLength)
+{
+    auto featureIdIter = featureIdParts.begin();
+    auto compositionIter = candidateComposition.begin();
+
+    while (compositionMatchStartIdx > 0) {
+        ++compositionIter;
+        --compositionMatchStartIdx;
+    }
+
+    while (matchLength > 0 && compositionIter != candidateComposition.end()) {
+        // Have we exhausted feature ID parts while there's still composition parts?
+        if (featureIdIter == featureIdParts.end()) {
+            return false;
+        }
+
+        auto& [idPartKey, idPartValue] = *featureIdIter;
+
+        // Does this ID part's field name match?
+        if (compositionIter->idPartLabel_ != idPartKey) {
+            return false;
+        }
+
+        // Does the ID part's value match?
+        auto& compositionDataType = compositionIter->datatype_;
+
+        if (std::holds_alternative<int64_t>(idPartValue)) {
+            auto value = std::get<int64_t>(idPartValue);
+            switch (compositionDataType) {
+            case IdPartDataType::I32:
+                // Value must fit an I32.
+                if (value < INT32_MIN || value > INT32_MAX) {
+                    return false;
+                }
+                break;
+            case IdPartDataType::U32:
+                if (value < 0 || value > UINT32_MAX) {
+                    return false;
+                }
+                break;
+            case IdPartDataType::U64:
+                if (value < 0 || value > UINT64_MAX) {
+                    return false;
+                }
+                break;
+            default:;
+            }
+        }
+        else if (std::holds_alternative<std::string_view>(idPartValue)) {
+            auto value = std::get<std::string_view>(idPartValue);
+            // UUID128 should be a 128 bit sequence.
+            if (compositionDataType == IdPartDataType::UUID128 && value.size() != 16) {
+                return false;
+            }
+        }
+        else {
+            throw logRuntimeError("Id part data type not supported!");
+        }
+
+        ++featureIdIter;
+        ++compositionIter;
+        --matchLength;
+    }
+
+    // Match means we either checked the required length, or all the values.
+    return matchLength == 0;
+}
+
+}  // namespace
+
+bool TileFeatureLayer::validFeatureId(
+    const std::string_view& typeId,
+    KeyValuePairs const& featureIdParts,
+    bool includeTilePrefix) {
+
+    auto typesIterator = this->layerInfo_->featureTypes_.begin();
+    while (typesIterator != this->layerInfo_->featureTypes_.end()) {
+        auto& type = *typesIterator;
+        if (type.name_ == typeId) {
+            break;
+        }
+    }
+    if (typesIterator == this->layerInfo_->featureTypes_.end()) {
+        throw logRuntimeError(stx::format("Could not find feature type {}", typeId));
+    }
+
+    for (auto& candidateComposition : typesIterator->uniqueIdCompositions_) {
+        uint32_t compositionMatchStartIndex = 0;
+        if (includeTilePrefix && this->featureIdPrefix().has_value()) {
+            // Iterate past the prefix in the unique id composition.
+            compositionMatchStartIndex = this->featureIdPrefix().value()->size();
+        }
+
+        if (idPartsMatchComposition(
+                candidateComposition,
+                compositionMatchStartIndex,
+                featureIdParts,
+                featureIdParts.size()))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const std::string_view& typeId,
     const KeyValuePairs& featureIdParts)
 {
-    // TODO: Validate ID parts
+    if (featureIdParts.empty()) {
+        throw logRuntimeError("Tried to create an empty feature ID.");
+    }
+
+    if (!validFeatureId(typeId, featureIdParts, true)) {
+        throw logRuntimeError("Could not find a matching ID composition.");
+    }
+
     auto featureIdIndex = impl_->featureIds_.size();
     auto featureIdObject = newObject(featureIdParts.size());
     impl_->featureIds_.emplace_back(FeatureId::Data{
@@ -127,7 +251,10 @@ TileFeatureLayer::newFeatureId(
     const std::string_view& typeId,
     const KeyValuePairs& featureIdParts)
 {
-    // TODO: Validate ID parts
+    if (!validFeatureId(typeId, featureIdParts, false)) {
+        throw logRuntimeError("Could not find a matching ID composition.");
+    }
+
     auto featureIdObject = newObject(featureIdParts.size());
     auto featureIdIndex = impl_->featureIds_.size();
     impl_->featureIds_.emplace_back(FeatureId::Data{
@@ -288,6 +415,17 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
 
 void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
 {
+    // Check that the prefix is compatible with all existing id composites.
+    for (auto& featureType : this->layerInfo_->featureTypes_) {
+        for (auto& candidateComposition : featureType.uniqueIdCompositions_) {
+            if (!idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size())) {
+                throw logRuntimeError(stx::format(
+                    "Prefix not compatible with an id composite in type: {}",
+                    featureType.name_));
+            }
+        }
+    }
+
     auto idPrefix = newObject(prefix.size());
     for (auto const& [k, v] : prefix) {
         auto&& kk = k;
