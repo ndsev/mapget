@@ -8,11 +8,9 @@ namespace mapget
 
 std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
 {
-    std::string nodeIdStr{nodeId};
-
     {
         std::shared_lock fieldCacheReadLock(fieldCacheMutex_);
-        auto it = fieldsPerNodeId_.find(nodeIdStr);
+        auto it = fieldsPerNodeId_.find(nodeId);
         if (it != fieldsPerNodeId_.end())
             return it->second;
     }
@@ -22,22 +20,22 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
         std::unique_lock fieldCacheOffsetsWriteLock(fieldCacheOffsetMutex_, std::defer_lock);
         std::lock(fieldCacheWriteLock, fieldCacheOffsetsWriteLock);
 
-        // Was it inserted already now?
-        auto it = fieldsPerNodeId_.find(nodeIdStr);
+        // Was the Fields dict inserted already now?
+        auto it = fieldsPerNodeId_.find(nodeId);
         if (it != fieldsPerNodeId_.end())
             return it->second;
 
-        // Load/Insert it
-        std::shared_ptr<Fields> cachedFields = std::make_shared<Fields>(nodeIdStr);
-        auto cachedFieldsBlob = getFields(nodeIdStr);
+        // Load/insert the Fields dict.
+        std::shared_ptr<Fields> cachedFields = std::make_shared<Fields>(nodeId);
+        auto cachedFieldsBlob = getFields(nodeId);
         if (cachedFieldsBlob) {
             std::stringstream stream;
             stream << *cachedFieldsBlob;
             Fields::readDataSourceNodeId(stream);
             cachedFields->read(stream);
-            fieldCacheOffsets_.emplace(nodeIdStr, cachedFields->highest());
+            fieldCacheOffsets_.emplace(nodeId, cachedFields->highest());
         }
-        auto [itNew, _] = fieldsPerNodeId_.emplace(nodeIdStr, cachedFields);
+        auto [itNew, _] = fieldsPerNodeId_.emplace(nodeId, cachedFields);
         return itNew->second;
     }
 }

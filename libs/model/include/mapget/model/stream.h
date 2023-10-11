@@ -107,12 +107,12 @@ public:
     };
 
     /**
-     * Cache for Fields-dictionaries. Fields dictionaries are unique per data source node,
+     * Cache for Fields-dictionaries. Fields-dicts are unique per data source node,
      * since each data source node may have a uniquely-filled field cache.
-     * The default implementation just places an empty Fields-dictionary
-     * into the cache if there is no registered one for the given node id.
+     * The default implementation just places an empty Fields-dict into the cache
+     * if there is no registered one for the given node id.
      * Derived CachedFieldsProviders may handle uncached Fields dicts differently,
-     * e.g. by initializing the Fields-object from a cache database.
+     * e.g. by initializing the Fields object from a cache database.
      */
     struct CachedFieldsProvider
     {
@@ -134,7 +134,7 @@ public:
 
     protected:
         std::shared_mutex fieldCacheMutex_;
-        std::map<std::string, std::shared_ptr<Fields>> fieldsPerNodeId_;
+        std::map<std::string, std::shared_ptr<Fields>, std::less<void>> fieldsPerNodeId_;
     };
 };
 

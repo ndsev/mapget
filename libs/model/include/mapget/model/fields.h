@@ -33,7 +33,7 @@ struct Fields : public simfil::Fields
         PropertiesStr,
     };
 
-    explicit Fields(std::string nodeId);
+    explicit Fields(const std::string_view& nodeId);
 
     /**
      * Write is overloaded, because it prepends the stream with
