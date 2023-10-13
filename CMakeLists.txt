@@ -161,6 +161,20 @@ if (WITH_COVERAGE)
   include(CodeCoverage)
 endif()
 
+# RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
+# tries to find a matching compiler and fails. So RocksDB must be included
+# after CodeCoverage.
+if (NOT TARGET rocksdb)
+  set(WITH_GFLAGS NO)
+  set(WITH_TESTS NO)
+  set(WITH_BENCHMARK_TOOLS NO)
+  FetchContent_Declare(rocksdb
+    GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
+    GIT_TAG        "main"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(rocksdb)
+endif()
+
 ##############
 # libs
 
