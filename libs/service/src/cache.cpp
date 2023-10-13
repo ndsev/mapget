@@ -68,6 +68,7 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& k, DataSource
         shared_from_this());
     tileReader.read(*tileBlob);
     ++cacheHits_;
+    log().debug("Returned tile from cache: {}", k.tileId_.value_);
     return result;
 }
 
