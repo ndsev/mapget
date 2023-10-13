@@ -12,7 +12,8 @@ endif()
 add_executable(test.mapget
   test-model.cpp
   test-info.cpp
-  test-http-datasource.cpp)
+  test-http-datasource.cpp
+  test-cache.cpp)
 
 add_executable(test.mapget.filelog
   test-file-logging.cpp)
