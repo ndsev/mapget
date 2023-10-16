@@ -64,8 +64,8 @@ TileFeatureLayer::TileFeatureLayer(
 
 TileFeatureLayer::TileFeatureLayer(
     std::istream& inputStream,
-    const LayerInfoResolveFun& layerInfoResolveFun,
-    const FieldNameResolveFun& fieldNameResolveFun
+    LayerInfoResolveFun const& layerInfoResolveFun,
+    FieldNameResolveFun const& fieldNameResolveFun
 ) :
     TileLayer(inputStream, layerInfoResolveFun),
     simfil::ModelPool(fieldNameResolveFun(nodeId_)),

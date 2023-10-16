@@ -14,7 +14,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     mapget::setLogLevel("trace", log());
 
     // Create layer info which has a single feature type with
-    // a single allowed feature id composition.
+    // several allowed feature id compositions.
     auto layerInfo = LayerInfo::fromJson(R"({
         "layerId": "WayLayer",
         "type": "Features",
