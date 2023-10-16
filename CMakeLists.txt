@@ -165,9 +165,11 @@ endif()
 # tries to find a matching compiler and fails. So RocksDB must be included
 # after CodeCoverage.
 if (NOT TARGET rocksdb)
-  set(WITH_GFLAGS NO)
-  set(WITH_TESTS NO)
-  set(WITH_BENCHMARK_TOOLS NO)
+  set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
+  set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
+  set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
+  set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
+
   FetchContent_Declare(rocksdb
     GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
     GIT_TAG        "main"
