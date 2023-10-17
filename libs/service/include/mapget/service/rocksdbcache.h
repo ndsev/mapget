@@ -23,6 +23,7 @@ private:
     rocksdb::Options options_;
     rocksdb::WriteOptions write_options_;
     rocksdb::ReadOptions read_options_;
+    std::vector<rocksdb::ColumnFamilyHandle*> column_family_handles_;
 };
 
 }
