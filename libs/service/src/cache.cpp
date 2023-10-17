@@ -48,27 +48,33 @@ nlohmann::json Cache::getStatistics() const {
     };
 }
 
-TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& k, DataSourceInfo const& i)
+TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
 {
-    auto tileBlob = getTileLayer(k);
+    auto tileBlob = getTileLayer(tileKey);
     if (!tileBlob) {
         ++cacheMisses_;
         return nullptr;
     }
     TileFeatureLayer::Ptr result;
     TileLayerStream::Reader tileReader(
-        [&i, &k](auto&& mapId, auto&& layerId){
-            if (i.mapId_ != mapId)
+        [&dataSource, &tileKey](auto&& mapId, auto&& layerId){
+            if (dataSource.mapId_ != mapId) {
                 throw logRuntimeError(stx::format(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
-                    mapId, k.tileId_.value_, i.mapId_));
-            return i.getLayer(std::string(layerId));
+                    mapId,
+                    tileKey.tileId_.value_,
+                    dataSource.mapId_));
+            }
+            return dataSource.getLayer(std::string(layerId));
         },
         [&](auto&& parsedLayer){result = parsedLayer;},
-        shared_from_this());
+
+        // TODO why does shared_from_this not work in cache test?
+        static_cast<std::shared_ptr<CachedFieldsProvider>>(this));
+
     tileReader.read(*tileBlob);
     ++cacheHits_;
-    log().debug("Returned tile from cache: {}", k.tileId_.value_);
+    log().debug("Returned tile from cache: {}", tileKey.tileId_.value_);
     return result;
 }
 
