@@ -80,7 +80,7 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
         {
             if (msgType == TileLayerStream::MessageType::TileFeatureLayer)
                 putTileLayer(MapTileKey(*l), msg);
-            else if (msgType == TileLayerStream::MessageType::TileFeatureLayer)
+            else if (msgType == TileLayerStream::MessageType::Fields)
                 putFields(l->nodeId(), msg);
         },
         fieldCacheOffsets_);

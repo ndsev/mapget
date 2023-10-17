@@ -24,6 +24,18 @@ class Cache : public TileLayerStream::CachedFieldsProvider, public std::enable_s
 
 public:
     using Ptr = std::shared_ptr<Cache>;
+    // The following methods are already implemented,
+    // they forward to the virtual methods on-demand.
+
+
+    /**
+     * Used by DataSource to upsert a cached TileFeatureLayer.
+     * Triggers putTileLayer and putFields internally.
+     */
+    void putTileFeatureLayer(TileFeatureLayer::Ptr const& l);
+
+    /** Used by DataSource to retrieve a cached TileFeatureLayer. */
+    TileFeatureLayer::Ptr getTileFeatureLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
 
     // You need to implement these methods:
 
@@ -39,7 +51,7 @@ public:
     /** Abstract: Upsert (update or insert) a fields-dict blob. */
     virtual void putFields(std::string_view const& sourceNodeId, std::string const& v) = 0;
 
-    // Override this method if your cache implementation has special stats
+    // Override this method if your cache implementation has special stats.
 
     /**
      * Get diagnostic statistics. The default implementation returns the following:
@@ -49,14 +61,6 @@ public:
      */
     virtual nlohmann::json getStatistics() const;
 
-    // The following methods are already implemented,
-    // they forward to the above methods on-demand.
-
-    /** Used by DataSource to retrieve a cached TileFeatureLayer. */
-    TileFeatureLayer::Ptr getTileFeatureLayer(MapTileKey const& k, DataSourceInfo const& i);
-
-    /** Used by DataSource to upsert a cached TileFeatureLayer. */
-    void putTileFeatureLayer(TileFeatureLayer::Ptr const& l);
 
 protected:
     // Override for CachedFieldsProvider::operator()

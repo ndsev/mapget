@@ -67,14 +67,14 @@ bool TileLayerStream::Reader::continueReading()
             buffer_,
             layerInfoProvider_,
             [this](auto&& nodeId){return (*fieldCacheProvider_)(nodeId);});
-        // Calculate duration
+        // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
         log().debug("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
         onParsedLayer_(tileFeatureLayer);
     }
     else if (nextValueType_ == MessageType::Fields)
     {
-        // Read the node id which identifies the fields dictionary
+        // Read the node id which identifies the fields dictionary.
         std::string fieldsDictNodeId = Fields::readDataSourceNodeId(buffer_);
         (*fieldCacheProvider_)(fieldsDictNodeId)->read(buffer_);
     }

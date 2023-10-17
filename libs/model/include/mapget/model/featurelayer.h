@@ -49,8 +49,7 @@ public:
      * @param layerInfo Information about the map layer this feature is associated with.
      *  Each feature in this layer must have a feature type which is also present in
      *  the layer. Therefore, feature ids from this layer can be verified to conform
-     *  to one of the allowed feature id compositions for the allowed type.
-     * TODO "for the allowed type" -> "for the feature type" ?
+     *  to one of the allowed feature id compositions for the feature type.
      * @param fields Shared field name dictionary, which allows compressed storage
      *  of object field name strings. It is auto-filled, and one instance may be used
      *  by multiple TileFeatureLayer instances.
@@ -218,7 +217,7 @@ protected:
     model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
 
     /**
-     * Generic node resolution overload
+     * Generic node resolution overload.
      */
     void resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 

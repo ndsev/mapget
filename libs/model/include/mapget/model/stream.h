@@ -123,14 +123,14 @@ public:
          * This operator is called by the Reader to obtain the fields
          * dictionary for a particular node id.
          */
-        virtual std::shared_ptr<Fields> operator() (std::string_view const& nodeIf);
+        virtual std::shared_ptr<Fields> operator() (std::string_view const& nodeId);
 
         /**
          * Obtain the highest known field id for each data source node id,
          * as currently present in the cache. The resulting dict may be
          * used by a mapget http client to set the `maxKnownFieldIds` info.
          */
-        virtual FieldOffsetMap fieldDictOffsets() const;
+        [[nodiscard]] virtual FieldOffsetMap fieldDictOffsets() const;
 
     protected:
         std::shared_mutex fieldCacheMutex_;
