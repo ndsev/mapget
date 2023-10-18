@@ -13,7 +13,7 @@ TileLayerStream::Reader::Reader(
     std::function<void(TileFeatureLayer::Ptr)> onParsedLayer,
     std::shared_ptr<CachedFieldsProvider> fieldCacheProvider)
     : layerInfoProvider_(std::move(layerInfoProvider)),
-      fieldCacheProvider_(
+      cachedFieldsProvider_(
           fieldCacheProvider ? std::move(fieldCacheProvider) :
                                std::make_shared<TileLayerStream::CachedFieldsProvider>()),
       onParsedLayer_(std::move(onParsedLayer))
