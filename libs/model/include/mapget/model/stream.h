@@ -63,6 +63,13 @@ public:
         /** Obtain the fields dict provider used by this Reader. */
         std::shared_ptr<CachedFieldsProvider> fieldDictCache();
 
+        /**
+         * Read a message header from a stream. Returns true and the next message's type and
+         * size, or false, if no sufficient bytes are available. Throws if the protocol version
+         * in the header does not match the version currently used by mapget.
+         */
+        static bool readMessageHeader(std::stringstream& stream, MessageType& outType, uint32_t& outSize);
+
     private:
         enum class Phase { ReadHeader, ReadValue };
 
@@ -70,6 +77,10 @@ public:
         MessageType nextValueType_ = MessageType::None;
         uint32_t nextValueSize_ = 0;
 
+        /**
+         * Reads messages from the current available data.
+         * @return True if it can continue and should be called again, false otherwise.
+         */
         bool continueReading();
 
         std::stringstream buffer_;
@@ -91,10 +102,15 @@ public:
          * dictionary will be updated as Fields dictionary updates are sent.
          * Using the same FieldId offset map for two Writer objects will
          * lead to undefined behavior.
+         *
+         * Setting differentialFieldUpdates=false is necessary when using
+         * the Writer with a Cache database, because it is not desirable
+         * to store partial Field dicts in the database.
          */
         Writer(
             std::function<void(std::string, MessageType)> onMessage,
-            FieldOffsetMap& fieldsOffsets);
+            FieldOffsetMap& fieldsOffsets,
+            bool differentialFieldUpdates = true);
 
         /** Serialize a tile feature layer and the required part of a Fields cache. */
         void write(TileFeatureLayer::Ptr const& tileFeatureLayer);
@@ -104,6 +120,7 @@ public:
 
         std::function<void(std::string, MessageType)> onMessage_;
         FieldOffsetMap& fieldsOffsets_;
+        bool differentialFieldUpdates_ = true;
     };
 
     /**

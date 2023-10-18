@@ -29,9 +29,21 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
         std::shared_ptr<Fields> cachedFields = std::make_shared<Fields>(nodeId);
         auto cachedFieldsBlob = getFields(nodeId);
         if (cachedFieldsBlob) {
+            // Read the fields from the stream.
             std::stringstream stream;
             stream << *cachedFieldsBlob;
-            Fields::readDataSourceNodeId(stream);
+
+            // First, read the header and the datasource node id.
+            // These must match what we expect.
+            TileLayerStream::MessageType streamMessageType;
+            uint32_t streamMessageSize;
+            TileLayerStream::Reader::readMessageHeader(stream, streamMessageType, streamMessageSize);
+            auto streamDataSourceNodeId = Fields::readDataSourceNodeId(stream);
+            if (streamMessageType != TileLayerStream::MessageType::Fields || streamDataSourceNodeId != nodeId) {
+                throw logRuntimeError("Stream header error while parsing fields from cache.");
+            }
+
+            // Now, actually read the fields message
             cachedFields->read(stream);
             fieldCacheOffsets_.emplace(nodeId, cachedFields->highest());
         }
@@ -87,7 +99,8 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
             else if (msgType == TileLayerStream::MessageType::Fields)
                 putFields(l->nodeId(), msg);
         },
-        fieldCacheOffsets_);
+        fieldCacheOffsets_,
+        /* differentialFieldUpdates = */ false);
     log().debug("Writing tile layer to cache: {}", MapTileKey(*l).toString());
     tileWriter.write(l);
 }

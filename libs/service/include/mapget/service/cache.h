@@ -27,7 +27,6 @@ public:
     // The following methods are already implemented,
     // they forward to the virtual methods on-demand.
 
-
     /**
      * Used by DataSource to upsert a cached TileFeatureLayer.
      * Triggers putTileLayer and putFields internally.
