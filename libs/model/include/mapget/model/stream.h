@@ -49,7 +49,7 @@ public:
         Reader(
             LayerInfoResolveFun layerInfoProvider,
             std::function<void(TileFeatureLayer::Ptr)> onParsedLayer,
-            std::shared_ptr<CachedFieldsProvider> fieldCacheProvider = nullptr);
+            std::shared_ptr<CachedFieldsProvider> cachedFieldsProvider = nullptr);
 
         /**
          * Add some bytes to parse. The next object will be parsed once
@@ -74,7 +74,7 @@ public:
 
         std::stringstream buffer_;
         LayerInfoResolveFun layerInfoProvider_;
-        std::shared_ptr<CachedFieldsProvider> fieldCacheProvider_;
+        std::shared_ptr<CachedFieldsProvider> cachedFieldsProvider_;
         std::function<void(TileFeatureLayer::Ptr)> onParsedLayer_;
     };
 

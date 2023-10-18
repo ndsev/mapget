@@ -68,9 +68,7 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, Data
             return dataSource.getLayer(std::string(layerId));
         },
         [&](auto&& parsedLayer){result = parsedLayer;},
-
-        // TODO why does shared_from_this not work in cache test?
-        static_cast<std::shared_ptr<CachedFieldsProvider>>(this));
+        shared_from_this());
 
     tileReader.read(*tileBlob);
     ++cacheHits_;

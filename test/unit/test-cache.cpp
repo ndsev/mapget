@@ -6,7 +6,7 @@ using namespace mapget;
 
 TEST_CASE("RocksDBCache", "[Cache]")
 {
-    auto cache = mapget::RocksDBCache();
+    auto cache = std::make_shared<mapget::RocksDBCache>();
 
     mapget::setLogLevel("trace", log());
 
@@ -75,8 +75,8 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     SECTION("Store and retrieve feature layer") {
         // Triggers both putTileLayer and putFields internally.
-        cache.putTileFeatureLayer(tile);
-        auto returnedTile = cache.getTileFeatureLayer(tile->id(), info);
+        cache->putTileFeatureLayer(tile);
+        auto returnedTile = cache->getTileFeatureLayer(tile->id(), info);
     }
 
 }

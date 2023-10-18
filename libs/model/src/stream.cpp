@@ -66,7 +66,7 @@ bool TileLayerStream::Reader::continueReading()
         auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
             buffer_,
             layerInfoProvider_,
-            [this](auto&& nodeId){return (*fieldCacheProvider_)(nodeId);});
+            [this](auto&& nodeId){return (*cachedFieldsProvider_)(nodeId);});
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
         log().debug("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
@@ -76,7 +76,7 @@ bool TileLayerStream::Reader::continueReading()
     {
         // Read the node id which identifies the fields dictionary.
         std::string fieldsDictNodeId = Fields::readDataSourceNodeId(buffer_);
-        (*fieldCacheProvider_)(fieldsDictNodeId)->read(buffer_);
+        (*cachedFieldsProvider_)(fieldsDictNodeId)->read(buffer_);
     }
 
     currentPhase_ = Phase::ReadHeader;
@@ -85,7 +85,7 @@ bool TileLayerStream::Reader::continueReading()
 
 std::shared_ptr<TileLayerStream::CachedFieldsProvider> TileLayerStream::Reader::fieldDictCache()
 {
-    return fieldCacheProvider_;
+    return cachedFieldsProvider_;
 }
 
 TileLayerStream::Writer::Writer(
