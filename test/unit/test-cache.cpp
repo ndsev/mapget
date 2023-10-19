@@ -1,18 +1,25 @@
 #include <catch2/catch_test_macros.hpp>
-#include "mapget/service/rocksdbcache.h"
+#include "mapget/http-service/cli.h"
 #include "mapget/log.h"
+#include "mapget/service/rocksdbcache.h"
 
 using namespace mapget;
 
+TEST_CASE("Cache settings via CLI", "[CLI-Cache]")
+{
+    mapget::runFromCommandLine(
+        {"--config", "../../examples/config/sample-service.toml", "serve"}
+    );
+}
+
 TEST_CASE("RocksDBCache", "[Cache]")
 {
-    auto cache = std::make_shared<mapget::RocksDBCache>();
-
     mapget::setLogLevel("trace", log());
 
     // TODO Make layer creation in test-model reusable.
-    // Currently, TileFeatureLayer deserialization test in test-model.cpp fails
-    // if layerInfo and fieldNames access is replaced with TileFeatureLayer functions.
+    // Currently, TileFeatureLayer deserialization test in test-model.cpp
+    // fails if layerInfo and fieldNames access is replaced with
+    // TileFeatureLayer functions.
 
     auto layerInfo = LayerInfo::fromJson(R"({
         "layerId": "WayLayer",
@@ -24,7 +31,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
                     [
                         {
                             "partId": "areaId",
-                            "description": "String which identifies the map area.",
+                            "description": "String identifying the map area.",
                             "datatype": "STR"
                         },
                         {
@@ -65,7 +72,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
     // Create empty shared autofilled field-name dictionary
     auto fieldNames = std::make_shared<Fields>(nodeId);
 
-    // Create a basic TileFeatureLayer
+    // Create a basic TileFeatureLayer.
     auto tile = std::make_shared<TileFeatureLayer>(
         tileId,
         nodeId,
@@ -73,10 +80,24 @@ TEST_CASE("RocksDBCache", "[Cache]")
         layerInfo,
         fieldNames);
 
-    SECTION("Store and retrieve feature layer") {
-        // Triggers both putTileLayer and putFields internally.
+    SECTION("Insert, retrieve, and update feature layers") {
+        auto cache = std::make_shared<mapget::RocksDBCache>();
+
+        // putTileFeatureLayer triggers both putTileLayer and putFields.
         cache->putTileFeatureLayer(tile);
         auto returnedTile = cache->getTileFeatureLayer(tile->id(), info);
+    }
+
+    SECTION("Clear cache") {
+        // TODO
+    }
+
+    SECTION("Limit cache size") {
+
+    }
+
+    SECTION("Create cache under a custom path") {
+        // TODO
     }
 
 }

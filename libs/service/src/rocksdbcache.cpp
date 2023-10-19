@@ -8,16 +8,20 @@
 namespace mapget
 {
 
-RocksDBCache::RocksDBCache()
+RocksDBCache::RocksDBCache(
+    int64_t cacheMaxTiles,
+    std::string cachePath,
+    bool clearCache)
 {
-    auto& db_path = "cache-rocksdb";
+    // TODO prepend current path only if not absolute path.
+    // TODO manage cache clearing - delete directory if it exists
+    //  and contains a valid RocksDB database (check by opening).
+
     auto current_path = std::filesystem::current_path();
-    auto absolute_db_path = current_path / db_path;
+    auto absolute_db_path = current_path / cachePath;
 
     options_.create_if_missing = true;
     options_.create_missing_column_families = true;
-    // TODO configurable TTL.
-    options_.WAL_ttl_seconds = 3600;
 
     // Create separate column families for tile layers and fields.
     // RocksDB requires a default column family, setting this to tile layers.
@@ -61,6 +65,10 @@ std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k) {
 }
 
 void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v) {
+    // TODO manage max tile count.
+    // Unique tile IDs iterating up, allowing to delete the oldest?
+    // + rocksDB supports efficient range deletes, could be worth a look?
+
     auto status = db_->Put(write_options_, column_family_handles_[0], k.toString(), v);
 
     if (!status.ok()) {
@@ -89,6 +97,5 @@ void RocksDBCache::putFields(std::string_view const& sourceNodeId, std::string c
         logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
     }
 }
-
 
 }

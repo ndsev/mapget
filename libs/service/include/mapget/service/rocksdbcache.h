@@ -10,13 +10,16 @@ namespace mapget
 class RocksDBCache : public Cache
 {
 public:
-    RocksDBCache();
-    ~RocksDBCache();
+    explicit RocksDBCache(
+        int64_t cacheMaxTiles = 1024,
+        std::string cachePath = "mapget-cache",
+        bool clearCache = false);
+    ~RocksDBCache() override;
 
-    std::optional<std::string> getTileLayer(MapTileKey const& k);
-    void putTileLayer(MapTileKey const& k, std::string const& v);
-    std::optional<std::string> getFields(std::string_view const& sourceNodeId);
-    void putFields(std::string_view const& sourceNodeId, std::string const& v);
+    std::optional<std::string> getTileLayer(MapTileKey const& k) override;
+    void putTileLayer(MapTileKey const& k, std::string const& v) override;
+    std::optional<std::string> getFields(std::string_view const& sourceNodeId) override;
+    void putFields(std::string_view const& sourceNodeId, std::string const& v) override;
 
 private:
     rocksdb::DB* db_;
@@ -26,4 +29,4 @@ private:
     std::vector<rocksdb::ColumnFamilyHandle*> column_family_handles_;
 };
 
-}
+}  // namespace mapget
