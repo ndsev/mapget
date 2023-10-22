@@ -121,7 +121,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto returnedTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
         assert(returnedTile->nodeId() == otherTile->nodeId());
 
-        // Loaded field dicts, get updated for  the DS info with getTileFeatureLayer.
+        // Loaded field dicts, get updated for the DS info with getTileFeatureLayer.
         assert(cache->getStatistics()["loaded-field-dicts"] == 2);
     }
 
@@ -140,7 +140,21 @@ TEST_CASE("RocksDBCache", "[Cache]")
     }
 
     SECTION("Create cache under a custom path") {
-        // TODO
-    }
+        std::filesystem::path test_cache = std::filesystem::current_path() / "rocksdb-unit-test";
+        log().info(stx::format("Test creating cache: {}", test_cache.string()));
 
+        // Delete cache if it already exists, e.g. from a broken test case.
+        if (std::filesystem::exists(test_cache)) {
+            std::filesystem::remove_all(test_cache);
+        }
+        assert(!std::filesystem::exists(test_cache));
+
+        // Create cache and make sure it worked.
+        auto cache = std::make_shared<mapget::RocksDBCache>(
+            1024, test_cache, true);
+        assert(std::filesystem::exists(test_cache));
+
+        // Delete cache.
+        std::filesystem::remove_all(test_cache);
+    }
 }
