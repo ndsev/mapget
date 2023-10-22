@@ -22,11 +22,12 @@ public:
     void putFields(std::string_view const& sourceNodeId, std::string const& v) override;
 
 private:
-    rocksdb::DB* db_;
+    rocksdb::DB* db_{};
     rocksdb::Options options_;
     rocksdb::WriteOptions write_options_;
     rocksdb::ReadOptions read_options_;
     std::vector<rocksdb::ColumnFamilyHandle*> column_family_handles_;
+    uint32_t key_count_ = 0;
 };
 
 }  // namespace mapget

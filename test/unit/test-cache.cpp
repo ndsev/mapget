@@ -57,9 +57,18 @@ TEST_CASE("RocksDBCache", "[Cache]")
         false,
         Version{0, 0, 0}});
 
-    auto nodeId = "SpecialCacheTestingNode";
-    auto mapId = "CacheMe";
+    // Create a basic TileFeatureLayer.
     auto tileId = TileId::fromWgs84(42., 11., 13);
+    auto nodeId = "CacheTestingNode";
+    auto mapId = "CacheMe";
+    // Create empty shared autofilled field-name dictionary.
+    auto fieldNames = std::make_shared<Fields>(nodeId);
+    auto tile = std::make_shared<TileFeatureLayer>(
+        tileId,
+        nodeId,
+        mapId,
+        layerInfo,
+        fieldNames);
 
     DataSourceInfo info(DataSourceInfo{
         nodeId,
@@ -69,23 +78,57 @@ TEST_CASE("RocksDBCache", "[Cache]")
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 
-    // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>(nodeId);
-
-    // Create a basic TileFeatureLayer.
-    auto tile = std::make_shared<TileFeatureLayer>(
-        tileId,
-        nodeId,
-        mapId,
+    // Create another basic TileFeatureLayer for a different node.
+    auto otherTileId = TileId::fromWgs84(42., 12., 13);
+    auto otherNodeId = "OtherCacheTestingNode";
+    auto otherMapId = "CacheMeToo";
+    // Create empty shared autofilled field-name dictionary.
+    auto otherFieldNames = std::make_shared<Fields>(otherNodeId);
+    auto otherTile = std::make_shared<TileFeatureLayer>(
+        otherTileId,
+        otherNodeId,
+        otherMapId,
         layerInfo,
-        fieldNames);
+        otherFieldNames);
+
+    DataSourceInfo otherInfo(DataSourceInfo{
+        otherNodeId,
+        otherMapId,
+        layers,
+        5,
+        nlohmann::json::object(),
+        TileLayerStream::CurrentProtocolVersion});
 
     SECTION("Insert, retrieve, and update feature layers") {
-        auto cache = std::make_shared<mapget::RocksDBCache>();
+        // Open or create cache, clear any existing data.
+        auto cache = std::make_shared<mapget::RocksDBCache>(
+            1024, "mapget-cache", true);
+        assert(cache->getStatistics()["loaded-field-dicts"] == 0);
 
         // putTileFeatureLayer triggers both putTileLayer and putFields.
         cache->putTileFeatureLayer(tile);
         auto returnedTile = cache->getTileFeatureLayer(tile->id(), info);
+        assert(cache->getStatistics()["loaded-field-dicts"] == 1);
+    }
+
+    SECTION("Reopen cache, insert a feature layer") {
+        // Open existing cache.
+        auto cache = std::make_shared<mapget::RocksDBCache>();
+        assert(cache->getStatistics()["loaded-field-dicts"] == 1);
+
+        cache->putTileFeatureLayer(otherTile);
+
+        auto returnedTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        assert(returnedTile->nodeId() == otherTile->nodeId());
+
+        // Loaded field dicts, get updated for  the DS info with getTileFeatureLayer.
+        assert(cache->getStatistics()["loaded-field-dicts"] == 2);
+    }
+
+    SECTION("Reopen cache, check field dicts loading") {
+        // Open existing cache.
+        auto cache = std::make_shared<mapget::RocksDBCache>();
+        assert(cache->getStatistics()["loaded-field-dicts"] == 2);
     }
 
     SECTION("Clear cache") {
