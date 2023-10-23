@@ -12,7 +12,8 @@ static uint8_t COL_TIMESTAMP = 0;
 static uint8_t COL_TILES = 1;
 static uint8_t COL_FIELD_DICTS = 2;
 
-RocksDBCache::RocksDBCache(int64_t cacheMaxTiles, std::string cachePath, bool clearCache)
+RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool clearCache)
+    : max_key_count_(cacheMaxTiles)
 {
     // Set standard RocksDB options.
     options_.create_if_missing = true;
@@ -78,6 +79,9 @@ RocksDBCache::RocksDBCache(int64_t cacheMaxTiles, std::string cachePath, bool cl
         }
     }
 
+    // TODO: delete a range if the cache is initialized with lower maxTiles
+    // than is in the opened one...
+
     log().debug(stx::format(
         "Initialized RocksDB cache with {} existing tile entries.",
         key_count_));
@@ -110,15 +114,39 @@ std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
 
 void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 {
-    // TODO manage max tile count.
-    // Unique tile IDs iterating up, allowing to delete the oldest?
-    // + rocksDB supports efficient range deletes, could be worth a look?
+    // Delete the oldest entry if we are exceeding the cache limit.
+    // TODO improve performance by using RocksDB's DeleteRange function.
+    if (max_key_count_ && key_count_ == max_key_count_) {
+        rocksdb::WriteBatch batch;
 
-    auto status = db_->Put(write_options_, column_family_handles_[COL_TILES], k.toString(), v);
+        // Iterator of the timestamp column is in tile insertion order.
+        std::unique_ptr<rocksdb::Iterator> it(
+            db_->NewIterator(read_options_,
+                             column_family_handles_[COL_TIMESTAMP]));
+        batch.Delete(column_family_handles_[COL_TIMESTAMP], it->key());
+        batch.Delete(column_family_handles_[COL_TILES], it->value());
+        rocksdb::Status status = db_->Write(write_options_, &batch);
+
+        if (!status.ok()) {
+            logRuntimeError(stx::format("Could not delete oldest cache entry: {}", status.ToString()));
+        }
+
+        --key_count_;
+    }
+
+    auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+
+    rocksdb::WriteBatch batch;
+    batch.Put(column_family_handles_[COL_TIMESTAMP], std::to_string(timestamp), k.toString());
+    batch.Put(column_family_handles_[COL_TILES], k.toString(), v);
+
+    auto status = db_->Write(write_options_, &batch);
 
     if (!status.ok()) {
         logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
     }
+
+    ++key_count_;
 }
 
 std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourceNodeId)

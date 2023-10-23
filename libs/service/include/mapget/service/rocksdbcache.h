@@ -11,7 +11,7 @@ class RocksDBCache : public Cache
 {
 public:
     explicit RocksDBCache(
-        int64_t cacheMaxTiles = 1024,
+        uint32_t cacheMaxTiles = 1024,
         std::string cachePath = "mapget-cache",
         bool clearCache = false);
     ~RocksDBCache() override;
@@ -28,6 +28,7 @@ private:
     rocksdb::ReadOptions read_options_;
     std::vector<rocksdb::ColumnFamilyHandle*> column_family_handles_;
     uint32_t key_count_ = 0;
+    uint32_t max_key_count_ = 0;
 };
 
 }  // namespace mapget
