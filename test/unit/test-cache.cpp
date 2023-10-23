@@ -120,19 +120,20 @@ TEST_CASE("RocksDBCache", "[Cache]")
         assert(updatedTile->size() == 1);
 
         // Check that cache hits and misses are properly recorded.
-        // TODO discuss: cache hit/miss stats are not persistent, is that a problem?
         auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
         assert(cache->getStatistics()["cache-hits"] == 2);
         assert(cache->getStatistics()["cache-misses"] == 1);
+        // TODO discuss: cache hit/miss stats are not persistent, is that a problem?
     }
 
-    SECTION("Reopen cache, insert another feature layer") {
+    SECTION("Reopen cache with maxTileCount=1, insert another layer") {
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>(
-            1024, "mapget-cache", false);
+            1, "mapget-cache", false);
         auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
         assert(fieldDictCount == 1);
 
+        // Add a tile to trigger cache cleaning.
         cache->putTileFeatureLayer(otherTile);
 
         auto returnedTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
@@ -141,21 +142,17 @@ TEST_CASE("RocksDBCache", "[Cache]")
         // Field dicts are updated with getTileFeatureLayer.
         fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
         assert(fieldDictCount == 2);
+
+        // Query the first inserted layer - it should not be retrievable.
+        auto missingTile = cache->getTileFeatureLayer(tile->id(), info);
+        assert(cache->getStatistics()["cache-misses"] == 1);
+        assert(!missingTile);
     }
 
     SECTION("Reopen cache, check loading of field dicts") {
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>();
         assert(cache->getStatistics()["loaded-field-dicts"] == 2);
-    }
-
-    SECTION("Check cache clearing") {
-        // TODO open cache with clearCache=true.
-    }
-
-    SECTION("Limit cache size") {
-        // TODO test cacheMaxTiles.
-        // Set to 1 upon opening, store 2 layers, check that the first was purged.
     }
 
     SECTION("Create cache under a custom path") {

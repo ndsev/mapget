@@ -8,9 +8,15 @@
 namespace mapget
 {
 
+// Timestamp to the tileId stored at that time. Used to delete oldest entries.
 static uint8_t COL_TIMESTAMP = 0;
-static uint8_t COL_TILES = 1;
-static uint8_t COL_FIELD_DICTS = 2;
+// Reverse tile->timestamp lookup.
+// Used to delete previous timestamp when a tile gets updated.
+static uint8_t COL_TIMESTAMP_REVERSE = 1;
+// Stores the actual tileId->tile data.
+static uint8_t COL_TILES = 2;
+// Field dicts. No data gets deleted from there unless clearCache=true is set.
+static uint8_t COL_FIELD_DICTS = 3;
 
 RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool clearCache)
     : max_key_count_(cacheMaxTiles)
@@ -25,6 +31,9 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
     column_families.push_back(rocksdb::ColumnFamilyDescriptor(
         ROCKSDB_NAMESPACE::kDefaultColumnFamilyName,
+        rocksdb::ColumnFamilyOptions()));
+    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+        "TileToTimestamp",
         rocksdb::ColumnFamilyOptions()));
     column_families.push_back(rocksdb::ColumnFamilyDescriptor(
         "Tiles",
@@ -80,7 +89,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     }
 
     // TODO: delete a range if the cache is initialized with lower maxTiles
-    // than is in the opened one...
+    //  than is in the opened one?
 
     log().debug(stx::format(
         "Initialized RocksDB cache with {} existing tile entries.",
@@ -116,14 +125,18 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 {
     // Delete the oldest entry if we are exceeding the cache limit.
     // TODO improve performance by using RocksDB's DeleteRange function.
-    if (max_key_count_ && key_count_ == max_key_count_) {
-        rocksdb::WriteBatch batch;
-
+    // Delete the oldest entry if we would otherwise exceed the tile limit.
+    if (max_key_count_ && key_count_ + 1 >= max_key_count_) {
         // Iterator of the timestamp column is in tile insertion order.
         std::unique_ptr<rocksdb::Iterator> it(
             db_->NewIterator(read_options_,
-                             column_family_handles_[COL_TIMESTAMP]));
+                             column_family_handles_[COL_TIMESTAMP])
+            );
+        it->SeekToFirst();
+
+        rocksdb::WriteBatch batch;
         batch.Delete(column_family_handles_[COL_TIMESTAMP], it->key());
+        batch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], it->value());
         batch.Delete(column_family_handles_[COL_TILES], it->value());
         rocksdb::Status status = db_->Write(write_options_, &batch);
 
@@ -134,10 +147,28 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
         --key_count_;
     }
 
+    // If the tile exists already, delete the previous timestamp entry.
+    std::string previousTileTimestamp;
+    if (db_->Get(
+            read_options_,
+            column_family_handles_[COL_TIMESTAMP_REVERSE],
+            k.toString(),
+            &previousTileTimestamp).ok()) {
+
+        rocksdb::WriteBatch batch;
+        batch.Delete(column_family_handles_[COL_TIMESTAMP], previousTileTimestamp);
+        batch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], k.toString());
+        rocksdb::Status status = db_->Write(write_options_, &batch);
+    }
+
     auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
 
     rocksdb::WriteBatch batch;
     batch.Put(column_family_handles_[COL_TIMESTAMP], std::to_string(timestamp), k.toString());
+    batch.Put(
+        column_family_handles_[COL_TIMESTAMP_REVERSE],
+        k.toString(),
+        std::to_string(timestamp));
     batch.Put(column_family_handles_[COL_TILES], k.toString(), v);
 
     auto status = db_->Write(write_options_, &batch);
@@ -152,7 +183,11 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourceNodeId)
 {
     std::string read_value;
-    auto status = db_->Get(read_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, &read_value);
+    auto status = db_->Get(
+        read_options_,
+        column_family_handles_[COL_FIELD_DICTS],
+        sourceNodeId,
+        &read_value);
 
     if (status.ok()) {
         log().trace(stx::format("Node: {} | Field dict size: {}", sourceNodeId, read_value.size()));
