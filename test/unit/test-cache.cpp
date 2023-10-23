@@ -149,6 +149,29 @@ TEST_CASE("RocksDBCache", "[Cache]")
         assert(!missingTile);
     }
 
+    SECTION("Store another tile at unlimited cache size") {
+        auto cache = std::make_shared<mapget::RocksDBCache>(
+            0, "mapget-cache", false);
+
+        // Insert another tile for the next test.
+        cache->putTileFeatureLayer(tile);
+
+        // Make sure the previous tile is still there, since cache is unlimited.
+        auto olderTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        assert(cache->getStatistics()["cache-misses"] == 0);
+        assert(cache->getStatistics()["cache-hits"] == 1);
+    }
+
+    SECTION("Reopen cache with maxTileCount=1, check older tile was deleted") {
+        auto cache = std::make_shared<mapget::RocksDBCache>(
+            1, "mapget-cache", false);
+        assert(cache->getStatistics()["cache-misses"] == 0);
+
+        // Query the first inserted layer - it should not be retrievable.
+        auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        assert(cache->getStatistics()["cache-misses"] == 1);
+    }
+
     SECTION("Reopen cache, check loading of field dicts") {
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>();

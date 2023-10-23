@@ -88,8 +88,30 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
         }
     }
 
-    // TODO: delete a range if the cache is initialized with lower maxTiles
-    //  than is in the opened one?
+    // Handle special case: if the cache is initialized with lower maxTiles
+    // than in the opened one, delete oldest tiles to fit limit.
+    if (!clearCache && max_key_count_ > 0 && key_count_ > max_key_count_) {
+        auto deleteCount = key_count_ - max_key_count_;
+        rocksdb::WriteBatch batch;
+        std::unique_ptr<rocksdb::Iterator> it(
+            db_->NewIterator(
+                read_options_,
+                column_family_handles_[COL_TIMESTAMP]));
+        it->SeekToFirst();
+        auto timeStampsToDelete = std::vector<std::string>();
+        while (deleteCount != 0) {
+            batch.Delete(column_family_handles_[COL_TIMESTAMP], it->key());
+            batch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], it->value());
+            batch.Delete(column_family_handles_[COL_TILES], it->value());
+            it->Next();
+            --deleteCount;
+        }
+        status = db_->Write(write_options_, &batch);
+        if (!status.ok()) {
+            logRuntimeError("Could not trim cache!");
+        }
+        key_count_ = max_key_count_;
+    }
 
     log().debug(stx::format(
         "Initialized RocksDB cache with {} existing tile entries.",
@@ -124,8 +146,8 @@ std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
 void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 {
     // Delete the oldest entry if we are exceeding the cache limit.
-    // TODO improve performance by using RocksDB's DeleteRange function.
-    // Delete the oldest entry if we would otherwise exceed the tile limit.
+    // TODO improve performance by using RocksDB's DeleteRange function
+    //  and not invoking deletion at every insert.
     if (max_key_count_ && key_count_ + 1 >= max_key_count_) {
         // Iterator of the timestamp column is in tile insertion order.
         std::unique_ptr<rocksdb::Iterator> it(
