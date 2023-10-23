@@ -45,7 +45,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         ]
     })"_json);
 
-    // Create a DataSourceInfo object.
+    // Create one LayerInfo to be re-used by all DataSourceInfos.
     std::map<std::string, std::shared_ptr<LayerInfo>> layers;
     layers[layerInfo->layerId_] = std::make_shared<LayerInfo>(LayerInfo{
         layerInfo->layerId_,
@@ -69,7 +69,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         mapId,
         layerInfo,
         fieldNames);
-
+    // Create a DataSourceInfo object.
     DataSourceInfo info(DataSourceInfo{
         nodeId,
         mapId,
@@ -90,7 +90,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         otherMapId,
         layerInfo,
         otherFieldNames);
-
+    // Create another DataSourceInfo object, but reuse the layer info.
     DataSourceInfo otherInfo(DataSourceInfo{
         otherNodeId,
         otherMapId,
@@ -99,44 +99,63 @@ TEST_CASE("RocksDBCache", "[Cache]")
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 
-    SECTION("Insert, retrieve, and update feature layers") {
+    SECTION("Insert, retrieve, and update feature layer") {
         // Open or create cache, clear any existing data.
         auto cache = std::make_shared<mapget::RocksDBCache>(
             1024, "mapget-cache", true);
-        assert(cache->getStatistics()["loaded-field-dicts"] == 0);
+        auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
+        assert(fieldDictCount == 0);
 
         // putTileFeatureLayer triggers both putTileLayer and putFields.
         cache->putTileFeatureLayer(tile);
         auto returnedTile = cache->getTileFeatureLayer(tile->id(), info);
-        assert(cache->getStatistics()["loaded-field-dicts"] == 1);
+        fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
+        assert(fieldDictCount == 1);
+
+        // Update a tile, check that cache returns the updated version.
+        assert(returnedTile->size() == 0);
+        auto feature = tile->newFeature("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
+        cache->putTileFeatureLayer(tile);
+        auto updatedTile = cache->getTileFeatureLayer(tile->id(), info);
+        assert(updatedTile->size() == 1);
+
+        // Check that cache hits and misses are properly recorded.
+        // TODO discuss: cache hit/miss stats are not persistent, is that a problem?
+        auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        assert(cache->getStatistics()["cache-hits"] == 2);
+        assert(cache->getStatistics()["cache-misses"] == 1);
     }
 
-    SECTION("Reopen cache, insert a feature layer") {
+    SECTION("Reopen cache, insert another feature layer") {
         // Open existing cache.
-        auto cache = std::make_shared<mapget::RocksDBCache>();
-        assert(cache->getStatistics()["loaded-field-dicts"] == 1);
+        auto cache = std::make_shared<mapget::RocksDBCache>(
+            1024, "mapget-cache", false);
+        auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
+        assert(fieldDictCount == 1);
 
         cache->putTileFeatureLayer(otherTile);
 
         auto returnedTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
         assert(returnedTile->nodeId() == otherTile->nodeId());
 
-        // Loaded field dicts, get updated for the DS info with getTileFeatureLayer.
-        assert(cache->getStatistics()["loaded-field-dicts"] == 2);
+        // Field dicts are updated with getTileFeatureLayer.
+        fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
+        assert(fieldDictCount == 2);
     }
 
-    SECTION("Reopen cache, check field dicts loading") {
+    SECTION("Reopen cache, check loading of field dicts") {
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>();
         assert(cache->getStatistics()["loaded-field-dicts"] == 2);
     }
 
-    SECTION("Clear cache") {
-        // TODO
+    SECTION("Check cache clearing") {
+        // TODO open cache with clearCache=true.
     }
 
     SECTION("Limit cache size") {
-
+        // TODO test cacheMaxTiles.
+        // Set to 1 upon opening, store 2 layers, check that the first was purged.
     }
 
     SECTION("Create cache under a custom path") {

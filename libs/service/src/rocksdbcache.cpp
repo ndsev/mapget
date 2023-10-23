@@ -8,6 +8,10 @@
 namespace mapget
 {
 
+static uint8_t COL_TIMESTAMP = 0;
+static uint8_t COL_TILES = 1;
+static uint8_t COL_FIELD_DICTS = 2;
+
 RocksDBCache::RocksDBCache(int64_t cacheMaxTiles, std::string cachePath, bool clearCache)
 {
     // Set standard RocksDB options.
@@ -15,10 +19,14 @@ RocksDBCache::RocksDBCache(int64_t cacheMaxTiles, std::string cachePath, bool cl
     options_.create_missing_column_families = true;
 
     // Create separate column families for tile layers and fields.
-    // RocksDB requires a default column family, setting this to tile layers.
+    // RocksDB requires a default column family, we use that for
+    // the timestamp->tile column.
     std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
     column_families.push_back(rocksdb::ColumnFamilyDescriptor(
         ROCKSDB_NAMESPACE::kDefaultColumnFamilyName,
+        rocksdb::ColumnFamilyOptions()));
+    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+        "Tiles",
         rocksdb::ColumnFamilyOptions()));
     column_families.push_back(rocksdb::ColumnFamilyDescriptor(
         "FieldDicts",
@@ -60,7 +68,6 @@ RocksDBCache::RocksDBCache(int64_t cacheMaxTiles, std::string cachePath, bool cl
             }
             else if (handle->GetName() == ROCKSDB_NAMESPACE::kDefaultColumnFamilyName) {
                 // Count existing tiles, since we're not clearing the cache.
-                // TODO instead remember olderst/newest keys for deletion support.
                 key_count_++;
             }
             else if (handle->GetName() == "FieldDicts") {
@@ -87,15 +94,18 @@ RocksDBCache::~RocksDBCache()
 std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
 {
     std::string read_value;
-    auto status = db_->Get(read_options_, column_family_handles_[0], k.toString(), &read_value);
+    auto status = db_->Get(read_options_, column_family_handles_[COL_TILES], k.toString(), &read_value);
 
     if (status.ok()) {
         log().trace(stx::format("Key: {} | Layer size: {}", k.toString(), read_value.size()));
         return read_value;
     }
+    else if (status.IsNotFound()) {
+        return {};
+    }
 
     logRuntimeError(stx::format("Error reading from database: {}", status.ToString()));
-    return {};
+    return {}; // For the sake of control flow checker.
 }
 
 void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
@@ -104,7 +114,7 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
     // Unique tile IDs iterating up, allowing to delete the oldest?
     // + rocksDB supports efficient range deletes, could be worth a look?
 
-    auto status = db_->Put(write_options_, column_family_handles_[0], k.toString(), v);
+    auto status = db_->Put(write_options_, column_family_handles_[COL_TILES], k.toString(), v);
 
     if (!status.ok()) {
         logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
@@ -114,7 +124,7 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourceNodeId)
 {
     std::string read_value;
-    auto status = db_->Get(read_options_, column_family_handles_[1], sourceNodeId, &read_value);
+    auto status = db_->Get(read_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, &read_value);
 
     if (status.ok()) {
         log().trace(stx::format("Node: {} | Field dict size: {}", sourceNodeId, read_value.size()));
@@ -127,7 +137,7 @@ std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourc
 
 void RocksDBCache::putFields(std::string_view const& sourceNodeId, std::string const& v)
 {
-    auto status = db_->Put(write_options_, column_family_handles_[1], sourceNodeId, v);
+    auto status = db_->Put(write_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, v);
 
     if (!status.ok()) {
         logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
