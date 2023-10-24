@@ -171,8 +171,8 @@ if (NOT TARGET rocksdb)
   set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
 
   FetchContent_Declare(rocksdb
-    GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-    GIT_TAG        "main"
+    GIT_REPOSITORY "https://github.com/evolvedbinary/rocksdb.git"
+    GIT_TAG        "sse4-2-fix"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(rocksdb)
 endif()
