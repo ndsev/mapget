@@ -28,17 +28,17 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     // Create separate column families for tile layers and fields.
     // RocksDB requires a default column family, we use that for
     // the timestamp->tile column.
-    std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
-    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+    std::vector<rocksdb::ColumnFamilyDescriptor> columnFamilies;
+    columnFamilies.push_back(rocksdb::ColumnFamilyDescriptor(
         ROCKSDB_NAMESPACE::kDefaultColumnFamilyName,
         rocksdb::ColumnFamilyOptions()));
-    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+    columnFamilies.push_back(rocksdb::ColumnFamilyDescriptor(
         "TileToTimestamp",
         rocksdb::ColumnFamilyOptions()));
-    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+    columnFamilies.push_back(rocksdb::ColumnFamilyDescriptor(
         "Tiles",
         rocksdb::ColumnFamilyOptions()));
-    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+    columnFamilies.push_back(rocksdb::ColumnFamilyDescriptor(
         "FieldDicts",
         rocksdb::ColumnFamilyOptions()));
 
@@ -48,19 +48,28 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     if (fs::path(cachePath).is_relative()) {
         absoluteCachePath = fs::current_path() / cachePath;
     }
+    log().debug(stx::format("Initializing RocksDB cache under: {}", absoluteCachePath.string()));
 
     if (!fs::exists(absoluteCachePath.parent_path())) {
-        logRuntimeError(stx::format(
+        throw logRuntimeError(stx::format(
             "Error initializing rocksDB cache: parent directory {} does not exist!",
             absoluteCachePath.parent_path().string()));
     }
 
+    if (clearCache) {
+        rocksdb::DestroyDB(absoluteCachePath, options_);
+    }
+
     // Open the database.
     rocksdb::Status status = rocksdb::DB::
-        Open(options_, absoluteCachePath, column_families, &column_family_handles_, &db_);
+        Open(options_, absoluteCachePath, columnFamilies, &column_family_handles_, &db_);
 
-    if (!status.ok()) {
-        logRuntimeError(stx::format(
+    if(status.IsCorruption()) {
+        throw logRuntimeError(
+            "RocksDB cache is corrupted, restart with '--clear-cache 1'!");
+    }
+    else if (!status.ok()) {
+        throw logRuntimeError(stx::format(
             "Error opening database at {}: {}",
             absoluteCachePath.string(),
             status.ToString()));
@@ -69,14 +78,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     for (rocksdb::ColumnFamilyHandle* handle : column_family_handles_) {
         std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(), handle));
         for (it->SeekToFirst(); it->Valid(); it->Next()) {
-            if (clearCache) {
-                // Remove all existing data, as requested.
-                status = db_->Delete(rocksdb::WriteOptions(), handle, it->key());
-                if (!status.ok()) {
-                    logRuntimeError(stx::format("Error clearing RocksDB cache!"));
-                }
-            }
-            else if (handle->GetName() == ROCKSDB_NAMESPACE::kDefaultColumnFamilyName) {
+            if (handle->GetName() == ROCKSDB_NAMESPACE::kDefaultColumnFamilyName) {
                 // Count existing tiles, since we're not clearing the cache.
                 key_count_++;
             }
@@ -93,10 +95,8 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     if (!clearCache && max_key_count_ > 0 && key_count_ > max_key_count_) {
         auto deleteCount = key_count_ - max_key_count_;
         rocksdb::WriteBatch batch;
-        std::unique_ptr<rocksdb::Iterator> it(
-            db_->NewIterator(
-                read_options_,
-                column_family_handles_[COL_TIMESTAMP]));
+        std::unique_ptr<rocksdb::Iterator>
+            it(db_->NewIterator(read_options_, column_family_handles_[COL_TIMESTAMP]));
         it->SeekToFirst();
         auto timeStampsToDelete = std::vector<std::string>();
         while (deleteCount != 0) {
@@ -108,14 +108,12 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
         }
         status = db_->Write(write_options_, &batch);
         if (!status.ok()) {
-            logRuntimeError("Could not trim cache!");
+            throw logRuntimeError("Could not trim cache!");
         }
         key_count_ = max_key_count_;
     }
 
-    log().debug(stx::format(
-        "Initialized RocksDB cache with {} existing tile entries.",
-        key_count_));
+    log().debug(stx::format("Initialized RocksDB cache with {} existing tile entries.",key_count_));
 }
 
 RocksDBCache::~RocksDBCache()
@@ -129,18 +127,19 @@ RocksDBCache::~RocksDBCache()
 std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
 {
     std::string read_value;
-    auto status = db_->Get(read_options_, column_family_handles_[COL_TILES], k.toString(), &read_value);
+    auto status =
+        db_->Get(read_options_, column_family_handles_[COL_TILES], k.toString(), &read_value);
 
     if (status.ok()) {
         log().trace(stx::format("Key: {} | Layer size: {}", k.toString(), read_value.size()));
+        log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
         return read_value;
     }
     else if (status.IsNotFound()) {
         return {};
     }
 
-    logRuntimeError(stx::format("Error reading from database: {}", status.ToString()));
-    return {}; // For the sake of control flow checker.
+    throw logRuntimeError(stx::format("Error reading from database: {}", status.ToString()));
 }
 
 void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
@@ -150,10 +149,8 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
     //  and not invoking deletion at every insert.
     if (max_key_count_ && key_count_ + 1 >= max_key_count_) {
         // Iterator of the timestamp column is in tile insertion order.
-        std::unique_ptr<rocksdb::Iterator> it(
-            db_->NewIterator(read_options_,
-                             column_family_handles_[COL_TIMESTAMP])
-            );
+        std::unique_ptr<rocksdb::Iterator>
+            it(db_->NewIterator(read_options_, column_family_handles_[COL_TIMESTAMP]));
         it->SeekToFirst();
 
         rocksdb::WriteBatch batch;
@@ -163,7 +160,8 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
         rocksdb::Status status = db_->Write(write_options_, &batch);
 
         if (!status.ok()) {
-            logRuntimeError(stx::format("Could not delete oldest cache entry: {}", status.ToString()));
+            throw logRuntimeError(
+                stx::format("Could not delete oldest cache entry: {}", status.ToString()));
         }
 
         --key_count_;
@@ -172,11 +170,12 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
     // If the tile exists already, delete the previous timestamp entry.
     std::string previousTileTimestamp;
     if (db_->Get(
-            read_options_,
-            column_family_handles_[COL_TIMESTAMP_REVERSE],
-            k.toString(),
-            &previousTileTimestamp).ok()) {
-
+               read_options_,
+               column_family_handles_[COL_TIMESTAMP_REVERSE],
+               k.toString(),
+               &previousTileTimestamp)
+            .ok())
+    {
         rocksdb::WriteBatch batch;
         batch.Delete(column_family_handles_[COL_TIMESTAMP], previousTileTimestamp);
         batch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], k.toString());
@@ -196,36 +195,37 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
     auto status = db_->Write(write_options_, &batch);
 
     if (!status.ok()) {
-        logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
+        throw logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
     }
 
     ++key_count_;
+    log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
 }
 
 std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourceNodeId)
 {
     std::string read_value;
-    auto status = db_->Get(
-        read_options_,
-        column_family_handles_[COL_FIELD_DICTS],
-        sourceNodeId,
-        &read_value);
+    auto status =
+        db_->Get(read_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, &read_value);
 
     if (status.ok()) {
         log().trace(stx::format("Node: {} | Field dict size: {}", sourceNodeId, read_value.size()));
         return read_value;
     }
+    else if (status.IsNotFound()) {
+        return {};
+    }
 
-    logRuntimeError(stx::format("Error reading from database: {}", status.ToString()));
-    return {};
+    throw logRuntimeError(stx::format("Error reading from database: {}", status.ToString()));
 }
 
 void RocksDBCache::putFields(std::string_view const& sourceNodeId, std::string const& v)
 {
-    auto status = db_->Put(write_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, v);
+    auto status =
+        db_->Put(write_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, v);
 
     if (!status.ok()) {
-        logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
+        throw logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
     }
 }
 

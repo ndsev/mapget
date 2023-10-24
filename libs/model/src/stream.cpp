@@ -57,7 +57,7 @@ bool TileLayerStream::Reader::continueReading()
             [this](auto&& nodeId){return (*cachedFieldsProvider_)(nodeId);});
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
-        log().debug("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
+        log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
         onParsedLayer_(tileFeatureLayer);
     }
     else if (nextValueType_ == MessageType::Fields)
@@ -134,7 +134,7 @@ void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLaye
     tileFeatureLayer->write(serializedFeatureLayer);
     auto bytes = serializedFeatureLayer.str();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
-    log().debug("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
+    log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
     sendMessage(std::move(bytes), MessageType::TileFeatureLayer);
 }
 

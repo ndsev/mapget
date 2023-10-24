@@ -44,11 +44,12 @@ struct ServeCommand
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory.")
             ->default_val("memory");
+        // TODO should RocksDB be the default cache?
         serveCmd->add_option(
             "--cache-dir", cachePath_, "Path to store RocksDB cache.")
             ->default_val("mapget-cache");
         serveCmd->add_option(
-            "--cache-max-tiles", cacheMaxTiles_, "-1 for unlimited, default 1024.")
+            "--cache-max-tiles", cacheMaxTiles_, "0 for unlimited, default 1024.")
             ->default_val(1024);
         serveCmd->add_option(
             "--clear-cache", clearCache_, "Clear existing cache at startup.")
@@ -66,7 +67,6 @@ struct ServeCommand
 
         std::shared_ptr<Cache> cache;
         if (cacheType_ == "rocksdb") {
-            log().info("Initializing RocksDB cache.");
             cache = std::make_shared<RocksDBCache>(cacheMaxTiles_, cachePath_, clearCache_);
         }
         else if (cacheType_ == "memory") {

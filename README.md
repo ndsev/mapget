@@ -40,6 +40,18 @@ Sample configuration files can be found under `examples/config`:
 - [sample-first-datasource.toml](examples/config/sample-first-datasource.toml) and [sample-second-datasource.toml](examples/config/sample-second-datasource.toml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
 - [sample-service.toml](examples/config/sample-service.toml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
 
+### Cache
+
+`mapget` supports persistent tile caching using a RocksDB-backed cache. For example, the sample invocation:
+
+```bash
+mapget serve --cache-type rocksdb --cache-dir "custom-cache-dir" --cache-max-tiles 100 --clear-cache 1
+```
+
+creates a RocksDB cache under "custom-cache-dir" from the execution directory
+(absolute paths are supported as well), instructs `mapget` to clear any cache entries from previous runs,
+and limits the number of cached tiles to 100.
+
 ## Map Data Sources
 
 At the heart of *mapget* are data sources, which provide map feature data for
@@ -83,6 +95,8 @@ e.g. *"Roads"* or *Lanes*.
 ## Component Overview
 
 The following diagram provides an overview over the libraries, their contents, and their dependencies:
+
+TODO: include RocksDBCache in component graph.
 
 ![components](docs/components.png)
 
