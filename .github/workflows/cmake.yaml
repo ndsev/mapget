@@ -43,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, windows-2019]
         python-version: ["3.8", "3.9", "3.10", "3.11"]
     steps:
       - uses: actions/checkout@v2
@@ -75,6 +75,8 @@ jobs:
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: build
+        env:
+          CMAKE_GENERATOR: "Visual Studio 16 2019"
         run: |
           choco install --no-progress -y openssl --version=1.1.1.2100
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
