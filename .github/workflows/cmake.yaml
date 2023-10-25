@@ -73,7 +73,7 @@ jobs:
                 "$(pwd)"/bin/wheel-auditme/mapget*.whl \
                 "$(pwd)"/bin/wheel mapget
       - name: Build (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' || matrix.os == 'windows-2019'
         working-directory: build
         env:
           CMAKE_GENERATOR: "Visual Studio 16 2019"
