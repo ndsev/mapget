@@ -96,8 +96,6 @@ e.g. *"Roads"* or *Lanes*.
 
 The following diagram provides an overview over the libraries, their contents, and their dependencies:
 
-TODO: include RocksDBCache in component graph.
-
 ![components](docs/components.png)
 
 `mapget` consists of four main libraries:
