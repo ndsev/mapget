@@ -161,22 +161,6 @@ if (WITH_COVERAGE)
   include(CodeCoverage)
 endif()
 
-# RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
-# tries to find a matching compiler and fails. So RocksDB must be included
-# after CodeCoverage.
-if (NOT TARGET rocksdb)
-  set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
-  set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
-  set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
-  set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
-
-  FetchContent_Declare(rocksdb
-    GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-    GIT_TAG        "v8.6.7"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(rocksdb)
-endif()
-
 ##############
 # libs
 
@@ -184,6 +168,23 @@ add_subdirectory(libs/logging)
 add_subdirectory(libs/model)
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+  if (NOT TARGET rocksdb)
+    # RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
+    # tries to find a matching compiler and fails. So RocksDB must be included
+    # after CodeCoverage.
+    set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
+    set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
+    set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
+    set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
+    set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
+
+    FetchContent_Declare(rocksdb
+      GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
+      GIT_TAG        dc87847e65449ef1cb6f787c5d753cbe8562bff1 # "v8.6.7"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(rocksdb)
+  endif()
+
   add_subdirectory(libs/service)
 endif()
 

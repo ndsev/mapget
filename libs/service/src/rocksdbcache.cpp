@@ -57,12 +57,12 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     }
 
     if (clearCache) {
-        rocksdb::DestroyDB(absoluteCachePath, options_);
+        rocksdb::DestroyDB(absoluteCachePath.string(), options_);
     }
 
     // Open the database.
     rocksdb::Status status = rocksdb::DB::
-        Open(options_, absoluteCachePath, columnFamilies, &column_family_handles_, &db_);
+        Open(options_, absoluteCachePath.string(), columnFamilies, &column_family_handles_, &db_);
 
     if(status.IsCorruption()) {
         throw logRuntimeError(

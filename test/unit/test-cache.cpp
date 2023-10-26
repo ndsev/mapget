@@ -2,6 +2,7 @@
 #include "mapget/http-service/cli.h"
 #include "mapget/log.h"
 #include "mapget/service/rocksdbcache.h"
+#include <chrono>
 
 using namespace mapget;
 
@@ -179,7 +180,11 @@ TEST_CASE("RocksDBCache", "[Cache]")
     }
 
     SECTION("Create cache under a custom path") {
-        std::filesystem::path test_cache = std::filesystem::current_path() / "rocksdb-unit-test";
+        auto now = std::chrono::system_clock::now();
+        auto epoch_time = std::chrono::system_clock::to_time_t(now);
+
+        std::filesystem::path test_cache = std::filesystem::temp_directory_path() /
+            ("rocksdb-unit-test-" + std::to_string(epoch_time));
         log().info(stx::format("Test creating cache: {}", test_cache.string()));
 
         // Delete cache if it already exists, e.g. from a broken test case.
@@ -190,10 +195,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
         // Create cache and make sure it worked.
         auto cache = std::make_shared<mapget::RocksDBCache>(
-            1024, test_cache, true);
+            1024, test_cache.string(), true);
         assert(std::filesystem::exists(test_cache));
-
-        // Delete cache.
-        std::filesystem::remove_all(test_cache);
     }
 }
