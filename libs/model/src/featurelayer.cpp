@@ -242,6 +242,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     // contains only references to feature nodes, in the order
     // of the feature node column.
     addRoot(simfil::ModelNode::Ptr(result));
+    setInfo("num-features", numRoots());
     return result;
 }
 
