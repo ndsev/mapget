@@ -180,8 +180,8 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 
     FetchContent_Declare(rocksdb
       GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-      GIT_TAG        dc87847e65449ef1cb6f787c5d753cbe8562bff1 # "v8.6.7"
-      GIT_SHALLOW    ON)
+      GIT_TAG        dc87847e65449ef1cb6f787c5d753cbe8562bff1 # Use version greater than v8.6.7 once released.
+      GIT_SHALLOW    OFF)  # Turn ON when using released tag.
     FetchContent_MakeAvailable(rocksdb)
   endif()
 
