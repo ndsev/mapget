@@ -144,29 +144,6 @@ std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
 
 void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 {
-    // Delete the oldest entry if we are exceeding the cache limit.
-    // TODO improve performance by using RocksDB's DeleteRange function
-    //  and not invoking deletion at every insert.
-    if (max_key_count_ && key_count_ + 1 >= max_key_count_) {
-        // Iterator of the timestamp column is in tile insertion order.
-        std::unique_ptr<rocksdb::Iterator>
-            it(db_->NewIterator(read_options_, column_family_handles_[COL_TIMESTAMP]));
-        it->SeekToFirst();
-
-        rocksdb::WriteBatch batch;
-        batch.Delete(column_family_handles_[COL_TIMESTAMP], it->key());
-        batch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], it->value());
-        batch.Delete(column_family_handles_[COL_TILES], it->value());
-        rocksdb::Status status = db_->Write(write_options_, &batch);
-
-        if (!status.ok()) {
-            throw logRuntimeError(
-                stx::format("Could not delete oldest cache entry: {}", status.ToString()));
-        }
-
-        --key_count_;
-    }
-
     // If the tile exists already, delete the previous timestamp entry.
     std::string previousTileTimestamp;
     if (db_->Get(
@@ -200,6 +177,28 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 
     ++key_count_;
     log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
+
+    // Delete the oldest entry if we are exceeding the cache limit.
+    // TODO improve performance by using RocksDB's DeleteRange function
+    //  and not invoking deletion at every insert.
+    if (max_key_count_ && key_count_ > max_key_count_) {
+        // Iterator of the timestamp column is in tile insertion order.
+        std::unique_ptr<rocksdb::Iterator>
+            it(db_->NewIterator(read_options_, column_family_handles_[COL_TIMESTAMP]));
+        it->SeekToFirst();
+
+        rocksdb::WriteBatch batch;
+        batch.Delete(column_family_handles_[COL_TIMESTAMP], it->key());
+        batch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], it->value());
+        batch.Delete(column_family_handles_[COL_TILES], it->value());
+        rocksdb::Status status = db_->Write(write_options_, &batch);
+
+        if (!status.ok()) {
+            throw logRuntimeError(
+                stx::format("Could not delete oldest cache entry: {}", status.ToString()));
+        }
+        --key_count_;
+    }
 }
 
 std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourceNodeId)

@@ -105,25 +105,25 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto cache = std::make_shared<mapget::RocksDBCache>(
             1024, "mapget-cache", true);
         auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        assert(fieldDictCount == 0);
+        REQUIRE(fieldDictCount == 0);
 
         // putTileFeatureLayer triggers both putTileLayer and putFields.
         cache->putTileFeatureLayer(tile);
         auto returnedTile = cache->getTileFeatureLayer(tile->id(), info);
         fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        assert(fieldDictCount == 1);
+        REQUIRE(fieldDictCount == 1);
 
         // Update a tile, check that cache returns the updated version.
-        assert(returnedTile->size() == 0);
+        REQUIRE(returnedTile->size() == 0);
         auto feature = tile->newFeature("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
         cache->putTileFeatureLayer(tile);
         auto updatedTile = cache->getTileFeatureLayer(tile->id(), info);
-        assert(updatedTile->size() == 1);
+        REQUIRE(updatedTile->size() == 1);
 
         // Check that cache hits and misses are properly recorded.
         auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
-        assert(cache->getStatistics()["cache-hits"] == 2);
-        assert(cache->getStatistics()["cache-misses"] == 1);
+        REQUIRE(cache->getStatistics()["cache-hits"] == 2);
+        REQUIRE(cache->getStatistics()["cache-misses"] == 1);
     }
 
     SECTION("Reopen cache with maxTileCount=1, insert another layer") {
@@ -131,22 +131,22 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto cache = std::make_shared<mapget::RocksDBCache>(
             1, "mapget-cache", false);
         auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        assert(fieldDictCount == 1);
+        REQUIRE(fieldDictCount == 1);
 
         // Add a tile to trigger cache cleaning.
         cache->putTileFeatureLayer(otherTile);
 
         auto returnedTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
-        assert(returnedTile->nodeId() == otherTile->nodeId());
+        REQUIRE(returnedTile->nodeId() == otherTile->nodeId());
 
         // Field dicts are updated with getTileFeatureLayer.
         fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        assert(fieldDictCount == 2);
+        REQUIRE(fieldDictCount == 2);
 
         // Query the first inserted layer - it should not be retrievable.
         auto missingTile = cache->getTileFeatureLayer(tile->id(), info);
-        assert(cache->getStatistics()["cache-misses"] == 1);
-        assert(!missingTile);
+        REQUIRE(cache->getStatistics()["cache-misses"] == 1);
+        REQUIRE(!missingTile);
     }
 
     SECTION("Store another tile at unlimited cache size") {
@@ -158,24 +158,34 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
         // Make sure the previous tile is still there, since cache is unlimited.
         auto olderTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
-        assert(cache->getStatistics()["cache-misses"] == 0);
-        assert(cache->getStatistics()["cache-hits"] == 1);
+        REQUIRE(cache->getStatistics()["cache-misses"] == 0);
+        REQUIRE(cache->getStatistics()["cache-hits"] == 1);
     }
 
     SECTION("Reopen cache with maxTileCount=1, check older tile was deleted") {
         auto cache = std::make_shared<mapget::RocksDBCache>(
             1, "mapget-cache", false);
-        assert(cache->getStatistics()["cache-misses"] == 0);
+        REQUIRE(cache->getStatistics()["cache-misses"] == 0);
 
         // Query the first inserted layer - it should not be retrievable.
         auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
-        assert(cache->getStatistics()["cache-misses"] == 1);
+        REQUIRE(cache->getStatistics()["cache-misses"] == 1);
     }
 
     SECTION("Reopen cache, check loading of field dicts") {
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>();
-        assert(cache->getStatistics()["loaded-field-dicts"] == 2);
+        REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
+
+        // Replace field dict value with test value.
+        auto val = cache->getFields(nodeId);
+        std::string fieldDictEntry = "test";
+        cache->putFields(nodeId, fieldDictEntry);
+        auto returnedEntry = cache->getFields(nodeId);
+
+        // Make sure field dict was properly stored, replacing previous value.
+        REQUIRE(returnedEntry == fieldDictEntry);
+        REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
     }
 
     SECTION("Create cache under a custom path") {
@@ -190,11 +200,11 @@ TEST_CASE("RocksDBCache", "[Cache]")
         if (std::filesystem::exists(test_cache)) {
             std::filesystem::remove_all(test_cache);
         }
-        assert(!std::filesystem::exists(test_cache));
+        REQUIRE(!std::filesystem::exists(test_cache));
 
         // Create cache and make sure it worked.
         auto cache = std::make_shared<mapget::RocksDBCache>(
             1024, test_cache.string(), true);
-        assert(std::filesystem::exists(test_cache));
+        REQUIRE(std::filesystem::exists(test_cache));
     }
 }
