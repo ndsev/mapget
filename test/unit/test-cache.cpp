@@ -1,8 +1,11 @@
+#include <bitsery/bitsery.h>
+#include <bitsery/adapter/stream.h>
+
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include "mapget/http-service/cli.h"
 #include "mapget/log.h"
 #include "mapget/service/rocksdbcache.h"
-#include <chrono>
 
 using namespace mapget;
 
@@ -100,6 +103,22 @@ TEST_CASE("RocksDBCache", "[Cache]")
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 
+
+    auto testFieldsNodeId = "FieldDictsTestingNode";
+    auto testFieldsDictionary = Fields(testFieldsNodeId);
+
+    // Write a field dict directly into cache, including the header
+    // added in TileLayerStream::sendMessage.
+    std::stringstream serializedFields;
+    testFieldsDictionary.write(serializedFields, 0);
+
+    std::stringstream serializedMessage;
+    bitsery::Serializer<bitsery::OutputStreamAdapter> s(serializedMessage);
+    s.object(TileLayerStream::CurrentProtocolVersion);
+    s.value1b(TileLayerStream::MessageType::Fields);
+    s.value4b((uint32_t)serializedFields.str().size());
+    serializedMessage << serializedFields.str();
+
     SECTION("Insert, retrieve, and update feature layer") {
         // Open or create cache, clear any existing data.
         auto cache = std::make_shared<mapget::RocksDBCache>(
@@ -177,15 +196,26 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto cache = std::make_shared<mapget::RocksDBCache>();
         REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
 
-        // Replace field dict value with test value.
-        auto val = cache->getFields(nodeId);
-        std::string fieldDictEntry = "test";
-        cache->putFields(nodeId, fieldDictEntry);
-        auto returnedEntry = cache->getFields(nodeId);
+        cache->putFields(testFieldsNodeId, serializedMessage.str());
+        auto returnedEntry = cache->getFields(testFieldsNodeId);
 
-        // Make sure field dict was properly stored, replacing previous value.
-        REQUIRE(returnedEntry == fieldDictEntry);
+        // Make sure field dict was properly stored.
+        REQUIRE(returnedEntry.value() == serializedMessage.str());
+
+        // TODO this kind of access bypasses the creation of a fieldCacheOffsets_
+        //  entry in the cache -> decouple the cache storage logic clearly from
+        //  tile layer writing logic.
         REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
+    }
+
+    SECTION("Reopen cache again, check loading of field dicts again") {
+        // Open existing cache.
+        auto cache = std::make_shared<mapget::RocksDBCache>();
+        REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 3);
+
+        // Check that the same value can still be retrieved from field dict.
+        auto returnedEntry = cache->getFields(testFieldsNodeId);
+        REQUIRE(returnedEntry.value() == serializedMessage.str());
     }
 
     SECTION("Create cache under a custom path") {

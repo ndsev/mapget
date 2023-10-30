@@ -140,6 +140,9 @@ void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLaye
 
 void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::MessageType msgType)
 {
+    // TODO refactor the preparation of tile layer & field dicts storage format
+    //  such that the encoding logic is not split over multiple functions.
+
     std::stringstream message;
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(message);
 

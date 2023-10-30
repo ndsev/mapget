@@ -161,15 +161,15 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 
     auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
 
-    rocksdb::WriteBatch batch;
-    batch.Put(column_family_handles_[COL_TIMESTAMP], std::to_string(timestamp), k.toString());
-    batch.Put(
+    rocksdb::WriteBatch newTileBatch;
+    newTileBatch.Put(column_family_handles_[COL_TIMESTAMP], std::to_string(timestamp), k.toString());
+    newTileBatch.Put(
         column_family_handles_[COL_TIMESTAMP_REVERSE],
         k.toString(),
         std::to_string(timestamp));
-    batch.Put(column_family_handles_[COL_TILES], k.toString(), v);
+    newTileBatch.Put(column_family_handles_[COL_TILES], k.toString(), v);
 
-    auto status = db_->Write(write_options_, &batch);
+    auto status = db_->Write(write_options_, &newTileBatch);
 
     if (!status.ok()) {
         throw logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
@@ -187,15 +187,15 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
             it(db_->NewIterator(read_options_, column_family_handles_[COL_TIMESTAMP]));
         it->SeekToFirst();
 
-        rocksdb::WriteBatch batch;
-        batch.Delete(column_family_handles_[COL_TIMESTAMP], it->key());
-        batch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], it->value());
-        batch.Delete(column_family_handles_[COL_TILES], it->value());
-        rocksdb::Status status = db_->Write(write_options_, &batch);
+        rocksdb::WriteBatch purgeBatch;
+        purgeBatch.Delete(column_family_handles_[COL_TIMESTAMP], it->key());
+        purgeBatch.Delete(column_family_handles_[COL_TIMESTAMP_REVERSE], it->value());
+        purgeBatch.Delete(column_family_handles_[COL_TILES], it->value());
+        rocksdb::Status purgeStatus = db_->Write(write_options_, &purgeBatch);
 
-        if (!status.ok()) {
+        if (!purgeStatus.ok()) {
             throw logRuntimeError(
-                stx::format("Could not delete oldest cache entry: {}", status.ToString()));
+                stx::format("Could not delete oldest cache entry: {}", purgeStatus.ToString()));
         }
         --key_count_;
     }

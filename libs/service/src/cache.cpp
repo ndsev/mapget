@@ -43,7 +43,7 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
                 throw logRuntimeError("Stream header error while parsing fields from cache.");
             }
 
-            // Now, actually read the fields message
+            // Now, actually read the fields message.
             cachedFields->read(stream);
             fieldCacheOffsets_.emplace(nodeId, cachedFields->highest());
         }
