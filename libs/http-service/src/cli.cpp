@@ -42,9 +42,8 @@ struct ServeCommand
             "Data source executable paths, including arguments. "
             "Can be specified multiple times.");
         serveCmd->add_option(
-            "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory.")
-            ->default_val("memory");
-        // TODO should RocksDB be the default cache?
+            "-c,--cache-type", cacheType_, "From [memory|rocksdb], default rocksdb.")
+            ->default_val("rocksdb");
         serveCmd->add_option(
             "--cache-dir", cachePath_, "Path to store RocksDB cache.")
             ->default_val("mapget-cache");
@@ -70,9 +69,8 @@ struct ServeCommand
             cache = std::make_shared<RocksDBCache>(cacheMaxTiles_, cachePath_, clearCache_);
         }
         else if (cacheType_ == "memory") {
-            // TODO support setting max size also for in-memory cache.
             log().info("Initializing in-memory cache.");
-            cache = std::make_shared<MemCache>();
+            cache = std::make_shared<MemCache>(cacheMaxTiles_);
         }
         else {
             logRuntimeError(stx::format("Cache type {} not supported!", cacheType_));

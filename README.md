@@ -42,15 +42,15 @@ Sample configuration files can be found under `examples/config`:
 
 ### Cache
 
-`mapget` supports persistent tile caching using a RocksDB-backed cache. For example, the sample invocation:
+`mapget` supports persistent tile caching using a RocksDB-backed cache, and non-persistent
+in-memory caching. The CLI options to configure caching behavior are:
 
-```bash
-mapget serve --cache-type rocksdb --cache-dir "custom-cache-dir" --cache-max-tiles 100 --clear-cache 1
-```
-
-creates a RocksDB cache under "custom-cache-dir" from the execution directory
-(absolute paths are supported as well), instructs `mapget` to clear any cache entries from previous runs,
-and limits the number of cached tiles to 100.
+| Option                   | Description                                                                                          | Default Value   |
+|--------------------------|------------------------------------------------------------------------------------------------------|-----------------|
+| `-c,--cache-type`        | Choose between "rocksdb" or "memory".                                                                | rocksdb         |
+| `--cache-dir`            | Path to store RocksDB cache.                                                                         | mapget-cache    |
+| `--cache-max-tiles`      | Number of tiles to store. Tiles are purged from cache in FIFO order. Set to 0 for unlimited storage. | 1024            |
+| `--clear-cache`          | Clear existing cache entries at startup.                                                             | false           |
 
 ## Map Data Sources
 

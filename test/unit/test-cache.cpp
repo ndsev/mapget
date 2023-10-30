@@ -124,7 +124,6 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
         assert(cache->getStatistics()["cache-hits"] == 2);
         assert(cache->getStatistics()["cache-misses"] == 1);
-        // TODO discuss: cache hit/miss stats are not persistent, is that a problem?
     }
 
     SECTION("Reopen cache with maxTileCount=1, insert another layer") {

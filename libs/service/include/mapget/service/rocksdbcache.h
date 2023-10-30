@@ -7,6 +7,11 @@
 namespace mapget
 {
 
+/**
+ * A persistent cache implementation that stores layers and field dictionaries
+ * in RocksDB. Oldest tiles are removed automatically in FIFO order when cacheMaxTiles is
+ * reached.
+ */
 class RocksDBCache : public Cache
 {
 public:
