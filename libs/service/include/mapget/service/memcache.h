@@ -30,10 +30,10 @@ public:
     void putTileLayer(MapTileKey const& k, std::string const& v) override;
 
     /** Retrieve a Fields-dict-blob for a sourceNodeId -> No-Op */
-    std::optional<std::string> getFields(std::string const& sourceNodeId) override {return {};}
+    std::optional<std::string> getFields(std::string_view const& sourceNodeId) override {return {};}
 
     /** Upsert a Fields-dict blob. -> No-Op */
-    void putFields(std::string const& sourceNodeId, std::string const& v) override {}
+    void putFields(std::string_view const& sourceNodeId, std::string const& v) override {}
 
     /** Enriches the statistics with info about the number of cached tiles. */
     nlohmann::json getStatistics() const override;

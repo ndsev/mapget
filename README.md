@@ -5,7 +5,7 @@
 **Main Capabilities:**
 
 * Coordinating requests for map data to various map data source processes.
-* Integrated map data cache based on sqlite or RocksDB (*TODO: Evaluate best cache DB solution*), or a simple memory cache.
+* Integrated map data cache based on RocksDB, or a simple in-memory cache.
 * Simple data-source API with bindings for C++, Python and JS.
 * Compact GeoJSON feature storage model - [25 to 50% smaller than BSON/msgpack](docs/size-comparison/table.md).
 * Integrated deep [feature filter language](https://github.com/klebert-engineering/simfil) based on (a subset of) *JSONata*
@@ -39,6 +39,18 @@ Sample configuration files can be found under `examples/config`:
 
 - [sample-first-datasource.toml](examples/config/sample-first-datasource.toml) and [sample-second-datasource.toml](examples/config/sample-second-datasource.toml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
 - [sample-service.toml](examples/config/sample-service.toml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
+
+### Cache
+
+`mapget` supports persistent tile caching using a RocksDB-backed cache, and non-persistent
+in-memory caching. The CLI options to configure caching behavior are:
+
+| Option                   | Description                                                                                          | Default Value   |
+|--------------------------|------------------------------------------------------------------------------------------------------|-----------------|
+| `-c,--cache-type`        | Choose between "memory" or "rocksdb" (Technology Preview).                                           | memory          |
+| `--cache-dir`            | Path to store RocksDB cache.                                                                         | mapget-cache    |
+| `--cache-max-tiles`      | Number of tiles to store. Tiles are purged from cache in FIFO order. Set to 0 for unlimited storage. | 1024            |
+| `--clear-cache`          | Clear existing cache entries at startup.                                                             | false           |
 
 ## Map Data Sources
 

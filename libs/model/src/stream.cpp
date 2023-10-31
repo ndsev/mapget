@@ -13,7 +13,7 @@ TileLayerStream::Reader::Reader(
     std::function<void(TileFeatureLayer::Ptr)> onParsedLayer,
     std::shared_ptr<CachedFieldsProvider> fieldCacheProvider)
     : layerInfoProvider_(std::move(layerInfoProvider)),
-      fieldCacheProvider_(
+      cachedFieldsProvider_(
           fieldCacheProvider ? std::move(fieldCacheProvider) :
                                std::make_shared<TileLayerStream::CachedFieldsProvider>()),
       onParsedLayer_(std::move(onParsedLayer))
@@ -33,30 +33,18 @@ bool TileLayerStream::Reader::eos()
 
 bool TileLayerStream::Reader::continueReading()
 {
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(buffer_);
-    auto numUnreadBytes = buffer_.tellp() - buffer_.tellg();
-
     if (currentPhase_ == Phase::ReadHeader)
     {
-        // Version: 6B, Type: 1B, Size: 4B
-        constexpr auto headerSize = 6 + 1 + 4;
-        if (numUnreadBytes < headerSize)
-            return false;
-
-        Version protocolVersion;
-        s.object(protocolVersion);
-        if (!protocolVersion.isCompatible(CurrentProtocolVersion)) {
-            throw logRuntimeError(stx::format(
-                "Unable to read message with version {} using version {}.",
-                protocolVersion.toString(),
-                CurrentProtocolVersion.toString()));
+        if (readMessageHeader(buffer_, nextValueType_, nextValueSize_)) {
+            currentPhase_ = Phase::ReadValue;
         }
-        s.value1b(nextValueType_);
-        s.value4b(nextValueSize_);
-        currentPhase_ = Phase::ReadValue;
-        return true;
+        else {
+            return false;
+        }
     }
 
+    bitsery::Deserializer<bitsery::InputStreamAdapter> s(buffer_);
+    auto numUnreadBytes = buffer_.tellp() - buffer_.tellg();
     if (numUnreadBytes < nextValueSize_)
         return false;
 
@@ -66,17 +54,17 @@ bool TileLayerStream::Reader::continueReading()
         auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
             buffer_,
             layerInfoProvider_,
-            [this](auto&& nodeId){return (*fieldCacheProvider_)(nodeId);});
-        // Calculate duration
+            [this](auto&& nodeId){return (*cachedFieldsProvider_)(nodeId);});
+        // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
-        log().debug("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
+        log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
         onParsedLayer_(tileFeatureLayer);
     }
     else if (nextValueType_ == MessageType::Fields)
     {
-        // Read the node id which identifies the fields dictionary
+        // Read the node id which identifies the fields' dictionary.
         std::string fieldsDictNodeId = Fields::readDataSourceNodeId(buffer_);
-        (*fieldCacheProvider_)(fieldsDictNodeId)->read(buffer_);
+        (*cachedFieldsProvider_)(fieldsDictNodeId)->read(buffer_);
     }
 
     currentPhase_ = Phase::ReadHeader;
@@ -85,14 +73,40 @@ bool TileLayerStream::Reader::continueReading()
 
 std::shared_ptr<TileLayerStream::CachedFieldsProvider> TileLayerStream::Reader::fieldDictCache()
 {
-    return fieldCacheProvider_;
+    return cachedFieldsProvider_;
+}
+
+bool TileLayerStream::Reader::readMessageHeader(std::stringstream & stream, MessageType& outType, uint32_t& outSize)
+{
+    bitsery::Deserializer<bitsery::InputStreamAdapter> s(stream);
+    auto numUnreadBytes = stream.tellp() - stream.tellg();
+
+    // Version: 6B, Type: 1B, Size: 4B
+    constexpr auto headerSize = 6 + 1 + 4;
+    if (numUnreadBytes < headerSize)
+        return false;
+
+    Version protocolVersion;
+    s.object(protocolVersion);
+    if (!protocolVersion.isCompatible(CurrentProtocolVersion)) {
+        throw logRuntimeError(stx::format(
+            "Unable to read message with version {} using version {}.",
+            protocolVersion.toString(),
+            CurrentProtocolVersion.toString()));
+    }
+    s.value1b(outType);
+    s.value4b(outSize);
+
+    return true;
 }
 
 TileLayerStream::Writer::Writer(
     std::function<void(std::string, MessageType)> onMessage,
-    FieldOffsetMap& fieldsOffsets)
+    FieldOffsetMap& fieldsOffsets,
+    bool differentialFieldUpdates)
     : onMessage_(std::move(onMessage)),
-      fieldsOffsets_(fieldsOffsets)
+      fieldsOffsets_(fieldsOffsets),
+      differentialFieldUpdates_(differentialFieldUpdates)
 {
 }
 
@@ -106,7 +120,10 @@ void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLaye
     {
         // Need to send the client an update for the Fields dictionary
         std::stringstream serializedFields;
-        fields->write(serializedFields, highestFieldKnownToClient+1);
+        auto fieldUpdateOffset = 0;
+        if (differentialFieldUpdates_)
+            fieldUpdateOffset = highestFieldKnownToClient+1;
+        fields->write(serializedFields, fieldUpdateOffset);
         sendMessage(serializedFields.str(), MessageType::Fields);
         highestFieldKnownToClient = highestField;
     }
@@ -117,12 +134,15 @@ void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLaye
     tileFeatureLayer->write(serializedFeatureLayer);
     auto bytes = serializedFeatureLayer.str();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
-    log().debug("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
+    log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
     sendMessage(std::move(bytes), MessageType::TileFeatureLayer);
 }
 
 void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::MessageType msgType)
 {
+    // TODO refactor the preparation of tile layer & field dicts storage format
+    //  such that the encoding logic is not split over multiple functions.
+
     std::stringstream message;
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(message);
 

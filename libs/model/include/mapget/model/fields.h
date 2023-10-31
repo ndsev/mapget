@@ -6,17 +6,15 @@ namespace mapget
 {
 
 /**
- * The Fields class is a case-insensitive dictionary for field names.
- * It acts as a container that automatically populates itself when fields are added to an object.
- * Multiple TileFeatureLayers can share the same Fields dictionary, which helps reduce the size
- * of serialized FeatureLayers.
+ * The Fields class is a case-insensitive dictionary of uint16_t to field name strings.
+ * It populates itself when fields are added to an object. Multiple TileFeatureLayers
+ * can share the same Fields dictionary, reducing the size of serialized FeatureLayers.
  *
- * The inherited mapget::Fields provides additional static field IDs that can be used for various purposes.
+ * The inherited mapget::Fields contains static field IDs for various purposes.
  *
- * Field IDs managed by the Fields dictionary are stored as uint16 values, which are smaller and faster
- * to work with compared to strings. When querying fields, the Fields dictionary is used to look up the
- * field ID for a given name. Once the ID is obtained, subsequent searches are performed using this 16-bit
- * integer, resulting in improved efficiency.
+ * Field IDs are uint16 values, which are smaller and faster to work with than strings.
+ * When querying fields by name, the Fields dictionary is used to look up a field ID.
+ * Subsequent searches are performed using this 16-bit integer for improved efficiency.
  *
  * Note: A fields dictionary is always unique per datasource node. Therefore,
  * the Fields object must be constructed with a datasource node id.
@@ -33,7 +31,7 @@ struct Fields : public simfil::Fields
         PropertiesStr,
     };
 
-    explicit Fields(std::string nodeId);
+    explicit Fields(const std::string_view& nodeId);
 
     /**
      * Write is overloaded, because it prepends the stream with

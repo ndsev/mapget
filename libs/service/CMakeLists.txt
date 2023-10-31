@@ -5,11 +5,13 @@ add_library(mapget-service STATIC
   include/mapget/service/cache.h
   include/mapget/service/datasource.h
   include/mapget/service/memcache.h
+  include/mapget/service/rocksdbcache.h
 
   src/service.cpp
   src/cache.cpp
   src/datasource.cpp
-  src/memcache.cpp)
+  src/memcache.cpp
+  src/rocksdbcache.cpp)
 
 target_include_directories(mapget-service
   PUBLIC
@@ -21,7 +23,8 @@ target_link_libraries(mapget-service
   PUBLIC
     stx::stx
     mapget-model
-    mapget-log)
+    mapget-log
+    rocksdb)
 
 if (MSVC)
   target_compile_definitions(mapget-service

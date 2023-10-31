@@ -7,7 +7,7 @@
 namespace mapget
 {
 
-Fields::Fields(std::string nodeId) : nodeId_(std::move(nodeId)) {
+Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(IdStr, "id");
     addStaticKey(TypeIdStr, "typeId");
     addStaticKey(LayerStr, "layer");

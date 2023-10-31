@@ -64,8 +64,8 @@ TileFeatureLayer::TileFeatureLayer(
 
 TileFeatureLayer::TileFeatureLayer(
     std::istream& inputStream,
-    const LayerInfoResolveFun& layerInfoResolveFun,
-    const FieldNameResolveFun& fieldNameResolveFun
+    LayerInfoResolveFun const& layerInfoResolveFun,
+    FieldNameResolveFun const& fieldNameResolveFun
 ) :
     TileLayer(inputStream, layerInfoResolveFun),
     simfil::ModelPool(fieldNameResolveFun(nodeId_)),
@@ -242,6 +242,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     // contains only references to feature nodes, in the order
     // of the feature node column.
     addRoot(simfil::ModelNode::Ptr(result));
+    setInfo("num-features", numRoots());
     return result;
 }
 

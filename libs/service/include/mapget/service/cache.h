@@ -16,12 +16,7 @@ namespace mapget
  * Abstract class which defines the behavior of a mapget cache,
  * which can store and recover the output of any mapget DataSource
  * for a specific MapTileKey. Any implementation must override the
- * following methods:
- *
- *   optional<string> getTileLayer(MapTileKey const& k)
- *   void putTileLayer(MapTileKey const& k, string const& v)
- *   optional<string> getFields(string const& sourceNodeId)
- *   void putFields(string const& sourceNodeId, std::string v)
+ * methods (get|put)TileLayer and (get|put)Fields.
  */
 class Cache : public TileLayerStream::CachedFieldsProvider, public std::enable_shared_from_this<Cache>
 {
@@ -29,22 +24,33 @@ class Cache : public TileLayerStream::CachedFieldsProvider, public std::enable_s
 
 public:
     using Ptr = std::shared_ptr<Cache>;
+    // The following methods are already implemented,
+    // they forward to the virtual methods on-demand.
+
+    /**
+     * Used by DataSource to upsert a cached TileFeatureLayer.
+     * Triggers putTileLayer and putFields internally.
+     */
+    void putTileFeatureLayer(TileFeatureLayer::Ptr const& l);
+
+    /** Used by DataSource to retrieve a cached TileFeatureLayer. */
+    TileFeatureLayer::Ptr getTileFeatureLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
 
     // You need to implement these methods:
 
     /** Abstract: Retrieve a TileLayer blob for a MapTileKey. */
     virtual std::optional<std::string> getTileLayer(MapTileKey const& k) = 0;
 
-    /** Abstract: Upsert (Update or Insert) a TileLayer blob. */
+    /** Abstract: Upsert (update or insert) a TileLayer blob. */
     virtual void putTileLayer(MapTileKey const& k, std::string const& v) = 0;
 
-    /** Abstract: Retrieve a Fields-dict-blob for a sourceNodeId. */
-    virtual std::optional<std::string> getFields(std::string const& sourceNodeId) = 0;
+    /** Abstract: Retrieve a fields-dict-blob for a sourceNodeId. */
+    virtual std::optional<std::string> getFields(std::string_view const& sourceNodeId) = 0;
 
-    /** Abstract: Upsert (Update or Insert) a Fields-dict blob. */
-    virtual void putFields(std::string const& sourceNodeId, std::string const& v) = 0;
+    /** Abstract: Upsert (update or insert) a fields-dict blob. */
+    virtual void putFields(std::string_view const& sourceNodeId, std::string const& v) = 0;
 
-    // Override this method if your cache implementation has special stats
+    // Override this method if your cache implementation has special stats.
 
     /**
      * Get diagnostic statistics. The default implementation returns the following:
@@ -54,14 +60,6 @@ public:
      */
     virtual nlohmann::json getStatistics() const;
 
-    // The following methods are already implemented,
-    // they forward to the above methods on-demand.
-
-    /** Used by DataSource to retrieve a cached TileFeatureLayer. */
-    TileFeatureLayer::Ptr getTileFeatureLayer(MapTileKey const& k, DataSourceInfo const& i);
-
-    /** Used by DataSource to upsert a cached TileFeatureLayer. */
-    void putTileFeatureLayer(TileFeatureLayer::Ptr const& l);
 
 protected:
     // Override for CachedFieldsProvider::operator()
