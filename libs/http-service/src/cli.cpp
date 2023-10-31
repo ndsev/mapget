@@ -42,8 +42,8 @@ struct ServeCommand
             "Data source executable paths, including arguments. "
             "Can be specified multiple times.");
         serveCmd->add_option(
-            "-c,--cache-type", cacheType_, "From [memory|rocksdb], default rocksdb.")
-            ->default_val("rocksdb");
+            "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory, rocksdb (Technology Preview).")
+            ->default_val("memory");
         serveCmd->add_option(
             "--cache-dir", cachePath_, "Path to store RocksDB cache.")
             ->default_val("mapget-cache");

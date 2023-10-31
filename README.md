@@ -47,7 +47,7 @@ in-memory caching. The CLI options to configure caching behavior are:
 
 | Option                   | Description                                                                                          | Default Value   |
 |--------------------------|------------------------------------------------------------------------------------------------------|-----------------|
-| `-c,--cache-type`        | Choose between "rocksdb" or "memory".                                                                | rocksdb         |
+| `-c,--cache-type`        | Choose between "memory" or "rocksdb" (Technology Preview).                                           | memory          |
 | `--cache-dir`            | Path to store RocksDB cache.                                                                         | mapget-cache    |
 | `--cache-max-tiles`      | Number of tiles to store. Tiles are purged from cache in FIFO order. Set to 0 for unlimited storage. | 1024            |
 | `--clear-cache`          | Clear existing cache entries at startup.                                                             | false           |
