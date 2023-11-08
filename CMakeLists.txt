@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.14)
+include(FetchContent)
 
+# Bootstrap Conan 2
+if (NOT CONAN_PROVIDER_INCLUDED)
+  set(CONAN_PROVIDER_INCLUDED true)
+  FetchContent_Declare(
+    conan_provider
+    GIT_REPOSITORY https://github.com/Klebert-Engineering/cmake-conan
+    GIT_TAG mapviewer)
+  FetchContent_MakeAvailable(conan_provider)
+  set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES "${conan_provider_SOURCE_DIR}/conan_provider.cmake")
+endif()
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set (MAPGET_WITH_WHEEL ON CACHE BOOL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
@@ -14,7 +25,6 @@ option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
 
 project(mapget)
-include(FetchContent)
 
 set(MAPGET_VERSION 2024.3)
 
@@ -60,6 +70,19 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-modules")
 ##############
 # deps
 
+find_package(spdlog REQUIRED)
+find_package(Bitsery REQUIRED)
+find_package(httplib REQUIRED)
+find_package(OpenSSL REQUIRED)
+
+if (NOT TARGET stx)
+  FetchContent_Declare(stx
+    GIT_REPOSITORY "https://github.com/Klebert-Engineering/stx.git"
+    GIT_TAG        "main"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(stx)
+endif()
+
 set(SIMFIL_WITH_MODEL_JSON YES)
 if (NOT TARGET simfil)
   FetchContent_Declare(simfil
@@ -69,45 +92,10 @@ if (NOT TARGET simfil)
   FetchContent_MakeAvailable(simfil)
 endif()
 
-if (NOT TARGET spdlog::spdlog)
-  set(SPDLOG_FMT_EXTERNAL TRUE CACHE BOOL "Ensure that spdlog uses fmt from conan." FORCE)
-  FetchContent_Declare(spdlog
-    GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
-    GIT_TAG        "v1.x"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(spdlog)
-endif()
-
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  if (NOT TARGET httplib)
-    FetchContent_Declare(httplib
-      GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-      GIT_TAG        "v0.14.3"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(httplib)
-    find_package(OpenSSL REQUIRED)
-    target_compile_definitions(httplib
-      INTERFACE
-        CPPHTTPLIB_OPENSSL_SUPPORT)
-    target_link_libraries(httplib INTERFACE OpenSSL::SSL)
-  endif()
-
-  if (NOT TARGET yaml-cpp)
-    FetchContent_Declare(yaml-cpp
-      GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
-      GIT_TAG        "master"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(yaml-cpp)
-  endif()
-
-  if (NOT TARGET cli11)
-    include(FetchContent)
-    FetchContent_Declare(cli11
-      GIT_REPOSITORY https://github.com/CLIUtils/CLI11
-      GIT_TAG        v2.3.2
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(cli11)
-  endif()
+  find_package(httplib REQUIRED)
+  find_package(yaml-cpp REQUIRED)
+  find_package(CLI11 REQUIRED)
 
   if (NOT TARGET tiny-process-library)
     set(BUILD_TESTING OFF)
@@ -132,14 +120,7 @@ if (MAPGET_WITH_WHEEL)
     set(WHEEL_DEPLOY_DIRECTORY "${MAPGET_DEPLOY_DIR}/wheel")
   endif()
 
-  if (NOT TARGET pybind11)
-    FetchContent_Declare(
-      pybind11
-      GIT_REPOSITORY https://github.com/pybind/pybind11.git
-      GIT_TAG        v2.10.4
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(pybind11)
-  endif()
+  find_package(pybind11 REQUIRED)
 endif()
 
 if (WITH_COVERAGE)
@@ -154,6 +135,11 @@ add_subdirectory(libs/model)
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   if (NOT TARGET rocksdb)
+    # FIXME: RocksDB is not yet on Conan 2
+    #
+    # The tracking issue is here: https://github.com/conan-io/conan-center-index/pull/17186
+    # Although, the Conan package is for version 6.* only...
+
     # RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
     # tries to find a matching compiler and fails. So RocksDB must be included
     # after CodeCoverage.

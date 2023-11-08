@@ -1,0 +1,14 @@
+[requires]
+spdlog/1.11.0
+bitsery/5.2.3
+cpp-httplib/0.14.1
+yaml-cpp/0.8.0
+cli11/2.3.2
+pybind11/2.11.1
+
+[generators]
+CMakeDeps
+
+[options]
+cpp-httplib/*:with_openssl=True
+openssl*:shared=True
