@@ -16,6 +16,13 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
         throw logRuntimeError("Failed to fetch datasource info.");
     info_ = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
 
+    if (info_.nodeId_.empty()) {
+        // Unique node IDs are required for the field offsets.
+        throw logRuntimeError(
+            stx::format("Remote data source is missing node ID! Source info: {}",
+                fetchedInfoJson->body));
+    }
+
     // Create as many clients as parallel requests are allowed.
     for (auto i = 0; i < std::max(info_.maxParallelJobs_, 1); ++i)
         httpClients_.emplace_back(host, port);

@@ -274,6 +274,19 @@ struct Service::Impl : public Service::Controller
 
     void addDataSource(DataSource::Ptr const& dataSource)
     {
+        if (dataSource->info().nodeId_.empty()) {
+            // Unique node IDs are required for the field offsets.
+            throw logRuntimeError("Tried to create service worker for an unnamed node!");
+        }
+        for (auto& existingSource : dataSourceInfo_) {
+            if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
+                // Unique node IDs are required for the field offsets.
+                throw logRuntimeError(
+                    stx::format("Data source with node ID '{}' already registered!",
+                                dataSource->info().nodeId_));
+            }
+        }
+
         DataSourceInfo info = dataSource->info();
         dataSourceInfo_[dataSource] = info;
         auto& workers = dataSourceWorkers_[dataSource];
@@ -368,13 +381,17 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
     for (const auto& r : requests) {
         if (!hasLayer(r->mapId_, r->layerId_)) {
             dataSourcesAvailable = false;
+            log().debug("No data source can provide requested map and layer: {}::{}",
+                r->mapId_,
+                r->layerId_);
             r->setStatus(RequestStatus::NoDataSource);
         }
     }
     // Second pass either aborts requests or add all to job queue.
     for (const auto& r : requests) {
         if (!dataSourcesAvailable) {
-            if (r->getStatus() != RequestStatus::NoDataSource){
+            if (r->getStatus() != RequestStatus::NoDataSource) {
+                log().debug("Aborting unfulfillable request!");
                 r->setStatus(RequestStatus::Aborted);
             }
         }
