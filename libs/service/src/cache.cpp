@@ -107,10 +107,15 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
 
 simfil::FieldId Cache::cachedFieldsOffset(std::string const& nodeId)
 {
+    if (nodeId.empty()) {
+        throw logRuntimeError("Tried to query cached fields offset for empty node ID!");
+    }
     std::unique_lock fieldsOffsetLock(fieldCacheOffsetMutex_);
     auto it = fieldCacheOffsets_.find(nodeId);
-    if (it != fieldCacheOffsets_.end())
+    if (it != fieldCacheOffsets_.end()) {
+        log().trace("Cached fields offset for {}: {}", nodeId, it->second);
         return it->second;
+    }
     return 0;
 }
 

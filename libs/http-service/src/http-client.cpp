@@ -16,7 +16,8 @@ struct HttpClient::Impl {
         client_.set_keep_alive(false);
         auto sourcesJson = client_.Get("/sources");
         if (!sourcesJson || sourcesJson->status != 200)
-            throw logRuntimeError("Failed to fetch sources.");
+            throw logRuntimeError(
+                stx::format("Failed to fetch sources: [{}]", sourcesJson->status));
         for (auto const& info : nlohmann::json::parse(sourcesJson->body)) {
             auto parsedInfo = DataSourceInfo::fromJson(info);
             sources_.emplace(parsedInfo.mapId_, parsedInfo);

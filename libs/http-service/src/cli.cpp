@@ -171,6 +171,11 @@ struct FetchCommand
                 }
             });
         cli.request(request)->wait();
+
+        if (request->getStatus() == NoDataSource)
+            throw logRuntimeError("Failed to fetch sources: no matching data source.");
+        if (request->getStatus() == Aborted)
+            throw logRuntimeError("Failed to fetch sources: request aborted.");
     }
 };
 
