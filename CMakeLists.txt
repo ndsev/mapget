@@ -172,11 +172,17 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     # RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
     # tries to find a matching compiler and fails. So RocksDB must be included
     # after CodeCoverage.
-    set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
-    set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
-    set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
-    set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
-    set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
+    set(WITH_TOOLS NO CACHE BOOL "RocksDB without tools")
+    set(WITH_CORE_TOOLS NO CACHE BOOL "RocksDB without core tools")
+    set(WITH_TRACE_TOOLS NO CACHE BOOL "RocksDB without trace tools")
+    set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "RocksDB without benchmark tools")
+
+    set(WITH_GFLAGS NO CACHE BOOL "RocksDB without gflags")
+    set(WITH_TESTS NO CACHE BOOL "RocksDB without tests")
+    set(WITH_RUNTIME_DEBUG NO CACHE BOOL "RocksDB runtime without debug build")
+
+    set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "RocksDB without gtest")
+    set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "RocksDB warnings are ok")
 
     FetchContent_Declare(rocksdb
       GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
