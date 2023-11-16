@@ -68,8 +68,7 @@ jobs:
         working-directory: build
         run: |
           python -m pip install delocate
-          brew install openssl ninja
-          export OPENSSL_ROOT_DIR=$(brew --prefix openssl)
+          brew install ninja
           export MACOSX_DEPLOYMENT_TARGET=10.15
           cmake -DPython3_ROOT_DIR=$pythonLocation \
                 -DPython3_FIND_FRAMEWORK=LAST \
@@ -87,7 +86,6 @@ jobs:
         env:
           CMAKE_GENERATOR: "Visual Studio 16 2019"
         run: |
-          choco install --no-progress -y openssl --version=1.1.1.2100
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
           cmake "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
           cmake --build . --config Release
