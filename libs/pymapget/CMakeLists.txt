@@ -27,11 +27,11 @@ target_compile_features(pymapget
   INTERFACE
     cxx_std_17)
 
-if (MSVC)
+if (WIN32)
   # Required because cpp-httplib speaks https via OpenSSL
   set(DEPLOY_FILES
-    "${OPENSSL_INCLUDE_DIR}/../libcrypto-1_1-x64.dll"
-    "${OPENSSL_INCLUDE_DIR}/../libssl-1_1-x64.dll"
+    "${OPENSSL_INCLUDE_DIR}/../bin/libcrypto-1_1-x64.dll"
+    "${OPENSSL_INCLUDE_DIR}/../bin/libssl-1_1-x64.dll"
     "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
 else()
   set(DEPLOY_FILES "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
