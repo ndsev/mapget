@@ -10,10 +10,14 @@ jobs:
   coverage-linux:
     name: Coverage
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
     - uses: actions/checkout@v3
       with:
         submodules: true
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.3
     - name: Install dependencies
       run: |
         sudo apt-get install ninja-build
@@ -30,6 +34,8 @@ jobs:
       working-directory: build
       run: |
         cmake -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
               -DWITH_COVERAGE=YES -GNinja ..
     - name: Build
