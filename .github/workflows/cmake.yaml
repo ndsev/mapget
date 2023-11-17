@@ -18,7 +18,7 @@ jobs:
         with:
           submodules: recursive
       - run: yum install ccache -y
-      - name: ccache
+      - name: Set-Up ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ github.job }}-${{ matrix.os }}
@@ -41,6 +41,7 @@ jobs:
           mv bin/wheel bin/wheel-auditme
           auditwheel repair bin/wheel-auditme/mapget*.whl -w bin/wheel
       - name: Test
+        timeout-minutes: 30
         working-directory: build
         run: |
           . ../venv/bin/activate
@@ -60,7 +61,7 @@ jobs:
       - uses: actions/checkout@v2
         with:
           submodules: recursive
-      - name: ccache
+      - name: Set-Up ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ github.job }}-${{ matrix.os }}
@@ -107,6 +108,7 @@ jobs:
           name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
           path: build/bin/wheel/*.whl
       - name: Test
+        timeout-minutes: 30
         working-directory: build
         run: |
           ctest -C Release --verbose --no-test=fail
