@@ -136,9 +136,7 @@ add_subdirectory(libs/model)
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   if (NOT TARGET rocksdb)
     # FIXME: RocksDB is not yet on Conan 2
-    #
     # The tracking issue is here: https://github.com/conan-io/conan-center-index/pull/17186
-    # Although, the Conan package is for version 6.* only...
 
     # RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
     # tries to find a matching compiler and fails. So RocksDB must be included
