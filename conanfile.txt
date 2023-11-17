@@ -12,4 +12,4 @@ CMakeDeps
 
 [options]
 cpp-httplib/*:with_openssl=True
-openssl*:shared=True
+openssl*:shared=False
