@@ -1,5 +1,8 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.20)
 include(FetchContent)
+
+cmake_policy(VERSION 3.20)
+cmake_policy(SET CMP0117 NEW)
 
 # Bootstrap Conan 2
 if (NOT CONAN_PROVIDER_INCLUDED)
