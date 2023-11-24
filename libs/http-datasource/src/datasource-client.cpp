@@ -113,11 +113,15 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
         true);
 
     std::unique_lock<std::mutex> lock(mutex_);
+#if defined(NDEBUG)
     if (!cv_.wait_for(lock, std::chrono::seconds(10), [this] { return remoteSource_ != nullptr; }))
     {
         throw logRuntimeError(
             "Timeout waiting for the child process to initialize the remote data source.");
     }
+#else
+    cv_.wait(lock, [this] { return remoteSource_ != nullptr; });
+#endif
 }
 
 RemoteDataSourceProcess::~RemoteDataSourceProcess()
