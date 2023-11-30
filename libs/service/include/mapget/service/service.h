@@ -2,6 +2,7 @@
 
 #include "cache.h"
 #include "datasource.h"
+#include "mapget/model/layer.h"
 #include "memcache.h"
 
 #include <condition_variable>
@@ -30,7 +31,7 @@ class LayerTilesRequest
 public:
     using Ptr = std::shared_ptr<LayerTilesRequest>;
 
-    /** Construct a request with the relevant parameters. */
+    /** Construct a request for tiles with the relevant parameters. */
     LayerTilesRequest(
         std::string mapId,
         std::string layerId,
@@ -131,6 +132,15 @@ public:
      * from any connected DataSource, true otherwise.
      */
     bool request(std::vector<LayerTilesRequest::Ptr> requests);
+
+    /**
+     * Trigger queries to all connected data sources to check
+     * for a feature matching the given typeId and idParts.
+     * Returns the list of MapTileKeys received from data sources.
+     */
+    std::vector<MapTileKey> locate(
+        std::string typeId,
+        std::vector<std::string> idParts);
 
     /**
      * Abort the given request. The request will be removed from
