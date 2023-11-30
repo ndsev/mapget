@@ -9,6 +9,7 @@
 #include <bitsery/traits/string.h>
 
 #include "simfil/model/bitsery-traits.h"
+#include <sstream>
 
 namespace mapget
 {
@@ -162,6 +163,21 @@ bool idPartsMatchComposition(
     return matchLength == 0;
 }
 
+std::string idPartsToString(KeyValuePairs const& idParts) {
+    std::stringstream result;
+    result << "{";
+    for (auto i = 0; i < idParts.size(); ++i) {
+        if (i > 0)
+            result << ", ";
+        result << idParts[i].first << ": ";
+        std::visit([&result](auto&& value){
+           result << value;
+        }, idParts[i].second);
+    }
+    result << "}";
+    return result.str();
+}
+
 }  // namespace
 
 bool TileFeatureLayer::validFeatureId(
@@ -208,7 +224,10 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     }
 
     if (!validFeatureId(typeId, featureIdParts, true)) {
-        throw logRuntimeError("Could not find a matching ID composition.");
+        throw logRuntimeError(stx::format(
+            "Could not find a matching ID composition of type {} with parts {}.",
+            typeId,
+            idPartsToString(featureIdParts)));
     }
 
     auto featureIdIndex = impl_->featureIds_.size();
@@ -252,7 +271,10 @@ TileFeatureLayer::newFeatureId(
     const KeyValuePairs& featureIdParts)
 {
     if (!validFeatureId(typeId, featureIdParts, false)) {
-        throw logRuntimeError("Could not find a matching ID composition.");
+        throw logRuntimeError(stx::format(
+            "Could not find a matching ID composition of type {} with parts {}.",
+            typeId,
+            idPartsToString(featureIdParts)));
     }
 
     auto featureIdObject = newObject(featureIdParts.size());
