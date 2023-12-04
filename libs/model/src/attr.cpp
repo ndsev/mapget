@@ -24,9 +24,21 @@ Attribute::Attribute(Attribute::Data& data, simfil::ModelConstPtr l, simfil::Mod
             });
 }
 
-model_ptr<Geometry> Attribute::validity()
+model_ptr<Geometry> Attribute::validity() const
 {
+    if (!hasValidity())
+        throw std::runtime_error("Attempt to access null validity.");
     return model().resolveGeometry(model_ptr<simfil::ModelNode>::make(model_, data_.validity_));
+}
+
+bool Attribute::hasValidity() const
+{
+    return data_.validity_.value_ != 0;
+}
+
+void Attribute::setValidity(const model_ptr<Geometry>& validityGeom)
+{
+    data_.validity_ = validityGeom->addr();
 }
 
 void Attribute::setDirection(const Attribute::Direction& v)
