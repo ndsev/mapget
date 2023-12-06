@@ -93,6 +93,11 @@ public:
      */
     nlohmann::json toGeoJson();
 
+    /**
+     * Expose access to underlying TileFeatureLayer.
+     */
+    using simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::model;
+
 protected:
     /**
      * Simfil Model-Node Functions
