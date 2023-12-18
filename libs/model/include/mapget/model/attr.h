@@ -7,7 +7,7 @@ namespace mapget
 
 /**
  * Represents a feature attribute which belongs to an
- * AttributeLayer, and may have typed `direction` and some
+ * AttributeLayer, and may have typed `direction` and
  * `validity` fields in addition to other arbitrary object fields.
  */
 class Attribute : public simfil::ProceduralObject<2, Attribute>
@@ -33,9 +33,11 @@ public:
     void setDirection(Direction const& v);
 
     /**
-     * Attribute validity accessor.
+     * Attribute validity accessors.
      */
-    model_ptr<Geometry> validity();
+    bool hasValidity() const;
+    model_ptr<Geometry> validity() const;
+    void setValidity(model_ptr<Geometry> const& validityGeom);
 
     /**
      * Read-only attribute name accessor.
