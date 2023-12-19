@@ -5,6 +5,19 @@
 namespace mapget
 {
 
+namespace {
+std::string_view directionToString(Attribute::Direction const& d) {
+    switch (d) {
+    case Attribute::Empty: return "EMPTY";
+    case Attribute::Positive: return "POSITIVE";
+    case Attribute::Negative: return "NEGATIVE";
+    case Attribute::Both: return "BOTH";
+    case Attribute::None: return "NONE";
+    }
+    return "?";
+}
+}
+
 Attribute::Attribute(Attribute::Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
     : simfil::ProceduralObject<2, Attribute>(data.fields_, std::move(l), a), data_(data)
 {
@@ -13,7 +26,7 @@ Attribute::Attribute(Attribute::Data& data, simfil::ModelConstPtr l, simfil::Mod
             Fields::DirectionStr,
             [](Attribute const& self) {
                 return model_ptr<simfil::ValueNode>::make(
-                    (int64_t)self.data_.direction_,
+                    directionToString(self.data_.direction_),
                     self.model_);
             });
     if (data_.validity_.value_)
