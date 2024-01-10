@@ -97,7 +97,7 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   if (NOT TARGET httplib)
     FetchContent_Declare(httplib
       GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-      GIT_TAG        "master"
+      GIT_TAG        "v0.14.3"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(httplib)
     find_package(OpenSSL REQUIRED)
