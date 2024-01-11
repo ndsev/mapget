@@ -37,6 +37,6 @@ jobs:
             --skip-existing \
             --verbose \
             --disable-progress-bar \
-            -u klebert-engineering \
-            -p "${KE_PYPI_PW}" \
+            -u "__token__" \
+            -p "${KE_PYPI_TOKEN}" \
             *.whl
