@@ -6,6 +6,7 @@ yaml-cpp/0.8.0
 cli11/2.3.2
 pybind11/2.11.1
 openssl/3.2.0
+rocksdb/8.8.1
 
 [generators]
 CMakeDeps
