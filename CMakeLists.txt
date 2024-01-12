@@ -137,26 +137,7 @@ add_subdirectory(libs/logging)
 add_subdirectory(libs/model)
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  if (NOT TARGET rocksdb)
-    # FIXME: RocksDB is not yet on Conan 2
-    # The tracking issue is here: https://github.com/conan-io/conan-center-index/pull/17186
-
-    # RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
-    # tries to find a matching compiler and fails. So RocksDB must be included
-    # after CodeCoverage.
-    set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
-    set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
-    set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
-    set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
-    set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
-    set(PORTABLE YES CACHE BOOL "rocksdb with max compatibility/portability")
-
-    FetchContent_Declare(rocksdb
-      GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-      GIT_TAG        v8.11.3
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(rocksdb)
-  endif()
+  find_package(rocksdb REQUIRED)
 
   add_subdirectory(libs/service)
 endif()
