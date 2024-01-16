@@ -21,7 +21,7 @@ jobs:
           path: dist/
       - name: Upload
         env:
-          KE_PYPI_PW: ${{ secrets.KE_PYPI_PW }}
+          KE_PYPI_TOKEN: ${{ secrets.KE_PYPI_TOKEN }}
         run: |
           echo "Initial state:"
           echo "=============="
