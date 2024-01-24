@@ -35,6 +35,7 @@ public:
 
 protected:
     AttributeLayer(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+    AttributeLayer() = default;
 };
 
 /**
@@ -62,6 +63,7 @@ public:
 
 protected:
     AttributeLayerList(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+    AttributeLayerList() = default;
 };
 
 }

@@ -199,9 +199,9 @@ bool TileFeatureLayer::validFeatureId(
 
     for (auto& candidateComposition : typeIt->uniqueIdCompositions_) {
         uint32_t compositionMatchStartIndex = 0;
-        if (includeTilePrefix && this->featureIdPrefix().has_value()) {
+        if (includeTilePrefix && this->featureIdPrefix()) {
             // Iterate past the prefix in the unique id composition.
-            compositionMatchStartIndex = this->featureIdPrefix().value()->size();
+            compositionMatchStartIndex = this->featureIdPrefix()->size();
         }
 
         if (idPartsMatchComposition(
@@ -324,7 +324,7 @@ TileFeatureLayer::newAttribute(const std::string_view& name, size_t initialCapac
         fieldNames()->emplace(name)
     });
     return Attribute(
-        impl_->attributes_.back(),
+        &impl_->attributes_.back(),
         shared_from_this(),
         {Attributes, (uint32_t)attrIndex});
 }
@@ -368,7 +368,7 @@ model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil
 model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const& n) const
 {
     return Attribute(
-        impl_->attributes_[n.addr().index()],
+        &impl_->attributes_[n.addr().index()],
         shared_from_this(),
         n.addr());
 }

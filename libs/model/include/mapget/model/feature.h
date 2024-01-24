@@ -126,22 +126,23 @@ protected:
         simfil::ModelNodeAddress geom_;
         simfil::ModelNodeAddress attrLayers_;
         simfil::ModelNodeAddress attrs_;
-        simfil::ModelNodeAddress children_;
+        simfil::ModelNodeAddress relations_;
 
         template <typename S>
         void serialize(S& s)
         {
-            s.value4b(id_.value_);
-            s.value4b(geom_.value_);
-            s.value4b(attrLayers_.value_);
-            s.value4b(attrs_.value_);
-            s.value4b(children_.value_);
+            s.object(id_);
+            s.object(geom_);
+            s.object(attrLayers_);
+            s.object(attrs_);
+            s.object(relations_);
         }
     };
 
     Feature(Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+    Feature() = default;
 
-    Data& data_;
+    Data* data_ = nullptr;
 
     // We keep the fields in a tiny vector on the stack,
     // because their number is dynamic, as a variable number
@@ -161,9 +162,10 @@ protected:
         [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
         FeaturePropertyView(Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+        FeaturePropertyView() = default;
 
-        Data& data_;
-        std::optional<model_ptr<Object>> attrs_;
+        Data* data_ = nullptr;
+        model_ptr<Object> attrs_;
     };
 };
 
