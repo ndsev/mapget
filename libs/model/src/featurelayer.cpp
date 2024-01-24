@@ -22,6 +22,7 @@ struct TileFeatureLayer::Impl {
     sfl::segmented_vector<FeatureId::Data, simfil::detail::ColumnPageSize/2> featureIds_;
     sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayers_;
     sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayerLists_;
+    sfl::segmented_vector<Relation::Data, simfil::detail::ColumnPageSize/2> relations_;
 
     // Simfil execution Environment for this tile's string pool.
     simfil::Environment simfilEnv_;
@@ -41,7 +42,8 @@ struct TileFeatureLayer::Impl {
         s.container(featureIds_, maxColumnSize);
         s.container(attrLayers_, maxColumnSize);
         s.container(attrLayerLists_, maxColumnSize);
-        s.value4b(featureIdPrefix_.value_);
+        s.object(featureIdPrefix_);
+        s.container(relations_, maxColumnSize);
     }
 
     explicit Impl(std::shared_ptr<Fields> fields)
@@ -293,9 +295,20 @@ TileFeatureLayer::newFeatureId(
     return FeatureId(impl_->featureIds_.back(), shared_from_this(), {FeatureIds, (uint32_t)featureIdIndex});
 }
 
-std::optional<model_ptr<Object>> TileFeatureLayer::featureIdPrefix()
+model_ptr<Relation>
+TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
 {
-    if (impl_->featureIdPrefix_.value_)
+    auto relationIndex = impl_->relations_.size();
+    impl_->relations_.emplace_back(Relation::Data{
+        fieldNames()->emplace(name),
+        target->addr()
+    });
+    return Relation(&impl_->relations_.back(), shared_from_this(), {Relations, (uint32_t)relationIndex});
+}
+
+model_ptr<Object> TileFeatureLayer::featureIdPrefix()
+{
+    if (impl_->featureIdPrefix_)
         return resolveObject(simfil::ModelNode::Ptr::make(shared_from_this(), impl_->featureIdPrefix_));
     return {};
 }
@@ -376,6 +389,14 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const&
         n.addr());
 }
 
+model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n) const
+{
+    return Relation(
+        &impl_->relations_[n.addr().index()],
+        shared_from_this(),
+        n.addr());
+}
+
 void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::ResolveFn& cb) const
 {
     switch (n.addr().column())
@@ -406,6 +427,10 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
     }
     case AttributeLayerLists: {
         cb(*resolveAttributeLayerList(n));
+        return;
+    }
+    case Relations: {
+        cb(*resolveRelation(n));
         return;
     }
     }

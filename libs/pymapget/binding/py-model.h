@@ -379,8 +379,8 @@ struct BoundFeature : public BoundModelNode
                 { return BoundAttributeLayerList(self.modelNodePtr_->attributeLayers()); },
                 "Access this feature's attribute layer collection.")
             .def(
-                "children",
-                [](BoundFeature& self) { return BoundArray(self.modelNodePtr_->children()); },
+                "relations",
+                [](BoundFeature& self) { return BoundArray(self.modelNodePtr_->relations()); },
                 "Access this feature's child feature id list.")
                 .def(
                     "add_point",

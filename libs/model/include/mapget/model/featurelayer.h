@@ -9,18 +9,10 @@
 #include "layer.h"
 #include "feature.h"
 #include "attrlayer.h"
+#include "relation.h"
 
 namespace mapget
 {
-
-/**
- * The KeyValuePairs type is a vector of pairs, where each pair
- * consists of a string_view key and a variant value that can be
- * either an int64_t or a string_view.
- */
-using KeyValuePairs = std::vector<std::pair<
-    std::string_view,
-    std::variant<int64_t, std::string_view>>>;
 
 /**
  * Callback type for a function which returns a field name cache instance
@@ -37,6 +29,7 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
 {
     friend class Feature;
     friend class FeatureId;
+    friend class Relation;
 
 public:
     /**
@@ -109,6 +102,15 @@ public:
         KeyValuePairs const& featureIdParts);
 
     /**
+     * Create a new relation. Use this function to create a named reference to another
+     * feature, which may also have optional source/target validity geometry.
+     * Relations must be stored in the feature's special relations-list.
+     */
+    model_ptr<Relation> newRelation(
+        std::string_view const& name,
+        model_ptr<FeatureId> const& target);
+
+    /**
      * Validate that a unique id composition exists that matches this feature id,
      * The field values must match the limitations of the IdPartDataType, and
      * The order of values in KeyValuePairs must be the same as in the composition!
@@ -167,19 +169,19 @@ public:
     Iterator end() const;
 
     /** (De-)Serialization */
-   void write(std::ostream& outputStream) override;
+    void write(std::ostream& outputStream) override;
 
-   /** Convert to GeoJSON geometry collection. */
-   nlohmann::json toGeoJson() const;
+    /** Convert to GeoJSON geometry collection. */
+    nlohmann::json toGeoJson() const;
 
-   /** Access number of stored features */
-   size_t size() const;
+    /** Access number of stored features */
+    size_t size() const;
 
-   /** Access feature at index i */
-   model_ptr<Feature> at(size_t i) const;
+    /** Access feature at index i */
+    model_ptr<Feature> at(size_t i) const;
 
-   /** Shared pointer type */
-   using Ptr = std::shared_ptr<TileFeatureLayer>;
+    /** Shared pointer type */
+    using Ptr = std::shared_ptr<TileFeatureLayer>;
 
 protected:
     /**
@@ -193,14 +195,14 @@ protected:
         Attributes,
         AttributeLayers,
         AttributeLayerLists,
-        Icons
+        Relations,
     };
 
     /**
      * The featureIdPrefix function returns common ID parts,
      * which are shared by all features in this layer.
      */
-    std::optional<model_ptr<Object>> featureIdPrefix();
+    model_ptr<Object> featureIdPrefix();
 
     /**
      * Create a new attribute layer collection.
@@ -215,6 +217,7 @@ protected:
     model_ptr<Attribute> resolveAttribute(simfil::ModelNode const& n) const;
     model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
     model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
+    model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
 
     /**
      * Generic node resolution overload.

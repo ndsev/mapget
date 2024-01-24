@@ -53,15 +53,15 @@ model_ptr<Object> Feature::attributes()
     return model().resolveObject(Ptr::make(model_, data_.attrs_));
 }
 
-model_ptr<Array> Feature::children()
+model_ptr<Array> Feature::relations()
 {
-    if (data_.children_.value_ == 0) {
+    if (!data_->relations_) {
         auto result = model().newArray(8);
-        data_.children_ = result->addr();
+        data_->relations_ = result->addr();
         updateFields();
         return result;
     }
-    return model().resolveArray(Ptr::make(model_, data_.children_));
+    return model().resolveArray(Ptr::make(model_, data_->relations_));
 }
 
 std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expression)
@@ -156,16 +156,16 @@ void Feature::updateFields() {
     }
 
     // Add other fields
-    if (data_.geom_.value_)
-        fields_.emplace_back(Fields::Geometry, Ptr::make(model_, data_.geom_));
-    if (data_.attrLayers_.value_ || data_.attrs_.value_)
+    if (data_->geom_)
+        fields_.emplace_back(Fields::Geometry, Ptr::make(model_, data_->geom_));
+    if (data_->attrLayers_ || data_->attrs_)
         fields_.emplace_back(
             Fields::PropertiesStr,
             Ptr::make(
                 model_,
                 simfil::ModelNodeAddress{TileFeatureLayer::FeatureProperties, addr().index()}));
-    if (data_.children_.value_)
-        fields_.emplace_back(Fields::ChildrenStr, Ptr::make(model_, data_.children_));
+    if (data_->relations_)
+        fields_.emplace_back(Fields::ChildrenStr, Ptr::make(model_, data_->relations_));
 }
 
 nlohmann::json Feature::toGeoJson()
