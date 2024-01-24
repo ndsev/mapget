@@ -8,14 +8,14 @@ namespace mapget
 
 FeatureId::FeatureId(FeatureId::Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a),
-      data_(data),
-      fields_(model().resolveObject(Ptr::make(l, data_.idParts_)))
+      data_(&data),
+      fields_(model().resolveObject(Ptr::make(l, data_->idParts_)))
 {
 }
 
 std::string_view FeatureId::typeId() const
 {
-    if (auto s = model().fieldNames()->resolve(data_.typeId_))
+    if (auto s = model().fieldNames()->resolve(data_->typeId_))
         return *s;
     return "err-unresolved-typename";
 }
@@ -32,8 +32,8 @@ std::string FeatureId::toString() const
     };
 
     // Add common id-part fields
-    if (data_.useCommonTilePrefix_ && model().featureIdPrefix())
-        for (auto const& [_, value] : (*model().featureIdPrefix())->fields())
+    if (data_->useCommonTilePrefix_ && model().featureIdPrefix())
+        for (auto const& [_, value] : model().featureIdPrefix()->fields())
             std::visit(addIdPart, value->value());
 
     // Add specific id-part fields

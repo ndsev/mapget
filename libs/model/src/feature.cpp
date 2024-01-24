@@ -5,52 +5,52 @@ namespace mapget
 {
 
 Feature::Feature(Feature::Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(d)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(&d)
 {
     updateFields();
 }
 
 model_ptr<FeatureId> Feature::id() const
 {
-    return model().resolveFeatureId(*Ptr::make(model_, data_.id_));
+    return model().resolveFeatureId(*Ptr::make(model_, data_->id_));
 }
 
 std::string_view mapget::Feature::typeId() const
 {
-    return model().resolveFeatureId(*Ptr::make(model_, data_.id_))->typeId();
+    return model().resolveFeatureId(*Ptr::make(model_, data_->id_))->typeId();
 }
 
 model_ptr<simfil::GeometryCollection> Feature::geom()
 {
-    if (data_.geom_.value_ == 0) {
+    if (!data_->geom_) {
         auto result = model().newGeometryCollection();
-        data_.geom_ = result->addr();
+        data_->geom_ = result->addr();
         updateFields();
         return result;
     }
-    return model().resolveGeometryCollection(Ptr::make(model_, data_.geom_));
+    return model().resolveGeometryCollection(Ptr::make(model_, data_->geom_));
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
 {
-    if (data_.attrLayers_.value_ == 0) {
+    if (!data_->attrLayers_) {
         auto result = model().newAttributeLayers();
-        data_.attrLayers_ = result->addr();
+        data_->attrLayers_ = result->addr();
         updateFields();
         return result;
     }
-    return model().resolveAttributeLayerList(*Ptr::make(model_, data_.attrLayers_));
+    return model().resolveAttributeLayerList(*Ptr::make(model_, data_->attrLayers_));
 }
 
 model_ptr<Object> Feature::attributes()
 {
-    if (data_.attrs_.value_ == 0) {
+    if (!data_->attrs_) {
         auto result = model().newObject(8);
-        data_.attrs_ = result->addr();
+        data_->attrs_ = result->addr();
         updateFields();
         return result;
     }
-    return model().resolveObject(Ptr::make(model_, data_.attrs_));
+    return model().resolveObject(Ptr::make(model_, data_->attrs_));
 }
 
 model_ptr<Array> Feature::relations()
@@ -136,7 +136,7 @@ void Feature::updateFields() {
     fields_.emplace_back(Fields::Type, simfil::ValueNode(std::string_view("Feature"), model_));
 
     // Add id field
-    fields_.emplace_back(Fields::IdStr, Ptr::make(model_, data_.id_));
+    fields_.emplace_back(Fields::IdStr, Ptr::make(model_, data_->id_));
     auto idNode = model().resolveFeatureId(*fields_.back().second);
 
     // Add type id field
@@ -146,7 +146,7 @@ void Feature::updateFields() {
 
     // Add common id-part fields
     if (model().featureIdPrefix())
-        for (auto const& [idPartName, value] : (*model().featureIdPrefix())->fields()) {
+        for (auto const& [idPartName, value] : model().featureIdPrefix()->fields()) {
             fields_.emplace_back(idPartName, value);
         }
 
@@ -243,10 +243,10 @@ Feature::FeaturePropertyView::FeaturePropertyView(
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a
 )
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(d)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(&d)
 {
-    if (data_.attrs_.value_)
-        attrs_ = model().resolveObject(Ptr::make(model_, data_.attrs_));
+    if (data_->attrs_)
+        attrs_ = model().resolveObject(Ptr::make(model_, data_->attrs_));
 }
 
 simfil::ValueType Feature::FeaturePropertyView::type() const
@@ -256,50 +256,50 @@ simfil::ValueType Feature::FeaturePropertyView::type() const
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const
 {
-    if (data_.attrLayers_.value_) {
+    if (data_->attrLayers_) {
         if (i == 0)
-            return Ptr::make(model_, data_.attrLayers_);
+            return Ptr::make(model_, data_->attrLayers_);
         i -= 1;
     }
     if (attrs_)
-        return (*attrs_)->at(i);
+        return attrs_->at(i);
     return {};
 }
 
 uint32_t Feature::FeaturePropertyView::size() const
 {
-    return (data_.attrLayers_.value_ ? 1 : 0) + (attrs_ ? (*attrs_)->size() : 0);
+    return (data_->attrLayers_ ? 1 : 0) + (attrs_ ? attrs_->size() : 0);
 }
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::FieldId& f) const
 {
-    if (data_.attrLayers_.value_ && f == Fields::LayerStr)
-        return Ptr::make(model_, data_.attrLayers_);
+    if (data_->attrLayers_ && f == Fields::LayerStr)
+        return Ptr::make(model_, data_->attrLayers_);
     if (attrs_)
-        return (*attrs_)->get(f);
+        return attrs_->get(f);
     return {};
 }
 
 simfil::FieldId Feature::FeaturePropertyView::keyAt(int64_t i) const
 {
-    if (data_.attrLayers_.value_) {
+    if (data_->attrLayers_) {
         if (i == 0)
             return Fields::LayerStr;
         i -= 1;
     }
     if (attrs_)
-        return (*attrs_)->keyAt(i);
+        return attrs_->keyAt(i);
     return {};
 }
 
 bool Feature::FeaturePropertyView::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
-    if (data_.attrLayers_.value_) {
-        if (!cb(*model().resolveAttributeLayerList(*Ptr::make(model_, data_.attrLayers_))))
+    if (data_->attrLayers_) {
+        if (!cb(*model().resolveAttributeLayerList(*Ptr::make(model_, data_->attrLayers_))))
             return false;
     }
     if (attrs_)
-        return (*attrs_)->iterate(cb);
+        return attrs_->iterate(cb);
     return true;
 }
 

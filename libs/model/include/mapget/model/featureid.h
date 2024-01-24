@@ -57,13 +57,14 @@ protected:
         void serialize(S& s) {
             s.value1b(useCommonTilePrefix_);
             s.value2b(typeId_);
-            s.value4b(idParts_.value_);
+            s.object(idParts_);
         }
     };
 
     FeatureId(Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+    FeatureId() = default;
 
-    Data& data_;
+    Data* data_ = nullptr;
 
     // Optional because resolve must be called, in
     // the constructor body.
