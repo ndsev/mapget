@@ -25,6 +25,7 @@ class FeatureId : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLay
 {
     friend class TileFeatureLayer;
     friend class Feature;
+    friend class Relation;
     friend class bitsery::Access;
     friend ModelNode::Ptr;
 

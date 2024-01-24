@@ -29,6 +29,10 @@ struct Fields : public simfil::Fields
         DirectionStr,
         ValidityStr,
         PropertiesStr,
+        NameStr,
+        TargetStr,
+        SourceValidityStr,
+        TargetValidityStr
     };
 
     explicit Fields(const std::string_view& nodeId);

@@ -35,7 +35,15 @@ namespace mapget
  *       },
  *       <non-layer-attr-name>: <non-layer-attr-value>, ...
  *     },
- *     children: [<child-id-list>]
+ *     relations: [
+ *       {
+ *         name: <relation-name>,
+ *         target: <target-feature-id>,
+ *         targetValidity: <geometry>,
+ *         sourceValidity: <geometry>
+ *       },
+ *       ...
+ *     ]
  *   }
  */
 class Feature : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
@@ -61,7 +69,7 @@ public:
     model_ptr<Object> attributes();
 
     /** Get this feature's child ID list. */
-    [[nodiscard]] model_ptr<Array> children();
+    [[nodiscard]] model_ptr<Array> relations();
 
     /** Add a point to the feature. */
     void addPoint(Point const& p);
