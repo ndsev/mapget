@@ -72,8 +72,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-modules")
 
 ##############
 # deps
-
-find_package(spdlog REQUIRED)
+find_package(spdlog  REQUIRED)
 find_package(Bitsery REQUIRED)
 find_package(httplib REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -96,9 +95,9 @@ if (NOT TARGET simfil)
 endif()
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  find_package(httplib REQUIRED)
+  find_package(httplib  REQUIRED)
   find_package(yaml-cpp REQUIRED)
-  find_package(CLI11 REQUIRED)
+  find_package(CLI11    REQUIRED)
 
   if (NOT TARGET tiny-process-library)
     set(BUILD_TESTING OFF)
@@ -137,7 +136,9 @@ add_subdirectory(libs/logging)
 add_subdirectory(libs/model)
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  find_package(rocksdb REQUIRED)
+  if (NOT TARGET RocksDB::rocksdb)
+    find_package(RocksDB REQUIRED)
+  endif()
 
   add_subdirectory(libs/service)
 endif()
