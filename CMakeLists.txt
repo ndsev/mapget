@@ -80,7 +80,7 @@ set(SIMFIL_WITH_MODEL_JSON YES)
 if (NOT TARGET simfil)
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "allow-array-inheritance"
+    GIT_TAG        "main"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()

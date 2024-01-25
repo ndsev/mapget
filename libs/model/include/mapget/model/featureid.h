@@ -27,7 +27,7 @@ class FeatureId : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLay
     friend class Feature;
     friend class Relation;
     friend class bitsery::Access;
-    friend ModelNode::Ptr;
+    template<typename> friend struct simfil::shared_model_ptr;
 
 public:
     /** Convert the FeatureId to a string like `<type-id>.<part-value-0>...<part-value-n>` */

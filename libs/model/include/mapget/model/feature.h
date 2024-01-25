@@ -4,6 +4,7 @@
 #include "attrlayer.h"
 #include "featureid.h"
 #include "tileid.h"
+#include "relation.h"
 
 #include "nlohmann/json.hpp"
 
@@ -50,7 +51,8 @@ class Feature : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer
 {
     friend class bitsery::Access;
     friend class TileFeatureLayer;
-    friend ModelNode::Ptr;
+    friend class BoundFeature;
+    template<typename> friend struct simfil::shared_model_ptr;
 
 public:
     /** Get the name of this feature's type. */
@@ -59,17 +61,26 @@ public:
     /** Get this feature's ID. */
     [[nodiscard]] model_ptr<FeatureId> id() const;
 
-    /** Get this feature's GeometryCollection. */
-    model_ptr<GeometryCollection> geom();
+    /**
+     * Get this feature's GeometryCollection. The non-const version adds a
+     * GeometryCollection if the feature does not have one yet.
+     */
+    [[nodiscard]] model_ptr<GeometryCollection> geom();
+    [[nodiscard]] model_ptr<GeometryCollection> geom() const;
 
-    /** Get this feature's Attribute layers. */
+    /**
+     * Get this feature's Attribute layers. The non-const version adds a
+     * AttributeLayerList if the feature does not have one yet.
+     */
     [[nodiscard]] model_ptr<AttributeLayerList> attributeLayers();
+    [[nodiscard]] model_ptr<AttributeLayerList> attributeLayers() const;
 
-    /** Get this feature's un-layered attributes. */
-    model_ptr<Object> attributes();
-
-    /** Get this feature's child ID list. */
-    [[nodiscard]] model_ptr<Array> relations();
+    /**
+     * Get this feature's un-layered attributes.The non-const version adds a
+     * generic attribute storage if the feature does not have one yet.
+     */
+    [[nodiscard]] model_ptr<Object> attributes();
+    [[nodiscard]] model_ptr<Object> attributes() const;
 
     /** Add a point to the feature. */
     void addPoint(Point const& p);
@@ -106,6 +117,29 @@ public:
      */
     using simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::model;
 
+    /**
+     * Create a new named relation and immediately insert it into the feature.
+     * Variants:
+     * (1) Creates a new feature id for the target, based on the given ID parts.
+     * (2) Use an existing feature id for the target.
+     * (3) Use an existing relation.
+     */
+    void addRelation(std::string_view const& name, std::string_view const& targetType, KeyValuePairs const& targetIdParts);
+    void addRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
+    void addRelation(model_ptr<Relation> const& relation);
+
+    /**
+     * Visit all added relations. Return false from the callback to abort.
+     * Returns false if aborted, true otherwise.
+     */
+    bool forEachRelation(std::function<bool(model_ptr<Relation> const&)> const& callback) const;
+
+    /** Get the number of added relations. */
+    [[nodiscard]] uint32_t numRelations() const;
+
+    /** Get a relation at a specific index. */
+    [[nodiscard]] model_ptr<Relation> getRelation(uint32_t index) const;
+
 protected:
     /**
      * Simfil Model-Node Functions
@@ -116,6 +150,15 @@ protected:
     [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId&) const override;
     [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
+
+    /**
+     * Get this feature's relation list.The non-const version adds a
+     * Relation list if the feature does not have one yet.
+     * Note: This accessor is private, to ensure that the relations
+     * array really only ever contains relations.
+     */
+    [[nodiscard]] model_ptr<Array> relations();
+    [[nodiscard]] model_ptr<Array> relations() const;
 
     /**
      * Feature Data

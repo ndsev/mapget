@@ -13,6 +13,7 @@ namespace mapget
 class Attribute : public simfil::ProceduralObject<2, Attribute>
 {
     friend class TileFeatureLayer;
+    template<typename> friend struct simfil::shared_model_ptr;
 
 public:
     /**

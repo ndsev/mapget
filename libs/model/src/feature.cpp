@@ -28,6 +28,13 @@ model_ptr<simfil::GeometryCollection> Feature::geom()
         updateFields();
         return result;
     }
+    return const_cast<const Feature*>(this)->geom();
+}
+
+model_ptr<GeometryCollection> Feature::geom() const
+{
+    if (!data_->geom_)
+        return {};
     return model().resolveGeometryCollection(Ptr::make(model_, data_->geom_));
 }
 
@@ -39,6 +46,13 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
         updateFields();
         return result;
     }
+    return const_cast<const Feature*>(this)->attributeLayers();
+}
+
+model_ptr<AttributeLayerList> Feature::attributeLayers() const
+{
+    if (!data_->attrLayers_)
+        return {};
     return model().resolveAttributeLayerList(*Ptr::make(model_, data_->attrLayers_));
 }
 
@@ -50,6 +64,13 @@ model_ptr<Object> Feature::attributes()
         updateFields();
         return result;
     }
+    return const_cast<const Feature*>(this)->attributes();
+}
+
+model_ptr<Object> Feature::attributes() const
+{
+    if (!data_->attrs_)
+        return {};
     return model().resolveObject(Ptr::make(model_, data_->attrs_));
 }
 
@@ -61,7 +82,14 @@ model_ptr<Array> Feature::relations()
         updateFields();
         return result;
     }
-    return model().resolveArray(Ptr::make(model_, data_->relations_));
+    return const_cast<const Feature*>(this)->relations();
+}
+
+model_ptr<Array> Feature::relations() const
+{
+    if (!data_->relations_)
+        return {};
+    model().resolveArray(Ptr::make(model_, data_->relations_));
 }
 
 std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expression)
@@ -165,7 +193,7 @@ void Feature::updateFields() {
                 model_,
                 simfil::ModelNodeAddress{TileFeatureLayer::FeatureProperties, addr().index()}));
     if (data_->relations_)
-        fields_.emplace_back(Fields::ChildrenStr, Ptr::make(model_, data_->relations_));
+        fields_.emplace_back(Fields::RelationsStr, Ptr::make(model_, data_->relations_));
 }
 
 nlohmann::json Feature::toGeoJson()
@@ -234,6 +262,50 @@ void Feature::addPoly(const std::vector<Point>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Polygon, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);
+}
+
+void Feature::addRelation(
+    const std::string_view& name,
+    const std::string_view& targetType,
+    const KeyValuePairs& targetIdParts)
+{
+    addRelation(name, model().newFeatureId(targetType, targetIdParts));
+}
+
+void Feature::addRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
+{
+    addRelation(model().newRelation(name, target));
+}
+
+void Feature::addRelation(const model_ptr<Relation>& relation)
+{
+    relations()->append(relation);
+}
+
+uint32_t Feature::numRelations() const
+{
+    if (data_->relations_)
+        return relations()->size();
+    return 0;
+}
+
+model_ptr<Relation> Feature::getRelation(uint32_t index) const
+{
+    if (data_->relations_)
+        return model().resolveRelation(*relations()->at(index));
+    return {};
+}
+
+bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> const& callback) const
+{
+    auto relationsPtr = relations();
+    if (!relationsPtr || !callback)
+        return true;
+    for (auto const& relation : *relationsPtr) {
+        if (!callback(model().resolveRelation(*relation)))
+            return false;
+    }
+    return true;
 }
 
 //////////////////////////////////////////

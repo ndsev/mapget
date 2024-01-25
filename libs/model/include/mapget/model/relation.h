@@ -24,6 +24,8 @@ class TileFeatureLayer;
 class Relation : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
     friend class TileFeatureLayer;
+    friend class Feature;
+    template<typename> friend struct simfil::shared_model_ptr;
 
 public:
     /**
@@ -81,40 +83,6 @@ protected:
 
     /** Reference to the actual data stored for the relation. */
     Data* data_{};
-};
-
-/**
- * Collection of attribute layers - this is merely a typed dict which
- * stores (layer-name, layer) pairs.
- */
-class RelationList : protected simfil::Array
-{
-    friend class TileFeatureLayer;
-    friend class bitsery::Access;
-    friend class Feature;
-    friend ModelNode::Ptr;
-
-public:
-    /**
-     * Create a new named relation and immediately insert it into the collection.
-     * Create a new feature id for the target, based on the given ID parts.
-     */
-    model_ptr<Relation> newRelation(std::string_view const& name, std::string_view const& targetType, KeyValuePairs const& targetIdParts);
-
-    /**
-     * Create a new named relation and immediately insert it into the collection.
-     * Use an existing feature id for the target.
-     */
-    model_ptr<Relation> newRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
-
-    /**
-     * Add a relation to the collection which was previously created.
-     * You can share a single relation between multiple collections, it will not be copied.
-     */
-    void addRelation(model_ptr<Relation> r);
-
-protected:
-    RelationList(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
 };
 
 }

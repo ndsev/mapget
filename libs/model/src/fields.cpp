@@ -11,7 +11,7 @@ Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(IdStr, "id");
     addStaticKey(TypeIdStr, "typeId");
     addStaticKey(LayerStr, "layer");
-    addStaticKey(ChildrenStr, "relations");
+    addStaticKey(RelationsStr, "relations");
     addStaticKey(DirectionStr, "direction");
     addStaticKey(ValidityStr, "validity");
     addStaticKey(PropertiesStr, "properties");

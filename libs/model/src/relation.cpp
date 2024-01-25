@@ -115,6 +115,4 @@ bool Relation::iterate(const simfil::ModelNode::IterCallback& cb) const
     return std::all_of(begin(), end(), [&cb](auto&& child){return cb(*child);});
 }
 
-
-
 }

@@ -25,7 +25,7 @@ struct Fields : public simfil::Fields
         IdStr = NextStaticId,
         TypeIdStr,
         LayerStr,
-        ChildrenStr,
+        RelationsStr,
         DirectionStr,
         ValidityStr,
         PropertiesStr,
