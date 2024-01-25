@@ -24,7 +24,7 @@ target_link_libraries(mapget-service
     stx::stx
     mapget-model
     mapget-log
-    rocksdb)
+    RocksDB::rocksdb)
 
 if (MSVC)
   target_compile_definitions(mapget-service
