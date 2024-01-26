@@ -24,6 +24,36 @@ struct TileFeatureLayer::Impl {
     sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayerLists_;
     sfl::segmented_vector<Relation::Data, simfil::detail::ColumnPageSize/2> relations_;
 
+    /**
+     * Indexing of features by their id hash. The hash-feature pairs are kept
+     * in a vector, which is kept in a sorted state. This allows finding a
+     * feature by it's id in O(log(n)) time.
+     */
+    struct FeatureAddrWithIdHash
+    {
+        simfil::ModelNodeAddress featureAddr_;
+        uint64_t idHash_ = 0;
+
+        template<class S>
+        void serialize(S& s) {
+            s.object(featureAddr_);
+            s.value8b(idHash_);
+        }
+
+        bool operator< (FeatureAddrWithIdHash const& other) const {
+            return std::tie(idHash_, featureAddr_) < std::tie(other.idHash_, other.featureAddr_);
+        }
+    };
+    sfl::segmented_vector<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize/4> featureHashIndex_;
+    bool featureHashIndexNeedsUpdate_ = false;
+
+    void updateFeatureHashIndex() {
+        if (!featureHashIndexNeedsUpdate_)
+            return;
+        featureHashIndexNeedsUpdate_ = false;
+        std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
+    }
+
     // Simfil execution Environment for this tile's string pool.
     simfil::Environment simfilEnv_;
 
@@ -44,6 +74,8 @@ struct TileFeatureLayer::Impl {
         s.container(attrLayerLists_, maxColumnSize);
         s.object(featureIdPrefix_);
         s.container(relations_, maxColumnSize);
+        updateFeatureHashIndex();
+        s.container(featureHashIndex_, maxColumnSize);
     }
 
     explicit Impl(std::shared_ptr<Fields> fields)
@@ -165,6 +197,9 @@ bool idPartsMatchComposition(
     return matchLength == 0;
 }
 
+/**
+ * Create a string representation of the given id parts.
+ */
 std::string idPartsToString(KeyValuePairs const& idParts) {
     std::stringstream result;
     result << "{";
@@ -180,13 +215,77 @@ std::string idPartsToString(KeyValuePairs const& idParts) {
     return result.str();
 }
 
+/**
+ * Remove id parts from a keysAndValues list which are optional under
+ * the given composition. Note: The ordering of keys in the keysAndValues
+ * list must match the ordering in the composition. E.g., if `areaId` comes
+ * before `featureId`, it will only be recognized if this order is also
+ * maintained in the keysAndValues list.
+ */
+KeyValuePairs stripOptionalIdParts(KeyValuePairs const& keysAndValues, std::vector<IdPart> const& composition)
+{
+    KeyValuePairs result;
+    result.reserve(keysAndValues.size());
+    auto idPartIt = composition.begin();
+
+    for (auto const& [key, value] : keysAndValues) {
+        bool isOptional = true;
+        while (idPartIt != composition.end()) {
+            if (key == idPartIt->idPartLabel_) {
+                isOptional = idPartIt->isOptional_;
+                ++idPartIt;
+                break;
+            }
+            ++idPartIt;
+        }
+        if (!isOptional)
+            result.emplace_back(key, value);
+    }
+
+    return result;
+}
+
+/**
+ * Create a hash of the given feature-type-name + idParts combination.
+ */
+uint64_t hashFeatureId(const std::string_view& type, const KeyValuePairs& idParts)
+{
+    std::hash<std::string_view> svHasher;
+    std::hash<int64_t> intHasher;
+
+    // Start with hashing the type.
+    uint64_t hash = svHasher(type);
+
+    // Combine the hash of each key-value pair.
+    for (const auto& [key, value] : idParts) {
+        // Hash the key.
+        hash ^= (svHasher(key) << 1);
+
+        // Hash the value based on its type.
+        hash ^= std::visit(
+            [&](const auto& val) -> uint64_t
+            {
+                using T = std::decay_t<decltype(val)>;
+                if constexpr (std::is_same_v<T, int64_t>) {
+                    return intHasher(val);
+                }
+                else {
+                    return svHasher(val);
+                }
+            },
+            value) << 1;
+    }
+
+    return hash;
+}
+
 }  // namespace
 
 bool TileFeatureLayer::validFeatureId(
     const std::string_view& typeId,
     KeyValuePairs const& featureIdParts,
-    bool includeTilePrefix) {
-
+    bool validateForNewFeature)
+{
     auto typeIt = this->layerInfo_->featureTypes_.begin();
     while (typeIt != this->layerInfo_->featureTypes_.end()) {
         if (typeIt->name_ == typeId)
@@ -199,7 +298,7 @@ bool TileFeatureLayer::validFeatureId(
 
     for (auto& candidateComposition : typeIt->uniqueIdCompositions_) {
         uint32_t compositionMatchStartIndex = 0;
-        if (includeTilePrefix && this->featureIdPrefix()) {
+        if (validateForNewFeature && this->featureIdPrefix()) {
             // Iterate past the prefix in the unique id composition.
             compositionMatchStartIndex = this->featureIdPrefix()->size();
         }
@@ -212,6 +311,11 @@ bool TileFeatureLayer::validFeatureId(
         {
             return true;
         }
+
+        // References may use alternative ID compositions,
+        // but the feature itself must always use the first one.
+        if (validateForNewFeature)
+            return false;
     }
 
     return false;
@@ -462,7 +566,8 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
 
 void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
 {
-    // Check that the prefix is compatible with all existing id composites.
+    // Check that the prefix is compatible with all primary id composites.
+    // The primary id composition is the first one in the list.
     for (auto& featureType : this->layerInfo_->featureTypes_) {
         for (auto& candidateComposition : featureType.uniqueIdCompositions_) {
             if (!idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size())) {
@@ -470,6 +575,7 @@ void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
                     "Prefix not compatible with an id composite in type: {}",
                     featureType.name_));
             }
+            break;
         }
     }
 
@@ -520,6 +626,54 @@ size_t TileFeatureLayer::size() const
 model_ptr<Feature> TileFeatureLayer::at(size_t i) const
 {
     return resolveFeature(*root(i));
+}
+
+model_ptr<Feature>
+TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryIdParts) const
+{
+    auto const& primaryIdComposition = getPrimaryIdComposition(type);
+    auto queryIdPartsStripped = stripOptionalIdParts(queryIdParts, primaryIdComposition);
+    auto hash = hashFeatureId(type, queryIdPartsStripped);
+
+    impl_->updateFeatureHashIndex();
+    auto it = std::lower_bound(
+        impl_->featureHashIndex_.begin(),
+        impl_->featureHashIndex_.end(),
+        Impl::FeatureAddrWithIdHash{0, hash},
+        [](auto&& l, auto&& r) { return l.idHash_ < r.idHash_; });
+
+    // Iterate through potential matches to handle hash collisions.
+    while (it != impl_->featureHashIndex_.end() && it->idHash_ == hash)
+    {
+        auto feature = resolveFeature(*simfil::ModelNode::Ptr::make(shared_from_this(), it->featureAddr_));
+        if (feature->id()->typeId() == type) {
+            auto featureIdParts = stripOptionalIdParts(feature->id()->keyValuePairs(), primaryIdComposition);
+            if (queryIdPartsStripped == featureIdParts)
+                return feature;
+        }
+        // Move to the next potential match.
+        ++it;
+    }
+
+    return {};
+}
+
+std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::string_view& typeId) const
+{
+    auto typeIt = this->layerInfo_->featureTypes_.begin();
+    while (typeIt != this->layerInfo_->featureTypes_.end()) {
+        if (typeIt->name_ == typeId)
+            break;
+        ++typeIt;
+    }
+    if (typeIt == this->layerInfo_->featureTypes_.end()) {
+        throw logRuntimeError(stx::format("Could not find feature type {}", typeId));
+    }
+    auto compositionIt = typeIt->uniqueIdCompositions_.begin();
+    if (compositionIt == typeIt->uniqueIdCompositions_.end()) {
+        throw logRuntimeError(stx::format("No composition for feature type {}!", typeId));
+    }
+    return *compositionIt;
 }
 
 }

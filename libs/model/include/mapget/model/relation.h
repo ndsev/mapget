@@ -5,15 +5,6 @@
 namespace mapget
 {
 
-/**
- * The KeyValuePairs type is a vector of pairs, where each pair
- * consists of a string_view key and a variant value that can be
- * either an int64_t or a string_view.
- */
-using KeyValuePairs = std::vector<std::pair<
-    std::string_view,
-    std::variant<int64_t, std::string_view>>>;
-
 class TileFeatureLayer;
 
 /**
@@ -50,7 +41,6 @@ public:
     /**
      * Read-only target feature accessors.
      */
-
     [[nodiscard]] model_ptr<FeatureId> target() const;
 
 protected:

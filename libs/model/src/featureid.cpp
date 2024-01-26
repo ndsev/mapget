@@ -78,4 +78,32 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
     return true;
 }
 
+KeyValuePairs FeatureId::keyValuePairs() const
+{
+    KeyValuePairs result;
+
+    auto objectFieldsToKeyValuePairs = [&result, this](simfil::ModelNode::FieldRange fields){
+        for (auto const& [key, value] : fields) {
+            auto keyStr = model().fieldNames()->resolve(key);
+            std::visit(
+                [&result, &keyStr](auto&& v)
+                {
+                    if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate> && !std::is_same_v<std::decay_t<decltype(v)>, double>) {
+                        result.emplace_back(*keyStr, v);
+                    }
+                },
+                value->value());
+        }
+    };
+
+    // Add common id-part fields.
+    if (data_->useCommonTilePrefix_ && model().featureIdPrefix())
+        objectFieldsToKeyValuePairs(model().featureIdPrefix()->fields());
+
+    // Add specific id-part fields.
+    objectFieldsToKeyValuePairs(fields());
+
+    return std::move(result);
+}
+
 }

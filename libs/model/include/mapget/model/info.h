@@ -102,6 +102,8 @@ struct FeatureTypeInfo
     /**
      * List of allowed unique id compositions (each id composition is a list of id parts)
      * A single id composition must never have more than 16 parts.
+     * The first unique id composition in the list is the primary, which must be
+     * used by all features. Secondary compositions may only be used by references/relations.
      */
     std::vector<std::vector<IdPart>> uniqueIdCompositions_;
 

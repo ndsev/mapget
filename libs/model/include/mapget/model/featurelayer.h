@@ -116,12 +116,12 @@ public:
      * The order of values in KeyValuePairs must be the same as in the composition!
      * @param typeId Feature type id, throws error if the type was not registered.
      * @param featureIdParts Uniquely identifying information for the feature.
-     * @param includeTilePrefix True if the id should be evaluated with this tile's prefix prepended.
+     * @param validateForNewFeature True if the id should be evaluated with this tile's prefix prepended.
      */
     bool validFeatureId(
         const std::string_view& typeId,
         KeyValuePairs const& featureIdParts,
-        bool includeTilePrefix);
+        bool validateForNewFeature);
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
@@ -180,6 +180,9 @@ public:
     /** Access feature at index i */
     model_ptr<Feature> at(size_t i) const;
 
+    /** Access feature through its id. */
+    model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
+
     /** Shared pointer type */
     using Ptr = std::shared_ptr<TileFeatureLayer>;
 
@@ -203,6 +206,9 @@ protected:
      * which are shared by all features in this layer.
      */
     model_ptr<Object> featureIdPrefix();
+
+    /** Get the primary id composition for the given feature type. */
+    std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
 
     /**
      * Create a new attribute layer collection.
