@@ -89,7 +89,7 @@ model_ptr<Array> Feature::relations() const
 {
     if (!data_->relations_)
         return {};
-    model().resolveArray(Ptr::make(model_, data_->relations_));
+    return model().resolveArray(Ptr::make(model_, data_->relations_));
 }
 
 std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expression)
