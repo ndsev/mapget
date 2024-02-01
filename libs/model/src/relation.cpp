@@ -58,7 +58,7 @@ model_ptr<FeatureId> Relation::target() const
 
 simfil::ValueType Relation::type() const
 {
-    return ModelNodeBase::type();
+    return simfil::ValueType::Object;
 }
 
 simfil::ModelNode::Ptr Relation::at(int64_t i) const
