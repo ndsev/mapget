@@ -47,7 +47,7 @@ namespace mapget
  *     ]
  *   }
  */
-class Feature : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
     friend class bitsery::Access;
     friend class TileFeatureLayer;

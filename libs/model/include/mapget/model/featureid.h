@@ -31,7 +31,7 @@ using KeyValuePairs = sfl::small_vector<std::pair<
 /**
  * Unique feature ID
  */
-class FeatureId : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class Feature;

@@ -13,7 +13,7 @@ class AttributeLayerList;
  * For example, all feature attributes which refer to road rules, such
  * as speed limits, might belong to the same attribute layer.
  */
-class AttributeLayer : protected simfil::Object
+class AttributeLayer : public simfil::Object
 {
     friend class TileFeatureLayer;
     friend class bitsery::Access;
@@ -41,7 +41,7 @@ protected:
  * Collection of attribute layers - this is merely a typed dict which
  * stores (layer-name, layer) pairs.
  */
-class AttributeLayerList : protected simfil::Object
+class AttributeLayerList : public simfil::Object
 {
     friend class TileFeatureLayer;
     friend class bitsery::Access;
