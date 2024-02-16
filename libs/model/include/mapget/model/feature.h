@@ -67,6 +67,7 @@ public:
      */
     [[nodiscard]] model_ptr<GeometryCollection> geom();
     [[nodiscard]] model_ptr<GeometryCollection> geom() const;
+    [[nodiscard]] model_ptr<Geometry> firstGeometry() const;
 
     /**
      * Get this feature's Attribute layers. The non-const version adds a

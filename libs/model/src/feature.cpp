@@ -308,6 +308,20 @@ bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> co
     return true;
 }
 
+model_ptr<Geometry> Feature::firstGeometry() const
+{
+    model_ptr<Geometry> result;
+    if (auto geometryCollection = geom()) {
+        geometryCollection->forEachGeometry(
+            [&result](auto&& geometry)
+            {
+                result = geometry;
+                return false;
+            });
+    }
+    return result;
+}
+
 //////////////////////////////////////////
 
 Feature::FeaturePropertyView::FeaturePropertyView(
