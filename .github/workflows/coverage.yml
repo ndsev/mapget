@@ -29,21 +29,19 @@ jobs:
         conan profile detect
     - name: Setup
       run: |
-        mkdir build
+        conan install . -s compiler.cppstd=17 -s build_type=Debug --build=missing
     - name: Configure
-      working-directory: build
       run: |
-        cmake -DCMAKE_BUILD_TYPE=Debug \
+        cmake --preset conan-debug \
               -DCMAKE_C_COMPILER_LAUNCHER=sccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
-              -DWITH_COVERAGE=YES -GNinja ..
+              -DWITH_COVERAGE=YES -GNinja
     - name: Build
-      working-directory: build
       run: |
-        cmake --build .
+        cmake --build --preset conan-debug
     - name: Run Test
-      working-directory: build/
+      working-directory: build/Debug
       run: |
         ctest --verbose
     - name: Run Gcovr

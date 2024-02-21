@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "mapget/log.h"
+#include "stx/format.h"
 #include "rocksdbcache.h"
 
 namespace mapget
