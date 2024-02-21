@@ -1,6 +1,7 @@
 #include "service.h"
 #include "locate.h"
 #include "mapget/log.h"
+#include "stx/format.h"
 
 #include <optional>
 #include <set>

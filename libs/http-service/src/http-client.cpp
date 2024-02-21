@@ -1,6 +1,7 @@
 #include "http-client.h"
 #include "httplib.h"
 #include "mapget/log.h"
+#include "stx/format.h"
 
 namespace mapget
 {
