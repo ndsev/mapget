@@ -10,6 +10,7 @@
 #include <istream>
 #include <ranges>
 #include <string_view>
+#include <charconv>
 
 #include "nlohmann/json.hpp"
 
