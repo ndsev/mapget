@@ -4,9 +4,9 @@
 #include "httplib.h"
 #include <csignal>
 #include <atomic>
+#include <ranges>
 
-#include "stx/format.h"
-#include "stx/string.h"
+#include "fmt/format.h"
 
 namespace mapget
 {
@@ -78,7 +78,7 @@ void HttpServer::go(
 
     std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
     if (!impl_->server_.is_running() || !impl_->server_.is_valid())
-        throw logRuntimeError(stx::format("Could not start HttpServer on {}:{}", interfaceAddr, port));
+        throw logRuntimeError(fmt::format("Could not start HttpServer on {}:{}", interfaceAddr, port));
 }
 
 bool HttpServer::isRunning() {
@@ -115,10 +115,13 @@ void HttpServer::waitForSignal() {
 
 bool HttpServer::mountFileSystem(const std::string& pathFromTo)
 {
-    auto parts = stx::split(pathFromTo, ":");
-    if (parts.size() == 1)
-        return impl_->server_.set_mount_point("/", parts[0]);
-    return impl_->server_.set_mount_point(parts[0], parts[1]);
+    using namespace std::ranges;
+    auto parts = pathFromTo | views::split(':') | views::transform([](auto&& s){return std::string(&*s.begin(), distance(s));});
+    auto partsVec = std::vector<std::string>(parts.begin(), parts.end());
+
+    if (partsVec.size() == 1)
+        return impl_->server_.set_mount_point("/", partsVec[0]);
+    return impl_->server_.set_mount_point(partsVec[0], partsVec[1]);
 }
 
 void HttpServer::printPortToStdOut(bool enabled) {

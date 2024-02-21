@@ -24,7 +24,7 @@ std::string generateUuid() {
 
 auto missing_field(std::string const& error, std::string const& context) {
     return std::runtime_error(
-        stx::format("{}::fromJson(): `{}`", context, error));
+        fmt::format("{}::fromJson(): `{}`", context, error));
 }
 
 }
@@ -36,7 +36,7 @@ bool Version::isCompatible(const Version& other) const
 
 std::string Version::toString() const
 {
-    return stx::format("{}.{}.{}", major_, minor_, patch_);
+    return fmt::format("{}.{}.{}", major_, minor_, patch_);
 }
 
 bool Version::operator==(const Version& other) const
@@ -214,7 +214,7 @@ std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId) 
     auto it = layers_.find(layerId);
     if (it == layers_.end()) {
         throw logRuntimeError(
-            stx::format("Could not find layer '{}' in map '{}'", layerId, mapId_)
+            fmt::format("Could not find layer '{}' in map '{}'", layerId, mapId_)
         );
     }
     return it->second;

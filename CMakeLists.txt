@@ -60,29 +60,22 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-modules")
 ##############
 # deps
 
-if (NOT TARGET stx)
-  FetchContent_Declare(stx
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/stx.git"
-    GIT_TAG        "main"
+set(SIMFIL_WITH_MODEL_JSON YES)
+if (NOT TARGET simfil)
+  FetchContent_Declare(simfil
+    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
+    GIT_TAG        "fetchcontent-find-package"
     GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(stx)
+  FetchContent_MakeAvailable(simfil)
 endif()
 
 if (NOT TARGET spdlog::spdlog)
+  set(SPDLOG_FMT_EXTERNAL TRUE)
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
     GIT_TAG        "v1.x"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(spdlog)
-endif()
-
-set(SIMFIL_WITH_MODEL_JSON YES)
-if (NOT TARGET simfil)
-  FetchContent_Declare(simfil
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "allow-eval-with-node"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(simfil)
 endif()
 
 if (NOT TARGET bitsery)

@@ -19,7 +19,7 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
     if (info_.nodeId_.empty()) {
         // Unique node IDs are required for the field offsets.
         throw logRuntimeError(
-            stx::format("Remote data source is missing node ID! Source info: {}",
+            fmt::format("Remote data source is missing node ID! Source info: {}",
                 fetchedInfoJson->body));
     }
 
@@ -46,7 +46,7 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
 
     // Send a GET tile request.
-    auto tileResponse = client.Get(stx::format(
+    auto tileResponse = client.Get(fmt::format(
         "/tile?layer={}&tileId={}&fieldsOffset={}",
         k.layerId_,
         k.tileId_.value_,

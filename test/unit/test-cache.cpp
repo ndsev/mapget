@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+
 #include "mapget/http-service/cli.h"
 #include "mapget/log.h"
 #include "mapget/service/rocksdbcache.h"
@@ -224,7 +225,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
         std::filesystem::path test_cache = std::filesystem::temp_directory_path() /
             ("rocksdb-unit-test-" + std::to_string(epoch_time));
-        log().info(stx::format("Test creating cache: {}", test_cache.string()));
+        log().info(fmt::format("Test creating cache: {}", test_cache.string()));
 
         // Delete cache if it already exists, e.g. from a broken test case.
         if (std::filesystem::exists(test_cache)) {

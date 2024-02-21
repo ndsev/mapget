@@ -282,7 +282,7 @@ struct Service::Impl : public Service::Controller
             if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
                 // Unique node IDs are required for the field offsets.
                 throw logRuntimeError(
-                    stx::format("Data source with node ID '{}' already registered!",
+                    fmt::format("Data source with node ID '{}' already registered!",
                                 dataSource->info().nodeId_));
             }
         }

@@ -35,7 +35,6 @@ target_link_libraries(mapget-model
   PUBLIC
     mapget-log
     sfl::sfl
-    stx::stx
     Bitsery::bitsery
     simfil::simfil
     nlohmann_json::nlohmann_json)

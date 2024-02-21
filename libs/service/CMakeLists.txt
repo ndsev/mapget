@@ -21,7 +21,6 @@ target_include_directories(mapget-service
 
 target_link_libraries(mapget-service
   PUBLIC
-    stx::stx
     mapget-model
     mapget-log
     rocksdb)

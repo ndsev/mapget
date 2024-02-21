@@ -109,7 +109,7 @@ TileFeatureLayer::TileFeatureLayer(
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
-        throw logRuntimeError(stx::format(
+        throw logRuntimeError(fmt::format(
             "Failed to read TileFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
@@ -293,7 +293,7 @@ bool TileFeatureLayer::validFeatureId(
         ++typeIt;
     }
     if (typeIt == this->layerInfo_->featureTypes_.end()) {
-        throw logRuntimeError(stx::format("Could not find feature type {}", typeId));
+        throw logRuntimeError(fmt::format("Could not find feature type {}", typeId));
     }
 
     for (auto& candidateComposition : typeIt->uniqueIdCompositions_) {
@@ -330,7 +330,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     }
 
     if (!validFeatureId(typeId, featureIdParts, true)) {
-        throw logRuntimeError(stx::format(
+        throw logRuntimeError(fmt::format(
             "Could not find a matching ID composition of type {} with parts {}.",
             typeId,
             idPartsToString(featureIdParts)));
@@ -377,7 +377,7 @@ TileFeatureLayer::newFeatureId(
     const KeyValuePairs& featureIdParts)
 {
     if (!validFeatureId(typeId, featureIdParts, false)) {
-        throw logRuntimeError(stx::format(
+        throw logRuntimeError(fmt::format(
             "Could not find a matching ID composition of type {} with parts {}.",
             typeId,
             idPartsToString(featureIdParts)));
@@ -571,7 +571,7 @@ void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
     for (auto& featureType : this->layerInfo_->featureTypes_) {
         for (auto& candidateComposition : featureType.uniqueIdCompositions_) {
             if (!idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size())) {
-                throw logRuntimeError(stx::format(
+                throw logRuntimeError(fmt::format(
                     "Prefix not compatible with an id composite in type: {}",
                     featureType.name_));
             }
@@ -667,11 +667,11 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
         ++typeIt;
     }
     if (typeIt == this->layerInfo_->featureTypes_.end()) {
-        throw logRuntimeError(stx::format("Could not find feature type {}", typeId));
+        throw logRuntimeError(fmt::format("Could not find feature type {}", typeId));
     }
     auto compositionIt = typeIt->uniqueIdCompositions_.begin();
     if (compositionIt == typeIt->uniqueIdCompositions_.end()) {
-        throw logRuntimeError(stx::format("No composition for feature type {}!", typeId));
+        throw logRuntimeError(fmt::format("No composition for feature type {}!", typeId));
     }
     return *compositionIt;
 }

@@ -73,7 +73,7 @@ struct ServeCommand
             cache = std::make_shared<MemCache>(cacheMaxTiles_);
         }
         else {
-            logRuntimeError(stx::format("Cache type {} not supported!", cacheType_));
+            logRuntimeError(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
         HttpService srv(cache);
