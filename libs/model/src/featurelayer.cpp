@@ -3,13 +3,14 @@
 
 #include <map>
 #include <shared_mutex>
+#include <sstream>
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
 
 #include "simfil/model/bitsery-traits.h"
-#include <sstream>
+#include "stx/format.h"
 
 namespace mapget
 {

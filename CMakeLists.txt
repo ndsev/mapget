@@ -4,23 +4,15 @@ include(FetchContent)
 cmake_policy(VERSION 3.20)
 cmake_policy(SET CMP0117 NEW)
 
-# Bootstrap Conan 2
-if (NOT CONAN_PROVIDER_INCLUDED)
-  set(CONAN_PROVIDER_INCLUDED true)
-  FetchContent_Declare(
-    conan_provider
-    GIT_REPOSITORY https://github.com/Klebert-Engineering/cmake-conan
-    GIT_TAG mapviewer)
-  FetchContent_MakeAvailable(conan_provider)
-  set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES "${conan_provider_SOURCE_DIR}/conan_provider.cmake")
-endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-  set (MAPGET_WITH_WHEEL ON CACHE BOOL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
-  set (MAPGET_WITH_SERVICE ON CACHE BOOL "Enable mapget-service library. Requires threads.")
-  set (MAPGET_WITH_HTTPLIB ON CACHE BOOL "Enable mapget-http-datasource and mapget-http-service libraries.")
-  set (MAPGET_ENABLE_TESTING ON CACHE BOOL "Enable testing.")
-  set (MAPGET_BUILD_EXAMPLES ON CACHE BOOL "Build examples.")
+  set(MAPGET_WITH_WHEEL ON CACHE BOOL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
+  set(MAPGET_WITH_SERVICE ON CACHE BOOL "Enable mapget-service library. Requires threads.")
+  set(MAPGET_WITH_HTTPLIB ON CACHE BOOL "Enable mapget-http-datasource and mapget-http-service libraries.")
+  set(MAPGET_ENABLE_TESTING ON CACHE BOOL "Enable testing.")
+  set(MAPGET_BUILD_EXAMPLES ON CACHE BOOL "Build examples.")
 endif()
 
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
@@ -31,8 +23,7 @@ project(mapget)
 
 set(MAPGET_VERSION 0.3.0)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(Python3_FIND_STRATEGY LOCATION)
 
 if (NOT MSVC)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -72,57 +63,14 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-modules")
 
 ##############
 # deps
-find_package(spdlog  REQUIRED)
-find_package(Bitsery REQUIRED)
-find_package(httplib REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-if (NOT TARGET stx)
-  FetchContent_Declare(stx
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/stx.git"
-    GIT_TAG        "main"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(stx)
-endif()
-
-set(SIMFIL_WITH_MODEL_JSON YES)
-if (NOT TARGET simfil)
-  FetchContent_Declare(simfil
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "main"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(simfil)
-endif()
-
-if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  find_package(httplib  REQUIRED)
-  find_package(yaml-cpp REQUIRED)
-  find_package(CLI11    REQUIRED)
-
-  if (NOT TARGET tiny-process-library)
-    set(BUILD_TESTING OFF)
-    FetchContent_Declare(tiny-process-library
-      GIT_REPOSITORY https://gitlab.com/eidheim/tiny-process-library
-      GIT_TAG        v2.0.4
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(tiny-process-library)
-  endif()
-endif()
+include(deps.cmake)
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
-    set(Python3_FIND_STRATEGY LOCATION)
-    FetchContent_Declare(python-cmake-wheel
-      GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
-      GIT_TAG        "v0.9.0"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(python-cmake-wheel)
     list(APPEND CMAKE_MODULE_PATH "${python-cmake-wheel_SOURCE_DIR}")
     include(python-wheel)
     set(WHEEL_DEPLOY_DIRECTORY "${MAPGET_DEPLOY_DIR}/wheel")
   endif()
-
-  find_package(pybind11 REQUIRED)
 endif()
 
 if (WITH_COVERAGE)
@@ -131,15 +79,10 @@ endif()
 
 ##############
 # libs
-
 add_subdirectory(libs/logging)
 add_subdirectory(libs/model)
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  if (NOT TARGET RocksDB::rocksdb)
-    find_package(RocksDB REQUIRED)
-  endif()
-
   add_subdirectory(libs/service)
 endif()
 
@@ -162,7 +105,7 @@ if (MAPGET_ENABLE_TESTING)
 
   if (MAPGET_WITH_WHEEL)
     add_subdirectory(test/integration)
-  endif ()
+  endif()
 
   if (WITH_COVERAGE)
     setup_target_for_coverage_gcovr_html(
