@@ -31,7 +31,7 @@ MapTileKey::MapTileKey(const std::string& str)
     layer_ = nlohmann::json(std::string_view(&*partsVec[1].begin(), distance(partsVec[1]))).get<LayerType>();
     mapId_ = std::string_view(&*partsVec[1].begin(), distance(partsVec[1]));
     layerId_ = std::string_view(&*partsVec[2].begin(), distance(partsVec[2]));
-    std::from_chars(&*partsVec[3].begin(), &*partsVec[3].end(), tileId_.value_, 16);
+    std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
 }
 
 MapTileKey::MapTileKey(const TileLayer& data)
