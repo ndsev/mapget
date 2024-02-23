@@ -70,7 +70,7 @@ if (NOT TARGET simfil)
 endif()
 
 if (NOT TARGET spdlog::spdlog)
-  set(SPDLOG_FMT_EXTERNAL TRUE)
+  set(SPDLOG_FMT_EXTERNAL TRUE CACHE STRING "Ensure that spdlog uses fmt from conan.")
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
     GIT_TAG        "v1.x"
