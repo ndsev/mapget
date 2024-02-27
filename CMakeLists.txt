@@ -78,14 +78,6 @@ if (NOT TARGET spdlog::spdlog)
   FetchContent_MakeAvailable(spdlog)
 endif()
 
-if (NOT TARGET bitsery)
-  FetchContent_Declare(bitsery
-    GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
-    GIT_TAG        "master"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(bitsery)
-endif()
-
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   if (NOT TARGET httplib)
     FetchContent_Declare(httplib
