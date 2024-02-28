@@ -31,7 +31,8 @@ add_library(mapget-model STATIC
 
 target_include_directories(mapget-model
   PUBLIC
-    include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${MAPGET_INSTALL_INCLUDEDIR}>
   PRIVATE
     include/mapget/model)
 
@@ -55,3 +56,7 @@ endif()
 if (WITH_COVERAGE)
   append_coverage_compiler_flags_to_target(mapget-model)
 endif()
+
+install(TARGETS mapget-model)
+install(DIRECTORY include/mapget/model
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})

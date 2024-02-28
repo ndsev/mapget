@@ -15,6 +15,11 @@ target_link_libraries(mapget-log
 
 target_include_directories(mapget-log
   PUBLIC
-    include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${MAPGET_INSTALL_INCLUDEDIR}>
   PRIVATE
     src)
+
+install(TARGETS mapget-log)
+install(DIRECTORY include/mapget
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})

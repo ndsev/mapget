@@ -40,12 +40,13 @@ else()
 endif()
 list(APPEND DEPLOY_FILES $<TARGET_FILE:simfil::simfil>)
 
-add_wheel(pymapget
-  NAME mapget
-  AUTHOR "Klebert Engineering"
-  URL "https://github.com/klebert-engineering/mapget"
-  VERSION "${MAPGET_VERSION}"
-  DESCRIPTION "Python bindings for the mapget library."
-  TARGET_DEPENDENCIES mapget-model mapget-http-datasource
-  LICENSE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE"
-  DEPLOY_FILES ${DEPLOY_FILES})
+# BUG: This does not yet work with conan!
+#add_wheel(pymapget
+#  NAME mapget
+#  AUTHOR "Klebert Engineering"
+#  URL "https://github.com/klebert-engineering/mapget"
+#  VERSION "${MAPGET_VERSION}"
+#  DESCRIPTION "Python bindings for the mapget library."
+#  TARGET_DEPENDENCIES mapget-model mapget-http-datasource
+#  LICENSE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE"
+#  DEPLOY_FILES ${DEPLOY_FILES})
