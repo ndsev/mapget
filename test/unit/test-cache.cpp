@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
 

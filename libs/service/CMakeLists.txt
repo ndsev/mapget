@@ -42,3 +42,7 @@ endif()
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
   target_link_libraries(mapget-service PUBLIC Threads::Threads)
 endif()
+
+install(TARGETS mapget-service)
+install(DIRECTORY include/mapget/service
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
