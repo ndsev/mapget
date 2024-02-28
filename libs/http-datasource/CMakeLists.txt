@@ -38,3 +38,7 @@ endif()
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
   target_link_libraries(mapget-http-datasource PUBLIC Threads::Threads)
 endif()
+
+install(TARGETS mapget-http-datasource)
+install(DIRECTORY include/mapget/http-datasource
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
