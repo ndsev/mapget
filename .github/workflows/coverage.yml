@@ -27,9 +27,15 @@ jobs:
       run: |
         pip install conan
         conan profile detect
+    - name: Install simfil (git)
+      shell: sh
+      run: |
+        cd $(mktemp -d)
+        git clone "https://github.com/Klebert-Engineering/simfil.git" simfil
+        conan editable add simfil
     - name: Setup
       run: |
-        conan install . -s compiler.cppstd=17 -s build_type=Debug --build=missing
+        conan install . -s compiler.cppstd=20 -s build_type=Debug --build=missing
     - name: Configure
       run: |
         cmake --preset conan-debug \
