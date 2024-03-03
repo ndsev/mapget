@@ -95,7 +95,7 @@ if (MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL)
-  #add_subdirectory(libs/pymapget) # TODO: Add back
+  add_subdirectory(libs/pymapget)
 endif()
 
 ##############

@@ -3,6 +3,8 @@
 from conan import ConanFile
 from conan.tools.build import check_min_cppstd
 from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps, cmake_layout
+from conan.tools.files import copy, get
+import os
 
 
 required_conan_version = ">=1.62.0"
@@ -33,7 +35,7 @@ class SimfilRecipe(ConanFile):
         "cpp-httplib/*:with_zlib": True,
     }
 
-    exports_sources = "CMakeLists.txt", "*.cmake", "libs/*", "apps/*", "test/*", "examples/*"
+    exports_sources = "CMakeLists.txt", "*.cmake", "libs/*", "apps/*", "test/*", "examples/*", "LICENSE"
     def validate(self):
         check_min_cppstd(self, "20")
 
@@ -44,7 +46,7 @@ class SimfilRecipe(ConanFile):
         self.requires("cpp-httplib/0.15.3")
         self.requires("yaml-cpp/0.8.0")
         self.requires("cli11/2.3.2")
-        #self.requires("pybind11/2.11.1")
+        self.requires("pybind11/2.11.1")
         self.requires("rocksdb/8.8.1")
         self.requires("nlohmann_json/3.11.2", transitive_headers=True)
 
@@ -70,6 +72,7 @@ class SimfilRecipe(ConanFile):
     def package(self):
         cmake = CMake(self)
         cmake.install()
+        copy(self, "LICENSE", src=self.source_folder, dst=os.path.join(self.package_folder, "licenses"))
 
     def package_info(self):
         self.cpp_info.components["log"].libs = ["mapget-log"]
@@ -87,7 +90,5 @@ class SimfilRecipe(ConanFile):
         self.cpp_info.components["http-datasource"].libs = ["mapget-http-datasource"]
         self.cpp_info.components["http-datasource"].set_property("cmake_target_name", "mapget::http-datasource")
         self.cpp_info.components["http-datasource"].requires = ["model", "service", "cpp-httplib::cpp-httplib"]
-        # TODO: This is commented out in CMake due to errors!
-        #self.cpp_info.components["pymapget"].libs = ["pymapget"]
-        #self.cpp_info.components["pymapget"].set_property("cmake_target_name", "pymapget")
-        #self.cpp_info.components["pymapget"].requires = ["pybind11::pybind11"]
+        self.cpp_info.components["pymapget"].libs = []
+        self.cpp_info.components["pymapget"].requires = ["model", "http-datasource", "pybind11::pybind11"]
