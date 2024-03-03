@@ -7,7 +7,7 @@ if (MAPGET_CONAN)
   find_package(httplib       REQUIRED)
   find_package(yaml-cpp      REQUIRED)
   find_package(CLI11         REQUIRED)
-  #find_package(pybind11      REQUIRED)
+  find_package(pybind11      REQUIRED)
   find_package(simfil        REQUIRED)
   find_package(nlohmann_json REQUIRED)
 else()
@@ -85,7 +85,7 @@ endif()
 
 FetchContent_Declare(python-cmake-wheel
   GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
-  GIT_TAG        "imported-targets"
+  GIT_TAG        "v0.9.0"
   GIT_SHALLOW    ON)
 FetchContent_MakeAvailable(python-cmake-wheel)
 
