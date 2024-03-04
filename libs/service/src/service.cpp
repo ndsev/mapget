@@ -402,6 +402,28 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
     return dataSourcesAvailable;
 }
 
+std::vector<MapTileKey> Service::locate(std::string typeId, std::vector<std::string> idParts) {
+    std::vector<MapTileKey> results;
+    std::mutex resultsMutex;  // Mutex for thread-safe access to results
+
+/*   
+    std::for_each(
+        std::execution::par,  // Parallel execution
+        impl_->dataSourceInfo_.begin(),
+        impl_->dataSourceInfo_.end(),
+        [&](auto&& dataSource) {
+            auto partialResults = dataSource.locate(typeId, idParts);
+
+            // Thread-safe addition of partial results to the main results
+            std::lock_guard<std::mutex> guard(resultsMutex);
+            results.insert(results.end(), partialResults.begin(), partialResults.end());
+        }
+    );
+*/
+
+    return results;
+}
+
 void Service::abort(const LayerTilesRequest::Ptr& r)
 {
     impl_->abortRequest(r);

@@ -211,6 +211,15 @@ struct HttpService::Impl
         oss << "</body></html>";
         res.set_content(oss.str(), "text/html");
     }
+
+    void handleLocateRequest(const httplib::Request&, httplib::Response& res)
+    {
+        std::ostringstream oss;
+        oss << "<html><body>";
+        oss << "<h1>/locate will be available soon!</h1>";
+        oss << "</body></html>";
+        res.set_content(oss.str(), "text/html");
+    }
 };
 
 HttpService::HttpService(Cache::Ptr cache) : Service(std::move(cache)), impl_(std::make_unique<Impl>(*this))
@@ -239,6 +248,13 @@ void HttpService::setup(httplib::Server& server)
         [this](const httplib::Request& req, httplib::Response& res)
         {
             impl_->handleStatusRequest(req, res);
+        });
+
+    server.Get(
+        "/locate",
+        [this](const httplib::Request& req, httplib::Response& res)
+        {
+            impl_->handleLocateRequest(req, res);
         });
 }
 
