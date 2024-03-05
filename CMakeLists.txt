@@ -70,7 +70,7 @@ if (NOT TARGET simfil)
 endif()
 
 if (NOT TARGET spdlog::spdlog)
-  set(SPDLOG_FMT_EXTERNAL TRUE CACHE STRING "Ensure that spdlog uses fmt from conan.")
+  set(SPDLOG_FMT_EXTERNAL TRUE CACHE BOOL "Ensure that spdlog uses fmt from conan." FORCE)
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
     GIT_TAG        "v1.x"
@@ -165,8 +165,8 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 
     FetchContent_Declare(rocksdb
       GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-      GIT_TAG        dc87847e65449ef1cb6f787c5d753cbe8562bff1 # Use version greater than v8.6.7 once released.
-      GIT_SHALLOW    OFF)  # Turn ON when using released tag.
+      GIT_TAG        v8.11.3
+      GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(rocksdb)
   endif()
 
