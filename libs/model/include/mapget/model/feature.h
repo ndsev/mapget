@@ -65,7 +65,7 @@ public:
      * Get this feature's GeometryCollection. The non-const version adds a
      * GeometryCollection if the feature does not have one yet.
      */
-    [[nodiscard]] model_ptr<GeometryCollection> geom();
+    model_ptr<GeometryCollection> geom();
     [[nodiscard]] model_ptr<GeometryCollection> geom() const;
     [[nodiscard]] model_ptr<Geometry> firstGeometry() const;
 
@@ -73,14 +73,14 @@ public:
      * Get this feature's Attribute layers. The non-const version adds a
      * AttributeLayerList if the feature does not have one yet.
      */
-    [[nodiscard]] model_ptr<AttributeLayerList> attributeLayers();
+    model_ptr<AttributeLayerList> attributeLayers();
     [[nodiscard]] model_ptr<AttributeLayerList> attributeLayers() const;
 
     /**
      * Get this feature's un-layered attributes.The non-const version adds a
      * generic attribute storage if the feature does not have one yet.
      */
-    [[nodiscard]] model_ptr<Object> attributes();
+    model_ptr<Object> attributes();
     [[nodiscard]] model_ptr<Object> attributes() const;
 
     /** Add a point to the feature. */
