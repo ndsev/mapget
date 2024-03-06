@@ -45,12 +45,12 @@ struct TileFeatureLayer::Impl {
         }
     };
     sfl::segmented_vector<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize/4> featureHashIndex_;
-    bool featureHashIndexNeedsUpdate_ = false;
+    bool featureHashIndexNeedsSorting_ = false;
 
-    void updateFeatureHashIndex() {
-        if (!featureHashIndexNeedsUpdate_)
+    void sortFeatureHashIndex() {
+        if (!featureHashIndexNeedsSorting_)
             return;
-        featureHashIndexNeedsUpdate_ = false;
+        featureHashIndexNeedsSorting_ = false;
         std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
     }
 
@@ -74,7 +74,7 @@ struct TileFeatureLayer::Impl {
         s.container(attrLayerLists_, maxColumnSize);
         s.object(featureIdPrefix_);
         s.container(relations_, maxColumnSize);
-        updateFeatureHashIndex();
+        sortFeatureHashIndex();
         s.container(featureHashIndex_, maxColumnSize);
     }
 
@@ -363,6 +363,13 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
         shared_from_this(),
         simfil::ModelNodeAddress{Features, (uint32_t)featureIndex});
 
+    // Add feature hash index entry.
+    auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
+    auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
+    auto hash = hashFeatureId(typeId, fullStrippedFeatureId);
+    impl_->featureHashIndex_.emplace_back(result.addr(), hash);
+    impl_->featureHashIndexNeedsSorting_ = true;
+
     // Note: Here we rely on the assertion that the root_ collection
     // contains only references to feature nodes, in the order
     // of the feature node column.
@@ -566,6 +573,10 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
 
 void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
 {
+    // The prefix must be set, before any feature is added.
+    if (impl_->features_.size() > 0)
+        throw std::runtime_error("Cannot set feature id prefix after a feature was added.");
+
     // Check that the prefix is compatible with all primary id composites.
     // The primary id composition is the first one in the list.
     for (auto& featureType : this->layerInfo_->featureTypes_) {
@@ -635,7 +646,7 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryI
     auto queryIdPartsStripped = stripOptionalIdParts(queryIdParts, primaryIdComposition);
     auto hash = hashFeatureId(type, queryIdPartsStripped);
 
-    impl_->updateFeatureHashIndex();
+    impl_->sortFeatureHashIndex();
     auto it = std::lower_bound(
         impl_->featureHashIndex_.begin(),
         impl_->featureHashIndex_.end(),
@@ -648,7 +659,19 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryI
         auto feature = resolveFeature(*simfil::ModelNode::Ptr::make(shared_from_this(), it->featureAddr_));
         if (feature->id()->typeId() == type) {
             auto featureIdParts = stripOptionalIdParts(feature->id()->keyValuePairs(), primaryIdComposition);
-            if (queryIdPartsStripped == featureIdParts)
+            // Ensure that ID parts match exactly, not just the hash.
+            if (featureIdParts.size() != queryIdPartsStripped.size()) {
+                ++it;
+                continue;
+            }
+            bool exactMatch = true;
+            for (auto i = 0; i < featureIdParts.size(); ++i) {
+                if (featureIdParts[i] != queryIdPartsStripped[i]) {
+                    exactMatch = false;
+                    break;
+                }
+            }
+            if (exactMatch)
                 return feature;
         }
         // Move to the next potential match.

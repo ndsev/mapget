@@ -84,11 +84,15 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         layerInfo,
         fieldNames);
 
-    // Test creating a feature while tile prefix is not set
-    auto feature0 = tile->newFeature("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
-
-    // Set the tile feature id prefix
+    // Set the tile's feature id prefix.
     tile->setPrefix({{"areaId", "TheBestArea"}});
+
+    // Test creating a feature while tile prefix is not set.
+    auto feature0 = tile->newFeature("Way", {{"wayId", 24}});
+
+    // Setting the tile feature id prefix after a feature was added
+    // must lead to a runtime error.
+    REQUIRE_THROWS(tile->setPrefix({{"areaId", "TheBestArea"}}));
 
     // Create a feature with line geometry
     auto feature1 = tile->newFeature("Way", {{"wayId", 42}});
@@ -269,6 +273,23 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(readTiles[0]->numRoots() == 2);
         REQUIRE(readTiles[1]->numRoots() == 2);
         REQUIRE(readTiles[2]->numRoots() == 3);
+    }
+
+    SECTION("Find")
+    {
+        auto foundFeature01 = tile->find("Way", {{"areaId", "TheBestArea"}, {"wayId", 24}});
+        REQUIRE(foundFeature01);
+        REQUIRE(foundFeature01->addr() == feature0->addr());
+
+        auto foundFeature11 = tile->find("Way", {{"areaId", "TheBestArea"}, {"wayId", 42}});
+        REQUIRE(foundFeature11);
+        REQUIRE(foundFeature11->addr() == feature1->addr());
+
+        auto foundFeature00 = tile->find("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
+        REQUIRE(!foundFeature00);
+
+        auto foundFeature10 = tile->find("Way", {{"wayId", 42}});
+        REQUIRE(!foundFeature10);
     }
 }
 

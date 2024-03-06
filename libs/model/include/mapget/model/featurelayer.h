@@ -71,6 +71,7 @@ public:
 
     /**
      * Set common id prefix for all features in this layer.
+     * Note: The prefix MUST be set before any feature is added to the tile.
      */
     void setPrefix(KeyValuePairs const& prefix);
 
