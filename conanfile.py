@@ -31,6 +31,7 @@ class MapgetRecipe(ConanFile):
         "shared": False,
         "fPIC": True,
         "simfil/*:with_json": True,
+        "simfil/*:shared": False,
         "cpp-httplib/*:with_openssl": True,
         "cpp-httplib/*:with_zlib": True,
     }
