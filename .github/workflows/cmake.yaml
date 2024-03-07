@@ -108,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
-          path: build/Release/bin/wheel/*.whl
+          path: build/**/bin/wheel/*.whl
       - name: Test
         timeout-minutes: 30
         run: |
