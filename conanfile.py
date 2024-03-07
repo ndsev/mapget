@@ -13,13 +13,13 @@ required_conan_version = ">=1.62.0"
 # NOTE: The recipe used for conan-center-index is a copy of this
 #       file with the version removed! Make sure to copy changes
 #       in this file over to the conan-center-index recipe.
-class SimfilRecipe(ConanFile):
+class MapgetRecipe(ConanFile):
     name = "mapget"
     version = "dev"
     url = "https://github.com/conan-io/conan-center-index"
     homepage = "https://github.com/ndsev/mapget"
-    license = "BSD 3-Clause"
-    topics = ["query language"]
+    license = "BSD-3-Clause"
+    topics = ["map"]
 
     # Binary configuration
     settings = "os", "compiler", "build_type", "arch"
@@ -40,7 +40,8 @@ class SimfilRecipe(ConanFile):
         check_min_cppstd(self, "20")
 
     def requirements(self):
-        self.requires("simfil/dev", transitive_headers=True)
+        self.requires("simfil/0.1.1", transitive_headers=True)
+        self.requires("fmt/10.2.1", override=True)
         self.requires("spdlog/[~1]")
         self.requires("bitsery/[~5]")
         self.requires("cpp-httplib/0.15.3")
