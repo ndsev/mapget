@@ -42,3 +42,5 @@ endif()
 install(TARGETS mapget-http-datasource)
 install(DIRECTORY include/mapget/http-datasource
   DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/mapget/detail
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
