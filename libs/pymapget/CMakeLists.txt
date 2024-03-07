@@ -40,12 +40,25 @@ else()
 endif()
 
 if (simfil_FOUND)
-  # Workaround for Conan issue https://github.com/conan-io/conan/issues/12300
+  # HACK: Workaround for Conan issue https://github.com/conan-io/conan/issues/12300
   block()
-    set(type ${CMAKE_BUILD_TYPE})
-    string(TOUPPER ${type} type)
-    set(conan_libs     ${simfil_LIBS_${type}})
-    set(conan_lib_dirs ${simfil_LIB_DIRS_${type}})
+    if (GENERATOR_IS_MULTI_CONFIG)
+      set(conan_libs "")
+      set(conan_lib_dirs "")
+      foreach(cfg ${CMAKE_CONFIGURATION_TYPES})
+        string(TOUPPER "${type}" CFG)
+        set(conan_libs
+          ${conan_libs};$<$<CONFIG:{cfg}>:${simfil_LIBS_${CFG}}>)
+        set(conan_lib_dirs
+          ${conan_lib_dirs};$<$<CONFIG:${cfg}>:${simfil_LIB_DIRS_${CFG}}>)
+      endforeach()
+    else()
+      set(type ${CMAKE_BUILD_TYPE})
+      string(TOUPPER "${type}" type)
+      set(conan_libs ${simfil_LIBS_${cfg}})
+      set(conan_lib_dirs ${simfil_LIB_DIRS_${cfg}})
+    endif()
+
     set(location "${conan_lib_dirs}/${conan_libs}")
     if (EXISTS "${location}${CMAKE_SHARED_LIBRARY_SUFFIX}")
       list(APPEND DEPLOY_FILES "${location}${CMAKE_SHARED_LIBRARY_SUFFIX}")
