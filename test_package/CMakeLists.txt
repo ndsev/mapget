@@ -8,7 +8,4 @@ find_package(mapget CONFIG
 add_executable(test_package src/example.cpp)
 target_link_libraries(test_package
   mapget::model
-  mapget::service
-  mapget::log
-  mapget::http-service
-  mapget::http-datasource)
+  mapget::log)
