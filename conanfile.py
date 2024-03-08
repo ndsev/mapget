@@ -26,10 +26,16 @@ class MapgetRecipe(ConanFile):
     options = {
         "shared": [True, False],
         "fPIC": [True, False],
+        "with_service": [True, False],
+        "with_httplib": [True, False],
+        "with_wheel": [True, False],
     }
     default_options = {
         "shared": False,
         "fPIC": True,
+        "with_service": True,
+        "with_httplib": True,
+        "with_wheel": False,
         "simfil/*:with_json": True,
         "simfil/*:shared": False,
         "cpp-httplib/*:with_openssl": True,
@@ -48,9 +54,11 @@ class MapgetRecipe(ConanFile):
         self.requires("cpp-httplib/0.15.3", transitive_headers=True)
         self.requires("yaml-cpp/0.8.0")
         self.requires("cli11/2.3.2")
-        self.requires("pybind11/2.11.1")
-        self.requires("rocksdb/8.8.1")
         self.requires("nlohmann_json/3.11.2", transitive_headers=True)
+        if self.options.with_service or self.options.with_httplib:
+            self.requires("rocksdb/8.8.1")
+        if self.options.with_wheel:
+            self.requires("pybind11/2.11.1")
 
     def config_options(self):
         if self.settings.os == "Windows":
@@ -62,9 +70,11 @@ class MapgetRecipe(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
         tc.cache_variables["MAPGET_CONAN"] = True
-        tc.cache_variables["MAPGET_WITH_WHEEL"] = True
         tc.cache_variables["MAPGET_ENABLE_TESTING"] = False
         tc.cache_variables["MAPGET_BUILD_EXAMPLES"] = False
+        tc.cache_variables["MAPGET_WITH_SERVICE"] = self.options.with_service
+        tc.cache_variables["MAPGET_WITH_HTTPLIB"] = self.options.with_httplib
+        tc.cache_variables["MAPGET_WITH_WHEEL"] = self.options.with_wheel
         tc.generate()
         deps = CMakeDeps(self)
         deps.generate()
@@ -86,14 +96,17 @@ class MapgetRecipe(ConanFile):
         self.cpp_info.components["model"].libs = ["mapget-model"]
         self.cpp_info.components["model"].requires = ["log", "simfil::simfil", "nlohmann_json::nlohmann_json", "bitsery::bitsery"]
         self.cpp_info.components["model"].set_property("cmake_target_name", "mapget::model")
-        self.cpp_info.components["service"].libs = ["mapget-service"]
-        self.cpp_info.components["service"].set_property("cmake_target_name", "mapget::service")
-        self.cpp_info.components["service"].requires = ["log", "model", "rocksdb::rocksdb", "yaml-cpp::yaml-cpp"]
-        self.cpp_info.components["http-service"].libs = ["mapget-http-service"]
-        self.cpp_info.components["http-service"].set_property("cmake_target_name", "mapget::http-service")
-        self.cpp_info.components["http-service"].requires = ["service", "http-datasource", "cpp-httplib::cpp-httplib", "cli11::cli11"]
-        self.cpp_info.components["http-datasource"].libs = ["mapget-http-datasource"]
-        self.cpp_info.components["http-datasource"].set_property("cmake_target_name", "mapget::http-datasource")
-        self.cpp_info.components["http-datasource"].requires = ["model", "service", "cpp-httplib::cpp-httplib"]
-        self.cpp_info.components["pymapget"].libs = []
-        self.cpp_info.components["pymapget"].requires = ["model", "http-datasource", "pybind11::pybind11"]
+        if self.options.with_service or self.options.with_httplib:
+            self.cpp_info.components["service"].libs = ["mapget-service"]
+            self.cpp_info.components["service"].set_property("cmake_target_name", "mapget::service")
+            self.cpp_info.components["service"].requires = ["log", "model", "rocksdb::rocksdb", "yaml-cpp::yaml-cpp"]
+        if self.options.with_httplib:
+            self.cpp_info.components["http-service"].libs = ["mapget-http-service"]
+            self.cpp_info.components["http-service"].set_property("cmake_target_name", "mapget::http-service")
+            self.cpp_info.components["http-service"].requires = ["service", "http-datasource", "cpp-httplib::cpp-httplib", "cli11::cli11"]
+            self.cpp_info.components["http-datasource"].libs = ["mapget-http-datasource"]
+            self.cpp_info.components["http-datasource"].set_property("cmake_target_name", "mapget::http-datasource")
+            self.cpp_info.components["http-datasource"].requires = ["model", "service", "cpp-httplib::cpp-httplib"]
+            if self.options.with_wheel:
+                self.cpp_info.components["pymapget"].libs = []
+                self.cpp_info.components["pymapget"].requires = ["model", "http-datasource", "pybind11::pybind11"]

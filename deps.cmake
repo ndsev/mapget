@@ -1,15 +1,25 @@
 include(FetchContent)
 
+if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+  set(WANTS_ROCKSDB YES)
+else()
+  set(WANTS_ROCKSDB NO)
+endif()
+
 if (MAPGET_CONAN)
   find_package(spdlog        REQUIRED)
   find_package(Bitsery       REQUIRED)
-  find_package(RocksDB       REQUIRED)
   find_package(httplib       REQUIRED)
   find_package(yaml-cpp      REQUIRED)
   find_package(CLI11         REQUIRED)
-  find_package(pybind11      REQUIRED)
   find_package(simfil        REQUIRED)
   find_package(nlohmann_json REQUIRED)
+  if (MAPGET_WITH_WHEEL)
+    find_package(pybind11      REQUIRED)
+  endif()
+  if (WANTS_ROCKSDB)
+    find_package(RocksDB       REQUIRED)
+  endif()
 else()
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
@@ -41,36 +51,41 @@ else()
     GIT_SHALLOW    ON
     FIND_PACKAGE_ARGS)
 
-  FetchContent_Declare(pybind11
-    GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
-    GIT_TAG        v2.11.1
-    GIT_SHALLOW    ON
-    FIND_PACKAGE_ARGS)
+  if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
+    FetchContent_Declare(pybind11
+      GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
+      GIT_TAG        v2.11.1
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(pybind11)
+  endif()
 
-  set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
-  set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
-  set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
-  set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
-  set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
-  FetchContent_Declare(rocksdb
-    GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-    GIT_TAG        dc87847e65449ef1cb6f787c5d753cbe8562bff1 # Use version greater than v8.6.7 once released.
-    GIT_SHALLOW    OFF
-    FIND_PACKAGE_ARGS NAMES RocksDB)
+  if (WANTS_ROCKSDB AND NOT TARGET rocksdb)
+    set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
+    set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
+    set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
+    set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
+    set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
+    FetchContent_Declare(rocksdb
+      GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
+      GIT_TAG        dc87847e65449ef1cb6f787c5d753cbe8562bff1 # Use version greater than v8.6.7 once released.
+      GIT_SHALLOW    OFF)
+    FetchContent_MakeAvailable(rocksdb)
+  endif()
 
+  if (NOT TARGET simfil)
+    set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
+    set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
+    FetchContent_Declare(simfil
+      GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
+      GIT_TAG        "main"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(simfil)
+  endif()
 
-  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
-  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
-  FetchContent_Declare(simfil
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "main"
-    GIT_SHALLOW    ON
-    FIND_PACKAGE_ARGS)
-
-  FetchContent_MakeAvailable(spdlog bitsery tiny-process-library stx simfil)
+  FetchContent_MakeAvailable(spdlog bitsery tiny-process-library stx)
 
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-    FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 rocksdb pybind11)
+    FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11)
   endif()
 
   FetchContent_GetProperties(cpp-httplib)
@@ -83,11 +98,13 @@ else()
   endif()
 endif()
 
-FetchContent_Declare(python-cmake-wheel
-  GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
-  GIT_TAG        "v0.9.0"
-  GIT_SHALLOW    ON)
-FetchContent_MakeAvailable(python-cmake-wheel)
+if (MAPGET_WITH_WHEEL)
+  FetchContent_Declare(python-cmake-wheel
+    GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
+    GIT_TAG        "v0.9.0"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(python-cmake-wheel)
+endif()
 
 FetchContent_Declare(stx
   GIT_REPOSITORY "https://github.com/Klebert-Engineering/stx.git"

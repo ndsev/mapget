@@ -29,14 +29,15 @@ jobs:
         conan profile detect
     - name: Setup
       run: |
-        conan install . -s compiler.cppstd=20 -s build_type=Debug --build=missing
+        conan install . -s compiler.cppstd=20 -s build_type=Debug -b missing \
+            -o with_wheel=True -o with_service=True -o with_httplib=True
     - name: Configure
       run: |
         cmake --preset conan-debug \
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
-              -DWITH_COVERAGE=YES -GNinja
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
+            -DWITH_COVERAGE=YES -GNinja
     - name: Build
       run: |
         cmake --build --preset conan-debug
