@@ -62,6 +62,9 @@ class MapgetRecipe(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
         tc.cache_variables["MAPGET_CONAN"] = True
+        tc.cache_variables["MAPGET_WITH_WHEEL"] = True
+        tc.cache_variables["MAPGET_ENABLE_TESTING"] = False
+        tc.cache_variables["MAPGET_BUILD_EXAMPLES"] = False
         tc.generate()
         deps = CMakeDeps(self)
         deps.generate()
