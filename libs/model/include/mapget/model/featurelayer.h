@@ -187,6 +187,16 @@ public:
     /** Shared pointer type */
     using Ptr = std::shared_ptr<TileFeatureLayer>;
 
+    /**
+     * Get this pool's simfil evaluation environment.
+     */
+    simfil::Environment& evaluationEnvironment();
+
+    /**
+     * Get a potentially cached compiled simfil expression for a simfil string.
+     */
+    simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
+
 protected:
     /**
      * The FeatureTileColumnId enum provides identifiers for different
@@ -230,16 +240,6 @@ protected:
      * Generic node resolution overload.
      */
     void resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
-
-    /**
-     * Get this pool's simfil evaluation environment.
-     */
-    simfil::Environment& evaluationEnvironment();
-
-    /**
-     * Get a potentially cached compiled simfil expression for a simfil string.
-     */
-    simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

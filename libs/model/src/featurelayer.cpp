@@ -58,7 +58,7 @@ struct TileFeatureLayer::Impl {
     simfil::Environment simfilEnv_;
 
     // Compiled simfil expressions, by hash of expression string
-    std::map<std::string, simfil::ExprPtr> simfilExpressions_;
+    std::map<std::string, simfil::ExprPtr, std::less<>> simfilExpressions_;
 
     // Mutex to manage access to the expression cache
     std::shared_mutex expressionCacheLock_;
@@ -578,15 +578,14 @@ simfil::Environment& TileFeatureLayer::evaluationEnvironment()
 simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_view& expr)
 {
     std::shared_lock sharedLock(impl_->expressionCacheLock_);
-    std::string exprString{expr};
-    auto it = impl_->simfilExpressions_.find(exprString);
+    auto it = impl_->simfilExpressions_.find(expr);
     if (it != impl_->simfilExpressions_.end()) {
         return it->second;
     }
     sharedLock.unlock();
     std::unique_lock uniqueLock(impl_->expressionCacheLock_);
     auto [newIt, _] = impl_->simfilExpressions_.emplace(
-        std::move(exprString),
+        std::string(expr),
         simfil::compile(impl_->simfilEnv_, expr, false)
     );
     return newIt->second;
