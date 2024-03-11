@@ -12,6 +12,7 @@ struct DataSourceServer::Impl
 {
     DataSourceInfo info_;
     std::function<void(TileFeatureLayer::Ptr)> tileCallback_;
+    std::function<std::optional<LocateResponse>(const LocateRequest&)> locateCallback_;
     std::shared_ptr<Fields> fields_;
 
     explicit Impl(DataSourceInfo info)
@@ -29,8 +30,16 @@ DataSourceServer::DataSourceServer(DataSourceInfo const& info)
 DataSourceServer::~DataSourceServer() = default;
 
 DataSourceServer&
-DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback) {
+DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback)
+{
     impl_->tileCallback_ = callback;
+    return *this;
+}
+
+DataSourceServer& DataSourceServer::onLocateRequest(
+    const std::function<std::optional<LocateResponse>(const LocateRequest&)>& callback)
+{
+    impl_->locateCallback_ = callback;
     return *this;
 }
 
@@ -91,6 +100,22 @@ void DataSourceServer::setup(httplib::Server& server)
         [this](const httplib::Request&, httplib::Response& res) {
             nlohmann::json j = impl_->info_.toJson();
             res.set_content(j.dump(), "application/json");
+        });
+
+    // Set up POST /locate endpoint
+    server.Post(
+        "/locate",
+        [this](const httplib::Request& req, httplib::Response& res) {
+            LocateRequest parsedReq(nlohmann::json::parse(req.body));
+            auto responseJson = nlohmann::json();
+
+            if (impl_->locateCallback_) {
+                if (auto response = impl_->locateCallback_(parsedReq)) {
+                    responseJson = response->serialize();
+                }
+            }
+
+            res.set_content(responseJson.dump(), "application/json");
         });
 }
 

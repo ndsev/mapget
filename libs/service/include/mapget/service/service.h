@@ -138,9 +138,7 @@ public:
      * for a feature matching the given typeId and idParts.
      * Returns the list of MapTileKeys received from data sources.
      */
-    std::vector<MapTileKey> locate(
-        std::string typeId,
-        std::vector<std::string> idParts);
+    std::vector<LocateResponse> locate(LocateRequest const& req);
 
     /**
      * Abort the given request. The request will be removed from

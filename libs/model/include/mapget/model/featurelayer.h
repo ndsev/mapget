@@ -73,7 +73,7 @@ public:
      * Set common id prefix for all features in this layer.
      * Note: The prefix MUST be set before any feature is added to the tile.
      */
-    void setPrefix(KeyValuePairs const& prefix);
+    void setPrefix(KeyValueViewPairs const& prefix);
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer() override;
@@ -89,8 +89,7 @@ public:
      * prefix. If empty, an error will be thrown.
      */
     model_ptr<Feature> newFeature(
-        std::string_view const& typeId,
-        KeyValuePairs const& featureIdParts);
+        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
 
     /**
      * Create a new feature id. Use this function to create a reference to another
@@ -99,8 +98,7 @@ public:
      * different tile.
      */
     model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId,
-        KeyValuePairs const& featureIdParts);
+        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
 
     /**
      * Create a new relation. Use this function to create a named reference to another
@@ -121,7 +119,7 @@ public:
      */
     bool validFeatureId(
         const std::string_view& typeId,
-        KeyValuePairs const& featureIdParts,
+        KeyValueViewPairs const& featureIdParts,
         bool validateForNewFeature);
 
     /**
@@ -182,6 +180,7 @@ public:
     model_ptr<Feature> at(size_t i) const;
 
     /** Access feature through its id. */
+    model_ptr<Feature> find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
 
     /** Shared pointer type */

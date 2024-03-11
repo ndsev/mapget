@@ -128,7 +128,7 @@ namespace
 bool idPartsMatchComposition(
     std::vector<IdPart> const& candidateComposition,
     uint32_t compositionMatchStartIdx,
-    KeyValuePairs const& featureIdParts,
+    KeyValueViewPairs const& featureIdParts,
     unsigned long matchLength)
 {
     auto featureIdIter = featureIdParts.begin();
@@ -200,7 +200,7 @@ bool idPartsMatchComposition(
 /**
  * Create a string representation of the given id parts.
  */
-std::string idPartsToString(KeyValuePairs const& idParts) {
+std::string idPartsToString(KeyValueViewPairs const& idParts) {
     std::stringstream result;
     result << "{";
     for (auto i = 0; i < idParts.size(); ++i) {
@@ -222,9 +222,10 @@ std::string idPartsToString(KeyValuePairs const& idParts) {
  * before `featureId`, it will only be recognized if this order is also
  * maintained in the keysAndValues list.
  */
-KeyValuePairs stripOptionalIdParts(KeyValuePairs const& keysAndValues, std::vector<IdPart> const& composition)
+KeyValueViewPairs
+stripOptionalIdParts(KeyValueViewPairs const& keysAndValues, std::vector<IdPart> const& composition)
 {
-    KeyValuePairs result;
+    KeyValueViewPairs result;
     result.reserve(keysAndValues.size());
     auto idPartIt = composition.begin();
 
@@ -250,7 +251,7 @@ KeyValuePairs stripOptionalIdParts(KeyValuePairs const& keysAndValues, std::vect
  * We do not use std::hash, as it has different implementations on different
  * compilers. This hash must be stable across Emscripten/GCC/MSVC/etc.
  */
-uint64_t hashFeatureId(const std::string_view& type, const KeyValuePairs& idParts)
+uint64_t hashFeatureId(const std::string_view& type, const KeyValueViewPairs& idParts)
 {
     // Constants for the FNV-1a hash algorithm
     constexpr uint64_t FNV_prime = 1099511628211ULL;
@@ -304,7 +305,7 @@ uint64_t hashFeatureId(const std::string_view& type, const KeyValuePairs& idPart
 
 bool TileFeatureLayer::validFeatureId(
     const std::string_view& typeId,
-    KeyValuePairs const& featureIdParts,
+    KeyValueViewPairs const& featureIdParts,
     bool validateForNewFeature)
 {
     auto typeIt = this->layerInfo_->featureTypes_.begin();
@@ -344,7 +345,7 @@ bool TileFeatureLayer::validFeatureId(
 
 simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const std::string_view& typeId,
-    const KeyValuePairs& featureIdParts)
+    const KeyValueViewPairs& featureIdParts)
 {
     if (featureIdParts.empty()) {
         throw logRuntimeError("Tried to create an empty feature ID.");
@@ -402,7 +403,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
 model_ptr<FeatureId>
 TileFeatureLayer::newFeatureId(
     const std::string_view& typeId,
-    const KeyValuePairs& featureIdParts)
+    const KeyValueViewPairs& featureIdParts)
 {
     if (!validFeatureId(typeId, featureIdParts, false)) {
         throw logRuntimeError(fmt::format(
@@ -591,7 +592,7 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
     return newIt->second;
 }
 
-void TileFeatureLayer::setPrefix(const KeyValuePairs& prefix)
+void TileFeatureLayer::setPrefix(const KeyValueViewPairs& prefix)
 {
     // The prefix must be set, before any feature is added.
     if (impl_->features_.size() > 0)
@@ -660,7 +661,7 @@ model_ptr<Feature> TileFeatureLayer::at(size_t i) const
 }
 
 model_ptr<Feature>
-TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryIdParts) const
+TileFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& queryIdParts) const
 {
     auto const& primaryIdComposition = getPrimaryIdComposition(type);
     auto queryIdPartsStripped = stripOptionalIdParts(queryIdParts, primaryIdComposition);
@@ -699,6 +700,22 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryI
     }
 
     return {};
+}
+
+model_ptr<Feature>
+TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryIdParts) const
+{
+    // Convert KeyValuePairs to KeyValuePairsView
+    KeyValueViewPairs kvpView;
+    for (auto const& [k, v] : queryIdParts) {
+        std::visit([&kvpView, &k](auto&& vv){
+            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string>)
+                kvpView.emplace_back(k, std::string_view(vv));
+            else
+                kvpView.emplace_back(k, vv);
+        }, v);
+    }
+    return find(type, kvpView);
 }
 
 std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::string_view& typeId) const

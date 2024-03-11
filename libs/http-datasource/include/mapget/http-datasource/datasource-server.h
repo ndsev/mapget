@@ -2,6 +2,7 @@
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/detail/http-server.h"
+#include "mapget/service/locate.h"
 
 namespace mapget
 {
@@ -31,6 +32,14 @@ public:
      * TileFeatureLayer::setError(...) to signal the error downstream.
      */
     DataSourceServer& onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const&);
+
+    /**
+     * Set the callback which will be invoked when a `/locate`-request is received.
+     * The callback argument is a LocateRequest, which the callback
+     * must process according to its available data.
+     */
+    DataSourceServer&
+    onLocateRequest(std::function<std::optional<LocateResponse>(LocateRequest const&)> const&);
 
     /**
      * Get the DataSourceInfo metadata which this instance was constructed with.

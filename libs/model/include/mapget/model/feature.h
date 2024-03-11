@@ -125,7 +125,8 @@ public:
      * (2) Use an existing feature id for the target.
      * (3) Use an existing relation.
      */
-    void addRelation(std::string_view const& name, std::string_view const& targetType, KeyValuePairs const& targetIdParts);
+    void addRelation(std::string_view const& name, std::string_view const& targetType,
+        KeyValueViewPairs const& targetIdParts);
     void addRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
     void addRelation(model_ptr<Relation> const& relation);
 

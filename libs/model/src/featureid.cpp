@@ -78,9 +78,9 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
     return true;
 }
 
-KeyValuePairs FeatureId::keyValuePairs() const
+KeyValueViewPairs FeatureId::keyValuePairs() const
 {
-    KeyValuePairs result;
+    KeyValueViewPairs result;
 
     auto objectFieldsToKeyValuePairs = [&result, this](simfil::ModelNode::FieldRange fields){
         for (auto const& [key, value] : fields) {

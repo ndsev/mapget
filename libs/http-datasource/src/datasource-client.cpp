@@ -72,6 +72,33 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     return result;
 }
 
+std::optional<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
+{
+    // Round-robin usage of http clients to facilitate parallel requests.
+    auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
+
+    // Send a GET tile request.
+    auto locateResponse = client.Post(
+        fmt::format("/locate"), req.serialize().dump(), "application/json");
+
+    // Check that the response is OK.
+    if (!locateResponse || locateResponse->status >= 300) {
+        // Forward to base class get(). This will instantiate a
+        // default TileFeatureLayer and call fill(). In our implementation
+        // of fill, we set an error.
+        // TODO: Read HTTPLIB_ERROR header, more log output.
+        return {};
+    }
+
+    // Check the response body for expected content.
+    auto responseJson = nlohmann::json::parse(locateResponse->body);
+    if (responseJson.is_null()) {
+        return {};
+    }
+
+    return LocateResponse(responseJson);
+}
+
 RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
 {
     auto stderrCallback = [this](const char* bytes, size_t n)
@@ -153,6 +180,13 @@ RemoteDataSourceProcess::get(MapTileKey const& k, Cache::Ptr& cache, DataSourceI
     if (!remoteSource_)
         throw logRuntimeError("Remote data source is not initialized.");
     return remoteSource_->get(k, cache, info);
+}
+
+std::optional<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)
+{
+    if (!remoteSource_)
+        throw logRuntimeError("Remote data source is not initialized.");
+    return remoteSource_->locate(req);
 }
 
 }

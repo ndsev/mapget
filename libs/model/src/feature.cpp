@@ -267,7 +267,7 @@ void Feature::addPoly(const std::vector<Point>& points) {
 void Feature::addRelation(
     const std::string_view& name,
     const std::string_view& targetType,
-    const KeyValuePairs& targetIdParts)
+    const KeyValueViewPairs& targetIdParts)
 {
     addRelation(name, model().newFeatureId(targetType, targetIdParts));
 }

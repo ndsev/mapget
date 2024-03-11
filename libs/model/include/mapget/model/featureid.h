@@ -20,13 +20,18 @@ using Geometry = simfil::Geometry;
 using GeomType = simfil::Geometry::GeomType;
 
 /**
- * The KeyValuePairs type is a vector of pairs, where each pair
+ * The KeyValuePairsView type is a vector of pairs, where each pair
  * consists of a string_view key and a variant value that can be
- * either an int64_t or a string_view.
+ * either an int64_t or a string_view. It is used as the interface-
+ * type for feature id parts. By using sfl::small_vector instead of
+ * std::vector, it is kept on the stack.
  */
-using KeyValuePairs = sfl::small_vector<std::pair<
+using KeyValueViewPairs = sfl::small_vector<std::pair<
     std::string_view,
     std::variant<int64_t, std::string_view>>, 16>;
+using KeyValuePairs = sfl::small_vector<std::pair<
+    std::string,
+    std::variant<int64_t, std::string>>, 16>;
 
 /**
  * Unique feature ID
@@ -47,7 +52,7 @@ public:
     [[nodiscard]] std::string_view typeId() const;
 
     /** Get all id-part key-value-pairs (including the common prefix). */
-    [[nodiscard]] KeyValuePairs keyValuePairs() const;
+    [[nodiscard]] KeyValueViewPairs keyValuePairs() const;
 
 protected:
     /**

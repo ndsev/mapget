@@ -402,25 +402,13 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
     return dataSourcesAvailable;
 }
 
-std::vector<MapTileKey> Service::locate(std::string typeId, std::vector<std::string> idParts) {
-    std::vector<MapTileKey> results;
-    std::mutex resultsMutex;  // Mutex for thread-safe access to results
-
-/*   
-    std::for_each(
-        std::execution::par,  // Parallel execution
-        impl_->dataSourceInfo_.begin(),
-        impl_->dataSourceInfo_.end(),
-        [&](auto&& dataSource) {
-            auto partialResults = dataSource.locate(typeId, idParts);
-
-            // Thread-safe addition of partial results to the main results
-            std::lock_guard<std::mutex> guard(resultsMutex);
-            results.insert(results.end(), partialResults.begin(), partialResults.end());
-        }
-    );
-*/
-
+std::vector<LocateResponse> Service::locate(LocateRequest const& req)
+{
+    std::vector<LocateResponse> results;
+    for (auto const& [ds, info] : impl_->dataSourceInfo_)
+        if (info.mapId_ == req.mapId_)
+            if (auto location = ds->locate(req))
+                results.emplace_back(*location);
     return results;
 }
 
@@ -443,8 +431,7 @@ bool Service::hasLayer(std::string const& mapId, std::string const& layerId)
 {
     std::unique_lock lock(impl_->jobsMutex_);
     // Check that one of the data sources can fulfill the request.
-    for (auto& dataSourceAndInfo : impl_->dataSourceInfo_) {
-        auto& info = dataSourceAndInfo.second;
+    for (auto& [ds, info] : impl_->dataSourceInfo_) {
         if (mapId != info.mapId_)
             continue;
         if (info.layers_.find(layerId) != info.layers_.end()) {

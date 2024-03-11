@@ -212,13 +212,24 @@ struct HttpService::Impl
         res.set_content(oss.str(), "text/html");
     }
 
-    void handleLocateRequest(const httplib::Request&, httplib::Response& res)
+    void handleLocateRequest(const httplib::Request& req, httplib::Response& res)
     {
-        std::ostringstream oss;
-        oss << "<html><body>";
-        oss << "<h1>/locate will be available soon!</h1>";
-        oss << "</body></html>";
-        res.set_content(oss.str(), "text/html");
+        // Parse the JSON request.
+        nlohmann::json j = nlohmann::json::parse(req.body);
+        auto requestsJson = j["requests"];
+        auto allResponsesJson = nlohmann::json::array();
+
+        for (auto const& locateReqJson : requestsJson) {
+            LocateRequest locateReq{locateReqJson};
+            auto responsesJson = nlohmann::json::array();
+            for (auto const& resp : self_.locate(locateReq))
+                responsesJson.emplace_back(resp.serialize());
+            allResponsesJson.emplace_back(responsesJson);
+        }
+
+        res.set_content(
+            nlohmann::json::object({{"responses", allResponsesJson}}).dump(),
+            "application/json");
     }
 };
 
@@ -250,7 +261,7 @@ void HttpService::setup(httplib::Server& server)
             impl_->handleStatusRequest(req, res);
         });
 
-    server.Get(
+    server.Post(
         "/locate",
         [this](const httplib::Request& req, httplib::Response& res)
         {
