@@ -6,12 +6,14 @@ add_library(mapget-service STATIC
   include/mapget/service/datasource.h
   include/mapget/service/memcache.h
   include/mapget/service/rocksdbcache.h
+  include/mapget/service/locate.h
 
   src/service.cpp
   src/cache.cpp
   src/datasource.cpp
   src/memcache.cpp
-  src/rocksdbcache.cpp)
+  src/rocksdbcache.cpp
+  src/locate.cpp)
 
 target_include_directories(mapget-service
   PUBLIC
