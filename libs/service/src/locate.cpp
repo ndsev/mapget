@@ -59,4 +59,28 @@ nlohmann::json LocateResponse::serialize() const
     return result;
 }
 
+std::optional<int64_t> LocateRequest::getIntIdPart(const std::string_view& idPart) const
+{
+    for (auto const& [key, value] : featureId_) {
+        if (key == idPart) {
+            if (std::holds_alternative<int64_t>(value)) {
+                return std::get<int64_t>(value);
+            }
+        }
+    }
+    return {};
+}
+
+std::optional<std::string_view> LocateRequest::getStrIdPart(const std::string_view& idPart) const
+{
+    for (auto const& [key, value] : featureId_) {
+        if (key == idPart) {
+            if (std::holds_alternative<std::string>(value)) {
+                return std::get<std::string>(value);
+            }
+        }
+    }
+    return {};
+}
+
 }  // namespace mapget

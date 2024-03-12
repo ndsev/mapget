@@ -21,6 +21,9 @@ public:
     std::string typeId_;
     KeyValuePairs featureId_;
 
+    std::optional<int64_t> getIntIdPart(std::string_view const& idPart) const;
+    std::optional<std::string_view> getStrIdPart(std::string_view const& idPart) const;
+
     [[nodiscard]] virtual nlohmann::json serialize() const;
 };
 
