@@ -78,7 +78,7 @@ struct TileFeatureLayer::Impl {
         s.container(featureHashIndex_, maxColumnSize);
     }
 
-    explicit Impl(std::shared_ptr<Fields> fields)
+    explicit Impl(std::shared_ptr<simfil::Fields> fields)
         : simfilEnv_(std::move(fields))
     {
     }
@@ -89,7 +89,7 @@ TileFeatureLayer::TileFeatureLayer(
     std::string const& nodeId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    std::shared_ptr<Fields> const& fields
+    std::shared_ptr<simfil::Fields> const& fields
 ) :
     simfil::ModelPool(fields),
     impl_(std::make_unique<Impl>(fields)),

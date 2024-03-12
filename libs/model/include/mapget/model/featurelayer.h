@@ -52,7 +52,7 @@ public:
         std::string const& nodeId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
-        std::shared_ptr<Fields> const& fields
+        std::shared_ptr<simfil::Fields> const& fields
     );
 
     /**
