@@ -34,11 +34,9 @@ jobs:
     - name: Configure
       run: |
         cmake --preset conan-debug \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
             -DMAPGET_ENABLE_TESTING=YES \
-            -DWITH_COVERAGE=YES -GNinja
+            -DWITH_COVERAGE=YES \
+            -GNinja
     - name: Build
       run: |
         cmake --build --preset conan-debug

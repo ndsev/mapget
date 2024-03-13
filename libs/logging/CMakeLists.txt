@@ -19,5 +19,5 @@ target_include_directories(mapget-log
     src)
 
 install(TARGETS mapget-log)
-install(DIRECTORY include/mapget
+install(FILES include/mapget/log.h
   DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
