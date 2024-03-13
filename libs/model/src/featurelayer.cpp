@@ -736,4 +736,25 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
     return *compositionIt;
 }
 
+void TileFeatureLayer::transcode(std::shared_ptr<simfil::Fields> const& newDict)
+{
+    for (auto& attr : impl_->attributes_) {
+        if (auto resolvedName = fieldNames()->resolve(attr.name_)) {
+            attr.name_ = newDict->emplace(*resolvedName);
+        }
+    }
+    for (auto& fid : impl_->featureIds_) {
+        if (auto resolvedName = fieldNames()->resolve(fid.typeId_)) {
+            fid.typeId_ = newDict->emplace(*resolvedName);
+        }
+    }
+    for (auto& rel : impl_->relations_) {
+        if (auto resolvedName = fieldNames()->resolve(rel.name_)) {
+            rel.name_ = newDict->emplace(*resolvedName);
+        }
+    }
+
+    ModelPool::transcode(newDict);
+}
+
 }

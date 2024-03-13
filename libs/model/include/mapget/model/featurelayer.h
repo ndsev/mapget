@@ -196,6 +196,13 @@ public:
      */
     simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
 
+    /**
+     * Change the fields dict of this model to a different one.
+     * Note: This will potentially create new field entries in the newDict,
+     * for field names which were not there before.
+     */
+    void transcode(std::shared_ptr<simfil::Fields> const& newDict) override;
+
 protected:
     /**
      * The FeatureTileColumnId enum provides identifiers for different
