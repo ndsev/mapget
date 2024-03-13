@@ -21,6 +21,8 @@ public:
     std::string typeId_;
     KeyValuePairs featureId_;
 
+    void setFeatureId(KeyValueViewPairs const& kvp);
+
     [[nodiscard]] std::optional<int64_t> getIntIdPart(std::string_view const& idPart) const;
     [[nodiscard]] std::optional<std::string_view> getStrIdPart(std::string_view const& idPart) const;
 

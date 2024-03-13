@@ -83,4 +83,18 @@ std::optional<std::string_view> LocateRequest::getStrIdPart(const std::string_vi
     return {};
 }
 
+void LocateRequest::setFeatureId(const KeyValueViewPairs& kvp)
+{
+    // Convert KeyValueViewPairs to KeyValuePairs
+    featureId_.clear();
+    for (auto const& [k, v] : kvp) {
+        std::visit([this, &k](auto&& vv){
+            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string_view>)
+                featureId_.emplace_back(k, std::string(vv));
+            else
+                featureId_.emplace_back(k, vv);
+        }, v);
+    }
+}
+
 }  // namespace mapget
