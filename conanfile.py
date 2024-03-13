@@ -51,10 +51,11 @@ class MapgetRecipe(ConanFile):
         self.requires("fmt/10.2.1", override=True)
         self.requires("spdlog/[~1]")
         self.requires("bitsery/[~5]")
-        self.requires("cpp-httplib/0.15.3", transitive_headers=True)
-        self.requires("yaml-cpp/0.8.0")
-        self.requires("cli11/2.3.2")
         self.requires("nlohmann_json/3.11.2", transitive_headers=True)
+        if self.options.with_httplib:
+            self.requires("cli11/2.3.2")
+            self.requires("cpp-httplib/0.15.3", transitive_headers=True)
+            self.requires("yaml-cpp/0.8.0")
         if self.options.with_service or self.options.with_httplib:
             self.requires("rocksdb/8.8.1")
         if self.options.with_wheel:
