@@ -37,14 +37,14 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
+            -DMAPGET_ENABLE_TESTING=YES \
             -DWITH_COVERAGE=YES -GNinja
     - name: Build
       run: |
         cmake --build --preset conan-debug
     - name: Run Test
-      working-directory: build/Debug
       run: |
-        ctest --verbose
+        ctest --preset conan-debug -C Debug --verbose --no-test=fail
     - name: Run Gcovr
       run: |
         mkdir coverage
