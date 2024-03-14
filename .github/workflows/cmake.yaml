@@ -87,7 +87,6 @@ jobs:
           cmake --preset conan-release \
                 -DPython3_ROOT_DIR="$pythonLocation" \
                 -DPython3_FIND_FRAMEWORK=LAST \
-                -DHTTPLIB_USE_BROTLI_IF_AVAILABLE=OFF \
                 -DCMAKE_C_COMPILER_LAUNCHER=sccache \
                 -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
                 -GNinja
@@ -105,7 +104,7 @@ jobs:
         run: |
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
           conan install . -s compiler.cppstd=20 -b missing -b editable
-          cmake --preset conan-default "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DMAPGET_ENABLE_TESTING=YES -DMAPGET_BUILD_EXAMPLES=YES
+          cmake --preset conan-default "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DMAPGET_ENABLE_TESTING=YES -DMAPGET_BUILD_EXAMPLES=YES
           cmake --build --preset conan-release
       - name: Deploy
         uses: actions/upload-artifact@v2
