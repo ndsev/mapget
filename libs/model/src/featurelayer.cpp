@@ -55,7 +55,7 @@ struct TileFeatureLayer::Impl {
     }
 
     // Simfil execution Environment for this tile's string pool.
-    simfil::Environment simfilEnv_;
+    std::unique_ptr<simfil::Environment> simfilEnv_;
 
     // Compiled simfil expressions, by hash of expression string
     std::map<std::string, simfil::ExprPtr, std::less<>> simfilExpressions_;
@@ -78,8 +78,8 @@ struct TileFeatureLayer::Impl {
         s.container(featureHashIndex_, maxColumnSize);
     }
 
-    explicit Impl(std::shared_ptr<simfil::Fields> fields)
-        : simfilEnv_(std::move(fields))
+    explicit Impl(std::shared_ptr<simfil::Fields> fieldDict)
+        : simfilEnv_(std::make_unique<simfil::Environment>(std::move(fieldDict)))
     {
     }
 };
@@ -573,7 +573,7 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
 
 simfil::Environment& TileFeatureLayer::evaluationEnvironment()
 {
-    return impl_->simfilEnv_;
+    return *impl_->simfilEnv_;
 }
 
 simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_view& expr)
@@ -587,7 +587,7 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
     std::unique_lock uniqueLock(impl_->expressionCacheLock_);
     auto [newIt, _] = impl_->simfilExpressions_.emplace(
         std::string(expr),
-        simfil::compile(impl_->simfilEnv_, expr, false)
+        simfil::compile(*impl_->simfilEnv_, expr, false)
     );
     return newIt->second;
 }
@@ -595,7 +595,7 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
 void TileFeatureLayer::setPrefix(const KeyValueViewPairs& prefix)
 {
     // The prefix must be set, before any feature is added.
-    if (impl_->features_.size() > 0)
+    if (!impl_->features_.empty())
         throw std::runtime_error("Cannot set feature id prefix after a feature was added.");
 
     // Check that the prefix is compatible with all primary id composites.
@@ -729,15 +729,15 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
     if (typeIt == this->layerInfo_->featureTypes_.end()) {
         throw logRuntimeError(fmt::format("Could not find feature type {}", typeId));
     }
-    auto compositionIt = typeIt->uniqueIdCompositions_.begin();
-    if (compositionIt == typeIt->uniqueIdCompositions_.end()) {
+    if (typeIt->uniqueIdCompositions_.empty()) {
         throw logRuntimeError(fmt::format("No composition for feature type {}!", typeId));
     }
-    return *compositionIt;
+    return typeIt->uniqueIdCompositions_.front();
 }
 
 void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newDict)
 {
+    // Re-map old field IDs to new field IDs
     for (auto& attr : impl_->attributes_) {
         if (auto resolvedName = fieldNames()->resolve(attr.name_)) {
             attr.name_ = newDict->emplace(*resolvedName);
@@ -752,6 +752,13 @@ void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newD
         if (auto resolvedName = fieldNames()->resolve(rel.name_)) {
             rel.name_ = newDict->emplace(*resolvedName);
         }
+    }
+
+    // Reset simfil environment and clear expression cache
+    {
+        std::unique_lock lock(impl_->expressionCacheLock_);
+        impl_->simfilExpressions_.clear();
+        impl_->simfilEnv_ = std::make_unique<simfil::Environment>(newDict);
     }
 
     ModelPool::setFieldNames(newDict);
