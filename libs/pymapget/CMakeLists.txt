@@ -1,4 +1,4 @@
-project(pymapget)
+project(pymapget CXX)
 
 pybind11_add_module(pymapget
   MODULE

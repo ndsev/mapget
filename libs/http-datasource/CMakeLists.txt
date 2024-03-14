@@ -1,4 +1,4 @@
-project(mapget-http-datasource)
+project(mapget-http-datasource CXX)
 
 add_library(mapget-http-datasource STATIC
   include/mapget/http-datasource/datasource-server.h
