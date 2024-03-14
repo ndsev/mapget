@@ -754,7 +754,7 @@ void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newD
         }
     }
 
-    ModelPool::transcode(newDict);
+    ModelPool::setFieldNames(newDict);
 }
 
 }
