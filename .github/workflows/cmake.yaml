@@ -10,8 +10,7 @@ jobs:
   build-manylinux:
     strategy:
       matrix:
-        #python-version: ["3.8", "3.9", "3.10", "3.11"]
-        python-version: ["3.8"]
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
     runs-on: ubuntu-latest
     container: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}:2023.1
     env:
