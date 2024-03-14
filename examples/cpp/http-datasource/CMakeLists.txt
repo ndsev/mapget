@@ -1,4 +1,4 @@
-project(cpp-sample-http-datasource)
+project(cpp-sample-http-datasource CXX)
 
 add_executable(${PROJECT_NAME}
   main.cpp)

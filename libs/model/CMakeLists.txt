@@ -1,4 +1,4 @@
-project(mapget-model)
+project(mapget-model CXX)
 
 add_library(mapget-model STATIC
   include/mapget/model/fields.h

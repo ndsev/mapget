@@ -65,6 +65,9 @@ if (WITH_COVERAGE AND NOT GCOVR_BIN)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-modules")
+if (WITH_COVERAGE)
+  include(CodeCoverage)
+endif()
 
 ##############
 # deps
@@ -76,10 +79,6 @@ if (MAPGET_WITH_WHEEL)
     include(python-wheel)
     set(WHEEL_DEPLOY_DIRECTORY "${MAPGET_DEPLOY_DIR}/wheel")
   endif()
-endif()
-
-if (WITH_COVERAGE)
-  include(CodeCoverage)
 endif()
 
 ##############
