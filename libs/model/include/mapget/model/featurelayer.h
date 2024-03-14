@@ -201,7 +201,7 @@ public:
      * Note: This will potentially create new field entries in the newDict,
      * for field names which were not there before.
      */
-    void transcode(std::shared_ptr<simfil::Fields> const& newDict) override;
+    void setFieldNames(std::shared_ptr<simfil::Fields> const& newDict) override;
 
 protected:
     /**

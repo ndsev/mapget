@@ -736,7 +736,7 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
     return *compositionIt;
 }
 
-void TileFeatureLayer::transcode(std::shared_ptr<simfil::Fields> const& newDict)
+void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newDict)
 {
     for (auto& attr : impl_->attributes_) {
         if (auto resolvedName = fieldNames()->resolve(attr.name_)) {
