@@ -1,4 +1,4 @@
-project(mapget-http-service)
+project(mapget-http-service CXX)
 
 add_library(mapget-http-service STATIC
   include/mapget/http-service/http-service.h

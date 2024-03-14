@@ -1,4 +1,4 @@
-project(mapget-service)
+project(mapget-service CXX)
 
 add_library(mapget-service STATIC
   include/mapget/service/service.h
