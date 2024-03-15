@@ -389,7 +389,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
     auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
     auto hash = hashFeatureId(typeId, fullStrippedFeatureId);
-    impl_->featureHashIndex_.emplace_back(result.addr(), hash);
+    impl_->featureHashIndex_.emplace_back(TileFeatureLayer::Impl::FeatureAddrWithIdHash{result.addr(), hash});
     impl_->featureHashIndexNeedsSorting_ = true;
 
     // Note: Here we rely on the assertion that the root_ collection
