@@ -32,7 +32,7 @@ public:
     struct CachedFieldsProvider;
 
     /** Protocol Version which parsed blobs must be compatible with. */
-    static constexpr Version CurrentProtocolVersion{0, 1, 0};
+    static constexpr Version CurrentProtocolVersion{0, 1, 1};
 
     /** Map to keep track of the highest sent field id per datasource node. */
     using FieldOffsetMap = std::map<std::string, simfil::FieldId>;

@@ -36,11 +36,6 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
                     ],
                     [
                         {
-                            "partId": "areaId",
-                            "description": "String which identifies the map area.",
-                            "datatype": "STR"
-                        },
-                        {
                             "partId": "wayIdU32",
                             "description": "A 32b uinteger.",
                             "datatype": "U32"
@@ -57,11 +52,6 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
                         }
                     ],
                     [
-                        {
-                            "partId": "areaId",
-                            "description": "String which identifies the map area.",
-                            "datatype": "STR"
-                        },
                         {
                             "partId": "wayIdI32",
                             "description": "A 32b integer.",
@@ -94,11 +84,15 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         layerInfo,
         fieldNames);
 
-    // Test creating a feature while tile prefix is not set
-    auto feature0 = tile->newFeature("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
-
-    // Set the tile feature id prefix
+    // Set the tile's feature id prefix.
     tile->setPrefix({{"areaId", "TheBestArea"}});
+
+    // Test creating a feature while tile prefix is not set.
+    auto feature0 = tile->newFeature("Way", {{"wayId", 24}});
+
+    // Setting the tile feature id prefix after a feature was added
+    // must lead to a runtime error.
+    REQUIRE_THROWS(tile->setPrefix({{"areaId", "TheBestArea"}}));
 
     // Create a feature with line geometry
     auto feature1 = tile->newFeature("Way", {{"wayId", 42}});
@@ -122,13 +116,19 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     attr->setDirection(Attribute::Direction::Positive);
     attr->addField("smell", "neutral");
 
-    // Add other features using different ID compositions
-    auto featureForId1 = tile->newFeature(
+    // Add feature ids using secondary ID compositions
+    auto featureForId1 = tile->newFeatureId(
         "Way",
         {{"wayIdU32", 42}, {"wayIdU64", 84}, {"wayIdUUID128", "0123456789abcdef"}});
-    auto featureForId2 = tile->newFeature(
+    auto featureForId2 = tile->newFeatureId(
         "Way",
         {{"wayIdI32", -42}, {"wayIdI64", -84}, {"wayIdUUID128", "0123456789abcdef"}});
+
+    SECTION("firstGeometry")
+    {
+        auto firstGeom = feature1->firstGeometry();
+        REQUIRE(firstGeom->geomType() == GeomType::Line);
+    }
 
     SECTION("toGeoJSON")
     {
@@ -162,7 +162,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     }
 
     SECTION("Create feature ID with negative value in uint") {
-        CHECK_THROWS(tile->newFeature(
+        CHECK_THROWS(tile->newFeatureId(
             "Way",
             {{"wayIdU32", -4},
              {"wayIdU64", -2},
@@ -170,7 +170,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     }
 
     SECTION("Create feature ID with non-16-byte UUID128") {
-        CHECK_THROWS(tile->newFeature(
+        CHECK_THROWS(tile->newFeatureId(
             "Way",
             {{"wayIdU32", 4},
              {"wayIdU64", 2},
@@ -178,7 +178,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     }
 
     SECTION("Create feature ID with no matching composition") {
-        CHECK_THROWS(tile->newFeature(
+        CHECK_THROWS(tile->newFeatureId(
             "Way",
             {{"wayIdI32", -4},
              {"wayIdU64", 2},
@@ -270,9 +270,26 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(readTiles.size() == 3);
         REQUIRE(readTiles[0]->fieldNames() == readTiles[1]->fieldNames());
         REQUIRE(readTiles[1]->fieldNames() == readTiles[2]->fieldNames());
-        REQUIRE(readTiles[0]->numRoots() == 4);
-        REQUIRE(readTiles[1]->numRoots() == 4);
-        REQUIRE(readTiles[2]->numRoots() == 5);
+        REQUIRE(readTiles[0]->numRoots() == 2);
+        REQUIRE(readTiles[1]->numRoots() == 2);
+        REQUIRE(readTiles[2]->numRoots() == 3);
+    }
+
+    SECTION("Find")
+    {
+        auto foundFeature01 = tile->find("Way", KeyValueViewPairs{{"areaId", "TheBestArea"}, {"wayId", 24}});
+        REQUIRE(foundFeature01);
+        REQUIRE(foundFeature01->addr() == feature0->addr());
+
+        auto foundFeature11 = tile->find("Way", KeyValueViewPairs{{"areaId", "TheBestArea"}, {"wayId", 42}});
+        REQUIRE(foundFeature11);
+        REQUIRE(foundFeature11->addr() == feature1->addr());
+
+        auto foundFeature00 = tile->find("Way", KeyValueViewPairs{{"areaId", "MediocreArea"}, {"wayId", 24}});
+        REQUIRE(!foundFeature00);
+
+        auto foundFeature10 = tile->find("Way", KeyValueViewPairs{{"wayId", 42}});
+        REQUIRE(!foundFeature10);
     }
 }
 

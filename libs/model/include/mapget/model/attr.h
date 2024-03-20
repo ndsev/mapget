@@ -13,6 +13,7 @@ namespace mapget
 class Attribute : public simfil::ProceduralObject<2, Attribute>
 {
     friend class TileFeatureLayer;
+    template<typename> friend struct simfil::shared_model_ptr;
 
 public:
     /**
@@ -56,16 +57,19 @@ protected:
         template<typename S>
         void serialize(S& s) {
             s.value1b(direction_);
-            s.value4b(validity_.value_);
+            s.object(validity_);
             s.value4b(fields_);
             s.value2b(name_);
         }
     };
 
-    Attribute(Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+    Attribute(Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+    Attribute() = default;
 
-    /** Reference to the actual stored data for the attribute. */
-    Data& data_;
+    /**
+     * Pointer to the actual data stored for the attribute.
+     */
+    Data* data_ = nullptr;
 };
 
 }

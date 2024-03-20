@@ -282,7 +282,7 @@ struct Service::Impl : public Service::Controller
             if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
                 // Unique node IDs are required for the field offsets.
                 throw logRuntimeError(
-                    stx::format("Data source with node ID '{}' already registered!",
+                    fmt::format("Data source with node ID '{}' already registered!",
                                 dataSource->info().nodeId_));
             }
         }
@@ -402,6 +402,16 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
     return dataSourcesAvailable;
 }
 
+std::vector<LocateResponse> Service::locate(LocateRequest const& req)
+{
+    std::vector<LocateResponse> results;
+    for (auto const& [ds, info] : impl_->dataSourceInfo_)
+        if (info.mapId_ == req.mapId_)
+            if (auto location = ds->locate(req))
+                results.emplace_back(*location);
+    return results;
+}
+
 void Service::abort(const LayerTilesRequest::Ptr& r)
 {
     impl_->abortRequest(r);
@@ -421,8 +431,7 @@ bool Service::hasLayer(std::string const& mapId, std::string const& layerId)
 {
     std::unique_lock lock(impl_->jobsMutex_);
     // Check that one of the data sources can fulfill the request.
-    for (auto& dataSourceAndInfo : impl_->dataSourceInfo_) {
-        auto& info = dataSourceAndInfo.second;
+    for (auto& [ds, info] : impl_->dataSourceInfo_) {
         if (mapId != info.mapId_)
             continue;
         if (info.layers_.find(layerId) != info.layers_.end()) {

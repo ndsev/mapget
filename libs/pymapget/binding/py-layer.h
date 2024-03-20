@@ -95,14 +95,14 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "set_prefix",
-            [](TileFeatureLayer& self, KeyValuePairs const& v) {self.setPrefix(v); },
+            [](TileFeatureLayer& self, KeyValueViewPairs const& v) {self.setPrefix(v); },
             py::arg("prefix"),
             R"pbdoc(
             Set common id prefix for all features in this layer.
         )pbdoc")
         .def(
             "new_feature",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairs const& idParts)
+            [](TileFeatureLayer& self, std::string const& typeId, KeyValueViewPairs const& idParts)
             { return BoundFeature(self.newFeature(typeId, idParts)); },
             py::arg("type_id"),
             py::arg("feature_id_parts"),
@@ -113,7 +113,7 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_feature_id",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairs const& idParts)
+            [](TileFeatureLayer& self, std::string const& typeId, KeyValueViewPairs const& idParts)
             { return BoundFeatureId(self.newFeatureId(typeId, idParts)); },
             py::arg("type_id"),
             py::arg("feature_id_parts"),

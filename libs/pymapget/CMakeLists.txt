@@ -36,6 +36,7 @@ if (MSVC)
 else()
   set(DEPLOY_FILES "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
 endif ()
+list(APPEND DEPLOY_FILES $<TARGET_FILE:simfil::simfil>)
 
 add_wheel(pymapget
   NAME mapget

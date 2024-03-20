@@ -56,6 +56,18 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             g->append({42., 12});
             ++dataSourceRequestCount;
         });
+    ds.onLocateRequest(
+        [&](mapget::LocateRequest const& request) -> std::optional<mapget::LocateResponse>
+        {
+            REQUIRE(request.mapId_ == "Tropico");
+            REQUIRE(request.typeId_ == "Way");
+            REQUIRE(request.featureId_ == mapget::KeyValuePairs{{"wayId", 0}});
+
+            mapget::LocateResponse response(request);
+            response.tileKey_.layerId_ = "WayLayer";
+            response.tileKey_.tileId_.value_ = 1;
+            return response;
+        });
 
     // Launch the DataSource on a separate thread.
     ds.go();
@@ -99,6 +111,30 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         reader.read(tileResponse->body);
 
         REQUIRE(receivedTileCount == 1);
+    }
+
+    SECTION("Fetch /locate")
+    {
+        // Initialize an httplib client.
+        httplib::Client cli("localhost", ds.port());
+
+        // Send a POST locate request.
+        auto response = cli.Post("/locate", R"({
+            "mapId": "Tropico",
+            "typeId": "Way",
+            "featureId": ["wayId", 0]
+        })", "application/json");
+
+        // Check that the response is OK.
+        REQUIRE(response != nullptr);
+        REQUIRE(response->status == 200);
+
+        // Check the response body for expected content.
+        mapget::LocateResponse responseParsed(nlohmann::json::parse(response->body));
+        REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
+        REQUIRE(responseParsed.tileKey_.layer_ == mapget::LayerType::Features);
+        REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
+        REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
     }
 
     SECTION("Query mapget HTTP service")
@@ -147,6 +183,35 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             client.request(unknownLayerRequest)->wait();
             REQUIRE(unknownLayerRequest->getStatus() == mapget::RequestStatus::NoDataSource);
             REQUIRE(receivedTileCount == 0);
+        }
+
+        SECTION("Run /locate through service")
+        {
+            httplib::Client client("localhost", service.port());
+
+            // Send a POST locate request.
+            auto response = client.Post("/locate", R"({
+                "requests": [{
+                    "mapId": "Tropico",
+                    "typeId": "Way",
+                    "featureId": ["wayId", 0]
+                }]
+            })", "application/json");
+
+            // Check that the response is OK.
+            REQUIRE(response != nullptr);
+            REQUIRE(response->status == 200);
+
+            // Check the response body for expected content.
+            auto responseJsonLists = nlohmann::json::parse(response->body)["responses"];
+            REQUIRE(responseJsonLists.size() == 1);
+            auto responseJsonList = responseJsonLists[0];
+            REQUIRE(responseJsonList.size() == 1);
+            mapget::LocateResponse responseParsed(responseJsonList[0]);
+            REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
+            REQUIRE(responseParsed.tileKey_.layer_ == mapget::LayerType::Features);
+            REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
+            REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
         }
 
         service.stop();

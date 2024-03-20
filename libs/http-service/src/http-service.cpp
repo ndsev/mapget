@@ -50,7 +50,7 @@ struct HttpService::Impl
                 responseType_ = binaryMimeType;
                 return;
             }
-            throw logRuntimeError(stx::format("Unknown Accept-Header value {}", responseType_));
+            throw logRuntimeError(fmt::format("Unknown Accept-Header value {}", responseType_));
         }
 
         void addResult(TileFeatureLayer::Ptr const& result)
@@ -211,6 +211,26 @@ struct HttpService::Impl
         oss << "</body></html>";
         res.set_content(oss.str(), "text/html");
     }
+
+    void handleLocateRequest(const httplib::Request& req, httplib::Response& res)
+    {
+        // Parse the JSON request.
+        nlohmann::json j = nlohmann::json::parse(req.body);
+        auto requestsJson = j["requests"];
+        auto allResponsesJson = nlohmann::json::array();
+
+        for (auto const& locateReqJson : requestsJson) {
+            LocateRequest locateReq{locateReqJson};
+            auto responsesJson = nlohmann::json::array();
+            for (auto const& resp : self_.locate(locateReq))
+                responsesJson.emplace_back(resp.serialize());
+            allResponsesJson.emplace_back(responsesJson);
+        }
+
+        res.set_content(
+            nlohmann::json::object({{"responses", allResponsesJson}}).dump(),
+            "application/json");
+    }
 };
 
 HttpService::HttpService(Cache::Ptr cache) : Service(std::move(cache)), impl_(std::make_unique<Impl>(*this))
@@ -239,6 +259,13 @@ void HttpService::setup(httplib::Server& server)
         [this](const httplib::Request& req, httplib::Response& res)
         {
             impl_->handleStatusRequest(req, res);
+        });
+
+    server.Post(
+        "/locate",
+        [this](const httplib::Request& req, httplib::Response& res)
+        {
+            impl_->handleLocateRequest(req, res);
         });
 }
 

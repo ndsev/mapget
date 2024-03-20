@@ -11,6 +11,7 @@ add_library(mapget-model STATIC
   include/mapget/model/tileid.h
   include/mapget/model/featureid.h
   include/mapget/model/stream.h
+  include/mapget/model/relation.h
 
   src/fields.cpp
   src/layer.cpp
@@ -21,7 +22,8 @@ add_library(mapget-model STATIC
   src/attrlayer.cpp
   src/tileid.cpp
   src/featureid.cpp
-  src/stream.cpp)
+  src/stream.cpp
+  src/relation.cpp)
 
 target_include_directories(mapget-model
   PUBLIC
@@ -33,7 +35,6 @@ target_link_libraries(mapget-model
   PUBLIC
     mapget-log
     sfl::sfl
-    stx::stx
     Bitsery::bitsery
     simfil::simfil
     nlohmann_json::nlohmann_json)

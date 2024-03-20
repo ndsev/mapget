@@ -25,10 +25,14 @@ struct Fields : public simfil::Fields
         IdStr = NextStaticId,
         TypeIdStr,
         LayerStr,
-        ChildrenStr,
+        RelationsStr,
         DirectionStr,
         ValidityStr,
         PropertiesStr,
+        NameStr,
+        TargetStr,
+        SourceValidityStr,
+        TargetValidityStr
     };
 
     explicit Fields(const std::string_view& nodeId);

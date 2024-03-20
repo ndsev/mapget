@@ -48,10 +48,10 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     if (fs::path(cachePath).is_relative()) {
         absoluteCachePath = fs::current_path() / cachePath;
     }
-    log().debug(stx::format("Initializing RocksDB cache under: {}", absoluteCachePath.string()));
+    log().debug(fmt::format("Initializing RocksDB cache under: {}", absoluteCachePath.string()));
 
     if (!fs::exists(absoluteCachePath.parent_path())) {
-        throw logRuntimeError(stx::format(
+        throw logRuntimeError(fmt::format(
             "Error initializing rocksDB cache: parent directory {} does not exist!",
             absoluteCachePath.parent_path().string()));
     }
@@ -69,7 +69,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
             "RocksDB cache is corrupted, restart with '--clear-cache 1'!");
     }
     else if (!status.ok()) {
-        throw logRuntimeError(stx::format(
+        throw logRuntimeError(fmt::format(
             "Error opening database at {}: {}",
             absoluteCachePath.string(),
             status.ToString()));
@@ -113,7 +113,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
         key_count_ = max_key_count_;
     }
 
-    log().debug(stx::format("Initialized RocksDB cache with {} existing tile entries.",key_count_));
+    log().debug(fmt::format("Initialized RocksDB cache with {} existing tile entries.",key_count_));
 }
 
 RocksDBCache::~RocksDBCache()
@@ -131,7 +131,7 @@ std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
         db_->Get(read_options_, column_family_handles_[COL_TILES], k.toString(), &read_value);
 
     if (status.ok()) {
-        log().trace(stx::format("Key: {} | Layer size: {}", k.toString(), read_value.size()));
+        log().trace(fmt::format("Key: {} | Layer size: {}", k.toString(), read_value.size()));
         log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
         return read_value;
     }
@@ -139,7 +139,7 @@ std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
         return {};
     }
 
-    throw logRuntimeError(stx::format("Error reading from database: {}", status.ToString()));
+    throw logRuntimeError(fmt::format("Error reading from database: {}", status.ToString()));
 }
 
 void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
@@ -172,7 +172,7 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
     auto status = db_->Write(write_options_, &newTileBatch);
 
     if (!status.ok()) {
-        throw logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
+        throw logRuntimeError(fmt::format("Error writing to database: {}", status.ToString()));
     }
 
     ++key_count_;
@@ -195,7 +195,7 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
 
         if (!purgeStatus.ok()) {
             throw logRuntimeError(
-                stx::format("Could not delete oldest cache entry: {}", purgeStatus.ToString()));
+                fmt::format("Could not delete oldest cache entry: {}", purgeStatus.ToString()));
         }
         --key_count_;
     }
@@ -208,14 +208,14 @@ std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourc
         db_->Get(read_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, &read_value);
 
     if (status.ok()) {
-        log().trace(stx::format("Node: {} | Field dict size: {}", sourceNodeId, read_value.size()));
+        log().trace(fmt::format("Node: {} | Field dict size: {}", sourceNodeId, read_value.size()));
         return read_value;
     }
     else if (status.IsNotFound()) {
         return {};
     }
 
-    throw logRuntimeError(stx::format("Error reading from database: {}", status.ToString()));
+    throw logRuntimeError(fmt::format("Error reading from database: {}", status.ToString()));
 }
 
 void RocksDBCache::putFields(std::string_view const& sourceNodeId, std::string const& v)
@@ -224,7 +224,7 @@ void RocksDBCache::putFields(std::string_view const& sourceNodeId, std::string c
         db_->Put(write_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, v);
 
     if (!status.ok()) {
-        throw logRuntimeError(stx::format("Error writing to database: {}", status.ToString()));
+        throw logRuntimeError(fmt::format("Error writing to database: {}", status.ToString()));
     }
 }
 

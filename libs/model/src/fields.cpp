@@ -11,10 +11,14 @@ Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(IdStr, "id");
     addStaticKey(TypeIdStr, "typeId");
     addStaticKey(LayerStr, "layer");
-    addStaticKey(ChildrenStr, "children");
+    addStaticKey(RelationsStr, "relations");
     addStaticKey(DirectionStr, "direction");
     addStaticKey(ValidityStr, "validity");
     addStaticKey(PropertiesStr, "properties");
+    addStaticKey(NameStr, "name");
+    addStaticKey(TargetStr, "target");
+    addStaticKey(SourceValidityStr, "sourceValidity");
+    addStaticKey(TargetValidityStr, "targetValidity");
 }
 
 void Fields::write(std::ostream& outputStream, simfil::FieldId offset) const

@@ -20,4 +20,9 @@ simfil::FieldId DataSource::cachedFieldsOffset(const std::string& nodeId, Cache:
     return cache->cachedFieldsOffset(nodeId);
 }
 
+std::optional<LocateResponse> DataSource::locate(const LocateRequest& req)
+{
+    return {};
+}
+
 }

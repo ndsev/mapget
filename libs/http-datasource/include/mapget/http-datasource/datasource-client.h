@@ -30,6 +30,7 @@ public:
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    std::optional<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:
     // DataSourceInfo is fetched in the constructor
@@ -64,6 +65,7 @@ public:
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    std::optional<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:
     std::unique_ptr<RemoteDataSource> remoteSource_;

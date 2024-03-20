@@ -76,6 +76,10 @@ A feature consists of a unique ID, some attributes, and some geometry. *mapget*
 also allows features to have a list of child feature IDs. **Note:** Feature geometry
 in *mapget* may always be 3D.
 
+* TODO: Document JSON representation.
+* TODO: Document Feature ID schemes.
+* TODO: Document Geometry Types.
+
 ## Map Tiles
 
 For performance reasons, *mapget* features are always served in a set covering
@@ -174,7 +178,7 @@ This example shows how you can write a minimal networked data source service.
 This example shows, how you can write a data source service in Python.
 You can simply `pip install mapget` to get access to the mapget Python API.
 
-## Retrieval Interface
+## REST API
 
 The `mapget` library provides simple C++ and HTTP/REST interfaces, which may be
 used to satisfy the following use-cases:
@@ -188,46 +192,14 @@ used to satisfy the following use-cases:
 The HTTP interface implemented in `mapget::HttpService` is a view on the C++ interface,
 which is implemented in `mapget::Service`. Detailed endpoint descriptions:
 
-```c++
-// Describe the connected Data Sources
-+ GET /sources():  list<DataSourceInfo>
+| Endpoint   | Method | Description                                                                                                       | Input                                                                                                                                               | Output                                                                                                                                                                            |
+|------------|--------|-------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `/sources` | GET    | Describe the connected Data Sources                                                                               | None                                                                                                                                                | `application/json`: List of DataSourceInfo objects.                                                                                                                               |
+| `/tiles`   | POST   | Get streamed features, according to hard constraints. Accepts encoding types `text/jsonl` or `application/binary` | List of objects containing `mapId`, `layerId`, `tileIds`, and optional `maxKnownFieldIds`.                                                          | `text/jsonl` or `application/binary`                                                                                                                                              |
+| `/status`  | GET    | Server status page                                                                                                | None                                                                                                                                                | text/html                                                                                                                                                                         |
+| `/locate`  | POST   | Obtain a list of tile-layer combinations providing a feature that satisfies given ID field constraints.           | `application/json`: List of external references, where each is a Request object with `mapId`, `typeId` and `featureId` (list of external ID parts). | `application/json`: List of lists of Resolution objects, where each corresponds to the Request object index. Each Resolution object includes `tileId`, `typeId`, and `featureId`. |
 
-// Get streamed features, according to hard constraints.
-// With Accept-Encoding text/jsonl or application/binary
-+ POST /tiles(list<{
-    mapId: string,
-    layerId: string,
-    tileIds: list<TileId>,
-       maxKnownFieldIds*
-  }>, filter: optional<string>):
-  bytes<TileLayerStream>
-
-// Server status page
-+ GET /status(): text/html
-
-// Obtain a list of tile-layer combinations which provide a
-// feature that satisfies the given ID field constraints.
-// TODO: Not implemented
-+ GET /locate(typeId, map<string, Scalar>)
-  list<pair<TileId, LayerId>>
-
-// Instruct the cache to *try* to fill itself with map data
-// according to the provided constraints. No guarantees are
-// made as to the timeliness or completeness of this task.
-// TODO: Not implemented
-+ POST /populate(
-    spatialConstraint*,
-    {mapId*, layerId*, featureType*, zoomLevel*}) 
-
-// Write GeoJSON features for a tile back to a map data source
-// which has supportedOperations&WRITE.
-// TODO: Not implemented
-+ POST /tile(
-    mapId: string,
-    layerId: string,
-    tileId: TileId,
-    features: list<object>): void
-```
+### Curl Call Example
 
 For example, the following curl call could be used to stream GeoJSON feature objects
 from the `MyMap` data source defined previously:
@@ -247,6 +219,8 @@ curl -X POST \
     ]
 }' "http://localhost:8080/tiles"
 ```
+
+### C++ Call Example
 
 If we use `"Accept: application/binary"` instead, we get a binary stream of
 tile data which we can also parse in C++, Python or JS. Here is an example in C++, using
@@ -276,6 +250,25 @@ void main(int argc, char const *argv[])
 ```
 
 Keep in mind, that you can also run a `mapget` service without any RPCs in your application. Check out [`examples/cpp/local-datasource`](examples/cpp/local-datasource/main.cpp) on how to do that.
+
+### About `locate`
+
+The `/locate` endpoint allows clients to obtain a list of tile-layer combinations that provide a feature satisfying given ID field constraints. This is crucial for applications needing to find specific data points within the massive datasets typically associated with map services. The endpoint uses a POST method due to the complexity and length of the queries, which involve resolving external references to data.
+
+**Details:**
+
+- **Input:** The input is a list of requests, each corresponding to an external reference that needs to be resolved. Each request object includes:
+    - `typeId`: Specifies the type of feature to locate.
+    - `featureId`: An array representing the external ID parts, where each part consists of a field name and value. This array is used to identify the feature uniquely. The used id scheme may be a secondary scheme.
+
+- **Output:** The output is a nested list structure where each outer list corresponds to an input request object. Each of these lists contains resolution objects that provide details about where the requested feature can be found within the map data. Each resolution object includes:
+    - `tileId`: The key of the map tile containing the feature.
+    - `typeId`: The type of feature found, which should match the `typeId` specified in the request.
+    - `featureId`: An array of ID parts similar to the input but typically using the primary feature ID scheme of the data source.
+
+This design allows clients to batch queries for multiple features in a single request, improving efficiency and reducing the number of required HTTP requests. It also supports the use of different ID schemes, accommodating scenarios where the request and response might use different identifiers for the same data due to varying external reference standards.
+
+Note, that a locate resolution must be provided by a datasource for the specified map, which implements the `onLocateRequest` callback.
 
 ### erdblick-mapget-datasource communication pattern
 

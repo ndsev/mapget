@@ -1,7 +1,7 @@
 #include "cache.h"
 #include "mapget/log.h"
 
-#include "stx/format.h"
+#include "fmt/format.h"
 
 namespace mapget
 {
@@ -71,7 +71,7 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, Data
     TileLayerStream::Reader tileReader(
         [&dataSource, &tileKey](auto&& mapId, auto&& layerId){
             if (dataSource.mapId_ != mapId) {
-                throw logRuntimeError(stx::format(
+                throw logRuntimeError(fmt::format(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
                     mapId,
                     tileKey.tileId_.value_,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cache.h"
+#include "locate.h"
 
 namespace mapget
 {
@@ -33,6 +34,14 @@ public:
      *  TileLayer::setInfo() may be used.
      */
     virtual void fill(TileFeatureLayer::Ptr const& featureTile) = 0;
+
+    /**
+     * Obtain a map tile key, where the feature with the specified ID may be found.
+     * The implementation is completely datasource-specific. Note, that the returned
+     * resulting LocateResponse may have resolved to a different typeId and featureId
+     * than the requested one.
+     */
+    virtual std::optional<LocateResponse> locate(LocateRequest const& req);
 
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
     virtual TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);

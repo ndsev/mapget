@@ -8,6 +8,9 @@
 #include "simfil/model/bitsery-traits.h"
 
 #include <istream>
+#include <ranges>
+#include <string_view>
+#include <charconv>
 
 #include "nlohmann/json.hpp"
 
@@ -16,13 +19,19 @@ namespace mapget
 
 MapTileKey::MapTileKey(const std::string& str)
 {
-    auto parts = stx::split(str, ":", false);
-    if (parts.size() < 4)
-        throw logRuntimeError(stx::format("Invalid cache tile id: {}", str));
-    layer_ = nlohmann::json(parts[0]).get<LayerType>();
-    mapId_ = parts[1];
-    layerId_ = parts[2];
-    tileId_ = TileId(std::stoull(str, nullptr, 16));
+    // This will get simpler with C++ 23. Then we can just use ranges::to<std::vector>,
+    // and also the verbose conversion from a char range to a string_view
+    // will not be necessary anymore.
+    using namespace std::ranges;
+    auto parts = str | views::split(':');
+    auto partsVec = std::vector<decltype(*parts.begin())>(parts.begin(), parts.end());
+
+    if (partsVec.size() < 4)
+        throw logRuntimeError(fmt::format("Invalid cache tile id: {}", str));
+    layer_ = nlohmann::json(std::string_view(&*partsVec[1].begin(), distance(partsVec[1]))).get<LayerType>();
+    mapId_ = std::string_view(&*partsVec[1].begin(), distance(partsVec[1]));
+    layerId_ = std::string_view(&*partsVec[2].begin(), distance(partsVec[2]));
+    std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
 }
 
 MapTileKey::MapTileKey(const TileLayer& data)
@@ -35,7 +44,7 @@ MapTileKey::MapTileKey(const TileLayer& data)
 
 std::string MapTileKey::toString() const
 {
-    return stx::format(
+    return fmt::format(
         "{}:{}:{}:{:0x}",
         nlohmann::json(layer_).get<std::string>(),
         mapId_,
@@ -80,7 +89,7 @@ TileLayer::TileLayer(
 
     s.object(mapVersion_);
     if (!mapVersion_.isCompatible(layerInfo_->version_)) {
-        throw logRuntimeError(stx::format(
+        throw logRuntimeError(fmt::format(
             "Read map layer '{}' version {} "
             "is incompatible with present version {}.",
             layerName,

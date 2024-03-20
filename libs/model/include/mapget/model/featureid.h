@@ -2,6 +2,7 @@
 
 #include "simfil/model/nodes.h"
 #include <functional>
+#include "sfl/small_vector.hpp"
 
 namespace mapget
 {
@@ -19,14 +20,29 @@ using Geometry = simfil::Geometry;
 using GeomType = simfil::Geometry::GeomType;
 
 /**
+ * The KeyValuePairsView type is a vector of pairs, where each pair
+ * consists of a string_view key and a variant value that can be
+ * either an int64_t or a string_view. It is used as the interface-
+ * type for feature id parts. By using sfl::small_vector instead of
+ * std::vector, it is kept on the stack.
+ */
+using KeyValueViewPairs = sfl::small_vector<std::pair<
+    std::string_view,
+    std::variant<int64_t, std::string_view>>, 16>;
+using KeyValuePairs = sfl::small_vector<std::pair<
+    std::string,
+    std::variant<int64_t, std::string>>, 16>;
+
+/**
  * Unique feature ID
  */
-class FeatureId : protected simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class Feature;
+    friend class Relation;
     friend class bitsery::Access;
-    friend ModelNode::Ptr;
+    template<typename> friend struct simfil::shared_model_ptr;
 
 public:
     /** Convert the FeatureId to a string like `<type-id>.<part-value-0>...<part-value-n>` */
@@ -34,6 +50,9 @@ public:
 
     /** Get the feature ID's type id. */
     [[nodiscard]] std::string_view typeId() const;
+
+    /** Get all id-part key-value-pairs (including the common prefix). */
+    [[nodiscard]] KeyValueViewPairs keyValuePairs() const;
 
 protected:
     /**
@@ -56,13 +75,14 @@ protected:
         void serialize(S& s) {
             s.value1b(useCommonTilePrefix_);
             s.value2b(typeId_);
-            s.value4b(idParts_.value_);
+            s.object(idParts_);
         }
     };
 
     FeatureId(Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+    FeatureId() = default;
 
-    Data& data_;
+    Data* data_ = nullptr;
 
     // Optional because resolve must be called, in
     // the constructor body.

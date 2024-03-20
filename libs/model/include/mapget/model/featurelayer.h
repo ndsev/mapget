@@ -9,18 +9,10 @@
 #include "layer.h"
 #include "feature.h"
 #include "attrlayer.h"
+#include "relation.h"
 
 namespace mapget
 {
-
-/**
- * The KeyValuePairs type is a vector of pairs, where each pair
- * consists of a string_view key and a variant value that can be
- * either an int64_t or a string_view.
- */
-using KeyValuePairs = std::vector<std::pair<
-    std::string_view,
-    std::variant<int64_t, std::string_view>>>;
 
 /**
  * Callback type for a function which returns a field name cache instance
@@ -37,6 +29,7 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
 {
     friend class Feature;
     friend class FeatureId;
+    friend class Relation;
 
 public:
     /**
@@ -59,7 +52,7 @@ public:
         std::string const& nodeId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
-        std::shared_ptr<Fields> const& fields
+        std::shared_ptr<simfil::Fields> const& fields
     );
 
     /**
@@ -78,8 +71,9 @@ public:
 
     /**
      * Set common id prefix for all features in this layer.
+     * Note: The prefix MUST be set before any feature is added to the tile.
      */
-    void setPrefix(KeyValuePairs const& prefix);
+    void setPrefix(KeyValueViewPairs const& prefix);
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer() override;
@@ -95,8 +89,7 @@ public:
      * prefix. If empty, an error will be thrown.
      */
     model_ptr<Feature> newFeature(
-        std::string_view const& typeId,
-        KeyValuePairs const& featureIdParts);
+        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
 
     /**
      * Create a new feature id. Use this function to create a reference to another
@@ -105,8 +98,16 @@ public:
      * different tile.
      */
     model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId,
-        KeyValuePairs const& featureIdParts);
+        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
+
+    /**
+     * Create a new relation. Use this function to create a named reference to another
+     * feature, which may also have optional source/target validity geometry.
+     * Relations must be stored in the feature's special relations-list.
+     */
+    model_ptr<Relation> newRelation(
+        std::string_view const& name,
+        model_ptr<FeatureId> const& target);
 
     /**
      * Validate that a unique id composition exists that matches this feature id,
@@ -114,12 +115,12 @@ public:
      * The order of values in KeyValuePairs must be the same as in the composition!
      * @param typeId Feature type id, throws error if the type was not registered.
      * @param featureIdParts Uniquely identifying information for the feature.
-     * @param includeTilePrefix True if the id should be evaluated with this tile's prefix prepended.
+     * @param validateForNewFeature True if the id should be evaluated with this tile's prefix prepended.
      */
     bool validFeatureId(
         const std::string_view& typeId,
-        KeyValuePairs const& featureIdParts,
-        bool includeTilePrefix);
+        KeyValueViewPairs const& featureIdParts,
+        bool validateForNewFeature);
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
@@ -167,19 +168,40 @@ public:
     Iterator end() const;
 
     /** (De-)Serialization */
-   void write(std::ostream& outputStream) override;
+    void write(std::ostream& outputStream) override;
 
-   /** Convert to GeoJSON geometry collection. */
-   nlohmann::json toGeoJson() const;
+    /** Convert to GeoJSON geometry collection. */
+    nlohmann::json toGeoJson() const;
 
-   /** Access number of stored features */
-   size_t size() const;
+    /** Access number of stored features */
+    size_t size() const;
 
-   /** Access feature at index i */
-   model_ptr<Feature> at(size_t i) const;
+    /** Access feature at index i */
+    model_ptr<Feature> at(size_t i) const;
 
-   /** Shared pointer type */
-   using Ptr = std::shared_ptr<TileFeatureLayer>;
+    /** Access feature through its id. */
+    model_ptr<Feature> find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
+    model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
+
+    /** Shared pointer type */
+    using Ptr = std::shared_ptr<TileFeatureLayer>;
+
+    /**
+     * Get this pool's simfil evaluation environment.
+     */
+    simfil::Environment& evaluationEnvironment();
+
+    /**
+     * Get a potentially cached compiled simfil expression for a simfil string.
+     */
+    simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
+
+    /**
+     * Change the fields dict of this model to a different one.
+     * Note: This will potentially create new field entries in the newDict,
+     * for field names which were not there before.
+     */
+    void setFieldNames(std::shared_ptr<simfil::Fields> const& newDict) override;
 
 protected:
     /**
@@ -193,14 +215,17 @@ protected:
         Attributes,
         AttributeLayers,
         AttributeLayerLists,
-        Icons
+        Relations,
     };
 
     /**
      * The featureIdPrefix function returns common ID parts,
      * which are shared by all features in this layer.
      */
-    std::optional<model_ptr<Object>> featureIdPrefix();
+    model_ptr<Object> featureIdPrefix();
+
+    /** Get the primary id composition for the given feature type. */
+    std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
 
     /**
      * Create a new attribute layer collection.
@@ -215,21 +240,12 @@ protected:
     model_ptr<Attribute> resolveAttribute(simfil::ModelNode const& n) const;
     model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
     model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
+    model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
 
     /**
      * Generic node resolution overload.
      */
     void resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
-
-    /**
-     * Get this pool's simfil evaluation environment.
-     */
-    simfil::Environment& evaluationEnvironment();
-
-    /**
-     * Get a potentially cached compiled simfil expression for a simfil string.
-     */
-    simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
