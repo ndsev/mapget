@@ -1,6 +1,5 @@
 #include "stream.h"
 #include "mapget/log.h"
-#include "stx/format.h"
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>

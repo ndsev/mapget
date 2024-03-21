@@ -8,7 +8,6 @@
 #include "mapget/http-service/cli.h"
 #include "mapget/log.h"
 #include "mapget/service/rocksdbcache.h"
-#include "stx/format.h"
 
 using namespace mapget;
 
