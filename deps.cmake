@@ -7,31 +7,33 @@ else()
 endif()
 
 if (MAPGET_CONAN)
-  find_package(spdlog        REQUIRED)
-  find_package(Bitsery       REQUIRED)
-  find_package(simfil        REQUIRED)
-  find_package(nlohmann_json REQUIRED)
+  find_package(spdlog        CONFIG REQUIRED)
+  find_package(Bitsery       CONFIG REQUIRED)
+  find_package(simfil        CONFIG REQUIRED)
+  find_package(nlohmann_json CONFIG REQUIRED)
   if (MAPGET_WITH_HTTPLIB)
-    find_package(httplib       REQUIRED)
-    find_package(yaml-cpp      REQUIRED)
-    find_package(CLI11         REQUIRED)
+    find_package(httplib     CONFIG REQUIRED)
+    find_package(yaml-cpp    CONFIG REQUIRED)
+    find_package(CLI11       CONFIG REQUIRED)
   endif()
   if (MAPGET_WITH_WHEEL)
-    find_package(pybind11      REQUIRED)
+    find_package(pybind11    CONFIG REQUIRED)
   endif()
   if (WANTS_ROCKSDB)
-    find_package(RocksDB       REQUIRED)
+    find_package(RocksDB     CONFIG REQUIRED)
   endif()
 else()
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
     GIT_TAG        "v1.x"
     GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(spdlog)
 
   FetchContent_Declare(bitsery
     GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
     GIT_TAG        "master"
     GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(bitsery)
 
   FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
@@ -46,8 +48,7 @@ else()
   FetchContent_Declare(cli11
     GIT_REPOSITORY "https://github.com/CLIUtils/CLI11"
     GIT_TAG        v2.3.2
-    GIT_SHALLOW    ON
-    FIND_PACKAGE_ARGS)
+    GIT_SHALLOW    ON)
 
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
     FetchContent_Declare(pybind11
@@ -79,8 +80,6 @@ else()
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(simfil)
   endif()
-
-  FetchContent_MakeAvailable(spdlog bitsery tiny-process-library stx)
 
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11)
