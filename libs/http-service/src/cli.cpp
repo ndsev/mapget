@@ -2,7 +2,6 @@
 #include "http-client.h"
 #include "http-service.h"
 #include "mapget/log.h"
-#include "stx/format.h"
 
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/service/rocksdbcache.h"

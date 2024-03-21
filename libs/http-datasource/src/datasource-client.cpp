@@ -1,7 +1,6 @@
 #include "datasource-client.h"
 #include "process.hpp"
 #include "mapget/log.h"
-#include "stx/format.h"
 
 #include <chrono>
 #include <regex>

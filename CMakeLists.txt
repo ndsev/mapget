@@ -4,12 +4,13 @@ cmake_policy(SET CMP0117 NEW)
 
 project(mapget CXX)
 
+set(MAPGET_VERSION 2024.3)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
 include(GNUInstallDirs)
-
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set(MAPGET_WITH_WHEEL ON CACHE BOOL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
@@ -22,10 +23,6 @@ endif()
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
 option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
-
-project(mapget)
-
-set(MAPGET_VERSION 2024.3)
 
 set(Python3_FIND_STRATEGY LOCATION)
 

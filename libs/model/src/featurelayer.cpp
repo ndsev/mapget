@@ -12,7 +12,6 @@
 #include <bitsery/traits/string.h>
 
 #include "simfil/model/bitsery-traits.h"
-#include "stx/format.h"
 
 namespace mapget
 {

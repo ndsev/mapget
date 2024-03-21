@@ -1,7 +1,6 @@
 #include "info.h"
 #include "stream.h"
 #include "mapget/log.h"
-#include "stx/format.h"
 
 #include <tuple>
 #include <random>

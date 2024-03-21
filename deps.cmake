@@ -26,26 +26,22 @@ else()
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
     GIT_TAG        "v1.x"
-    GIT_SHALLOW    ON
-    FIND_PACKAGE_ARGS)
+    GIT_SHALLOW    ON)
 
   FetchContent_Declare(bitsery
     GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
     GIT_TAG        "master"
-    GIT_SHALLOW    ON
-    FIND_PACKAGE_ARGS)
+    GIT_SHALLOW    ON)
 
   FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
     GIT_TAG        "v0.14.3"
-    GIT_SHALLOW    ON
-    FIND_PACKAGE_ARGS NAMES)
+    GIT_SHALLOW    ON)
 
   FetchContent_Declare(yaml-cpp
     GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
     GIT_TAG        "master"
-    GIT_SHALLOW    ON
-    FIND_PACKAGE_ARGS)
+    GIT_SHALLOW    ON)
 
   FetchContent_Declare(cli11
     GIT_REPOSITORY "https://github.com/CLIUtils/CLI11"
@@ -107,12 +103,6 @@ if (MAPGET_WITH_WHEEL)
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(python-cmake-wheel)
 endif()
-
-FetchContent_Declare(stx
-  GIT_REPOSITORY "https://github.com/Klebert-Engineering/stx.git"
-  GIT_TAG        "main"
-  GIT_SHALLOW    ON)
-FetchContent_MakeAvailable(stx)
 
 set(BUILD_TESTING NO CACHE BOOL "")
 FetchContent_Declare(tiny-process-library
