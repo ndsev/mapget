@@ -1,4 +1,4 @@
-project(cpp-sample-local-service)
+project(cpp-sample-local-service CXX)
 
 add_executable(${PROJECT_NAME}
   main.cpp)

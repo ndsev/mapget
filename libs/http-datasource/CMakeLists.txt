@@ -1,4 +1,4 @@
-project(mapget-http-datasource)
+project(mapget-http-datasource CXX)
 
 add_library(mapget-http-datasource STATIC
   include/mapget/http-datasource/datasource-server.h
@@ -38,3 +38,9 @@ endif()
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
   target_link_libraries(mapget-http-datasource PUBLIC Threads::Threads)
 endif()
+
+install(TARGETS mapget-http-datasource)
+install(DIRECTORY include/mapget/http-datasource
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/mapget/detail
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
