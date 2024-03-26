@@ -162,6 +162,11 @@ void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::
     onMessage_(message.str(), msgType);
 }
 
+void TileLayerStream::Writer::sendEndOfStream()
+{
+    sendMessage("", MessageType::EndOfStream);
+}
+
 std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::operator()(const std::string_view& nodeId)
 {
     {
