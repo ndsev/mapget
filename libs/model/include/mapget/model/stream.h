@@ -27,6 +27,7 @@ public:
         None = 0,
         Fields = 1,
         TileFeatureLayer = 2,
+        EndOfStream = 128
     };
 
     struct CachedFieldsProvider;
@@ -114,6 +115,9 @@ public:
 
         /** Serialize a tile feature layer and the required part of a Fields cache. */
         void write(TileFeatureLayer::Ptr const& tileFeatureLayer);
+
+        /** Send an EndOfStream message. */
+        void sendEndOfStream();
 
     private:
         void sendMessage(std::string&& bytes, MessageType msgType);

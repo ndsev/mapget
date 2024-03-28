@@ -32,6 +32,13 @@ public:
      */
     void addAttribute(model_ptr<Attribute> a);
 
+    /**
+     * Iterate over the stored attributes. The passed lambda must return
+     * true to continue iterating, or false to abort iteration.
+     * @return True if all attributes were visited, false if the callback ever returned false.
+     */
+    bool forEachAttribute(std::function<bool(model_ptr<Attribute> const& attr)> const& cb);
+
 protected:
     AttributeLayer(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
     AttributeLayer() = default;
@@ -59,6 +66,14 @@ public:
      * You can share a single layer between multiple collections, it will not be copied.
      */
     void addLayer(std::string_view const& name, model_ptr<AttributeLayer> l);
+
+    /**
+     * Iterate over the stored layers. The passed lambda must return
+     * true to continue iterating, or false to abort iteration.
+     * @return True if all layers were visited, false if the callback ever returned false.
+     */
+    bool forEachLayer(
+        std::function<bool(std::string_view, model_ptr<AttributeLayer> const& layer)> const& cb);
 
 protected:
     AttributeLayerList(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);

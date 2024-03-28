@@ -1,1 +1,1 @@
-Checks: '-misc-no-recursion,-cert-err34-c'
+Checks: '-misc-no-recursion,-cert-err34-c,-readability-use-anyofallof'

@@ -24,8 +24,15 @@ struct HttpService::Impl
 
         std::stringstream buffer_;
         std::string responseType_;
+        std::unique_ptr<TileLayerStream::Writer> writer_;
         std::vector<LayerTilesRequest::Ptr> requests_;
         TileLayerStream::FieldOffsetMap fieldsOffsets_;
+
+        HttpTilesRequestState() {
+            writer_ = std::make_unique<TileLayerStream::Writer>(
+                [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
+                fieldsOffsets_);
+        }
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
         {
@@ -59,12 +66,10 @@ struct HttpService::Impl
             log().debug("Response ready: {}", MapTileKey(*result).toString());
             if (responseType_ == binaryMimeType) {
                 // Binary response
-                TileLayerStream::Writer writer{
-                    [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
-                    fieldsOffsets_};
-                writer.write(result);
+                writer_->write(result);
             }
             else {
+                // JSON response
                 buffer_ << nlohmann::to_string(result->toGeoJson())+"\n";
             }
             resultEvent_.notify_one();
@@ -147,11 +152,13 @@ struct HttpService::Impl
                     lock,
                     [&]
                     {
-                        strBuf = state->buffer_.str();
                         allDone = std::all_of(
                             state->requests_.begin(),
                             state->requests_.end(),
                             [](const auto& r) { return r->isDone(); });
+                        if (allDone)
+                            state->writer_->sendEndOfStream();
+                        strBuf = state->buffer_.str();
                         return !strBuf.empty() || allDone;
                     });
 
