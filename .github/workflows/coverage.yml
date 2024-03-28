@@ -40,10 +40,12 @@ jobs:
       run: |
         mkdir coverage
         gcovr --html-details coverage/coverage.html \
-              --filter libs/
+              --filter libs/ \
+              --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
         gcovr --cobertura coverage.xml \
               --html coverage.html \
-              --filter libs/
+              --filter libs/ \
+              --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
 
     - name: Publish Coverage HTML
       uses: actions/upload-artifact@v3
