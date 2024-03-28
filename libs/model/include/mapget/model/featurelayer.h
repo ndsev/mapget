@@ -30,6 +30,8 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class Feature;
     friend class FeatureId;
     friend class Relation;
+    friend class AttributeLayer;
+    friend class AttributeLayerList;
 
 public:
     /**
