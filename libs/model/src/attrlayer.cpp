@@ -27,7 +27,7 @@ void AttributeLayer::addAttribute(model_ptr<Attribute> a)
     addField(a->name(), simfil::ModelNode::Ptr(a));
 }
 
-bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<Attribute>&)>& cb)
+bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<Attribute>&)>& cb) const
 {
     if (!cb)
         return false;
@@ -66,7 +66,7 @@ void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<Attrib
 }
 
 bool AttributeLayerList::forEachLayer(
-    const std::function<bool(std::string_view, const model_ptr<AttributeLayer>&)>& cb)
+    const std::function<bool(std::string_view, const model_ptr<AttributeLayer>&)>& cb) const
 {
     if (!cb)
         return false;

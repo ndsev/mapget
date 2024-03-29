@@ -64,7 +64,7 @@ Attribute::Direction Attribute::direction() const
     return data_->direction_;
 }
 
-std::string_view Attribute::name()
+std::string_view Attribute::name() const
 {
     if (auto s = model().fieldNames()->resolve(data_->name_))
         return *s;

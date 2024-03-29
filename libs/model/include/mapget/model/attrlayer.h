@@ -37,7 +37,7 @@ public:
      * true to continue iterating, or false to abort iteration.
      * @return True if all attributes were visited, false if the callback ever returned false.
      */
-    bool forEachAttribute(std::function<bool(model_ptr<Attribute> const& attr)> const& cb);
+    bool forEachAttribute(std::function<bool(model_ptr<Attribute> const& attr)> const& cb) const;
 
 protected:
     AttributeLayer(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
@@ -73,7 +73,8 @@ public:
      * @return True if all layers were visited, false if the callback ever returned false.
      */
     bool forEachLayer(
-        std::function<bool(std::string_view, model_ptr<AttributeLayer> const& layer)> const& cb);
+        std::function<bool(std::string_view, model_ptr<AttributeLayer> const& layer)> const& cb
+    ) const;
 
 protected:
     AttributeLayerList(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
