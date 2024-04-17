@@ -48,12 +48,12 @@ TileId TileId::fromWgs84(double longitude, double latitude, uint16_t zoomLevel)
         longitude += LON_EXTENT;
 
     // Calculate the number of subdivisions
-    auto numCols = static_cast<uint16_t>(1 << (zoomLevel + 1));
-    auto numRows = static_cast<uint16_t>(1 << zoomLevel);
+    auto numCols = static_cast<int64_t>(1ll << (zoomLevel + 1));
+    auto numRows = static_cast<int64_t>(1ll << zoomLevel);
 
     // Convert to grid coordinates
-    auto x = static_cast<int64_t>((longitude / LON_EXTENT) * numCols);
-    auto y = static_cast<int64_t>(((MAX_LAT - latitude) / LAT_EXTENT) * numRows);
+    auto x = static_cast<int64_t>((longitude / LON_EXTENT) * static_cast<double>(numCols));
+    auto y = static_cast<int64_t>(((MAX_LAT - latitude) / LAT_EXTENT) * static_cast<double>(numCols));
 
     x %= numCols;
     y %= numRows * 2;
