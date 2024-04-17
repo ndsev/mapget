@@ -43,17 +43,19 @@ bool TileId::operator< (TileId const& other) const {
 
 TileId TileId::fromWgs84(double longitude, double latitude, uint16_t zoomLevel)
 {
+    zoomLevel = std::min((uint16_t)62, zoomLevel);
+
     longitude = fmod(longitude, LON_EXTENT) + MAX_LON;
     if (longitude < 0.)
         longitude += LON_EXTENT;
 
     // Calculate the number of subdivisions
-    auto numCols = static_cast<int64_t>(1ll << (zoomLevel + 1));
-    auto numRows = static_cast<int64_t>(1ll << zoomLevel);
+    auto numCols = static_cast<int64_t>(1ull << (zoomLevel + 1));
+    auto numRows = static_cast<int64_t>(1ull << zoomLevel);
 
     // Convert to grid coordinates
     auto x = static_cast<int64_t>((longitude / LON_EXTENT) * static_cast<double>(numCols));
-    auto y = static_cast<int64_t>(((MAX_LAT - latitude) / LAT_EXTENT) * static_cast<double>(numCols));
+    auto y = static_cast<int64_t>(((MAX_LAT - latitude) / LAT_EXTENT) * static_cast<double>(numRows));
 
     x %= numCols;
     y %= numRows * 2;
