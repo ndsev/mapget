@@ -43,7 +43,7 @@ public:
     /**
      * Read-only attribute name accessor.
      */
-    std::string_view name();
+    std::string_view name() const;
 
 protected:
 

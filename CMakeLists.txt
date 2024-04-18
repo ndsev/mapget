@@ -16,7 +16,7 @@ option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-servic
 project(mapget)
 include(FetchContent)
 
-set(MAPGET_VERSION 2024.1)
+set(MAPGET_VERSION 2024.2)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -162,6 +162,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
     set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
     set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
+    set(PORTABLE YES CACHE BOOL "rocksdb with max compatibility/portability")
 
     FetchContent_Declare(rocksdb
       GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
