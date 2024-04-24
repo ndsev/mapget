@@ -239,9 +239,11 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             j.at("mapId").get<std::string>(),
             layers,
             j.value("maxParallelJobs", 8),
+            j.value("add-on", false),
             j.value("extraJsonAttachment", nlohmann::json::object()),
             Version::fromJson(
-                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))};
+                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))
+        };
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "DataSourceInfo");
@@ -260,6 +262,7 @@ nlohmann::json DataSourceInfo::toJson() const
         {"mapId", mapId_},
         {"layers", layersJson},
         {"maxParallelJobs", maxParallelJobs_},
+        {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
         {"protocolVersion", protocolVersion_.toJson()}};
 }

@@ -81,6 +81,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         mapId,
         layers,
         5,
+        false,
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 
@@ -102,6 +103,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         otherMapId,
         layers,
         5,
+        false,
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 

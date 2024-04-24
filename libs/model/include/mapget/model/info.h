@@ -241,6 +241,9 @@ struct DataSourceInfo
     /** Maximum number of parallel jobs */
     int maxParallelJobs_ = 8;
 
+    /** Declare the datasource as an add-on to other datasources for the same map. */
+    bool isAddOn_ = false;
+
     /** Extra JSON attachment. May also be used to store style-sheets. */
     nlohmann::json extraJsonAttachment_;
 
@@ -282,6 +285,7 @@ struct DataSourceInfo
      *   },
      *   "nodeId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
      *                                        // Note: Only provide this if you have a good reason.
+     *   "addOn": <bool>                     // Optional: Declare the datasource as add-on.
      * }
      *
      * Each LayerType, FeatureTypeInfo, and Coverage object has its own specific JSON structure,

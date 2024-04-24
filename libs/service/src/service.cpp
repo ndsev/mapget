@@ -172,6 +172,8 @@ struct Service::Controller
 
         return result;
     }
+
+    virtual void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile) = 0;
 };
 
 struct Service::Worker
@@ -226,6 +228,8 @@ struct Service::Worker
             if (!result)
                 throw logRuntimeError("DataSource::get() returned null.");
 
+            controller_.loadAddOnTiles(result);
+
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
                 controller_.cache_->putTileFeatureLayer(result);
@@ -250,6 +254,7 @@ struct Service::Impl : public Service::Controller
 {
     std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
+    std::list<DataSource::Ptr> addOnDataSources_;
 
     explicit Impl(Cache::Ptr cache) : Controller(std::move(cache)) {}
 
@@ -289,6 +294,14 @@ struct Service::Impl : public Service::Controller
 
         DataSourceInfo info = dataSource->info();
         dataSourceInfo_[dataSource] = info;
+
+        // If the datasource is an add-on source, then it
+        // does not have separate workers.
+        if (info.isAddOn_) {
+            addOnDataSources_.emplace_back(dataSource);
+            return;
+        }
+
         auto& workers = dataSourceWorkers_[dataSource];
 
         // Create workers for this DataSource
@@ -303,8 +316,9 @@ struct Service::Impl : public Service::Controller
     {
         std::unique_lock lock(jobsMutex_);
         dataSourceInfo_.erase(dataSource);
-        auto workers = dataSourceWorkers_.find(dataSource);
+        addOnDataSources_.remove(dataSource);
 
+        auto workers = dataSourceWorkers_.find(dataSource);
         if (workers != dataSourceWorkers_.end())
         {
             // Signal each worker thread to terminate.
@@ -358,6 +372,81 @@ struct Service::Impl : public Service::Controller
             infos.push_back(info);
         }
         return std::move(infos);
+    }
+
+    void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile) override {
+        for (auto const& auxDataSource : addOnDataSources_) {
+            if (auxDataSource->info().mapId_ == baseTile->mapId()) {
+                auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
+                if (!auxTile) {
+                    log().warn("auxDataSource returned null for {}", baseTile->id().toString());
+                    continue;
+                }
+
+                // Re-encode the base tile in a common field namespace.
+                // This is necessary, because the aux tile may introduce new field
+                // names to the base tile. Since we cannot manipulate the original
+                // node's field dict, we have to create a new one based on a new
+                // artificial node id.
+                auto auxBaseNodeId = baseTile->nodeId() + "||||" + auxTile->nodeId();
+                auto auxBaseFieldDict = cache_->getFieldDict(auxBaseNodeId);
+                baseTile->setFieldNames(auxBaseFieldDict);
+                baseTile->setNodeId(auxBaseNodeId);
+
+                // Adopt new attributes, features and relations for the base feature
+                // from the auxiliary feature.
+                for (auto const& auxFeature : *auxTile) {
+                    auto baseFeature = baseTile->find(
+                        auxFeature->id()->typeId(),
+                        auxFeature->id()->keyValuePairs());
+                    if (!baseFeature)
+                        continue;
+
+                    std::unordered_map<uint32_t, simfil::ModelNode::Ptr> clonedModelNodes;
+                    auto lookupOrClone = [&](simfil::ModelNode::Ptr const& n) -> simfil::ModelNode::Ptr {
+                        return baseTile->clone(clonedModelNodes, auxTile, n);
+                    };
+
+                    // Adopt attributes
+                    if (auto attrs = auxFeature->attributes()) {
+                        auto baseAttrs = baseFeature->attributes();
+                        for (auto const& [key, value] : attrs->fields()) {
+                            if (auto keyStr = auxTile->fieldNames()->resolve(key)) {
+                                baseAttrs->addField(*keyStr, lookupOrClone(value));
+                            }
+                        }
+                    }
+
+                    // Adopt attribute layers
+                    if (auto attrLayers = auxFeature->attributeLayers()) {
+                        auto baseAttrLayers = baseFeature->attributeLayers();
+                        for (auto const& [key, value] : attrLayers->fields()) {
+                            if (auto keyStr = auxTile->fieldNames()->resolve(key)) {
+                                baseAttrLayers->addField(*keyStr, lookupOrClone(value));
+                            }
+                        }
+                    }
+
+                    // Adopt geometries
+                    if (auto geom = auxFeature->geom()) {
+                        auto baseGeom = baseFeature->geom();
+                        geom->forEachGeometry([&baseGeom, &baseTile, &lookupOrClone](auto&& geomElement){
+                            baseGeom->addGeometry(baseTile->resolveGeometry(lookupOrClone(geomElement)));
+                            return true;
+                        });
+                    }
+
+                    // Adopt relations
+                    if (auxFeature->numRelations()) {
+                        auxFeature->forEachRelation([this, &baseFeature, &baseTile, &lookupOrClone](auto&& rel){
+                            auto newRel = baseTile->resolveRelation(*lookupOrClone(rel));
+                            baseFeature->addRelation(newRel);
+                            return true;
+                        });
+                    }
+                }
+            }
+        }
     }
 };
 
