@@ -10,7 +10,8 @@ add_library(mapget-log STATIC
 target_link_libraries(mapget-log
   PUBLIC
     spdlog::spdlog
-    fmt::fmt)
+    fmt::fmt
+    simfil::simfil)
 
 target_include_directories(mapget-log
   PUBLIC

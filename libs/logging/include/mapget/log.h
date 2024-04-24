@@ -1,6 +1,7 @@
 #pragma once
 
 #include "spdlog/spdlog.h"
+#include "simfil/exception-handler.h"
 
 namespace mapget
 {
@@ -31,6 +32,9 @@ template <typename error_t = std::runtime_error>
 error_t logRuntimeError(std::string const& what)
 {
     log().error(what);
+    if (simfil::ThrowHandler::instance().get()) {
+        simfil::raise<error_t>(what);
+    }
     return error_t(what);
 }
 
