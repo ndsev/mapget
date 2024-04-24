@@ -45,6 +45,13 @@ public:
      */
     std::string_view name() const;
 
+    /**
+     * Iterate over the attribute's extra fields. The passed lambda must return
+     * true to continue iterating, or false to abort iteration.
+     * @return True if all fields were visited, false if the callback ever returned false.
+     */
+    bool forEachField(std::function<bool(std::string_view const& k, simfil::ModelNode::Ptr const& val)> const& cb) const;
+
 protected:
 
     /** Actual per-attribute data that is stored in the model's attributes-column. */

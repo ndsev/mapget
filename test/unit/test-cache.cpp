@@ -128,7 +128,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
         REQUIRE(fieldDictCount == 0);
 
-        // putTileFeatureLayer triggers both putTileLayer and putFields.
+        // putTileFeatureLayer triggers both putTileLayerBlob and putFieldsBlob.
         cache->putTileFeatureLayer(tile);
         auto returnedTile = cache->getTileFeatureLayer(tile->id(), info);
         fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
@@ -198,8 +198,8 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto cache = std::make_shared<mapget::RocksDBCache>();
         REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
 
-        cache->putFields(testFieldsNodeId, serializedMessage.str());
-        auto returnedEntry = cache->getFields(testFieldsNodeId);
+        cache->putFieldsBlob(testFieldsNodeId, serializedMessage.str());
+        auto returnedEntry = cache->getFieldsBlob(testFieldsNodeId);
 
         // Make sure field dict was properly stored.
         REQUIRE(returnedEntry.value() == serializedMessage.str());
@@ -216,7 +216,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 3);
 
         // Check that the same value can still be retrieved from field dict.
-        auto returnedEntry = cache->getFields(testFieldsNodeId);
+        auto returnedEntry = cache->getFieldsBlob(testFieldsNodeId);
         REQUIRE(returnedEntry.value() == serializedMessage.str());
     }
 

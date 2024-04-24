@@ -10,7 +10,7 @@ TileFeatureLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, Da
         info.nodeId_,
         info.mapId_,
         info.getLayer(k.layerId_),
-        (*cache)(info.nodeId_));
+        cache->getFieldDict(info.nodeId_));
     fill(result);
     return result;
 }

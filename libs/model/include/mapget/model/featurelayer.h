@@ -205,6 +205,26 @@ public:
      */
     void setFieldNames(std::shared_ptr<simfil::Fields> const& newDict) override;
 
+    /**
+     * Create a copy of otherNode (which lives in otherLayer) in this layer.
+     * The clonedModelNodes dict may be provided to avoid repeated copies
+     * of nodes which are referenced multiple times.
+     */
+    simfil::ModelNode::Ptr clone(
+        std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+        TileFeatureLayer::Ptr const& otherLayer,
+        simfil::ModelNode::Ptr const& otherNode);
+
+    /**
+     * Node resolution functions.
+     */
+    model_ptr<AttributeLayer> resolveAttributeLayer(simfil::ModelNode const& n) const;
+    model_ptr<AttributeLayerList> resolveAttributeLayerList(simfil::ModelNode const& n) const;
+    model_ptr<Attribute> resolveAttribute(simfil::ModelNode const& n) const;
+    model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
+    model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
+    model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
+
 protected:
     /**
      * The FeatureTileColumnId enum provides identifiers for different
@@ -233,16 +253,6 @@ protected:
      * Create a new attribute layer collection.
      */
     model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8);
-
-    /**
-     * Node resolution functions.
-     */
-    model_ptr<AttributeLayer> resolveAttributeLayer(simfil::ModelNode const& n) const;
-    model_ptr<AttributeLayerList> resolveAttributeLayerList(simfil::ModelNode const& n) const;
-    model_ptr<Attribute> resolveAttribute(simfil::ModelNode const& n) const;
-    model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
-    model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
-    model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
 
     /**
      * Generic node resolution overload.

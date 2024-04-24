@@ -129,7 +129,7 @@ bool idPartsMatchComposition(
     std::vector<IdPart> const& candidateComposition,
     uint32_t compositionMatchStartIdx,
     KeyValueViewPairs const& featureIdParts,
-    unsigned long matchLength)
+    size_t matchLength)
 {
     auto featureIdIter = featureIdParts.begin();
     auto compositionIter = candidateComposition.begin();
@@ -484,6 +484,8 @@ model_ptr<AttributeLayerList> TileFeatureLayer::newAttributeLayers(size_t initia
 
 model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != AttributeLayers)
+        throw logRuntimeError("Cannot cast this node to an AttributeLayer.");
     return AttributeLayer(
         impl_->attrLayers_[n.addr().index()],
         shared_from_this(),
@@ -492,6 +494,8 @@ model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelN
 
 model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != AttributeLayerLists)
+        throw logRuntimeError("Cannot cast this node to an AttributeLayerList.");
     return AttributeLayerList(
         impl_->attrLayerLists_[n.addr().index()],
         shared_from_this(),
@@ -500,6 +504,8 @@ model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil
 
 model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != Attributes)
+        throw logRuntimeError("Cannot cast this node to an Attribute.");
     return Attribute(
         &impl_->attributes_[n.addr().index()],
         shared_from_this(),
@@ -508,6 +514,8 @@ model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const&
 
 model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != Features)
+        throw logRuntimeError("Cannot cast this node to a Feature.");
     return Feature(
         impl_->features_[n.addr().index()],
         shared_from_this(),
@@ -516,6 +524,8 @@ model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) 
 
 model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != FeatureIds)
+        throw logRuntimeError("Cannot cast this node to a FeatureId.");
     return FeatureId(
         impl_->featureIds_[n.addr().index()],
         shared_from_this(),
@@ -524,6 +534,8 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const&
 
 model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n) const
 {
+    if (n.addr().column() != Relations)
+        throw logRuntimeError("Cannot cast this node to a Relation.");
     return Relation(
         &impl_->relations_[n.addr().index()],
         shared_from_this(),
@@ -762,6 +774,153 @@ void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newD
     }
 
     ModelPool::setFieldNames(newDict);
+}
+
+simfil::ModelNode::Ptr TileFeatureLayer::clone(
+    std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& cache,
+    const TileFeatureLayer::Ptr& otherLayer,
+    const simfil::ModelNode::Ptr& otherNode)
+{
+    auto it = cache.find(otherNode->addr().value_);
+    if (it != cache.end()) {
+        return it->second;
+    }
+
+    using namespace simfil;
+    ModelNode::Ptr& newCacheNode = cache[otherNode->addr().value_];
+    switch (otherNode->addr().column()) {
+    case Objects: {
+        auto resolved = otherLayer->resolveObject(otherNode);
+        auto newNode = newObject(resolved->size());
+        newCacheNode = newNode;
+        for (auto [key, value] : resolved->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                newNode->addField(*keyStr, clone(cache, otherLayer, value));
+            }
+        }
+        break;
+    }
+    case Arrays: {
+        auto resolved = otherLayer->resolveArray(otherNode);
+        auto newNode = newArray(resolved->size());
+        newCacheNode = newNode;
+        for (auto value : *resolved) {
+            newNode->append(clone(cache, otherLayer, value));
+        }
+        break;
+    }
+    case Geometries:
+    case Points:
+    case PointBuffers: {
+        auto resolved = otherLayer->resolveGeometry(otherNode);
+        auto newNode = newGeometry(resolved->geomType(), resolved->numPoints());
+        newCacheNode = newNode;
+        resolved->forEachPoint(
+            [&newNode](auto&& pt)
+            {
+                newNode->append(pt);
+                return true;
+            });
+        break;
+    }
+    case GeometryCollections: {
+        auto resolved = otherLayer->resolveGeometryCollection(otherNode);
+        auto newNode = newGeometryCollection(resolved->numGeometries());
+        newCacheNode = newNode;
+        resolved->forEachGeometry(
+            [this, &newNode, &cache, &otherLayer](auto&& geom)
+            {
+                newNode->addGeometry(resolveGeometry(clone(cache, otherLayer, geom)));
+                return true;
+            });
+        break;
+    }
+    case Int64: {
+        otherLayer->resolve(*otherNode, Lambda([this, &newCacheNode](auto&& resolved){
+            auto value = std::get<int64_t>(resolved.value());
+            auto newNode = newValue(value);
+            newCacheNode = newNode;
+        }));
+        break;
+    }
+    case Double: {
+        otherLayer->resolve(*otherNode, Lambda([this, &newCacheNode](auto&& resolved){
+            auto value = std::get<double>(resolved.value());
+            auto newNode = newValue(value);
+            newCacheNode = newNode;
+        }));
+        break;
+    }
+    case String: {
+        otherLayer->resolve(*otherNode, Lambda([this, &newCacheNode](auto&& resolved){
+            auto value = std::get<std::string_view>(resolved.value());
+            auto newNode = newValue(value);
+            newCacheNode = newNode;
+        }));
+        break;
+    }
+    case Features:
+    case FeatureProperties: {
+        throw logRuntimeError("Cannot clone entire feature yet.");
+    }
+    case FeatureIds: {
+        auto resolved = otherLayer->resolveFeatureId(*otherNode);
+        auto newNode = newFeatureId(resolved->typeId(), resolved->keyValuePairs());
+        newCacheNode = newNode;
+        break;
+    }
+    case Attributes: {
+        auto resolved = otherLayer->resolveAttribute(*otherNode);
+        auto newNode = newAttribute(resolved->name());
+        newCacheNode = newNode;
+        if (resolved->hasValidity()) {
+            newNode->setValidity(resolveGeometry(clone(cache, otherLayer, resolved->validity())));
+        }
+        newNode->setDirection(resolved->direction());
+        resolved->forEachField(
+            [this, &newNode, &cache, &otherLayer](auto&& key, auto&& value)
+            {
+                newNode->addField(key, clone(cache, otherLayer, value));
+                return true;
+            });
+        break;
+    }
+    case AttributeLayers: {
+        auto resolved = otherLayer->resolveAttributeLayer(*otherNode);
+        auto newNode = newAttributeLayer(resolved->size());
+        newCacheNode = newNode;
+        for (auto [key, value] : resolved->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                newNode->addField(*keyStr, clone(cache, otherLayer, value));
+            }
+        }
+        break;
+    }
+    case AttributeLayerLists: {
+        auto resolved = otherLayer->resolveAttributeLayerList(*otherNode);
+        auto newNode = newAttributeLayers(resolved->size());
+        newCacheNode = newNode;
+        for (auto [key, value] : resolved->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                newNode->addField(*keyStr, clone(cache, otherLayer, value));
+            }
+        }
+        break;
+    }
+    case Relations: {
+        auto resolved = otherLayer->resolveRelation(*otherNode);
+        auto newNode = newRelation(
+            resolved->name(),
+            resolveFeatureId(*clone(cache, otherLayer, resolved->target())));
+        newCacheNode = newNode;
+        break;
+    }
+    default: {
+        newCacheNode = ModelNode::Ptr::make(shared_from_this(), otherNode->addr());
+    }
+    }
+    cache.insert({otherNode->addr().value_, newCacheNode});
+    return newCacheNode;
 }
 
 }

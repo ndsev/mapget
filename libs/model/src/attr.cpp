@@ -71,4 +71,26 @@ std::string_view Attribute::name() const
     throw logRuntimeError("Attribute name is not known to string pool.");
 }
 
+bool Attribute::forEachField(
+    std::function<bool(std::string_view const& k, simfil::ModelNode::Ptr const& val)> const& cb)
+    const
+{
+    if (!cb)
+        return false;
+    auto numExtraFields = fields_.size();
+    for (auto const& [key, value] : fields()) {
+        if (numExtraFields) {
+            // Skip the procedural fields.
+            --numExtraFields;
+            continue;
+        }
+
+        if (auto ks = model().fieldNames()->resolve(key)) {
+            if (!cb(*ks, value))
+                return false;
+        }
+    }
+    return true;
+}
+
 }

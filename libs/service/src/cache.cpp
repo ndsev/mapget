@@ -6,7 +6,7 @@
 namespace mapget
 {
 
-std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
+std::shared_ptr<Fields> Cache::getFieldDict(const std::string_view& nodeId)
 {
     {
         std::shared_lock fieldCacheReadLock(fieldCacheMutex_);
@@ -27,7 +27,7 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
 
         // Load/insert the Fields dict.
         std::shared_ptr<Fields> cachedFields = std::make_shared<Fields>(nodeId);
-        auto cachedFieldsBlob = getFields(nodeId);
+        auto cachedFieldsBlob = getFieldsBlob(nodeId);
         if (cachedFieldsBlob) {
             // Read the fields from the stream.
             std::stringstream stream;
@@ -62,7 +62,7 @@ nlohmann::json Cache::getStatistics() const {
 
 TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
 {
-    auto tileBlob = getTileLayer(tileKey);
+    auto tileBlob = getTileLayerBlob(tileKey);
     if (!tileBlob) {
         ++cacheMisses_;
         return nullptr;
@@ -95,9 +95,9 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
         [&l, this](auto&& msg, auto&& msgType)
         {
             if (msgType == TileLayerStream::MessageType::TileFeatureLayer)
-                putTileLayer(MapTileKey(*l), msg);
+                putTileLayerBlob(MapTileKey(*l), msg);
             else if (msgType == TileLayerStream::MessageType::Fields)
-                putFields(l->nodeId(), msg);
+                putFieldsBlob(l->nodeId(), msg);
         },
         fieldCacheOffsets_,
         /* differentialFieldUpdates = */ false);

@@ -149,7 +149,7 @@ struct Service::Controller
                         // Wait for the work to finish, then send the (hopefully cached) result.
                         log().debug("Delaying tile with job in progress: {}",
                                      result->first.toString());
-                        --(request->nextTileIndex_);
+                        --request->nextTileIndex_;
                         result.reset();
                         continue;
                     }

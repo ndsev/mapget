@@ -85,7 +85,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
             else if (handle->GetName() == "FieldDicts") {
                 // Update fieldCacheOffsets_ (superclass member)
                 // for each node ID by triggering cache lookup.
-                (*this)(it->key().ToString());
+                getFieldsBlob(it->key().ToString());
             }
         }
     }
@@ -124,7 +124,7 @@ RocksDBCache::~RocksDBCache()
     delete db_;
 }
 
-std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
+std::optional<std::string> RocksDBCache::getTileLayerBlob(MapTileKey const& k)
 {
     std::string read_value;
     auto status =
@@ -142,7 +142,7 @@ std::optional<std::string> RocksDBCache::getTileLayer(MapTileKey const& k)
     throw logRuntimeError(fmt::format("Error reading from database: {}", status.ToString()));
 }
 
-void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
+void RocksDBCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
 {
     // If the tile exists already, delete the previous timestamp entry.
     std::string previousTileTimestamp;
@@ -201,7 +201,7 @@ void RocksDBCache::putTileLayer(MapTileKey const& k, std::string const& v)
     }
 }
 
-std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourceNodeId)
+std::optional<std::string> RocksDBCache::getFieldsBlob(std::string_view const& sourceNodeId)
 {
     std::string read_value;
     auto status =
@@ -218,7 +218,7 @@ std::optional<std::string> RocksDBCache::getFields(std::string_view const& sourc
     throw logRuntimeError(fmt::format("Error reading from database: {}", status.ToString()));
 }
 
-void RocksDBCache::putFields(std::string_view const& sourceNodeId, std::string const& v)
+void RocksDBCache::putFieldsBlob(std::string_view const& sourceNodeId, std::string const& v)
 {
     auto status =
         db_->Put(write_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, v);
