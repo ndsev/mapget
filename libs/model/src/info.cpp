@@ -239,7 +239,7 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             j.at("mapId").get<std::string>(),
             layers,
             j.value("maxParallelJobs", 8),
-            j.value("add-on", false),
+            j.value("addOn", false),
             j.value("extraJsonAttachment", nlohmann::json::object()),
             Version::fromJson(
                 j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))

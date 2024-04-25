@@ -85,7 +85,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
             else if (handle->GetName() == "FieldDicts") {
                 // Update fieldCacheOffsets_ (superclass member)
                 // for each node ID by triggering cache lookup.
-                getFieldsBlob(it->key().ToString());
+                Cache::getFieldDict(it->key().ToString());
             }
         }
     }
