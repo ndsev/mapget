@@ -320,9 +320,9 @@ bool TileFeatureLayer::validFeatureId(
 
     for (auto& candidateComposition : typeIt->uniqueIdCompositions_) {
         uint32_t compositionMatchStartIndex = 0;
-        if (validateForNewFeature && this->featureIdPrefix()) {
+        if (validateForNewFeature && this->getIdPrefix()) {
             // Iterate past the prefix in the unique id composition.
-            compositionMatchStartIndex = this->featureIdPrefix()->size();
+            compositionMatchStartIndex = this->getIdPrefix()->size();
         }
 
         if (idPartsMatchComposition(
@@ -439,7 +439,7 @@ TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<Feat
     return Relation(&impl_->relations_.back(), shared_from_this(), {Relations, (uint32_t)relationIndex});
 }
 
-model_ptr<Object> TileFeatureLayer::featureIdPrefix()
+model_ptr<Object> TileFeatureLayer::getIdPrefix()
 {
     if (impl_->featureIdPrefix_)
         return resolveObject(simfil::ModelNode::Ptr::make(shared_from_this(), impl_->featureIdPrefix_));
@@ -604,7 +604,7 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
     return newIt->second;
 }
 
-void TileFeatureLayer::setPrefix(const KeyValueViewPairs& prefix)
+void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
 {
     // The prefix must be set, before any feature is added.
     if (!impl_->features_.empty())

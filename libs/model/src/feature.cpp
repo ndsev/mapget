@@ -173,8 +173,8 @@ void Feature::updateFields() {
         model_ptr<simfil::ValueNode>::make(idNode->typeId(), model_));
 
     // Add common id-part fields
-    if (model().featureIdPrefix())
-        for (auto const& [idPartName, value] : model().featureIdPrefix()->fields()) {
+    if (model().getIdPrefix())
+        for (auto const& [idPartName, value] : model().getIdPrefix()->fields()) {
             fields_.emplace_back(idPartName, value);
         }
 

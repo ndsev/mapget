@@ -85,14 +85,14 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         fieldNames);
 
     // Set the tile's feature id prefix.
-    tile->setPrefix({{"areaId", "TheBestArea"}});
+    tile->setIdPrefix({{"areaId", "TheBestArea"}});
 
     // Test creating a feature while tile prefix is not set.
     auto feature0 = tile->newFeature("Way", {{"wayId", 24}});
 
     // Setting the tile feature id prefix after a feature was added
     // must lead to a runtime error.
-    REQUIRE_THROWS(tile->setPrefix({{"areaId", "TheBestArea"}}));
+    REQUIRE_THROWS(tile->setIdPrefix({{"areaId", "TheBestArea"}}));
 
     // Create a feature with line geometry
     auto feature1 = tile->newFeature("Way", {{"wayId", 42}});

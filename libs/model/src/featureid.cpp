@@ -32,8 +32,8 @@ std::string FeatureId::toString() const
     };
 
     // Add common id-part fields
-    if (data_->useCommonTilePrefix_ && model().featureIdPrefix())
-        for (auto const& [_, value] : model().featureIdPrefix()->fields())
+    if (data_->useCommonTilePrefix_ && model().getIdPrefix())
+        for (auto const& [_, value] : model().getIdPrefix()->fields())
             std::visit(addIdPart, value->value());
 
     // Add specific id-part fields
@@ -97,8 +97,8 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
     };
 
     // Add common id-part fields.
-    if (data_->useCommonTilePrefix_ && model().featureIdPrefix())
-        objectFieldsToKeyValuePairs(model().featureIdPrefix()->fields());
+    if (data_->useCommonTilePrefix_ && model().getIdPrefix())
+        objectFieldsToKeyValuePairs(model().getIdPrefix()->fields());
 
     // Add specific id-part fields.
     objectFieldsToKeyValuePairs(fields());

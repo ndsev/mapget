@@ -95,7 +95,7 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "set_prefix",
-            [](TileFeatureLayer& self, KeyValueViewPairs const& v) {self.setPrefix(v); },
+            [](TileFeatureLayer& self, KeyValueViewPairs const& v) { self.setIdPrefix(v); },
             py::arg("prefix"),
             R"pbdoc(
             Set common id prefix for all features in this layer.
@@ -108,7 +108,7 @@ void bindTileLayer(py::module_& m)
             py::arg("feature_id_parts"),
             R"pbdoc(
             Creates a new feature and insert it into this tile layer. The unique identifying
-            information, prepended with the featureIdPrefix, must conform to an existing
+            information, prepended with the getIdPrefix, must conform to an existing
             UniqueIdComposition for the feature typeId within the associated layer.
         )pbdoc")
         .def(

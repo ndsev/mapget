@@ -72,17 +72,18 @@ public:
     );
 
     /**
-     * Set common id prefix for all features in this layer.
+     * Get/Set common id prefix for all features in this layer.
      * Note: The prefix MUST be set before any feature is added to the tile.
      */
-    void setPrefix(KeyValueViewPairs const& prefix);
+    void setIdPrefix(KeyValueViewPairs const& prefix);
+    model_ptr<Object> getIdPrefix();
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer() override;
 
     /**
      * Creates a new feature and insert it into this tile layer.
-     * The featureIdParts (which do not include the featureIdPrefix of the layer)
+     * The featureIdParts (which do not include the getIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
      * within the associated layer, or a runtime error will be raised.
      * @param typeId Specifies the type of the feature.
@@ -239,12 +240,6 @@ protected:
         AttributeLayerLists,
         Relations,
     };
-
-    /**
-     * The featureIdPrefix function returns common ID parts,
-     * which are shared by all features in this layer.
-     */
-    model_ptr<Object> featureIdPrefix();
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
