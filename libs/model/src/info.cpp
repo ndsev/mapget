@@ -390,7 +390,7 @@ LayerInfo::decodeFeatureId(const std::string_view& featureIdString)
                     break;
             }
 
-            if (numCheckedValues != numRequiredValues || numCheckedValues != values.size())
+            if (numCheckedValues != numRequiredValues || numCheckedValues != values.size()-1)
                 continue;
 
             if (validFeatureId(typeId, result, false)) {

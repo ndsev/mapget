@@ -185,6 +185,22 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
              {"wayIdUUID128", "0123456789abcdef"}}));
     }
 
+    SECTION("Decode feature ID") {
+        auto fid = tile->newFeatureId(
+            "Way",
+            {{"wayIdI32", -4},
+             {"wayIdI64", 2},
+             {"wayIdUUID128", "0123456789abcdef"}});
+
+        auto fidString = fid->toString();
+        auto fidDecoded = layerInfo->decodeFeatureId(fidString);
+
+        REQUIRE(fidDecoded);
+        auto [featureType, idParts] = *fidDecoded;
+        auto fid2 = tile->newFeatureId(featureType, idParts);
+        REQUIRE(fid2->toString() == fidString);
+    }
+
     SECTION("Serialization")
     {
         std::stringstream tileBytes;
