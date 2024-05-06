@@ -5,6 +5,7 @@
 #include <tuple>
 #include <random>
 #include <sstream>
+#include <charconv>
 
 namespace mapget
 {
@@ -25,6 +26,17 @@ std::string generateUuid() {
 auto missing_field(std::string const& error, std::string const& context) {
     return std::runtime_error(
         fmt::format("{}::fromJson(): `{}`", context, error));
+}
+
+template <class T, class... Args>
+std::optional<T> from_chars(std::string_view s, Args... args)
+{
+    const char *end = s.begin() + s.size();
+    T number;
+    auto result = std::from_chars(s.begin(), end, number, args...);
+    if (result.ec != std::errc{} || result.ptr != end)
+        return {};
+    return number;
 }
 
 }
@@ -94,6 +106,78 @@ nlohmann::json IdPart::toJson() const
         {"datatype", datatype_},
         {"isSynthetic", isSynthetic_},
         {"isOptional", isOptional_}};
+}
+
+bool IdPart::idPartsMatchComposition(
+    const std::vector<IdPart>& candidateComposition,
+    uint32_t compositionMatchStartIdx,
+    const KeyValueViewPairs& featureIdParts,
+    size_t matchLength)
+{
+    auto featureIdIter = featureIdParts.begin();
+    auto compositionIter = candidateComposition.begin();
+
+    while (compositionMatchStartIdx > 0) {
+        ++compositionIter;
+        --compositionMatchStartIdx;
+    }
+
+    while (matchLength > 0 && compositionIter != candidateComposition.end()) {
+        // Have we exhausted feature ID parts while there's still composition parts?
+        if (featureIdIter == featureIdParts.end()) {
+            return false;
+        }
+
+        auto& [idPartKey, idPartValue] = *featureIdIter;
+
+        // Does this ID part's field name match?
+        if (compositionIter->idPartLabel_ != idPartKey) {
+            return false;
+        }
+
+        // Does the ID part's value match?
+        auto& compositionDataType = compositionIter->datatype_;
+
+        if (std::holds_alternative<int64_t>(idPartValue)) {
+            auto value = std::get<int64_t>(idPartValue);
+            switch (compositionDataType) {
+            case IdPartDataType::I32:
+                // Value must fit an I32.
+                if (value < INT32_MIN || value > INT32_MAX) {
+                    return false;
+                }
+                break;
+            case IdPartDataType::U32:
+                if (value < 0 || value > UINT32_MAX) {
+                    return false;
+                }
+                break;
+            case IdPartDataType::U64:
+                if (value < 0 || value > UINT64_MAX) {
+                    return false;
+                }
+                break;
+            default:;
+            }
+        }
+        else if (std::holds_alternative<std::string_view>(idPartValue)) {
+            auto value = std::get<std::string_view>(idPartValue);
+            // UUID128 should be a 128 bit sequence.
+            if (compositionDataType == IdPartDataType::UUID128 && value.size() != 16) {
+                return false;
+            }
+        }
+        else {
+            throw logRuntimeError("Id part data type not supported!");
+        }
+
+        ++featureIdIter;
+        ++compositionIter;
+        --matchLength;
+    }
+
+    // Match means we either checked the required length, or all the values.
+    return matchLength == 0;
 }
 
 FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
@@ -209,15 +293,126 @@ nlohmann::json LayerInfo::toJson() const
         {"version", version_.toJson()}};
 }
 
-std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId) const
+FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing)
+{
+    auto typeIt = std::find_if(
+        featureTypes_.begin(),
+        featureTypes_.end(),
+        [&sv](auto&& tp) { return tp.name_ == sv; });
+    if (typeIt != featureTypes_.end())
+        return &*typeIt;
+    if (throwIfMissing) {
+        throw logRuntimeError(fmt::format("Could not find feature type {}", sv));
+    }
+    return nullptr;
+}
+
+bool LayerInfo::validFeatureId(
+    const std::string_view& typeId,
+    KeyValueViewPairs const& featureIdParts,
+    bool validateForNewFeature,
+    uint32_t compositionMatchStartIndex)
+{
+    auto typeInfo = getTypeInfo(typeId);
+
+    for (auto& candidateComposition : typeInfo->uniqueIdCompositions_) {
+        if (IdPart::idPartsMatchComposition(
+            candidateComposition,
+            compositionMatchStartIndex,
+            featureIdParts,
+            featureIdParts.size()))
+        {
+            return true;
+        }
+
+        // References may use alternative ID compositions,
+        // but the feature itself must always use the first (primary) one.
+        if (validateForNewFeature)
+            return false;
+    }
+
+    return false;
+}
+
+std::optional<std::pair<std::string_view, KeyValueViewPairs>>
+LayerInfo::decodeFeatureId(const std::string_view& featureIdString)
+{
+    // Split the input string by dots
+    using namespace std::ranges;
+    auto valuesV = featureIdString | views::split('.') | views::transform([](auto&& s){return std::string_view(&*s.begin(), distance(s));});
+    auto values = std::vector<std::string_view>(valuesV.begin(), valuesV.end());
+    if (values.empty())
+        return {};  // Not enough values to form a valid feature ID
+
+    auto&& typeId = values[0];
+    auto typeInfo = getTypeInfo(typeId, false);
+    if (!typeInfo)
+        return {};
+
+    for (auto withOptionalParts : {false, true})
+    {
+        for (const auto& composition : typeInfo->uniqueIdCompositions_) {
+            KeyValueViewPairs result;
+            result.reserve(composition.size());
+
+            auto numCheckedValues = 0;
+            auto numRequiredValues = 0;
+            for (auto&& part : composition) {
+                if (part.isOptional_ && !withOptionalParts)
+                    continue;
+
+                ++numRequiredValues;
+                if (numCheckedValues +1 >= values.size()) {
+                    break;
+                }
+                auto&& rawValue = values[numCheckedValues +1];
+                std::optional<std::variant<int64_t, std::string_view>> parsedValue;
+
+                switch (part.datatype_) {
+                case IdPartDataType::I32:
+                case IdPartDataType::U32:
+                case IdPartDataType::I64:
+                case IdPartDataType::U64:
+                    if (auto intValue = from_chars<int64_t>(rawValue))
+                        parsedValue = *intValue;
+                    break;
+                case IdPartDataType::STR:
+                case IdPartDataType::UUID128:
+                    parsedValue = rawValue;
+                    break;
+                }
+
+                if (parsedValue) {
+                    result.emplace_back(part.idPartLabel_, *parsedValue);
+                    ++numCheckedValues;
+                }
+                else
+                    break;
+            }
+
+            if (numCheckedValues != numRequiredValues || numCheckedValues != values.size())
+                continue;
+
+            if (validFeatureId(typeId, result, false)) {
+                return std::make_pair(typeId, result);
+            }
+        }
+    }
+
+    return {}; // No valid composition found
+}
+
+std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId, bool throwIfMissing) const
 {
     auto it = layers_.find(layerId);
-    if (it == layers_.end()) {
+    if (it != layers_.end())
+        return it->second;
+    if (throwIfMissing) {
         throw logRuntimeError(
             fmt::format("Could not find layer '{}' in map '{}'", layerId, mapId_)
         );
     }
-    return it->second;
+    return {};
 }
 
 DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)

@@ -16,7 +16,7 @@ option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-servic
 project(mapget)
 include(FetchContent)
 
-set(MAPGET_VERSION 2024.2)
+set(MAPGET_VERSION 2024.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -111,20 +111,6 @@ public:
     model_ptr<Relation> newRelation(
         std::string_view const& name,
         model_ptr<FeatureId> const& target);
-
-    /**
-     * Validate that a unique id composition exists that matches this feature id,
-     * The field values must match the limitations of the IdPartDataType, and
-     * The order of values in KeyValuePairs must be the same as in the composition!
-     * @param typeId Feature type id, throws error if the type was not registered.
-     * @param featureIdParts Uniquely identifying information for the feature.
-     * @param validateForNewFeature True if the id should be evaluated with this tile's prefix prepended.
-     */
-    bool validFeatureId(
-        const std::string_view& typeId,
-        KeyValueViewPairs const& featureIdParts,
-        bool validateForNewFeature);
-
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */
