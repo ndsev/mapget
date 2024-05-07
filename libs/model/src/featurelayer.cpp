@@ -236,7 +236,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     }
 
     uint32_t idPrefixLength = 0;
-    if (auto const idPrefix = featureIdPrefix())
+    if (auto const idPrefix = getIdPrefix())
         idPrefixLength = idPrefix->size();
 
     if (!layerInfo_->validFeatureId(typeId, featureIdParts, true, idPrefixLength)) {

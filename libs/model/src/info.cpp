@@ -31,9 +31,9 @@ auto missing_field(std::string const& error, std::string const& context) {
 template <class T, class... Args>
 std::optional<T> from_chars(std::string_view s, Args... args)
 {
-    const char *end = s.begin() + s.size();
+    auto end = s.data() + s.size();
     T number;
-    auto result = std::from_chars(s.begin(), end, number, args...);
+    auto result = std::from_chars(s.data(), end, number, args...);
     if (result.ec != std::errc{} || result.ptr != end)
         return {};
     return number;
