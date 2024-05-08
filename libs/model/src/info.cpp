@@ -6,6 +6,7 @@
 #include <random>
 #include <sstream>
 #include <charconv>
+#include <regex>
 
 namespace mapget
 {
@@ -334,74 +335,6 @@ bool LayerInfo::validFeatureId(
     return false;
 }
 
-std::optional<std::pair<std::string_view, KeyValueViewPairs>>
-LayerInfo::decodeFeatureId(const std::string_view& featureIdString)
-{
-    // Split the input string by dots
-    using namespace std::ranges;
-    auto valuesV = featureIdString | views::split('.') | views::transform([](auto&& s){return std::string_view(&*s.begin(), distance(s));});
-    auto values = std::vector<std::string_view>(valuesV.begin(), valuesV.end());
-    if (values.empty())
-        return {};  // Not enough values to form a valid feature ID
-
-    auto&& typeId = values[0];
-    auto typeInfo = getTypeInfo(typeId, false);
-    if (!typeInfo)
-        return {};
-
-    for (auto withOptionalParts : {false, true})
-    {
-        for (const auto& composition : typeInfo->uniqueIdCompositions_) {
-            KeyValueViewPairs result;
-            result.reserve(composition.size());
-
-            auto numCheckedValues = 0;
-            auto numRequiredValues = 0;
-            for (auto&& part : composition) {
-                if (part.isOptional_ && !withOptionalParts)
-                    continue;
-
-                ++numRequiredValues;
-                if (numCheckedValues +1 >= values.size()) {
-                    break;
-                }
-                auto&& rawValue = values[numCheckedValues +1];
-                std::optional<std::variant<int64_t, std::string_view>> parsedValue;
-
-                switch (part.datatype_) {
-                case IdPartDataType::I32:
-                case IdPartDataType::U32:
-                case IdPartDataType::I64:
-                case IdPartDataType::U64:
-                    if (auto intValue = from_chars<int64_t>(rawValue))
-                        parsedValue = *intValue;
-                    break;
-                case IdPartDataType::STR:
-                case IdPartDataType::UUID128:
-                    parsedValue = rawValue;
-                    break;
-                }
-
-                if (parsedValue) {
-                    result.emplace_back(part.idPartLabel_, *parsedValue);
-                    ++numCheckedValues;
-                }
-                else
-                    break;
-            }
-
-            if (numCheckedValues != numRequiredValues || numCheckedValues != values.size()-1)
-                continue;
-
-            if (validFeatureId(typeId, result, false)) {
-                return std::make_pair(typeId, result);
-            }
-        }
-    }
-
-    return {}; // No valid composition found
-}
-
 std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId, bool throwIfMissing) const
 {
     auto it = layers_.find(layerId);
@@ -460,6 +393,20 @@ nlohmann::json DataSourceInfo::toJson() const
         {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
         {"protocolVersion", protocolVersion_.toJson()}};
+}
+
+KeyValueViewPairs castToKeyValueView(const KeyValuePairs& kvp)
+{
+    KeyValueViewPairs kvpView;
+    for (auto const& [k, v] : kvp) {
+        std::visit([&kvpView, &k](auto&& vv){
+            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string>)
+               kvpView.emplace_back(k, std::string_view(vv));
+            else
+               kvpView.emplace_back(k, vv);
+        }, v);
+    }
+    return kvpView;
 }
 
 }

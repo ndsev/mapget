@@ -23,6 +23,9 @@ using KeyValueViewPairs =
 using KeyValuePairs =
     sfl::small_vector<std::pair<std::string, std::variant<int64_t, std::string>>, 16>;
 
+/** Convert KeyValuePairs to KeyValuePairsView */
+KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
+
 /**
  * Version Definition - This is used to recognize whether a stored blob of a
  * TileFeatureLayer should be parsed by this version of the mapget library.
@@ -256,15 +259,6 @@ struct LayerInfo
         KeyValueViewPairs const& featureIdParts,
         bool validateForNewFeature,
         uint32_t compositionMatchStartIndex = 0);
-
-    /**
-     * Convert a FeatureId string representation like Road.565665.1 to KeyValuePairs.
-     * This function returns the first ID composition for the feature type which can
-     * absorb exactly all of the ID parts, *using either all or none of the optional parts*.
-     * @param featureIdString Stringified feature id to parse.
-     */
-    std::optional<std::pair<std::string_view, KeyValueViewPairs>> decodeFeatureId(
-        const std::string_view& featureIdString);
 
     /** Create LayerInfo from JSON. */
     static std::shared_ptr<LayerInfo> fromJson(const nlohmann::json& j, std::string const& layerId="");

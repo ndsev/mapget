@@ -605,17 +605,7 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& qu
 model_ptr<Feature>
 TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryIdParts) const
 {
-    // Convert KeyValuePairs to KeyValuePairsView
-    KeyValueViewPairs kvpView;
-    for (auto const& [k, v] : queryIdParts) {
-        std::visit([&kvpView, &k](auto&& vv){
-            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string>)
-                kvpView.emplace_back(k, std::string_view(vv));
-            else
-                kvpView.emplace_back(k, vv);
-        }, v);
-    }
-    return find(type, kvpView);
+    return find(type, castToKeyValueView(queryIdParts));
 }
 
 std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::string_view& typeId) const
