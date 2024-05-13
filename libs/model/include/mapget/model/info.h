@@ -109,6 +109,15 @@ struct IdPart
     [[nodiscard]] nlohmann::json toJson() const;
 
     /**
+     * Check whether the given value satisfies the constraints of this
+     * IdPart specification. The value will be converted to an integer if provided
+     * as a string, but not vice versa. Returns true and the correct converted value
+     * written into val if the validation succeeds, false otherwise.
+     */
+    bool validate(std::variant<int64_t, std::string_view>& val, std::string* error = nullptr) const;
+    bool validate(std::variant<int64_t, std::string>& val, std::string* error = nullptr) const;
+
+    /**
      * Check that starting from a given index, the parts of an id composition
      * match the featureIdParts segment from start for the given length.
      */
@@ -116,7 +125,8 @@ struct IdPart
         std::vector<IdPart> const& candidateComposition,
         uint32_t compositionMatchStartIdx,
         KeyValueViewPairs const& featureIdParts,
-        size_t matchLength);
+        size_t matchLength,
+        bool requireCompositionEnd);
 };
 
 /** Structure to represent the feature type info */

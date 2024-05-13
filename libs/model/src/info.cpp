@@ -113,7 +113,8 @@ bool IdPart::idPartsMatchComposition(
     const std::vector<IdPart>& candidateComposition,
     uint32_t compositionMatchStartIdx,
     const KeyValueViewPairs& featureIdParts,
-    size_t matchLength)
+    size_t matchLength,
+    bool requireCompositionEnd)
 {
     auto featureIdIter = featureIdParts.begin();
     auto compositionIter = candidateComposition.begin();
@@ -124,61 +125,130 @@ bool IdPart::idPartsMatchComposition(
     }
 
     while (matchLength > 0 && compositionIter != candidateComposition.end()) {
-        // Have we exhausted feature ID parts while there's still composition parts?
+        // Have we exhausted feature ID parts?
         if (featureIdIter == featureIdParts.end()) {
             return false;
         }
 
-        auto& [idPartKey, idPartValue] = *featureIdIter;
+        auto [idPartKey, idPartValue] = *featureIdIter;
 
         // Does this ID part's field name match?
         if (compositionIter->idPartLabel_ != idPartKey) {
+            if (compositionIter->isOptional_) {
+                ++compositionIter;
+                continue;
+            }
             return false;
         }
 
         // Does the ID part's value match?
-        auto& compositionDataType = compositionIter->datatype_;
-
-        if (std::holds_alternative<int64_t>(idPartValue)) {
-            auto value = std::get<int64_t>(idPartValue);
-            switch (compositionDataType) {
-            case IdPartDataType::I32:
-                // Value must fit an I32.
-                if (value < INT32_MIN || value > INT32_MAX) {
-                    return false;
-                }
-                break;
-            case IdPartDataType::U32:
-                if (value < 0 || value > UINT32_MAX) {
-                    return false;
-                }
-                break;
-            case IdPartDataType::U64:
-                if (value < 0 || value > UINT64_MAX) {
-                    return false;
-                }
-                break;
-            default:;
-            }
-        }
-        else if (std::holds_alternative<std::string_view>(idPartValue)) {
-            auto value = std::get<std::string_view>(idPartValue);
-            // UUID128 should be a 128 bit sequence.
-            if (compositionDataType == IdPartDataType::UUID128 && value.size() != 16) {
-                return false;
-            }
-        }
-        else {
-            throw logRuntimeError("Id part data type not supported!");
-        }
+        if (!compositionIter->validate(idPartValue))
+            return false;
 
         ++featureIdIter;
         ++compositionIter;
         --matchLength;
     }
 
-    // Match means we either checked the required length, or all the values.
+    if (requireCompositionEnd) {
+        while (compositionIter != candidateComposition.end()) {
+            if (!compositionIter->isOptional_)
+                return false;
+        }
+    }
+
     return matchLength == 0;
+}
+
+bool IdPart::validate(std::variant<int64_t, std::string>& val, std::string* error) const
+{
+    if (std::holds_alternative<std::string>(val)) {
+        auto& strVal = std::get<std::string>(val);
+        auto result = std::variant<int64_t, std::string_view>(strVal);
+        auto resultBool = validate(result, error);
+        // The string value may have been turned into an integer.
+        if (std::holds_alternative<int64_t>(result)) {
+            val = std::get<int64_t>(result);
+        }
+        return resultBool;
+    }
+    auto result = std::variant<int64_t, std::string_view>(std::get<int64_t>(val));
+    return validate(result, error);
+}
+
+bool IdPart::validate(std::variant<int64_t, std::string_view>& val, std::string* error) const
+{
+    std::optional<int64_t> intVal;
+    if (std::holds_alternative<std::string_view>(val)) {
+        intVal = from_chars<int64_t>(std::get<std::string_view>(val));
+    }
+    else {
+        intVal = std::get<int64_t>(val);
+    }
+
+    auto expectInteger = [this, &error, &intVal, &val](auto const minVal, auto const maxVal) -> bool {
+        if (!intVal) {
+            if (error)
+                *error = fmt::format(
+                    "Value '{}' for {} is not an integer!",
+                    std::get<std::string_view>(val),
+                    idPartLabel_);
+            return false;
+        }
+        if (intVal < minVal) {
+            if (error)
+                *error = fmt::format("Value {} for {} is smaller than allowed ({}).", *intVal, idPartLabel_, minVal);
+            return false;
+        }
+        if (intVal > maxVal) {
+            if (error)
+                *error = fmt::format("Value {} for {} is larger than allowed ({}).", *intVal, idPartLabel_, maxVal);
+            return false;
+        }
+        val = *intVal;
+        return true;
+    };
+
+    auto expectString = [this, &error, &val](auto const& validator) -> bool {
+        if (!std::holds_alternative<std::string_view>(val)) {
+            if (error)
+                *error = fmt::format(
+                    "Value for {} must be a string!",
+                    idPartLabel_);
+            return false;
+        }
+        return validator(std::get<std::string_view>(val), error);
+    };
+
+    auto expectUuid128 = [&expectString]() -> bool {
+        return expectString([](auto const& strVal, auto error){
+            if (strVal.size() != 16) {
+                if (error)
+                    *error = fmt::format("Value for {} must have 16 characters!", strVal);
+                return false;
+            }
+            return true;
+        });
+    };
+
+    switch (datatype_) {
+    case IdPartDataType::I32:
+        return expectInteger(INT32_MIN, INT32_MAX);
+    case IdPartDataType::U32:
+        return expectInteger(0, INT32_MAX);
+    case IdPartDataType::U64:
+        return expectInteger(0, INT64_MAX);
+    case IdPartDataType::I64:
+        return expectInteger(INT64_MIN, INT64_MAX);
+    case IdPartDataType::UUID128:
+        return expectUuid128();
+    case IdPartDataType::STR:
+        return expectString([](auto s, auto e){return true;});
+    }
+
+    if (error)
+        *error = fmt::format("Part datatype {} is not supported.", static_cast<std::underlying_type_t<IdPartDataType>>(datatype_));
+    return false;
 }
 
 FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
@@ -321,7 +391,8 @@ bool LayerInfo::validFeatureId(
             candidateComposition,
             compositionMatchStartIndex,
             featureIdParts,
-            featureIdParts.size()))
+            featureIdParts.size(),
+            true))
         {
             return true;
         }
