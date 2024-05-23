@@ -1,4 +1,5 @@
 #include "service.h"
+#include "locate.h"
 #include "mapget/log.h"
 
 #include <optional>
@@ -173,7 +174,7 @@ struct Service::Controller
         return result;
     }
 
-    virtual void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile) = 0;
+    virtual void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) = 0;
 };
 
 struct Service::Worker
@@ -228,7 +229,7 @@ struct Service::Worker
             if (!result)
                 throw logRuntimeError("DataSource::get() returned null.");
 
-            controller_.loadAddOnTiles(result);
+            controller_.loadAddOnTiles(result, *dataSource_);
 
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
@@ -374,7 +375,7 @@ struct Service::Impl : public Service::Controller
         return std::move(infos);
     }
 
-    void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile) override {
+    void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) override {
         for (auto const& auxDataSource : addOnDataSources_) {
             if (auxDataSource->info().mapId_ == baseTile->mapId()) {
                 auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
@@ -395,10 +396,34 @@ struct Service::Impl : public Service::Controller
 
                 // Adopt new attributes, features and relations for the base feature
                 // from the auxiliary feature.
-                for (auto const& auxFeature : *auxTile) {
-                    auto baseFeature = baseTile->find(
-                        auxFeature->id()->typeId(),
-                        auxFeature->id()->keyValuePairs());
+                for (auto const& auxFeature : *auxTile)
+                {
+                    auto auxFeatureType = auxFeature->id()->typeId();
+                    auto auxFeatureKvp = auxFeature->id()->keyValuePairs();
+
+                    // Convert the feature reference to a direct one on-demand.
+                    // If the ID does not validate as a primary feature id, we assume
+                    // that it uses a secondary ID scheme for which a locate-call
+                    // is required.
+                    auto idIsIndirect = !baseTile->layerInfo()->validFeatureId(
+                        auxFeatureType,
+                        auxFeatureKvp,
+                        true);
+                    if (idIsIndirect)
+                    {
+                        auto locateResponse = baseDataSource.locate(LocateRequest(
+                            auxTile->mapId(),
+                            std::string(auxFeatureType),
+                            castToKeyValue(auxFeatureKvp)));
+                        if (!locateResponse) {
+                            log().warn("Could not locate indirect aux feature id {}", auxFeature->id()->toString());
+                            continue;
+                        }
+                        auxFeatureType = locateResponse->typeId_;
+                        auxFeatureKvp = castToKeyValueView(locateResponse->featureId_);
+                    }
+
+                    auto baseFeature = baseTile->find(auxFeatureType, auxFeatureKvp);
                     if (!baseFeature)
                         continue;
 
@@ -495,7 +520,7 @@ std::vector<LocateResponse> Service::locate(LocateRequest const& req)
 {
     std::vector<LocateResponse> results;
     for (auto const& [ds, info] : impl_->dataSourceInfo_)
-        if (info.mapId_ == req.mapId_)
+        if (info.mapId_ == req.mapId_ && !info.isAddOn_)
             if (auto location = ds->locate(req))
                 results.emplace_back(*location);
     return results;
