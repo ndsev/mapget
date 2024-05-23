@@ -23,8 +23,11 @@ using KeyValueViewPairs =
 using KeyValuePairs =
     sfl::small_vector<std::pair<std::string, std::variant<int64_t, std::string>>, 16>;
 
-/** Convert KeyValuePairs to KeyValuePairsView */
+/** Convert KeyValuePairs to KeyValuePairsView. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
+
+/** Convert KeyValueViewPairs to KeyValuePairs. */
+KeyValuePairs castToKeyValue(KeyValueViewPairs const& kvp);
 
 /**
  * Version Definition - This is used to recognize whether a stored blob of a

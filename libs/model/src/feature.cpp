@@ -322,6 +322,23 @@ model_ptr<Geometry> Feature::firstGeometry() const
     return result;
 }
 
+std::optional<std::vector<model_ptr<Relation>>>
+Feature::filterRelations(const std::string_view& name) const
+{
+    std::vector<model_ptr<Relation>> result;
+    result.reserve(numRelations());
+
+    forEachRelation([&name, &result](auto&& rel){
+        if (rel->name() == name)
+            result.push_back(rel);
+        return true;
+    });
+
+    if (result.empty())
+        return {};
+    return result;
+}
+
 //////////////////////////////////////////
 
 Feature::FeaturePropertyView::FeaturePropertyView(

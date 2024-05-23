@@ -36,14 +36,14 @@ public:
     /**
      * Attribute validity accessors.
      */
-    bool hasValidity() const;
-    model_ptr<Geometry> validity() const;
+    [[nodiscard]] bool hasValidity() const;
+    [[nodiscard]] model_ptr<Geometry> validity() const;
     void setValidity(model_ptr<Geometry> const& validityGeom);
 
     /**
      * Read-only attribute name accessor.
      */
-    std::string_view name() const;
+    [[nodiscard]] std::string_view name() const;
 
     /**
      * Iterate over the attribute's extra fields. The passed lambda must return

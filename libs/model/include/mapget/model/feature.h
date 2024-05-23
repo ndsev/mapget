@@ -137,6 +137,9 @@ public:
     bool forEachRelation(std::function<bool(model_ptr<Relation> const&)> const& callback) const;
 
     /** Get the number of added relations. */
+    [[nodiscard]] std::optional<std::vector<model_ptr<Relation>>> filterRelations(std::string_view const& name) const;
+
+    /** Get the number of added relations. */
     [[nodiscard]] uint32_t numRelations() const;
 
     /** Get a relation at a specific index. */

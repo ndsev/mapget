@@ -23,6 +23,10 @@ LocateRequest::LocateRequest(const nlohmann::json& j)
     }
 }
 
+LocateRequest::LocateRequest(std::string mapId, std::string typeId, KeyValuePairs featureId) :
+    mapId_(std::move(mapId)), typeId_(std::move(typeId)), featureId_(std::move(featureId))
+{}
+
 nlohmann::json LocateRequest::serialize() const
 {
     nlohmann::json featureId = nlohmann::json::array();
