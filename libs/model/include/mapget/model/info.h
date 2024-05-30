@@ -22,9 +22,14 @@ using KeyValueViewPairs =
     sfl::small_vector<std::pair<std::string_view, std::variant<int64_t, std::string_view>>, 16>;
 using KeyValuePairs =
     sfl::small_vector<std::pair<std::string, std::variant<int64_t, std::string>>, 16>;
+using KeyValuePairVec =
+    std::vector<std::pair<std::string, std::variant<int64_t, std::string>>>;
 
 /** Convert KeyValuePairs to KeyValuePairsView. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
+
+/** Convert KeyValuePairs to KeyValuePairsView. */
+KeyValueViewPairs castToKeyValueView(KeyValuePairVec const& kvp);
 
 /** Convert KeyValueViewPairs to KeyValuePairs. */
 KeyValuePairs castToKeyValue(KeyValueViewPairs const& kvp);

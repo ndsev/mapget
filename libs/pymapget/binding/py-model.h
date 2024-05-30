@@ -59,13 +59,13 @@ namespace
 using ModelVariant =
     std::variant<bool, int16_t, int64_t, double, std::string_view, ModelNode::Ptr >;
 
-ModelVariant py_value_to_model(py::object const& py_value, TileFeatureLayer& model)
+ModelVariant pyValueToModel(py::object const& pyValue, TileFeatureLayer& model)
 {
-    if (py::isinstance<py::bool_>(py_value)) {
-        return py_value.cast<bool>();
+    if (py::isinstance<py::bool_>(pyValue)) {
+        return pyValue.cast<bool>();
     }
-    else if (py::isinstance<py::int_>(py_value)) {
-        auto value = py_value.cast<int64_t>();
+    else if (py::isinstance<py::int_>(pyValue)) {
+        auto value = pyValue.cast<int64_t>();
         if (value >= INT16_MIN && value <= INT16_MAX) {
             return static_cast<int16_t>(value);
         }
@@ -73,22 +73,22 @@ ModelVariant py_value_to_model(py::object const& py_value, TileFeatureLayer& mod
             return value;
         }
     }
-    else if (py::isinstance<py::float_>(py_value)) {
-        return py_value.cast<double>();
+    else if (py::isinstance<py::float_>(pyValue)) {
+        return pyValue.cast<double>();
     }
-    else if (py::isinstance<py::str>(py_value)) {
-        return py_value.cast<std::string_view>();
+    else if (py::isinstance<py::str>(pyValue)) {
+        return pyValue.cast<std::string_view>();
     }
-    else if (py::isinstance<BoundModelNode>(py_value)) {
-        return py_value.cast<BoundModelNode&>().node();
+    else if (py::isinstance<BoundModelNode>(pyValue)) {
+        return pyValue.cast<BoundModelNode&>().node();
     }
-    else if (py::isinstance<py::list>(py_value)) {
+    else if (py::isinstance<py::list>(pyValue)) {
         // Recursively convert Python list to array.
-        auto list = py_value.cast<py::list>();
+        auto list = pyValue.cast<py::list>();
         auto arr = model.newArray(list.size());
 
         for (auto const& item : list) {
-            auto value = py_value_to_model(py::reinterpret_borrow<py::object>(item), model);
+            auto value = pyValueToModel(py::reinterpret_borrow<py::object>(item), model);
             std::visit([&arr](auto&& vv){
                 arr->append(vv);
             }, value);
@@ -96,18 +96,18 @@ ModelVariant py_value_to_model(py::object const& py_value, TileFeatureLayer& mod
 
         return ModelNode::Ptr(arr);
     }
-    else if (py::isinstance<py::dict>(py_value)) {
+    else if (py::isinstance<py::dict>(pyValue)) {
         // Recursively convert Python dict to object.
-        auto dict = py_value.cast<py::dict>();
+        auto dict = pyValue.cast<py::dict>();
         auto obj = model.newObject(dict.size());
 
         for (auto const& [anyKey, anyValue] : dict) {
             std::string key = py::str(anyKey);
-            auto vv = py_value_to_model(py::reinterpret_borrow<py::object>(anyValue), model);
+            auto vv = pyValueToModel(py::reinterpret_borrow<py::object>(anyValue), model);
             std::visit(
                 [&obj, &key](auto&& value)
                 {
-                    if constexpr (std::is_same<std::decay_t<decltype(value)>, bool>::value)
+                    if constexpr (std::is_same_v<std::decay_t<decltype(value)>, bool>)
                         obj->addBool(key, value);
                     else
                         obj->addField(key, value);
@@ -133,11 +133,11 @@ struct BoundObject : public BoundModelNode
             "add_field",
             [](ObjClass& self, std::string_view const& name, py::object const& py_value)
             {
-                auto vv = py_value_to_model(py_value, *self.model());
+                auto vv = pyValueToModel(py_value, *self.model());
                 std::visit(
                     [&self, &name](auto&& value)
                     {
-                        if constexpr (std::is_same<std::decay_t<decltype(value)>, bool>::value) {
+                        if constexpr (std::is_same_v<std::decay_t<decltype(value)>, bool>) {
                             self.modelNodePtr_->addBool(name, value);
                         }
                         else {
@@ -172,9 +172,7 @@ struct BoundArray : public BoundModelNode
             .def(
                 "append",
                 [](BoundArray& self, py::object const& py_value) {
-                    auto vv = py_value_to_model(
-                        py_value,
-                        *self.model());
+                    auto vv = pyValueToModel(py_value, *self.model());
                     std::visit([&self](auto&& value) { self.modelNodePtr_->append(value); }, vv);
                 },
                 py::arg("value"),

@@ -494,4 +494,18 @@ KeyValuePairs castToKeyValue(const KeyValueViewPairs& kvpView)
     return kvp;
 }
 
+KeyValueViewPairs castToKeyValueView(const KeyValuePairVec& kvp)
+{
+    KeyValueViewPairs kvpView;
+    for (auto const& [k, v] : kvp) {
+        std::visit([&kvpView, &k](auto&& vv){
+            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string>)
+               kvpView.emplace_back(k, std::string_view(vv));
+            else
+               kvpView.emplace_back(k, vv);
+        }, v);
+    }
+    return kvpView;
+}
+
 }
