@@ -95,15 +95,16 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "set_prefix",
-            [](TileFeatureLayer& self, KeyValueViewPairs const& v) { self.setIdPrefix(v); },
+            [](TileFeatureLayer& self, KeyValuePairVec const& v) {
+                self.setIdPrefix(castToKeyValueView(v)); },
             py::arg("prefix"),
             R"pbdoc(
             Set common id prefix for all features in this layer.
         )pbdoc")
         .def(
             "new_feature",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValueViewPairs const& idParts)
-            { return BoundFeature(self.newFeature(typeId, idParts)); },
+            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairVec const& idParts)
+            { return BoundFeature(self.newFeature(typeId, castToKeyValueView(idParts))); },
             py::arg("type_id"),
             py::arg("feature_id_parts"),
             R"pbdoc(
@@ -113,8 +114,8 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_feature_id",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValueViewPairs const& idParts)
-            { return BoundFeatureId(self.newFeatureId(typeId, idParts)); },
+            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairVec const& idParts)
+            { return BoundFeatureId(self.newFeatureId(typeId, castToKeyValueView(idParts))); },
             py::arg("type_id"),
             py::arg("feature_id_parts"),
             R"pbdoc(

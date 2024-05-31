@@ -149,6 +149,12 @@ struct BoundObject : public BoundModelNode
             py::arg("name"),
             py::arg("value"),
             "Add a field to the object.");
+        c.def(
+            "extend",
+            [](ObjClass& self, BoundObject const& py_value)
+            { self.modelNodePtr_->extend(py_value.modelNodePtr_); },
+            py::arg("other_object"),
+            "add all fields from `other_object` to this object.");
     }
 
     static void bind(py::module_& m)
