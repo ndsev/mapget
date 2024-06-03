@@ -1,8 +1,11 @@
 #include "feature.h"
 #include "featurelayer.h"
+#include "geometry.h"
 
 namespace mapget
 {
+
+using GeomType = Geometry::GeomType;
 
 Feature::Feature(Feature::Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(&d)
@@ -20,7 +23,7 @@ std::string_view mapget::Feature::typeId() const
     return model().resolveFeatureId(*Ptr::make(model_, data_->id_))->typeId();
 }
 
-model_ptr<simfil::GeometryCollection> Feature::geom()
+model_ptr<GeometryCollection> Feature::geom()
 {
     if (!data_->geom_) {
         auto result = model().newGeometryCollection();
@@ -35,7 +38,7 @@ model_ptr<GeometryCollection> Feature::geom() const
 {
     if (!data_->geom_)
         return {};
-    return model().resolveGeometryCollection(Ptr::make(model_, data_->geom_));
+    return model().resolveGeometryCollection(*Ptr::make(model_, data_->geom_));
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
@@ -161,7 +164,7 @@ void Feature::updateFields() {
     fields_.clear();
 
     // Add type field
-    fields_.emplace_back(Fields::Type, simfil::ValueNode(std::string_view("Feature"), model_));
+    fields_.emplace_back(Fields::TypeStr, simfil::ValueNode(std::string_view("Feature"), model_));
 
     // Add id field
     fields_.emplace_back(Fields::IdStr, Ptr::make(model_, data_->id_));
@@ -193,7 +196,7 @@ void Feature::updateFields() {
 
     // Add other fields
     if (data_->geom_)
-        fields_.emplace_back(Fields::Geometry, Ptr::make(model_, data_->geom_));
+        fields_.emplace_back(Fields::GeometryStr, Ptr::make(model_, data_->geom_));
     if (data_->attrLayers_ || data_->attrs_)
         fields_.emplace_back(
             Fields::PropertiesStr,
@@ -214,6 +217,11 @@ nlohmann::json Feature::toGeoJson()
 
 nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)
 {
+    // We can identify geometry via its column
+    //if (n.addr().column() == TileFeatureLayer::Geometries) {
+    //    return model().resolveGeometry(n)->toGeoJson();
+    //}
+    
     if (n.type() == simfil::ValueType::Object) {
         auto j = nlohmann::json::object();
         for (const auto& [fieldId, childNode] : n.fields()) {
@@ -243,30 +251,30 @@ nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)
     }
 }
 
-void Feature::addPoint(const Point& p) {
+void Feature::addPoint(const Point<>& p) {
     auto newGeom = geom()->newGeometry(GeomType::Points, 0);
     newGeom->append(p);
 }
 
-void Feature::addPoints(const std::vector<Point>& points) {
+void Feature::addPoints(const std::vector<Point<>>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Points, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addLine(const std::vector<Point>& points) {
+void Feature::addLine(const std::vector<Point<>>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Line, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addMesh(const std::vector<Point>& points) {
+void Feature::addMesh(const std::vector<Point<>>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Mesh, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addPoly(const std::vector<Point>& points) {
+void Feature::addPoly(const std::vector<Point<>>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Polygon, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);

@@ -2,12 +2,10 @@
 
 #include <cstdint>
 
-#include "simfil/model/point.h"
+#include "point.h"
 
 namespace mapget
 {
-
-using Point = simfil::geo::Point<double>;
 
 /**
  * TileId class - represents a rectangular area on the globe, according to
@@ -25,6 +23,8 @@ using Point = simfil::geo::Point<double>;
  */
 struct TileId
 {
+    using PointT = Point<double>;
+
     /**
      * Constructor to initialize TileId with x, y, z
      */
@@ -46,22 +46,22 @@ struct TileId
     /**
      * Get the center of the tile in Wgs84.
      */
-    [[nodiscard]] Point center() const;
+    [[nodiscard]] PointT center() const;
 
     /**
      * Get the south-west (minimum) corner of the tile in Wgs84.
      */
-    [[nodiscard]] Point sw() const;
+    [[nodiscard]] PointT sw() const;
 
     /**
      * Get the north-east (maximum) corner of the tile in Wgs84.
      */
-    [[nodiscard]] Point ne() const;
+    [[nodiscard]] PointT ne() const;
 
     /**
      * Get the size of the tile in Wgs84.
      */
-    [[nodiscard]] Point size() const;
+    [[nodiscard]] PointT size() const;
 
     /**
      * Function to get x (column) component of the TileId

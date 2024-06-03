@@ -64,7 +64,7 @@ set(SIMFIL_WITH_MODEL_JSON YES)
 if (NOT TARGET simfil)
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "5af9ada73898c952657d1bf1358205e54e82a584"
+    GIT_TAG        "simfil-80-move-ext-geo"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()

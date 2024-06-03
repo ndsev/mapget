@@ -4,8 +4,7 @@
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
 #include "mapget/log.h"
-
-#include <iostream>
+#include "nlohmann/json_fwd.hpp"
 
 using namespace mapget;
 
@@ -104,8 +103,22 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     feature1->addPoint({41.5, 10.5, 0});
     feature1->addPoints({{41.5, 10.5, 0}, {41.6, 10.7}});
     feature1->addLine({{41.5, 10.5, 0}, {41.6, 10.7}});
+
     feature1->addMesh({{41.5, 10.5, 0}, {41.6, 10.7}, {41.5, 10.3}});
+
     feature1->addPoly({{41.5, 10.5, 0}, {41.6, 10.7}, {41.5, 10.3}, {41.8, 10.9}});
+
+    // Unclosed polygon in CW order
+    feature1->addPoly({{0, 1}, {1, 1}, {1, 0}, {0, 0}});
+
+    // Closed polygon in CCW order
+    feature1->addPoly({{1, 0}, {2, 0}, {2, 1}, {1, 1}, {1, 0}});
+
+    // Closed polygon in CW order with elevation
+    feature1->addPoly({{2, 1, 0}, {3, 1, 1}, {3, 0, 2}, {2, 0, 3}, {2, 1, 0}});
+
+    // Mesh of multiple triangles
+    feature1->addMesh({{3, 0, 0}, {4, 0, 0}, {4, 1, 0}, {4, 1, 0}, {3, 1, 0}, {3, 0, 0}});
 
     // Add a fixed attribute
     feature1->attributes()->addField("main_ingredient", "Pepper");
@@ -127,16 +140,31 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("firstGeometry")
     {
         auto firstGeom = feature1->firstGeometry();
-        REQUIRE(firstGeom->geomType() == GeomType::Line);
+        REQUIRE(firstGeom->geomType() == Geometry::GeomType::Line);
     }
 
     SECTION("toGeoJSON")
     {
-        constexpr auto expected = R"({"areaId":"TheBestArea","geometry":{"geometries":[{"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0]],"type":"MultiPolygon"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0]],"type":"Polygon"}],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","layerId":"WayLayer","mapId":"Tropico","properties":{"layer":{"cheese":{"mozzarella":{"direction":"POSITIVE","smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42})";
-        std::stringstream featureGeoJson;
-        featureGeoJson << feature1->toGeoJson();
-        log().trace(featureGeoJson.str());
-        REQUIRE(featureGeoJson.str() == expected);
+        constexpr auto expected =
+            R"({"areaId":"TheBestArea","geometry":{"geometries":[)"
+            R"({"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},)"
+            R"({"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"LineString"},)"
+            R"({"coordinates":[[[[41.5,10.5,0.0],[41.5,10.299999997019768,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.5,0.0]]]],"type":"MultiPolygon"},)"
+            R"({"coordinates":[[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0],[41.5,10.5,0.0]]],"type":"Polygon"},)"
+            R"({"coordinates":[[[0,1,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]]],"type":"Polygon"},)"  // Unclosed, CW
+            R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"type":"Polygon"},)"  // Closed, CCW
+            R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"type":"Polygon"},)"  // Closed, CW, Z!=0
+            R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"type":"MultiPolygon"})"  // Mesh
+            R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":"POSITIVE","smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
+            R"("layerId":"WayLayer","mapId":"Tropico"})";
+
+        auto res = feature1->toGeoJson();
+        auto exp = nlohmann::json::parse(expected);
+
+        INFO(nlohmann::json::diff( exp, res).dump());
+        REQUIRE(res == exp);
     }
 
     SECTION("Basic field access")
@@ -294,7 +322,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 }
 
 // Helper function to compare two points with some tolerance
-void REQUIRE_EQUAL(const Point& p1, const Point& p2, double eps = 1e-6) {
+void REQUIRE_EQUAL(const Point<>& p1, const Point<>& p2, double eps = 1e-6) {
     REQUIRE(std::abs(p1.x - p2.x) < eps);
     REQUIRE(std::abs(p1.y - p2.y) < eps);
 }

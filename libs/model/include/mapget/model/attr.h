@@ -5,6 +5,8 @@
 namespace mapget
 {
 
+class Geometry;
+
 /**
  * Represents a feature attribute which belongs to an
  * AttributeLayer, and may have typed `direction` and

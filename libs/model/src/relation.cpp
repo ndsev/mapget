@@ -14,7 +14,7 @@ model_ptr<Geometry> Relation::sourceValidity() const
 {
     if (!hasSourceValidity())
         throw std::runtime_error("Attempt to access null validity.");
-    return model().resolveGeometry(model_ptr<simfil::ModelNode>::make(model_, data_->sourceValidity_));
+    return model().resolveGeometry(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceValidity_));
 }
 
 bool Relation::hasSourceValidity() const
@@ -31,7 +31,7 @@ model_ptr<Geometry> Relation::targetValidity() const
 {
     if (!hasTargetValidity())
         throw std::runtime_error("Attempt to access null validity.");
-    return model().resolveGeometry(model_ptr<simfil::ModelNode>::make(model_, data_->targetValidity_));
+    return model().resolveGeometry(*model_ptr<simfil::ModelNode>::make(model_, data_->targetValidity_));
 }
 
 bool Relation::hasTargetValidity() const

@@ -71,11 +71,11 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, Data
     TileLayerStream::Reader tileReader(
         [&dataSource, &tileKey](auto&& mapId, auto&& layerId){
             if (dataSource.mapId_ != mapId) {
-                raise(fmt::format(
+                raiseFmt(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
                     mapId,
                     tileKey.tileId_.value_,
-                    dataSource.mapId_));
+                    dataSource.mapId_);
             }
             return dataSource.getLayer(std::string(layerId));
         },
