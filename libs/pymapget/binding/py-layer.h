@@ -102,6 +102,34 @@ void bindTileLayer(py::module_& m)
             Set common id prefix for all features in this layer.
         )pbdoc")
         .def(
+            "new_value",
+            [](TileFeatureLayer& self, py::object const& pyValue) -> BoundModelNodeBase
+            {
+                auto vv = pyValueToModel(pyValue, self);
+                BoundModelNodeBase result;
+                std::visit(
+                    [&self, &result](auto&& value)
+                    {
+                        if constexpr (
+                            std::is_same_v<std::decay_t<decltype(value)>, bool> ||
+                            std::is_same_v<std::decay_t<decltype(value)>, int16_t>)
+                            result.modelNodePtr_ = self.newSmallValue(value);
+                        else if constexpr (
+                            std::is_same_v<std::decay_t<decltype(value)>, ModelNode::Ptr>)
+                            throw logRuntimeError("Expecting scalar!");
+                        else
+                            result.modelNodePtr_ = self.newValue(value);
+                    },
+                    vv);
+                return result;
+            },
+            py::arg("value"),
+            R"pbdoc(
+            Creates a new feature and insert it into this tile layer. The unique identifying
+            information, prepended with the getIdPrefix, must conform to an existing
+            UniqueIdComposition for the feature typeId within the associated layer.
+        )pbdoc")
+        .def(
             "new_feature",
             [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairVec const& idParts)
             { return BoundFeature(self.newFeature(typeId, castToKeyValueView(idParts))); },

@@ -53,11 +53,8 @@ struct BoundModelNodeBase : public BoundModelNode
     shared_model_ptr<ModelNode> modelNodePtr_;
 };
 
-namespace
-{
-
 using ModelVariant =
-    std::variant<bool, int16_t, int64_t, double, std::string_view, ModelNode::Ptr >;
+    std::variant<bool, int16_t, int64_t, double, std::string_view, ModelNode::Ptr>;
 
 ModelVariant pyValueToModel(py::object const& pyValue, TileFeatureLayer& model)
 {
@@ -121,7 +118,6 @@ ModelVariant pyValueToModel(py::object const& pyValue, TileFeatureLayer& model)
         throw mapget::logRuntimeError("Unsupported Python type");
     }
 }
-}  // namespace
 
 template <typename NodeType = Object>
 struct BoundObject : public BoundModelNode
