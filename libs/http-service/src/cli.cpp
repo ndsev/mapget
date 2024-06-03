@@ -122,6 +122,7 @@ struct FetchCommand
 {
     std::string server_, map_, layer_;
     std::vector<uint64_t> tiles_;
+    bool mute_ = false;
 
     explicit FetchCommand(CLI::App& app)
     {
@@ -130,6 +131,8 @@ struct FetchCommand
             ->required();
         fetchCmd->add_option("-m,--map", map_, "Map to retrieve.")->required();
         fetchCmd->add_option("-l,--layer", layer_, "Layer of the map to retrieve.")->required();
+        fetchCmd->add_option("--mute",
+            mute_, "Mute the actual tile GeoJSON output.");
         fetchCmd
             ->add_option(
                 "-t,--tile",
@@ -143,7 +146,7 @@ struct FetchCommand
     {
         if (log().level() <= spdlog::level::debug) {
             // Skips building the tile list string if it will not be logged.
-            std::string tileList = "";
+            std::string tileList;
             for (auto& tile : tiles_) {
                 tileList += std::to_string(tile) + " ";
             }
@@ -164,11 +167,13 @@ struct FetchCommand
             map_,
             layer_,
             std::vector<TileId>{tiles_.begin(), tiles_.end()},
-            [](auto&& tile)
+            [this](TileFeatureLayer::Ptr const& tile)
             {
-                if (log().level() == spdlog::level::trace) {
-                    log().trace(tile->toGeoJson().dump());
-                }
+                if (!mute_)
+                    std::cout << tile->toGeoJson().dump() << std::endl;
+                if (tile->error())
+                    throw logRuntimeError(
+                        fmt::format("Tile {}: {}", tile->id().toString(), *tile->error()));
             });
         cli.request(request)->wait();
 
@@ -208,6 +213,9 @@ int runFromCommandLine(std::vector<std::string> args)
     }
     catch (const CLI::ParseError& e) {
         return app.exit(e);
+    }
+    catch (std::runtime_error const& e) {
+        return 1;
     }
     return 0;
 }

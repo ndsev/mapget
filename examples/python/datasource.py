@@ -52,7 +52,8 @@ def handle_tile_request(tile: mapget.TileFeatureLayer):
     attr.add_field("speedLimit", 50)
 
     # Add a child feature ID
-    feature.children().append(tile.new_feature_id("Way", [("wayId", 10)]))
+    # TODO: Add Python bindings for relations.
+    # feature.children().append(tile.new_feature_id("Way", [("wayId", 10)]))
 
 
 # Instantiate a data source with a minimal mandatory set
