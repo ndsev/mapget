@@ -58,6 +58,18 @@ bool MapTileKey::operator<(const MapTileKey& other) const
         std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
 }
 
+bool MapTileKey::operator==(const MapTileKey& other) const
+{
+    return std::tie(layer_, mapId_, layerId_, tileId_) ==
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+}
+
+bool MapTileKey::operator!=(const MapTileKey& other) const
+{
+    return std::tie(layer_, mapId_, layerId_, tileId_) !=
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+}
+
 TileLayer::TileLayer(
     const TileId& id,
     std::string nodeId,

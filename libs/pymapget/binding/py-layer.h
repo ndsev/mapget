@@ -105,7 +105,7 @@ void bindTileLayer(py::module_& m)
             "new_value",
             [](TileFeatureLayer& self, py::object const& pyValue) -> BoundModelNodeBase
             {
-                auto vv = pyValueToModel(pyValue, self);
+                auto cppValue = pyValueToModel(pyValue, self);
                 BoundModelNodeBase result;
                 std::visit(
                     [&self, &result](auto&& value)
@@ -116,18 +116,17 @@ void bindTileLayer(py::module_& m)
                             result.modelNodePtr_ = self.newSmallValue(value);
                         else if constexpr (
                             std::is_same_v<std::decay_t<decltype(value)>, ModelNode::Ptr>)
-                            throw logRuntimeError("Expecting scalar!");
+                            result.modelNodePtr_ = value;
                         else
                             result.modelNodePtr_ = self.newValue(value);
                     },
-                    vv);
+                    cppValue);
                 return result;
             },
             py::arg("value"),
             R"pbdoc(
-            Creates a new feature and insert it into this tile layer. The unique identifying
-            information, prepended with the getIdPrefix, must conform to an existing
-            UniqueIdComposition for the feature typeId within the associated layer.
+            Create a new model value from any Python value (Supported are:
+            List, Dict with string-convertible key, Int, Str, Float, Bool).
         )pbdoc")
         .def(
             "new_feature",

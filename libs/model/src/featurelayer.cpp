@@ -801,4 +801,71 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
     return newCacheNode;
 }
 
+void TileFeatureLayer::clone(
+    std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+    const TileFeatureLayer::Ptr& otherLayer,
+    const Feature& otherFeature,
+    const std::string_view& type,
+    KeyValueViewPairs idParts)
+{
+    auto cloneTarget = find(type, idParts);
+    if (!cloneTarget) {
+        // Remove tile ID prefix from idParts to create a new feature.
+        if (getIdPrefix() && idParts.size() >= getIdPrefix()->size()) {
+            idParts = KeyValueViewPairs(
+                idParts.begin()+getIdPrefix()->size(), idParts.end());
+        }
+        cloneTarget = newFeature(type, idParts);
+    }
+
+    auto lookupOrClone =
+        [&](simfil::ModelNode::Ptr const& n) -> simfil::ModelNode::Ptr
+    {
+        return clone(clonedModelNodes, otherLayer, n);
+    };
+
+    // Adopt attributes
+    if (auto attrs = otherFeature.attributes()) {
+        auto baseAttrs = cloneTarget->attributes();
+        for (auto const& [key, value] : attrs->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                baseAttrs->addField(*keyStr, lookupOrClone(value));
+            }
+        }
+    }
+
+    // Adopt attribute layers
+    if (auto attrLayers = otherFeature.attributeLayers()) {
+        auto baseAttrLayers = cloneTarget->attributeLayers();
+        for (auto const& [key, value] : attrLayers->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                baseAttrLayers->addField(*keyStr, lookupOrClone(value));
+            }
+        }
+    }
+
+    // Adopt geometries
+    if (auto geom = otherFeature.geom()) {
+        auto baseGeom = cloneTarget->geom();
+        geom->forEachGeometry(
+            [this, &baseGeom, &lookupOrClone](auto&& geomElement)
+            {
+                baseGeom->addGeometry(
+                    resolveGeometry(lookupOrClone(geomElement)));
+                return true;
+            });
+    }
+
+    // Adopt relations
+    if (otherFeature.numRelations()) {
+        otherFeature.forEachRelation(
+            [this, &cloneTarget, &lookupOrClone](auto&& rel)
+            {
+                auto newRel = resolveRelation(*lookupOrClone(rel));
+                cloneTarget->addRelation(newRel);
+                return true;
+            });
+    }
+}
+
 }

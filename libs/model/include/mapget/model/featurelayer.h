@@ -193,6 +193,19 @@ public:
     void setFieldNames(std::shared_ptr<simfil::Fields> const& newDict) override;
 
     /**
+     * Create a copy of otherFeature in this layer with the given type
+     * and id-parts. If a feature with that ID already exists in this layer,
+     * the attributes/relations/geometries from otherFeature will simply
+     * be appended to the existing feature.
+     */
+    void clone(
+        std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+        TileFeatureLayer::Ptr const& otherLayer,
+        Feature const& otherFeature,
+        std::string_view const& type,
+        KeyValueViewPairs idParts);
+
+    /**
      * Create a copy of otherNode (which lives in otherLayer) in this layer.
      * The clonedModelNodes dict may be provided to avoid repeated copies
      * of nodes which are referenced multiple times.

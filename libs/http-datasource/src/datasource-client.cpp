@@ -72,7 +72,7 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     return result;
 }
 
-std::optional<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
+std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
@@ -96,7 +96,12 @@ std::optional<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
         return {};
     }
 
-    return LocateResponse(responseJson);
+    // Parse the resulting responses.
+    std::vector<LocateResponse> responseVector;
+    for (auto const& responseJsonAlternative : responseJson) {
+        responseVector.emplace_back(responseJsonAlternative);
+    }
+    return responseVector;
 }
 
 RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
@@ -182,7 +187,7 @@ RemoteDataSourceProcess::get(MapTileKey const& k, Cache::Ptr& cache, DataSourceI
     return remoteSource_->get(k, cache, info);
 }
 
-std::optional<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)
+std::vector<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)
 {
     if (!remoteSource_)
         throw logRuntimeError("Remote data source is not initialized.");

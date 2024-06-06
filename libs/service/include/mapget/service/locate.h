@@ -38,7 +38,8 @@ class LocateResponse : public LocateRequest
 {
 public:
     explicit LocateResponse(nlohmann::json const& j);
-    LocateResponse(LocateRequest const& req);
+    LocateResponse(LocateResponse const& resp) = default;
+    explicit LocateResponse(LocateRequest const& req);
 
     MapTileKey tileKey_;
 

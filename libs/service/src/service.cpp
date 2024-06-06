@@ -389,85 +389,59 @@ struct Service::Impl : public Service::Controller
                 // names to the base tile. Since we cannot manipulate the original
                 // node's field dict, we have to create a new one based on a new
                 // artificial node id.
-                auto auxBaseNodeId = baseTile->nodeId() + "||||" + auxTile->nodeId();
+                auto auxBaseNodeId = baseTile->nodeId() + "|" + auxTile->nodeId();
                 auto auxBaseFieldDict = cache_->getFieldDict(auxBaseNodeId);
                 baseTile->setFieldNames(auxBaseFieldDict);
                 baseTile->setNodeId(auxBaseNodeId);
 
                 // Adopt new attributes, features and relations for the base feature
                 // from the auxiliary feature.
+                std::unordered_map<uint32_t, simfil::ModelNode::Ptr> clonedModelNodes;
                 for (auto const& auxFeature : *auxTile)
                 {
-                    auto auxFeatureType = auxFeature->id()->typeId();
-                    auto auxFeatureKvp = auxFeature->id()->keyValuePairs();
+                    // Note: A single secondary feature ID may resolve to multiple
+                    // primary feature IDs. So we keep a vector of aux feature ID info.
+                    std::vector<std::pair<std::string_view, KeyValueViewPairs>> auxFeatureIds = {
+                        {auxFeature->id()->typeId(), auxFeature->id()->keyValuePairs()}};
 
-                    // Convert the feature reference to a direct one on-demand.
+                    // Convert the feature reference to multiple direct ones on-demand.
                     // If the ID does not validate as a primary feature id, we assume
                     // that it uses a secondary ID scheme for which a locate-call
                     // is required.
                     auto idIsIndirect = !baseTile->layerInfo()->validFeatureId(
-                        auxFeatureType,
-                        auxFeatureKvp,
+                        auxFeatureIds[0].first,
+                        auxFeatureIds[0].second,
                         true);
+                    std::vector<LocateResponse> locateResponses;
                     if (idIsIndirect)
                     {
-                        auto locateResponse = baseDataSource.locate(LocateRequest(
+                        locateResponses = baseDataSource.locate(LocateRequest(
                             auxTile->mapId(),
-                            std::string(auxFeatureType),
-                            castToKeyValue(auxFeatureKvp)));
-                        if (!locateResponse) {
+                            std::string(auxFeatureIds[0].first),
+                            castToKeyValue(auxFeatureIds[0].second)));
+                        if (locateResponses.empty()) {
                             log().warn("Could not locate indirect aux feature id {}", auxFeature->id()->toString());
                             continue;
                         }
-                        auxFeatureType = locateResponse->typeId_;
-                        auxFeatureKvp = castToKeyValueView(locateResponse->featureId_);
-                    }
-
-                    auto baseFeature = baseTile->find(auxFeatureType, auxFeatureKvp);
-                    if (!baseFeature)
-                        continue;
-
-                    std::unordered_map<uint32_t, simfil::ModelNode::Ptr> clonedModelNodes;
-                    auto lookupOrClone = [&](simfil::ModelNode::Ptr const& n) -> simfil::ModelNode::Ptr {
-                        return baseTile->clone(clonedModelNodes, auxTile, n);
-                    };
-
-                    // Adopt attributes
-                    if (auto attrs = auxFeature->attributes()) {
-                        auto baseAttrs = baseFeature->attributes();
-                        for (auto const& [key, value] : attrs->fields()) {
-                            if (auto keyStr = auxTile->fieldNames()->resolve(key)) {
-                                baseAttrs->addField(*keyStr, lookupOrClone(value));
-                            }
+                        auxFeatureIds.clear();
+                        for (auto const& resolution : locateResponses) {
+                            // Do not adopt resolutions which point to a different tile layer.
+                            if (resolution.tileKey_ != baseTile->id())
+                                continue;
+                            auxFeatureIds.emplace_back(
+                                resolution.typeId_,
+                                castToKeyValueView(resolution.featureId_));
                         }
                     }
 
-                    // Adopt attribute layers
-                    if (auto attrLayers = auxFeature->attributeLayers()) {
-                        auto baseAttrLayers = baseFeature->attributeLayers();
-                        for (auto const& [key, value] : attrLayers->fields()) {
-                            if (auto keyStr = auxTile->fieldNames()->resolve(key)) {
-                                baseAttrLayers->addField(*keyStr, lookupOrClone(value));
-                            }
-                        }
-                    }
-
-                    // Adopt geometries
-                    if (auto geom = auxFeature->geom()) {
-                        auto baseGeom = baseFeature->geom();
-                        geom->forEachGeometry([&baseGeom, &baseTile, &lookupOrClone](auto&& geomElement){
-                            baseGeom->addGeometry(baseTile->resolveGeometry(lookupOrClone(geomElement)));
-                            return true;
-                        });
-                    }
-
-                    // Adopt relations
-                    if (auxFeature->numRelations()) {
-                        auxFeature->forEachRelation([this, &baseFeature, &baseTile, &lookupOrClone](auto&& rel){
-                            auto newRel = baseTile->resolveRelation(*lookupOrClone(rel));
-                            baseFeature->addRelation(newRel);
-                            return true;
-                        });
+                    // Go over all feature IDs to which the auxiliary feature data should be appended.
+                    for (auto const& [auxFeatureType, auxFeatureKvp] : auxFeatureIds) {
+                        baseTile->clone(
+                            clonedModelNodes,
+                            auxTile,
+                            *auxFeature,
+                            auxFeatureType,
+                            auxFeatureKvp);
                     }
                 }
             }
@@ -520,9 +494,10 @@ std::vector<LocateResponse> Service::locate(LocateRequest const& req)
 {
     std::vector<LocateResponse> results;
     for (auto const& [ds, info] : impl_->dataSourceInfo_)
-        if (info.mapId_ == req.mapId_ && !info.isAddOn_)
-            if (auto location = ds->locate(req))
-                results.emplace_back(*location);
+        if (info.mapId_ == req.mapId_ && !info.isAddOn_) {
+            for (auto const& location : ds->locate(req))
+                results.emplace_back(location);
+        }
     return results;
 }
 

@@ -39,7 +39,7 @@ public:
      * must process according to its available data.
      */
     DataSourceServer&
-    onLocateRequest(std::function<std::optional<LocateResponse>(LocateRequest const&)> const&);
+    onLocateRequest(std::function<std::vector<LocateResponse>(LocateRequest const&)> const&);
 
     /**
      * Get the DataSourceInfo metadata which this instance was constructed with.

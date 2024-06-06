@@ -58,6 +58,12 @@ struct MapTileKey
 
     /** Operator <, allows this struct to be used as an std::map key. */
     bool operator<(MapTileKey const& other) const;
+
+    /** Operator ==, compares all components. */
+    bool operator==(MapTileKey const& other) const;
+
+    /** Operator ==, compares all components. */
+    bool operator!=(MapTileKey const& other) const;
 };
 
 /**
