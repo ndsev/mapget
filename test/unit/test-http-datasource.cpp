@@ -130,7 +130,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(response->status == 200);
 
         // Check the response body for expected content.
-        mapget::LocateResponse responseParsed(nlohmann::json::parse(response->body));
+        mapget::LocateResponse responseParsed(nlohmann::json::parse(response->body)[0]);
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
         REQUIRE(responseParsed.tileKey_.layer_ == mapget::LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
