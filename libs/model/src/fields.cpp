@@ -10,6 +10,8 @@ namespace mapget
 Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(IdStr, "id");
     addStaticKey(TypeIdStr, "typeId");
+    addStaticKey(MapIdStr, "mapId");
+    addStaticKey(LayerIdStr, "layerId");
     addStaticKey(LayerStr, "layer");
     addStaticKey(RelationsStr, "relations");
     addStaticKey(DirectionStr, "direction");
