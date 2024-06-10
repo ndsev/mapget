@@ -36,6 +36,9 @@ private:
     // DataSourceInfo is fetched in the constructor
     DataSourceInfo info_;
 
+    // Error string, written in get() and set in fill().
+    std::string error_;
+
     // Multiple http clients allow parallel GET requests
     std::vector<httplib::Client> httpClients_;
     std::atomic_uint64_t nextClient_{0};

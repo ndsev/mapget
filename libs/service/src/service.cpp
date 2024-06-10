@@ -383,6 +383,10 @@ struct Service::Impl : public Service::Controller
                     log().warn("auxDataSource returned null for {}", baseTile->id().toString());
                     continue;
                 }
+                if (auxTile->error()) {
+                    log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *auxTile->error());
+                    continue;
+                }
 
                 // Re-encode the base tile in a common field namespace.
                 // This is necessary, because the aux tile may introduce new field

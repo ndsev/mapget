@@ -36,7 +36,7 @@ DataSourceInfo RemoteDataSource::info()
 void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
 {
     // If we get here, an error occurred.
-    featureTile->setError("Error while contacting remote data source.");
+    featureTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
 }
 
 TileFeatureLayer::Ptr
@@ -57,7 +57,18 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
         // Forward to base class get(). This will instantiate a
         // default TileFeatureLayer and call fill(). In our implementation
         // of fill, we set an error.
-        // TODO: Read HTTPLIB_ERROR header, more log output.
+        if (tileResponse->has_header("HTTPLIB_ERROR")) {
+            error_ = tileResponse->get_header_value("HTTPLIB_ERROR");
+        }
+        else if (tileResponse->has_header("EXCEPTION_WHAT")) {
+            error_ = tileResponse->get_header_value("EXCEPTION_WHAT");
+        }
+        else {
+            error_ = fmt::format("Code {}", tileResponse->status);
+        }
+
+        // Use tile instantiation logic of the base class,
+        // the error is then set in fill().
         return DataSource::get(k, cache, info);
     }
 
