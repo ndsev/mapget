@@ -23,8 +23,9 @@ class TileFeatureLayer;
  * Geometry object, which stores a point collection, a line-string,
  * or a triangle mesh.
  */
-struct Geometry final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class Geometry final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend struct VertexNode;
@@ -151,8 +152,9 @@ protected:
 
 /** GeometryCollection node has `type` and `geometries` fields. */
 
-struct GeometryCollection : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class GeometryCollection : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend class Feature;
@@ -204,8 +206,9 @@ private:
 
 /** VertexBuffer Node */
 
-struct VertexBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class VertexBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend struct Geometry;
@@ -233,8 +236,9 @@ private:
 
 /** Polygon Node */
 
-struct PolygonNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class PolygonNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend struct Geometry;
@@ -253,8 +257,9 @@ private:
 
 /** Mesh Node */
 
-struct MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend struct Geometry;
@@ -274,8 +279,9 @@ private:
     uint32_t size_ = 0;
 };
 
-struct MeshTriangleCollectionNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class MeshTriangleCollectionNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend struct Geometry;
@@ -297,8 +303,9 @@ private:
  *
  * A linear ring represents a simple polygon that is closed and in CCW order.
  */
-struct LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend struct Geometry;
@@ -325,8 +332,9 @@ private:
 
 /** Vertex Node */
 
-struct VertexNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class VertexNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
+public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend struct Geometry;
