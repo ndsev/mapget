@@ -28,11 +28,11 @@ class Geometry final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureL
 public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
-    friend struct VertexNode;
-    friend struct LinearRingNode;
-    friend struct VertexBufferNode;
-    friend struct PolygonNode;
-    friend struct MeshNode;
+    friend class VertexNode;
+    friend class LinearRingNode;
+    friend class VertexBufferNode;
+    friend class PolygonNode;
+    friend class MeshNode;
 
     enum class GeomType: uint8_t {
         Points,   // Point-cloud
@@ -211,8 +211,8 @@ class VertexBufferNode final : public simfil::MandatoryDerivedModelNodeBase<Tile
 public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
-    friend struct Geometry;
-    friend struct MeshNode;
+    friend class Geometry;
+    friend class MeshNode;
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -241,7 +241,7 @@ class PolygonNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatu
 public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
-    friend struct Geometry;
+    friend class Geometry;
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -262,7 +262,7 @@ class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureL
 public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
-    friend struct Geometry;
+    friend class Geometry;
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -284,7 +284,7 @@ class MeshTriangleCollectionNode : public simfil::MandatoryDerivedModelNodeBase<
 public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
-    friend struct Geometry;
+    friend class Geometry;
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -308,7 +308,7 @@ class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureL
 public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
-    friend struct Geometry;
+    friend class Geometry;
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -337,8 +337,8 @@ class VertexNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatur
 public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
-    friend struct Geometry;
-    friend struct VertexBufferNode;
+    friend class Geometry;
+    friend class VertexBufferNode;
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;

@@ -133,10 +133,7 @@ auto LineString::intersects(const Polygon& p) const -> bool
     return p.intersects(*this);
 }
 
-auto LineString::operator==(const LineString& o) const -> bool
-{
-    return points == o.points;
-}
+auto LineString::operator==(const LineString& o) const -> bool = default;
 
 auto LineString::toString() const -> std::string
 {
@@ -223,10 +220,7 @@ auto BBox::intersects(const LineString& p) const -> bool
     return edges().intersects(p);
 }
 
-auto BBox::operator==(const BBox& o) const -> bool
-{
-    return p1 == o.p1 && p2 == o.p2;
-}
+auto BBox::operator==(const BBox& o) const -> bool = default;
 
 auto BBox::toString() const -> std::string
 {
@@ -404,10 +398,7 @@ auto Polygon::intersects(const Polygon& l) const -> bool
     return polys[0].intersects(l);
 }
 
-auto Polygon::operator==(const Polygon& o) const -> bool
-{
-    return polys == o.polys;
-}
+auto Polygon::operator==(const Polygon& o) const -> bool = default;
 
 auto Polygon::toString() const -> std::string
 {
