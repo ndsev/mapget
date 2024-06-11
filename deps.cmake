@@ -66,7 +66,7 @@ else()
     set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
     FetchContent_Declare(RocksDB
       GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-      GIT_TAG        "v9.2.1"
+      GIT_TAG        "v9.1.0"
       GIT_SHALLOW    OFF)
     FetchContent_MakeAvailable(RocksDB)
     add_library(RocksDB::rocksdb ALIAS rocksdb)

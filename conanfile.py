@@ -57,7 +57,7 @@ class MapgetRecipe(ConanFile):
             self.requires("cpp-httplib/0.15.3", transitive_headers=True)
             self.requires("yaml-cpp/0.8.0")
         if self.options.with_service or self.options.with_httplib:
-            self.requires("rocksdb/8.8.1")
+            self.requires("rocksdb/9.1.0")
         if self.options.with_wheel:
             self.requires("pybind11/2.11.1")
 
