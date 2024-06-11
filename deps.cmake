@@ -64,11 +64,12 @@ else()
     set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
     set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
     set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
-    FetchContent_Declare(rocksdb
+    FetchContent_Declare(RocksDB
       GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-      GIT_TAG        dc87847e65449ef1cb6f787c5d753cbe8562bff1 # Use version greater than v8.6.7 once released.
+      GIT_TAG        "v9.2.1"
       GIT_SHALLOW    OFF)
-    FetchContent_MakeAvailable(rocksdb)
+    FetchContent_MakeAvailable(RocksDB)
+    add_library(RocksDB::rocksdb ALIAS rocksdb)
   endif()
 
   if (NOT TARGET simfil)
