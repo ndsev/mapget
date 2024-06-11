@@ -23,7 +23,7 @@ namespace mapget
  */
 struct TileId
 {
-    using PointT = Point<double>;
+    using Point = ::mapget::Point<double>;
 
     /**
      * Constructor to initialize TileId with x, y, z
@@ -46,22 +46,22 @@ struct TileId
     /**
      * Get the center of the tile in Wgs84.
      */
-    [[nodiscard]] PointT center() const;
+    [[nodiscard]] Point center() const;
 
     /**
      * Get the south-west (minimum) corner of the tile in Wgs84.
      */
-    [[nodiscard]] PointT sw() const;
+    [[nodiscard]] Point sw() const;
 
     /**
      * Get the north-east (maximum) corner of the tile in Wgs84.
      */
-    [[nodiscard]] PointT ne() const;
+    [[nodiscard]] Point ne() const;
 
     /**
      * Get the size of the tile in Wgs84.
      */
-    [[nodiscard]] PointT size() const;
+    [[nodiscard]] Point size() const;
 
     /**
      * Function to get x (column) component of the TileId
