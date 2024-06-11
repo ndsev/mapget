@@ -46,6 +46,7 @@ struct BoundModelNodeBase : public BoundModelNode
                 R"pbdoc(
             Get the node's scalar value if it has one.
         )pbdoc");
+        py::class_<BoundModelNodeBase, BoundModelNode>(m, "ModelNodeBase");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -147,10 +148,10 @@ struct BoundObject : public BoundModelNode
             "Add a field to the object.");
         c.def(
             "extend",
-            [](ObjClass& self, BoundObject const& py_value)
+            [](ObjClass& self, BoundObject<> const& py_value)
             { self.modelNodePtr_->extend(py_value.modelNodePtr_); },
             py::arg("other_object"),
-            "add all fields from `other_object` to this object.");
+            "Add all fields from `other_object` to this object.");
     }
 
     static void bind(py::module_& m)
