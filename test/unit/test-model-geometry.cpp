@@ -116,12 +116,12 @@ TEST_CASE("LineString", "[geo.linestring]") {
         auto l1 = LineString{{Point<>{-1, -1}, Point<>{ 1, 1}}};
         auto l2 = LineString{{Point<>{ 1, -1}, Point<>{-1, 1}}};
         REQUIRE(l1.intersects(l2));
-    };
+    }
     SECTION("Two crossing lines vert/horz") {
         auto l1 = LineString{{Point<>{0, -1}, Point<>{1, 1}}};
         auto l2 = LineString{{Point<>{-1, 0}, Point<>{1, 0}}};
         REQUIRE(l1.intersects(l2));
-    };
+    }
 }
 
 TEST_CASE("Polygon", "[geo.polygon]") {
@@ -131,13 +131,13 @@ TEST_CASE("Polygon", "[geo.polygon]") {
         REQUIRE(p.contains(Point<>{0, 0}));       /* top-left */
         REQUIRE(!p.contains(Point<>{-0.5, 0.5})); /* left */
         REQUIRE(!p.contains(Point<>{ 1.5, 0.5})); /* right */
-    };
+    }
     SECTION("Point in triangle polygon") {
         auto p = Polygon{{LineString{{Point<>{0, 0}, Point<>{1, 1}, Point<>{0, 1}}}}};
         REQUIRE(p.contains(Point<>{0.4999, 0.5}));  /* on edge */
         REQUIRE(p.contains(Point<>{0, 0}));         /* top-left */
         REQUIRE(!p.contains(Point<>{0.5001, 0.5})); /* left to edge */
-    };
+    }
 }
 
 TEST_CASE("GeometryCollection", "[geom.collection]")
@@ -282,10 +282,10 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
         auto numPts = 0;
         auto numGeoms = 0;
         geometry_collection->forEachGeometry(
-            [&](auto&& g)
+            [&numPts, &numGeoms, &pts](const auto& g)
             {
                 g->forEachPoint(
-                    [&](auto&& p)
+                    [&numPts, &pts](const auto& p)
                     {
                         REQUIRE(p == pts[numPts]);
                         ++numPts;

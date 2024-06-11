@@ -294,8 +294,7 @@ static auto pointInPoly(const LineString& edges, const PointT& p)
         return false;
 
     /* Ray */
-    auto ra = p;
-    auto rb = PointT{std::numeric_limits<double>::max(), p.y};
+    const auto rb = PointT{std::numeric_limits<double>::max(), p.y};
 
     size_t n = 0;
     for (auto i = 0; i < edges.points.size(); ++i) {
@@ -305,7 +304,7 @@ static auto pointInPoly(const LineString& edges, const PointT& p)
         const auto& a = edges.points[i];
         const auto& b = edges.points[(i + 1) % edges.points.size()];
 
-        if (lineIntersects(a, b, ra, rb))
+        if (lineIntersects(a, b, p, rb))
             n++;
     }
 
@@ -1071,11 +1070,13 @@ auto LineStringFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args
     if (args.size() < 1)
         mapget::raise<ArgumentCountError>(*this, 1, 1, args.size());
 
-    enum {
+    enum class Mode {
         None,
         Points,
         Floats,
-    } mode = None;
+    };
+
+    Mode mode = Mode::None;
 
     std::vector<double> floats;
     floats.reserve(4);
@@ -1083,11 +1084,11 @@ auto LineStringFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args
     for (const auto& arg : args) {
         (void)arg->eval(ctx, val, LambdaResultFn([&mode, &floats](auto, Value v) {
             /* Argument 0 determines the argument type: Point or Float, Float */
-            if (mode == None)
-                mode = v.isa(ValueType::TransientObject) ? Points : Floats;
+            if (mode == Mode::None)
+                mode = v.isa(ValueType::TransientObject) ? Mode::Points : Mode::Floats;
 
             if (auto pt = getObject<PointT>(v, &meta::PointType::Type)) {
-                if (mode != Points)
+                if (mode != Mode::Points)
                     mapget::raiseFmt("linestring: Expected value of type point; got {}", v.toString());
 
                 floats.push_back(pt->x);
@@ -1104,13 +1105,13 @@ auto LineStringFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args
         }));
     }
 
-    if (mode == Floats)
+    if (mode == Mode::Floats)
         if (floats.size() % 2 != 0)
             mapget::raiseFmt("linestring: Uneven number of values");
 
     std::vector<PointT> points;
     for (auto i = 1; i < floats.size(); i += 2) {
-        points.push_back({floats[i-1], floats[i-0]});
+        points.emplace_back(floats[i-1], floats[i-0]);
     }
 
     return res(ctx, meta::LineStringType::Type.make(std::move(points)));

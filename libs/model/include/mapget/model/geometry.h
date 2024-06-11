@@ -223,8 +223,9 @@ public:
 
     Point<double> pointAt(int64_t) const;
 
-private:
     VertexBufferNode() = delete;
+
+private:
     VertexBufferNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
 
     Geometry::Data const* baseGeomData_ = nullptr;
@@ -250,8 +251,9 @@ public:
     [[nodiscard]] FieldId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
-private:
     PolygonNode() = delete;
+
+private:
     PolygonNode(ModelConstPtr pool, ModelNodeAddress const& a);
 };
 
@@ -271,8 +273,9 @@ public:
     [[nodiscard]] FieldId keyAt(int64_t) const override { return {}; }
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
-private:
     MeshNode() = delete;
+
+private:
     MeshNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
 
     Geometry::Data const* geomData_;
@@ -292,9 +295,10 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     MeshTriangleCollectionNode() = delete;
-    explicit MeshTriangleCollectionNode(const ModelNode& base);
 
 private:
+    explicit MeshTriangleCollectionNode(const ModelNode& base);
+
     uint32_t index_ = 0;
 };
 
@@ -318,11 +322,12 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     LinearRingNode() = delete;
+
+private:
     explicit LinearRingNode(const ModelNode& base, std::optional<size_t> length = {});
 
     model_ptr<VertexBufferNode> vertexBuffer() const;
 
-private:
     enum class Orientation : uint8_t { CW, CCW };
     Orientation orientation_ = Orientation::CW;
     bool closed_ = false;
@@ -347,8 +352,9 @@ public:
     [[nodiscard]] FieldId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
-private:
     VertexNode() = delete;
+
+private:
     VertexNode(ModelNode const& baseNode, Geometry::Data const* geomData);
 
     Point<double> point_;

@@ -49,7 +49,6 @@ struct LineString
 
     auto bbox() const -> BBox;
 
-    auto close() -> void;
     auto linear_ring_signed_area() const -> double;
 
     auto intersects(const BBox&) const -> bool;
@@ -64,8 +63,6 @@ struct LineString
 struct Polygon
 {
     std::vector<LineString> polys;
-
-    auto close() -> void;
 
     auto bbox() const -> BBox;
     auto area() const -> double;
