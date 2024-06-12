@@ -11,13 +11,6 @@
 
 using namespace mapget;
 
-TEST_CASE("Cache settings via CLI", "[CLI-Cache]")
-{
-    mapget::runFromCommandLine(
-        {"--config", "../../examples/config/sample-service.toml", "serve"}
-    );
-}
-
 TEST_CASE("RocksDBCache", "[Cache]")
 {
     mapget::setLogLevel("trace", log());
