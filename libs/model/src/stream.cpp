@@ -89,7 +89,7 @@ bool TileLayerStream::Reader::readMessageHeader(std::stringstream & stream, Mess
     Version protocolVersion;
     s.object(protocolVersion);
     if (!protocolVersion.isCompatible(CurrentProtocolVersion)) {
-        throw logRuntimeError(fmt::format(
+        raise(fmt::format(
             "Unable to read message with version {} using version {}.",
             protocolVersion.toString(),
             CurrentProtocolVersion.toString()));

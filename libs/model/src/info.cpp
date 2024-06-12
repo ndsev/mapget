@@ -373,7 +373,7 @@ FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool t
     if (typeIt != featureTypes_.end())
         return &*typeIt;
     if (throwIfMissing) {
-        throw logRuntimeError(fmt::format("Could not find feature type {}", sv));
+        raise(fmt::format("Could not find feature type {}", sv));
     }
     return nullptr;
 }
@@ -412,7 +412,7 @@ std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId, 
     if (it != layers_.end())
         return it->second;
     if (throwIfMissing) {
-        throw logRuntimeError(
+        raise(
             fmt::format("Could not find layer '{}' in map '{}'", layerId, mapId_)
         );
     }

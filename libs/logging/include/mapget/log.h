@@ -24,18 +24,15 @@ spdlog::logger& log();
 void setLogLevel(std::string logLevel, spdlog::logger& logInstance);
 
 /**
- * Log a runtime error and return the throwable object.
- * @param what Runtime error message.
- * @return std::runtime_error to throw.
+ * Log an exception and throw it via simfil::raise().
  */
-template <typename error_t = std::runtime_error>
-error_t logRuntimeError(std::string const& what)
+template<typename ExceptionType=std::runtime_error, typename... Args>
+[[noreturn]] void raise(Args&&... args)
 {
-    log().error(what);
-    if (simfil::ThrowHandler::instance().get()) {
-        simfil::raise<error_t>(what);
-    }
-    return error_t(what);
+    ExceptionType exceptionInstance(std::forward<Args>(args)...);
+    if constexpr (requires {exceptionInstance.what();})
+        log().error(exceptionInstance.what());
+    simfil::raise<ExceptionType>(exceptionInstance);
 }
 
 }

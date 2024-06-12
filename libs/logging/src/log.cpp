@@ -50,7 +50,7 @@ spdlog::logger& mapget::log()
                 try {
                     logFileMaxSizeInt = std::stoull(logFileMaxSize);
                 }
-                catch (std::exception& e) {
+                catch (std::exception&) {
                     std::cerr << "Could not parse value of "
                               << ENVVAR_LOG_FILE_MAXSIZE << " ." << std::endl;
                 }

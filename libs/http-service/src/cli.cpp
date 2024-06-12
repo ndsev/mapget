@@ -73,7 +73,7 @@ struct ServeCommand
             cache = std::make_shared<MemCache>(cacheMaxTiles_);
         }
         else {
-            logRuntimeError(fmt::format("Cache type {} not supported!", cacheType_));
+            raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
         HttpService srv(cache);
@@ -172,15 +172,15 @@ struct FetchCommand
                 if (!mute_)
                     std::cout << tile->toGeoJson().dump() << std::endl;
                 if (tile->error())
-                    throw logRuntimeError(
+                    raise(
                         fmt::format("Tile {}: {}", tile->id().toString(), *tile->error()));
             });
         cli.request(request)->wait();
 
         if (request->getStatus() == NoDataSource)
-            throw logRuntimeError("Failed to fetch sources: no matching data source.");
+            raise("Failed to fetch sources: no matching data source.");
         if (request->getStatus() == Aborted)
-            throw logRuntimeError("Failed to fetch sources: request aborted.");
+            raise("Failed to fetch sources: request aborted.");
     }
 };
 

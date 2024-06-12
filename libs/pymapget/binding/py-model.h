@@ -116,7 +116,7 @@ ModelVariant pyValueToModel(py::object const& pyValue, TileFeatureLayer& model)
         return ModelNode::Ptr(obj);
     }
     else {
-        throw mapget::logRuntimeError("Unsupported Python type");
+        mapget::raise("Unsupported Python type");
     }
 }
 

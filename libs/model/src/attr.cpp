@@ -68,7 +68,7 @@ std::string_view Attribute::name() const
 {
     if (auto s = model().fieldNames()->resolve(data_->name_))
         return *s;
-    throw logRuntimeError("Attribute name is not known to string pool.");
+    raise("Attribute name is not known to string pool.");
 }
 
 bool Attribute::forEachField(

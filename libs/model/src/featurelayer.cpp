@@ -109,7 +109,7 @@ TileFeatureLayer::TileFeatureLayer(
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
-        throw logRuntimeError(fmt::format(
+        raise(fmt::format(
             "Failed to read TileFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
@@ -232,7 +232,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const KeyValueViewPairs& featureIdParts)
 {
     if (featureIdParts.empty()) {
-        throw logRuntimeError("Tried to create an empty feature ID.");
+        raise("Tried to create an empty feature ID.");
     }
 
     uint32_t idPrefixLength = 0;
@@ -240,7 +240,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
         idPrefixLength = idPrefix->size();
 
     if (!layerInfo_->validFeatureId(typeId, featureIdParts, true, idPrefixLength)) {
-        throw logRuntimeError(fmt::format(
+        raise(fmt::format(
             "Could not find a matching ID composition of type {} with parts {}.",
             typeId,
             idPartsToString(featureIdParts)));
@@ -294,7 +294,7 @@ TileFeatureLayer::newFeatureId(
     const KeyValueViewPairs& featureIdParts)
 {
     if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
-        throw logRuntimeError(fmt::format(
+        raise(fmt::format(
             "Could not find a matching ID composition of type {} with parts {}.",
             typeId,
             idPartsToString(featureIdParts)));
@@ -373,7 +373,7 @@ model_ptr<AttributeLayerList> TileFeatureLayer::newAttributeLayers(size_t initia
 model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelNode const& n) const
 {
     if (n.addr().column() != AttributeLayers)
-        throw logRuntimeError("Cannot cast this node to an AttributeLayer.");
+        raise("Cannot cast this node to an AttributeLayer.");
     return AttributeLayer(
         impl_->attrLayers_[n.addr().index()],
         shared_from_this(),
@@ -383,7 +383,7 @@ model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelN
 model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil::ModelNode const& n) const
 {
     if (n.addr().column() != AttributeLayerLists)
-        throw logRuntimeError("Cannot cast this node to an AttributeLayerList.");
+        raise("Cannot cast this node to an AttributeLayerList.");
     return AttributeLayerList(
         impl_->attrLayerLists_[n.addr().index()],
         shared_from_this(),
@@ -393,7 +393,7 @@ model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil
 model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const& n) const
 {
     if (n.addr().column() != Attributes)
-        throw logRuntimeError("Cannot cast this node to an Attribute.");
+        raise("Cannot cast this node to an Attribute.");
     return Attribute(
         &impl_->attributes_[n.addr().index()],
         shared_from_this(),
@@ -403,7 +403,7 @@ model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const&
 model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) const
 {
     if (n.addr().column() != Features)
-        throw logRuntimeError("Cannot cast this node to a Feature.");
+        raise("Cannot cast this node to a Feature.");
     return Feature(
         impl_->features_[n.addr().index()],
         shared_from_this(),
@@ -413,7 +413,7 @@ model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) 
 model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const& n) const
 {
     if (n.addr().column() != FeatureIds)
-        throw logRuntimeError("Cannot cast this node to a FeatureId.");
+        raise("Cannot cast this node to a FeatureId.");
     return FeatureId(
         impl_->featureIds_[n.addr().index()],
         shared_from_this(),
@@ -423,7 +423,7 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const&
 model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n) const
 {
     if (n.addr().column() != Relations)
-        throw logRuntimeError("Cannot cast this node to a Relation.");
+        raise("Cannot cast this node to a Relation.");
     return Relation(
         &impl_->relations_[n.addr().index()],
         shared_from_this(),
@@ -503,7 +503,7 @@ void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
     for (auto& featureType : this->layerInfo_->featureTypes_) {
         for (auto& candidateComposition : featureType.uniqueIdCompositions_) {
             if (!IdPart::idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size(), false)) {
-                throw logRuntimeError(fmt::format(
+                raise(fmt::format(
                     "Prefix not compatible with an id composite in type: {}",
                     featureType.name_));
             }
@@ -617,10 +617,10 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
         ++typeIt;
     }
     if (typeIt == this->layerInfo_->featureTypes_.end()) {
-        throw logRuntimeError(fmt::format("Could not find feature type {}", typeId));
+        raise(fmt::format("Could not find feature type {}", typeId));
     }
     if (typeIt->uniqueIdCompositions_.empty()) {
-        throw logRuntimeError(fmt::format("No composition for feature type {}!", typeId));
+        raise(fmt::format("No composition for feature type {}!", typeId));
     }
     return typeIt->uniqueIdCompositions_.front();
 }
@@ -739,7 +739,7 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
     }
     case Features:
     case FeatureProperties: {
-        throw logRuntimeError("Cannot clone entire feature yet.");
+        raise("Cannot clone entire feature yet.");
     }
     case FeatureIds: {
         auto resolved = otherLayer->resolveFeatureId(*otherNode);

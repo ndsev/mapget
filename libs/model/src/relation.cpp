@@ -48,7 +48,7 @@ std::string_view Relation::name() const
 {
     if (auto s = model().fieldNames()->resolve(data_->name_))
         return *s;
-    throw logRuntimeError("Relation name is not known to string pool.");
+    raise("Relation name is not known to string pool.");
 }
 
 model_ptr<FeatureId> Relation::target() const

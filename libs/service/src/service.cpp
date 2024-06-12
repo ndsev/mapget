@@ -101,7 +101,7 @@ struct Service::Controller
     explicit Controller(Cache::Ptr cache) : cache_(std::move(cache))
     {
         if (!cache_)
-            throw logRuntimeError("Cache must not be null!");
+            raise("Cache must not be null!");
     }
 
     std::optional<Job> nextJob(DataSourceInfo const& i)
@@ -227,7 +227,7 @@ struct Service::Worker
         {
             auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
             if (!result)
-                throw logRuntimeError("DataSource::get() returned null.");
+                raise("DataSource::get() returned null.");
 
             controller_.loadAddOnTiles(result, *dataSource_);
 
@@ -282,12 +282,12 @@ struct Service::Impl : public Service::Controller
     {
         if (dataSource->info().nodeId_.empty()) {
             // Unique node IDs are required for the field offsets.
-            throw logRuntimeError("Tried to create service worker for an unnamed node!");
+            raise("Tried to create service worker for an unnamed node!");
         }
         for (auto& existingSource : dataSourceInfo_) {
             if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
                 // Unique node IDs are required for the field offsets.
-                throw logRuntimeError(
+                raise(
                     fmt::format("Data source with node ID '{}' already registered!",
                                 dataSource->info().nodeId_));
             }
@@ -344,7 +344,7 @@ struct Service::Impl : public Service::Controller
     void addRequest(LayerTilesRequest::Ptr r)
     {
         if (!r)
-            throw logRuntimeError("Attempt to call Service::addRequest(nullptr).");
+            raise("Attempt to call Service::addRequest(nullptr).");
         if (r->isDone()) {
             // Nothing to do.
             r->notifyStatus();

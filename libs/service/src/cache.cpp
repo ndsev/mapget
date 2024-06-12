@@ -40,7 +40,7 @@ std::shared_ptr<Fields> Cache::getFieldDict(const std::string_view& nodeId)
             TileLayerStream::Reader::readMessageHeader(stream, streamMessageType, streamMessageSize);
             auto streamDataSourceNodeId = Fields::readDataSourceNodeId(stream);
             if (streamMessageType != TileLayerStream::MessageType::Fields || streamDataSourceNodeId != nodeId) {
-                throw logRuntimeError("Stream header error while parsing fields from cache.");
+                raise("Stream header error while parsing fields from cache.");
             }
 
             // Now, actually read the fields message.
@@ -71,7 +71,7 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, Data
     TileLayerStream::Reader tileReader(
         [&dataSource, &tileKey](auto&& mapId, auto&& layerId){
             if (dataSource.mapId_ != mapId) {
-                throw logRuntimeError(fmt::format(
+                raise(fmt::format(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
                     mapId,
                     tileKey.tileId_.value_,
@@ -108,7 +108,7 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
 simfil::FieldId Cache::cachedFieldsOffset(std::string const& nodeId)
 {
     if (nodeId.empty()) {
-        throw logRuntimeError("Tried to query cached fields offset for empty node ID!");
+        raise("Tried to query cached fields offset for empty node ID!");
     }
     std::unique_lock fieldsOffsetLock(fieldCacheOffsetMutex_);
     auto it = fieldCacheOffsets_.find(nodeId);
