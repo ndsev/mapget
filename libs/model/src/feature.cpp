@@ -172,6 +172,14 @@ void Feature::updateFields() {
         Fields::TypeIdStr,
         model_ptr<simfil::ValueNode>::make(idNode->typeId(), model_));
 
+    // Add map and layer ids.
+    fields_.emplace_back(
+        Fields::MapIdStr,
+        model_ptr<simfil::ValueNode>::make(model().mapId(), model_));
+    fields_.emplace_back(
+        Fields::LayerIdStr,
+        model_ptr<simfil::ValueNode>::make(model().layerInfo()->layerId_, model_));
+
     // Add common id-part fields
     if (model().getIdPrefix())
         for (auto const& [idPartName, value] : model().getIdPrefix()->fields()) {
