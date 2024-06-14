@@ -28,6 +28,7 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
         "testMapId",
         layers,
         5,
+        false,
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 

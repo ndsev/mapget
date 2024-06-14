@@ -21,10 +21,10 @@ public:
         bool clearCache = false);
     ~RocksDBCache() override;
 
-    std::optional<std::string> getTileLayer(MapTileKey const& k) override;
-    void putTileLayer(MapTileKey const& k, std::string const& v) override;
-    std::optional<std::string> getFields(std::string_view const& sourceNodeId) override;
-    void putFields(std::string_view const& sourceNodeId, std::string const& v) override;
+    std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override;
+    void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
+    std::optional<std::string> getFieldsBlob(std::string_view const& sourceNodeId) override;
+    void putFieldsBlob(std::string_view const& sourceNodeId, std::string const& v) override;
 
 private:
     rocksdb::DB* db_{};

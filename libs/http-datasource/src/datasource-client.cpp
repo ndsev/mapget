@@ -13,12 +13,12 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
     httplib::Client client(host, port);
     auto fetchedInfoJson = client.Get("/info");
     if (!fetchedInfoJson || fetchedInfoJson->status >= 300)
-        throw logRuntimeError("Failed to fetch datasource info.");
+        raise("Failed to fetch datasource info.");
     info_ = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
 
     if (info_.nodeId_.empty()) {
         // Unique node IDs are required for the field offsets.
-        throw logRuntimeError(
+        raise(
             fmt::format("Remote data source is missing node ID! Source info: {}",
                 fetchedInfoJson->body));
     }
@@ -36,7 +36,7 @@ DataSourceInfo RemoteDataSource::info()
 void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
 {
     // If we get here, an error occurred.
-    featureTile->setError("Error while contacting remote data source.");
+    featureTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
 }
 
 TileFeatureLayer::Ptr
@@ -57,7 +57,18 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
         // Forward to base class get(). This will instantiate a
         // default TileFeatureLayer and call fill(). In our implementation
         // of fill, we set an error.
-        // TODO: Read HTTPLIB_ERROR header, more log output.
+        if (tileResponse->has_header("HTTPLIB_ERROR")) {
+            error_ = tileResponse->get_header_value("HTTPLIB_ERROR");
+        }
+        else if (tileResponse->has_header("EXCEPTION_WHAT")) {
+            error_ = tileResponse->get_header_value("EXCEPTION_WHAT");
+        }
+        else {
+            error_ = fmt::format("Code {}", tileResponse->status);
+        }
+
+        // Use tile instantiation logic of the base class,
+        // the error is then set in fill().
         return DataSource::get(k, cache, info);
     }
 
@@ -72,7 +83,7 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     return result;
 }
 
-std::optional<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
+std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
@@ -96,7 +107,12 @@ std::optional<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
         return {};
     }
 
-    return LocateResponse(responseJson);
+    // Parse the resulting responses.
+    std::vector<LocateResponse> responseVector;
+    for (auto const& responseJsonAlternative : responseJson) {
+        responseVector.emplace_back(responseJsonAlternative);
+    }
+    return responseVector;
 }
 
 RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
@@ -143,7 +159,7 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
 #if defined(NDEBUG)
     if (!cv_.wait_for(lock, std::chrono::seconds(10), [this] { return remoteSource_ != nullptr; }))
     {
-        throw logRuntimeError(
+        raise(
             "Timeout waiting for the child process to initialize the remote data source.");
     }
 #else
@@ -163,14 +179,14 @@ RemoteDataSourceProcess::~RemoteDataSourceProcess()
 DataSourceInfo RemoteDataSourceProcess::info()
 {
     if (!remoteSource_)
-        throw logRuntimeError("Remote data source is not initialized.");
+        raise("Remote data source is not initialized.");
     return remoteSource_->info();
 }
 
 void RemoteDataSourceProcess::fill(TileFeatureLayer::Ptr const& featureTile)
 {
     if (!remoteSource_)
-        throw logRuntimeError("Remote data source is not initialized.");
+        raise("Remote data source is not initialized.");
     remoteSource_->fill(featureTile);
 }
 
@@ -178,14 +194,14 @@ TileFeatureLayer::Ptr
 RemoteDataSourceProcess::get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info)
 {
     if (!remoteSource_)
-        throw logRuntimeError("Remote data source is not initialized.");
+        raise("Remote data source is not initialized.");
     return remoteSource_->get(k, cache, info);
 }
 
-std::optional<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)
+std::vector<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)
 {
     if (!remoteSource_)
-        throw logRuntimeError("Remote data source is not initialized.");
+        raise("Remote data source is not initialized.");
     return remoteSource_->locate(req);
 }
 

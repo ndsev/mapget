@@ -5,6 +5,8 @@
 #include <tuple>
 #include <random>
 #include <sstream>
+#include <charconv>
+#include <regex>
 
 namespace mapget
 {
@@ -25,6 +27,17 @@ std::string generateUuid() {
 auto missing_field(std::string const& error, std::string const& context) {
     return std::runtime_error(
         fmt::format("{}::fromJson(): `{}`", context, error));
+}
+
+template <class T, class... Args>
+std::optional<T> from_chars(std::string_view s, Args... args)
+{
+    auto end = s.data() + s.size();
+    T number;
+    auto result = std::from_chars(s.data(), end, number, args...);
+    if (result.ec != std::errc{} || result.ptr != end)
+        return {};
+    return number;
 }
 
 }
@@ -94,6 +107,148 @@ nlohmann::json IdPart::toJson() const
         {"datatype", datatype_},
         {"isSynthetic", isSynthetic_},
         {"isOptional", isOptional_}};
+}
+
+bool IdPart::idPartsMatchComposition(
+    const std::vector<IdPart>& candidateComposition,
+    uint32_t compositionMatchStartIdx,
+    const KeyValueViewPairs& featureIdParts,
+    size_t matchLength,
+    bool requireCompositionEnd)
+{
+    auto featureIdIter = featureIdParts.begin();
+    auto compositionIter = candidateComposition.begin();
+
+    while (compositionMatchStartIdx > 0) {
+        ++compositionIter;
+        --compositionMatchStartIdx;
+    }
+
+    while (matchLength > 0 && compositionIter != candidateComposition.end()) {
+        // Have we exhausted feature ID parts?
+        if (featureIdIter == featureIdParts.end()) {
+            return false;
+        }
+
+        auto [idPartKey, idPartValue] = *featureIdIter;
+
+        // Does this ID part's field name match?
+        if (compositionIter->idPartLabel_ != idPartKey) {
+            if (compositionIter->isOptional_) {
+                ++compositionIter;
+                continue;
+            }
+            return false;
+        }
+
+        // Does the ID part's value match?
+        if (!compositionIter->validate(idPartValue))
+            return false;
+
+        ++featureIdIter;
+        ++compositionIter;
+        --matchLength;
+    }
+
+    if (requireCompositionEnd) {
+        while (compositionIter != candidateComposition.end()) {
+            if (!compositionIter->isOptional_)
+                return false;
+        }
+    }
+
+    return matchLength == 0;
+}
+
+bool IdPart::validate(std::variant<int64_t, std::string>& val, std::string* error) const
+{
+    if (std::holds_alternative<std::string>(val)) {
+        auto& strVal = std::get<std::string>(val);
+        auto result = std::variant<int64_t, std::string_view>(strVal);
+        auto resultBool = validate(result, error);
+        // The string value may have been turned into an integer.
+        if (std::holds_alternative<int64_t>(result)) {
+            val = std::get<int64_t>(result);
+        }
+        return resultBool;
+    }
+    auto result = std::variant<int64_t, std::string_view>(std::get<int64_t>(val));
+    return validate(result, error);
+}
+
+bool IdPart::validate(std::variant<int64_t, std::string_view>& val, std::string* error) const
+{
+    std::optional<int64_t> intVal;
+    if (std::holds_alternative<std::string_view>(val)) {
+        intVal = from_chars<int64_t>(std::get<std::string_view>(val));
+    }
+    else {
+        intVal = std::get<int64_t>(val);
+    }
+
+    auto expectInteger = [this, &error, &intVal, &val](auto const minVal, auto const maxVal) -> bool {
+        if (!intVal) {
+            if (error)
+                *error = fmt::format(
+                    "Value '{}' for {} is not an integer!",
+                    std::get<std::string_view>(val),
+                    idPartLabel_);
+            return false;
+        }
+        if (intVal < minVal) {
+            if (error)
+                *error = fmt::format("Value {} for {} is smaller than allowed ({}).", *intVal, idPartLabel_, minVal);
+            return false;
+        }
+        if (intVal > maxVal) {
+            if (error)
+                *error = fmt::format("Value {} for {} is larger than allowed ({}).", *intVal, idPartLabel_, maxVal);
+            return false;
+        }
+        val = *intVal;
+        return true;
+    };
+
+    auto expectString = [this, &error, &val](auto const& validator) -> bool {
+        if (!std::holds_alternative<std::string_view>(val)) {
+            if (error)
+                *error = fmt::format(
+                    "Value for {} must be a string!",
+                    idPartLabel_);
+            return false;
+        }
+        return validator(std::get<std::string_view>(val), error);
+    };
+
+    auto expectUuid128 = [&expectString]() -> bool {
+        return expectString([](auto const& strVal, auto error){
+            if (strVal.size() != 16) {
+                if (error)
+                    *error = fmt::format("Value for {} must have 16 characters!", strVal);
+                return false;
+            }
+            return true;
+        });
+    };
+
+    switch (datatype_) {
+    case IdPartDataType::I32:
+        return expectInteger(INT32_MIN, INT32_MAX);
+    case IdPartDataType::U32:
+        return expectInteger(0, INT32_MAX);
+    case IdPartDataType::U64:
+        return expectInteger(0, INT64_MAX);
+    case IdPartDataType::I64:
+        return expectInteger(INT64_MIN, INT64_MAX);
+    case IdPartDataType::UUID128:
+        return expectUuid128();
+    case IdPartDataType::STR:
+        return expectString([](auto s, auto e){return true;});
+    }
+
+    if (error)
+        *error = fmt::format("Part datatype {} is not supported.", static_cast<std::underlying_type_t<IdPartDataType>>(datatype_));
+    return false;
 }
 
 FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
@@ -209,15 +364,59 @@ nlohmann::json LayerInfo::toJson() const
         {"version", version_.toJson()}};
 }
 
-std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId) const
+FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing)
+{
+    auto typeIt = std::find_if(
+        featureTypes_.begin(),
+        featureTypes_.end(),
+        [&sv](auto&& tp) { return tp.name_ == sv; });
+    if (typeIt != featureTypes_.end())
+        return &*typeIt;
+    if (throwIfMissing) {
+        raise(fmt::format("Could not find feature type {}", sv));
+    }
+    return nullptr;
+}
+
+bool LayerInfo::validFeatureId(
+    const std::string_view& typeId,
+    KeyValueViewPairs const& featureIdParts,
+    bool validateForNewFeature,
+    uint32_t compositionMatchStartIndex)
+{
+    auto typeInfo = getTypeInfo(typeId);
+
+    for (auto& candidateComposition : typeInfo->uniqueIdCompositions_) {
+        if (IdPart::idPartsMatchComposition(
+            candidateComposition,
+            compositionMatchStartIndex,
+            featureIdParts,
+            featureIdParts.size(),
+            true))
+        {
+            return true;
+        }
+
+        // References may use alternative ID compositions,
+        // but the feature itself must always use the first (primary) one.
+        if (validateForNewFeature)
+            return false;
+    }
+
+    return false;
+}
+
+std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId, bool throwIfMissing) const
 {
     auto it = layers_.find(layerId);
-    if (it == layers_.end()) {
-        throw logRuntimeError(
+    if (it != layers_.end())
+        return it->second;
+    if (throwIfMissing) {
+        raise(
             fmt::format("Could not find layer '{}' in map '{}'", layerId, mapId_)
         );
     }
-    return it->second;
+    return {};
 }
 
 DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
@@ -239,9 +438,11 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             j.at("mapId").get<std::string>(),
             layers,
             j.value("maxParallelJobs", 8),
+            j.value("addOn", false),
             j.value("extraJsonAttachment", nlohmann::json::object()),
             Version::fromJson(
-                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))};
+                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))
+        };
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "DataSourceInfo");
@@ -260,8 +461,51 @@ nlohmann::json DataSourceInfo::toJson() const
         {"mapId", mapId_},
         {"layers", layersJson},
         {"maxParallelJobs", maxParallelJobs_},
+        {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
         {"protocolVersion", protocolVersion_.toJson()}};
+}
+
+KeyValueViewPairs castToKeyValueView(const KeyValuePairs& kvp)
+{
+    KeyValueViewPairs kvpView;
+    for (auto const& [k, v] : kvp) {
+        std::visit([&kvpView, &k](auto&& vv){
+            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string>)
+               kvpView.emplace_back(k, std::string_view(vv));
+            else
+               kvpView.emplace_back(k, vv);
+        }, v);
+    }
+    return kvpView;
+}
+
+KeyValuePairs castToKeyValue(const KeyValueViewPairs& kvpView)
+{
+    KeyValuePairs kvp;
+    for (auto const& [k, v] : kvpView) {
+        std::visit([&kvp, &k](auto&& vv){
+            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string_view>)
+                kvp.emplace_back(k, std::string(vv));
+            else
+                kvp.emplace_back(k, vv);
+        }, v);
+    }
+    return kvp;
+}
+
+KeyValueViewPairs castToKeyValueView(const KeyValuePairVec& kvp)
+{
+    KeyValueViewPairs kvpView;
+    for (auto const& [k, v] : kvp) {
+        std::visit([&kvpView, &k](auto&& vv){
+            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string>)
+               kvpView.emplace_back(k, std::string_view(vv));
+            else
+               kvpView.emplace_back(k, vv);
+        }, v);
+    }
+    return kvpView;
 }
 
 }

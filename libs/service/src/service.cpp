@@ -1,4 +1,5 @@
 #include "service.h"
+#include "locate.h"
 #include "mapget/log.h"
 
 #include <optional>
@@ -100,7 +101,7 @@ struct Service::Controller
     explicit Controller(Cache::Ptr cache) : cache_(std::move(cache))
     {
         if (!cache_)
-            throw logRuntimeError("Cache must not be null!");
+            raise("Cache must not be null!");
     }
 
     std::optional<Job> nextJob(DataSourceInfo const& i)
@@ -149,7 +150,7 @@ struct Service::Controller
                         // Wait for the work to finish, then send the (hopefully cached) result.
                         log().debug("Delaying tile with job in progress: {}",
                                      result->first.toString());
-                        --(request->nextTileIndex_);
+                        --request->nextTileIndex_;
                         result.reset();
                         continue;
                     }
@@ -172,6 +173,8 @@ struct Service::Controller
 
         return result;
     }
+
+    virtual void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) = 0;
 };
 
 struct Service::Worker
@@ -224,7 +227,9 @@ struct Service::Worker
         {
             auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
             if (!result)
-                throw logRuntimeError("DataSource::get() returned null.");
+                raise("DataSource::get() returned null.");
+
+            controller_.loadAddOnTiles(result, *dataSource_);
 
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
@@ -250,6 +255,7 @@ struct Service::Impl : public Service::Controller
 {
     std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
+    std::list<DataSource::Ptr> addOnDataSources_;
 
     explicit Impl(Cache::Ptr cache) : Controller(std::move(cache)) {}
 
@@ -276,12 +282,12 @@ struct Service::Impl : public Service::Controller
     {
         if (dataSource->info().nodeId_.empty()) {
             // Unique node IDs are required for the field offsets.
-            throw logRuntimeError("Tried to create service worker for an unnamed node!");
+            raise("Tried to create service worker for an unnamed node!");
         }
         for (auto& existingSource : dataSourceInfo_) {
             if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
                 // Unique node IDs are required for the field offsets.
-                throw logRuntimeError(
+                raise(
                     fmt::format("Data source with node ID '{}' already registered!",
                                 dataSource->info().nodeId_));
             }
@@ -289,6 +295,14 @@ struct Service::Impl : public Service::Controller
 
         DataSourceInfo info = dataSource->info();
         dataSourceInfo_[dataSource] = info;
+
+        // If the datasource is an add-on source, then it
+        // does not have separate workers.
+        if (info.isAddOn_) {
+            addOnDataSources_.emplace_back(dataSource);
+            return;
+        }
+
         auto& workers = dataSourceWorkers_[dataSource];
 
         // Create workers for this DataSource
@@ -303,8 +317,9 @@ struct Service::Impl : public Service::Controller
     {
         std::unique_lock lock(jobsMutex_);
         dataSourceInfo_.erase(dataSource);
-        auto workers = dataSourceWorkers_.find(dataSource);
+        addOnDataSources_.remove(dataSource);
 
+        auto workers = dataSourceWorkers_.find(dataSource);
         if (workers != dataSourceWorkers_.end())
         {
             // Signal each worker thread to terminate.
@@ -329,7 +344,7 @@ struct Service::Impl : public Service::Controller
     void addRequest(LayerTilesRequest::Ptr r)
     {
         if (!r)
-            throw logRuntimeError("Attempt to call Service::addRequest(nullptr).");
+            raise("Attempt to call Service::addRequest(nullptr).");
         if (r->isDone()) {
             // Nothing to do.
             r->notifyStatus();
@@ -358,6 +373,83 @@ struct Service::Impl : public Service::Controller
             infos.push_back(info);
         }
         return std::move(infos);
+    }
+
+    void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) override {
+        for (auto const& auxDataSource : addOnDataSources_) {
+            if (auxDataSource->info().mapId_ == baseTile->mapId()) {
+                auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
+                if (!auxTile) {
+                    log().warn("auxDataSource returned null for {}", baseTile->id().toString());
+                    continue;
+                }
+                if (auxTile->error()) {
+                    log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *auxTile->error());
+                    continue;
+                }
+
+                // Re-encode the base tile in a common field namespace.
+                // This is necessary, because the aux tile may introduce new field
+                // names to the base tile. Since we cannot manipulate the original
+                // node's field dict, we have to create a new one based on a new
+                // artificial node id.
+                auto auxBaseNodeId = baseTile->nodeId() + "|" + auxTile->nodeId();
+                auto auxBaseFieldDict = cache_->getFieldDict(auxBaseNodeId);
+                baseTile->setFieldNames(auxBaseFieldDict);
+                baseTile->setNodeId(auxBaseNodeId);
+
+                // Adopt new attributes, features and relations for the base feature
+                // from the auxiliary feature.
+                std::unordered_map<uint32_t, simfil::ModelNode::Ptr> clonedModelNodes;
+                for (auto const& auxFeature : *auxTile)
+                {
+                    // Note: A single secondary feature ID may resolve to multiple
+                    // primary feature IDs. So we keep a vector of aux feature ID info.
+                    std::vector<std::pair<std::string_view, KeyValueViewPairs>> auxFeatureIds = {
+                        {auxFeature->id()->typeId(), auxFeature->id()->keyValuePairs()}};
+
+                    // Convert the feature reference to multiple direct ones on-demand.
+                    // If the ID does not validate as a primary feature id, we assume
+                    // that it uses a secondary ID scheme for which a locate-call
+                    // is required.
+                    auto idIsIndirect = !baseTile->layerInfo()->validFeatureId(
+                        auxFeatureIds[0].first,
+                        auxFeatureIds[0].second,
+                        true);
+                    std::vector<LocateResponse> locateResponses;
+                    if (idIsIndirect)
+                    {
+                        locateResponses = baseDataSource.locate(LocateRequest(
+                            auxTile->mapId(),
+                            std::string(auxFeatureIds[0].first),
+                            castToKeyValue(auxFeatureIds[0].second)));
+                        if (locateResponses.empty()) {
+                            log().warn("Could not locate indirect aux feature id {}", auxFeature->id()->toString());
+                            continue;
+                        }
+                        auxFeatureIds.clear();
+                        for (auto const& resolution : locateResponses) {
+                            // Do not adopt resolutions which point to a different tile layer.
+                            if (resolution.tileKey_ != baseTile->id())
+                                continue;
+                            auxFeatureIds.emplace_back(
+                                resolution.typeId_,
+                                castToKeyValueView(resolution.featureId_));
+                        }
+                    }
+
+                    // Go over all feature IDs to which the auxiliary feature data should be appended.
+                    for (auto const& [auxFeatureType, auxFeatureKvp] : auxFeatureIds) {
+                        baseTile->clone(
+                            clonedModelNodes,
+                            auxTile,
+                            *auxFeature,
+                            auxFeatureType,
+                            auxFeatureKvp);
+                    }
+                }
+            }
+        }
     }
 };
 
@@ -406,9 +498,10 @@ std::vector<LocateResponse> Service::locate(LocateRequest const& req)
 {
     std::vector<LocateResponse> results;
     for (auto const& [ds, info] : impl_->dataSourceInfo_)
-        if (info.mapId_ == req.mapId_)
-            if (auto location = ds->locate(req))
-                results.emplace_back(*location);
+        if (info.mapId_ == req.mapId_ && !info.isAddOn_) {
+            for (auto const& location : ds->locate(req))
+                results.emplace_back(location);
+        }
     return results;
 }
 

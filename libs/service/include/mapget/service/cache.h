@@ -29,26 +29,29 @@ public:
 
     /**
      * Used by DataSource to upsert a cached TileFeatureLayer.
-     * Triggers putTileLayer and putFields internally.
+     * Triggers putTileLayerBlob and putFieldsBlob internally.
      */
     void putTileFeatureLayer(TileFeatureLayer::Ptr const& l);
 
     /** Used by DataSource to retrieve a cached TileFeatureLayer. */
     TileFeatureLayer::Ptr getTileFeatureLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
 
+    /** Override for CachedFieldsProvider::getFieldDict() */
+    std::shared_ptr<Fields> getFieldDict(std::string_view const&) override;
+
     // You need to implement these methods:
 
     /** Abstract: Retrieve a TileLayer blob for a MapTileKey. */
-    virtual std::optional<std::string> getTileLayer(MapTileKey const& k) = 0;
+    virtual std::optional<std::string> getTileLayerBlob(MapTileKey const& k) = 0;
 
     /** Abstract: Upsert (update or insert) a TileLayer blob. */
-    virtual void putTileLayer(MapTileKey const& k, std::string const& v) = 0;
+    virtual void putTileLayerBlob(MapTileKey const& k, std::string const& v) = 0;
 
     /** Abstract: Retrieve a fields-dict-blob for a sourceNodeId. */
-    virtual std::optional<std::string> getFields(std::string_view const& sourceNodeId) = 0;
+    virtual std::optional<std::string> getFieldsBlob(std::string_view const& sourceNodeId) = 0;
 
     /** Abstract: Upsert (update or insert) a fields-dict blob. */
-    virtual void putFields(std::string_view const& sourceNodeId, std::string const& v) = 0;
+    virtual void putFieldsBlob(std::string_view const& sourceNodeId, std::string const& v) = 0;
 
     // Override this method if your cache implementation has special stats.
 
@@ -62,9 +65,6 @@ public:
 
 
 protected:
-    // Override for CachedFieldsProvider::operator()
-    std::shared_ptr<Fields> operator() (std::string_view const&) override;
-
     // Used by DataSource::cachedFieldsOffset()
     simfil::FieldId cachedFieldsOffset(std::string const& nodeId);
 

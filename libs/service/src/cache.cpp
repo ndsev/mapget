@@ -6,7 +6,7 @@
 namespace mapget
 {
 
-std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
+std::shared_ptr<Fields> Cache::getFieldDict(const std::string_view& nodeId)
 {
     {
         std::shared_lock fieldCacheReadLock(fieldCacheMutex_);
@@ -27,7 +27,7 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
 
         // Load/insert the Fields dict.
         std::shared_ptr<Fields> cachedFields = std::make_shared<Fields>(nodeId);
-        auto cachedFieldsBlob = getFields(nodeId);
+        auto cachedFieldsBlob = getFieldsBlob(nodeId);
         if (cachedFieldsBlob) {
             // Read the fields from the stream.
             std::stringstream stream;
@@ -40,7 +40,7 @@ std::shared_ptr<Fields> Cache::operator()(const std::string_view& nodeId)
             TileLayerStream::Reader::readMessageHeader(stream, streamMessageType, streamMessageSize);
             auto streamDataSourceNodeId = Fields::readDataSourceNodeId(stream);
             if (streamMessageType != TileLayerStream::MessageType::Fields || streamDataSourceNodeId != nodeId) {
-                throw logRuntimeError("Stream header error while parsing fields from cache.");
+                raise("Stream header error while parsing fields from cache.");
             }
 
             // Now, actually read the fields message.
@@ -62,7 +62,7 @@ nlohmann::json Cache::getStatistics() const {
 
 TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
 {
-    auto tileBlob = getTileLayer(tileKey);
+    auto tileBlob = getTileLayerBlob(tileKey);
     if (!tileBlob) {
         ++cacheMisses_;
         return nullptr;
@@ -71,7 +71,7 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, Data
     TileLayerStream::Reader tileReader(
         [&dataSource, &tileKey](auto&& mapId, auto&& layerId){
             if (dataSource.mapId_ != mapId) {
-                throw logRuntimeError(fmt::format(
+                raise(fmt::format(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
                     mapId,
                     tileKey.tileId_.value_,
@@ -95,9 +95,9 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
         [&l, this](auto&& msg, auto&& msgType)
         {
             if (msgType == TileLayerStream::MessageType::TileFeatureLayer)
-                putTileLayer(MapTileKey(*l), msg);
+                putTileLayerBlob(MapTileKey(*l), msg);
             else if (msgType == TileLayerStream::MessageType::Fields)
-                putFields(l->nodeId(), msg);
+                putFieldsBlob(l->nodeId(), msg);
         },
         fieldCacheOffsets_,
         /* differentialFieldUpdates = */ false);
@@ -108,7 +108,7 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
 simfil::FieldId Cache::cachedFieldsOffset(std::string const& nodeId)
 {
     if (nodeId.empty()) {
-        throw logRuntimeError("Tried to query cached fields offset for empty node ID!");
+        raise("Tried to query cached fields offset for empty node ID!");
     }
     std::unique_lock fieldsOffsetLock(fieldCacheOffsetMutex_);
     auto it = fieldCacheOffsets_.find(nodeId);

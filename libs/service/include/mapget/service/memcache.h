@@ -24,16 +24,16 @@ public:
     MemCache(uint32_t maxCachedTiles=1024);
 
     /** Retrieve a TileLayer blob for a MapTileKey. */
-    std::optional<std::string> getTileLayer(MapTileKey const& k) override;
+    std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override;
 
     /** Upsert a TileLayer blob. */
-    void putTileLayer(MapTileKey const& k, std::string const& v) override;
+    void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
 
     /** Retrieve a Fields-dict-blob for a sourceNodeId -> No-Op */
-    std::optional<std::string> getFields(std::string_view const& sourceNodeId) override {return {};}
+    std::optional<std::string> getFieldsBlob(std::string_view const& sourceNodeId) override {return {};}
 
     /** Upsert a Fields-dict blob. -> No-Op */
-    void putFields(std::string_view const& sourceNodeId, std::string const& v) override {}
+    void putFieldsBlob(std::string_view const& sourceNodeId, std::string const& v) override {}
 
     /** Enriches the statistics with info about the number of cached tiles. */
     nlohmann::json getStatistics() const override;

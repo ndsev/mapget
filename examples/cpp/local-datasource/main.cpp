@@ -41,7 +41,7 @@ public:
 
     void fill(TileFeatureLayer::Ptr const& tile) override {
         // Add some ID parts that are shared by all features in the tile.
-        tile->setPrefix({{"areaId", "BestArea"}});
+        tile->setIdPrefix({{"areaId", "BestArea"}});
 
         // Create a feature with line geometry
         auto feature1 = tile->newFeature("Way", {{"wayId", 42}});

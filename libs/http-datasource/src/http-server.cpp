@@ -56,7 +56,7 @@ void HttpServer::go(
     }
 
     if (impl_->server_.is_running() || impl_->serverThread_.joinable())
-        throw logRuntimeError("HttpServer is already running");
+        raise("HttpServer is already running");
 
     if (port == 0) {
         impl_->port_ = impl_->server_.bind_to_any_port(interfaceAddr);
@@ -78,7 +78,7 @@ void HttpServer::go(
 
     std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
     if (!impl_->server_.is_running() || !impl_->server_.is_valid())
-        throw logRuntimeError(fmt::format("Could not start HttpServer on {}:{}", interfaceAddr, port));
+        raise(fmt::format("Could not start HttpServer on {}:{}", interfaceAddr, port));
 }
 
 bool HttpServer::isRunning() {

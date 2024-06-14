@@ -58,6 +58,12 @@ struct MapTileKey
 
     /** Operator <, allows this struct to be used as an std::map key. */
     bool operator<(MapTileKey const& other) const;
+
+    /** Operator ==, compares all components. */
+    bool operator==(MapTileKey const& other) const;
+
+    /** Operator ==, compares all components. */
+    bool operator!=(MapTileKey const& other) const;
 };
 
 /**
@@ -159,7 +165,6 @@ protected:
     std::string nodeId_;
     std::string mapId_;
     std::shared_ptr<LayerInfo> layerInfo_;
-    // TODO what is the error string for? Does it follow some standard?
     std::optional<std::string> error_;
     std::chrono::time_point<std::chrono::system_clock> timestamp_;
     std::optional<std::chrono::milliseconds> ttl_;

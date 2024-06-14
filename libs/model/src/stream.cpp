@@ -54,7 +54,7 @@ bool TileLayerStream::Reader::continueReading()
         auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
             buffer_,
             layerInfoProvider_,
-            [this](auto&& nodeId){return (*cachedFieldsProvider_)(nodeId);});
+            [this](auto&& nodeId){return cachedFieldsProvider_->getFieldDict(nodeId);});
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
         log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
@@ -64,7 +64,7 @@ bool TileLayerStream::Reader::continueReading()
     {
         // Read the node id which identifies the fields' dictionary.
         std::string fieldsDictNodeId = Fields::readDataSourceNodeId(buffer_);
-        (*cachedFieldsProvider_)(fieldsDictNodeId)->read(buffer_);
+        cachedFieldsProvider_->getFieldDict(fieldsDictNodeId)->read(buffer_);
     }
 
     currentPhase_ = Phase::ReadHeader;
@@ -89,7 +89,7 @@ bool TileLayerStream::Reader::readMessageHeader(std::stringstream & stream, Mess
     Version protocolVersion;
     s.object(protocolVersion);
     if (!protocolVersion.isCompatible(CurrentProtocolVersion)) {
-        throw logRuntimeError(fmt::format(
+        raise(fmt::format(
             "Unable to read message with version {} using version {}.",
             protocolVersion.toString(),
             CurrentProtocolVersion.toString()));
@@ -167,7 +167,7 @@ void TileLayerStream::Writer::sendEndOfStream()
     sendMessage("", MessageType::EndOfStream);
 }
 
-std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::operator()(const std::string_view& nodeId)
+std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::getFieldDict(const std::string_view& nodeId)
 {
     {
         std::shared_lock fieldCacheReadLock(fieldCacheMutex_);

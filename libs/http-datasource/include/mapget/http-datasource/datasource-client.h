@@ -30,11 +30,14 @@ public:
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
-    std::optional<LocateResponse> locate(const mapget::LocateRequest &req) override;
+    std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:
     // DataSourceInfo is fetched in the constructor
     DataSourceInfo info_;
+
+    // Error string, written in get() and set in fill().
+    std::string error_;
 
     // Multiple http clients allow parallel GET requests
     std::vector<httplib::Client> httpClients_;
@@ -65,7 +68,7 @@ public:
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
-    std::optional<LocateResponse> locate(const mapget::LocateRequest &req) override;
+    std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:
     std::unique_ptr<RemoteDataSource> remoteSource_;

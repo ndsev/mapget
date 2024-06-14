@@ -36,12 +36,13 @@ public:
     virtual void fill(TileFeatureLayer::Ptr const& featureTile) = 0;
 
     /**
-     * Obtain a map tile key, where the feature with the specified ID may be found.
+     * Obtain map tile keys where the feature with the specified ID may be found.
      * The implementation is completely datasource-specific. Note, that the returned
-     * resulting LocateResponse may have resolved to a different typeId and featureId
-     * than the requested one.
+     * resulting LocateResponses may have resolved to a different typeId and featureId
+     * than the requested one. This is useful when locate is used to resolve a
+     * secondary to a primary feature ID.
      */
-    virtual std::optional<LocateResponse> locate(LocateRequest const& req);
+    virtual std::vector<LocateResponse> locate(LocateRequest const& req);
 
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
     virtual TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);

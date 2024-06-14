@@ -15,6 +15,7 @@ class LocateRequest
 {
 public:
     explicit LocateRequest(nlohmann::json const& j);
+    LocateRequest(std::string mapId, std::string typeId, KeyValuePairs featureId);
     virtual ~LocateRequest() = default;
 
     std::string mapId_;
@@ -37,7 +38,8 @@ class LocateResponse : public LocateRequest
 {
 public:
     explicit LocateResponse(nlohmann::json const& j);
-    LocateResponse(LocateRequest const& req);
+    LocateResponse(LocateResponse const& resp) = default;
+    explicit LocateResponse(LocateRequest const& req);
 
     MapTileKey tileKey_;
 

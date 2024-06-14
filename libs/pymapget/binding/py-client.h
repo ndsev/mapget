@@ -49,7 +49,7 @@ py::object json_to_py_value(const json& j)
         return py_dict;
     }
     default: {
-        throw mapget::logRuntimeError("Invalid JSON value type");
+        mapget::raise("Invalid JSON value type");
     }
     }
 }

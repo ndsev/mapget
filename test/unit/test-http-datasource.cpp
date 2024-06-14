@@ -57,7 +57,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             ++dataSourceRequestCount;
         });
     ds.onLocateRequest(
-        [&](mapget::LocateRequest const& request) -> std::optional<mapget::LocateResponse>
+        [&](mapget::LocateRequest const& request) -> std::vector<mapget::LocateResponse>
         {
             REQUIRE(request.mapId_ == "Tropico");
             REQUIRE(request.typeId_ == "Way");
@@ -66,7 +66,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             mapget::LocateResponse response(request);
             response.tileKey_.layerId_ = "WayLayer";
             response.tileKey_.tileId_.value_ = 1;
-            return response;
+            return {response};
         });
 
     // Launch the DataSource on a separate thread.
@@ -130,7 +130,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(response->status == 200);
 
         // Check the response body for expected content.
-        mapget::LocateResponse responseParsed(nlohmann::json::parse(response->body));
+        mapget::LocateResponse responseParsed(nlohmann::json::parse(response->body)[0]);
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
         REQUIRE(responseParsed.tileKey_.layer_ == mapget::LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");

@@ -6,7 +6,7 @@ namespace mapget
 
 MemCache::MemCache(uint32_t maxCachedTiles) : maxCachedTiles_(maxCachedTiles) {}
 
-std::optional<std::string> MemCache::getTileLayer(const MapTileKey& k)
+std::optional<std::string> MemCache::getTileLayerBlob(const MapTileKey& k)
 {
     std::shared_lock cacheLock(cacheMutex_);
     auto cacheIt = cachedTiles_.find(k.toString());
@@ -15,7 +15,7 @@ std::optional<std::string> MemCache::getTileLayer(const MapTileKey& k)
     return {};
 }
 
-void MemCache::putTileLayer(const MapTileKey& k, const std::string& v)
+void MemCache::putTileLayerBlob(const MapTileKey& k, const std::string& v)
 {
     std::unique_lock cacheLock(cacheMutex_);
     auto ks = k.toString();

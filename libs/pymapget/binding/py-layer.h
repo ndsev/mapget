@@ -95,26 +95,54 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "set_prefix",
-            [](TileFeatureLayer& self, KeyValueViewPairs const& v) {self.setPrefix(v); },
+            [](TileFeatureLayer& self, KeyValuePairVec const& v) {
+                self.setIdPrefix(castToKeyValueView(v)); },
             py::arg("prefix"),
             R"pbdoc(
             Set common id prefix for all features in this layer.
         )pbdoc")
         .def(
+            "new_value",
+            [](TileFeatureLayer& self, py::object const& pyValue) -> BoundModelNodeBase
+            {
+                auto cppValue = pyValueToModel(pyValue, self);
+                BoundModelNodeBase result;
+                std::visit(
+                    [&self, &result](auto&& value)
+                    {
+                        if constexpr (
+                            std::is_same_v<std::decay_t<decltype(value)>, bool> ||
+                            std::is_same_v<std::decay_t<decltype(value)>, int16_t>)
+                            result.modelNodePtr_ = self.newSmallValue(value);
+                        else if constexpr (
+                            std::is_same_v<std::decay_t<decltype(value)>, ModelNode::Ptr>)
+                            result.modelNodePtr_ = value;
+                        else
+                            result.modelNodePtr_ = self.newValue(value);
+                    },
+                    cppValue);
+                return result;
+            },
+            py::arg("value"),
+            R"pbdoc(
+            Create a new model value from any Python value (Supported are:
+            List, Dict with string-convertible key, Int, Str, Float, Bool).
+        )pbdoc")
+        .def(
             "new_feature",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValueViewPairs const& idParts)
-            { return BoundFeature(self.newFeature(typeId, idParts)); },
+            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairVec const& idParts)
+            { return BoundFeature(self.newFeature(typeId, castToKeyValueView(idParts))); },
             py::arg("type_id"),
             py::arg("feature_id_parts"),
             R"pbdoc(
             Creates a new feature and insert it into this tile layer. The unique identifying
-            information, prepended with the featureIdPrefix, must conform to an existing
+            information, prepended with the getIdPrefix, must conform to an existing
             UniqueIdComposition for the feature typeId within the associated layer.
         )pbdoc")
         .def(
             "new_feature_id",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValueViewPairs const& idParts)
-            { return BoundFeatureId(self.newFeatureId(typeId, idParts)); },
+            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairVec const& idParts)
+            { return BoundFeatureId(self.newFeatureId(typeId, castToKeyValueView(idParts))); },
             py::arg("type_id"),
             py::arg("feature_id_parts"),
             R"pbdoc(

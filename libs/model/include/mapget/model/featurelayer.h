@@ -72,17 +72,18 @@ public:
     );
 
     /**
-     * Set common id prefix for all features in this layer.
+     * Get/Set common id prefix for all features in this layer.
      * Note: The prefix MUST be set before any feature is added to the tile.
      */
-    void setPrefix(KeyValueViewPairs const& prefix);
+    void setIdPrefix(KeyValueViewPairs const& prefix);
+    model_ptr<Object> getIdPrefix();
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer() override;
 
     /**
      * Creates a new feature and insert it into this tile layer.
-     * The featureIdParts (which do not include the featureIdPrefix of the layer)
+     * The featureIdParts (which do not include the getIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
      * within the associated layer, or a runtime error will be raised.
      * @param typeId Specifies the type of the feature.
@@ -110,20 +111,6 @@ public:
     model_ptr<Relation> newRelation(
         std::string_view const& name,
         model_ptr<FeatureId> const& target);
-
-    /**
-     * Validate that a unique id composition exists that matches this feature id,
-     * The field values must match the limitations of the IdPartDataType, and
-     * The order of values in KeyValuePairs must be the same as in the composition!
-     * @param typeId Feature type id, throws error if the type was not registered.
-     * @param featureIdParts Uniquely identifying information for the feature.
-     * @param validateForNewFeature True if the id should be evaluated with this tile's prefix prepended.
-     */
-    bool validFeatureId(
-        const std::string_view& typeId,
-        KeyValueViewPairs const& featureIdParts,
-        bool validateForNewFeature);
-
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */
@@ -205,6 +192,39 @@ public:
      */
     void setFieldNames(std::shared_ptr<simfil::Fields> const& newDict) override;
 
+    /**
+     * Create a copy of otherFeature in this layer with the given type
+     * and id-parts. If a feature with that ID already exists in this layer,
+     * the attributes/relations/geometries from otherFeature will simply
+     * be appended to the existing feature.
+     */
+    void clone(
+        std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+        TileFeatureLayer::Ptr const& otherLayer,
+        Feature const& otherFeature,
+        std::string_view const& type,
+        KeyValueViewPairs idParts);
+
+    /**
+     * Create a copy of otherNode (which lives in otherLayer) in this layer.
+     * The clonedModelNodes dict may be provided to avoid repeated copies
+     * of nodes which are referenced multiple times.
+     */
+    simfil::ModelNode::Ptr clone(
+        std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+        TileFeatureLayer::Ptr const& otherLayer,
+        simfil::ModelNode::Ptr const& otherNode);
+
+    /**
+     * Node resolution functions.
+     */
+    model_ptr<AttributeLayer> resolveAttributeLayer(simfil::ModelNode const& n) const;
+    model_ptr<AttributeLayerList> resolveAttributeLayerList(simfil::ModelNode const& n) const;
+    model_ptr<Attribute> resolveAttribute(simfil::ModelNode const& n) const;
+    model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
+    model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
+    model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
+
 protected:
     /**
      * The FeatureTileColumnId enum provides identifiers for different
@@ -220,12 +240,6 @@ protected:
         Relations,
     };
 
-    /**
-     * The featureIdPrefix function returns common ID parts,
-     * which are shared by all features in this layer.
-     */
-    model_ptr<Object> featureIdPrefix();
-
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
 
@@ -233,16 +247,6 @@ protected:
      * Create a new attribute layer collection.
      */
     model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8);
-
-    /**
-     * Node resolution functions.
-     */
-    model_ptr<AttributeLayer> resolveAttributeLayer(simfil::ModelNode const& n) const;
-    model_ptr<AttributeLayerList> resolveAttributeLayerList(simfil::ModelNode const& n) const;
-    model_ptr<Attribute> resolveAttribute(simfil::ModelNode const& n) const;
-    model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
-    model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
-    model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
 
     /**
      * Generic node resolution overload.

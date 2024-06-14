@@ -24,6 +24,8 @@ struct Fields : public simfil::Fields
     enum StaticFieldIds : simfil::FieldId {
         IdStr = NextStaticId,
         TypeIdStr,
+        MapIdStr,
+        LayerIdStr,
         LayerStr,
         RelationsStr,
         DirectionStr,

@@ -136,6 +136,9 @@ public:
      */
     bool forEachRelation(std::function<bool(model_ptr<Relation> const&)> const& callback) const;
 
+    /** Get all relations with the matching name. Nullopt will be returned instead of an empty vector. */
+    [[nodiscard]] std::optional<std::vector<model_ptr<Relation>>> filterRelations(std::string_view const& name) const;
+
     /** Get the number of added relations. */
     [[nodiscard]] uint32_t numRelations() const;
 

@@ -16,7 +16,7 @@ option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-servic
 project(mapget)
 include(FetchContent)
 
-set(MAPGET_VERSION 2024.2)
+set(MAPGET_VERSION 2024.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,7 +64,7 @@ set(SIMFIL_WITH_MODEL_JSON YES)
 if (NOT TARGET simfil)
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "main"
+    GIT_TAG        "5af9ada73898c952657d1bf1358205e54e82a584"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()

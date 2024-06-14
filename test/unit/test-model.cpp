@@ -85,14 +85,14 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         fieldNames);
 
     // Set the tile's feature id prefix.
-    tile->setPrefix({{"areaId", "TheBestArea"}});
+    tile->setIdPrefix({{"areaId", "TheBestArea"}});
 
     // Test creating a feature while tile prefix is not set.
     auto feature0 = tile->newFeature("Way", {{"wayId", 24}});
 
     // Setting the tile feature id prefix after a feature was added
     // must lead to a runtime error.
-    REQUIRE_THROWS(tile->setPrefix({{"areaId", "TheBestArea"}}));
+    REQUIRE_THROWS(tile->setIdPrefix({{"areaId", "TheBestArea"}}));
 
     // Create a feature with line geometry
     auto feature1 = tile->newFeature("Way", {{"wayId", 42}});
@@ -132,7 +132,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
     SECTION("toGeoJSON")
     {
-        constexpr auto expected = R"({"areaId":"TheBestArea","geometry":{"geometries":[{"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0]],"type":"MultiPolygon"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0]],"type":"Polygon"}],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":"POSITIVE","smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42})";
+        constexpr auto expected = R"({"areaId":"TheBestArea","geometry":{"geometries":[{"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"MultiPoint"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"LineString"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0]],"type":"MultiPolygon"},{"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0]],"type":"Polygon"}],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","layerId":"WayLayer","mapId":"Tropico","properties":{"layer":{"cheese":{"mozzarella":{"direction":"POSITIVE","smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42})";
         std::stringstream featureGeoJson;
         featureGeoJson << feature1->toGeoJson();
         log().trace(featureGeoJson.str());

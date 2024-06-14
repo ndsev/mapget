@@ -2,7 +2,7 @@
 
 #include "simfil/model/nodes.h"
 #include <functional>
-#include "sfl/small_vector.hpp"
+#include "info.h"
 
 namespace mapget
 {
@@ -18,20 +18,6 @@ using Array = simfil::Array;
 using GeometryCollection = simfil::GeometryCollection;
 using Geometry = simfil::Geometry;
 using GeomType = simfil::Geometry::GeomType;
-
-/**
- * The KeyValuePairsView type is a vector of pairs, where each pair
- * consists of a string_view key and a variant value that can be
- * either an int64_t or a string_view. It is used as the interface-
- * type for feature id parts. By using sfl::small_vector instead of
- * std::vector, it is kept on the stack.
- */
-using KeyValueViewPairs = sfl::small_vector<std::pair<
-    std::string_view,
-    std::variant<int64_t, std::string_view>>, 16>;
-using KeyValuePairs = sfl::small_vector<std::pair<
-    std::string,
-    std::variant<int64_t, std::string>>, 16>;
 
 /**
  * Unique feature ID
@@ -84,8 +70,6 @@ protected:
 
     Data* data_ = nullptr;
 
-    // Optional because resolve must be called, in
-    // the constructor body.
     model_ptr<Object> fields_;
 };
 

@@ -109,7 +109,7 @@ TileFeatureLayer::TileFeatureLayer(
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
-        throw logRuntimeError(fmt::format(
+        raise(fmt::format(
             "Failed to read TileFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
@@ -120,82 +120,6 @@ TileFeatureLayer::~TileFeatureLayer() = default;
 
 namespace
 {
-
-/**
- * Check that starting from a given index, the parts of an id composition
- * match the featureIdParts segment from start for the given length.
- */
-bool idPartsMatchComposition(
-    std::vector<IdPart> const& candidateComposition,
-    uint32_t compositionMatchStartIdx,
-    KeyValueViewPairs const& featureIdParts,
-    unsigned long matchLength)
-{
-    auto featureIdIter = featureIdParts.begin();
-    auto compositionIter = candidateComposition.begin();
-
-    while (compositionMatchStartIdx > 0) {
-        ++compositionIter;
-        --compositionMatchStartIdx;
-    }
-
-    while (matchLength > 0 && compositionIter != candidateComposition.end()) {
-        // Have we exhausted feature ID parts while there's still composition parts?
-        if (featureIdIter == featureIdParts.end()) {
-            return false;
-        }
-
-        auto& [idPartKey, idPartValue] = *featureIdIter;
-
-        // Does this ID part's field name match?
-        if (compositionIter->idPartLabel_ != idPartKey) {
-            return false;
-        }
-
-        // Does the ID part's value match?
-        auto& compositionDataType = compositionIter->datatype_;
-
-        if (std::holds_alternative<int64_t>(idPartValue)) {
-            auto value = std::get<int64_t>(idPartValue);
-            switch (compositionDataType) {
-            case IdPartDataType::I32:
-                // Value must fit an I32.
-                if (value < INT32_MIN || value > INT32_MAX) {
-                    return false;
-                }
-                break;
-            case IdPartDataType::U32:
-                if (value < 0 || value > UINT32_MAX) {
-                    return false;
-                }
-                break;
-            case IdPartDataType::U64:
-                if (value < 0 || value > UINT64_MAX) {
-                    return false;
-                }
-                break;
-            default:;
-            }
-        }
-        else if (std::holds_alternative<std::string_view>(idPartValue)) {
-            auto value = std::get<std::string_view>(idPartValue);
-            // UUID128 should be a 128 bit sequence.
-            if (compositionDataType == IdPartDataType::UUID128 && value.size() != 16) {
-                return false;
-            }
-        }
-        else {
-            throw logRuntimeError("Id part data type not supported!");
-        }
-
-        ++featureIdIter;
-        ++compositionIter;
-        --matchLength;
-    }
-
-    // Match means we either checked the required length, or all the values.
-    return matchLength == 0;
-}
 
 /**
  * Create a string representation of the given id parts.
@@ -303,56 +227,20 @@ uint64_t hashFeatureId(const std::string_view& type, const KeyValueViewPairs& id
 
 }  // namespace
 
-bool TileFeatureLayer::validFeatureId(
-    const std::string_view& typeId,
-    KeyValueViewPairs const& featureIdParts,
-    bool validateForNewFeature)
-{
-    auto typeIt = this->layerInfo_->featureTypes_.begin();
-    while (typeIt != this->layerInfo_->featureTypes_.end()) {
-        if (typeIt->name_ == typeId)
-            break;
-        ++typeIt;
-    }
-    if (typeIt == this->layerInfo_->featureTypes_.end()) {
-        throw logRuntimeError(fmt::format("Could not find feature type {}", typeId));
-    }
-
-    for (auto& candidateComposition : typeIt->uniqueIdCompositions_) {
-        uint32_t compositionMatchStartIndex = 0;
-        if (validateForNewFeature && this->featureIdPrefix()) {
-            // Iterate past the prefix in the unique id composition.
-            compositionMatchStartIndex = this->featureIdPrefix()->size();
-        }
-
-        if (idPartsMatchComposition(
-                candidateComposition,
-                compositionMatchStartIndex,
-                featureIdParts,
-                featureIdParts.size()))
-        {
-            return true;
-        }
-
-        // References may use alternative ID compositions,
-        // but the feature itself must always use the first one.
-        if (validateForNewFeature)
-            return false;
-    }
-
-    return false;
-}
-
 simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     const std::string_view& typeId,
     const KeyValueViewPairs& featureIdParts)
 {
     if (featureIdParts.empty()) {
-        throw logRuntimeError("Tried to create an empty feature ID.");
+        raise("Tried to create an empty feature ID.");
     }
 
-    if (!validFeatureId(typeId, featureIdParts, true)) {
-        throw logRuntimeError(fmt::format(
+    uint32_t idPrefixLength = 0;
+    if (auto const idPrefix = getIdPrefix())
+        idPrefixLength = idPrefix->size();
+
+    if (!layerInfo_->validFeatureId(typeId, featureIdParts, true, idPrefixLength)) {
+        raise(fmt::format(
             "Could not find a matching ID composition of type {} with parts {}.",
             typeId,
             idPartsToString(featureIdParts)));
@@ -405,8 +293,8 @@ TileFeatureLayer::newFeatureId(
     const std::string_view& typeId,
     const KeyValueViewPairs& featureIdParts)
 {
-    if (!validFeatureId(typeId, featureIdParts, false)) {
-        throw logRuntimeError(fmt::format(
+    if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
+        raise(fmt::format(
             "Could not find a matching ID composition of type {} with parts {}.",
             typeId,
             idPartsToString(featureIdParts)));
@@ -439,7 +327,7 @@ TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<Feat
     return Relation(&impl_->relations_.back(), shared_from_this(), {Relations, (uint32_t)relationIndex});
 }
 
-model_ptr<Object> TileFeatureLayer::featureIdPrefix()
+model_ptr<Object> TileFeatureLayer::getIdPrefix()
 {
     if (impl_->featureIdPrefix_)
         return resolveObject(simfil::ModelNode::Ptr::make(shared_from_this(), impl_->featureIdPrefix_));
@@ -484,6 +372,8 @@ model_ptr<AttributeLayerList> TileFeatureLayer::newAttributeLayers(size_t initia
 
 model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != AttributeLayers)
+        raise("Cannot cast this node to an AttributeLayer.");
     return AttributeLayer(
         impl_->attrLayers_[n.addr().index()],
         shared_from_this(),
@@ -492,6 +382,8 @@ model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelN
 
 model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != AttributeLayerLists)
+        raise("Cannot cast this node to an AttributeLayerList.");
     return AttributeLayerList(
         impl_->attrLayerLists_[n.addr().index()],
         shared_from_this(),
@@ -500,6 +392,8 @@ model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil
 
 model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != Attributes)
+        raise("Cannot cast this node to an Attribute.");
     return Attribute(
         &impl_->attributes_[n.addr().index()],
         shared_from_this(),
@@ -508,6 +402,8 @@ model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const&
 
 model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != Features)
+        raise("Cannot cast this node to a Feature.");
     return Feature(
         impl_->features_[n.addr().index()],
         shared_from_this(),
@@ -516,6 +412,8 @@ model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) 
 
 model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const& n) const
 {
+    if (n.addr().column() != FeatureIds)
+        raise("Cannot cast this node to a FeatureId.");
     return FeatureId(
         impl_->featureIds_[n.addr().index()],
         shared_from_this(),
@@ -524,6 +422,8 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const&
 
 model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n) const
 {
+    if (n.addr().column() != Relations)
+        raise("Cannot cast this node to a Relation.");
     return Relation(
         &impl_->relations_[n.addr().index()],
         shared_from_this(),
@@ -592,7 +492,7 @@ simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_vi
     return newIt->second;
 }
 
-void TileFeatureLayer::setPrefix(const KeyValueViewPairs& prefix)
+void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
 {
     // The prefix must be set, before any feature is added.
     if (!impl_->features_.empty())
@@ -602,8 +502,8 @@ void TileFeatureLayer::setPrefix(const KeyValueViewPairs& prefix)
     // The primary id composition is the first one in the list.
     for (auto& featureType : this->layerInfo_->featureTypes_) {
         for (auto& candidateComposition : featureType.uniqueIdCompositions_) {
-            if (!idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size())) {
-                throw logRuntimeError(fmt::format(
+            if (!IdPart::idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size(), false)) {
+                raise(fmt::format(
                     "Prefix not compatible with an id composite in type: {}",
                     featureType.name_));
             }
@@ -705,17 +605,7 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& qu
 model_ptr<Feature>
 TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryIdParts) const
 {
-    // Convert KeyValuePairs to KeyValuePairsView
-    KeyValueViewPairs kvpView;
-    for (auto const& [k, v] : queryIdParts) {
-        std::visit([&kvpView, &k](auto&& vv){
-            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string>)
-                kvpView.emplace_back(k, std::string_view(vv));
-            else
-                kvpView.emplace_back(k, vv);
-        }, v);
-    }
-    return find(type, kvpView);
+    return find(type, castToKeyValueView(queryIdParts));
 }
 
 std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::string_view& typeId) const
@@ -727,10 +617,10 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
         ++typeIt;
     }
     if (typeIt == this->layerInfo_->featureTypes_.end()) {
-        throw logRuntimeError(fmt::format("Could not find feature type {}", typeId));
+        raise(fmt::format("Could not find feature type {}", typeId));
     }
     if (typeIt->uniqueIdCompositions_.empty()) {
-        throw logRuntimeError(fmt::format("No composition for feature type {}!", typeId));
+        raise(fmt::format("No composition for feature type {}!", typeId));
     }
     return typeIt->uniqueIdCompositions_.front();
 }
@@ -762,6 +652,220 @@ void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newD
     }
 
     ModelPool::setFieldNames(newDict);
+}
+
+simfil::ModelNode::Ptr TileFeatureLayer::clone(
+    std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& cache,
+    const TileFeatureLayer::Ptr& otherLayer,
+    const simfil::ModelNode::Ptr& otherNode)
+{
+    auto it = cache.find(otherNode->addr().value_);
+    if (it != cache.end()) {
+        return it->second;
+    }
+
+    using namespace simfil;
+    ModelNode::Ptr& newCacheNode = cache[otherNode->addr().value_];
+    switch (otherNode->addr().column()) {
+    case Objects: {
+        auto resolved = otherLayer->resolveObject(otherNode);
+        auto newNode = newObject(resolved->size());
+        newCacheNode = newNode;
+        for (auto [key, value] : resolved->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                newNode->addField(*keyStr, clone(cache, otherLayer, value));
+            }
+        }
+        break;
+    }
+    case Arrays: {
+        auto resolved = otherLayer->resolveArray(otherNode);
+        auto newNode = newArray(resolved->size());
+        newCacheNode = newNode;
+        for (auto value : *resolved) {
+            newNode->append(clone(cache, otherLayer, value));
+        }
+        break;
+    }
+    case Geometries:
+    case Points:
+    case PointBuffers: {
+        auto resolved = otherLayer->resolveGeometry(otherNode);
+        auto newNode = newGeometry(resolved->geomType(), resolved->numPoints());
+        newCacheNode = newNode;
+        resolved->forEachPoint(
+            [&newNode](auto&& pt)
+            {
+                newNode->append(pt);
+                return true;
+            });
+        break;
+    }
+    case GeometryCollections: {
+        auto resolved = otherLayer->resolveGeometryCollection(otherNode);
+        auto newNode = newGeometryCollection(resolved->numGeometries());
+        newCacheNode = newNode;
+        resolved->forEachGeometry(
+            [this, &newNode, &cache, &otherLayer](auto&& geom)
+            {
+                newNode->addGeometry(resolveGeometry(clone(cache, otherLayer, geom)));
+                return true;
+            });
+        break;
+    }
+    case Int64: {
+        otherLayer->resolve(*otherNode, Lambda([this, &newCacheNode](auto&& resolved){
+            auto value = std::get<int64_t>(resolved.value());
+            auto newNode = newValue(value);
+            newCacheNode = newNode;
+        }));
+        break;
+    }
+    case Double: {
+        otherLayer->resolve(*otherNode, Lambda([this, &newCacheNode](auto&& resolved){
+            auto value = std::get<double>(resolved.value());
+            auto newNode = newValue(value);
+            newCacheNode = newNode;
+        }));
+        break;
+    }
+    case String: {
+        otherLayer->resolve(*otherNode, Lambda([this, &newCacheNode](auto&& resolved){
+            auto value = std::get<std::string_view>(resolved.value());
+            auto newNode = newValue(value);
+            newCacheNode = newNode;
+        }));
+        break;
+    }
+    case Features:
+    case FeatureProperties: {
+        raise("Cannot clone entire feature yet.");
+    }
+    case FeatureIds: {
+        auto resolved = otherLayer->resolveFeatureId(*otherNode);
+        auto newNode = newFeatureId(resolved->typeId(), resolved->keyValuePairs());
+        newCacheNode = newNode;
+        break;
+    }
+    case Attributes: {
+        auto resolved = otherLayer->resolveAttribute(*otherNode);
+        auto newNode = newAttribute(resolved->name());
+        newCacheNode = newNode;
+        if (resolved->hasValidity()) {
+            newNode->setValidity(resolveGeometry(clone(cache, otherLayer, resolved->validity())));
+        }
+        newNode->setDirection(resolved->direction());
+        resolved->forEachField(
+            [this, &newNode, &cache, &otherLayer](auto&& key, auto&& value)
+            {
+                newNode->addField(key, clone(cache, otherLayer, value));
+                return true;
+            });
+        break;
+    }
+    case AttributeLayers: {
+        auto resolved = otherLayer->resolveAttributeLayer(*otherNode);
+        auto newNode = newAttributeLayer(resolved->size());
+        newCacheNode = newNode;
+        for (auto [key, value] : resolved->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                newNode->addField(*keyStr, clone(cache, otherLayer, value));
+            }
+        }
+        break;
+    }
+    case AttributeLayerLists: {
+        auto resolved = otherLayer->resolveAttributeLayerList(*otherNode);
+        auto newNode = newAttributeLayers(resolved->size());
+        newCacheNode = newNode;
+        for (auto [key, value] : resolved->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                newNode->addField(*keyStr, clone(cache, otherLayer, value));
+            }
+        }
+        break;
+    }
+    case Relations: {
+        auto resolved = otherLayer->resolveRelation(*otherNode);
+        auto newNode = newRelation(
+            resolved->name(),
+            resolveFeatureId(*clone(cache, otherLayer, resolved->target())));
+        newCacheNode = newNode;
+        break;
+    }
+    default: {
+        newCacheNode = ModelNode::Ptr::make(shared_from_this(), otherNode->addr());
+    }
+    }
+    cache.insert({otherNode->addr().value_, newCacheNode});
+    return newCacheNode;
+}
+
+void TileFeatureLayer::clone(
+    std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+    const TileFeatureLayer::Ptr& otherLayer,
+    const Feature& otherFeature,
+    const std::string_view& type,
+    KeyValueViewPairs idParts)
+{
+    auto cloneTarget = find(type, idParts);
+    if (!cloneTarget) {
+        // Remove tile ID prefix from idParts to create a new feature.
+        if (getIdPrefix() && idParts.size() >= getIdPrefix()->size()) {
+            idParts = KeyValueViewPairs(
+                idParts.begin()+getIdPrefix()->size(), idParts.end());
+        }
+        cloneTarget = newFeature(type, idParts);
+    }
+
+    auto lookupOrClone =
+        [&](simfil::ModelNode::Ptr const& n) -> simfil::ModelNode::Ptr
+    {
+        return clone(clonedModelNodes, otherLayer, n);
+    };
+
+    // Adopt attributes
+    if (auto attrs = otherFeature.attributes()) {
+        auto baseAttrs = cloneTarget->attributes();
+        for (auto const& [key, value] : attrs->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                baseAttrs->addField(*keyStr, lookupOrClone(value));
+            }
+        }
+    }
+
+    // Adopt attribute layers
+    if (auto attrLayers = otherFeature.attributeLayers()) {
+        auto baseAttrLayers = cloneTarget->attributeLayers();
+        for (auto const& [key, value] : attrLayers->fields()) {
+            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+                baseAttrLayers->addField(*keyStr, lookupOrClone(value));
+            }
+        }
+    }
+
+    // Adopt geometries
+    if (auto geom = otherFeature.geom()) {
+        auto baseGeom = cloneTarget->geom();
+        geom->forEachGeometry(
+            [this, &baseGeom, &lookupOrClone](auto&& geomElement)
+            {
+                baseGeom->addGeometry(
+                    resolveGeometry(lookupOrClone(geomElement)));
+                return true;
+            });
+    }
+
+    // Adopt relations
+    if (otherFeature.numRelations()) {
+        otherFeature.forEachRelation(
+            [this, &cloneTarget, &lookupOrClone](auto&& rel)
+            {
+                auto newRel = resolveRelation(*lookupOrClone(rel));
+                cloneTarget->addRelation(newRel);
+                return true;
+            });
+    }
 }
 
 }

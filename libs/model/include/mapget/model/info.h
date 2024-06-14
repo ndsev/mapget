@@ -4,11 +4,35 @@
 #include <vector>
 #include <memory>
 #include <nlohmann/json.hpp>
-
+#include "sfl/small_vector.hpp"
+#include <variant>
 #include "tileid.h"
 
 namespace mapget
 {
+
+/**
+ * The KeyValue(View)Pairs type is a vector of pairs, where each pair
+ * consists of a string_view key and a variant value that can be
+ * either an int64_t or a string_view. It is used as the interface-
+ * type for feature id parts. By using sfl::small_vector instead of
+ * std::vector, it is kept on the stack.
+ */
+using KeyValueViewPairs =
+    sfl::small_vector<std::pair<std::string_view, std::variant<int64_t, std::string_view>>, 16>;
+using KeyValuePairs =
+    sfl::small_vector<std::pair<std::string, std::variant<int64_t, std::string>>, 16>;
+using KeyValuePairVec =
+    std::vector<std::pair<std::string, std::variant<int64_t, std::string>>>;
+
+/** Convert KeyValuePairs to KeyValuePairsView. */
+KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
+
+/** Convert KeyValuePairs to KeyValuePairsView. */
+KeyValueViewPairs castToKeyValueView(KeyValuePairVec const& kvp);
+
+/** Convert KeyValueViewPairs to KeyValuePairs. */
+KeyValuePairs castToKeyValue(KeyValueViewPairs const& kvp);
 
 /**
  * Version Definition - This is used to recognize whether a stored blob of a
@@ -91,6 +115,26 @@ struct IdPart
 
     /** Serialize IdPart to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
+
+    /**
+     * Check whether the given value satisfies the constraints of this
+     * IdPart specification. The value will be converted to an integer if provided
+     * as a string, but not vice versa. Returns true and the correct converted value
+     * written into val if the validation succeeds, false otherwise.
+     */
+    bool validate(std::variant<int64_t, std::string_view>& val, std::string* error = nullptr) const;
+    bool validate(std::variant<int64_t, std::string>& val, std::string* error = nullptr) const;
+
+    /**
+     * Check that starting from a given index, the parts of an id composition
+     * match the featureIdParts segment from start for the given length.
+     */
+    static bool idPartsMatchComposition(
+        std::vector<IdPart> const& candidateComposition,
+        uint32_t compositionMatchStartIdx,
+        KeyValueViewPairs const& featureIdParts,
+        size_t matchLength,
+        bool requireCompositionEnd);
 };
 
 /** Structure to represent the feature type info */
@@ -199,6 +243,9 @@ struct LayerInfo
     /** List of feature types, only relevant if this is a Feature-layer. */
     std::vector<FeatureTypeInfo> featureTypes_;
 
+    /** Utility function to get some feature type info by name. */
+    FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true);
+
     /** List of zoom levels */
     std::vector<int> zoomLevels_;
 
@@ -216,6 +263,20 @@ struct LayerInfo
 
     /** Version of the map layer. */
     Version version_;
+
+    /**
+     * Validate that a unique id composition exists that matches this feature id.
+     * The field values must match the limitations of the IdPartDataType, and
+     * The order of values in KeyValuePairs must be the same as in the composition!
+     * @param typeId Feature type id, throws error if the type was not registered.
+     * @param featureIdParts Uniquely identifying information for the feature.
+     * @param validateForNewFeature True if the id should be evaluated with this tile's prefix prepended.
+     */
+    bool validFeatureId(
+        const std::string_view& typeId,
+        KeyValueViewPairs const& featureIdParts,
+        bool validateForNewFeature,
+        uint32_t compositionMatchStartIndex = 0);
 
     /** Create LayerInfo from JSON. */
     static std::shared_ptr<LayerInfo> fromJson(const nlohmann::json& j, std::string const& layerId="");
@@ -241,6 +302,9 @@ struct DataSourceInfo
     /** Maximum number of parallel jobs */
     int maxParallelJobs_ = 8;
 
+    /** Declare the datasource as an add-on to other datasources for the same map. */
+    bool isAddOn_ = false;
+
     /** Extra JSON attachment. May also be used to store style-sheets. */
     nlohmann::json extraJsonAttachment_;
 
@@ -248,7 +312,7 @@ struct DataSourceInfo
     Version protocolVersion_;
 
     /** Get the layer, or a runtime error, if no such layer exists. */
-    [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId) const;
+    [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId, bool throwIfMissing=true) const;
 
     /**
      * Deserializes a DataSourceInfo object from JSON.
@@ -282,6 +346,7 @@ struct DataSourceInfo
      *   },
      *   "nodeId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
      *                                        // Note: Only provide this if you have a good reason.
+     *   "addOn": <bool>                     // Optional: Declare the datasource as add-on.
      * }
      *
      * Each LayerType, FeatureTypeInfo, and Coverage object has its own specific JSON structure,

@@ -144,7 +144,7 @@ public:
          * This operator is called by the Reader to obtain the fields
          * dictionary for a particular node id.
          */
-        virtual std::shared_ptr<Fields> operator() (std::string_view const& nodeId);
+        virtual std::shared_ptr<Fields> getFieldDict(std::string_view const& nodeId);
 
         /**
          * Obtain the highest known field id for each data source node id,

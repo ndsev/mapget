@@ -172,9 +172,17 @@ void Feature::updateFields() {
         Fields::TypeIdStr,
         model_ptr<simfil::ValueNode>::make(idNode->typeId(), model_));
 
+    // Add map and layer ids.
+    fields_.emplace_back(
+        Fields::MapIdStr,
+        model_ptr<simfil::ValueNode>::make(model().mapId(), model_));
+    fields_.emplace_back(
+        Fields::LayerIdStr,
+        model_ptr<simfil::ValueNode>::make(model().layerInfo()->layerId_, model_));
+
     // Add common id-part fields
-    if (model().featureIdPrefix())
-        for (auto const& [idPartName, value] : model().featureIdPrefix()->fields()) {
+    if (model().getIdPrefix())
+        for (auto const& [idPartName, value] : model().getIdPrefix()->fields()) {
             fields_.emplace_back(idPartName, value);
         }
 
@@ -319,6 +327,23 @@ model_ptr<Geometry> Feature::firstGeometry() const
                 return false;
             });
     }
+    return result;
+}
+
+std::optional<std::vector<model_ptr<Relation>>>
+Feature::filterRelations(const std::string_view& name) const
+{
+    std::vector<model_ptr<Relation>> result;
+    result.reserve(numRelations());
+
+    forEachRelation([&name, &result](auto&& rel){
+        if (rel->name() == name)
+            result.push_back(rel);
+        return true;
+    });
+
+    if (result.empty())
+        return {};
     return result;
 }
 

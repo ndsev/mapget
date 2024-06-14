@@ -27,7 +27,7 @@ MapTileKey::MapTileKey(const std::string& str)
     auto partsVec = std::vector<decltype(*parts.begin())>(parts.begin(), parts.end());
 
     if (partsVec.size() < 4)
-        throw logRuntimeError(fmt::format("Invalid cache tile id: {}", str));
+        raise(fmt::format("Invalid cache tile id: {}", str));
     layer_ = nlohmann::json(std::string_view(&*partsVec[1].begin(), distance(partsVec[1]))).get<LayerType>();
     mapId_ = std::string_view(&*partsVec[1].begin(), distance(partsVec[1]));
     layerId_ = std::string_view(&*partsVec[2].begin(), distance(partsVec[2]));
@@ -56,6 +56,17 @@ bool MapTileKey::operator<(const MapTileKey& other) const
 {
     return std::tie(layer_, mapId_, layerId_, tileId_) <
         std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+}
+
+bool MapTileKey::operator==(const MapTileKey& other) const
+{
+    return std::tie(layer_, mapId_, layerId_, tileId_) ==
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+}
+
+bool MapTileKey::operator!=(const MapTileKey& other) const
+{
+    return !(*this == other);
 }
 
 TileLayer::TileLayer(
@@ -89,7 +100,7 @@ TileLayer::TileLayer(
 
     s.object(mapVersion_);
     if (!mapVersion_.isCompatible(layerInfo_->version_)) {
-        throw logRuntimeError(fmt::format(
+        raise(fmt::format(
             "Read map layer '{}' version {} "
             "is incompatible with present version {}.",
             layerName,

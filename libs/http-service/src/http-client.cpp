@@ -16,7 +16,7 @@ struct HttpClient::Impl {
         client_.set_keep_alive(false);
         auto sourcesJson = client_.Get("/sources");
         if (!sourcesJson || sourcesJson->status != 200)
-            throw logRuntimeError(
+            raise(
                 fmt::format("Failed to fetch sources: [{}]", sourcesJson->status));
         for (auto const& info : nlohmann::json::parse(sourcesJson->body)) {
             auto parsedInfo = DataSourceInfo::fromJson(info);
@@ -29,7 +29,7 @@ struct HttpClient::Impl {
     {
         auto mapIt = sources_.find(std::string(map));
         if (mapIt == sources_.end())
-            throw logRuntimeError("Could not find map data source info");
+            raise("Could not find map data source info");
         return mapIt->second.getLayer(std::string(layer));
     }
 };
