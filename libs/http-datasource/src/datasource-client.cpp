@@ -57,14 +57,20 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
         // Forward to base class get(). This will instantiate a
         // default TileFeatureLayer and call fill(). In our implementation
         // of fill, we set an error.
-        if (tileResponse->has_header("HTTPLIB_ERROR")) {
-            error_ = tileResponse->get_header_value("HTTPLIB_ERROR");
-        }
-        else if (tileResponse->has_header("EXCEPTION_WHAT")) {
-            error_ = tileResponse->get_header_value("EXCEPTION_WHAT");
+
+        if (tileResponse) {
+            if (tileResponse->has_header("HTTPLIB_ERROR")) {
+                error_ = tileResponse->get_header_value("HTTPLIB_ERROR");
+            }
+            else if (tileResponse->has_header("EXCEPTION_WHAT")) {
+                error_ = tileResponse->get_header_value("EXCEPTION_WHAT");
+            }
+            else {
+                error_ = fmt::format("Code {}", tileResponse->status);
+            }
         }
         else {
-            error_ = fmt::format("Code {}", tileResponse->status);
+            error_ = "No remote response.";
         }
 
         // Use tile instantiation logic of the base class,
