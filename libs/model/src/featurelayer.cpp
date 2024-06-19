@@ -12,6 +12,42 @@
 #include <bitsery/traits/string.h>
 
 #include "simfil/model/bitsery-traits.h"
+#include "geometry.h"
+
+/** Bitsery serialization traits */
+namespace bitsery
+{
+
+template <typename S>
+void serialize(S& s, mapget::Point<float>& v) {
+    s.value4b(v.x);
+    s.value4b(v.y);
+    s.value4b(v.z);
+}
+
+template <typename S>
+void serialize(S& s, mapget::Point<double>& v) {
+    s.value8b(v.x);
+    s.value8b(v.y);
+    s.value8b(v.z);
+}
+
+}
+
+namespace
+{
+template <class... Args>
+std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
+{
+    auto env = std::make_unique<simfil::Environment>(std::forward<Args>(args)...);
+    env->functions["geo"] = &mapget::GeoFn::Fn;
+    env->functions["point"] = &mapget::PointFn::Fn;
+    env->functions["bbox"] = &mapget::BBoxFn::Fn;
+    env->functions["linestring"] = &mapget::LineStringFn::Fn;
+
+    return env;
+}
+}
 
 namespace mapget
 {
