@@ -39,7 +39,7 @@ template<typename ExceptionType=std::runtime_error, typename... Args>
 template <class ExceptionType = std::runtime_error, class... Args>
 [[noreturn]] void raiseFmt(std::string_view fmt, Args&&... args)
 {
-    raise<ExceptionType>(fmt::vformat(fmt, fmt::make_format_args(std::forward<Args>(args)...)));
+    raise<ExceptionType>(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...));
 }
 
 }
