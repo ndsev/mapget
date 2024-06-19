@@ -21,6 +21,13 @@ Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(TargetStr, "target");
     addStaticKey(SourceValidityStr, "sourceValidity");
     addStaticKey(TargetValidityStr, "targetValidity");
+    addStaticKey(LonStr, "lon");
+    addStaticKey(LatStr, "lat");
+    addStaticKey(GeometryStr, "geometry");
+    addStaticKey(GeometriesStr, "geometries");
+    addStaticKey(TypeStr, "type");
+    addStaticKey(CoordinatesStr, "coordinates");
+    addStaticKey(ElevationStr, "elevation");
 }
 
 void Fields::write(std::ostream& outputStream, simfil::FieldId offset) const

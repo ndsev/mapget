@@ -17,9 +17,10 @@ public:
     explicit HttpService(Cache::Ptr cache = std::make_shared<MemCache>());
     ~HttpService() override;
 
-private:
+protected:
     void setup(httplib::Server& server) override;
 
+private:
     struct Impl;
     friend struct Impl;
     std::unique_ptr<Impl> impl_;

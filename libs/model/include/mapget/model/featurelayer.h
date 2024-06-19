@@ -1,7 +1,6 @@
 #pragma once
 
 #include "simfil/simfil.h"
-#include "simfil/model/model.h"
 #include "simfil/model/arena.h"
 #include "simfil/environment.h"
 
@@ -10,6 +9,7 @@
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
+#include "geometry.h"
 
 namespace mapget
 {
@@ -30,8 +30,17 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class Feature;
     friend class FeatureId;
     friend class Relation;
+    friend class Attribute;
     friend class AttributeLayer;
     friend class AttributeLayerList;
+    friend class Geometry;
+    friend class GeometryCollection;
+    friend class VertexNode;
+    friend class VertexBufferNode;
+    friend class PolygonNode;
+    friend class MeshNode;
+    friend class MeshTriangleCollectionNode;
+    friend class LinearRingNode;
 
 public:
     /**
@@ -120,6 +129,21 @@ public:
      * Create a new attribute layer, which may be inserted into a feature.
      */
     model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8);
+
+    /**
+     * Create a new geometry collection.
+     */
+    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=1);
+
+    /**
+     * Create a new geometry.
+     */
+    model_ptr<Geometry> newGeometry(Geometry::GeomType geomType, size_t initialCapacity=1);
+
+    /**
+     * Create a new geometry view.
+     */
+    model_ptr<Geometry> newGeometryView(Geometry::GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base);
 
     /**
      * Return type for begin() and end() methods to support range-based
@@ -224,6 +248,15 @@ public:
     model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
     model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
     model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
+    model_ptr<VertexNode> resolvePoints(simfil::ModelNode const& n) const;
+    model_ptr<VertexBufferNode> resolvePointBuffers(simfil::ModelNode const& n) const;
+    model_ptr<Geometry> resolveGeometry(simfil::ModelNode const& n) const;
+    model_ptr<GeometryCollection> resolveGeometryCollection(simfil::ModelNode const& n) const;
+    model_ptr<MeshNode> resolveMesh(simfil::ModelNode const& n) const;
+    model_ptr<MeshTriangleCollectionNode> resolveMeshTriangleCollection(simfil::ModelNode const& n) const;
+    model_ptr<LinearRingNode> resolveMeshTriangleLinearRing(simfil::ModelNode const& n) const;
+    model_ptr<PolygonNode> resolvePolygon(simfil::ModelNode const& n) const;
+    model_ptr<LinearRingNode> resolveLinearRing(simfil::ModelNode const& n) const;
 
 protected:
     /**
@@ -238,6 +271,15 @@ protected:
         AttributeLayers,
         AttributeLayerLists,
         Relations,
+        Points,
+        PointBuffers,
+        Geometries,
+        GeometryCollections,
+        Mesh,
+        MeshTriangleCollection,
+        MeshTriangleLinearRing, // LinearRing with fixed size 3
+        Polygon,
+        LinearRing,
     };
 
     /** Get the primary id composition for the given feature type. */
@@ -252,6 +294,8 @@ protected:
      * Generic node resolution overload.
      */
     void resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
+
+    Geometry::Storage& vertexBufferStorage();
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

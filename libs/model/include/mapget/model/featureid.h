@@ -1,8 +1,8 @@
 #pragma once
 
 #include "simfil/model/nodes.h"
-#include <functional>
 #include "info.h"
+#include "sfl/small_vector.hpp"
 
 namespace mapget
 {
@@ -15,9 +15,6 @@ using model_ptr = simfil::shared_model_ptr<T>;
 
 using Object = simfil::Object;
 using Array = simfil::Array;
-using GeometryCollection = simfil::GeometryCollection;
-using Geometry = simfil::Geometry;
-using GeomType = simfil::Geometry::GeomType;
 
 /**
  * Unique feature ID

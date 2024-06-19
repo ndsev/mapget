@@ -1,6 +1,7 @@
 #pragma once
 
 #include "spdlog/spdlog.h"
+#include "fmt/core.h"
 #include "simfil/exception-handler.h"
 
 namespace mapget
@@ -33,6 +34,12 @@ template<typename ExceptionType=std::runtime_error, typename... Args>
     if constexpr (requires {exceptionInstance.what();})
         log().error(exceptionInstance.what());
     simfil::raise<ExceptionType>(exceptionInstance);
+}
+
+template <class ExceptionType = std::runtime_error, class... Args>
+[[noreturn]] void raiseFmt(std::string_view fmt, Args&&... args)
+{
+    raise<ExceptionType>(fmt::vformat(fmt, fmt::make_format_args(std::forward<Args>(args)...)));
 }
 
 }

@@ -2,12 +2,10 @@
 
 #include <cstdint>
 
-#include "simfil/model/point.h"
+#include "point.h"
 
 namespace mapget
 {
-
-using Point = simfil::geo::Point<double>;
 
 /**
  * TileId class - represents a rectangular area on the globe, according to
@@ -25,6 +23,8 @@ using Point = simfil::geo::Point<double>;
  */
 struct TileId
 {
+    using Point = ::mapget::Point<double>;
+
     /**
      * Constructor to initialize TileId with x, y, z
      */

@@ -51,9 +51,8 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     log().debug(fmt::format("Initializing RocksDB cache under: {}", absoluteCachePath.string()));
 
     if (!fs::exists(absoluteCachePath.parent_path())) {
-        raise(fmt::format(
-            "Error initializing rocksDB cache: parent directory {} does not exist!",
-            absoluteCachePath.parent_path().string()));
+        raiseFmt("Error initializing rocksDB cache: parent directory {} does not exist!",
+            absoluteCachePath.parent_path().string());
     }
 
     if (clearCache) {

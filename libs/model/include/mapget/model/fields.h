@@ -34,7 +34,14 @@ struct Fields : public simfil::Fields
         NameStr,
         TargetStr,
         SourceValidityStr,
-        TargetValidityStr
+        TargetValidityStr,
+        LonStr,
+        LatStr,
+        GeometryStr,
+        GeometriesStr,
+        TypeStr,
+        CoordinatesStr,
+        ElevationStr,
     };
 
     explicit Fields(const std::string_view& nodeId);

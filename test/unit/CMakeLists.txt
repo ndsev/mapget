@@ -11,6 +11,8 @@ endif()
 
 add_executable(test.mapget
   test-model.cpp
+  test-model-geometry.cpp
+  test-simfil-geometry.cpp
   test-info.cpp
   test-http-datasource.cpp
   test-cache.cpp)

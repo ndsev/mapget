@@ -48,10 +48,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
     mapget::DataSourceServer ds(info);
     std::atomic_uint32_t dataSourceRequestCount = 0;
     ds.onTileRequest(
-        [&](auto&& tile)
+        [&](const auto& tile)
         {
             auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
-            auto g = f->geom()->newGeometry(mapget::GeomType::Line);
+            auto g = f->geom()->newGeometry(mapget::Geometry::GeomType::Line);
             g->append({42., 11});
             g->append({42., 12});
             ++dataSourceRequestCount;

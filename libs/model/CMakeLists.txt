@@ -12,6 +12,8 @@ add_library(mapget-model STATIC
   include/mapget/model/featureid.h
   include/mapget/model/stream.h
   include/mapget/model/relation.h
+  include/mapget/model/geometry.h
+  include/mapget/model/simfil-geometry.h
 
   src/fields.cpp
   src/layer.cpp
@@ -22,8 +24,10 @@ add_library(mapget-model STATIC
   src/attrlayer.cpp
   src/tileid.cpp
   src/featureid.cpp
+  src/relation.cpp
   src/stream.cpp
-  src/relation.cpp)
+  src/geometry.cpp
+  src/simfil-geometry.cpp)
 
 target_include_directories(mapget-model
   PUBLIC

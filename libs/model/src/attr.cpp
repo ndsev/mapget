@@ -41,7 +41,8 @@ model_ptr<Geometry> Attribute::validity() const
 {
     if (!hasValidity())
         throw std::runtime_error("Attempt to access null validity.");
-    return model().resolveGeometry(model_ptr<simfil::ModelNode>::make(model_, data_->validity_));
+    // TODO: We could remove this cast by passing the ModelPool through ProceduralObject->Object->...
+    return dynamic_cast<TileFeatureLayer&>(model()).resolveGeometry(*simfil::ModelNode::Ptr::make(model_, data_->validity_));
 }
 
 bool Attribute::hasValidity() const

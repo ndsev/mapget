@@ -6,6 +6,7 @@ namespace mapget
 {
 
 class TileFeatureLayer;
+class Geometry;
 
 /**
  * Represents a feature relation which belongs to a
