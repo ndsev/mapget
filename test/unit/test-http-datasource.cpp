@@ -51,7 +51,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         [&](const auto& tile)
         {
             auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
-            auto g = f->geom()->newGeometry(mapget::Geometry::GeomType::Line);
+            auto g = f->geom()->newGeometry(mapget::GeomType::Line);
             g->append({42., 11});
             g->append({42., 12});
             ++dataSourceRequestCount;

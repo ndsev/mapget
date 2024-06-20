@@ -1,4 +1,4 @@
-project(mapget-service)
+project(mapget-service CXX)
 
 add_library(mapget-service STATIC
   include/mapget/service/service.h
@@ -25,7 +25,7 @@ target_link_libraries(mapget-service
   PUBLIC
     mapget-model
     mapget-log
-    rocksdb)
+    RocksDB::rocksdb)
 
 if (MSVC)
   target_compile_definitions(mapget-service
@@ -43,3 +43,7 @@ endif()
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
   target_link_libraries(mapget-service PUBLIC Threads::Threads)
 endif()
+
+install(TARGETS mapget-service)
+install(DIRECTORY include/mapget/service
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})

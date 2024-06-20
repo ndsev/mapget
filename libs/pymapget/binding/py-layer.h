@@ -188,7 +188,7 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_geometry",
-            [](TileFeatureLayer& self, Geometry::GeomType const& geomType)
+            [](TileFeatureLayer& self, GeomType const& geomType)
             { return BoundGeometry(self.newGeometry(geomType)); },
             py::arg("geom_type"),
             R"pbdoc(

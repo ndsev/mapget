@@ -1,8 +1,9 @@
 #include "datasource-client.h"
 #include "process.hpp"
+#include "mapget/log.h"
+
 #include <chrono>
 #include <regex>
-#include "mapget/log.h"
 
 namespace mapget
 {

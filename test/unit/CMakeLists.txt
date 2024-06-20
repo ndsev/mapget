@@ -1,11 +1,14 @@
-project(test.mapget.unit)
+project(test.mapget.unit CXX)
 
-if (NOT TARGET Catch2)
-  FetchContent_Declare(Catch2
-    GIT_REPOSITORY "https://github.com/catchorg/Catch2.git"
-    GIT_TAG        "v3.3.2"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(Catch2)
+FetchContent_Declare(Catch2
+  GIT_REPOSITORY "https://github.com/catchorg/Catch2.git"
+  GIT_TAG        "v3.5.2"
+  GIT_SHALLOW    ON
+  FIND_PACKAGE_ARGS)
+FetchContent_MakeAvailable(Catch2)
+
+FetchContent_GetProperties(Catch2)
+if (Catch2_POPULATED)
   list(APPEND CMAKE_MODULE_PATH "${CATCH2_SOURCE_DIR}/contrib")
 endif()
 

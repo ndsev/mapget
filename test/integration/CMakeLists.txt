@@ -1,4 +1,4 @@
-project(test.mapget.integration)
+project(test.mapget.integration CXX)
 
 # TODO: Figure out a way to do this without assuming free ports.
 set (MAPGET_SERVER_PORT 61852)

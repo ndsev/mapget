@@ -19,14 +19,14 @@ namespace bitsery
 {
 
 template <typename S>
-void serialize(S& s, mapget::Point<float>& v) {
+void serialize(S& s, glm::fvec3& v) {
     s.value4b(v.x);
     s.value4b(v.y);
     s.value4b(v.z);
 }
 
 template <typename S>
-void serialize(S& s, mapget::Point<double>& v) {
+void serialize(S& s, mapget::Point& v) {
     s.value8b(v.x);
     s.value8b(v.y);
     s.value8b(v.z);
@@ -420,7 +420,7 @@ model_ptr<GeometryCollection> TileFeatureLayer::newGeometryCollection(size_t ini
         {GeometryCollections, (uint32_t)listIndex});
 }
 
-model_ptr<Geometry> TileFeatureLayer::newGeometry(Geometry::GeomType geomType, size_t initialCapacity)
+model_ptr<Geometry> TileFeatureLayer::newGeometry(GeomType geomType, size_t initialCapacity)
 {
     initialCapacity = std::max((size_t)1, initialCapacity);
     impl_->geom_.emplace_back(geomType, initialCapacity);
@@ -431,7 +431,7 @@ model_ptr<Geometry> TileFeatureLayer::newGeometry(Geometry::GeomType geomType, s
 }
 
 model_ptr<Geometry> TileFeatureLayer::newGeometryView(
-    Geometry::GeomType geomType,
+    GeomType geomType,
     uint32_t offset,
     uint32_t size,
     const model_ptr<Geometry>& base)

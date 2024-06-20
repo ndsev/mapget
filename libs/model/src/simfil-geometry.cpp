@@ -20,8 +20,6 @@ using namespace simfil;
 namespace mapget
 {
 
-using PointT = Point<double>;
-
 static auto inline min(double a, double b)
 {
     return std::min<double>(a, b);
@@ -35,26 +33,26 @@ static auto inline max(double a, double b)
 /**
  * Returns if point q is on _segment_ ab
  */
-static auto pointOnSegment(const PointT& a, const PointT& q, const PointT& b)
+static auto pointOnSegment(const Point& a, const Point& q, const Point& b)
 {
     return q.x <= max(a.x, b.x) && q.x >= min(a.x, b.x) &&
            q.y <= max(a.y, b.y) && q.y >= min(a.y, b.y);
 }
 
-static auto dot(const PointT& a, const PointT& b)
+static auto dot(const Point& a, const Point& b)
 {
     return a.x*b.x + a.y*b.y;
 }
 
-static auto cross(const PointT& a, const PointT& b)
+static auto cross(const Point& a, const Point& b)
 {
     return a.x*b.y - a.y*b.x;
 }
 
-static auto pointOnLine(const PointT& a, const PointT& q, const PointT& b)
+static auto pointOnLine(const Point& a, const Point& q, const Point& b)
 {
-    auto v = PointT{a.x - q.x, a.y - q.y};
-    auto w = PointT{q.x - b.x, q.y - b.y};
+    auto v = Point{a.x - q.x, a.y - q.y};
+    auto w = Point{q.x - b.x, q.y - b.y};
 
     return cross(v, w) == 0 && dot(v, w) > 0;
 }
@@ -64,7 +62,7 @@ static auto pointOnLine(const PointT& a, const PointT& q, const PointT& b)
  * 1 => CW
  * 2 => CCW
  */
-static auto orientation(const PointT& a, const PointT& q, const PointT& b)
+static auto orientation(const Point& a, const Point& q, const Point& b)
 {
     auto val = (q.y - a.y) * (b.x - q.x) -
                (q.x - a.x) * (b.y - q.y);
@@ -74,7 +72,7 @@ static auto orientation(const PointT& a, const PointT& q, const PointT& b)
     return val > 0 ? 1 : 2;
 }
 
-static auto lineIntersects(const PointT& a, const PointT& b, const PointT& c, const PointT& d)
+static auto lineIntersects(const Point& a, const Point& b, const Point& c, const Point& d)
 {
     // Algorithm from: https://www.geeksforgeeks.org/check-if-two-given-line-segments-intersect/?ref=lbp
     auto o1 = orientation(a, b, c);
@@ -93,7 +91,7 @@ static auto lineIntersects(const PointT& a, const PointT& b, const PointT& c, co
     return false;
 }
 
-auto LineString::intersects(const PointT& p) const -> bool
+auto LineString::intersects(const Point& p) const -> bool
 {
     for (auto i = 1; i < points.size(); ++i) {
         const auto& a = points[i-1];
@@ -161,11 +159,11 @@ auto BBox::normalized() const -> BBox
 auto BBox::edges() const -> LineString
 {
     LineString edges;
-    edges.points = {p1, PointT{p2.x, p1.y}, p2, PointT{p1.x, p2.y}, p1};
+    edges.points = {p1, Point{p2.x, p1.y}, p2, Point{p1.x, p2.y}, p1};
     return edges;
 }
 
-auto BBox::contains(const PointT& p) const -> bool
+auto BBox::contains(const Point& p) const -> bool
 {
     auto minx = std::min<double>(p1.x, p2.x);
     auto maxx = std::max<double>(p1.x, p2.x);
@@ -285,7 +283,7 @@ auto LineString::linear_ring_signed_area() const -> double
     return a / 2;
 }
 
-static auto pointInPoly(const LineString& edges, const PointT& p)
+static auto pointInPoly(const LineString& edges, const Point& p)
 {
     if (edges.points.size() <= 2)
         return false;
@@ -294,7 +292,7 @@ static auto pointInPoly(const LineString& edges, const PointT& p)
         return false;
 
     /* Ray */
-    const auto rb = PointT{std::numeric_limits<double>::max(), p.y};
+    const auto rb = Point{std::numeric_limits<double>::max(), p.y};
 
     size_t n = 0;
     for (auto i = 0; i < edges.points.size(); ++i) {
@@ -321,7 +319,7 @@ static auto pointsInPoly(const LineString& poly, const LineString& l)
         });
 }
 
-auto Polygon::contains(const PointT& p) const -> bool
+auto Polygon::contains(const Point& p) const -> bool
 {
     if (polys.empty())
         return false;
@@ -452,16 +450,16 @@ auto PointType::make(double x, double y) -> Value
     return Value(ValueType::TransientObject, std::move(obj));
 }
 
-auto PointType::unaryOp(std::string_view op, const PointT& self) const -> Value
+auto PointType::unaryOp(std::string_view op, const Point& self) const -> Value
 {
     COMMON_UNARY_OPS(self);
 
     mapget::raiseFmt("Invalid operator {} for operand {}", op, ident);
 }
 
-auto PointType::binaryOp(std::string_view op, const PointT& p, const Value& r) const -> Value
+auto PointType::binaryOp(std::string_view op, const Point& p, const Value& r) const -> Value
 {
-    COMPARISON_OPS(PointT, p);
+    COMPARISON_OPS(Point, p);
 
     if (op == OP_NAME_WITHIN) {
         if (r.isa(ValueType::Null))
@@ -477,7 +475,7 @@ auto PointType::binaryOp(std::string_view op, const PointT& p, const Value& r) c
             return Value::f();
         if (auto o = getObject<BBox>(r, &BBoxType::Type))
             return Value::make(o->contains(p));
-        if (auto o = getObject<PointT>(r, &PointType::Type))
+        if (auto o = getObject<Point>(r, &PointType::Type))
             return Value::make(p == *o);
         if (auto o = getObject<LineString>(r, &LineStringType::Type))
             return Value::make(o->intersects(p));
@@ -488,7 +486,7 @@ auto PointType::binaryOp(std::string_view op, const PointT& p, const Value& r) c
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, ident, valueType2String(r.type));
 }
 
-auto PointType::binaryOp(std::string_view op, const Value& l, const PointT& r) const -> Value
+auto PointType::binaryOp(std::string_view op, const Value& l, const Point& r) const -> Value
 {
     if (op == OperatorEq::name() || op == OperatorNeq::name() || op == OP_NAME_INTERSECTS)
         return binaryOp(op, r, l);
@@ -496,7 +494,7 @@ auto PointType::binaryOp(std::string_view op, const Value& l, const PointT& r) c
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, valueType2String(l.type), ident);
 }
 
-auto PointType::unpack(const PointT& self, std::function<bool(Value)> res) const -> void
+auto PointType::unpack(const Point& self, std::function<bool(Value)> res) const -> void
 {
     if (!res(Value(ValueType::Float, self.x))) return;
     if (!res(Value(ValueType::Float, self.y))) return;
@@ -552,7 +550,7 @@ auto BBoxType::binaryOp(std::string_view op, const BBox& b, const Value& r) cons
             return Value::f();
         if (auto o = getObject<BBox>(r, &BBoxType::Type))
             return Value::make(b.contains(*o));
-        if (auto o = getObject<PointT>(r, &PointType::Type))
+        if (auto o = getObject<Point>(r, &PointType::Type))
             return Value::make(b.contains(*o));
         if (auto o = getObject<LineString>(r, &LineStringType::Type))
             return Value::make(b.contains(*o));
@@ -565,7 +563,7 @@ auto BBoxType::binaryOp(std::string_view op, const BBox& b, const Value& r) cons
             return Value::f();
         if (auto o = getObject<BBox>(r, &BBoxType::Type))
             return Value::make(b.intersects(*o));
-        if (auto o = getObject<PointT>(r, &PointType::Type))
+        if (auto o = getObject<Point>(r, &PointType::Type))
             return Value::make(b.contains(*o));
         if (auto o = getObject<LineString>(r, &LineStringType::Type))
             return Value::make(b.intersects(*o));
@@ -597,7 +595,7 @@ LineStringType::LineStringType()
     : TypedMetaType("linestring")
 {}
 
-auto LineStringType::make(std::vector<PointT> pts) -> Value
+auto LineStringType::make(std::vector<Point> pts) -> Value
 {
     auto obj = TransientObject(&LineStringType::Type);
     auto ls = get(obj);
@@ -634,7 +632,7 @@ auto LineStringType::binaryOp(std::string_view op, const LineString& ls, const V
             return Value::f();
         if (auto o = getObject<BBox>(r, &BBoxType::Type))
             return Value::make(ls.intersects(*o));
-        if (auto o = getObject<PointT>(r, &PointType::Type))
+        if (auto o = getObject<Point>(r, &PointType::Type))
             return Value::make(ls.intersects(*o));
         if (auto o = getObject<LineString>(r, &LineStringType::Type))
             return Value::make(ls.intersects(*o));
@@ -711,7 +709,7 @@ auto PolygonType::binaryOp(std::string_view op, const Polygon& l, const Value& r
             return Value::f();
         if (auto o = getObject<BBox>(r, &BBoxType::Type))
             return Value::make(l.contains(*o));
-        if (auto o = getObject<PointT>(r, &PointType::Type))
+        if (auto o = getObject<Point>(r, &PointType::Type))
             return Value::make(l.contains(*o));
         if (auto o = getObject<LineString>(r, &LineStringType::Type))
             return Value::make(l.contains(*o));
@@ -723,7 +721,7 @@ auto PolygonType::binaryOp(std::string_view op, const Polygon& l, const Value& r
             return Value::f();
         if (auto o = getObject<BBox>(r, &BBoxType::Type))
             return Value::make(l.intersects(*o));
-        if (auto o = getObject<PointT>(r, &PointType::Type))
+        if (auto o = getObject<Point>(r, &PointType::Type))
             return Value::make(l.contains(*o));
         if (auto o = getObject<LineString>(r, &LineStringType::Type))
             return Value::make(l.intersects(*o));
@@ -829,7 +827,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
             return res(ctx, std::move(v));
 
         if (auto coordnode = v.node->get(Fields::CoordinatesStr)) {
-            auto getPt = [&](const ModelNode &node, PointT &pt) {
+            auto getPt = [&](const ModelNode &node, Point &pt) {
                 auto nx = node.at(0), ny = node.at(1);
                 if (!nx || !ny)
                     return false;
@@ -848,7 +846,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
             };
 
             if (type == "Point") {
-                PointT pt;
+                Point pt;
                 if (!getPt(*coordnode, pt))
                     if (res(ctx, Value::null()) == Result::Stop)
                         return Result::Stop;
@@ -856,7 +854,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
                 return res(ctx, meta::PointType::Type.make(pt.x, pt.y));
             } else if (type == "MultiPoint") {
                 for (auto i = 0; i < coordnode->size(); ++i) {
-                    PointT pt;
+                    Point pt;
                     if (!getPt(*coordnode->at(i), pt))
                         if (res(ctx, Value::null()) == Result::Stop)
                             return Result::Stop;
@@ -866,7 +864,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
 
                 return Result::Continue;
             } else if (type == "LineString") {
-                std::vector<PointT> pts;
+                std::vector<Point> pts;
                 for (auto i = 0; i < coordnode->size(); ++i) {
                     if (!getPt(*coordnode->at(i), pts.emplace_back()))
                         if (res(ctx, Value::null()) == Result::Stop)
@@ -876,7 +874,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
                 return res(ctx, meta::LineStringType::Type.make(std::move(pts)));
             } else if (type == "MultiLineString") {
                 for (auto i = 0; i < coordnode->size(); ++i) {
-                    std::vector<PointT> pts;
+                    std::vector<Point> pts;
                     auto subline = coordnode->at(i);
                     for (auto i = 0; i < subline->size(); ++i) {
                         if (!getPt(*subline->at(i), pts.emplace_back()))
@@ -893,7 +891,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
             } else if (type == "Polygon") {
                 std::vector<LineString> polys;
                 for (auto i = 0; i < coordnode->size(); ++i) {
-                    std::vector<PointT> pts;
+                    std::vector<Point> pts;
                     auto subline = coordnode->at(i);
                     for (auto i = 0; i < subline->size(); ++i) {
                         if (!getPt(*subline->at(i), pts.emplace_back()))
@@ -910,7 +908,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
                     std::vector<LineString> polys;
                     auto subpoly = coordnode->at(i);
                     for (auto i = 0; i < subpoly->size(); ++i) {
-                        std::vector<PointT> pts;
+                        std::vector<Point> pts;
                         auto subline = subpoly->at(i);
                         for (auto i = 0; i < subline->size(); ++i) {
                             if (!getPt(*subline->at(i), pts.emplace_back()))
@@ -1002,7 +1000,7 @@ auto BBoxFn::eval(Context ctx, Value v, const std::vector<ExprPtr>& args, const 
 
         if (auto o = getObject<BBox>(val, &meta::BBoxType::Type))
             return res(ctx, meta::BBoxType::Type.make(*o));
-        if (auto o = getObject<PointT>(val, &meta::PointType::Type))
+        if (auto o = getObject<Point>(val, &meta::PointType::Type))
             return res(ctx, meta::BBoxType::Type.make(o->x, o->y, o->x, o->y));
         if (auto o = getObject<LineString>(val, &meta::LineStringType::Type))
             return res(ctx, meta::BBoxType::Type.make(o->bbox()));
@@ -1020,12 +1018,12 @@ auto BBoxFn::eval(Context ctx, Value v, const std::vector<ExprPtr>& args, const 
         if (!p2ok)
             mapget::raise<ArgumentValueCountError>(*this, 1);
 
-        PointT p1, p2;
-        if (auto a1 = getObject<PointT>(p1val, &meta::PointType::Type))
+        Point p1, p2;
+        if (auto a1 = getObject<Point>(p1val, &meta::PointType::Type))
             p1 = *a1;
         else
             mapget::raise<ArgumentTypeError>(*this, 0, "point", valueType2String(p1val.type));
-        if (auto a2 = getObject<PointT>(p2val, &meta::PointType::Type))
+        if (auto a2 = getObject<Point>(p2val, &meta::PointType::Type))
             p2 = *a2;
         else
             mapget::raise<ArgumentTypeError>(*this, 1, "point", valueType2String(p2val.type));
@@ -1087,7 +1085,7 @@ auto LineStringFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args
             if (mode == Mode::None)
                 mode = v.isa(ValueType::TransientObject) ? Mode::Points : Mode::Floats;
 
-            if (auto pt = getObject<PointT>(v, &meta::PointType::Type)) {
+            if (auto pt = getObject<Point>(v, &meta::PointType::Type)) {
                 if (mode != Mode::Points)
                     mapget::raiseFmt("linestring: Expected value of type point; got {}", v.toString());
 
@@ -1109,7 +1107,7 @@ auto LineStringFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args
         if (floats.size() % 2 != 0)
             mapget::raiseFmt("linestring: Uneven number of values");
 
-    std::vector<PointT> points;
+    std::vector<Point> points;
     for (auto i = 1; i < floats.size(); i += 2) {
         points.emplace_back(floats[i-1], floats[i-0]);
     }

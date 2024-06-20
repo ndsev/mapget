@@ -104,7 +104,7 @@ auto makeTile() {
     } while (false)
 
 TEST_CASE("Point", "[geo.point]") {
-    REQUIRE(Point<>{0, 1} == Point<>{0, 1});
+    REQUIRE(Point{0, 1} == Point{0, 1});
 }
 
 TEST_CASE("BBox", "[geo.bbox]") {
@@ -113,30 +113,30 @@ TEST_CASE("BBox", "[geo.bbox]") {
 
 TEST_CASE("LineString", "[geo.linestring]") {
     SECTION("Two crossing lines") {
-        auto l1 = LineString{{Point<>{-1, -1}, Point<>{ 1, 1}}};
-        auto l2 = LineString{{Point<>{ 1, -1}, Point<>{-1, 1}}};
+        auto l1 = LineString{{Point{-1, -1}, Point{ 1, 1}}};
+        auto l2 = LineString{{Point{ 1, -1}, Point{-1, 1}}};
         REQUIRE(l1.intersects(l2));
     }
     SECTION("Two crossing lines vert/horz") {
-        auto l1 = LineString{{Point<>{0, -1}, Point<>{1, 1}}};
-        auto l2 = LineString{{Point<>{-1, 0}, Point<>{1, 0}}};
+        auto l1 = LineString{{Point{0, -1}, Point{1, 1}}};
+        auto l2 = LineString{{Point{-1, 0}, Point{1, 0}}};
         REQUIRE(l1.intersects(l2));
     }
 }
 
 TEST_CASE("Polygon", "[geo.polygon]") {
     SECTION("Point in rectangle polygon") {
-        auto p = Polygon{{LineString{{Point<>{0, 0}, Point<>{1, 0}, Point<>{1, 1}, Point<>{0, 1}}}}};
-        REQUIRE(p.contains(Point<>{0.5, 0.5}));   /* center */
-        REQUIRE(p.contains(Point<>{0, 0}));       /* top-left */
-        REQUIRE(!p.contains(Point<>{-0.5, 0.5})); /* left */
-        REQUIRE(!p.contains(Point<>{ 1.5, 0.5})); /* right */
+        auto p = Polygon{{LineString{{Point{0, 0}, Point{1, 0}, Point{1, 1}, Point{0, 1}}}}};
+        REQUIRE(p.contains(Point{0.5, 0.5}));   /* center */
+        REQUIRE(p.contains(Point{0, 0}));       /* top-left */
+        REQUIRE(!p.contains(Point{-0.5, 0.5})); /* left */
+        REQUIRE(!p.contains(Point{ 1.5, 0.5})); /* right */
     }
     SECTION("Point in triangle polygon") {
-        auto p = Polygon{{LineString{{Point<>{0, 0}, Point<>{1, 1}, Point<>{0, 1}}}}};
-        REQUIRE(p.contains(Point<>{0.4999, 0.5}));  /* on edge */
-        REQUIRE(p.contains(Point<>{0, 0}));         /* top-left */
-        REQUIRE(!p.contains(Point<>{0.5001, 0.5})); /* left to edge */
+        auto p = Polygon{{LineString{{Point{0, 0}, Point{1, 1}, Point{0, 1}}}}};
+        REQUIRE(p.contains(Point{0.4999, 0.5}));  /* on edge */
+        REQUIRE(p.contains(Point{0, 0}));         /* top-left */
+        REQUIRE(!p.contains(Point{0.5001, 0.5})); /* left to edge */
     }
 }
 
@@ -144,7 +144,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
 {
     auto model_pool = makeTile();
     auto geometry_collection = model_pool->newGeometryCollection();
-    auto point_geom = geometry_collection->newGeometry(Geometry::GeomType::Points);
+    auto point_geom = geometry_collection->newGeometry(GeomType::Points);
     point_geom->append({.0, .0, .0});
     point_geom->append({.25, .25, .25});
     point_geom->append({.5, .5, .5});
@@ -159,7 +159,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
     SECTION("Recover geometry")
     {
         REQUIRE(point_geom->type() == ValueType::Object);
-        REQUIRE(point_geom->geomType() == Geometry::GeomType::Points);
+        REQUIRE(point_geom->geomType() == GeomType::Points);
         REQUIRE(point_geom->numPoints() == 4);
         REQUIRE(point_geom->pointAt(0).x == .0);
         REQUIRE(point_geom->pointAt(1).x == .25);
@@ -185,12 +185,12 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
     }
 
     SECTION("Geometry View") {
-        auto view = model_pool->newGeometryView(Geometry::GeomType::Line, 1, 2, point_geom);
+        auto view = model_pool->newGeometryView(GeomType::Line, 1, 2, point_geom);
         REQUIRE(view->pointAt(0).x == .25);
         REQUIRE(view->pointAt(1).x == .5);
         REQUIRE_THROWS(view->pointAt(2));
 
-        auto subview = model_pool->newGeometryView(Geometry::GeomType::Points, 1, 1, view);
+        auto subview = model_pool->newGeometryView(GeomType::Points, 1, 1, view);
         REQUIRE(subview->pointAt(0).x == .5);
         REQUIRE_THROWS(subview->pointAt(1));
     }
@@ -201,7 +201,7 @@ TEST_CASE("Spatial Operators", "[spatial.ops]") {
 
     // Create a GeometryCollection with a Point
     auto geometry_collection = model_pool->newGeometryCollection();
-    auto point_geom = geometry_collection->newGeometry(Geometry::GeomType::Points);
+    auto point_geom = geometry_collection->newGeometry(GeomType::Points);
     point_geom->append({2., 3., 0.});
     model_pool->addRoot(model_ptr<ModelNode>(model_pool->newObject()->addField(
         "geometry",
@@ -226,22 +226,22 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
     auto model_pool = makeTile();
 
     // Points
-    Point<> a{2, 3}, b{1, 1}, c{4, 4}, d{0, 0}, e{5, 0}, f{2.5, 5};
+    Point a{2, 3}, b{1, 1}, c{4, 4}, d{0, 0}, e{5, 0}, f{2.5, 5};
 
     // Create a GeometryCollection
     auto geometry_collection = model_pool->newGeometryCollection();
 
     // Create and add Point geometry
-    auto point_geom = geometry_collection->newGeometry(Geometry::GeomType::Points);
+    auto point_geom = geometry_collection->newGeometry(GeomType::Points);
     point_geom->append(a);
 
     // Create and add LineString geometry
-    auto linestring_geom = geometry_collection->newGeometry(Geometry::GeomType::Line);
+    auto linestring_geom = geometry_collection->newGeometry(GeomType::Line);
     linestring_geom->append(b);
     linestring_geom->append(c);
 
     // Create and add Polygon geometry
-    auto polygon_geom = geometry_collection->newGeometry(Geometry::GeomType::Polygon);
+    auto polygon_geom = geometry_collection->newGeometry(GeomType::Polygon);
     polygon_geom->append(d);
     polygon_geom->append(e);
     polygon_geom->append(f);
@@ -278,7 +278,7 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
     }
 
     SECTION("For-each") {
-        auto pts = std::vector<Point<>>{a, b, c, d, e, f};
+        auto pts = std::vector<Point>{a, b, c, d, e, f};
         auto numPts = 0;
         auto numGeoms = 0;
         geometry_collection->forEachGeometry(

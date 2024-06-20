@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14.0)
-project(mapget-log)
+project(mapget-log CXX)
 
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
@@ -15,6 +15,11 @@ target_link_libraries(mapget-log
 
 target_include_directories(mapget-log
   PUBLIC
-    include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${MAPGET_INSTALL_INCLUDEDIR}>
   PRIVATE
     src)
+
+install(TARGETS mapget-log)
+install(FILES include/mapget/log.h
+  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})

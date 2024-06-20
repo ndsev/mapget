@@ -19,6 +19,13 @@ namespace mapget
 
 class TileFeatureLayer;
 
+enum class GeomType: uint8_t {
+    Points,   // Point-cloud
+    Line,     // Line-string
+    Polygon,  // Auto-closed polygon
+    Mesh      // Collection of triangles
+};
+
 /**
  * Geometry object, which stores a point collection, a line-string,
  * or a triangle mesh.
@@ -34,13 +41,6 @@ public:
     friend class PolygonNode;
     friend class MeshNode;
 
-    enum class GeomType: uint8_t {
-        Points,   // Point-cloud
-        Line,     // Line-string
-        Polygon,  // Auto-closed polygon
-        Mesh      // Collection of triangles
-    };
-
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
@@ -49,7 +49,7 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Add a point to the Geometry. */
-    void append(Point<double> const& p);
+    void append(Point const& p);
 
     /** Get the type of the geometry. */
     [[nodiscard]] GeomType geomType() const;
@@ -58,14 +58,14 @@ public:
     [[nodiscard]] size_t numPoints() const;
 
     /** Get a point at an index. */
-    [[nodiscard]] Point<double> pointAt(size_t index) const;
+    [[nodiscard]] Point pointAt(size_t index) const;
 
     /** Iterate over all Points in the geometry.
      * @param callback Function which is called for each contained point.
      *  Must return true to continue iteration, false to abort iteration.
      * @return True if all points were visited, false if the callback ever returned false.
      * @example
-     *   collection->forEachPoint([](Point<double>&& point){
+     *   collection->forEachPoint([](Point&& point){
      *      std::cout << point.x() << "," << point.y() << "," << point.z() << std::endl;
      *      return true;
      *   })
@@ -107,7 +107,7 @@ protected:
 
                 // Offset is set when vertexArray is allocated,
                 // which happens when the first point is added.
-                Point<double> offset_;
+                Point offset_;
             } geom_;
 
             struct GeomViewDetails {
@@ -141,7 +141,7 @@ protected:
         }
     };
 
-    using Storage = simfil::ArrayArena<Point<float>, simfil::detail::ColumnPageSize*2>;
+    using Storage = simfil::ArrayArena<glm::fvec3, simfil::detail::ColumnPageSize*2>;
 
     Data* geomData_ = nullptr;
     Storage* storage_ = nullptr;
@@ -169,7 +169,7 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Adds a new Geometry to the collection and returns a reference. */
-    model_ptr<Geometry> newGeometry(Geometry::GeomType type, size_t initialCapacity=4);
+    model_ptr<Geometry> newGeometry(GeomType type, size_t initialCapacity=4);
 
     /** Append an existing Geometry to the collection. */
     void addGeometry(model_ptr<Geometry> const& geom);
@@ -221,7 +221,7 @@ public:
     [[nodiscard]] FieldId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
-    Point<double> pointAt(int64_t) const;
+    Point pointAt(int64_t) const;
 
     VertexBufferNode() = delete;
 
@@ -357,7 +357,7 @@ public:
 private:
     VertexNode(ModelNode const& baseNode, Geometry::Data const* geomData);
 
-    Point<double> point_;
+    Point point_;
 };
 
 template <typename LambdaType, class ModelType>

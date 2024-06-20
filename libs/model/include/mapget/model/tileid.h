@@ -23,8 +23,6 @@ namespace mapget
  */
 struct TileId
 {
-    using Point = ::mapget::Point<double>;
-
     /**
      * Constructor to initialize TileId with x, y, z
      */

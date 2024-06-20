@@ -10,7 +10,7 @@ void bindTileId(py::module_& m)
 {
     using namespace mapget;
 
-    py::class_<Point<>>(m, "Point", R"pbdoc(
+    py::class_<Point>(m, "Point", R"pbdoc(
             The Point class represents a point in 3D space with x, y, and z components.
         )pbdoc")
         .def(py::init<>(), R"pbdoc(
@@ -24,17 +24,17 @@ void bindTileId(py::module_& m)
             py::arg("x") = 0,
             py::arg("y") = 0,
             py::arg("z") = 0)
-        .def_readwrite("x", &Point<>::x, "The x-component of the point.")
-        .def_readwrite("y", &Point<>::y, "The y-component of the point.")
-        .def_readwrite("z", &Point<>::z, "The z-component of the point.")
+        .def_readwrite("x", &Point::x, "The x-component of the point.")
+        .def_readwrite("y", &Point::y, "The y-component of the point.")
+        .def_readwrite("z", &Point::z, "The z-component of the point.")
         .def(
             "__eq__",
-            &Point<>::operator==,
+            &Point::operator==,
             R"pbdoc(
             Operator overload for equality comparison with another Point.
             )pbdoc",
             py::arg("other"))
-        .def("__str__", &Point<>::toString, R"pbdoc(
+        .def("__str__", &Point::toString, R"pbdoc(
             Convert the Point to a string representation.
             )pbdoc");
 

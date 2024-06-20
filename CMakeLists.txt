@@ -1,25 +1,30 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.20)
+cmake_policy(VERSION 3.20)
+cmake_policy(SET CMP0117 NEW)
 
+project(mapget CXX)
+
+set(MAPGET_VERSION 2024.3)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(FetchContent)
+include(GNUInstallDirs)
 
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-  set (MAPGET_WITH_WHEEL ON CACHE BOOL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
-  set (MAPGET_WITH_SERVICE ON CACHE BOOL "Enable mapget-service library. Requires threads.")
-  set (MAPGET_WITH_HTTPLIB ON CACHE BOOL "Enable mapget-http-datasource and mapget-http-service libraries.")
-  set (MAPGET_ENABLE_TESTING ON CACHE BOOL "Enable testing.")
-  set (MAPGET_BUILD_EXAMPLES ON CACHE BOOL "Build examples.")
+  set(MAPGET_WITH_WHEEL ON CACHE BOOL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
+  set(MAPGET_WITH_SERVICE ON CACHE BOOL "Enable mapget-service library. Requires threads.")
+  set(MAPGET_WITH_HTTPLIB ON CACHE BOOL "Enable mapget-http-datasource and mapget-http-service libraries.")
+  set(MAPGET_ENABLE_TESTING ON CACHE BOOL "Enable testing.")
+  set(MAPGET_BUILD_EXAMPLES ON CACHE BOOL "Build examples.")
 endif()
 
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
 option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
 
-project(mapget)
-include(FetchContent)
-
-set(MAPGET_VERSION 2024.3)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(Python3_FIND_STRATEGY LOCATION)
 
 if (NOT MSVC)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -29,17 +34,23 @@ endif()
 if (NOT MAPGET_DEPLOY_DIR)
   set (MAPGET_DEPLOY_DIR "${CMAKE_BINARY_DIR}/bin")
 endif()
-set (CMAKE_LIBRARY_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
-set (CMAKE_RUNTIME_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
-set (CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${MAPGET_DEPLOY_DIR}")
-set (CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${MAPGET_DEPLOY_DIR}")
-set (CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${MAPGET_DEPLOY_DIR}")
-set (CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${MAPGET_DEPLOY_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${MAPGET_DEPLOY_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${MAPGET_DEPLOY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${MAPGET_DEPLOY_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${MAPGET_DEPLOY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${MAPGET_DEPLOY_DIR}")
+set(MAPGET_INSTALL_INCLUDEDIR "${CMAKE_INSTALL_INCLUDEDIR}/mapget/")
 
-if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-  option(WITH_COVERAGE "Enable gcovr coverage" YES)
-else()
+option(WITH_COVERAGE "Enable gcovr coverage" NO)
+if (NOT CMAKE_COMPILER_IS_GNUCXX AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(WITH_COVERAGE NO)
+endif()
+
+find_program(GCOVR_BIN gcovr)
+if (WITH_COVERAGE AND NOT GCOVR_BIN)
+  set(WITH_COVERAGE NO)
+  message(WARNING "Could not find gcovr binary. Disabling coverage report!")
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
@@ -49,128 +60,29 @@ if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
   endif()
 endif()
 
-find_program(GCOVR_BIN gcovr)
-if (WITH_COVERAGE AND NOT GCOVR_BIN)
-  set(WITH_COVERAGE NO)
-  message(WARNING "Could not find gcovr binary. Disabling coverage report!")
-endif()
-
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-modules")
-
-##############
-# deps
-
-set(SIMFIL_WITH_MODEL_JSON YES)
-if (NOT TARGET simfil)
-  FetchContent_Declare(simfil
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "v0.2.0"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(simfil)
-endif()
-
-if (NOT TARGET spdlog::spdlog)
-  set(SPDLOG_FMT_EXTERNAL TRUE CACHE BOOL "Ensure that spdlog uses fmt from conan." FORCE)
-  FetchContent_Declare(spdlog
-    GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
-    GIT_TAG        "v1.x"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(spdlog)
-endif()
-
-if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  if (NOT TARGET httplib)
-    FetchContent_Declare(httplib
-      GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-      GIT_TAG        "v0.14.3"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(httplib)
-    find_package(OpenSSL REQUIRED)
-    target_compile_definitions(httplib
-      INTERFACE
-        CPPHTTPLIB_OPENSSL_SUPPORT)
-    target_link_libraries(httplib INTERFACE OpenSSL::SSL)
-  endif()
-
-  if (NOT TARGET yaml-cpp)
-    FetchContent_Declare(yaml-cpp
-      GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
-      GIT_TAG        "master"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(yaml-cpp)
-  endif()
-
-  if (NOT TARGET cli11)
-    include(FetchContent)
-    FetchContent_Declare(cli11
-      GIT_REPOSITORY https://github.com/CLIUtils/CLI11
-      GIT_TAG        v2.3.2
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(cli11)
-  endif()
-
-  if (NOT TARGET tiny-process-library)
-    set(BUILD_TESTING OFF)
-    FetchContent_Declare(tiny-process-library
-      GIT_REPOSITORY https://gitlab.com/eidheim/tiny-process-library
-      GIT_TAG        v2.0.4
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(tiny-process-library)
-  endif()
-endif()
-
-if (MAPGET_WITH_WHEEL)
-  if (NOT TARGET wheel)
-    set(Python3_FIND_STRATEGY LOCATION)
-    FetchContent_Declare(python-cmake-wheel
-      GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
-      GIT_TAG        "v0.9.0"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(python-cmake-wheel)
-    list(APPEND CMAKE_MODULE_PATH "${python-cmake-wheel_SOURCE_DIR}")
-    include(python-wheel)
-    set(WHEEL_DEPLOY_DIRECTORY "${MAPGET_DEPLOY_DIR}/wheel")
-  endif()
-
-  if (NOT TARGET pybind11)
-    FetchContent_Declare(
-      pybind11
-      GIT_REPOSITORY https://github.com/pybind/pybind11.git
-      GIT_TAG        v2.10.4
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(pybind11)
-  endif()
-endif()
-
 if (WITH_COVERAGE)
   include(CodeCoverage)
 endif()
 
 ##############
-# libs
+# deps
+include(deps.cmake)
 
+if (MAPGET_WITH_WHEEL)
+  if (NOT TARGET wheel)
+    list(APPEND CMAKE_MODULE_PATH "${python-cmake-wheel_SOURCE_DIR}")
+    include(python-wheel)
+    set(WHEEL_DEPLOY_DIRECTORY "${MAPGET_DEPLOY_DIR}/wheel")
+  endif()
+endif()
+
+##############
+# libs
 add_subdirectory(libs/logging)
 add_subdirectory(libs/model)
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  if (NOT TARGET rocksdb)
-    # RocksDB adds ASM as language to the project, upon which CodeCoverage.cmake
-    # tries to find a matching compiler and fails. So RocksDB must be included
-    # after CodeCoverage.
-    set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
-    set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
-    set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
-    set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
-    set(DISABLE_WARNING_AS_ERROR 1 CACHE BOOL "rocksdb warnings are ok")
-    set(PORTABLE YES CACHE BOOL "rocksdb with max compatibility/portability")
-
-    FetchContent_Declare(rocksdb
-      GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-      GIT_TAG        v8.11.3
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(rocksdb)
-  endif()
-
   add_subdirectory(libs/service)
 endif()
 
@@ -193,7 +105,7 @@ if (MAPGET_ENABLE_TESTING)
 
   if (MAPGET_WITH_WHEEL)
     add_subdirectory(test/integration)
-  endif ()
+  endif()
 
   if (WITH_COVERAGE)
     setup_target_for_coverage_gcovr_html(

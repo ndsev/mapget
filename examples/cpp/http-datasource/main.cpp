@@ -36,7 +36,7 @@ public:
 
         // Create a feature with line geometry
         auto feature1 = tile->newFeature("Way", {{"wayId", 42}});
-        auto line = feature1->geom()->newGeometry(Geometry::GeomType::Line, 2);
+        auto line = feature1->geom()->newGeometry(GeomType::Line, 2);
         line->append({41., 10.});
         line->append({43., 11.});
 

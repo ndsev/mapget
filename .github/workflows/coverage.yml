@@ -10,32 +10,39 @@ jobs:
   coverage-linux:
     name: Coverage
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
     - uses: actions/checkout@v3
       with:
         submodules: true
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.3
     - name: Install dependencies
       run: |
         sudo apt-get install ninja-build
         pip install gcovr
         gcovr --version
+    - name: Install Conan
+      run: |
+        pip install conan
+        conan profile detect
     - name: Setup
       run: |
-        mkdir build
+        conan install . -s compiler.cppstd=20 -s build_type=Debug -b missing \
+            -o with_wheel=True -o with_service=True -o with_httplib=True
     - name: Configure
-      working-directory: build
       run: |
-        cmake -DCMAKE_BUILD_TYPE=Debug \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
-              -DWITH_COVERAGE=YES -GNinja ..
+        cmake --preset conan-debug \
+            -DMAPGET_ENABLE_TESTING=YES \
+            -DWITH_COVERAGE=YES \
+            -GNinja
     - name: Build
-      working-directory: build
       run: |
-        cmake --build .
+        cmake --build --preset conan-debug
     - name: Run Test
-      working-directory: build/
       run: |
-        ctest --verbose
+        ctest --preset conan-debug -C Debug --verbose --no-test=fail
     - name: Run Gcovr
       run: |
         mkdir coverage

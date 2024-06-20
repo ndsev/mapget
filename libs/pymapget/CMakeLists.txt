@@ -1,4 +1,4 @@
-project(pymapget)
+project(pymapget CXX)
 
 pybind11_add_module(pymapget
   MODULE
@@ -27,16 +27,17 @@ target_compile_features(pymapget
   INTERFACE
     cxx_std_17)
 
-if (MSVC)
-  # Required because cpp-httplib speaks https via OpenSSL
+FetchContent_GetProperties(cpp-httplib)
+if (MSVC AND CPP-HTTPLIB_POPULATED)
+  # Required because cpp-httplib speaks https via OpenSSL.
+  # Only needed if httplib came via FetchContent.
   set(DEPLOY_FILES
     "${OPENSSL_INCLUDE_DIR}/../libcrypto-1_1-x64.dll"
     "${OPENSSL_INCLUDE_DIR}/../libssl-1_1-x64.dll"
     "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
 else()
   set(DEPLOY_FILES "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
-endif ()
-list(APPEND DEPLOY_FILES $<TARGET_FILE:simfil::simfil>)
+endif()
 
 add_wheel(pymapget
   NAME mapget

@@ -13,81 +13,105 @@ jobs:
         python-version: ["3.8", "3.9", "3.10", "3.11"]
     runs-on: ubuntu-latest
     container: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}:2023.1
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v2
         with:
           submodules: recursive
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.3
+      - name: Install Conan
+        run: |
+          pip install conan
+          conan profile detect
       - name: Configure
         run: |
           python3 -m venv venv && . ./venv/bin/activate
           pip install -U setuptools wheel pip
-          mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release ..
+          conan install . -s compiler.cppstd=20 -b missing -b editable \
+            -o with_wheel=True -o with_service=True -o with_httplib=True
+          cmake --preset conan-release \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DMAPGET_ENABLE_TESTING=True \
+            -DMAPGET_BUILD_EXAMPLES=True \
+            -GNinja
       - name: Build
-        working-directory: build
         run: |
-          . ../venv/bin/activate
-          cmake --build .
+          . ./venv/bin/activate
+          cmake --build --preset conan-release
+          cd build/Release
           mv bin/wheel bin/wheel-auditme
           auditwheel repair bin/wheel-auditme/mapget*.whl -w bin/wheel
       - name: Test
-        working-directory: build
+        timeout-minutes: 30
         run: |
-          . ../venv/bin/activate
-          ctest -C Release --verbose --no-test=fail
+          . ./venv/bin/activate
+          ctest --preset conan-release -C Release --verbose --no-test=fail
       - name: Deploy
         uses: actions/upload-artifact@v2
         with:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest
-          path: build/bin/wheel/*.whl
+          path: build/Release/bin/wheel/*.whl
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [macos-13, windows-2019]  # Currently, macos-latest is macos 12
         python-version: ["3.8", "3.9", "3.10", "3.11"]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v2
         with:
           submodules: recursive
-      - uses: actions/setup-python@v2
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.3
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           architecture: x64
-      - run: python -m pip install setuptools wheel
-      - run: mkdir build
+      - name: Install Conan
+        run: |
+          pip install conan
+          conan profile detect
+      - run: python -m pip install setuptools wheel ninja
       - name: Build (macOS)
         if: matrix.os == 'macos-13'
-        working-directory: build
         run: |
           python -m pip install delocate
-          brew install openssl
-          export OPENSSL_ROOT_DIR=$(brew --prefix openssl)
           export MACOSX_DEPLOYMENT_TARGET=10.15
-          cmake -DPython3_ROOT_DIR=$pythonLocation \
+          conan install . -s compiler.cppstd=20 -b missing -b editable \
+            -o with_wheel=True -o with_service=True -o with_httplib=True
+          cmake --preset conan-release \
+                -DPython3_ROOT_DIR="$pythonLocation" \
                 -DPython3_FIND_FRAMEWORK=LAST \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DHTTPLIB_USE_BROTLI_IF_AVAILABLE=OFF ..
-          cmake --build .
+                -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+                -GNinja
+          cmake --build --preset conan-release
+          cd build/Release
           mv bin/wheel bin/wheel-auditme  # Same as on Linux
           ./_deps/python-cmake-wheel-src/repair-wheel-macos.bash \
                 "$(pwd)"/bin/wheel-auditme/mapget*.whl \
                 "$(pwd)"/bin/wheel mapget
+      - name: Enable Developer Command Prompt (Windows)
+        uses: ilammy/msvc-dev-cmd@v1.12.1
+        if: matrix.os == 'windows-latest' || matrix.os == 'windows-2019'
       - name: Build (Windows)
         if: matrix.os == 'windows-latest' || matrix.os == 'windows-2019'
-        working-directory: build
-        env:
-          CMAKE_GENERATOR: "Visual Studio 16 2019"
         run: |
-          choco install --no-progress -y openssl --version=1.1.1.2100
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
-          cmake "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DCMAKE_BUILD_TYPE=Release ..
-          cmake --build . --config Release
+          conan install . -s compiler.cppstd=20 -b missing -b editable
+          cmake --preset conan-default "-DPython3_ROOT_DIR=$env:pythonLocation" -DPython3_FIND_REGISTRY=LAST -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DMAPGET_ENABLE_TESTING=YES -DMAPGET_BUILD_EXAMPLES=YES
+          cmake --build --preset conan-release
       - name: Deploy
         uses: actions/upload-artifact@v2
         with:
           name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
-          path: build/bin/wheel/*.whl
+          path: build/**/bin/wheel/*.whl
       - name: Test
-        working-directory: build
+        timeout-minutes: 30
         run: |
-          ctest -C Release --verbose --no-test=fail
+          ctest --preset conan-release -C Release --verbose --no-test=fail

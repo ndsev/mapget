@@ -193,11 +193,11 @@ struct BoundGeometry : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::enum_<Geometry::GeomType>(m, "GeomType")
-            .value("LINE", Geometry::GeomType::Line)
-            .value("MESH", Geometry::GeomType::Mesh)
-            .value("POINTS", Geometry::GeomType::Points)
-            .value("POLYGON", Geometry::GeomType::Polygon);
+        py::enum_<GeomType>(m, "GeomType")
+            .value("LINE", GeomType::Line)
+            .value("MESH", GeomType::Mesh)
+            .value("POINTS", GeomType::Points)
+            .value("POLYGON", GeomType::Polygon);
 
         py::class_<BoundGeometry, BoundModelNode>(m, "Geometry")
             .def(
@@ -213,7 +213,7 @@ struct BoundGeometry : public BoundModelNode
             )pbdoc")
             .def(
                 "append",
-                [](BoundGeometry& node, Point<> const& p) {
+                [](BoundGeometry& node, Point const& p) {
                     node.modelNodePtr_->append(p);
                 },
                 py::arg("point"),
@@ -236,7 +236,7 @@ struct BoundGeometryCollection : public BoundModelNode
         py::class_<BoundGeometryCollection, BoundModelNode>(m, "GeometryCollection")
             .def(
                 "new_geometry",
-                [](BoundGeometryCollection& self, Geometry::GeomType const& geomType)
+                [](BoundGeometryCollection& self, GeomType const& geomType)
                 { return BoundGeometry(self.modelNodePtr_->newGeometry(geomType)); },
                 py::arg("geom_type"),
                 "Create and insert a new geometry into the collection.");
@@ -385,35 +385,35 @@ struct BoundFeature : public BoundModelNode
                 "Access this feature's relation list.")
             .def(
                 "add_point",
-                [](BoundFeature& self, Point<> const& p) {
+                [](BoundFeature& self, Point const& p) {
                     self.modelNodePtr_->addPoint(p);
                 },
                 py::arg("p"),
                 "Add a point to the feature.")
             .def(
                 "add_points",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addPoints(points);
                 },
                 py::arg("points"),
                 "Add multiple points to the feature.")
             .def(
                 "add_line",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addLine(points);
                 },
                 py::arg("points"),
                 "Add a line to the feature.")
             .def(
                 "add_mesh",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addMesh(points);
                 },
                 py::arg("points"),
                 "Add a mesh to the feature, len(points) must be multiple of three.")
             .def(
                 "add_poly",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addPoly(points);
                 },
                 py::arg("points"),
