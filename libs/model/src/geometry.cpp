@@ -146,7 +146,7 @@ FieldId Geometry::keyAt(int64_t i) const {
     throw std::out_of_range("geom: Out of range.");
 }
 
-void Geometry::append(Point<double> const& p)
+void Geometry::append(Point const& p)
 {
     if (geomData_->isView_)
         throw std::runtime_error("Cannot append to geometry view.");
@@ -165,7 +165,7 @@ void Geometry::append(Point<double> const& p)
     }
     storage_->emplace_back(
         geomData.vertexArray_,
-        Point<float>{
+        glm::fvec3{
             static_cast<float>(p.x - geomData.offset_.x),
             static_cast<float>(p.y - geomData.offset_.y),
             static_cast<float>(p.z - geomData.offset_.z)});
@@ -188,7 +188,7 @@ size_t Geometry::numPoints() const
     return vertexBufferNode.size();
 }
 
-Point<double> Geometry::pointAt(size_t index) const
+Point Geometry::pointAt(size_t index) const
 {
     VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::PointBuffers, addr_.index()}};
     VertexNode vertex{*vertexBufferNode.at((int64_t)index), vertexBufferNode.baseGeomData_};
@@ -484,7 +484,7 @@ bool VertexBufferNode::iterate(const IterCallback& cb) const
     return cont;
 }
 
-Point<double> VertexBufferNode::pointAt(int64_t index) const
+Point VertexBufferNode::pointAt(int64_t index) const
 {
     VertexNode vertex{*at(index), baseGeomData_};
     return vertex.point_;

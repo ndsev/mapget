@@ -322,7 +322,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 }
 
 // Helper function to compare two points with some tolerance
-void REQUIRE_EQUAL(const Point<>& p1, const Point<>& p2, double eps = 1e-6) {
+void REQUIRE_EQUAL(const Point& p1, const Point& p2, double eps = 1e-6) {
     REQUIRE(std::abs(p1.x - p2.x) < eps);
     REQUIRE(std::abs(p1.y - p2.y) < eps);
 }

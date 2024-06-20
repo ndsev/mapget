@@ -27,7 +27,8 @@ add_library(mapget-model STATIC
   src/relation.cpp
   src/stream.cpp
   src/geometry.cpp
-  src/simfil-geometry.cpp)
+  src/simfil-geometry.cpp
+  src/point.cpp)
 
 target_include_directories(mapget-model
   PUBLIC
@@ -38,6 +39,7 @@ target_include_directories(mapget-model
 
 target_link_libraries(mapget-model
   PUBLIC
+    glm::glm
     mapget-log
     sfl::sfl
     Bitsery::bitsery

@@ -19,14 +19,14 @@ namespace bitsery
 {
 
 template <typename S>
-void serialize(S& s, mapget::Point<float>& v) {
+void serialize(S& s, glm::fvec3& v) {
     s.value4b(v.x);
     s.value4b(v.y);
     s.value4b(v.z);
 }
 
 template <typename S>
-void serialize(S& s, mapget::Point<double>& v) {
+void serialize(S& s, mapget::Point& v) {
     s.value8b(v.x);
     s.value8b(v.y);
     s.value8b(v.z);

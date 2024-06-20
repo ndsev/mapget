@@ -52,6 +52,7 @@ class MapgetRecipe(ConanFile):
         self.requires("spdlog/[~1]", transitive_headers=True)
         self.requires("bitsery/[~5]")
         self.requires("nlohmann_json/3.11.2", transitive_headers=True)
+        self.requires("glm/cci.20230113")
         if self.options.with_httplib:
             self.requires("cli11/2.3.2")
             self.requires("cpp-httplib/0.15.3", transitive_headers=True)
@@ -95,7 +96,7 @@ class MapgetRecipe(ConanFile):
         self.cpp_info.components["log"].set_property("cmake_target_name", "mapget::log")
         self.cpp_info.components["log"].requires = ["spdlog::spdlog"]
         self.cpp_info.components["model"].libs = ["mapget-model"]
-        self.cpp_info.components["model"].requires = ["log", "simfil::simfil", "nlohmann_json::nlohmann_json", "bitsery::bitsery"]
+        self.cpp_info.components["model"].requires = ["log", "simfil::simfil", "nlohmann_json::nlohmann_json", "bitsery::bitsery", "glm::glm"]
         self.cpp_info.components["model"].set_property("cmake_target_name", "mapget::model")
         if self.options.with_service or self.options.with_httplib:
             self.cpp_info.components["service"].libs = ["mapget-service"]

@@ -251,30 +251,30 @@ nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)
     }
 }
 
-void Feature::addPoint(const Point<>& p) {
+void Feature::addPoint(const Point& p) {
     auto newGeom = geom()->newGeometry(GeomType::Points, 0);
     newGeom->append(p);
 }
 
-void Feature::addPoints(const std::vector<Point<>>& points) {
+void Feature::addPoints(const std::vector<Point>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Points, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addLine(const std::vector<Point<>>& points) {
+void Feature::addLine(const std::vector<Point>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Line, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addMesh(const std::vector<Point<>>& points) {
+void Feature::addMesh(const std::vector<Point>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Mesh, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addPoly(const std::vector<Point<>>& points) {
+void Feature::addPoly(const std::vector<Point>& points) {
     auto newGeom = geom()->newGeometry(GeomType::Polygon, points.size()-1);
     for (auto const& p : points)
         newGeom->append(p);

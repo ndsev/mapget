@@ -8,7 +8,7 @@
 #include "simfil/simfil.h"
 
 using namespace mapget;
-using DPoint = mapget::Point<double>;
+using DPoint = mapget::Point;
 using simfil::ValueType;
 
 auto makeLayer()

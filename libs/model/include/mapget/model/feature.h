@@ -87,19 +87,19 @@ public:
     [[nodiscard]] model_ptr<Object> attributes() const;
 
     /** Add a point to the feature. */
-    void addPoint(Point<> const& p);
+    void addPoint(Point const& p);
 
     /** Add multiple points to the feature. */
-    void addPoints(std::vector<Point<>> const& points);
+    void addPoints(std::vector<Point> const& points);
 
     /** Add a line to the feature. */
-    void addLine(std::vector<Point<>> const& points);
+    void addLine(std::vector<Point> const& points);
 
     /** Add a mesh to the feature. Points must be a multiple of 3. */
-    void addMesh(std::vector<Point<>> const& points);
+    void addMesh(std::vector<Point> const& points);
 
     /** Add a polygon to the feature. Will be auto-closed. Must not have holes. */
-    void addPoly(std::vector<Point<>> const& points);
+    void addPoly(std::vector<Point> const& points);
 
     /**
      * Evaluate a filter expression on this feature, get the first (or Null) result.

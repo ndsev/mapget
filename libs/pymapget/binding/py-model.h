@@ -213,7 +213,7 @@ struct BoundGeometry : public BoundModelNode
             )pbdoc")
             .def(
                 "append",
-                [](BoundGeometry& node, Point<> const& p) {
+                [](BoundGeometry& node, Point const& p) {
                     node.modelNodePtr_->append(p);
                 },
                 py::arg("point"),
@@ -385,35 +385,35 @@ struct BoundFeature : public BoundModelNode
                 "Access this feature's relation list.")
             .def(
                 "add_point",
-                [](BoundFeature& self, Point<> const& p) {
+                [](BoundFeature& self, Point const& p) {
                     self.modelNodePtr_->addPoint(p);
                 },
                 py::arg("p"),
                 "Add a point to the feature.")
             .def(
                 "add_points",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addPoints(points);
                 },
                 py::arg("points"),
                 "Add multiple points to the feature.")
             .def(
                 "add_line",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addLine(points);
                 },
                 py::arg("points"),
                 "Add a line to the feature.")
             .def(
                 "add_mesh",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addMesh(points);
                 },
                 py::arg("points"),
                 "Add a mesh to the feature, len(points) must be multiple of three.")
             .def(
                 "add_poly",
-                [](BoundFeature& self, std::vector<Point<>> const& points) {
+                [](BoundFeature& self, std::vector<Point> const& points) {
                     self.modelNodePtr_->addPoly(points);
                 },
                 py::arg("points"),

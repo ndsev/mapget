@@ -68,7 +68,7 @@ TileId TileId::fromWgs84(double longitude, double latitude, uint16_t zoomLevel)
     return {(uint16_t)x, (uint16_t)y, zoomLevel};
 }
 
-TileId::Point TileId::center() const {
+Point TileId::center() const {
     auto extent = size();
     auto lon = MIN_LON + (static_cast<double>(x()) + 0.5) * extent.x;
     // Subtract from MAX_LAT because y=0 is the North Pole
@@ -76,7 +76,7 @@ TileId::Point TileId::center() const {
     return {lon, lat};
 }
 
-TileId::Point TileId::sw() const {
+Point TileId::sw() const {
     auto extent = size();
     double lon = MIN_LON + static_cast<double>(x()) * extent.x;
     // Subtract from MAX_LAT because y=0 is the North Pole
@@ -84,7 +84,7 @@ TileId::Point TileId::sw() const {
     return {lon, lat};
 }
 
-TileId::Point TileId::ne() const {
+Point TileId::ne() const {
     auto extent = size();
     double lon = MIN_LON + static_cast<double>(x() + 1) * extent.x;
     // Subtract from MAX_LAT because y=0 is the North Pole
@@ -92,7 +92,7 @@ TileId::Point TileId::ne() const {
     return {lon, lat};
 }
 
-TileId::Point TileId::size() const {
+Point TileId::size() const {
     return {LON_EXTENT / (1 << (z() + 1)), LAT_EXTENT / (1 << z())};
 }
 

@@ -11,6 +11,7 @@ if (MAPGET_CONAN)
   find_package(Bitsery       CONFIG REQUIRED)
   find_package(simfil        CONFIG REQUIRED)
   find_package(nlohmann_json CONFIG REQUIRED)
+  find_package(glm           CONFIG REQUIRED)
   if (MAPGET_WITH_HTTPLIB)
     find_package(httplib     CONFIG REQUIRED)
     find_package(yaml-cpp    CONFIG REQUIRED)
@@ -23,6 +24,12 @@ if (MAPGET_CONAN)
     find_package(RocksDB     CONFIG REQUIRED)
   endif()
 else()
+  FetchContent_Declare(glm
+    GIT_REPOSITORY "https://github.com/g-truc/glm.git"
+    GIT_TAG        "0.9.9.8"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(glm)
+
   FetchContent_Declare(fmt
     GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
     GIT_TAG        "10.0.0"
