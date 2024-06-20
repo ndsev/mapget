@@ -420,7 +420,7 @@ model_ptr<GeometryCollection> TileFeatureLayer::newGeometryCollection(size_t ini
         {GeometryCollections, (uint32_t)listIndex});
 }
 
-model_ptr<Geometry> TileFeatureLayer::newGeometry(Geometry::GeomType geomType, size_t initialCapacity)
+model_ptr<Geometry> TileFeatureLayer::newGeometry(GeomType geomType, size_t initialCapacity)
 {
     initialCapacity = std::max((size_t)1, initialCapacity);
     impl_->geom_.emplace_back(geomType, initialCapacity);
@@ -431,7 +431,7 @@ model_ptr<Geometry> TileFeatureLayer::newGeometry(Geometry::GeomType geomType, s
 }
 
 model_ptr<Geometry> TileFeatureLayer::newGeometryView(
-    Geometry::GeomType geomType,
+    GeomType geomType,
     uint32_t offset,
     uint32_t size,
     const model_ptr<Geometry>& base)

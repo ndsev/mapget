@@ -59,7 +59,7 @@ FieldId GeometryCollection::keyAt(int64_t i) const {
     throw std::out_of_range("geom collection: Out of range.");
 }
 
-model_ptr<Geometry> GeometryCollection::newGeometry(Geometry::GeomType type, size_t initialCapacity) {
+model_ptr<Geometry> GeometryCollection::newGeometry(GeomType type, size_t initialCapacity) {
     auto result = model().newGeometry(type, initialCapacity);
     auto arrayPtr = ModelNode::Ptr::make(model_, ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     model().resolveArray(arrayPtr)->append(result);
@@ -171,7 +171,7 @@ void Geometry::append(Point const& p)
             static_cast<float>(p.z - geomData.offset_.z)});
 }
 
-Geometry::GeomType Geometry::geomType() const {
+GeomType Geometry::geomType() const {
     return geomData_->type_;
 }
 

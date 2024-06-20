@@ -144,7 +144,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
 {
     auto model_pool = makeTile();
     auto geometry_collection = model_pool->newGeometryCollection();
-    auto point_geom = geometry_collection->newGeometry(Geometry::GeomType::Points);
+    auto point_geom = geometry_collection->newGeometry(GeomType::Points);
     point_geom->append({.0, .0, .0});
     point_geom->append({.25, .25, .25});
     point_geom->append({.5, .5, .5});
@@ -159,7 +159,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
     SECTION("Recover geometry")
     {
         REQUIRE(point_geom->type() == ValueType::Object);
-        REQUIRE(point_geom->geomType() == Geometry::GeomType::Points);
+        REQUIRE(point_geom->geomType() == GeomType::Points);
         REQUIRE(point_geom->numPoints() == 4);
         REQUIRE(point_geom->pointAt(0).x == .0);
         REQUIRE(point_geom->pointAt(1).x == .25);
@@ -185,12 +185,12 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
     }
 
     SECTION("Geometry View") {
-        auto view = model_pool->newGeometryView(Geometry::GeomType::Line, 1, 2, point_geom);
+        auto view = model_pool->newGeometryView(GeomType::Line, 1, 2, point_geom);
         REQUIRE(view->pointAt(0).x == .25);
         REQUIRE(view->pointAt(1).x == .5);
         REQUIRE_THROWS(view->pointAt(2));
 
-        auto subview = model_pool->newGeometryView(Geometry::GeomType::Points, 1, 1, view);
+        auto subview = model_pool->newGeometryView(GeomType::Points, 1, 1, view);
         REQUIRE(subview->pointAt(0).x == .5);
         REQUIRE_THROWS(subview->pointAt(1));
     }
@@ -201,7 +201,7 @@ TEST_CASE("Spatial Operators", "[spatial.ops]") {
 
     // Create a GeometryCollection with a Point
     auto geometry_collection = model_pool->newGeometryCollection();
-    auto point_geom = geometry_collection->newGeometry(Geometry::GeomType::Points);
+    auto point_geom = geometry_collection->newGeometry(GeomType::Points);
     point_geom->append({2., 3., 0.});
     model_pool->addRoot(model_ptr<ModelNode>(model_pool->newObject()->addField(
         "geometry",
@@ -232,16 +232,16 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
     auto geometry_collection = model_pool->newGeometryCollection();
 
     // Create and add Point geometry
-    auto point_geom = geometry_collection->newGeometry(Geometry::GeomType::Points);
+    auto point_geom = geometry_collection->newGeometry(GeomType::Points);
     point_geom->append(a);
 
     // Create and add LineString geometry
-    auto linestring_geom = geometry_collection->newGeometry(Geometry::GeomType::Line);
+    auto linestring_geom = geometry_collection->newGeometry(GeomType::Line);
     linestring_geom->append(b);
     linestring_geom->append(c);
 
     // Create and add Polygon geometry
-    auto polygon_geom = geometry_collection->newGeometry(Geometry::GeomType::Polygon);
+    auto polygon_geom = geometry_collection->newGeometry(GeomType::Polygon);
     polygon_geom->append(d);
     polygon_geom->append(e);
     polygon_geom->append(f);

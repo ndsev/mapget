@@ -95,7 +95,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
     // Create a feature with line geometry
     auto feature1 = tile->newFeature("Way", {{"wayId", 42}});
-    auto line = feature1->geom()->newGeometry(Geometry::GeomType::Line, 2);
+    auto line = feature1->geom()->newGeometry(GeomType::Line, 2);
     line->append({41., 10.});
     line->append({43., 11.});
 
@@ -140,7 +140,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("firstGeometry")
     {
         auto firstGeom = feature1->firstGeometry();
-        REQUIRE(firstGeom->geomType() == Geometry::GeomType::Line);
+        REQUIRE(firstGeom->geomType() == GeomType::Line);
     }
 
     SECTION("toGeoJSON")

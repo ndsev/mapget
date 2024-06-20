@@ -5,8 +5,6 @@
 namespace mapget
 {
 
-using GeomType = Geometry::GeomType;
-
 Feature::Feature(Feature::Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(&d)
 {

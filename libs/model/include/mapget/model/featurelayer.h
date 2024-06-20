@@ -138,12 +138,12 @@ public:
     /**
      * Create a new geometry.
      */
-    model_ptr<Geometry> newGeometry(Geometry::GeomType geomType, size_t initialCapacity=1);
+    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=1);
 
     /**
      * Create a new geometry view.
      */
-    model_ptr<Geometry> newGeometryView(Geometry::GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base);
+    model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base);
 
     /**
      * Return type for begin() and end() methods to support range-based

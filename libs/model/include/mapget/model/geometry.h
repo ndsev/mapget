@@ -19,6 +19,13 @@ namespace mapget
 
 class TileFeatureLayer;
 
+enum class GeomType: uint8_t {
+    Points,   // Point-cloud
+    Line,     // Line-string
+    Polygon,  // Auto-closed polygon
+    Mesh      // Collection of triangles
+};
+
 /**
  * Geometry object, which stores a point collection, a line-string,
  * or a triangle mesh.
@@ -33,13 +40,6 @@ public:
     friend class VertexBufferNode;
     friend class PolygonNode;
     friend class MeshNode;
-
-    enum class GeomType: uint8_t {
-        Points,   // Point-cloud
-        Line,     // Line-string
-        Polygon,  // Auto-closed polygon
-        Mesh      // Collection of triangles
-    };
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -169,7 +169,7 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Adds a new Geometry to the collection and returns a reference. */
-    model_ptr<Geometry> newGeometry(Geometry::GeomType type, size_t initialCapacity=4);
+    model_ptr<Geometry> newGeometry(GeomType type, size_t initialCapacity=4);
 
     /** Append an existing Geometry to the collection. */
     void addGeometry(model_ptr<Geometry> const& geom);
