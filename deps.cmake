@@ -23,6 +23,12 @@ if (MAPGET_CONAN)
     find_package(RocksDB     CONFIG REQUIRED)
   endif()
 else()
+  FetchContent_Declare(fmt
+    GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
+    GIT_TAG        "10.0.0"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(fmt)
+
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
     GIT_TAG        "v1.x"
@@ -77,7 +83,7 @@ else()
     set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
     FetchContent_Declare(simfil
       GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-      GIT_TAG        "v0.1.3"
+      GIT_TAG        "v0.2.1"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(simfil)
   endif()
