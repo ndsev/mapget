@@ -30,24 +30,30 @@ else()
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(glm)
 
-  FetchContent_Declare(fmt
-    GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
-    GIT_TAG        "10.0.0"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(fmt)
+  if (NOT TARGET fmt::fmt)
+    FetchContent_Declare(fmt
+      GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
+      GIT_TAG        "10.0.0"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(fmt)
+  endif()
 
-  set (SPDLOG_FMT_EXTERNAL ON)
-  FetchContent_Declare(spdlog
-    GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
-    GIT_TAG        "v1.x"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(spdlog)
+  if (NOT TARGET spdlog::spdlog)
+    set (SPDLOG_FMT_EXTERNAL ON)
+    FetchContent_Declare(spdlog
+      GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
+      GIT_TAG        "v1.x"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(spdlog)
+  endif()
 
-  FetchContent_Declare(bitsery
-    GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
-    GIT_TAG        "master"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(bitsery)
+  if (NOT TARGET bitsery::Bitsery)
+    FetchContent_Declare(bitsery
+      GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
+      GIT_TAG        "master"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(bitsery)
+  endif()
 
   FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
