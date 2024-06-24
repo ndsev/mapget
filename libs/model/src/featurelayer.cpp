@@ -1,6 +1,7 @@
 #include "featurelayer.h"
 
 #include "simfil-geometry.h"
+#include "simfilutil.h"
 #include "mapget/log.h"
 
 #include <map>

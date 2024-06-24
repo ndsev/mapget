@@ -2,9 +2,7 @@
 
 #include <string>
 #include <mutex>
-#include <shared_mutex>
 
-#include "mapget/model/tileid.h"
 #include "mapget/model/info.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"

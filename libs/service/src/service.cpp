@@ -1,7 +1,10 @@
 #include "service.h"
 #include "locate.h"
 #include "mapget/log.h"
+#include "mapget/model/featurelayer.h"
+#include "mapget/model/info.h"
 
+#include <memory>
 #include <optional>
 #include <set>
 #include <atomic>

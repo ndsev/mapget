@@ -1,4 +1,5 @@
 #include "datasource-client.h"
+#include "mapget/model/bloblayer.h"
 #include "process.hpp"
 #include "mapget/log.h"
 
@@ -38,6 +39,12 @@ void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
 {
     // If we get here, an error occurred.
     featureTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
+}
+
+void RemoteDataSource::fill(const TileBlobLayer::Ptr& blobTile)
+{
+    // If we get here, an error occurred.
+    blobTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
 }
 
 TileLayer::Ptr
@@ -195,6 +202,13 @@ void RemoteDataSourceProcess::fill(TileFeatureLayer::Ptr const& featureTile)
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
     remoteSource_->fill(featureTile);
+}
+
+void RemoteDataSourceProcess::fill(TileBlobLayer::Ptr const& blobLayer)
+{
+    if (!remoteSource_)
+        raise("Remote data source is not initialized.");
+    remoteSource_->fill(blobLayer);
 }
 
 TileLayer::Ptr

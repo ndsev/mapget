@@ -1,9 +1,11 @@
 #include "stream.h"
 #include "mapget/log.h"
+#include "simfil/model/nodes.h"
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
+#include <memory>
 
 namespace mapget
 {

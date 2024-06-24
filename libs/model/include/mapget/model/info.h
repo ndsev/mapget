@@ -81,7 +81,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
     })
 
 /** Enum to represent the possible layer types */
-enum class LayerType {Features, Heightmap, OrthoImage, GLTF};
+enum class LayerType {Features, Heightmap, OrthoImage, GLTF, Blob};
 NLOHMANN_JSON_SERIALIZE_ENUM(
     LayerType,
     {
@@ -89,6 +89,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {LayerType::Heightmap, "Heightmap"},
         {LayerType::OrthoImage, "OrthoImage"},
         {LayerType::GLTF, "GLTF"},
+        {LayerType::Blob, "Blob"},
     })
 
 /** Structure to represent a part of a feature id composition. */

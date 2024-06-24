@@ -3,6 +3,9 @@
 #include "cache.h"
 #include "locate.h"
 
+#include "mapget/model/featurelayer.h"
+#include "mapget/model/bloblayer.h"
+
 namespace mapget
 {
 
@@ -34,6 +37,7 @@ public:
      *  TileLayer::setInfo() may be used.
      */
     virtual void fill(TileFeatureLayer::Ptr const& featureTile) = 0;
+    virtual void fill(TileBlobLayer::Ptr const& featureTile) = 0;
 
     /**
      * Obtain map tile keys where the feature with the specified ID may be found.
