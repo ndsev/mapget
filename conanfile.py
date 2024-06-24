@@ -52,7 +52,7 @@ class MapgetRecipe(ConanFile):
         self.requires("spdlog/[~1]", transitive_headers=True)
         self.requires("bitsery/[~5]")
         self.requires("nlohmann_json/3.11.2", transitive_headers=True)
-        self.requires("glm/cci.20230113")
+        self.requires("glm/cci.20230113", transitive_headers=True)
         if self.options.with_httplib:
             self.requires("cli11/2.3.2")
             self.requires("cpp-httplib/0.15.3", transitive_headers=True)
