@@ -197,7 +197,7 @@ void bindTileLayer(py::module_& m)
         .def(
             "geojson",
             [](TileFeatureLayer& self)
-            { return self.toGeoJson().dump(); },
+            { return self.toJson().dump(); },
             R"pbdoc(
             Convert this tile to a GeoJSON feature collection.
         )pbdoc");

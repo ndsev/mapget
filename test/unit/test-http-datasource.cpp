@@ -47,7 +47,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
     // Initialize a DataSource.
     mapget::DataSourceServer ds(info);
     std::atomic_uint32_t dataSourceRequestCount = 0;
-    ds.onTileRequest(
+    ds.onTileFeatureRequest(
         [&](const auto& tile)
         {
             auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});

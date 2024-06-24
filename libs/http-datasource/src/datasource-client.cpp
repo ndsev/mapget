@@ -40,7 +40,7 @@ void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
     featureTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
 }
 
-TileFeatureLayer::Ptr
+TileLayer::Ptr
 RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceInfo& info)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
@@ -197,7 +197,7 @@ void RemoteDataSourceProcess::fill(TileFeatureLayer::Ptr const& featureTile)
     remoteSource_->fill(featureTile);
 }
 
-TileFeatureLayer::Ptr
+TileLayer::Ptr
 RemoteDataSourceProcess::get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info)
 {
     if (!remoteSource_)

@@ -1,9 +1,13 @@
 #include "datasource-server.h"
 #include "mapget/detail/http-server.h"
+#include "mapget/model/bloblayer.h"
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/info.h"
 #include "mapget/model/stream.h"
 
 #include "httplib.h"
+#include <memory>
+#include <stdexcept>
 #include <utility>
 
 namespace mapget {
@@ -11,7 +15,7 @@ namespace mapget {
 struct DataSourceServer::Impl
 {
     DataSourceInfo info_;
-    std::function<void(TileFeatureLayer::Ptr)> tileCallback_;
+    std::function<void(TileFeatureLayer::Ptr)> tileFeatureCallback_;
     std::function<std::vector<LocateResponse>(const LocateRequest&)> locateCallback_;
     std::shared_ptr<Fields> fields_;
 
@@ -30,9 +34,9 @@ DataSourceServer::DataSourceServer(DataSourceInfo const& info)
 DataSourceServer::~DataSourceServer() = default;
 
 DataSourceServer&
-DataSourceServer::onTileRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback)
+DataSourceServer::onTileFeatureRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback)
 {
-    impl_->tileCallback_ = callback;
+    impl_->tileFeatureCallback_ = callback;
     return *this;
 }
 
@@ -69,14 +73,32 @@ void DataSourceServer::setup(httplib::Server& server)
                 responseType = req.get_param_value("responseType");
 
             // Create response TileFeatureLayer.
-            auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
-                tileIdParam,
-                impl_->info_.nodeId_,
-                impl_->info_.mapId_,
-                layer,
-                impl_->fields_);
-            if (impl_->tileCallback_)
-                impl_->tileCallback_(tileFeatureLayer);
+            auto tileLayer = [&]() {
+                switch (layer->type_) {
+                case mapget::LayerType::Features: {
+                    auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
+                        tileIdParam,
+                        impl_->info_.nodeId_,
+                        impl_->info_.mapId_,
+                        layer,
+                        impl_->fields_);
+                    impl_->tileFeatureCallback_(tileFeatureLayer);
+                    return tileFeatureLayer;
+                }
+                //case mapget::LayerType::Blob: {
+                //    auto tileBlobLayer = std::make_shared<TileBlobLayer>(
+                //        tileIdParam,
+                //        impl_->info_.nodeId_,
+                //        impl_->info_.mapId_,
+                //        layer,
+                //        impl_->fields_);
+                //    impl_->tileBlobCallback_(tileBlobLayer);
+                //    return tileBlobLayer;
+                //}
+                default:
+                    throw std::runtime_error(fmt::format("Unknown layer type {}", (int)layer->type_));
+                }
+            }();
 
             // Serialize TileFeatureLayer using TileLayerStream.
             if (responseType == "binary") {
@@ -86,11 +108,11 @@ void DataSourceServer::setup(httplib::Server& server)
                 TileLayerStream::Writer layerWriter{
                     [&](auto&& msg, auto&& msgType) { content << msg; },
                     fieldOffsets};
-                layerWriter.write(tileFeatureLayer);
+                layerWriter.write(tileLayer);
                 res.set_content(content.str(), "application/binary");
             }
             else {
-                res.set_content(nlohmann::to_string(tileFeatureLayer->toGeoJson()), "application/json");
+                res.set_content(nlohmann::to_string(tileLayer->toJson()), "application/json");
             }
         });
 

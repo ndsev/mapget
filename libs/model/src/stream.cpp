@@ -110,29 +110,34 @@ TileLayerStream::Writer::Writer(
 {
 }
 
-void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLayer)
+void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
 {
-    auto fields = tileFeatureLayer->fieldNames();
-    auto& highestFieldKnownToClient = fieldsOffsets_[tileFeatureLayer->nodeId()];
-    auto highestField = fields->highest();
+    // TODO: Casting to ModelPool here is somewhat nasty.
+    if (auto modelPool = std::dynamic_pointer_cast<simfil::ModelPool>(tileLayer)) {
+        auto fields = modelPool->fieldNames();
+        if (fields) {
+            auto& highestFieldKnownToClient = fieldsOffsets_[tileLayer->nodeId()];
+            auto highestField = fields->highest();
 
-    if (highestFieldKnownToClient < highestField)
-    {
-        // Need to send the client an update for the Fields dictionary
-        std::stringstream serializedFields;
-        auto fieldUpdateOffset = 0;
-        if (differentialFieldUpdates_)
-            fieldUpdateOffset = highestFieldKnownToClient+1;
-        fields->write(serializedFields, fieldUpdateOffset);
-        sendMessage(serializedFields.str(), MessageType::Fields);
-        highestFieldKnownToClient = highestField;
+            if (highestFieldKnownToClient < highestField)
+            {
+                // Need to send the client an update for the Fields dictionary
+                std::stringstream serializedFields;
+                auto fieldUpdateOffset = 0;
+                if (differentialFieldUpdates_)
+                    fieldUpdateOffset = highestFieldKnownToClient+1;
+                fields->write(serializedFields, fieldUpdateOffset);
+                sendMessage(serializedFields.str(), MessageType::Fields);
+                highestFieldKnownToClient = highestField;
+            }
+        }
     }
 
     // Send actual tileFeatureLayer
-    std::stringstream serializedFeatureLayer;
+    std::stringstream serializedLayer;
     auto start = std::chrono::system_clock::now();
-    tileFeatureLayer->write(serializedFeatureLayer);
-    auto bytes = serializedFeatureLayer.str();
+    tileLayer->write(serializedLayer);
+    auto bytes = serializedLayer.str();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
     log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
     sendMessage(std::move(bytes), MessageType::TileFeatureLayer);

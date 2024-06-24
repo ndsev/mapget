@@ -46,7 +46,6 @@ nlohmann::json LocateRequest::serialize() const
 LocateResponse::LocateResponse(const LocateRequest& req) : LocateRequest(req)
 {
     tileKey_.mapId_ = req.mapId_;
-    tileKey_.layer_ = LayerType::Features;
 }
 
 LocateResponse::LocateResponse(const nlohmann::json& j) : LocateRequest(j)

@@ -70,7 +70,7 @@ struct HttpService::Impl
             }
             else {
                 // JSON response
-                buffer_ << nlohmann::to_string(result->toGeoJson())+"\n";
+                buffer_ << nlohmann::to_string(result->toJson())+"\n";
             }
             resultEvent_.notify_one();
         }

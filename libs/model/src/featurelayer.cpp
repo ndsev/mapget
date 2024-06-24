@@ -1,5 +1,5 @@
 #include "featurelayer.h"
-#include "sfl/segmented_vector.hpp"
+
 #include "simfil-geometry.h"
 #include "mapget/log.h"
 
@@ -12,6 +12,7 @@
 #include <bitsery/traits/string.h>
 
 #include "simfil/model/bitsery-traits.h"
+#include "sfl/segmented_vector.hpp"
 #include "geometry.h"
 
 /** Bitsery serialization traits */
@@ -675,7 +676,7 @@ void TileFeatureLayer::write(std::ostream& outputStream)
     ModelPool::write(outputStream);
 }
 
-nlohmann::json TileFeatureLayer::toGeoJson() const
+nlohmann::json TileFeatureLayer::toJson() const
 {
     auto features = nlohmann::json::array();
     for (auto f : *this)

@@ -129,7 +129,6 @@ struct Service::Controller
                     // Create result wrapper object.
                     auto tileId = request->tiles_[request->nextTileIndex_++];
                     result = {MapTileKey(), request};
-                    result->first.layer_ = layerIt->second->type_;
                     result->first.mapId_ = request->mapId_;
                     result->first.layerId_ = request->layerId_;
                     result->first.tileId_ = tileId;
@@ -229,22 +228,26 @@ struct Service::Worker
             if (!result)
                 raise("DataSource::get() returned null.");
 
-            controller_.loadAddOnTiles(result, *dataSource_);
+            if (result->layerInfo()->type_ != LayerType::Features)
+                raise("Job layer is not a feature layer.");
+            auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(result);
+
+            controller_.loadAddOnTiles(featureLayer, *dataSource_);
 
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
-                controller_.cache_->putTileFeatureLayer(result);
+                controller_.cache_->putTileFeatureLayer(featureLayer);
                 controller_.jobsInProgress_.erase(mapTileKey);
-                request->notifyResult(result);
+                request->notifyResult(featureLayer);
                 // As we entered a tile into the cache, notify other workers
                 // that this tile can be served.
                 controller_.jobsAvailable_.notify_all();
             }
         }
         catch (std::exception& e) {
-		log().error("Could not load tile {}: {}",
-				mapTileKey.toString(),
-				e.what());
+            log().error("Could not load tile {}: {}",
+                mapTileKey.toString(),
+                e.what());
         }
 
         return true;
@@ -378,13 +381,27 @@ struct Service::Impl : public Service::Controller
     void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) override {
         for (auto const& auxDataSource : addOnDataSources_) {
             if (auxDataSource->info().mapId_ == baseTile->mapId()) {
-                auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
+                auto auxTile = [&]() -> TileFeatureLayer::Ptr
+                {
+                    auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
+                    if (!auxTile) {
+                        log().warn("auxDataSource returned null for {}", baseTile->id().toString());
+                        return {};
+                    }
+                    if (auxTile->error()) {
+                        log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *auxTile->error());
+                        return {};
+                    }
+                    if (auxTile->layerInfo()->type_ != LayerType::Features) {
+                        log().warn("Addon tile is not a feature layer");
+                        return {};
+                    }
+
+                    return std::static_pointer_cast<TileFeatureLayer>(auxTile);
+                }();
+
                 if (!auxTile) {
-                    log().warn("auxDataSource returned null for {}", baseTile->id().toString());
-                    continue;
-                }
-                if (auxTile->error()) {
-                    log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *auxTile->error());
+                    // Error messages have been generated above.
                     continue;
                 }
 

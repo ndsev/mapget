@@ -296,7 +296,7 @@ struct DataSourceInfo
     /** Unique identifier of the map */
     std::string mapId_;
 
-    /** List of layers */
+    /** List of layers (layerId -> LayerInfo) */
     std::map<std::string, std::shared_ptr<LayerInfo>> layers_;
 
     /** Maximum number of parallel jobs */
@@ -346,7 +346,7 @@ struct DataSourceInfo
      *   },
      *   "nodeId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
      *                                        // Note: Only provide this if you have a good reason.
-     *   "addOn": <bool>                     // Optional: Declare the datasource as add-on.
+     *   "addOn": <bool>                      // Optional: Declare the datasource as add-on.
      * }
      *
      * Each LayerType, FeatureTypeInfo, and Coverage object has its own specific JSON structure,

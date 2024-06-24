@@ -4,8 +4,8 @@
 #include "simfil/model/arena.h"
 #include "simfil/environment.h"
 
-#include "fields.h"
 #include "layer.h"
+#include "fields.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
@@ -13,12 +13,6 @@
 
 namespace mapget
 {
-
-/**
- * Callback type for a function which returns a field name cache instance
- * for a given node identifier.
- */
-using FieldNameResolveFun = std::function<std::shared_ptr<Fields>(std::string_view const&)>;
 
 /**
  * The TileFeatureLayer class represents a specific map layer
@@ -184,7 +178,7 @@ public:
     void write(std::ostream& outputStream) override;
 
     /** Convert to GeoJSON geometry collection. */
-    nlohmann::json toGeoJson() const;
+    nlohmann::json toJson() const override;
 
     /** Access number of stored features */
     size_t size() const;

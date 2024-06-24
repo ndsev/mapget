@@ -114,7 +114,7 @@ public:
             bool differentialFieldUpdates = true);
 
         /** Serialize a tile feature layer and the required part of a Fields cache. */
-        void write(TileFeatureLayer::Ptr const& tileFeatureLayer);
+        void write(TileLayer::Ptr const& tileFeatureLayer);
 
         /** Send an EndOfStream message. */
         void sendEndOfStream();

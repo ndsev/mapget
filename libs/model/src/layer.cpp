@@ -28,7 +28,6 @@ MapTileKey::MapTileKey(const std::string& str)
 
     if (partsVec.size() < 4)
         raise(fmt::format("Invalid cache tile id: {}", str));
-    layer_ = nlohmann::json(std::string_view(&*partsVec[1].begin(), distance(partsVec[1]))).get<LayerType>();
     mapId_ = std::string_view(&*partsVec[1].begin(), distance(partsVec[1]));
     layerId_ = std::string_view(&*partsVec[2].begin(), distance(partsVec[2]));
     std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
@@ -36,7 +35,6 @@ MapTileKey::MapTileKey(const std::string& str)
 
 MapTileKey::MapTileKey(const TileLayer& data)
 {
-    layer_ = data.layerInfo()->type_;
     mapId_ = data.mapId();
     layerId_ = data.layerInfo()->layerId_;
     tileId_ = data.tileId();
@@ -45,8 +43,7 @@ MapTileKey::MapTileKey(const TileLayer& data)
 std::string MapTileKey::toString() const
 {
     return fmt::format(
-        "{}:{}:{}:{:0x}",
-        nlohmann::json(layer_).get<std::string>(),
+        "{}:{}:{:0x}",
         mapId_,
         layerId_,
         tileId_.value_);
@@ -54,14 +51,14 @@ std::string MapTileKey::toString() const
 
 bool MapTileKey::operator<(const MapTileKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_) <
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+    return std::tie(mapId_, layerId_, tileId_) <
+        std::tie(other.mapId_, other.layerId_, other.tileId_);
 }
 
 bool MapTileKey::operator==(const MapTileKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_) ==
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+    return std::tie(mapId_, layerId_, tileId_) ==
+        std::tie(other.mapId_, other.layerId_, other.tileId_);
 }
 
 bool MapTileKey::operator!=(const MapTileKey& other) const
