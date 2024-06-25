@@ -1,6 +1,5 @@
 #include "featurelayer.h"
 
-#include "simfil-geometry.h"
 #include "simfilutil.h"
 #include "mapget/log.h"
 
@@ -34,21 +33,6 @@ void serialize(S& s, mapget::Point& v) {
     s.value8b(v.z);
 }
 
-}
-
-namespace
-{
-template <class... Args>
-std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
-{
-    auto env = std::make_unique<simfil::Environment>(std::forward<Args>(args)...);
-    env->functions["geo"] = &mapget::GeoFn::Fn;
-    env->functions["point"] = &mapget::PointFn::Fn;
-    env->functions["bbox"] = &mapget::BBoxFn::Fn;
-    env->functions["linestring"] = &mapget::LineStringFn::Fn;
-
-    return env;
-}
 }
 
 namespace mapget
@@ -96,14 +80,8 @@ struct TileFeatureLayer::Impl {
         std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
     }
 
-    // Simfil execution Environment for this tile's string pool.
-    std::unique_ptr<simfil::Environment> simfilEnv_;
-
-    // Compiled simfil expressions, by hash of expression string
-    std::map<std::string, simfil::ExprPtr, std::less<>> simfilExpressions_;
-
-    // Mutex to manage access to the expression cache
-    std::shared_mutex expressionCacheLock_;
+    // Simfil compiled expression cache and environment
+    SimfilExpressionCache expressionCache_;
 
     // (De-)Serialization
     template<typename S>
@@ -123,7 +101,7 @@ struct TileFeatureLayer::Impl {
     }
 
     explicit Impl(std::shared_ptr<simfil::Fields> fieldDict)
-        : simfilEnv_(makeEnvironment(std::move(fieldDict)))
+        : expressionCache_(makeEnvironment(std::move(fieldDict)))
     {
     }
 };
@@ -609,25 +587,9 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
     return ModelPool::resolve(n, cb);
 }
 
-simfil::Environment& TileFeatureLayer::evaluationEnvironment()
+std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query, size_t rootIndex)
 {
-    return *impl_->simfilEnv_;
-}
-
-simfil::ExprPtr const& TileFeatureLayer::compiledExpression(const std::string_view& expr)
-{
-    std::shared_lock sharedLock(impl_->expressionCacheLock_);
-    auto it = impl_->simfilExpressions_.find(expr);
-    if (it != impl_->simfilExpressions_.end()) {
-        return it->second;
-    }
-    sharedLock.unlock();
-    std::unique_lock uniqueLock(impl_->expressionCacheLock_);
-    auto [newIt, _] = impl_->simfilExpressions_.emplace(
-        std::string(expr),
-        simfil::compile(*impl_->simfilEnv_, expr, false)
-    );
-    return newIt->second;
+    return impl_->expressionCache_.eval(query, *this, rootIndex);
 }
 
 void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
@@ -783,11 +745,7 @@ void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newD
     }
 
     // Reset simfil environment and clear expression cache
-    {
-        std::unique_lock lock(impl_->expressionCacheLock_);
-        impl_->simfilExpressions_.clear();
-        impl_->simfilEnv_ = makeEnvironment(newDict);
-    }
+    impl_->expressionCache_.reset(makeEnvironment(newDict));
 
     ModelPool::setFieldNames(newDict);
 }

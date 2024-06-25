@@ -24,14 +24,14 @@ struct TileBlobLayer::Impl
     // The binary zserio data.
     std::vector<std::byte> sourceData_;
 
-    // Simfil query execution environment
-    std::unique_ptr<simfil::Environment> environment_;
-
     // Pool data
     sfl::segmented_vector<CompoundBlobNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
 
+    // Simfil compiled expression and environment
+    SimfilExpressionCache expressionCache_;
+
     Impl(std::shared_ptr<simfil::Fields> fields)
-        : environment_(makeEnvironment(std::move(fields)))
+        : expressionCache_(makeEnvironment(std::move(fields)))
     {}
 
     // Bitsery (de-)serialization interface
@@ -79,9 +79,7 @@ TileBlobLayer::TileBlobLayer(
 
 simfil::Environment& TileBlobLayer::evaluationEnvironment()
 {
-    assert(impl_->environment_.get() && "Environment must be set!");
-
-    return *impl_->environment_;
+    return impl_->expressionCache_.environment();
 }
 
 std::span<const std::byte> TileBlobLayer::sourceData() const

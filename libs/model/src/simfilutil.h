@@ -1,9 +1,14 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
+#include <string_view>
 
 #include "simfil/environment.h"
+#include "simfil/model/model.h"
+#include "simfil/simfil.h"
 #include "simfil-geometry.h"
+#include "simfil/expression.h"
 
 namespace mapget
 {
@@ -25,5 +30,68 @@ std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
 
     return env;
 }
+
+/**
+ * Simfil compiled expression cache.
+ */
+struct SimfilExpressionCache
+{
+    SimfilExpressionCache(std::unique_ptr<simfil::Environment> env)
+        : env_(std::move(env))
+    {}
+
+    std::vector<simfil::Value> eval(std::string_view query, simfil::ModelPool& pool, size_t rootIndex = 0)
+    {
+        auto evalFun = [&](auto&& expr)
+        {
+            return simfil::eval(*env_, *expr, pool, rootIndex);
+        };
+
+        std::shared_lock s(mtx_);
+        auto iter = cache_.find(query);
+        if (iter != cache_.end())
+            return evalFun(iter->second);
+        s.unlock();
+
+        std::unique_lock u(mtx_);
+        auto [newIter, _] = cache_.emplace(
+            std::string(query),
+            simfil::compile(*env_, query, false)
+        );
+        return evalFun(newIter->second);
+    }
+
+    const simfil::ExprPtr& compile(std::string_view query)
+    {
+        std::shared_lock s(mtx_);
+        auto iter = cache_.find(query);
+        if (iter != cache_.end())
+            return iter->second;
+        s.unlock();
+
+        std::unique_lock u(mtx_);
+        auto [newIter, _] = cache_.emplace(
+            std::string(query),
+            simfil::compile(*env_, query, false)
+        );
+        return newIter->second;
+    }
+
+    void reset(std::unique_ptr<simfil::Environment> env)
+    {
+        std::unique_lock l(mtx_);
+        cache_.clear();
+        env_ = std::move(env);
+    }
+
+    simfil::Environment& environment()
+    {
+        return *env_;
+    }
+
+    mutable std::shared_mutex mtx_;
+    std::map<std::string, simfil::ExprPtr, std::less<>> cache_;
+    std::unique_ptr<simfil::Environment> env_;
+};
 
 }

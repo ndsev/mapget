@@ -194,14 +194,9 @@ public:
     using Ptr = std::shared_ptr<TileFeatureLayer>;
 
     /**
-     * Get this pool's simfil evaluation environment.
+     * Evaluate a (potentially cached) simfil query on this pool
      */
-    simfil::Environment& evaluationEnvironment();
-
-    /**
-     * Get a potentially cached compiled simfil expression for a simfil string.
-     */
-    simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
+    std::vector<simfil::Value> evaluate(std::string_view query, size_t rootIndex = 0);
 
     /**
      * Change the fields dict of this model to a different one.
