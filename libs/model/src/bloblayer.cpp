@@ -1,10 +1,17 @@
 #include "bloblayer.h"
 
+#include <limits>
 #include <memory>
 
+#include "bitsery/bitsery.h"
+#include "bitsery/adapter/stream.h"
 #include "bitsery/adapter/stream.h"
 #include "bitsery/deserializer.h"
 #include "bitsery/serializer.h"
+#include "bitsery/traits/string.h"
+#include "bitsery/traits/vector.h"
+#include "simfil/model/bitsery-traits.h" // segmented_vector traits
+
 #include "blob.h"
 #include "featureid.h"
 #include "layer.h"
@@ -38,13 +45,10 @@ struct TileBlobLayer::Impl
     template<typename S>
     void readWrite(S& s) {
         constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
-        constexpr size_t maxSourceSize = std::numeric_limits<uint32_t>::max();
         s.container(compounds_, maxColumnSize);
-        s.container(sourceData_, maxSourceSize);
+        //s.container(sourceData_, std::numeric_limits<uint32_t>::max()); // FIXME: !!
     }
 };
-
-// TODO: Cache compiled simfil expressions
 
 TileBlobLayer::TileBlobLayer(
     TileId tileId,

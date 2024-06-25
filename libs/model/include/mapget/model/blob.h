@@ -31,6 +31,13 @@ struct SourceRegion
     {
         return std::make_tuple(offset, length);
     }
+
+    template <typename S>
+    void serialize(S& s)
+    {
+        s.value4b(offset);
+        s.value4b(length);
+    }
 };
 
 /**
@@ -80,6 +87,13 @@ private:
     {
         simfil::ModelNodeAddress object_;
         SourceRegion sourceRegion_;
+
+        template <typename S>
+        void serialize(S& s)
+        {
+            s.object(object_);
+            s.object(sourceRegion_);
+        }
     };
 
     Data* const data_;
