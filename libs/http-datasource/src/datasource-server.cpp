@@ -3,6 +3,7 @@
 #include "mapget/model/bloblayer.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
+#include "mapget/model/layer.h"
 #include "mapget/model/stream.h"
 
 #include "httplib.h"
@@ -15,7 +16,14 @@ namespace mapget {
 struct DataSourceServer::Impl
 {
     DataSourceInfo info_;
-    std::function<void(TileFeatureLayer::Ptr)> tileFeatureCallback_;
+    std::function<void(TileFeatureLayer::Ptr)> tileFeatureCallback_ = [](auto&&)
+    {
+        throw std::runtime_error("TileFeatureLayer callback is unset!");
+    };
+    std::function<void(TileBlobLayer::Ptr)> tileBlobCallback_ = [](auto&&)
+    {
+        throw std::runtime_error("TileBlobLayer callback is unset!");
+    };
     std::function<std::vector<LocateResponse>(const LocateRequest&)> locateCallback_;
     std::shared_ptr<Fields> fields_;
 
@@ -37,6 +45,13 @@ DataSourceServer&
 DataSourceServer::onTileFeatureRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback)
 {
     impl_->tileFeatureCallback_ = callback;
+    return *this;
+}
+
+DataSourceServer&
+DataSourceServer::onTileBlobRequest(std::function<void(TileBlobLayer::Ptr)> const& callback)
+{
+    impl_->tileBlobCallback_ = callback;
     return *this;
 }
 
@@ -73,7 +88,7 @@ void DataSourceServer::setup(httplib::Server& server)
                 responseType = req.get_param_value("responseType");
 
             // Create response TileFeatureLayer.
-            auto tileLayer = [&]() {
+            auto tileLayer = [&]() -> std::shared_ptr<TileLayer> {
                 switch (layer->type_) {
                 case mapget::LayerType::Features: {
                     auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
@@ -85,18 +100,18 @@ void DataSourceServer::setup(httplib::Server& server)
                     impl_->tileFeatureCallback_(tileFeatureLayer);
                     return tileFeatureLayer;
                 }
-                //case mapget::LayerType::Blob: {
-                //    auto tileBlobLayer = std::make_shared<TileBlobLayer>(
-                //        tileIdParam,
-                //        impl_->info_.nodeId_,
-                //        impl_->info_.mapId_,
-                //        layer,
-                //        impl_->fields_);
-                //    impl_->tileBlobCallback_(tileBlobLayer);
-                //    return tileBlobLayer;
-                //}
+                case mapget::LayerType::Blob: {
+                    auto tileBlobLayer = std::make_shared<TileBlobLayer>(
+                        tileIdParam,
+                        impl_->info_.nodeId_,
+                        impl_->info_.mapId_,
+                        layer,
+                        impl_->fields_); // Are shared fields good or bad?
+                    impl_->tileBlobCallback_(tileBlobLayer);
+                    return tileBlobLayer;
+                }
                 default:
-                    throw std::runtime_error(fmt::format("Unknown layer type {}", (int)layer->type_));
+                    throw std::runtime_error(fmt::format("Unsupported layer type {}", (int)layer->type_));
                 }
             }();
 

@@ -10,10 +10,6 @@ namespace mapget
 
 class CompoundBlobNode;
 
-// TODO: Wir brauchen ein Mapping von blob-id (int) -> blob-id (str) um
-//       speicher zu sparen.
-// TODO: Wie können wir blobs zuordnen, bzw. den geeigneten blob finden?
-//
 class TileBlobLayer : public TileLayer, public simfil::ModelPool
 {
 public:
@@ -41,6 +37,8 @@ public:
         LayerInfoResolveFun const& layerInfoResolveFun,
         FieldNameResolveFun const& fieldNameResolveFun);
 
+    ~TileBlobLayer();
+
     /**
      * Node factory interface
      */
@@ -58,7 +56,6 @@ public:
 
     /**
      * Return the binary (zserio) blob.
-     * FIXME: Dangerous API!
      */
     std::span<const std::byte> sourceData() const;
 
@@ -66,6 +63,11 @@ public:
      * Serialize the layer.
      */
     void write(std::ostream&) override;
+
+    /**
+     * Serialize to json.
+     */
+    nlohmann::json toJson() const override;
 
 private:
     /**

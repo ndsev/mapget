@@ -27,13 +27,14 @@ public:
     ~DataSourceServer() override;
 
     /**
-     * Set the callback which will be invoked when a `/tile`-request is received.
-     * The callback argument is a fresh TileFeatureLayer instance, which the callback
-     * must fill according to the set TileFeatureLayer's layer info and tile id.
+     * Set the callbacks which will be invoked when a `/tile`-request is received.
+     * The callback argument is a fresh Tile*Layer instance, which the callback
+     * must fill according to the set Tile*Layer's layer info and tile id.
      * If an error occurs while filling the tile, the callback can use
-     * TileFeatureLayer::setError(...) to signal the error downstream.
+     * TileLayer::setError(...) to signal the error downstream.
      */
     DataSourceServer& onTileFeatureRequest(std::function<void(TileFeatureLayer::Ptr)> const&);
+    DataSourceServer& onTileBlobRequest(std::function<void(TileBlobLayer::Ptr)> const&);
 
     /**
      * Set the callback which will be invoked when a `/locate`-request is received.

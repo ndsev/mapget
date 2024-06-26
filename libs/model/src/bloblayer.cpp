@@ -81,6 +81,8 @@ TileBlobLayer::TileBlobLayer(
     ModelPool::read(in);
 }
 
+TileBlobLayer::~TileBlobLayer() = default;
+
 simfil::Environment& TileBlobLayer::evaluationEnvironment()
 {
     return impl_->expressionCache_.environment();
@@ -123,6 +125,11 @@ void TileBlobLayer::write(std::ostream& outputStream)
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     impl_->readWrite(s);
     ModelPool::write(outputStream);
+}
+
+nlohmann::json TileBlobLayer::toJson() const
+{
+    return {}; // FIXME: Implement
 }
 
 }
