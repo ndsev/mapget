@@ -2,7 +2,6 @@
 
 #include "simfil/model/nodes.h"
 #include "info.h"
-#include "sfl/small_vector.hpp"
 
 namespace mapget
 {

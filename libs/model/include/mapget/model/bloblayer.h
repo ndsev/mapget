@@ -1,14 +1,16 @@
 #pragma once
 
-#include "layer.h"
+#include <string>
+
 #include "simfil/model/model.h"
 #include "simfil/environment.h"
 #include "simfil/model/nodes.h"
 
+#include "layer.h"
+#include "blob.h"
+
 namespace mapget
 {
-
-class CompoundBlobNode;
 
 class TileBlobLayer : public TileLayer, public simfil::ModelPool
 {
@@ -50,11 +52,6 @@ public:
     simfil::Environment& evaluationEnvironment();
 
     /**
-     * Get the blob tree root node.
-     */
-    //model_ptr<BlobNode> root() const;
-
-    /**
      * Return the binary (zserio) blob.
      */
     std::span<const std::byte> sourceData() const;
@@ -63,11 +60,14 @@ public:
      * Serialize the layer.
      */
     void write(std::ostream&) override;
+    nlohmann::json toJson() const override;
 
     /**
-     * Serialize to json.
+     * Information about the representing zserio blob.
      */
-    nlohmann::json toJson() const override;
+    //smartclient::LayerDescriptor sourceDescriptor() const; // TODO We need a replacement for this, smartclient is no dependency of mapget
+    std::string moduleTypeName() const;
+    unsigned moduleVersion() const;
 
 private:
     /**

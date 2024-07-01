@@ -4,10 +4,12 @@
 #include <cstdint>
 #include <tuple>
 
-#include "bloblayer.h"
+#include "simfil/model/nodes.h"
 
 namespace mapget
 {
+
+class TileBlobLayer;
 
 struct SourceRegion
 {

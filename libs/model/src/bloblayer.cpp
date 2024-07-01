@@ -16,6 +16,7 @@
 #include "featureid.h"
 #include "layer.h"
 #include "mapget/log.h"
+#include "simfil/model/model.h"
 #include "simfilutil.h"
 
 #include "simfil/environment.h"
@@ -129,7 +130,7 @@ void TileBlobLayer::write(std::ostream& outputStream)
 
 nlohmann::json TileBlobLayer::toJson() const
 {
-    return {}; // FIXME: Implement
+    return ModelPool::toJson();
 }
 
 }

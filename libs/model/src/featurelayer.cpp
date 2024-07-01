@@ -641,6 +641,11 @@ void TileFeatureLayer::write(std::ostream& outputStream)
 
 nlohmann::json TileFeatureLayer::toJson() const
 {
+    return toGeoJson();
+}
+
+nlohmann::json TileFeatureLayer::toGeoJson() const
+{
     auto features = nlohmann::json::array();
     for (auto f : *this)
         features.push_back(f->toGeoJson());

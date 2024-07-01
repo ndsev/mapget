@@ -179,6 +179,7 @@ public:
 
     /** Convert to GeoJSON geometry collection. */
     nlohmann::json toJson() const override;
+    nlohmann::json toGeoJson() const;
 
     /** Access number of stored features */
     size_t size() const;
