@@ -37,8 +37,8 @@ The `mapget` executable can parse a config file with arguments supported by the 
 
 Sample configuration files can be found under `examples/config`:
 
-- [sample-first-datasource.toml](examples/config/sample-first-datasource.toml) and [sample-second-datasource.toml](examples/config/sample-second-datasource.toml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
-- [sample-service.toml](examples/config/sample-service.toml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
+- [sample-first-datasource.toml](examples/config/sample-first-datasource.yaml) and [sample-second-datasource.toml](examples/config/sample-second-datasource.yaml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
+- [sample-service.toml](examples/config/sample-service.yaml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
 
 ### Cache
 

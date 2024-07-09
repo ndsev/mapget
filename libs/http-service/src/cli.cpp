@@ -9,9 +9,90 @@
 #include <CLI/CLI.hpp>
 #include <string>
 #include <vector>
+#include <yaml-cpp/yaml.h>
 
 namespace mapget
 {
+
+namespace
+{
+
+class ConfigYAML : public CLI::Config {
+public:
+    std::string to_config(const CLI::App *app, bool default_also, bool, std::string) const override {
+        std::string config_path = app->get_config_ptr() ? app->get_config_ptr()->as<std::string>() : "config.yaml";
+        std::ifstream ifs(config_path);
+        YAML::Node root = ifs ? YAML::Load(ifs) : YAML::Node();
+
+        // Create or clear the 'mapget' node
+        auto mapgetNode = root["mapget"] = YAML::Node(YAML::NodeType::Map);
+
+        // Process current app configuration into 'mapget' node
+        _to_yaml(mapgetNode, app, default_also);
+
+        // Output the YAML content as a formatted string
+        std::stringstream ss;
+        ss << root;
+        return ss.str();
+    }
+
+    void _to_yaml(YAML::Node root, const CLI::App *app, bool default_also) const {
+        for (const CLI::Option *opt : app->get_options({})) {
+            if (!opt->get_lnames().empty() && opt->get_configurable()) {
+                std::string name = opt->get_lnames()[0];
+
+                if (opt->get_type_size() != 0) {
+                    if (opt->count() > 0)
+                        root[name] = opt->count() == 1 ? opt->results().at(0) : opt->results();
+                    else if (default_also && !opt->get_default_str().empty())
+                        root[name] = opt->get_default_str();
+                } else {
+                    root[name] = opt->count() ? (opt->count() > 1 ? opt->count() : true) : (default_also ? false : YAML::Node());
+                }
+            }
+        }
+
+        for (const CLI::App *subcom : app->get_subcommands({}))
+            _to_yaml(root[subcom->get_name()], subcom, default_also);
+    }
+
+    std::vector<CLI::ConfigItem> from_config(std::istream &input) const override {
+        YAML::Node root = YAML::Load(input);
+        YAML::Node mapgetNode = root["mapget"];
+        return mapgetNode ? _from_yaml(mapgetNode) : std::vector<CLI::ConfigItem>();
+    }
+
+    std::vector<CLI::ConfigItem> _from_yaml(const YAML::Node &node, const std::string &name = "", const std::vector<std::string> &prefix = {}) const {
+        std::vector<CLI::ConfigItem> results;
+
+        if (node.IsMap()) {
+            for (const auto &item : node) {
+                auto copy_prefix = prefix;
+                if (!name.empty()) {
+                    copy_prefix.push_back(name);
+                }
+                auto sub_results = _from_yaml(item.second, item.first.as<std::string>(), copy_prefix);
+                results.insert(results.end(), sub_results.begin(), sub_results.end());
+            }
+        } else if (!name.empty()) {
+            results.emplace_back();
+            CLI::ConfigItem &res = results.back();
+            res.name = name;
+            res.parents = prefix;
+            if (node.IsScalar()) {
+                res.inputs = {node.as<std::string>()};
+            } else if (node.IsSequence()) {
+                for (const auto &val : node) {
+                    res.inputs.push_back(val.as<std::string>());
+                }
+            }
+        }
+
+        return results;
+    }
+};
+
+}
 
 struct ServeCommand
 {
@@ -197,6 +278,7 @@ int runFromCommandLine(std::vector<std::string> args)
         "--config",
         "",
         "Optional path to a file with configuration arguments for mapget.");
+    app.config_formatter(std::make_shared<ConfigYAML>());
 
     app.require_subcommand(1);
 
