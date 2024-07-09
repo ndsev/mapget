@@ -42,12 +42,18 @@ public:
                 std::string name = opt->get_lnames()[0];
 
                 if (opt->get_type_size() != 0) {
-                    if (opt->count() > 0)
-                        root[name] = opt->count() == 1 ? opt->results().at(0) : opt->results();
+                    if (opt->count() == 1)
+                        root[name] = opt->results().at(0);
+                    else if (opt->count() > 0)
+                        root[name] = opt->results();
                     else if (default_also && !opt->get_default_str().empty())
                         root[name] = opt->get_default_str();
-                } else {
-                    root[name] = opt->count() ? (opt->count() > 1 ? opt->count() : true) : (default_also ? false : YAML::Node());
+                }
+                else if (opt->count()) {
+                    root[name] = opt->count() > 1 ? YAML::Node(opt->count()) : YAML::Node(true);
+                }
+                else {
+                    root[name] = default_also ? YAML::Node(false) : YAML::Node();
                 }
             }
         }

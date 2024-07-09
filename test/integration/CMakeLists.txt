@@ -72,13 +72,13 @@ add_wheel_test(test-config-cpp
     -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
 
     # Run service
-    -b "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.toml serve"
+    -b "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.yaml serve"
 
     # Request from py datasource
-    -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.toml fetch"
+    -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.yaml fetch"
 
     # Request from cpp datasource
-    -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.toml fetch"
+    -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.yaml fetch"
   )
 
 add_wheel_test(test-config-py
@@ -92,13 +92,13 @@ add_wheel_test(test-config-py
     -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
 
     # Run service
-    -b "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.toml serve"
+    -b "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.yaml serve"
 
     # Request from py datasource
-    -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.toml fetch"
+    -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.yaml fetch"
 
     # Request from cpp datasource
-    -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.toml fetch"
+    -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.yaml fetch"
 )
 
 # TODO should there be a Python test for the 400 response?
