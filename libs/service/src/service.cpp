@@ -1,6 +1,7 @@
 #include "service.h"
 #include "locate.h"
 #include "mapget/log.h"
+#include "config.h"
 
 #include <optional>
 #include <set>
@@ -257,10 +258,77 @@ struct Service::Impl : public Service::Controller
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
     std::list<DataSource::Ptr> addOnDataSources_;
 
-    explicit Impl(Cache::Ptr cache) : Controller(std::move(cache)) {}
+    std::unique_ptr<DataSourceConfig::Subscription> configSubscription_;
+    std::map<std::string, DataSource::Ptr> dataSourceConfigs_;
+
+    explicit Impl(Cache::Ptr cache, bool useDataSourceConfig) : Controller(std::move(cache))
+    {
+        if (!useDataSourceConfig)
+            return;
+        configSubscription_ = DataSourceConfig::instance().subscribe(
+            [this](auto&& dataSourceConfigNodes)
+            {
+                log().info("Config changed. Scanning for datasource changes...");
+
+                // Deserialize datasource configurations and update service accordingly
+                std::map<std::string, YAML::Node> newConfigs;
+                for (const auto& node : dataSourceConfigNodes) {
+                    YAML::Emitter out;
+                    out << YAML::DoubleQuoted << YAML::Flow << node;
+                    std::string serializedConfig = out.c_str();
+
+                    if (!out.good()) {
+                        log().error("YAML serialization failed: {}", out.GetLastError());
+                        continue;
+                    }
+
+                    newConfigs[serializedConfig] = node;
+                }
+
+                // Remove datasources not present in the new configuration
+                auto it = dataSourceConfigs_.begin();
+                while (it != dataSourceConfigs_.end()) {
+                    if (newConfigs.find(it->first) == newConfigs.end()) {
+                        log().info("Removing datasource with config: {}", it->first);
+                        removeDataSource(it->second);
+                        it = dataSourceConfigs_.erase(it);
+                    }
+                    else {
+                        ++it;
+                    }
+                }
+
+                // Add or update datasources present in the new configuration
+                for (const auto& [configKey, configNode] : newConfigs) {
+                    if (dataSourceConfigs_.find(configKey) == dataSourceConfigs_.end()) {
+                        log().info("Adding new datasource with config: {}", configKey);
+                        auto dataSource = DataSourceConfig::instance().instantiate(configNode);
+                        if (dataSource) {
+                            addDataSource(dataSource);
+                            dataSourceConfigs_[configKey] = dataSource;
+                        }
+                        else {
+                            log().error(
+                                "Failed to instantiate datasource with config: {}",
+                                configKey);
+                        }
+                    }
+                    else {
+                        // Potentially update existing datasource if needed
+                        log().info(
+                            "Datasource already exists, no update required for config: {}",
+                            configKey);
+                        // Optional: Handle updates to existing datasources
+                    }
+                }
+            });
+    }
 
     ~Impl()
     {
+        // Ensure that no new datasources are added while we are cleaning up.
+        configSubscription_.reset();
+
         for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
             for (auto& worker : dataSourceAndWorkers.second) {
                 worker->shouldTerminate_ = true;
@@ -453,17 +521,26 @@ struct Service::Impl : public Service::Controller
     }
 };
 
-Service::Service(Cache::Ptr cache) : impl_(std::make_unique<Impl>(std::move(cache))) {}
+Service::Service(Cache::Ptr cache, bool useDataSourceConfig)
+    : impl_(std::make_unique<Impl>(std::move(cache), useDataSourceConfig))
+{
+}
 
 Service::~Service() = default;
 
 void Service::add(DataSource::Ptr const& dataSource)
 {
+    if (impl_->configSubscription_) {
+        raise("Service::add() cannot be used: Datasources are managed via config file.");
+    }
     impl_->addDataSource(dataSource);
 }
 
 void Service::remove(const DataSource::Ptr& dataSource)
 {
+    if (impl_->configSubscription_) {
+        raise("Service::remove() cannot be used: Datasources are managed via config file.");
+    }
     impl_->removeDataSource(dataSource);
 }
 

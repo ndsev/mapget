@@ -102,8 +102,13 @@ public:
      * Construct a service with a shared Cache instance. Note: The Cache must not
      * be null. For a simple default cache implementation, you can use the
      * MemCache.
+     * @param cache Cache instance to use.
+     * @param useDataSourceConfig Instruct this service instance to instantiate its datasource
+     *  backends based on a subscription to the YAML datasource config file.
      */
-    explicit Service(Cache::Ptr cache = std::make_shared<MemCache>());
+    explicit Service(
+        Cache::Ptr cache = std::make_shared<MemCache>(),
+        bool useDataSourceConfig = false);
 
     /** Destructor. Stops all workers of the present data sources. */
     ~Service();
