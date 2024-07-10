@@ -90,6 +90,7 @@ jobs:
                 -DPython3_FIND_FRAMEWORK=LAST \
                 -DCMAKE_C_COMPILER_LAUNCHER=sccache \
                 -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+                -DMAPGET_ENABLE_TESTING=ON \
                 -GNinja
           cmake --build --preset conan-release
           cd build/Release
