@@ -7,7 +7,7 @@
 #include <string>
 #include <thread>
 #include <mutex>
-#include <unordered_map>
+#include <map>
 #include <vector>
 #include "datasource.h"
 #include "yaml-cpp/yaml.h"
@@ -25,14 +25,14 @@ namespace mapget
  * Services will call subscribe() to be notified about the currently
  * active set of services from the config.
  */
-class DataSourceConfig
+class DataSourceConfigService
 {
 public:
     /**
      * Gets the singleton instance of the DataSourceConfig class.
      * @return Reference to the singleton instance.
      */
-    static DataSourceConfig& instance();
+    static DataSourceConfigService& get();
 
     /**
      * Class representing a subscription to the configuration changes.
@@ -47,7 +47,7 @@ public:
 
     private:
         uint32_t id_ = 0;
-        friend class DataSourceConfig;
+        friend class DataSourceConfigService;
     };
 
     /**
@@ -82,12 +82,17 @@ public:
         std::string const& typeName,
         std::function<DataSource::Ptr(YAML::Node const& arguments)> constructor);
 
+    /**
+     * Call this to stop the config file watching thread.
+     */
+    void end();
+
 private:
     // Private constructor to enforce the singleton pattern.
-    DataSourceConfig();
+    DataSourceConfigService();
 
     // Destructor to clean up resources.
-    ~DataSourceConfig();
+    ~DataSourceConfigService();
 
     /**
      * Unsubscribes a subscription based on its ID.
@@ -110,10 +115,10 @@ private:
     std::string configFilePath_;
 
     // Map of subscription IDs to their respective callback functions.
-    std::unordered_map<uint32_t, std::function<void(std::vector<YAML::Node> const&)>> subscriptions_;
+    std::map<uint32_t, std::function<void(std::vector<YAML::Node> const&)>> subscriptions_;
 
     // Map of data source type names to their respective constructor functions.
-    std::unordered_map<std::string, std::function<DataSource::Ptr(YAML::Node const&)>> constructors_;
+    std::map<std::string, std::function<DataSource::Ptr(YAML::Node const&)>> constructors_;
 
     // Current configuration nodes.
     std::vector<YAML::Node> currentConfig_;

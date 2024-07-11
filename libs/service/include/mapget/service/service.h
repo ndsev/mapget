@@ -118,6 +118,8 @@ public:
      * and incoming/present requests for the data source will start to be
      * processed. Note, that the map layer versions for all layers of the
      * given source must be compatible with present one's, if existing.
+     *
+     * Thread safety: This method should not be called in parallel with itself or remove().
      */
     void add(DataSource::Ptr const& dataSource);
 
@@ -125,6 +127,8 @@ public:
      * Remove a data source from the service. Requests for data which
      * can only be satisfied by the given source will not be processed anymore.
      * TODO: Any such ongoing requests should be forcefully marked as done.
+     *
+     * Thread safety: This method should not be called in parallel with itself or add().
      */
     void remove(DataSource::Ptr const& dataSource);
 

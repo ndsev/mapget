@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <sstream>
 
 #include "config.h"
 #include "mapget/log.h"
@@ -10,19 +11,19 @@
 namespace mapget
 {
 
-DataSourceConfig& DataSourceConfig::instance()
+DataSourceConfigService& DataSourceConfigService::get()
 {
-    static DataSourceConfig instance;
+    static DataSourceConfigService instance;
     return instance;
 }
 
-DataSourceConfig::Subscription::~Subscription()
+DataSourceConfigService::Subscription::~Subscription()
 {
-    DataSourceConfig::instance().unsubscribe(id_);
+    DataSourceConfigService::get().unsubscribe(id_);
 }
 
-std::unique_ptr<DataSourceConfig::Subscription>
-DataSourceConfig::subscribe(std::function<void(std::vector<YAML::Node> const&)> const& callback)
+std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::subscribe(
+    std::function<void(std::vector<YAML::Node> const&)> const& callback)
 {
     if (!callback) {
         log().warn("Refusing to register config subscription with NULL callback.");
@@ -40,19 +41,19 @@ DataSourceConfig::subscribe(std::function<void(std::vector<YAML::Node> const&)> 
     return sub;
 }
 
-void DataSourceConfig::unsubscribe(uint32_t id)
+void DataSourceConfigService::unsubscribe(uint32_t id)
 {
     std::lock_guard memberAccessLock(memberAccessMutex_);
     subscriptions_.erase(id);
 }
 
-void DataSourceConfig::setConfigFilePath(std::string const& path) {
+void DataSourceConfigService::setConfigFilePath(std::string const& path)
+{
     configFilePath_ = path;
-    loadConfig();  // Initial load
     restartFileWatchThread();
 }
 
-void DataSourceConfig::loadConfig()
+void DataSourceConfigService::loadConfig()
 {
     try {
         YAML::Node config = YAML::LoadFile(configFilePath_);
@@ -61,8 +62,9 @@ void DataSourceConfig::loadConfig()
             currentConfig_.clear();
             for (auto const& node : sourcesNode)
                 currentConfig_.push_back(node);
-            for (const auto& subscriber : subscriptions_) {
-                subscriber.second(currentConfig_);
+            for (const auto& [subId, subCb] : subscriptions_) {
+                log().debug("Calling subscriber {}", subId);
+                subCb(currentConfig_);
             }
         }
         else {
@@ -74,7 +76,7 @@ void DataSourceConfig::loadConfig()
     }
 }
 
-DataSource::Ptr DataSourceConfig::instantiate(YAML::Node const& descriptor)
+DataSource::Ptr DataSourceConfigService::instantiate(YAML::Node const& descriptor)
 {
     if (auto typeNode = descriptor["type"]) {
         std::lock_guard memberAccessLock(memberAccessMutex_);
@@ -87,14 +89,14 @@ DataSource::Ptr DataSourceConfig::instantiate(YAML::Node const& descriptor)
             log().error("Datasource constructor for type {} returned NULL.", type);
             return nullptr;
         }
-        log().error("No constructor registered for datasource type: ", type);
+        log().error("No constructor registered for datasource type: {}", type);
         return nullptr;
     }
     log().error("A YAML datasource descriptor is missing the `type` key!");
     return nullptr;
 }
 
-void DataSourceConfig::registerConstructor(
+void DataSourceConfigService::registerConstructor(
     std::string const& typeName,
     std::function<DataSource::Ptr(YAML::Node const&)> constructor)
 {
@@ -106,7 +108,7 @@ void DataSourceConfig::registerConstructor(
     constructors_[typeName] = std::move(constructor);
 }
 
-void DataSourceConfig::restartFileWatchThread()
+void DataSourceConfigService::restartFileWatchThread()
 {
     namespace fs = std::filesystem;
 
@@ -114,27 +116,79 @@ void DataSourceConfig::restartFileWatchThread()
         // If there's already a thread running, wait for it to finish before starting a new one.
         watching_ = false;
         watchThread_->join();
-        watching_ = true;
     }
 
+    watching_ = true;
     watchThread_ = std::thread(
-        [this, path= configFilePath_]()
+        [this, path = configFilePath_]()
         {
-            auto lastModTime = fs::last_write_time(path);
+            auto toStr = [](auto&& time){
+                std::stringstream ss;
+                ss << time;
+                return ss.str();
+            };
+
+            log().debug("Starting watch thread for {}.", path);
+
+            fs::file_time_type lastModTime;
+            bool fileExisted = fs::exists(path);
+
+            if (fileExisted) {
+                lastModTime = fs::last_write_time(path);
+                log().debug("The config file exists (t={}).", toStr(lastModTime));
+                loadConfig();
+            }
+            else {
+                log().debug("The config file does not exist yet.");
+            }
+
             while (watching_) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                auto currentModTime = fs::last_write_time(path);
-                if (currentModTime != lastModTime) {
-                    loadConfig();
-                    lastModTime = currentModTime;
+                if (fs::exists(path)) {
+                    if (!fileExisted) {
+                        // The file has appeared since the last check.
+                        lastModTime = fs::last_write_time(path);
+                        log().debug("The config file exists now (t={}).", toStr(lastModTime));
+                        fileExisted = true;
+                        loadConfig();
+                    }
+                    else {
+                        auto currentModTime = fs::last_write_time(path);
+
+                        if (currentModTime != lastModTime) {
+                            // The file exists and has been modified since the last check.
+                            log().debug(
+                                "The config file changed ({} vs {}).",
+                                toStr(currentModTime),
+                                toStr(lastModTime));
+                            lastModTime = currentModTime;
+                            loadConfig();
+                        }
+                        else {
+                            log().debug(
+                                "The config file is unchanged ({} vs {}).",
+                                toStr(currentModTime),
+                                toStr(lastModTime));
+                        }
+                    }
+                }
+                else if (fileExisted) {
+                    log().debug("The config file disappeared.");
+                    fileExisted = false;
                 }
             }
         });
 }
 
-DataSourceConfig::DataSourceConfig() = default;
+DataSourceConfigService::DataSourceConfigService() = default;
 
-DataSourceConfig::~DataSourceConfig() {
+DataSourceConfigService::~DataSourceConfigService()
+{
+    end();
+}
+
+void DataSourceConfigService::end()
+{
     // Signal the watching thread to stop.
     watching_ = false;
     if (watchThread_ && watchThread_->joinable()) {

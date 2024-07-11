@@ -209,7 +209,9 @@ struct Service::Worker
                 lock,
                 [&, this]()
                 {
+                    log().trace("Worker checking conditions.");
                     if (shouldTerminate_) {
+                        log().trace("Terminating.");
                         // Set by the controller at shutdown or if a data source
                         // is removed. All worker instances are expected to terminate.
                         return true;
@@ -258,14 +260,14 @@ struct Service::Impl : public Service::Controller
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
     std::list<DataSource::Ptr> addOnDataSources_;
 
-    std::unique_ptr<DataSourceConfig::Subscription> configSubscription_;
+    std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
     std::map<std::string, DataSource::Ptr> dataSourceConfigs_;
 
     explicit Impl(Cache::Ptr cache, bool useDataSourceConfig) : Controller(std::move(cache))
     {
         if (!useDataSourceConfig)
             return;
-        configSubscription_ = DataSourceConfig::instance().subscribe(
+        configSubscription_ = DataSourceConfigService::get().subscribe(
             [this](auto&& dataSourceConfigNodes)
             {
                 log().info("Config changed. Scanning for datasource changes...");
@@ -301,8 +303,8 @@ struct Service::Impl : public Service::Controller
                 // Add or update datasources present in the new configuration
                 for (const auto& [configKey, configNode] : newConfigs) {
                     if (dataSourceConfigs_.find(configKey) == dataSourceConfigs_.end()) {
-                        log().info("Adding new datasource with config: {}", configKey);
-                        auto dataSource = DataSourceConfig::instance().instantiate(configNode);
+                        log().info("Adding new datasource with config: `{}`", configKey);
+                        auto dataSource = DataSourceConfigService::get().instantiate(configNode);
                         if (dataSource) {
                             addDataSource(dataSource);
                             dataSourceConfigs_[configKey] = dataSource;
@@ -381,7 +383,6 @@ struct Service::Impl : public Service::Controller
 
     void removeDataSource(DataSource::Ptr const& dataSource)
     {
-        std::unique_lock lock(jobsMutex_);
         dataSourceInfo_.erase(dataSource);
         addOnDataSources_.remove(dataSource);
 

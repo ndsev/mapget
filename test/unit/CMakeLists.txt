@@ -18,7 +18,8 @@ add_executable(test.mapget
   test-simfil-geometry.cpp
   test-info.cpp
   test-http-datasource.cpp
-  test-cache.cpp)
+  test-cache.cpp
+  test-config.cpp)
 
 add_executable(test.mapget.filelog
   test-file-logging.cpp)
