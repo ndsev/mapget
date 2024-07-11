@@ -314,11 +314,9 @@ struct Service::Impl : public Service::Controller
                         }
                     }
                     else {
-                        // Potentially update existing datasource if needed
                         log().info(
                             "Datasource already exists, no update required for config: {}",
                             configKey);
-                        // Optional: Handle updates to existing datasources
                     }
                 }
             });
@@ -530,17 +528,11 @@ Service::~Service() = default;
 
 void Service::add(DataSource::Ptr const& dataSource)
 {
-    if (impl_->configSubscription_) {
-        raise("Service::add() cannot be used: Datasources are managed via config file.");
-    }
     impl_->addDataSource(dataSource);
 }
 
 void Service::remove(const DataSource::Ptr& dataSource)
 {
-    if (impl_->configSubscription_) {
-        raise("Service::remove() cannot be used: Datasources are managed via config file.");
-    }
     impl_->removeDataSource(dataSource);
 }
 
