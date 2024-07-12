@@ -141,15 +141,17 @@ struct ServeCommand
             port_,
             "Port to start the server on. Default is 0.")
             ->default_val("0");
-        serveCmd->add_option(
+        CLI::deprecate_option(serveCmd->add_option(
             "-d,--datasource-host",
             datasourceHosts_,
-            "Data sources in format <host:port>. Can be specified multiple times.");
-        serveCmd->add_option(
+            "This option is deprecated. Use a config file instead!. "
+            "Data sources in format <host:port>. Can be specified multiple times."));
+        CLI::deprecate_option(serveCmd->add_option(
             "-e,--datasource-exe",
             datasourceExecutables_,
+            "This option is deprecated. Use a config file instead!. "
             "Data source executable paths, including arguments. "
-            "Can be specified multiple times.");
+            "Can be specified multiple times."));
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory, rocksdb (Technology Preview).")
             ->default_val("memory");
