@@ -100,8 +100,8 @@ public:
 };
 
 void registerDefaultDatasourceTypes() {
-    auto& config = DataSourceConfigService::get();
-    config.registerDataSourceType(
+    auto& service = DataSourceConfigService::get();
+    service.registerDataSourceType(
         "DataSourceHost",
         [](YAML::Node const& config) -> DataSource::Ptr {
             if (auto url = config["url"])
@@ -109,7 +109,7 @@ void registerDefaultDatasourceTypes() {
             else
                 throw std::runtime_error("Missing `url` field.");
         });
-    config.registerDataSourceType(
+    service.registerDataSourceType(
         "DataSourceProcess",
         [](YAML::Node const& config) -> DataSource::Ptr {
             if (auto cmd = config["cmd"])

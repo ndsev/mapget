@@ -72,6 +72,7 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
     DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
 
     // Initial empty configuration
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []" << std::endl;

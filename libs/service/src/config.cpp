@@ -68,7 +68,7 @@ void DataSourceConfigService::loadConfig()
             }
         }
         else {
-            log().warn("The config file {} does not have a sources node.");
+            log().debug("The config file {} does not have a sources node.", configFilePath_);
         }
     }
     catch (const YAML::Exception& e) {
@@ -137,11 +137,11 @@ void DataSourceConfigService::restartFileWatchThread()
                 return ss.str();
             };
 
-            auto modTime = [](std::string const& path) -> std::optional<fs::file_time_type> {
+            auto modTime = [](std::string const& checkPath) -> std::optional<fs::file_time_type> {
                 try {
                     std::error_code e;
-                    if (fs::exists(path)) {
-                        auto result = fs::last_write_time(path, e);
+                    if (fs::exists(checkPath)) {
+                        auto result = fs::last_write_time(checkPath, e);
                         if (!e)
                             return result;
                     }
