@@ -129,60 +129,64 @@ void DataSourceConfigService::restartFileWatchThread()
     watchThread_ = std::thread(
         [this, path = configFilePath_]()
         {
-            auto toStr = [](auto&& time){
+            log().debug("Starting watch thread for {}.", path);
+
+            auto toStr = [](fs::file_time_type const& time){
                 std::stringstream ss;
-                ss << time;
+                ss << std::chrono::duration_cast<std::chrono::seconds>(time.time_since_epoch()).count();
                 return ss.str();
             };
 
-            log().debug("Starting watch thread for {}.", path);
+            auto modTime = [](std::string const& path) -> std::optional<fs::file_time_type> {
+                try {
+                    std::error_code e;
+                    if (fs::exists(path)) {
+                        auto result = fs::last_write_time(path, e);
+                        if (!e)
+                            return result;
+                    }
+                }
+                catch (...) {
+                    // Nothing to do.
+                }
+                return {};
+            };
 
-            fs::file_time_type lastModTime;
-            bool fileExisted = fs::exists(path);
-
-            if (fileExisted) {
-                lastModTime = fs::last_write_time(path);
-                log().debug("The config file exists (t={}).", toStr(lastModTime));
+            auto lastModTime = modTime(path);
+            if (lastModTime)
                 loadConfig();
-            }
-            else {
+            else
                 log().debug("The config file does not exist yet.");
-            }
 
             while (watching_) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (fs::exists(path)) {
-                    if (!fileExisted) {
-                        // The file has appeared since the last check.
-                        lastModTime = fs::last_write_time(path);
-                        log().debug("The config file exists now (t={}).", toStr(lastModTime));
-                        fileExisted = true;
+                auto currentModTime = modTime(path);
+
+                if (currentModTime && !lastModTime) {
+                    // The file has appeared since the last check.
+                    log().debug("The config file exists now (t={}).", toStr(*lastModTime));
+                    loadConfig();
+                }
+                else if (!currentModTime && lastModTime) {
+                    log().debug("The config file disappeared.");
+                }
+                else if (currentModTime && lastModTime) {
+                    if (*currentModTime != *lastModTime) {
+                        // The file exists and has been modified since the last check.
+                        log().debug(
+                            "The config file changed (t0={} vs t1={}).",
+                            toStr(*currentModTime),
+                            toStr(*lastModTime));
                         loadConfig();
                     }
-                    else {
-                        auto currentModTime = fs::last_write_time(path);
+                    else
+                        log().trace(
+                            "The config file is unchanged (t0={} vs t1={}).",
+                            toStr(*currentModTime),
+                            toStr(*lastModTime));
+                }
 
-                        if (currentModTime != lastModTime) {
-                            // The file exists and has been modified since the last check.
-                            log().debug(
-                                "The config file changed ({} vs {}).",
-                                toStr(currentModTime),
-                                toStr(lastModTime));
-                            lastModTime = currentModTime;
-                            loadConfig();
-                        }
-                        else {
-                            log().trace(
-                                "The config file is unchanged ({} vs {}).",
-                                toStr(currentModTime),
-                                toStr(lastModTime));
-                        }
-                    }
-                }
-                else if (fileExisted) {
-                    log().debug("The config file disappeared.");
-                    fileExisted = false;
-                }
+                lastModTime = currentModTime;
             }
         });
 }
