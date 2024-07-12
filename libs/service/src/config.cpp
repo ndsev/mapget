@@ -83,13 +83,19 @@ DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descri
         auto type = typeNode.as<std::string>();
         auto it = constructors_.find(type);
         if (it != constructors_.end()) {
-            if (auto result = it->second(descriptor)) {
-                return result;
+            try {
+                if (auto result = it->second(descriptor)) {
+                    return result;
+                }
+                log().error("Datasource constructor for type {} returned NULL.", type);
+                return nullptr;
             }
-            log().error("Datasource constructor for type {} returned NULL.", type);
-            return nullptr;
+            catch (std::exception const& e) {
+                log().error("Exception while making `{}` datasource: {}", type, e.what());
+                return nullptr;
+            }
         }
-        log().error("No constructor registered for datasource type: {}", type);
+        log().error("No constructor is registered for datasource type: {}", type);
         return nullptr;
     }
     log().error("A YAML datasource descriptor is missing the `type` key!");
