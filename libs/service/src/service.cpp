@@ -304,14 +304,14 @@ struct Service::Impl : public Service::Controller
                 for (const auto& [configKey, configNode] : newConfigs) {
                     if (dataSourceConfigs_.find(configKey) == dataSourceConfigs_.end()) {
                         log().info("Adding new datasource with config: `{}`", configKey);
-                        auto dataSource = DataSourceConfigService::get().instantiate(configNode);
+                        auto dataSource = DataSourceConfigService::get().makeDataSource(configNode);
                         if (dataSource) {
                             addDataSource(dataSource);
                             dataSourceConfigs_[configKey] = dataSource;
                         }
                         else {
                             log().error(
-                                "Failed to instantiate datasource with config: {}",
+                                "Failed to makeDataSource datasource with config: {}",
                                 configKey);
                         }
                     }

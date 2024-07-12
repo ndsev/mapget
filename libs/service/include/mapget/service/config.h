@@ -21,7 +21,7 @@ namespace mapget
  * a list of datasource descriptors. Each descriptor must have a `type:`
  * key, to describe the datasource constructor that is supposed to be called.
  * The whole descriptor will be passed into the lambda that is registered
- * as the constructor for the given type name when calling instantiate().
+ * as the constructor for the given type name when calling makeDataSource().
  * Services will call subscribe() to be notified about the currently
  * active set of services from the config.
  */
@@ -71,14 +71,14 @@ public:
      * @param descriptor The YAML node containing the data source descriptor.
      * @return Shared pointer to the instantiated data source, or nullptr if instantiation failed.
      */
-    DataSource::Ptr instantiate(YAML::Node const& descriptor);
+    DataSource::Ptr makeDataSource(YAML::Node const& descriptor);
 
     /**
      * Registers a constructor for a given data source type.
      * @param typeName The name of the data source type.
      * @param constructor The constructor function to call for this data source type.
      */
-    void registerConstructor(
+    void registerDataSourceType(
         std::string const& typeName,
         std::function<DataSource::Ptr(YAML::Node const& arguments)> constructor);
 

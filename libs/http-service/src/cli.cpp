@@ -5,6 +5,7 @@
 
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/service/rocksdbcache.h"
+#include "mapget/service/config.h"
 
 #include <CLI/CLI.hpp>
 #include <string>
@@ -68,7 +69,7 @@ public:
         return mapgetNode ? _from_yaml(mapgetNode) : std::vector<CLI::ConfigItem>();
     }
 
-    std::vector<CLI::ConfigItem> _from_yaml(const YAML::Node &node, const std::string &name = "", const std::vector<std::string> &prefix = {}) const {
+    [[nodiscard]] std::vector<CLI::ConfigItem> _from_yaml(const YAML::Node &node, const std::string &name = "", const std::vector<std::string> &prefix = {}) const {
         std::vector<CLI::ConfigItem> results;
 
         if (node.IsMap()) {
@@ -98,6 +99,26 @@ public:
     }
 };
 
+void registerDefaultDatasourceTypes() {
+    auto& config = DataSourceConfigService::get();
+    config.registerDataSourceType(
+        "DataSourceHost",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            if (auto url = config["url"])
+                return RemoteDataSource::fromHostPort(url.as<std::string>());
+            else
+                throw std::runtime_error("Missing `url` field.");
+        });
+    config.registerDataSourceType(
+        "DataSourceProcess",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            if (auto cmd = config["cmd"])
+                return std::make_shared<RemoteDataSourceProcess>(cmd.as<std::string>());
+            else
+                throw std::runtime_error("Missing `cmd` field.");
+        });
+};
+
 }
 
 struct ServeCommand
@@ -110,8 +131,9 @@ struct ServeCommand
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
     std::string webapp_;
+    CLI::App& app_;
 
-    explicit ServeCommand(CLI::App& app)
+    explicit ServeCommand(CLI::App& app) : app_(app)
     {
         auto serveCmd = app.add_subcommand("serve", "Starts the server.");
         serveCmd->add_option(
@@ -163,16 +185,19 @@ struct ServeCommand
             raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
-        HttpService srv(cache);
+        bool watchConfig = false;
+        if (auto config = app_.get_config_ptr()) {
+            watchConfig = true;
+            registerDefaultDatasourceTypes();
+            DataSourceConfigService::get().setConfigFilePath(config->as<std::string>());
+        };
+
+        HttpService srv(cache, watchConfig);
 
         if (!datasourceHosts_.empty()) {
             for (auto& ds : datasourceHosts_) {
-                auto delimiterPos = ds.find(':');
-                std::string dsHost = ds.substr(0, delimiterPos);
-                int dsPort = std::stoi(ds.substr(delimiterPos + 1, ds.size()));
-                log().info("Connecting to datasource at {}:{}.", dsHost, dsPort);
                 try {
-                    srv.add(std::make_shared<RemoteDataSource>(dsHost, dsPort));
+                    srv.add(RemoteDataSource::fromHostPort(ds));
                 }
                 catch (std::exception const& e) {
                     log().error("  ...failed: {}", e.what());

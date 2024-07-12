@@ -43,11 +43,10 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
-    DataSourceConfigService::get().registerConstructor(
+    DataSourceConfigService::get().registerDataSourceType(
         "TestDataSource",
-        [](const YAML::Node& config) -> DataSource::Ptr {
-            return std::make_shared<TestDataSource>();
-        });
+        [](const YAML::Node& config) -> DataSource::Ptr
+        { return std::make_shared<TestDataSource>(); });
 
     auto cache = std::make_shared<MemCache>();
     Service service(cache, true);

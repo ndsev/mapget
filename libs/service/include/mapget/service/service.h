@@ -103,7 +103,7 @@ public:
      * be null. For a simple default cache implementation, you can use the
      * MemCache.
      * @param cache Cache instance to use.
-     * @param useDataSourceConfig Instruct this service instance to instantiate its datasource
+     * @param useDataSourceConfig Instruct this service instance to makeDataSource its datasource
      *  backends based on a subscription to the YAML datasource config file.
      */
     explicit Service(

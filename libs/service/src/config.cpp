@@ -76,7 +76,7 @@ void DataSourceConfigService::loadConfig()
     }
 }
 
-DataSource::Ptr DataSourceConfigService::instantiate(YAML::Node const& descriptor)
+DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descriptor)
 {
     if (auto typeNode = descriptor["type"]) {
         std::lock_guard memberAccessLock(memberAccessMutex_);
@@ -96,7 +96,7 @@ DataSource::Ptr DataSourceConfigService::instantiate(YAML::Node const& descripto
     return nullptr;
 }
 
-void DataSourceConfigService::registerConstructor(
+void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
     std::function<DataSource::Ptr(YAML::Node const&)> constructor)
 {
@@ -106,6 +106,7 @@ void DataSourceConfigService::registerConstructor(
     }
     std::lock_guard memberAccessLock(memberAccessMutex_);
     constructors_[typeName] = std::move(constructor);
+    log().info("Registered data source type {}.", typeName);
 }
 
 void DataSourceConfigService::restartFileWatchThread()
@@ -165,7 +166,7 @@ void DataSourceConfigService::restartFileWatchThread()
                             loadConfig();
                         }
                         else {
-                            log().debug(
+                            log().trace(
                                 "The config file is unchanged ({} vs {}).",
                                 toStr(currentModTime),
                                 toStr(lastModTime));

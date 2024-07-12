@@ -122,6 +122,15 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
     return responseVector;
 }
 
+std::shared_ptr<RemoteDataSource> RemoteDataSource::fromHostPort(const std::string& hostPort)
+{
+    auto delimiterPos = hostPort.find(':');
+    std::string dsHost = hostPort.substr(0, delimiterPos);
+    int dsPort = std::stoi(hostPort.substr(delimiterPos + 1, hostPort.size()));
+    log().info("Connecting to datasource at {}:{}.", dsHost, dsPort);
+    return std::make_shared<RemoteDataSource>(dsHost, dsPort);
+}
+
 RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
 {
     auto stderrCallback = [this](const char* bytes, size_t n)

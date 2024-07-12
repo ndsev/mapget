@@ -240,7 +240,8 @@ struct HttpService::Impl
     }
 };
 
-HttpService::HttpService(Cache::Ptr cache) : Service(std::move(cache)), impl_(std::make_unique<Impl>(*this))
+HttpService::HttpService(Cache::Ptr cache, bool watchConfig)
+    : Service(std::move(cache), watchConfig), impl_(std::make_unique<Impl>(*this))
 {}
 
 HttpService::~HttpService() = default;
