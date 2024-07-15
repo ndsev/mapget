@@ -21,12 +21,12 @@ TileId::TileId(uint64_t value) : value_(value) {
     // No extra work needed here as we directly assign the given value
 }
 
-uint16_t TileId::x() const {
-    return (uint16_t) (value_ >> 32);
+uint32_t TileId::x() const {
+    return (uint32_t) (value_ >> 32);
 }
 
-uint16_t TileId::y() const {
-    return (uint16_t) ((value_ >> 16) & 0xFFFF);
+uint32_t TileId::y() const {
+    return (uint32_t) ((value_ >> 16) & 0xFFFF);
 }
 
 uint16_t TileId::z() const {

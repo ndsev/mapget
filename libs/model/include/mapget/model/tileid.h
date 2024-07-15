@@ -64,12 +64,12 @@ struct TileId
     /**
      * Function to get x (column) component of the TileId
      */
-    [[nodiscard]] uint16_t x() const;
+    [[nodiscard]] uint32_t x() const;
 
     /**
      * Function to get y (row) component of the TileId
      */
-    [[nodiscard]] uint16_t y() const;
+    [[nodiscard]] uint32_t y() const;
 
     /**
      * Function to get z (zoom level) component of the TileId (zoom level)
