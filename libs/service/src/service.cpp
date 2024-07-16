@@ -270,7 +270,7 @@ struct Service::Impl : public Service::Controller
         configSubscription_ = DataSourceConfigService::get().subscribe(
             [this](auto&& dataSourceConfigNodes)
             {
-                log().info("Config changed. Scanning for datasource changes...");
+                log().debug("Config changed. Scanning for datasource changes...");
 
                 // Deserialize datasource configurations and update service accordingly
                 std::map<std::string, YAML::Node> newConfigs;
@@ -291,7 +291,7 @@ struct Service::Impl : public Service::Controller
                 auto it = dataSourceConfigs_.begin();
                 while (it != dataSourceConfigs_.end()) {
                     if (newConfigs.find(it->first) == newConfigs.end()) {
-                        log().info("Removing datasource with config: {}", it->first);
+                        log().debug("Removing datasource with config: {}", it->first);
                         removeDataSource(it->second);
                         it = dataSourceConfigs_.erase(it);
                     }
@@ -303,7 +303,7 @@ struct Service::Impl : public Service::Controller
                 // Add or update datasources present in the new configuration
                 for (const auto& [configKey, configNode] : newConfigs) {
                     if (dataSourceConfigs_.find(configKey) == dataSourceConfigs_.end()) {
-                        log().info("Adding new datasource with config: `{}`", configKey);
+                        log().debug("Adding new datasource with config: `{}`", configKey);
                         auto dataSource = DataSourceConfigService::get().makeDataSource(configNode);
                         if (dataSource) {
                             addDataSource(dataSource);
@@ -316,7 +316,7 @@ struct Service::Impl : public Service::Controller
                         }
                     }
                     else {
-                        log().info(
+                        log().debug(
                             "Datasource already exists, no update required for config: {}",
                             configKey);
                     }
