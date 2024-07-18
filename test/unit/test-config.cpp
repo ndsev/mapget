@@ -1,16 +1,16 @@
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
-#include <condition_variable>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
+#include <future>
 
 #include "mapget/log.h"
 #include "mapget/service/config.h"
 #include "mapget/service/datasource.h"
 #include "mapget/service/memcache.h"
 #include "mapget/service/service.h"
+#include "mapget/http-service/cli.h"
 
 namespace fs = std::filesystem;
 using namespace mapget;
@@ -38,21 +38,11 @@ std::string generateTimestampedDirectoryName(const std::string& baseName)
     return baseName + "_" + std::to_string(millis);
 }
 
-void waitForUpdate(
-    std::condition_variable& cv,
-    std::mutex& mtx,
-    std::atomic<bool>& flag,
-    std::chrono::seconds timeout)
+void waitForUpdate(std::future<void>& future, std::chrono::seconds timeout)
 {
-    std::unique_lock<std::mutex> lock(mtx);
-    if (flag.load()) {
-        flag.store(false);  // Reset flag for next wait
-        return;
-    }
-    if (!cv.wait_for(lock, timeout, [&] { return flag.load(); })) {
+    if (future.wait_for(timeout) != std::future_status::ready) {
         throw std::runtime_error("Timeout waiting for configuration update.");
     }
-    flag.store(false);  // Reset flag for next wait
 }
 
 TEST_CASE("Mapget Config", "[MapgetConfig]")
@@ -98,19 +88,14 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     Service service(cache, true);
     REQUIRE(service.info().empty());
 
-    std::atomic<bool> updateOccurred(false);
-    std::condition_variable cv;
-    std::mutex mtx;
+    std::promise<void> updatePromise;
+    auto updateFuture = updatePromise.get_future();
 
     auto subscription = DataSourceConfigService::get().subscribe(
         [&](auto&&)
         {
             log().debug("Configuration update detected.");
-            {
-                std::lock_guard<std::mutex> lock(mtx);
-                updateOccurred.store(true);
-            }
-            cv.notify_all();
+            updatePromise.set_value();
         });
 
     DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
@@ -121,8 +106,12 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []" << std::endl;
     }
-    waitForUpdate(cv, mtx, updateOccurred, std::chrono::seconds(5));
+    waitForUpdate(updateFuture, std::chrono::seconds(5));
     REQUIRE(service.info().empty());
+
+    // Reset future for next update
+    updatePromise = std::promise<void>();
+    updateFuture = updatePromise.get_future();
 
     // Adding a datasource
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -133,7 +122,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
           - type: TestDataSource
         )" << std::endl;
     }
-    waitForUpdate(cv, mtx, updateOccurred, std::chrono::seconds(5));
+    waitForUpdate(updateFuture, std::chrono::seconds(5));
     auto dataSourceInfos = service.info();
     REQUIRE(dataSourceInfos.size() == 1);
     REQUIRE(dataSourceInfos[0].mapId_ == "Catan");
@@ -144,7 +133,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []";
     }
-    waitForUpdate(cv, mtx, updateOccurred, std::chrono::seconds(5));
+    waitForUpdate(updateFuture, std::chrono::seconds(5));
     REQUIRE(service.info().empty());
 
     // Cleanup
