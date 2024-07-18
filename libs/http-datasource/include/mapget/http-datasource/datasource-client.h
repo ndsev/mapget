@@ -20,6 +20,11 @@ class RemoteDataSource : public DataSource
 {
 public:
     /**
+     * Construct from joint host:port string.
+     */
+    static std::shared_ptr<RemoteDataSource> fromHostPort(std::string const& hostPort);
+
+    /**
      * Construct a DataSource with the host and port of
      * a running DataSourceServer. Throws if the connection
      * fails for any reason.

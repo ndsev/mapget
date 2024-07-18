@@ -5,13 +5,137 @@
 
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/service/rocksdbcache.h"
+#include "mapget/service/config.h"
 
 #include <CLI/CLI.hpp>
 #include <string>
 #include <vector>
+#include <yaml-cpp/yaml.h>
 
 namespace mapget
 {
+
+namespace
+{
+
+class ConfigYAML : public CLI::Config
+{
+public:
+    std::string to_config(const CLI::App* app, bool defaultAlso, bool, std::string) const override
+    {
+        std::string config_path = app->get_config_ptr() ?
+            app->get_config_ptr()->as<std::string>() :
+            "config.yaml";
+        std::ifstream ifs(config_path);
+        YAML::Node root = ifs ? YAML::Load(ifs) : YAML::Node();
+
+        // Create or clear the 'mapget' node
+        auto mapgetNode = root["mapget"] = YAML::Node(YAML::NodeType::Map);
+
+        // Process current app configuration into 'mapget' node
+        toYaml(mapgetNode, app, defaultAlso);
+
+        // Output the YAML content as a formatted string
+        std::stringstream ss;
+        ss << root;
+        return ss.str();
+    }
+
+    void toYaml(YAML::Node root, const CLI::App* app, bool defaultAlso) const
+    {
+        for (const CLI::Option* opt : app->get_options({})) {
+            if (!opt->get_lnames().empty() && opt->get_configurable()) {
+                std::string name = opt->get_lnames()[0];
+
+                if (opt->get_type_size() != 0) {
+                    if (opt->count() == 1)
+                        root[name] = opt->results().at(0);
+                    else if (opt->count() > 0)
+                        root[name] = opt->results();
+                    else if (defaultAlso && !opt->get_default_str().empty())
+                        root[name] = opt->get_default_str();
+                }
+                else if (opt->count()) {
+                    root[name] = opt->count() > 1 ? YAML::Node(opt->count()) : YAML::Node(true);
+                }
+                else {
+                    root[name] = defaultAlso ? YAML::Node(false) : YAML::Node();
+                }
+            }
+        }
+
+        for (const CLI::App* subcom : app->get_subcommands({}))
+            toYaml(root[subcom->get_name()], subcom, defaultAlso);
+    }
+
+    std::vector<CLI::ConfigItem> from_config(std::istream& input) const override
+    {
+        try {
+            YAML::Node root = YAML::Load(input);
+            YAML::Node mapgetNode = root["mapget"];
+            return mapgetNode ? fromYaml(mapgetNode) : std::vector<CLI::ConfigItem>();
+        }
+        catch (YAML::ParserException const& e) {
+            raise(fmt::format("Failed to parse config file! Error: {}", e.what()));
+        }
+    }
+
+    [[nodiscard]] std::vector<CLI::ConfigItem> fromYaml(
+        const YAML::Node& node,
+        const std::string& name = "",
+        const std::vector<std::string>& prefix = {}) const
+    {
+        std::vector<CLI::ConfigItem> results;
+
+        if (node.IsMap()) {
+            for (const auto& item : node) {
+                auto copy_prefix = prefix;
+                if (!name.empty()) {
+                    copy_prefix.push_back(name);
+                }
+                auto sub_results = fromYaml(item.second, item.first.as<std::string>(), copy_prefix);
+                results.insert(results.end(), sub_results.begin(), sub_results.end());
+            }
+        }
+        else if (!name.empty()) {
+            CLI::ConfigItem& res = results.emplace_back();
+            res.name = name;
+            res.parents = prefix;
+            if (node.IsScalar()) {
+                res.inputs = {node.as<std::string>()};
+            }
+            else if (node.IsSequence()) {
+                for (const auto& val : node) {
+                    res.inputs.push_back(val.as<std::string>());
+                }
+            }
+        }
+
+        return results;
+    }
+};
+
+void registerDefaultDatasourceTypes() {
+    auto& service = DataSourceConfigService::get();
+    service.registerDataSourceType(
+        "DataSourceHost",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            if (auto url = config["url"])
+                return RemoteDataSource::fromHostPort(url.as<std::string>());
+            else
+                throw std::runtime_error("Missing `url` field.");
+        });
+    service.registerDataSourceType(
+        "DataSourceProcess",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            if (auto cmd = config["cmd"])
+                return std::make_shared<RemoteDataSourceProcess>(cmd.as<std::string>());
+            else
+                throw std::runtime_error("Missing `cmd` field.");
+        });
+}
+
+}
 
 struct ServeCommand
 {
@@ -23,8 +147,9 @@ struct ServeCommand
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
     std::string webapp_;
+    CLI::App& app_;
 
-    explicit ServeCommand(CLI::App& app)
+    explicit ServeCommand(CLI::App& app) : app_(app)
     {
         auto serveCmd = app.add_subcommand("serve", "Starts the server.");
         serveCmd->add_option(
@@ -32,15 +157,17 @@ struct ServeCommand
             port_,
             "Port to start the server on. Default is 0.")
             ->default_val("0");
-        serveCmd->add_option(
+        CLI::deprecate_option(serveCmd->add_option(
             "-d,--datasource-host",
             datasourceHosts_,
-            "Data sources in format <host:port>. Can be specified multiple times.");
-        serveCmd->add_option(
+            "This option is deprecated. Use a config file instead!. "
+            "Data sources in format <host:port>. Can be specified multiple times."));
+        CLI::deprecate_option(serveCmd->add_option(
             "-e,--datasource-exe",
             datasourceExecutables_,
+            "This option is deprecated. Use a config file instead!. "
             "Data source executable paths, including arguments. "
-            "Can be specified multiple times.");
+            "Can be specified multiple times."));
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory, rocksdb (Technology Preview).")
             ->default_val("memory");
@@ -76,16 +203,19 @@ struct ServeCommand
             raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
-        HttpService srv(cache);
+        bool watchConfig = false;
+        if (auto config = app_.get_config_ptr()) {
+            watchConfig = true;
+            registerDefaultDatasourceTypes();
+            DataSourceConfigService::get().setConfigFilePath(config->as<std::string>());
+        }
+
+        HttpService srv(cache, watchConfig);
 
         if (!datasourceHosts_.empty()) {
             for (auto& ds : datasourceHosts_) {
-                auto delimiterPos = ds.find(':');
-                std::string dsHost = ds.substr(0, delimiterPos);
-                int dsPort = std::stoi(ds.substr(delimiterPos + 1, ds.size()));
-                log().info("Connecting to datasource at {}:{}.", dsHost, dsPort);
                 try {
-                    srv.add(std::make_shared<RemoteDataSource>(dsHost, dsPort));
+                    srv.add(RemoteDataSource::fromHostPort(ds));
                 }
                 catch (std::exception const& e) {
                     log().error("  ...failed: {}", e.what());
@@ -184,7 +314,7 @@ struct FetchCommand
     }
 };
 
-int runFromCommandLine(std::vector<std::string> args)
+int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     std::string log_level_;
@@ -197,8 +327,10 @@ int runFromCommandLine(std::vector<std::string> args)
         "--config",
         "",
         "Optional path to a file with configuration arguments for mapget.");
+    app.config_formatter(std::make_shared<ConfigYAML>());
 
-    app.require_subcommand(1);
+    if (requireSubcommand)
+        app.require_subcommand(1);
 
     if (!log_level_.empty()) {
         mapget::setLogLevel(log_level_, log());

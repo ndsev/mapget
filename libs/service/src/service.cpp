@@ -1,6 +1,7 @@
 #include "service.h"
 #include "locate.h"
 #include "mapget/log.h"
+#include "config.h"
 
 #include <optional>
 #include <set>
@@ -208,7 +209,9 @@ struct Service::Worker
                 lock,
                 [&, this]()
                 {
+                    log().trace("Worker checking conditions.");
                     if (shouldTerminate_) {
+                        log().trace("Terminating.");
                         // Set by the controller at shutdown or if a data source
                         // is removed. All worker instances are expected to terminate.
                         return true;
@@ -257,10 +260,44 @@ struct Service::Impl : public Service::Controller
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
     std::list<DataSource::Ptr> addOnDataSources_;
 
-    explicit Impl(Cache::Ptr cache) : Controller(std::move(cache)) {}
+    std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
+    std::vector<DataSource::Ptr> dataSourcesFromConfig_;
+
+    explicit Impl(Cache::Ptr cache, bool useDataSourceConfig) : Controller(std::move(cache))
+    {
+        if (!useDataSourceConfig)
+            return;
+        configSubscription_ = DataSourceConfigService::get().subscribe(
+            [this](auto&& dataSourceConfigNodes)
+            {
+                // Remove previous datasources.
+                log().info("Config changed. Removing previous datasources.");
+                for (auto const& datasource : dataSourcesFromConfig_) {
+                    removeDataSource(datasource);
+                }
+                dataSourcesFromConfig_.clear();
+
+                // Add datasources present in the new configuration.
+                auto index = 0;
+                for (const auto& configNode : dataSourceConfigNodes) {
+                    if (auto dataSource = DataSourceConfigService::get().makeDataSource(configNode)) {
+                        addDataSource(dataSource);
+                        dataSourcesFromConfig_.push_back(dataSource);
+                    }
+                    else {
+                        log().error(
+                            "Failed to makeDataSource datasource at index {}.", index);
+                    }
+                    ++index;
+                }
+            });
+    }
 
     ~Impl()
     {
+        // Ensure that no new datasources are added while we are cleaning up.
+        configSubscription_.reset();
+
         for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
             for (auto& worker : dataSourceAndWorkers.second) {
                 worker->shouldTerminate_ = true;
@@ -315,7 +352,6 @@ struct Service::Impl : public Service::Controller
 
     void removeDataSource(DataSource::Ptr const& dataSource)
     {
-        std::unique_lock lock(jobsMutex_);
         dataSourceInfo_.erase(dataSource);
         addOnDataSources_.remove(dataSource);
 
@@ -453,7 +489,10 @@ struct Service::Impl : public Service::Controller
     }
 };
 
-Service::Service(Cache::Ptr cache) : impl_(std::make_unique<Impl>(std::move(cache))) {}
+Service::Service(Cache::Ptr cache, bool useDataSourceConfig)
+    : impl_(std::make_unique<Impl>(std::move(cache), useDataSourceConfig))
+{
+}
 
 Service::~Service() = default;
 

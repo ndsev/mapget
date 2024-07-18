@@ -1,0 +1,13 @@
+# mapget: A client/server application for map data retrieval.
+mapget:
+    # From: trace, debug, info, warn, error, critical. Overrides MAPGET_LOG_LEVEL.
+    log-level: trace
+    fetch:
+        # Server to connect to in format <host:port>.
+        server: 127.0.0.1:61852
+        # Map to retrieve.
+        map: Tropico
+        # Layer of the map to retrieve.
+        layer: WayLayer
+        # Tile of the map to retrieve. Can be specified multiple times.
+        tile: 12345

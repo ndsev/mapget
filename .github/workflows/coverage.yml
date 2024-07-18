@@ -42,7 +42,7 @@ jobs:
         cmake --build --preset conan-debug
     - name: Run Test
       run: |
-        ctest --preset conan-debug -C Debug --verbose --no-test=fail
+        ctest --preset conan-debug -C Debug --verbose --no-tests=error
     - name: Run Gcovr
       run: |
         mkdir coverage

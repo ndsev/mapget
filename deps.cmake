@@ -126,7 +126,7 @@ if (MAPGET_WITH_WHEEL)
   FetchContent_MakeAvailable(python-cmake-wheel)
 endif()
 
-set(BUILD_TESTING NO CACHE BOOL "")
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(tiny-process-library
   GIT_REPOSITORY "https://gitlab.com/eidheim/tiny-process-library"
   GIT_TAG        v2.0.4

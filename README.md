@@ -33,12 +33,40 @@ mapget serve --help
 
 (or `python -m mapget --help` for the Python package).
 
-The `mapget` executable can parse a config file with arguments supported by the command line interface. The path to the config file can be provided to `mapget` via command line by specifying the `--config` parameter.
+The `mapget` executable can parse a `YAML`-based config file. The path to the config file can be provided to `mapget` via command line by specifying the `--config` parameter.
+The config file may have two top-level keys which are used by mapget: The `sources` key and the `mapget` key.
 
+### The `mapget` YAML key
+
+Under the `mapget` YAML key, any config options which can also be set via the command line may be set.
+Note, that changes in this section are not applied while mapget is running, you will need to restart it.
 Sample configuration files can be found under `examples/config`:
 
-- [sample-first-datasource.toml](examples/config/sample-first-datasource.toml) and [sample-second-datasource.toml](examples/config/sample-second-datasource.toml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
-- [sample-service.toml](examples/config/sample-service.toml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
+- [sample-first-datasource.yaml](examples/config/sample-first-datasource.yaml) and [sample-second-datasource.yaml](examples/config/sample-second-datasource.yaml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
+- [sample-service.yaml](examples/config/sample-service.yaml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
+
+### The `sources` YAML key
+
+Under the `sources` YAML key, you can configure datasources which are going to be served.
+Note, that changes from the sources section are going to be applied immediately once the config
+file is saved. This means, you can add and/or remove sources while mapget is running.
+This section has the following format: The `sources` key must have a list. Each entry in the list
+represents a datasource. The entry must have a `type` key, which denotes the specific datasource
+constructor to call. You may register additional datasource types using the
+`DatasourceConfigService` from `mapget/service/config.h`. By default, the following datasource types are supported:
+
+| Data Source Type        | Required Configurations | Optional Configurations     |
+|-------------------------|-------------------------|-----------------------------|
+| `DataSourceHost`        | `url`                   | N/A                         |
+| `DataSourceProcess`     | `cmd`                   | N/A                         |
+
+For example, the following would be a valid configuration:
+
+```yaml
+sources:
+  - type: DataSourceProcess
+    cmd: cpp-sample-http-datasource
+```
 
 ### Cache
 
