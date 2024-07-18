@@ -39,4 +39,4 @@ jobs:
             --disable-progress-bar \
             -u "__token__" \
             -p "${KE_PYPI_TOKEN}" \
-            **/*.whl
+            $(find . -name "*.whl")
