@@ -261,7 +261,7 @@ struct Service::Impl : public Service::Controller
     std::list<DataSource::Ptr> addOnDataSources_;
 
     std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
-    std::map<std::string, DataSource::Ptr> dataSourceConfigs_;
+    std::vector<DataSource::Ptr> dataSourcesFromConfig_;
 
     explicit Impl(Cache::Ptr cache, bool useDataSourceConfig) : Controller(std::move(cache))
     {
@@ -270,56 +270,26 @@ struct Service::Impl : public Service::Controller
         configSubscription_ = DataSourceConfigService::get().subscribe(
             [this](auto&& dataSourceConfigNodes)
             {
-                log().debug("Config changed. Scanning for datasource changes...");
-
-                // Deserialize datasource configurations and update service accordingly
-                std::map<std::string, YAML::Node> newConfigs;
-                for (const auto& node : dataSourceConfigNodes) {
-                    YAML::Emitter out;
-                    out << YAML::DoubleQuoted << YAML::Flow << node;
-                    std::string serializedConfig = out.c_str();
-
-                    if (!out.good()) {
-                        log().error("YAML serialization failed: {}", out.GetLastError());
-                        continue;
-                    }
-
-                    newConfigs[serializedConfig] = node;
+                // Remove previous datasources.
+                log().info("Config changed. Removing previous datasources.");
+                for (auto const& datasource : dataSourcesFromConfig_) {
+                    removeDataSource(datasource);
                 }
+                dataSourcesFromConfig_.clear();
 
-                // Remove datasources not present in the new configuration
-                auto it = dataSourceConfigs_.begin();
-                while (it != dataSourceConfigs_.end()) {
-                    if (newConfigs.find(it->first) == newConfigs.end()) {
-                        log().debug("Removing datasource with config: {}", it->first);
-                        removeDataSource(it->second);
-                        it = dataSourceConfigs_.erase(it);
+                // Add datasources present in the new configuration.
+                auto index = 0;
+                for (const auto& configNode : dataSourceConfigNodes) {
+                    auto dataSource = DataSourceConfigService::get().makeDataSource(configNode);
+                    if (dataSource) {
+                        addDataSource(dataSource);
+                        dataSourcesFromConfig_.push_back(dataSource);
                     }
                     else {
-                        ++it;
+                        log().error(
+                            "Failed to makeDataSource datasource at index {}.", index);
                     }
-                }
-
-                // Add or update datasources present in the new configuration
-                for (const auto& [configKey, configNode] : newConfigs) {
-                    if (dataSourceConfigs_.find(configKey) == dataSourceConfigs_.end()) {
-                        log().debug("Adding new datasource with config: `{}`", configKey);
-                        auto dataSource = DataSourceConfigService::get().makeDataSource(configNode);
-                        if (dataSource) {
-                            addDataSource(dataSource);
-                            dataSourceConfigs_[configKey] = dataSource;
-                        }
-                        else {
-                            log().error(
-                                "Failed to makeDataSource datasource with config: {}",
-                                configKey);
-                        }
-                    }
-                    else {
-                        log().debug(
-                            "Datasource already exists, no update required for config: {}",
-                            configKey);
-                    }
+                    ++index;
                 }
             });
     }

@@ -72,7 +72,7 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
     DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
 
     // Initial empty configuration
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []" << std::endl;
@@ -81,7 +81,7 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
     REQUIRE(service.info().empty());
 
     // Adding a datasource
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << R"(
@@ -95,7 +95,7 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
     REQUIRE(dataSourceInfos[0].mapId_ == "Catan");
 
     // Removing the datasource
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []";
@@ -106,6 +106,6 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
     // Cleanup
     fs::remove_all(tempDir);
     // Wait for "The config file disappeared" message :)
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
     DataSourceConfigService::get().end();
 }
