@@ -22,6 +22,8 @@ DataSourceConfigService::Subscription::~Subscription()
     DataSourceConfigService::get().unsubscribe(id_);
 }
 
+DataSourceConfigService::Subscription::Subscription(uint32_t id) : id_(id) {}
+
 std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::subscribe(
     std::function<void(std::vector<YAML::Node> const&)> const& callback)
 {
@@ -31,8 +33,7 @@ std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::
     }
 
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    auto sub = std::make_unique<Subscription>();
-    sub->id_ = nextSubscriptionId_++;
+    auto sub = std::make_unique<Subscription>(nextSubscriptionId_++);
     subscriptions_[sub->id_] = callback;
     // Optionally, trigger the callback with the current configuration immediately
     if (!currentConfig_.empty()) {

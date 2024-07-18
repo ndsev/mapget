@@ -280,8 +280,7 @@ struct Service::Impl : public Service::Controller
                 // Add datasources present in the new configuration.
                 auto index = 0;
                 for (const auto& configNode : dataSourceConfigNodes) {
-                    auto dataSource = DataSourceConfigService::get().makeDataSource(configNode);
-                    if (dataSource) {
+                    if (auto dataSource = DataSourceConfigService::get().makeDataSource(configNode)) {
                         addDataSource(dataSource);
                         dataSourcesFromConfig_.push_back(dataSource);
                     }

@@ -18,10 +18,14 @@ namespace mapget
 namespace
 {
 
-class ConfigYAML : public CLI::Config {
+class ConfigYAML : public CLI::Config
+{
 public:
-    std::string to_config(const CLI::App *app, bool default_also, bool, std::string) const override {
-        std::string config_path = app->get_config_ptr() ? app->get_config_ptr()->as<std::string>() : "config.yaml";
+    std::string to_config(const CLI::App* app, bool defaultAlso, bool, std::string) const override
+    {
+        std::string config_path = app->get_config_ptr() ?
+            app->get_config_ptr()->as<std::string>() :
+            "config.yaml";
         std::ifstream ifs(config_path);
         YAML::Node root = ifs ? YAML::Load(ifs) : YAML::Node();
 
@@ -29,7 +33,7 @@ public:
         auto mapgetNode = root["mapget"] = YAML::Node(YAML::NodeType::Map);
 
         // Process current app configuration into 'mapget' node
-        _to_yaml(mapgetNode, app, default_also);
+        toYaml(mapgetNode, app, defaultAlso);
 
         // Output the YAML content as a formatted string
         std::stringstream ss;
@@ -37,8 +41,9 @@ public:
         return ss.str();
     }
 
-    void _to_yaml(YAML::Node root, const CLI::App *app, bool default_also) const {
-        for (const CLI::Option *opt : app->get_options({})) {
+    void toYaml(YAML::Node root, const CLI::App* app, bool defaultAlso) const
+    {
+        for (const CLI::Option* opt : app->get_options({})) {
             if (!opt->get_lnames().empty() && opt->get_configurable()) {
                 std::string name = opt->get_lnames()[0];
 
@@ -47,49 +52,55 @@ public:
                         root[name] = opt->results().at(0);
                     else if (opt->count() > 0)
                         root[name] = opt->results();
-                    else if (default_also && !opt->get_default_str().empty())
+                    else if (defaultAlso && !opt->get_default_str().empty())
                         root[name] = opt->get_default_str();
                 }
                 else if (opt->count()) {
                     root[name] = opt->count() > 1 ? YAML::Node(opt->count()) : YAML::Node(true);
                 }
                 else {
-                    root[name] = default_also ? YAML::Node(false) : YAML::Node();
+                    root[name] = defaultAlso ? YAML::Node(false) : YAML::Node();
                 }
             }
         }
 
-        for (const CLI::App *subcom : app->get_subcommands({}))
-            _to_yaml(root[subcom->get_name()], subcom, default_also);
+        for (const CLI::App* subcom : app->get_subcommands({}))
+            toYaml(root[subcom->get_name()], subcom, defaultAlso);
     }
 
-    std::vector<CLI::ConfigItem> from_config(std::istream &input) const override {
+    std::vector<CLI::ConfigItem> from_config(std::istream& input) const override
+    {
         YAML::Node root = YAML::Load(input);
         YAML::Node mapgetNode = root["mapget"];
-        return mapgetNode ? _from_yaml(mapgetNode) : std::vector<CLI::ConfigItem>();
+        return mapgetNode ? fromYaml(mapgetNode) : std::vector<CLI::ConfigItem>();
     }
 
-    [[nodiscard]] std::vector<CLI::ConfigItem> _from_yaml(const YAML::Node &node, const std::string &name = "", const std::vector<std::string> &prefix = {}) const {
+    [[nodiscard]] std::vector<CLI::ConfigItem> fromYaml(
+        const YAML::Node& node,
+        const std::string& name = "",
+        const std::vector<std::string>& prefix = {}) const
+    {
         std::vector<CLI::ConfigItem> results;
 
         if (node.IsMap()) {
-            for (const auto &item : node) {
+            for (const auto& item : node) {
                 auto copy_prefix = prefix;
                 if (!name.empty()) {
                     copy_prefix.push_back(name);
                 }
-                auto sub_results = _from_yaml(item.second, item.first.as<std::string>(), copy_prefix);
+                auto sub_results = fromYaml(item.second, item.first.as<std::string>(), copy_prefix);
                 results.insert(results.end(), sub_results.begin(), sub_results.end());
             }
-        } else if (!name.empty()) {
-            results.emplace_back();
-            CLI::ConfigItem &res = results.back();
+        }
+        else if (!name.empty()) {
+            CLI::ConfigItem& res = results.emplace_back();
             res.name = name;
             res.parents = prefix;
             if (node.IsScalar()) {
                 res.inputs = {node.as<std::string>()};
-            } else if (node.IsSequence()) {
-                for (const auto &val : node) {
+            }
+            else if (node.IsSequence()) {
+                for (const auto& val : node) {
                     res.inputs.push_back(val.as<std::string>());
                 }
             }
@@ -117,7 +128,7 @@ void registerDefaultDatasourceTypes() {
             else
                 throw std::runtime_error("Missing `cmd` field.");
         });
-};
+}
 
 }
 
@@ -192,7 +203,7 @@ struct ServeCommand
             watchConfig = true;
             registerDefaultDatasourceTypes();
             DataSourceConfigService::get().setConfigFilePath(config->as<std::string>());
-        };
+        }
 
         HttpService srv(cache, watchConfig);
 

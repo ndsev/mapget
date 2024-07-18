@@ -1,21 +1,24 @@
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
-#include <chrono>
-#include <atomic>
+#include <mutex>
 
-#include "mapget/service/service.h"
-#include "mapget/service/datasource.h"
-#include "mapget/service/config.h"
 #include "mapget/log.h"
+#include "mapget/service/config.h"
+#include "mapget/service/datasource.h"
 #include "mapget/service/memcache.h"
+#include "mapget/service/service.h"
 
 namespace fs = std::filesystem;
 using namespace mapget;
 
 struct TestDataSource : public DataSource
 {
-    DataSourceInfo info() override {
+    DataSourceInfo info() override
+    {
         return DataSourceInfo::fromJson(R"(
         {
             "mapId": "Catan",
@@ -27,19 +30,26 @@ struct TestDataSource : public DataSource
     void fill(TileFeatureLayer::Ptr const& featureTile) override {};
 };
 
-std::string generateTimestampedDirectoryName(const std::string& baseName) {
+std::string generateTimestampedDirectoryName(const std::string& baseName)
+{
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     return baseName + "_" + std::to_string(millis);
 }
 
-void waitForUpdate(std::atomic<bool>& flag, std::chrono::seconds timeout) {
-    auto start = std::chrono::steady_clock::now();
-    while (!flag.load() && std::chrono::steady_clock::now() - start < timeout) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+void waitForUpdate(
+    std::condition_variable& cv,
+    std::mutex& mtx,
+    std::atomic<bool>& flag,
+    std::chrono::seconds timeout)
+{
+    std::unique_lock<std::mutex> lock(mtx);
+    if (flag.load()) {
+        flag.store(false);  // Reset flag for next wait
+        return;
     }
-    if (!flag.load()) {
+    if (!cv.wait_for(lock, timeout, [&] { return flag.load(); })) {
         throw std::runtime_error("Timeout waiting for configuration update.");
     }
     flag.store(false);  // Reset flag for next wait
@@ -55,18 +65,26 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
 
     DataSourceConfigService::get().registerDataSourceType(
         "TestDataSource",
-        [](const YAML::Node& config) -> DataSource::Ptr { return std::make_shared<TestDataSource>(); });
+        [](const YAML::Node& config) -> DataSource::Ptr
+        { return std::make_shared<TestDataSource>(); });
 
     auto cache = std::make_shared<MemCache>();
     Service service(cache, true);
     REQUIRE(service.info().empty());
 
     std::atomic<bool> updateOccurred(false);
+    std::condition_variable cv;
+    std::mutex mtx;
 
     auto subscription = DataSourceConfigService::get().subscribe(
-        [&](auto&&) {
+        [&](auto&&)
+        {
             log().debug("Configuration update detected.");
-            updateOccurred.store(true);
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                updateOccurred.store(true);
+            }
+            cv.notify_all();
         });
 
     DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
@@ -77,7 +95,7 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []" << std::endl;
     }
-    waitForUpdate(updateOccurred, std::chrono::seconds(5));
+    waitForUpdate(cv, mtx, updateOccurred, std::chrono::seconds(5));
     REQUIRE(service.info().empty());
 
     // Adding a datasource
@@ -89,7 +107,7 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
           - type: TestDataSource
         )" << std::endl;
     }
-    waitForUpdate(updateOccurred, std::chrono::seconds(5));
+    waitForUpdate(cv, mtx, updateOccurred, std::chrono::seconds(5));
     auto dataSourceInfos = service.info();
     REQUIRE(dataSourceInfos.size() == 1);
     REQUIRE(dataSourceInfos[0].mapId_ == "Catan");
@@ -100,7 +118,7 @@ TEST_CASE("Load Config From File", "[DataSourceConfig]")
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []";
     }
-    waitForUpdate(updateOccurred, std::chrono::seconds(5));
+    waitForUpdate(cv, mtx, updateOccurred, std::chrono::seconds(5));
     REQUIRE(service.info().empty());
 
     // Cleanup

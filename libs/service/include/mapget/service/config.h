@@ -44,9 +44,15 @@ public:
          * Destructor that ensures unsubscription.
          */
         ~Subscription();
+        Subscription(Subscription const& other) = delete;
+        Subscription(Subscription&& other) = default;
+        Subscription& operator= (Subscription const& other) = delete;
 
     private:
+        explicit Subscription(uint32_t id);
         uint32_t id_ = 0;
+
+        friend std::unique_ptr<Subscription> std::make_unique<Subscription>(uint32_t&&);
         friend class DataSourceConfigService;
     };
 
