@@ -55,7 +55,7 @@ TEST_CASE("Mapget Config", "[MapgetConfig]")
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: [" << std::endl;
-        REQUIRE(mapget::runFromCommandLine(std::vector<std::string>{std::string("--config"), tempConfigPath}) == 1);
+        REQUIRE(mapget::runFromCommandLine({std::string("--config"), tempConfigPath.string()}) == 1);
     }
 
     SECTION("Good Config")
@@ -65,7 +65,7 @@ TEST_CASE("Mapget Config", "[MapgetConfig]")
         sources:
           - type: TestDataSource
         )" << std::endl;
-        REQUIRE(mapget::runFromCommandLine(std::vector<std::string>{std::string("--config"), tempConfigPath}, false) == 0);
+        REQUIRE(mapget::runFromCommandLine({std::string("--config"), tempConfigPath.string()}, false) == 0);
     }
 }
 
