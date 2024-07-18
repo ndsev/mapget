@@ -4,5 +4,5 @@
 #include <string>
 
 namespace mapget {
-    int runFromCommandLine(std::vector<std::string> args);
+    int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand = true);
 }

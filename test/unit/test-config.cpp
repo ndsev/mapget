@@ -55,7 +55,33 @@ void waitForUpdate(
     flag.store(false);  // Reset flag for next wait
 }
 
-TEST_CASE("Load Config From File", "[DataSourceConfig]")
+TEST_CASE("Mapget Config", "[MapgetConfig]")
+{
+    auto tempDir = fs::temp_directory_path() / generateTimestampedDirectoryName("mapget_test");
+    fs::create_directory(tempDir);
+    auto tempConfigPath = tempDir / "temp_config.yaml";
+
+    SECTION("Bad Config")
+    {
+        std::ofstream out(tempConfigPath, std::ios_base::trunc);
+        out << "sources: [" << std::endl;
+        REQUIRE(mapget::runFromCommandLine({
+            "--config", tempConfigPath
+        }) == 1);
+    }
+
+    SECTION("Good Config")
+    {
+        std::ofstream out(tempConfigPath, std::ios_base::trunc);
+        out << R"(
+        sources:
+          - type: TestDataSource
+        )" << std::endl;
+        REQUIRE(mapget::runFromCommandLine({"--config", tempConfigPath}, false) == 0);
+    }
+}
+
+TEST_CASE("Datasource Config", "[DataSourceConfig]")
 {
     setLogLevel("trace", log());
 

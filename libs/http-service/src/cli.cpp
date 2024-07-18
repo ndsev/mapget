@@ -314,7 +314,7 @@ struct FetchCommand
     }
 };
 
-int runFromCommandLine(std::vector<std::string> args)
+int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     std::string log_level_;
@@ -329,7 +329,8 @@ int runFromCommandLine(std::vector<std::string> args)
         "Optional path to a file with configuration arguments for mapget.");
     app.config_formatter(std::make_shared<ConfigYAML>());
 
-    app.require_subcommand(1);
+    if (requireSubcommand)
+        app.require_subcommand(1);
 
     if (!log_level_.empty()) {
         mapget::setLogLevel(log_level_, log());
