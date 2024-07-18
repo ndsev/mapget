@@ -70,9 +70,14 @@ public:
 
     std::vector<CLI::ConfigItem> from_config(std::istream& input) const override
     {
-        YAML::Node root = YAML::Load(input);
-        YAML::Node mapgetNode = root["mapget"];
-        return mapgetNode ? fromYaml(mapgetNode) : std::vector<CLI::ConfigItem>();
+        try {
+            YAML::Node root = YAML::Load(input);
+            YAML::Node mapgetNode = root["mapget"];
+            return mapgetNode ? fromYaml(mapgetNode) : std::vector<CLI::ConfigItem>();
+        }
+        catch (YAML::ParserException const& e) {
+            raise(fmt::format("Failed to parse config file! Error: {}", e.what()));
+        }
     }
 
     [[nodiscard]] std::vector<CLI::ConfigItem> fromYaml(
