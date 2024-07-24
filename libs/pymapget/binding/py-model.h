@@ -22,16 +22,22 @@ struct BoundModelNode
 
     virtual ModelNode::Ptr node() = 0;
 
-    TileFeatureLayer::Ptr model()
+    TileFeatureLayer& featureLayer()
     {
         struct GetTileFeatureLayer : public simfil::ModelNode {
             explicit GetTileFeatureLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
-            TileFeatureLayer::Ptr operator()() {
+            auto operator()() {
                 return std::dynamic_pointer_cast<TileFeatureLayer>(
                     std::const_pointer_cast<simfil::Model>(model_));
             }
         };
-        return GetTileFeatureLayer(*node())();
+        if (auto n = node()) {
+            if (auto ptr = GetTileFeatureLayer(*n)())
+                return *ptr;
+            else
+                throw pybind11::type_error("Unexpected model type");
+        }
+        throw pybind11::value_error("Node is NULL");
     }
 };
 
@@ -130,7 +136,7 @@ struct BoundObject : public BoundModelNode
             "add_field",
             [](ObjClass& self, std::string_view const& name, py::object const& py_value)
             {
-                auto vv = pyValueToModel(py_value, *self.model());
+                auto vv = pyValueToModel(py_value, self.featureLayer());
                 std::visit(
                     [&self, &name](auto&& value)
                     {
@@ -175,7 +181,7 @@ struct BoundArray : public BoundModelNode
             .def(
                 "append",
                 [](BoundArray& self, py::object const& py_value) {
-                    auto vv = pyValueToModel(py_value, *self.model());
+                    auto vv = pyValueToModel(py_value, self.featureLayer());
                     std::visit([&self](auto&& value) { self.modelNodePtr_->append(value); }, vv);
                 },
                 py::arg("value"),
