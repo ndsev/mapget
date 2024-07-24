@@ -1,6 +1,6 @@
 #pragma once
 
-#include "featurelayer.h"
+#include "layer.h"
 #include "fields.h"
 
 #include <map>
@@ -11,13 +11,13 @@ namespace mapget
 {
 
 /**
- * Protocol for binary streaming of TileFeatureLayer and associated
+ * Protocol for binary streaming of TileLayer and associated
  * Fields dictionary objects. The general stream encoding is a simple
  * Version-Type-Length-Value one:
  * - The version (6b) indicates the protocol version which was used to
  *   serialise the blob. This must be compatible with the current version
  *   which is used by the mapget library.
- * - The type (1B) must be either Fields (1) or TileFeatureLayer (2).
+ * - The type (1B) must be either Fields (1) or TileLayer (2).
  * - The length (4b)  indicates the byte-length of the serialized object,
  *   which is stored in the value.
  */
@@ -28,6 +28,7 @@ public:
         None = 0,
         Fields = 1,
         TileFeatureLayer = 2,
+        TileSourceDataLayer = 3,
         EndOfStream = 128
     };
 
@@ -39,7 +40,7 @@ public:
     /** Map to keep track of the highest sent field id per datasource node. */
     using FieldOffsetMap = std::map<std::string, simfil::StringId>;
 
-    /** The Reader turns bytes into TileFeatureLayer objects. */
+    /** The Reader turns bytes into TileLayer objects. */
     struct Reader
     {
         /**
@@ -50,7 +51,7 @@ public:
          */
         Reader(
             LayerInfoResolveFun layerInfoProvider,
-            std::function<void(TileFeatureLayer::Ptr)> onParsedLayer,
+            std::function<void(TileLayer::Ptr)> onParsedLayer,
             std::shared_ptr<CachedFieldsProvider> cachedFieldsProvider = nullptr);
 
         /**
@@ -88,7 +89,7 @@ public:
         std::stringstream buffer_;
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<CachedFieldsProvider> cachedFieldsProvider_;
-        std::function<void(TileFeatureLayer::Ptr)> onParsedLayer_;
+        std::function<void(TileLayer::Ptr)> onParsedLayer_;
     };
 
     /**
@@ -115,7 +116,7 @@ public:
             bool differentialFieldUpdates = true);
 
         /** Serialize a tile feature layer and the required part of a Fields cache. */
-        void write(TileFeatureLayer::Ptr const& tileFeatureLayer);
+        void write(TileLayer::Ptr const& tileLayer);
 
         /** Send an EndOfStream message. */
         void sendEndOfStream();

@@ -43,7 +43,7 @@ struct HttpService::Impl
             for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>())
                 tileIds.emplace_back(tid);
             requests_.push_back(
-                std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds), nullptr));
+                std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
         }
 
         void setResponseType(std::string const& s)
@@ -60,7 +60,7 @@ struct HttpService::Impl
             raise(fmt::format("Unknown Accept-Header value {}", responseType_));
         }
 
-        void addResult(TileFeatureLayer::Ptr const& result)
+        void addResult(TileLayer::Ptr const& result)
         {
             std::unique_lock lock(mutex_);
             log().debug("Response ready: {}", MapTileKey(*result).toString());
@@ -70,7 +70,7 @@ struct HttpService::Impl
             }
             else {
                 // JSON response
-                buffer_ << nlohmann::to_string(result->toGeoJson())+"\n";
+                buffer_ << nlohmann::to_string(result->toJson())+"\n";
             }
             resultEvent_.notify_one();
         }
@@ -106,10 +106,14 @@ struct HttpService::Impl
 
         // Process requests.
         for (auto& request : state->requests_) {
-            request->onResult_ = [state](auto&& tileFeatureLayer)
+            request->onFeatureLayer([state](auto&& layer)
             {
-                state->addResult(tileFeatureLayer);
-            };
+                state->addResult(layer);
+            });
+            request->onSourceDataLayer([state](auto&& layer)
+            {
+                state->addResult(layer);
+            });
             request->onDone_ = [state](RequestStatus r)
             {
                 state->resultEvent_.notify_one();

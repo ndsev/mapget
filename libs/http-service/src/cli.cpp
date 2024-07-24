@@ -296,11 +296,11 @@ struct FetchCommand
         auto request = std::make_shared<LayerTilesRequest>(
             map_,
             layer_,
-            std::vector<TileId>{tiles_.begin(), tiles_.end()},
-            [this](TileFeatureLayer::Ptr const& tile)
+            std::vector<TileId>{tiles_.begin(), tiles_.end()});
+        request->onFeatureLayer([this](auto const& tile)
             {
                 if (!mute_)
-                    std::cout << tile->toGeoJson().dump() << std::endl;
+                    std::cout << tile->toJson().dump() << std::endl;
                 if (tile->error())
                     raise(
                         fmt::format("Tile {}: {}", tile->id().toString(), *tile->error()));

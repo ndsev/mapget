@@ -4,6 +4,7 @@
 
 #include "point.h"
 #include "featureid.h"
+#include "sourceinfo.h"
 
 #include <cstdint>
 #include <optional>
@@ -47,6 +48,10 @@ public:
     [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
     [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
+    /** Source region */
+    void setSourceDataReference(SourceDataReference info);
+    SourceDataReference sourceDataReference() const;
 
     /** Add a point to the Geometry. */
     void append(Point const& p);
@@ -125,6 +130,8 @@ protected:
             } view_;
         } detail_;
 
+        SourceDataReference sourceDataReference_;
+
         template<typename S>
         void serialize(S& s) {
             s.value1b(isView_);
@@ -138,6 +145,7 @@ protected:
                 s.value4b(detail_.view_.size_);
                 s.object(detail_.view_.baseGeometry_);
             }
+            s.object(sourceDataReference_);
         }
     };
 
@@ -164,8 +172,8 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const FieldId&) const override;
-    [[nodiscard]] FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Adds a new Geometry to the collection and returns a reference. */
@@ -217,8 +225,8 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const FieldId &) const override;
-    [[nodiscard]] FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId &) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     Point pointAt(int64_t) const;
@@ -247,8 +255,8 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const FieldId &) const override;
-    [[nodiscard]] FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId &) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     PolygonNode() = delete;
@@ -269,8 +277,8 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const FieldId &) const override { return {}; }
-    [[nodiscard]] FieldId keyAt(int64_t) const override { return {}; }
+    [[nodiscard]] ModelNode::Ptr get(const StringId &) const override { return {}; }
+    [[nodiscard]] StringId keyAt(int64_t) const override { return {}; }
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     MeshNode() = delete;
@@ -317,8 +325,8 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const FieldId &) const override;
-    [[nodiscard]] FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId &) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     LinearRingNode() = delete;
@@ -348,8 +356,8 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const FieldId &) const override;
-    [[nodiscard]] FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId &) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     VertexNode() = delete;

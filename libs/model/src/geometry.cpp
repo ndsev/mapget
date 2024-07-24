@@ -1,6 +1,7 @@
 #include "geometry.h"
 #include "featurelayer.h"
 #include "simfil/model/nodes.h"
+#include "sourceinfo.h"
 
 #include <cassert>
 #include <cstdint>

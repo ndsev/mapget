@@ -207,43 +207,7 @@ nlohmann::json Feature::toGeoJson()
     // Ensure that properties and geometry exist
     attributes();
     geom();
-    return toJsonPrivate(*this);
-}
-
-nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)
-{
-    // We can identify geometry via its column
-    //if (n.addr().column() == TileFeatureLayer::Geometries) {
-    //    return model().resolveGeometry(n)->toGeoJson();
-    //}
-    
-    if (n.type() == simfil::ValueType::Object) {
-        auto j = nlohmann::json::object();
-        for (const auto& [fieldId, childNode] : n.fields()) {
-            if (auto resolvedField = model().fieldNames()->resolve(fieldId))
-                j[*resolvedField] = toJsonPrivate(*childNode);
-        }
-        return j;
-    }
-    else if (n.type() == simfil::ValueType::Array) {
-        auto j = nlohmann::json::array();
-        for (const auto& i : n)
-            j.push_back(toJsonPrivate(*i));
-        return j;
-    }
-    else {
-        nlohmann::json j;
-        std::visit(
-            [&j](auto&& v)
-            {
-                if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>)
-                    j = v;
-                else
-                    j = nullptr;
-            },
-            n.value());
-        return j;
-    }
+    return toJson();
 }
 
 void Feature::addPoint(const Point& p) {

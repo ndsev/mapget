@@ -281,7 +281,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         std::vector<TileFeatureLayer::Ptr> readTiles;
         TileLayerStream::Reader reader{
             [&](auto&& mapId, auto&& layerId) { return layerInfo; },
-            [&](auto&& layerPtr) { readTiles.push_back(layerPtr); },
+            [&](auto&& layerPtr) {
+                if (auto featureLayer = std::dynamic_pointer_cast<TileFeatureLayer>(layerPtr))
+                    readTiles.push_back(featureLayer);
+            },
         };
 
         // Reading an empty buffer should not result in any tiles.

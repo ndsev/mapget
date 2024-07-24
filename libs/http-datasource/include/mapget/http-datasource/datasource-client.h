@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mapget/model/sourcedatalayer.h"
+#include "mapget/model/featurelayer.h"
 #include "mapget/service/datasource.h"
 #include "httplib.h"
 
@@ -34,7 +36,8 @@ public:
     // DataSource method overrides
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
-    TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    void fill(TileSourceDataLayer::Ptr const& blobTile) override;
+    TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
     std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:
@@ -72,7 +75,8 @@ public:
     // DataSource method overrides
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
-    TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    void fill(TileSourceDataLayer::Ptr const& sourceDataLayer) override;
+    TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
     std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:

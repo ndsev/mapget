@@ -4,9 +4,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <memory>
 
 #include "mapget/http-service/cli.h"
 #include "mapget/log.h"
+#include "mapget/model/featurelayer.h"
+#include "mapget/model/info.h"
 #include "mapget/service/rocksdbcache.h"
 
 using namespace mapget;
@@ -116,6 +119,16 @@ TEST_CASE("RocksDBCache", "[Cache]")
     s.value4b((uint32_t)serializedFields.str().size());
     serializedMessage << serializedFields.str();
 
+    auto getFeatureLayer = [](auto& cache, auto tileId, auto info) {
+        auto layer = cache->getTileLayer(tileId, info);
+        REQUIRE(!!layer);
+
+        auto layerInfo = layer->layerInfo();
+        REQUIRE(!!layerInfo);
+        REQUIRE(layerInfo->type_ == mapget::LayerType::Features);
+        return std::static_pointer_cast<TileFeatureLayer>(layer);
+    };
+
     SECTION("Insert, retrieve, and update feature layer") {
         // Open or create cache, clear any existing data.
         auto cache = std::make_shared<mapget::RocksDBCache>(
@@ -123,21 +136,21 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
         REQUIRE(fieldDictCount == 0);
 
-        // putTileFeatureLayer triggers both putTileLayerBlob and putFieldsBlob.
-        cache->putTileFeatureLayer(tile);
-        auto returnedTile = cache->getTileFeatureLayer(tile->id(), info);
+        // putTileLayer triggers both putTileLayerBlob and putFieldsBlob.
+        cache->putTileLayer(tile);
+        auto returnedTile = getFeatureLayer(cache, tile->id(), info);
         fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
         REQUIRE(fieldDictCount == 1);
 
         // Update a tile, check that cache returns the updated version.
         REQUIRE(returnedTile->size() == 0);
         auto feature = tile->newFeature("Way", {{"areaId", "MediocreArea"}, {"wayId", 24}});
-        cache->putTileFeatureLayer(tile);
-        auto updatedTile = cache->getTileFeatureLayer(tile->id(), info);
+        cache->putTileLayer(tile);
+        auto updatedTile = getFeatureLayer(cache, tile->id(), info);
         REQUIRE(updatedTile->size() == 1);
 
         // Check that cache hits and misses are properly recorded.
-        auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        auto missingTile = cache->getTileLayer(otherTile->id(), otherInfo);
         REQUIRE(cache->getStatistics()["cache-hits"] == 2);
         REQUIRE(cache->getStatistics()["cache-misses"] == 1);
     }
@@ -150,17 +163,17 @@ TEST_CASE("RocksDBCache", "[Cache]")
         REQUIRE(fieldDictCount == 1);
 
         // Add a tile to trigger cache cleaning.
-        cache->putTileFeatureLayer(otherTile);
+        cache->putTileLayer(otherTile);
 
-        auto returnedTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        auto returnedTile = getFeatureLayer(cache, otherTile->id(), otherInfo);
         REQUIRE(returnedTile->nodeId() == otherTile->nodeId());
 
-        // Field dicts are updated with getTileFeatureLayer.
+        // Field dicts are updated with getTileLayer.
         fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
         REQUIRE(fieldDictCount == 2);
 
         // Query the first inserted layer - it should not be retrievable.
-        auto missingTile = cache->getTileFeatureLayer(tile->id(), info);
+        auto missingTile = cache->getTileLayer(tile->id(), info);
         REQUIRE(cache->getStatistics()["cache-misses"] == 1);
         REQUIRE(!missingTile);
     }
@@ -170,10 +183,10 @@ TEST_CASE("RocksDBCache", "[Cache]")
             0, "mapget-cache", false);
 
         // Insert another tile for the next test.
-        cache->putTileFeatureLayer(tile);
+        cache->putTileLayer(tile);
 
         // Make sure the previous tile is still there, since cache is unlimited.
-        auto olderTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        auto olderTile = cache->getTileLayer(otherTile->id(), otherInfo);
         REQUIRE(cache->getStatistics()["cache-misses"] == 0);
         REQUIRE(cache->getStatistics()["cache-hits"] == 1);
     }
@@ -184,7 +197,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         REQUIRE(cache->getStatistics()["cache-misses"] == 0);
 
         // Query the first inserted layer - it should not be retrievable.
-        auto missingTile = cache->getTileFeatureLayer(otherTile->id(), otherInfo);
+        auto missingTile = cache->getTileLayer(otherTile->id(), otherInfo);
         REQUIRE(cache->getStatistics()["cache-misses"] == 1);
     }
 

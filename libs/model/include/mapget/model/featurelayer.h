@@ -178,6 +178,7 @@ public:
     void write(std::ostream& outputStream) override;
 
     /** Convert to GeoJSON geometry collection. */
+    nlohmann::json toJson() const override;
     nlohmann::json toGeoJson() const;
 
     /** Access number of stored features */

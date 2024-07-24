@@ -60,16 +60,16 @@ nlohmann::json Cache::getStatistics() const {
     };
 }
 
-TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
+TileLayer::Ptr Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
 {
     auto tileBlob = getTileLayerBlob(tileKey);
     if (!tileBlob) {
         ++cacheMisses_;
         return nullptr;
     }
-    TileFeatureLayer::Ptr result;
+    TileLayer::Ptr result;
     TileLayerStream::Reader tileReader(
-        [&dataSource, &tileKey](auto&& mapId, auto&& layerId){
+        [&dataSource, &tileKey](auto&& mapId, auto&& layerId) {
             if (dataSource.mapId_ != mapId) {
                 raiseFmt(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
@@ -88,13 +88,14 @@ TileFeatureLayer::Ptr Cache::getTileFeatureLayer(const MapTileKey& tileKey, Data
     return result;
 }
 
-void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
+void Cache::putTileLayer(TileLayer::Ptr const& l)
 {
     std::unique_lock fieldsOffsetLock(fieldCacheOffsetMutex_);
     TileLayerStream::Writer tileWriter(
         [&l, this](auto&& msg, auto&& msgType)
         {
-            if (msgType == TileLayerStream::MessageType::TileFeatureLayer)
+            if (msgType == TileLayerStream::MessageType::TileFeatureLayer ||
+                msgType == TileLayerStream::MessageType::TileSourceDataLayer)
                 putTileLayerBlob(MapTileKey(*l), msg);
             else if (msgType == TileLayerStream::MessageType::Fields)
                 putFieldsBlob(l->nodeId(), msg);

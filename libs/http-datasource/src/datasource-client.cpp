@@ -1,4 +1,5 @@
 #include "datasource-client.h"
+#include "mapget/model/sourcedatalayer.h"
 #include "process.hpp"
 #include "mapget/log.h"
 
@@ -40,7 +41,13 @@ void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
     featureTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
 }
 
-TileFeatureLayer::Ptr
+void RemoteDataSource::fill(const TileSourceDataLayer::Ptr& blobTile)
+{
+    // If we get here, an error occurred.
+    blobTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
+}
+
+TileLayer::Ptr
 RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceInfo& info)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
@@ -56,7 +63,7 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     // Check that the response is OK.
     if (!tileResponse || tileResponse->status >= 300) {
         // Forward to base class get(). This will instantiate a
-        // default TileFeatureLayer and call fill(). In our implementation
+        // default TileLayer and call fill(). In our implementation
         // of fill, we set an error.
 
         if (tileResponse) {
@@ -80,7 +87,7 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     }
 
     // Check the response body for expected content.
-    TileFeatureLayer::Ptr result;
+    TileLayer::Ptr result;
     TileLayerStream::Reader reader(
         [&](auto&& mapId, auto&& layerId) { return info.getLayer(std::string(layerId)); },
         [&](auto&& tile) { result = tile; },
@@ -206,7 +213,14 @@ void RemoteDataSourceProcess::fill(TileFeatureLayer::Ptr const& featureTile)
     remoteSource_->fill(featureTile);
 }
 
-TileFeatureLayer::Ptr
+void RemoteDataSourceProcess::fill(TileSourceDataLayer::Ptr const& sourceDataLayer)
+{
+    if (!remoteSource_)
+        raise("Remote data source is not initialized.");
+    remoteSource_->fill(sourceDataLayer);
+}
+
+TileLayer::Ptr
 RemoteDataSourceProcess::get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info)
 {
     if (!remoteSource_)

@@ -1,8 +1,15 @@
 #include "service.h"
-#include "locate.h"
-#include "mapget/log.h"
-#include "config.h"
 
+#include "fmt/format.h"
+#include "locate.h"
+#include "config.h"
+#include "mapget/log.h"
+#include "mapget/model/sourcedatalayer.h"
+#include "mapget/model/featurelayer.h"
+#include "mapget/model/info.h"
+#include "mapget/model/layer.h"
+
+#include <memory>
 #include <optional>
 #include <set>
 #include <atomic>
@@ -16,12 +23,10 @@ namespace mapget
 LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
-    std::vector<TileId> tiles,
-    std::function<void(TileFeatureLayer::Ptr)> onResult)
+    std::vector<TileId> tiles)
     : mapId_(std::move(mapId)),
       layerId_(std::move(layerId)),
-      tiles_(std::move(tiles)),
-      onResult_(std::move(onResult))
+      tiles_(std::move(tiles))
 {
     if (tiles_.empty()) {
         // An empty request is always set to success, but the client/service
@@ -30,9 +35,22 @@ LayerTilesRequest::LayerTilesRequest(
     }
 }
 
-void LayerTilesRequest::notifyResult(TileFeatureLayer::Ptr r) {
-    if (onResult_)
-        onResult_(std::move(r));
+void LayerTilesRequest::notifyResult(TileLayer::Ptr r) {
+    const auto type = r->layerInfo()->type_;
+    switch (type) {
+    case mapget::LayerType::Features:
+        if (onFeatureLayer_)
+            onFeatureLayer_(std::move(std::static_pointer_cast<mapget::TileFeatureLayer>(r)));
+        break;
+    case mapget::LayerType::SourceData:
+        if (onSourceDataLayer_)
+            onSourceDataLayer_(std::move(std::static_pointer_cast<mapget::TileSourceDataLayer>(r)));
+        break;
+    default:
+        mapget::log().error(fmt::format("Unhandled layer type {}, no matching callback!", static_cast<int>(type)));
+        break;
+    }
+
     ++resultCount_;
     if (resultCount_ == tiles_.size()) {
         setStatus(RequestStatus::Success);
@@ -136,7 +154,7 @@ struct Service::Controller
                     result->first.tileId_ = tileId;
 
                     // Cache lookup.
-                    auto cachedResult = cache_->getTileFeatureLayer(result->first, i);
+                    auto cachedResult = cache_->getTileLayer(result->first, i);
                     if (cachedResult) {
                         // TODO: Consider TTL.
                         log().debug("Serving cached tile: {}", result->first.toString());
@@ -150,7 +168,7 @@ struct Service::Controller
                         // Don't work on something that is already being worked on.
                         // Wait for the work to finish, then send the (hopefully cached) result.
                         log().debug("Delaying tile with job in progress: {}",
-                                     result->first.toString());
+                                    result->first.toString());
                         --request->nextTileIndex_;
                         result.reset();
                         continue;
@@ -228,26 +246,30 @@ struct Service::Worker
 
         try
         {
-            auto result = dataSource_->get(mapTileKey, controller_.cache_, info_);
-            if (!result)
+            auto layer = dataSource_->get(mapTileKey, controller_.cache_, info_);
+            if (!layer)
                 raise("DataSource::get() returned null.");
 
-            controller_.loadAddOnTiles(result, *dataSource_);
+            // Special FeatureLayer handling
+            if (layer->layerInfo()->type_ == LayerType::Features) {
+                controller_.loadAddOnTiles(std::static_pointer_cast<TileFeatureLayer>(layer), *dataSource_);
+            }
+
+            controller_.cache_->putTileLayer(layer);
 
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
-                controller_.cache_->putTileFeatureLayer(result);
                 controller_.jobsInProgress_.erase(mapTileKey);
-                request->notifyResult(result);
+                request->notifyResult(layer);
                 // As we entered a tile into the cache, notify other workers
                 // that this tile can be served.
                 controller_.jobsAvailable_.notify_all();
             }
         }
         catch (std::exception& e) {
-		log().error("Could not load tile {}: {}",
-				mapTileKey.toString(),
-				e.what());
+            log().error("Could not load tile {}: {}",
+                mapTileKey.toString(),
+                e.what());
         }
 
         return true;
@@ -414,13 +436,27 @@ struct Service::Impl : public Service::Controller
     void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) override {
         for (auto const& auxDataSource : addOnDataSources_) {
             if (auxDataSource->info().mapId_ == baseTile->mapId()) {
-                auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
+                auto auxTile = [&]() -> TileFeatureLayer::Ptr
+                {
+                    auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
+                    if (!auxTile) {
+                        log().warn("auxDataSource returned null for {}", baseTile->id().toString());
+                        return {};
+                    }
+                    if (auxTile->error()) {
+                        log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *auxTile->error());
+                        return {};
+                    }
+                    if (auxTile->layerInfo()->type_ != LayerType::Features) {
+                        log().warn("Addon tile is not a feature layer");
+                        return {};
+                    }
+
+                    return std::static_pointer_cast<TileFeatureLayer>(auxTile);
+                }();
+
                 if (!auxTile) {
-                    log().warn("auxDataSource returned null for {}", baseTile->id().toString());
-                    continue;
-                }
-                if (auxTile->error()) {
-                    log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *auxTile->error());
+                    // Error messages have been generated above.
                     continue;
                 }
 

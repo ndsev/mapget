@@ -26,13 +26,13 @@ public:
     // they forward to the virtual methods on-demand.
 
     /**
-     * Used by DataSource to upsert a cached TileFeatureLayer.
+     * Used by DataSource to upsert a cached TileLayer.
      * Triggers putTileLayerBlob and putFieldsBlob internally.
      */
-    void putTileFeatureLayer(TileFeatureLayer::Ptr const& l);
+    void putTileLayer(TileLayer::Ptr const& l);
 
-    /** Used by DataSource to retrieve a cached TileFeatureLayer. */
-    TileFeatureLayer::Ptr getTileFeatureLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
+    /** Used by DataSource to retrieve a cached TileLayer. */
+    TileLayer::Ptr getTileLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
 
     /** Override for CachedFieldsProvider::getFieldDict() */
     std::shared_ptr<Fields> getFieldDict(std::string_view const&) override;

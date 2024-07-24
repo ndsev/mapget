@@ -79,6 +79,8 @@ struct MapTileKey
 class TileLayer
 {
 public:
+    using Ptr = std::shared_ptr<TileLayer>;
+
     /**
      * Constructor that takes tileId_, nodeId_, mapId_, layerInfo_,
      * and sets the timestamp_ to the current system time.
@@ -97,6 +99,8 @@ public:
     TileLayer(
         std::istream& inputStream,
         LayerInfoResolveFun const& layerInfoResolveFun);
+
+    virtual ~TileLayer() = default;
 
     /** Get a global identifier for this tile layer. */
     [[nodiscard]] MapTileKey id() const;
@@ -165,19 +169,20 @@ public:
     [[nodiscard]] nlohmann::json info() const;
     void setInfo(std::string const& k, nlohmann::json const& v);
 
+    /** Serialization */
+    virtual void write(std::ostream& outputStream);
+    virtual nlohmann::json toJson() const;
+
 protected:
     Version mapVersion_{0, 0, 0};
     TileId tileId_;
-    std::string nodeId_;
+    std::string nodeId_; // Identifier of the field dictionary/datasource instance
     std::string mapId_;
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;
     std::chrono::time_point<std::chrono::system_clock> timestamp_;
     std::optional<std::chrono::milliseconds> ttl_;
     nlohmann::json info_;
-
-    /** Serialization */
-    void write(std::ostream& outputStream);
 };
 
 }
