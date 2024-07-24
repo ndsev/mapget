@@ -16,6 +16,12 @@ namespace mapget
 {
 
 /**
+ * Callback type for a function which returns a field name cache instance
+ * for a given node identifier.
+ */
+using FieldNameResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
+
+/**
  * Callback type for a function which returns a layer info pointer for
  * a given (map-name, layer-name) combination.
  */

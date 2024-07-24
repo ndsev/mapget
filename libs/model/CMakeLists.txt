@@ -27,8 +27,9 @@ add_library(mapget-model STATIC
   src/relation.cpp
   src/stream.cpp
   src/geometry.cpp
+  src/point.cpp
   src/simfil-geometry.cpp
-  src/point.cpp)
+  src/simfilutil.cpp)
 
 target_include_directories(mapget-model
   PUBLIC

@@ -15,12 +15,6 @@ namespace mapget
 {
 
 /**
- * Callback type for a function which returns a field name cache instance
- * for a given node identifier.
- */
-using FieldNameResolveFun = std::function<std::shared_ptr<Fields>(std::string_view const&)>;
-
-/**
  * The TileFeatureLayer class represents a specific map layer
  * within a map tile. It is a container for map features.
  * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
@@ -200,14 +194,10 @@ public:
     using Ptr = std::shared_ptr<TileFeatureLayer>;
 
     /**
-     * Get this pool's simfil evaluation environment.
+     * Evaluate a (potentially cached) simfil query on this pool
      */
-    simfil::Environment& evaluationEnvironment();
-
-    /**
-     * Get a potentially cached compiled simfil expression for a simfil string.
-     */
-    simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
+    std::vector<simfil::Value> evaluate(std::string_view query, size_t rootIndex = 0);
+    std::vector<simfil::Value> evaluate(std::string_view query, ModelNode const& node);
 
     /**
      * Change the string pool of this model to a different one.

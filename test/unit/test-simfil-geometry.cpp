@@ -95,10 +95,7 @@ auto makeLayer()
 #define REQUIRE_QUERY(query, type, result)              \
     do {                                                \
         auto pool = makeLayer();                        \
-        auto& env = pool->evaluationEnvironment();      \
-        auto ast = simfil::compile(env, query, false);  \
-        INFO("simfil ast: " << ast->toString());        \
-        auto res = simfil::eval(env, *ast, *pool);      \
+        auto res = pool->evaluate(query);               \
         REQUIRE(res.size() == 1);                       \
         INFO("simifil res: " << res[0].toString());     \
         REQUIRE(res[0].as<type>() == result);           \
