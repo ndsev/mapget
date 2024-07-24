@@ -12,7 +12,7 @@ using simfil::ValueType;
 using simfil::ModelNode;
 using simfil::ModelNodeAddress;
 using simfil::ModelConstPtr;
-using simfil::FieldId;
+using simfil::StringId;
 
 namespace mapget
 {
@@ -44,8 +44,8 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const FieldId&) const override;
-    [[nodiscard]] FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Add a point to the Geometry. */

@@ -30,12 +30,12 @@ Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(ElevationStr, "elevation");
 }
 
-void Fields::write(std::ostream& outputStream, simfil::FieldId offset) const
+void Fields::write(std::ostream& outputStream, simfil::StringId offset) const
 {
     // Write the node id which identifies the fields dictionary
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
-    simfil::Fields::write(outputStream, offset);
+    simfil::StringPool::write(outputStream, offset);
 }
 
 std::string Fields::readDataSourceNodeId(std::istream& inputStream) {

@@ -61,7 +61,7 @@ protected:
         Direction direction_ = Empty;
         simfil::ModelNodeAddress validity_;
         simfil::ArrayIndex fields_ = -1;
-        simfil::FieldId name_ = 0;
+        simfil::StringId name_ = 0;
 
         template<typename S>
         void serialize(S& s) {

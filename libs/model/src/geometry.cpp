@@ -43,7 +43,7 @@ uint32_t GeometryCollection::size() const {
     return 2;
 }
 
-ModelNode::Ptr GeometryCollection::get(const FieldId& f) const {
+ModelNode::Ptr GeometryCollection::get(const StringId& f) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->get(f);
     if (f == Fields::TypeStr) return at(0);
@@ -51,7 +51,7 @@ ModelNode::Ptr GeometryCollection::get(const FieldId& f) const {
     return {};
 }
 
-FieldId GeometryCollection::keyAt(int64_t i) const {
+StringId GeometryCollection::keyAt(int64_t i) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->keyAt(i);
     if (i == 0) return Fields::TypeStr;
@@ -134,16 +134,26 @@ uint32_t Geometry::size() const {
     return 2;
 }
 
-ModelNode::Ptr Geometry::get(const FieldId& f) const {
+ModelNode::Ptr Geometry::get(const StringId& f) const {
     if (f == Fields::TypeStr) return at(0);
     if (f == Fields::CoordinatesStr) return at(1);
     return {};
 }
 
-FieldId Geometry::keyAt(int64_t i) const {
+StringId Geometry::keyAt(int64_t i) const {
     if (i == 0) return Fields::TypeStr;
     if (i == 1) return Fields::CoordinatesStr;
     throw std::out_of_range("geom: Out of range.");
+}
+
+void Geometry::setSourceDataReference(SourceDataReference info)
+{
+    geomData_->sourceDataReference_ = std::move(info);
+}
+
+SourceDataReference Geometry::sourceDataReference() const
+{
+    return geomData_->sourceDataReference_;
 }
 
 void Geometry::append(Point const& p)
@@ -221,12 +231,12 @@ uint32_t PolygonNode::size() const
     return 1;
 }
 
-ModelNode::Ptr PolygonNode::get(const FieldId&) const
+ModelNode::Ptr PolygonNode::get(const StringId&) const
 {
     return {};
 }
 
-FieldId PolygonNode::keyAt(int64_t) const
+StringId PolygonNode::keyAt(int64_t) const
 {
     return {};
 }
@@ -386,12 +396,12 @@ ModelNode::Ptr LinearRingNode::at(int64_t index) const
     return buffer->at(index + offset_);
 }
 
-ModelNode::Ptr LinearRingNode::get(const FieldId&) const
+ModelNode::Ptr LinearRingNode::get(const StringId&) const
 {
     return {};
 }
 
-FieldId LinearRingNode::keyAt(int64_t) const
+StringId LinearRingNode::keyAt(int64_t) const
 {
     return {};
 }
@@ -461,11 +471,11 @@ uint32_t VertexBufferNode::size() const {
     return size_;
 }
 
-ModelNode::Ptr VertexBufferNode::get(const FieldId &) const {
+ModelNode::Ptr VertexBufferNode::get(const StringId &) const {
     return {};
 }
 
-FieldId VertexBufferNode::keyAt(int64_t) const {
+StringId VertexBufferNode::keyAt(int64_t) const {
     return {};
 }
 
@@ -518,14 +528,14 @@ uint32_t VertexNode::size() const {
     return 3;
 }
 
-ModelNode::Ptr VertexNode::get(const FieldId & field) const {
+ModelNode::Ptr VertexNode::get(const StringId & field) const {
     if (field == Fields::LonStr) return at(0);
     if (field == Fields::LatStr) return at(1);
     if (field == Fields::ElevationStr) return at(2);
     else return {};
 }
 
-FieldId VertexNode::keyAt(int64_t i) const {
+StringId VertexNode::keyAt(int64_t i) const {
     if (i == 0) return Fields::LonStr;
     if (i == 1) return Fields::LatStr;
     if (i == 2) return Fields::ElevationStr;

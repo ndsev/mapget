@@ -241,7 +241,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->mapVersion() == tile->mapVersion());
         REQUIRE(deserializedTile->info() == tile->info());
 
-        REQUIRE(deserializedTile->fieldNames() == tile->fieldNames());
+        REQUIRE(deserializedTile->strings() == tile->strings());
         for (auto feature : *deserializedTile) {
             REQUIRE(feature->id()->toString().substr(0, 16) == "Way.TheBestArea.");
         }
@@ -296,8 +296,8 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         REQUIRE(reader.eos());
         REQUIRE(readTiles.size() == 3);
-        REQUIRE(readTiles[0]->fieldNames() == readTiles[1]->fieldNames());
-        REQUIRE(readTiles[1]->fieldNames() == readTiles[2]->fieldNames());
+        REQUIRE(readTiles[0]->strings() == readTiles[1]->strings());
+        REQUIRE(readTiles[1]->strings() == readTiles[2]->strings());
         REQUIRE(readTiles[0]->numRoots() == 2);
         REQUIRE(readTiles[1]->numRoots() == 2);
         REQUIRE(readTiles[2]->numRoots() == 3);

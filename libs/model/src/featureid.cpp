@@ -15,7 +15,7 @@ FeatureId::FeatureId(FeatureId::Data& data, simfil::ModelConstPtr l, simfil::Mod
 
 std::string_view FeatureId::typeId() const
 {
-    if (auto s = model().fieldNames()->resolve(data_->typeId_))
+    if (auto s = model().strings()->resolve(data_->typeId_))
         return *s;
     return "err-unresolved-typename";
 }
@@ -63,12 +63,12 @@ uint32_t FeatureId::size() const
     return fields_->size();
 }
 
-simfil::ModelNode::Ptr FeatureId::get(const simfil::FieldId& f) const
+simfil::ModelNode::Ptr FeatureId::get(const simfil::StringId& f) const
 {
     return fields_->get(f);
 }
 
-simfil::FieldId FeatureId::keyAt(int64_t i) const
+simfil::StringId FeatureId::keyAt(int64_t i) const
 {
     return fields_->keyAt(i);
 }
@@ -84,7 +84,7 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
 
     auto objectFieldsToKeyValuePairs = [&result, this](simfil::ModelNode::FieldRange fields){
         for (auto const& [key, value] : fields) {
-            auto keyStr = model().fieldNames()->resolve(key);
+            auto keyStr = model().strings()->resolve(key);
             std::visit(
                 [&result, &keyStr](auto&& v)
                 {

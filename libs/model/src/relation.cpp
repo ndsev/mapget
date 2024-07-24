@@ -46,7 +46,7 @@ void Relation::setTargetValidity(const model_ptr<Geometry>& validityGeom)
 
 std::string_view Relation::name() const
 {
-    if (auto s = model().fieldNames()->resolve(data_->name_))
+    if (auto s = model().strings()->resolve(data_->name_))
         return *s;
     raise("Relation name is not known to string pool.");
 }
@@ -82,7 +82,7 @@ uint32_t Relation::size() const
     return 2 + (data_->sourceValidity_ || data_->targetValidity_ ? 2 : 0);
 }
 
-simfil::ModelNode::Ptr Relation::get(const simfil::FieldId& f) const
+simfil::ModelNode::Ptr Relation::get(const simfil::StringId& f) const
 {
     switch (f) {
     case Fields::NameStr: // name
@@ -98,7 +98,7 @@ simfil::ModelNode::Ptr Relation::get(const simfil::FieldId& f) const
     }
 }
 
-simfil::FieldId Relation::keyAt(int64_t i) const
+simfil::StringId Relation::keyAt(int64_t i) const
 {
     switch (i) {
     case 0: return Fields::NameStr;

@@ -67,7 +67,7 @@ Attribute::Direction Attribute::direction() const
 
 std::string_view Attribute::name() const
 {
-    if (auto s = model().fieldNames()->resolve(data_->name_))
+    if (auto s = model().strings()->resolve(data_->name_))
         return *s;
     raise("Attribute name is not known to string pool.");
 }
@@ -86,7 +86,7 @@ bool Attribute::forEachField(
             continue;
         }
 
-        if (auto ks = model().fieldNames()->resolve(key)) {
+        if (auto ks = model().strings()->resolve(key)) {
             if (!cb(*ks, value))
                 return false;
         }

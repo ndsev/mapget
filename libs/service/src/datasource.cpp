@@ -15,7 +15,7 @@ TileFeatureLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, Da
     return result;
 }
 
-simfil::FieldId DataSource::cachedFieldsOffset(const std::string& nodeId, Cache::Ptr const& cache)
+simfil::StringId DataSource::cachedFieldsOffset(const std::string& nodeId, Cache::Ptr const& cache)
 {
     return cache->cachedFieldsOffset(nodeId);
 }

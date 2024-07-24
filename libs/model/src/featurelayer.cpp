@@ -120,8 +120,8 @@ struct TileFeatureLayer::Impl {
         s.ext(vertexBuffers_, bitsery::ext::ArrayArenaExt{});
     }
 
-    explicit Impl(std::shared_ptr<simfil::Fields> fieldDict)
-        : simfilEnv_(makeEnvironment(std::move(fieldDict)))
+    explicit Impl(std::shared_ptr<simfil::StringPool> fieldDict)
+        : expressionCache_(makeEnvironment(std::move(fieldDict)))
     {
     }
 };
@@ -131,7 +131,7 @@ TileFeatureLayer::TileFeatureLayer(
     std::string const& nodeId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    std::shared_ptr<simfil::Fields> const& fields
+    std::shared_ptr<simfil::StringPool> const& fields
 ) :
     ModelPool(fields),
     impl_(std::make_unique<Impl>(fields)),
@@ -292,7 +292,7 @@ simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
     auto featureIdObject = newObject(featureIdParts.size());
     impl_->featureIds_.emplace_back(FeatureId::Data{
         true,
-        fieldNames()->emplace(typeId),
+        strings()->emplace(typeId),
         featureIdObject->addr()
     });
     for (auto const& [k, v] : featureIdParts) {
@@ -346,7 +346,7 @@ TileFeatureLayer::newFeatureId(
     auto featureIdIndex = impl_->featureIds_.size();
     impl_->featureIds_.emplace_back(FeatureId::Data{
         false,
-        fieldNames()->emplace(typeId),
+        strings()->emplace(typeId),
         featureIdObject->addr()
     });
     for (auto const& [k, v] : featureIdParts) {
@@ -363,7 +363,7 @@ TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<Feat
 {
     auto relationIndex = impl_->relations_.size();
     impl_->relations_.emplace_back(Relation::Data{
-        fieldNames()->emplace(name),
+        strings()->emplace(name),
         target->addr()
     });
     return Relation(&impl_->relations_.back(), shared_from_this(), {Relations, (uint32_t)relationIndex});
@@ -384,7 +384,7 @@ TileFeatureLayer::newAttribute(const std::string_view& name, size_t initialCapac
         Attribute::Empty,
         {Null, 0},
         objectMemberStorage().new_array(initialCapacity),
-        fieldNames()->emplace(name)
+        strings()->emplace(name)
     });
     return Attribute(
         &impl_->attributes_.back(),
@@ -761,21 +761,21 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
     return typeIt->uniqueIdCompositions_.front();
 }
 
-void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newDict)
+void TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     // Re-map old field IDs to new field IDs
     for (auto& attr : impl_->attributes_) {
-        if (auto resolvedName = fieldNames()->resolve(attr.name_)) {
+        if (auto resolvedName = strings()->resolve(attr.name_)) {
             attr.name_ = newDict->emplace(*resolvedName);
         }
     }
     for (auto& fid : impl_->featureIds_) {
-        if (auto resolvedName = fieldNames()->resolve(fid.typeId_)) {
+        if (auto resolvedName = strings()->resolve(fid.typeId_)) {
             fid.typeId_ = newDict->emplace(*resolvedName);
         }
     }
     for (auto& rel : impl_->relations_) {
-        if (auto resolvedName = fieldNames()->resolve(rel.name_)) {
+        if (auto resolvedName = strings()->resolve(rel.name_)) {
             rel.name_ = newDict->emplace(*resolvedName);
         }
     }
@@ -787,7 +787,7 @@ void TileFeatureLayer::setFieldNames(std::shared_ptr<simfil::Fields> const& newD
         impl_->simfilEnv_ = makeEnvironment(newDict);
     }
 
-    ModelPool::setFieldNames(newDict);
+    ModelPool::setStrings(newDict);
 }
 
 simfil::ModelNode::Ptr TileFeatureLayer::clone(
@@ -808,7 +808,7 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newObject(resolved->size());
         newCacheNode = newNode;
         for (auto [key, value] : resolved->fields()) {
-            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+            if (auto keyStr = otherLayer->strings()->resolve(key)) {
                 newNode->addField(*keyStr, clone(cache, otherLayer, value));
             }
         }
@@ -909,7 +909,7 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newAttributeLayer(resolved->size());
         newCacheNode = newNode;
         for (auto [key, value] : resolved->fields()) {
-            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+            if (auto keyStr = otherLayer->strings()->resolve(key)) {
                 newNode->addField(*keyStr, clone(cache, otherLayer, value));
             }
         }
@@ -920,7 +920,7 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newAttributeLayers(resolved->size());
         newCacheNode = newNode;
         for (auto [key, value] : resolved->fields()) {
-            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+            if (auto keyStr = otherLayer->strings()->resolve(key)) {
                 newNode->addField(*keyStr, clone(cache, otherLayer, value));
             }
         }
@@ -969,7 +969,7 @@ void TileFeatureLayer::clone(
     if (auto attrs = otherFeature.attributes()) {
         auto baseAttrs = cloneTarget->attributes();
         for (auto const& [key, value] : attrs->fields()) {
-            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+            if (auto keyStr = otherLayer->strings()->resolve(key)) {
                 baseAttrs->addField(*keyStr, lookupOrClone(value));
             }
         }
@@ -979,7 +979,7 @@ void TileFeatureLayer::clone(
     if (auto attrLayers = otherFeature.attributeLayers()) {
         auto baseAttrLayers = cloneTarget->attributeLayers();
         for (auto const& [key, value] : attrLayers->fields()) {
-            if (auto keyStr = otherLayer->fieldNames()->resolve(key)) {
+            if (auto keyStr = otherLayer->strings()->resolve(key)) {
                 baseAttrLayers->addField(*keyStr, lookupOrClone(value));
             }
         }

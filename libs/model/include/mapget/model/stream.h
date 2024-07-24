@@ -1,6 +1,7 @@
 #pragma once
 
 #include "featurelayer.h"
+#include "fields.h"
 
 #include <map>
 #include <sstream>
@@ -36,7 +37,7 @@ public:
     static constexpr Version CurrentProtocolVersion{0, 1, 1};
 
     /** Map to keep track of the highest sent field id per datasource node. */
-    using FieldOffsetMap = std::map<std::string, simfil::FieldId>;
+    using FieldOffsetMap = std::map<std::string, simfil::StringId>;
 
     /** The Reader turns bytes into TileFeatureLayer objects. */
     struct Reader

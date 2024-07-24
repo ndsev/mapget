@@ -4,13 +4,13 @@
 #include "tileid.h"
 
 #include "nlohmann/json.hpp"
-#include "simfil/model/nodes.h"
 
 #include <string>
 #include <chrono>
 #include <optional>
 #include <memory>
-#include <tuple>
+
+namespace simfil { struct StringPool; }
 
 namespace mapget
 {
@@ -141,7 +141,7 @@ public:
      * Getter and setter for 'ttl_' member variable.
      * It represents how long this layer should live.
      */
-    [[nodiscard]]std::optional<std::chrono::milliseconds> ttl() const;
+    [[nodiscard]] std::optional<std::chrono::milliseconds> ttl() const;
     void setTtl(const std::optional<std::chrono::milliseconds>& timeToLive);
 
     /**

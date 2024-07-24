@@ -105,7 +105,7 @@ void Cache::putTileFeatureLayer(TileFeatureLayer::Ptr const& l)
     tileWriter.write(l);
 }
 
-simfil::FieldId Cache::cachedFieldsOffset(std::string const& nodeId)
+simfil::StringId Cache::cachedFieldsOffset(std::string const& nodeId)
 {
     if (nodeId.empty()) {
         raise("Tried to query cached fields offset for empty node ID!");

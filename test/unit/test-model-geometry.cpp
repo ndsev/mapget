@@ -92,7 +92,7 @@ auto makeTile() {
 
 #define REQUIRE_EVAL_1(query, type, result) \
     do {\
-        Environment env(model_pool->fieldNames()); \
+        Environment env(model_pool->strings()); \
         env.functions["geo"] = &GeoFn::Fn; \
         env.functions["bbox"] = &BBoxFn::Fn; \
         env.functions["linestring"] = &LineStringFn::Fn; \
@@ -207,7 +207,7 @@ TEST_CASE("Spatial Operators", "[spatial.ops]") {
         "geometry",
         point_geom)));
 
-    Environment env(model_pool->fieldNames());
+    Environment env(model_pool->strings());
 
     SECTION("Point Within BBox") {
         REQUIRE_EVAL_1("geo() within bbox(1, 2, 4, 5)", ValueType::Bool, true);

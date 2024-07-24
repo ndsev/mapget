@@ -155,8 +155,8 @@ protected:
     [[nodiscard]] simfil::ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId&) const override;
-    [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
     /**
@@ -198,7 +198,7 @@ protected:
     // We keep the fields in a tiny vector on the stack,
     // because their number is dynamic, as a variable number
     // of id-part fields is adopted from the feature id.
-    sfl::small_vector<std::pair<simfil::FieldId, simfil::ModelNode::Ptr>, 32> fields_;
+    sfl::small_vector<std::pair<simfil::StringId, simfil::ModelNode::Ptr>, 32> fields_;
     void updateFields();
 
     nlohmann::json toJsonPrivate(simfil::ModelNode const&);
@@ -208,8 +208,8 @@ protected:
         [[nodiscard]] simfil::ValueType type() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
-        [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId&) const override;
-        [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
+        [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
+        [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
         [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
         FeaturePropertyView(Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);

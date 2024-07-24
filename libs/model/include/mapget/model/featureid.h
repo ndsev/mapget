@@ -2,7 +2,6 @@
 
 #include "simfil/model/nodes.h"
 #include "info.h"
-#include "sfl/small_vector.hpp"
 
 namespace mapget
 {
@@ -45,13 +44,13 @@ protected:
     [[nodiscard]] simfil::ScalarValueType value() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId &) const override;
-    [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const simfil::StringId &) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
     struct Data {
         bool useCommonTilePrefix_ = false;
-        simfil::FieldId typeId_ = 0;
+        simfil::StringId typeId_ = 0;
         simfil::ModelNodeAddress idParts_;
 
         template<typename S>

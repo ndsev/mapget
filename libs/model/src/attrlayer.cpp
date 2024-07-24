@@ -71,12 +71,12 @@ bool AttributeLayerList::forEachLayer(
     if (!cb)
         return false;
     for(auto const& [fieldId, value] : fields()) {
-        if (auto layerName = model().fieldNames()->resolve(fieldId)) {
+        if (auto layerName = model().strings()->resolve(fieldId)) {
             if (value->addr().column() != TileFeatureLayer::AttributeLayers) {
                 log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
                 continue;
             }
-            auto attrLayer = reinterpret_cast<TileFeatureLayer&>(model()).resolveAttributeLayer(*value);
+            auto attrLayer = static_cast<TileFeatureLayer&>(model()).resolveAttributeLayer(*value);
             if (!cb(*layerName, attrLayer))
                 return false;
         }

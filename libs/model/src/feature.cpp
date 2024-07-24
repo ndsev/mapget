@@ -106,7 +106,8 @@ std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expressi
         addr().index());
 }
 
-simfil::Value Feature::evaluate(const std::string_view& expression) {
+simfil::Value Feature::evaluate(const std::string_view& expression)
+{
     auto results = evaluateAll(expression);
     if (results.empty())
         return simfil::Value::null();
@@ -130,7 +131,7 @@ uint32_t Feature::size() const
     return fields_.size();
 }
 
-simfil::ModelNode::Ptr Feature::get(const simfil::FieldId& f) const
+simfil::ModelNode::Ptr Feature::get(const simfil::StringId& f) const
 {
     for (auto const& [fieldName, fieldValue] : fields_)
         if (fieldName == f)
@@ -138,7 +139,7 @@ simfil::ModelNode::Ptr Feature::get(const simfil::FieldId& f) const
     return {};
 }
 
-simfil::FieldId Feature::keyAt(int64_t i) const
+simfil::StringId Feature::keyAt(int64_t i) const
 {
     if (i < fields_.size())
         return fields_[i].first;
@@ -388,7 +389,7 @@ uint32_t Feature::FeaturePropertyView::size() const
     return (data_->attrLayers_ ? 1 : 0) + (attrs_ ? attrs_->size() : 0);
 }
 
-simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::FieldId& f) const
+simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::StringId& f) const
 {
     if (data_->attrLayers_ && f == Fields::LayerStr)
         return Ptr::make(model_, data_->attrLayers_);
@@ -397,7 +398,7 @@ simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::FieldId& 
     return {};
 }
 
-simfil::FieldId Feature::FeaturePropertyView::keyAt(int64_t i) const
+simfil::StringId Feature::FeaturePropertyView::keyAt(int64_t i) const
 {
     if (data_->attrLayers_) {
         if (i == 0)

@@ -48,7 +48,7 @@ public:
     virtual TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);
 
 protected:
-    static simfil::FieldId cachedFieldsOffset(std::string const& nodeId, Cache::Ptr const& cache);
+    static simfil::StringId cachedFieldsOffset(std::string const& nodeId, Cache::Ptr const& cache);
 };
 
 }

@@ -49,13 +49,13 @@ protected:
     [[nodiscard]] simfil::ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId &) const override;
-    [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const simfil::StringId &) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Actual per-attribute data that is stored in the model's attributes-column. */
     struct Data {
-        simfil::FieldId name_ = 0;
+        simfil::StringId name_ = 0;
         simfil::ModelNodeAddress targetFeatureId_;
         simfil::ModelNodeAddress sourceValidity_;
         simfil::ModelNodeAddress targetValidity_;

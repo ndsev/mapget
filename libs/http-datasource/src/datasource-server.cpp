@@ -59,9 +59,9 @@ void DataSourceServer::setup(httplib::Server& server)
             auto layer = impl_->info_.getLayer(layerIdParam);
 
             auto tileIdParam = TileId{std::stoull(req.get_param_value("tileId"))};
-            auto fieldsOffsetParam = (simfil::FieldId)0;
+            auto fieldsOffsetParam = (simfil::StringId)0;
             if (req.has_param("fieldsOffset"))
-                fieldsOffsetParam = (simfil::FieldId)
+                fieldsOffsetParam = (simfil::StringId)
                     std::stoul(req.get_param_value("fieldsOffset"));
 
             std::string responseType = "binary";

@@ -4,8 +4,8 @@
 #include "simfil/model/arena.h"
 #include "simfil/environment.h"
 
-#include "fields.h"
 #include "layer.h"
+#include "fields.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
@@ -63,7 +63,7 @@ public:
         std::string const& nodeId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
-        std::shared_ptr<simfil::Fields> const& fields
+        std::shared_ptr<simfil::StringPool> const& fields
     );
 
     /**
@@ -210,11 +210,11 @@ public:
     simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
 
     /**
-     * Change the fields dict of this model to a different one.
+     * Change the string pool of this model to a different one.
      * Note: This will potentially create new field entries in the newDict,
      * for field names which were not there before.
      */
-    void setFieldNames(std::shared_ptr<simfil::Fields> const& newDict) override;
+    void setStrings(std::shared_ptr<simfil::StringPool> const& newPool) override;
 
     /**
      * Create a copy of otherFeature in this layer with the given type

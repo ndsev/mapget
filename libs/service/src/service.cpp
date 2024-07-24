@@ -162,7 +162,7 @@ struct Service::Controller
                     // Move this request to the end of the list, so others gain priority.
                     requests_.splice(requests_.end(), requests_, reqIt);
 
-		    log().debug("Working on tile: {}", result->first.toString());
+                    log().debug("Working on tile: {}", result->first.toString());
                     break;
                 }
             }
@@ -431,7 +431,7 @@ struct Service::Impl : public Service::Controller
                 // artificial node id.
                 auto auxBaseNodeId = baseTile->nodeId() + "|" + auxTile->nodeId();
                 auto auxBaseFieldDict = cache_->getFieldDict(auxBaseNodeId);
-                baseTile->setFieldNames(auxBaseFieldDict);
+                baseTile->setStrings(auxBaseFieldDict);
                 baseTile->setNodeId(auxBaseNodeId);
 
                 // Adopt new attributes, features and relations for the base feature

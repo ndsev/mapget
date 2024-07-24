@@ -66,7 +66,7 @@ public:
 
 protected:
     // Used by DataSource::cachedFieldsOffset()
-    simfil::FieldId cachedFieldsOffset(std::string const& nodeId);
+    simfil::StringId cachedFieldsOffset(std::string const& nodeId);
 
     // Mutex for fieldCacheOffsets_
     std::mutex fieldCacheOffsetMutex_;

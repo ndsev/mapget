@@ -97,7 +97,7 @@ struct HttpService::Impl
         // Parse maxKnownFieldIds.
         if (j.contains("maxKnownFieldIds")) {
             for (auto& item : j["maxKnownFieldIds"].items()) {
-                state->fieldsOffsets_[item.key()] = item.value().get<simfil::FieldId>();
+                state->fieldsOffsets_[item.key()] = item.value().get<simfil::StringId>();
             }
         }
 
