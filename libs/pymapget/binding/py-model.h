@@ -27,7 +27,7 @@ struct BoundModelNode
         struct GetTileFeatureLayer : public simfil::ModelNode {
             explicit GetTileFeatureLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
             TileFeatureLayer::Ptr operator()() {
-                return std::reinterpret_pointer_cast<TileFeatureLayer>(
+                return std::dynamic_pointer_cast<TileFeatureLayer>(
                     std::const_pointer_cast<simfil::Model>(model_));
             }
         };

@@ -17,7 +17,7 @@ AttributeLayer::AttributeLayer(
 model_ptr<Attribute>
 AttributeLayer::newAttribute(const std::string_view& name, size_t initialCapacity)
 {
-    auto result = reinterpret_cast<TileFeatureLayer&>(model()).newAttribute(name, initialCapacity);
+    auto result = static_cast<TileFeatureLayer&>(model()).newAttribute(name, initialCapacity);
     addAttribute(result);
     return result;
 }
@@ -36,7 +36,7 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
             log().warn("Don't add anything other than Attributes into AttributeLayers!");
             continue;
         }
-        auto attr = reinterpret_cast<TileFeatureLayer&>(model()).resolveAttribute(*value);
+        auto attr = static_cast<TileFeatureLayer&>(model()).resolveAttribute(*value);
         if (!cb(attr))
             return false;
     }
