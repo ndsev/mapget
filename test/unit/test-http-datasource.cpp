@@ -39,6 +39,9 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                         ]
                     }
                 ]
+            },
+            "SourceData-WayLayer": {
+                "type": "SourceData"
             }
         }
     }
@@ -46,7 +49,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     // Initialize a DataSource.
     mapget::DataSourceServer ds(info);
-    std::atomic_uint32_t dataSourceRequestCount = 0;
+    std::atomic_uint32_t dataSourceFeatureRequestCount = 0;
+    std::atomic_uint32_t dataSourceSourceDataRequestCount = 0;
     ds.onTileFeatureRequest(
         [&](const auto& tile)
         {
@@ -54,7 +58,11 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             auto g = f->geom()->newGeometry(mapget::GeomType::Line);
             g->append({42., 11});
             g->append({42., 12});
-            ++dataSourceRequestCount;
+            ++dataSourceFeatureRequestCount;
+        });
+    ds.onTileSourceDataRequest(
+        [&](const auto& tile) {
+            ++dataSourceSourceDataRequestCount;
         });
     ds.onLocateRequest(
         [&](mapget::LocateRequest const& request) -> std::vector<mapget::LocateResponse>
@@ -107,7 +115,38 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(mapId == info.mapId_);
                 return info.getLayer(std::string(layerId));
             },
-            [&](auto&& tile) { receivedTileCount++; });
+            [&](auto&& tile) {
+                REQUIRE(tile->id().layer_ == mapget::LayerType::Features);
+                receivedTileCount++;
+            });
+        reader.read(tileResponse->body);
+
+        REQUIRE(receivedTileCount == 1);
+    }
+    SECTION("Fetch /tile SourceData")
+    {
+        // Initialize an httplib client.
+        httplib::Client cli("localhost", ds.port());
+
+        // Send a GET tile request
+        auto tileResponse = cli.Get("/tile?layer=SourceData-WayLayer&tileId=1");
+
+        // Check that the response is OK.
+        REQUIRE(tileResponse != nullptr);
+        REQUIRE(tileResponse->status == 200);
+
+        // Check the response body for expected content.
+        auto receivedTileCount = 0;
+        mapget::TileLayerStream::Reader reader(
+            [&](auto&& mapId, auto&& layerId)
+            {
+                REQUIRE(mapId == info.mapId_);
+                return info.getLayer(std::string(layerId));
+            },
+            [&](auto&& tile) {
+                REQUIRE(tile->id().layer_ == mapget::LayerType::SourceData);
+                receivedTileCount++;
+            });
         reader.read(tileResponse->body);
 
         REQUIRE(receivedTileCount == 1);
@@ -167,7 +206,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
             REQUIRE(receivedTileCount == 4);
             // One tile requested twice, so the cache was used.
-            REQUIRE(dataSourceRequestCount == 3);
+            REQUIRE(dataSourceFeatureRequestCount == 3);
         }
 
         SECTION("Trigger 400 responses")
