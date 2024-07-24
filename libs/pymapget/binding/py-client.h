@@ -68,7 +68,7 @@ public:
     void notifyResult(TileFeatureLayer::Ptr result) override {
         std::unique_lock lock(bufferMutex_);
         buffer_.push(result);
-        bufferSignal_.notify_one();  // Signal that a new result is available
+        bufferSignal_.notify_one(); // Signal that a new result is available
         LayerTilesRequest::notifyResult(result);
     }
 

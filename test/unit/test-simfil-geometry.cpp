@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "mapget/model/simfil-geometry.h"
 #include "mapget/model/point.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/fields.h"
@@ -8,7 +7,6 @@
 #include "simfil/simfil.h"
 
 using namespace mapget;
-using DPoint = mapget::Point;
 using simfil::ValueType;
 
 auto makeLayer()
