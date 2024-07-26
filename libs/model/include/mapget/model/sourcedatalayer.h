@@ -39,7 +39,7 @@ public:
     TileSourceDataLayer(
         std::istream&,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        FieldNameResolveFun const& fieldNameResolveFun);
+        StringResolveFun const& fieldNameResolveFun);
 
     ~TileSourceDataLayer() override;
 

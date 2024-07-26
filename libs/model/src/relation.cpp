@@ -85,13 +85,13 @@ uint32_t Relation::size() const
 simfil::ModelNode::Ptr Relation::get(const simfil::StringId& f) const
 {
     switch (f) {
-    case Fields::NameStr: // name
+    case StringPool::NameStr: // name
         return model_ptr<simfil::ValueNode>::make(name(), model().shared_from_this());
-    case Fields::TargetStr: // target
+    case StringPool::TargetStr: // target
         return ModelNode::Ptr::make(model().shared_from_this(), data_->targetFeatureId_);
-    case Fields::SourceValidityStr: // source validity
+    case StringPool::SourceValidityStr: // source validity
         return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceValidity_);
-    case Fields::TargetValidityStr: // target validity
+    case StringPool::TargetValidityStr: // target validity
         return ModelNode::Ptr::make(model().shared_from_this(), data_->targetValidity_);
     default:
         return {};
@@ -101,10 +101,10 @@ simfil::ModelNode::Ptr Relation::get(const simfil::StringId& f) const
 simfil::StringId Relation::keyAt(int64_t i) const
 {
     switch (i) {
-    case 0: return Fields::NameStr;
-    case 1: return Fields::TargetStr;
-    case 2: return Fields::SourceValidityStr;
-    case 3: return Fields::TargetValidityStr;
+    case 0: return StringPool::NameStr;
+    case 1: return StringPool::TargetStr;
+    case 2: return StringPool::SourceValidityStr;
+    case 3: return StringPool::TargetValidityStr;
     default:
         return {};
     }

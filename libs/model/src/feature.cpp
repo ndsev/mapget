@@ -99,7 +99,7 @@ std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expressi
     // contains only references to feature nodes, in the order
     // of the feature node column. We could think about protected inheritance
     // of the ModelPool to safeguard this.
-    return model().evaluate(expression, addr().index());
+    return model().evaluate(expression, *this);
 }
 
 simfil::Value Feature::evaluate(const std::string_view& expression)
@@ -159,23 +159,23 @@ void Feature::updateFields() {
     fields_.clear();
 
     // Add type field
-    fields_.emplace_back(Fields::TypeStr, simfil::ValueNode(std::string_view("Feature"), model_));
+    fields_.emplace_back(StringPool::TypeStr, simfil::ValueNode(std::string_view("Feature"), model_));
 
     // Add id field
-    fields_.emplace_back(Fields::IdStr, Ptr::make(model_, data_->id_));
+    fields_.emplace_back(StringPool::IdStr, Ptr::make(model_, data_->id_));
     auto idNode = model().resolveFeatureId(*fields_.back().second);
 
     // Add type id field
     fields_.emplace_back(
-        Fields::TypeIdStr,
+        StringPool::TypeIdStr,
         model_ptr<simfil::ValueNode>::make(idNode->typeId(), model_));
 
     // Add map and layer ids.
     fields_.emplace_back(
-        Fields::MapIdStr,
+        StringPool::MapIdStr,
         model_ptr<simfil::ValueNode>::make(model().mapId(), model_));
     fields_.emplace_back(
-        Fields::LayerIdStr,
+        StringPool::LayerIdStr,
         model_ptr<simfil::ValueNode>::make(model().layerInfo()->layerId_, model_));
 
     // Add common id-part fields
@@ -191,23 +191,23 @@ void Feature::updateFields() {
 
     // Add other fields
     if (data_->geom_)
-        fields_.emplace_back(Fields::GeometryStr, Ptr::make(model_, data_->geom_));
+        fields_.emplace_back(StringPool::GeometryStr, Ptr::make(model_, data_->geom_));
     if (data_->attrLayers_ || data_->attrs_)
         fields_.emplace_back(
-            Fields::PropertiesStr,
+            StringPool::PropertiesStr,
             Ptr::make(
                 model_,
                 simfil::ModelNodeAddress{TileFeatureLayer::FeatureProperties, addr().index()}));
     if (data_->relations_)
-        fields_.emplace_back(Fields::RelationsStr, Ptr::make(model_, data_->relations_));
+        fields_.emplace_back(StringPool::RelationsStr, Ptr::make(model_, data_->relations_));
 }
 
-nlohmann::json Feature::toGeoJson()
+nlohmann::json Feature::toJson() const
 {
     // Ensure that properties and geometry exist
-    attributes();
-    geom();
-    return toJson();
+    (void)attributes();
+    (void)geom();
+    return simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
 }
 
 void Feature::addPoint(const Point& p) {
@@ -351,7 +351,7 @@ uint32_t Feature::FeaturePropertyView::size() const
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::StringId& f) const
 {
-    if (data_->attrLayers_ && f == Fields::LayerStr)
+    if (data_->attrLayers_ && f == StringPool::LayerStr)
         return Ptr::make(model_, data_->attrLayers_);
     if (attrs_)
         return attrs_->get(f);
@@ -362,7 +362,7 @@ simfil::StringId Feature::FeaturePropertyView::keyAt(int64_t i) const
 {
     if (data_->attrLayers_) {
         if (i == 0)
-            return Fields::LayerStr;
+            return StringPool::LayerStr;
         i -= 1;
     }
     if (attrs_)

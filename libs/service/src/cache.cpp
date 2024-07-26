@@ -6,7 +6,7 @@
 namespace mapget
 {
 
-std::shared_ptr<Fields> Cache::getFieldDict(const std::string_view& nodeId)
+std::shared_ptr<StringPool> Cache::getFieldDict(const std::string_view& nodeId)
 {
     {
         std::shared_lock fieldCacheReadLock(fieldCacheMutex_);
@@ -26,7 +26,7 @@ std::shared_ptr<Fields> Cache::getFieldDict(const std::string_view& nodeId)
             return it->second;
 
         // Load/insert the Fields dict.
-        std::shared_ptr<Fields> cachedFields = std::make_shared<Fields>(nodeId);
+        std::shared_ptr<StringPool> cachedFields = std::make_shared<StringPool>(nodeId);
         auto cachedFieldsBlob = getFieldsBlob(nodeId);
         if (cachedFieldsBlob) {
             // Read the fields from the stream.
@@ -38,7 +38,7 @@ std::shared_ptr<Fields> Cache::getFieldDict(const std::string_view& nodeId)
             TileLayerStream::MessageType streamMessageType;
             uint32_t streamMessageSize;
             TileLayerStream::Reader::readMessageHeader(stream, streamMessageType, streamMessageSize);
-            auto streamDataSourceNodeId = Fields::readDataSourceNodeId(stream);
+            auto streamDataSourceNodeId = StringPool::readDataSourceNodeId(stream);
             if (streamMessageType != TileLayerStream::MessageType::Fields || streamDataSourceNodeId != nodeId) {
                 raise("Stream header error while parsing fields from cache.");
             }

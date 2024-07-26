@@ -18,7 +18,7 @@ namespace mapget
  * Callback type for a function which returns a field name cache instance
  * for a given node identifier.
  */
-using FieldNameResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
+using StringResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
 
 template <class... Args>
 std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
@@ -61,15 +61,6 @@ struct SimfilExpressionCache
     {
         auto evalFun = [&](auto&& expr) {
             return simfil::eval(*env_, expr, node);
-        };
-
-        return eval(query, evalFun);
-    }
-
-    std::vector<simfil::Value> eval(std::string_view query, simfil::ModelPool const& pool, size_t rootIndex = 0)
-    {
-        auto evalFun = [&](auto&& expr) {
-            return simfil::eval(*env_, expr, pool, rootIndex);
         };
 
         return eval(query, evalFun);

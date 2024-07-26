@@ -62,7 +62,7 @@ TileSourceDataLayer::TileSourceDataLayer(
 TileSourceDataLayer::TileSourceDataLayer(
     std::istream& in,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    FieldNameResolveFun const& fieldNameResolveFun
+    StringResolveFun const& fieldNameResolveFun
 ) :
     TileLayer(in, layerInfoResolveFun),
     ModelPool(fieldNameResolveFun(nodeId_)),
@@ -71,9 +71,9 @@ TileSourceDataLayer::TileSourceDataLayer(
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(in);
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
-        raise(fmt::format(
+        raiseFmt(
             "Failed to read TileFeatureLayer: Error {}",
-            static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
+            static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error()));
     }
     ModelPool::read(in);
 }

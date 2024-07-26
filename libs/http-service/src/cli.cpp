@@ -297,14 +297,16 @@ struct FetchCommand
             map_,
             layer_,
             std::vector<TileId>{tiles_.begin(), tiles_.end()});
-        request->onFeatureLayer([this](auto const& tile)
-            {
-                if (!mute_)
-                    std::cout << tile->toJson().dump() << std::endl;
-                if (tile->error())
-                    raise(
-                        fmt::format("Tile {}: {}", tile->id().toString(), *tile->error()));
-            });
+        auto fn = [this](auto const& tile)
+        {
+            if (!mute_)
+                std::cout << tile->toJson().dump() << std::endl;
+            if (tile->error())
+                raise(fmt::format("Tile {}: {}",
+                                  tile->id().toString(), *tile->error()));
+        };
+        request->onFeatureLayer(fn);
+        request->onSourceDataLayer(fn);
         cli.request(request)->wait();
 
         if (request->getStatus() == NoDataSource)

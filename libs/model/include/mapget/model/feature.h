@@ -112,9 +112,9 @@ public:
     std::vector<simfil::Value> evaluateAll(std::string_view const& expression);
 
     /**
-     * Convert the Feature to GeoJSON.
+     * Convert the Feature to (Geo-) JSON.
      */
-    nlohmann::json toGeoJson();
+    nlohmann::json toJson() const override;
 
     /**
      * Expose access to underlying TileFeatureLayer.

@@ -24,10 +24,10 @@ struct DataSourceServer::Impl
         throw std::runtime_error("TileSourceDataLayer callback is unset!");
     };
     std::function<std::vector<LocateResponse>(const LocateRequest&)> locateCallback_;
-    std::shared_ptr<Fields> fields_;
+    std::shared_ptr<StringPool> fields_;
 
     explicit Impl(DataSourceInfo info)
-        : info_(std::move(info)), fields_(std::make_shared<Fields>(info_.nodeId_))
+        : info_(std::move(info)), fields_(std::make_shared<StringPool>(info_.nodeId_))
     {
     }
 };
@@ -113,10 +113,10 @@ void DataSourceServer::setup(httplib::Server& server)
                 }
             }();
 
-            // Serialize TileFeatureLayer using TileLayerStream.
+            // Serialize TileLayer using TileLayerStream.
             if (responseType == "binary") {
                 std::stringstream content;
-                TileLayerStream::FieldOffsetMap fieldOffsets{
+                TileLayerStream::StringOffsetMap fieldOffsets{
                     {impl_->info_.nodeId_, fieldsOffsetParam}};
                 TileLayerStream::Writer layerWriter{
                     [&](auto&& msg, auto&& msgType) { content << msg; },

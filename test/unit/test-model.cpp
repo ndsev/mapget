@@ -73,7 +73,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     })"_json);
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
+    auto fieldNames = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -143,7 +143,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(firstGeom->geomType() == GeomType::Line);
     }
 
-    SECTION("toGeoJSON")
+    SECTION("toJSON")
     {
         constexpr auto expected =
             R"({"areaId":"TheBestArea","geometry":{"geometries":[)"
@@ -160,7 +160,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":"POSITIVE","smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
-        auto res = feature1->toGeoJson();
+        auto res = feature1->toJson();
         auto exp = nlohmann::json::parse(expected);
 
         INFO(nlohmann::json::diff( exp, res).dump());
@@ -256,11 +256,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         auto messageCount = 0;
         std::stringstream byteStream;
-        TileLayerStream::FieldOffsetMap fieldOffsets;
+        TileLayerStream::StringOffsetMap stringOffsets;
         TileLayerStream::Writer layerWriter{[&](auto&& msg, auto&& type){
             ++messageCount;
             byteStream << msg;
-        }, fieldOffsets};
+        }, stringOffsets};
 
         layerWriter.write(tile);
         REQUIRE(messageCount == 2);

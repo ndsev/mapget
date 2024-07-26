@@ -70,10 +70,10 @@ struct SourceDataAddress
 };
 
 /**
- * Info attached to the logical representation/view-model to identify the
- * corresponding source data region. Other metadata such as the zserio Type
- * is attached to the blob-tree and can be found by looking for the tree node(s)
- * that match the target blobs SourceRegion.
+ * Info attached to feature components to identify the corresponding source data
+ * region. Other metadata such as the zserio Type is attached to the blob-tree
+ * and can be found by looking for the tree node(s) that match the target blobs
+ * SourceRegion.
  */
 struct SourceDataReference
 {

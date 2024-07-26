@@ -2,7 +2,7 @@
 
 #include "mapget/model/point.h"
 #include "mapget/model/featurelayer.h"
-#include "mapget/model/fields.h"
+#include "mapget/model/stringpool.h"
 #include "simfil/model/nodes.h"
 #include "simfil/simfil.h"
 
@@ -72,7 +72,7 @@ auto makeLayer()
     })"_json);
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
+    auto fieldNames = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(

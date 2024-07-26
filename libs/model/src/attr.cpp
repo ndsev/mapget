@@ -23,7 +23,7 @@ Attribute::Attribute(Attribute::Data* data, simfil::ModelConstPtr l, simfil::Mod
 {
     if (data_->direction_)
         fields_.emplace_back(
-            Fields::DirectionStr,
+            StringPool::DirectionStr,
             [](Attribute const& self) {
                 return model_ptr<simfil::ValueNode>::make(
                     directionToString(self.data_->direction_),
@@ -31,7 +31,7 @@ Attribute::Attribute(Attribute::Data* data, simfil::ModelConstPtr l, simfil::Mod
             });
     if (data_->validity_)
         fields_.emplace_back(
-            Fields::ValidityStr,
+            StringPool::ValidityStr,
             [](Attribute const& self) {
                 return model_ptr<simfil::ModelNode>::make(self.model_, self.data_->validity_);
             });

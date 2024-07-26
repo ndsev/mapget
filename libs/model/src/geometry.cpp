@@ -47,16 +47,16 @@ uint32_t GeometryCollection::size() const {
 ModelNode::Ptr GeometryCollection::get(const StringId& f) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->get(f);
-    if (f == Fields::TypeStr) return at(0);
-    if (f == Fields::GeometriesStr) return at(1);
+    if (f == StringPool::TypeStr) return at(0);
+    if (f == StringPool::GeometriesStr) return at(1);
     return {};
 }
 
 StringId GeometryCollection::keyAt(int64_t i) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->keyAt(i);
-    if (i == 0) return Fields::TypeStr;
-    if (i == 1) return Fields::GeometriesStr;
+    if (i == 0) return StringPool::TypeStr;
+    if (i == 1) return StringPool::GeometriesStr;
     throw std::out_of_range("geom collection: Out of range.");
 }
 
@@ -136,14 +136,14 @@ uint32_t Geometry::size() const {
 }
 
 ModelNode::Ptr Geometry::get(const StringId& f) const {
-    if (f == Fields::TypeStr) return at(0);
-    if (f == Fields::CoordinatesStr) return at(1);
+    if (f == StringPool::TypeStr) return at(0);
+    if (f == StringPool::CoordinatesStr) return at(1);
     return {};
 }
 
 StringId Geometry::keyAt(int64_t i) const {
-    if (i == 0) return Fields::TypeStr;
-    if (i == 1) return Fields::CoordinatesStr;
+    if (i == 0) return StringPool::TypeStr;
+    if (i == 1) return StringPool::CoordinatesStr;
     throw std::out_of_range("geom: Out of range.");
 }
 
@@ -530,16 +530,16 @@ uint32_t VertexNode::size() const {
 }
 
 ModelNode::Ptr VertexNode::get(const StringId & field) const {
-    if (field == Fields::LonStr) return at(0);
-    if (field == Fields::LatStr) return at(1);
-    if (field == Fields::ElevationStr) return at(2);
+    if (field == StringPool::LonStr) return at(0);
+    if (field == StringPool::LatStr) return at(1);
+    if (field == StringPool::ElevationStr) return at(2);
     else return {};
 }
 
 StringId VertexNode::keyAt(int64_t i) const {
-    if (i == 0) return Fields::LonStr;
-    if (i == 1) return Fields::LatStr;
-    if (i == 2) return Fields::ElevationStr;
+    if (i == 0) return StringPool::LonStr;
+    if (i == 1) return StringPool::LatStr;
+    if (i == 2) return StringPool::ElevationStr;
     throw std::out_of_range("vertex: Out of range.");
 }
 

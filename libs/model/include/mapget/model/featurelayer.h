@@ -5,7 +5,7 @@
 #include "simfil/environment.h"
 
 #include "layer.h"
-#include "fields.h"
+#include "stringpool.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
@@ -71,7 +71,7 @@ public:
     TileFeatureLayer(
         std::istream& inputStream,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        FieldNameResolveFun const& fieldNameResolveFun
+        StringResolveFun const& fieldNameResolveFun
     );
 
     /**
@@ -177,9 +177,8 @@ public:
     /** (De-)Serialization */
     void write(std::ostream& outputStream) override;
 
-    /** Convert to GeoJSON geometry collection. */
+    /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
-    nlohmann::json toGeoJson() const;
 
     /** Access number of stored features */
     size_t size() const;
@@ -197,7 +196,7 @@ public:
     /**
      * Evaluate a (potentially cached) simfil query on this pool
      */
-    std::vector<simfil::Value> evaluate(std::string_view query, size_t rootIndex = 0);
+    std::vector<simfil::Value> evaluate(std::string_view query);
     std::vector<simfil::Value> evaluate(std::string_view query, ModelNode const& node);
 
     /**

@@ -122,7 +122,7 @@ TileFeatureLayer::TileFeatureLayer(
 TileFeatureLayer::TileFeatureLayer(
     std::istream& inputStream,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    FieldNameResolveFun const& fieldNameResolveFun
+    StringResolveFun const& fieldNameResolveFun
 ) :
     TileLayer(inputStream, layerInfoResolveFun),
     ModelPool(fieldNameResolveFun(nodeId_)),
@@ -587,9 +587,9 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
     return ModelPool::resolve(n, cb);
 }
 
-std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query, size_t rootIndex)
+std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query)
 {
-    return impl_->expressionCache_.eval(query, *this, rootIndex);
+    return impl_->expressionCache_.eval(query, *root(0));
 }
 
 std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node)
@@ -646,14 +646,9 @@ void TileFeatureLayer::write(std::ostream& outputStream)
 
 nlohmann::json TileFeatureLayer::toJson() const
 {
-    return toGeoJson();
-}
-
-nlohmann::json TileFeatureLayer::toGeoJson() const
-{
     auto features = nlohmann::json::array();
     for (auto f : *this)
-        features.push_back(f->toGeoJson());
+        features.push_back(f->toJson());
     return nlohmann::json::object({
         {"type", "FeatureCollection"},
         {"features", features},

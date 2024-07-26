@@ -35,7 +35,7 @@ public:
     TileLayer::Ptr getTileLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
 
     /** Override for CachedFieldsProvider::getFieldDict() */
-    std::shared_ptr<Fields> getFieldDict(std::string_view const&) override;
+    std::shared_ptr<StringPool> getFieldDict(std::string_view const&) override;
 
     // You need to implement these methods:
 
@@ -68,7 +68,7 @@ protected:
 
     // Mutex for fieldCacheOffsets_
     std::mutex fieldCacheOffsetMutex_;
-    TileLayerStream::FieldOffsetMap fieldCacheOffsets_;
+    TileLayerStream::StringOffsetMap fieldCacheOffsets_;
 
     // Statistics
     int64_t cacheHits_ = 0;

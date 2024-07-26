@@ -26,7 +26,7 @@ struct HttpService::Impl
         std::string responseType_;
         std::unique_ptr<TileLayerStream::Writer> writer_;
         std::vector<LayerTilesRequest::Ptr> requests_;
-        TileLayerStream::FieldOffsetMap fieldsOffsets_;
+        TileLayerStream::StringOffsetMap fieldsOffsets_;
 
         HttpTilesRequestState() {
             writer_ = std::make_unique<TileLayerStream::Writer>(

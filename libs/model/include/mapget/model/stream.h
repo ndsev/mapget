@@ -1,7 +1,7 @@
 #pragma once
 
 #include "layer.h"
-#include "fields.h"
+#include "stringpool.h"
 
 #include <map>
 #include <sstream>
@@ -17,7 +17,7 @@ namespace mapget
  * - The version (6b) indicates the protocol version which was used to
  *   serialise the blob. This must be compatible with the current version
  *   which is used by the mapget library.
- * - The type (1B) must be either Fields (1) or TileLayer (2).
+ * - The type (1B) must be one fo the MessageType enum values.
  * - The length (4b)  indicates the byte-length of the serialized object,
  *   which is stored in the value.
  */
@@ -38,7 +38,7 @@ public:
     static constexpr Version CurrentProtocolVersion{0, 1, 1};
 
     /** Map to keep track of the highest sent field id per datasource node. */
-    using FieldOffsetMap = std::map<std::string, simfil::StringId>;
+    using StringOffsetMap = std::map<std::string, simfil::StringId>;
 
     /** The Reader turns bytes into TileLayer objects. */
     struct Reader
@@ -112,7 +112,7 @@ public:
          */
         Writer(
             std::function<void(std::string, MessageType)> onMessage,
-            FieldOffsetMap& fieldsOffsets,
+            StringOffsetMap& fieldsOffsets,
             bool differentialFieldUpdates = true);
 
         /** Serialize a tile feature layer and the required part of a Fields cache. */
@@ -125,7 +125,7 @@ public:
         void sendMessage(std::string&& bytes, MessageType msgType);
 
         std::function<void(std::string, MessageType)> onMessage_;
-        FieldOffsetMap& fieldsOffsets_;
+        StringOffsetMap& fieldsOffsets_;
         bool differentialFieldUpdates_ = true;
     };
 
@@ -146,18 +146,18 @@ public:
          * This operator is called by the Reader to obtain the fields
          * dictionary for a particular node id.
          */
-        virtual std::shared_ptr<Fields> getFieldDict(std::string_view const& nodeId);
+        virtual std::shared_ptr<StringPool> getFieldDict(std::string_view const& nodeId);
 
         /**
          * Obtain the highest known field id for each data source node id,
          * as currently present in the cache. The resulting dict may be
          * used by a mapget http client to set the `maxKnownFieldIds` info.
          */
-        [[nodiscard]] virtual FieldOffsetMap fieldDictOffsets() const;
+        [[nodiscard]] virtual StringOffsetMap fieldDictOffsets() const;
 
     protected:
         std::shared_mutex fieldCacheMutex_;
-        std::map<std::string, std::shared_ptr<Fields>, std::less<void>> fieldsPerNodeId_;
+        std::map<std::string, std::shared_ptr<StringPool>, std::less<void>> fieldsPerNodeId_;
     };
 };
 

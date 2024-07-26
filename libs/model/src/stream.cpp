@@ -77,7 +77,7 @@ bool TileLayerStream::Reader::continueReading()
     else if (nextValueType_ == MessageType::Fields)
     {
         // Read the node id which identifies the fields' dictionary.
-        std::string fieldsDictNodeId = Fields::readDataSourceNodeId(buffer_);
+        std::string fieldsDictNodeId = StringPool::readDataSourceNodeId(buffer_);
         cachedFieldsProvider_->getFieldDict(fieldsDictNodeId)->read(buffer_);
     }
 
@@ -116,7 +116,7 @@ bool TileLayerStream::Reader::readMessageHeader(std::stringstream & stream, Mess
 
 TileLayerStream::Writer::Writer(
     std::function<void(std::string, MessageType)> onMessage,
-    FieldOffsetMap& fieldsOffsets,
+    StringOffsetMap& fieldsOffsets,
     bool differentialFieldUpdates)
     : onMessage_(std::move(onMessage)),
       fieldsOffsets_(fieldsOffsets),
@@ -198,7 +198,7 @@ void TileLayerStream::Writer::sendEndOfStream()
     sendMessage("", MessageType::EndOfStream);
 }
 
-std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::getFieldDict(const std::string_view& nodeId)
+std::shared_ptr<StringPool> TileLayerStream::CachedFieldsProvider::getFieldDict(const std::string_view& nodeId)
 {
     {
         std::shared_lock fieldCacheReadLock(fieldCacheMutex_);
@@ -214,14 +214,14 @@ std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::getFieldDict(cons
         if (it != fieldsPerNodeId_.end())
             return it->second;
         auto [newIt, _] =
-            fieldsPerNodeId_.emplace(nodeId, std::make_shared<Fields>(std::string(nodeId)));
+            fieldsPerNodeId_.emplace(nodeId, std::make_shared<StringPool>(std::string(nodeId)));
         return newIt->second;
     }
 }
 
-TileLayerStream::FieldOffsetMap TileLayerStream::CachedFieldsProvider::fieldDictOffsets() const
+TileLayerStream::StringOffsetMap TileLayerStream::CachedFieldsProvider::fieldDictOffsets() const
 {
-    auto result = FieldOffsetMap();
+    auto result = StringOffsetMap();
     for (auto const& [nodeId, fieldsDict] : fieldsPerNodeId_)
         result.emplace(nodeId, fieldsDict->highest());
     return result;

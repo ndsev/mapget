@@ -6,20 +6,19 @@ namespace mapget
 {
 
 /**
- * The Fields class is a case-insensitive dictionary of uint16_t to field name strings.
- * It populates itself when fields are added to an object. Multiple TileFeatureLayers
- * can share the same Fields dictionary, reducing the size of serialized FeatureLayers.
+ * The StringPool class is a case-insensitive dictionary of uint16_t to field name strings.
+ * Multiple TileFeatureLayers can share the same pool, reducing the size of serialized FeatureLayers.
  *
- * The inherited mapget::Fields contains static field IDs for various purposes.
+ * The inherited mapget::StringPool contains static field IDs for various purposes.
  *
- * Field IDs are uint16 values, which are smaller and faster to work with than strings.
- * When querying fields by name, the Fields dictionary is used to look up a field ID.
+ * String IDs are uint16 values, which are smaller and faster to work with than strings.
+ * When querying strings by name, the pool is used to look up a field ID.
  * Subsequent searches are performed using this 16-bit integer for improved efficiency.
  *
- * Note: A fields dictionary is always unique per datasource node. Therefore,
- * the Fields object must be constructed with a datasource node id.
+ * Note: A StringPool is always unique per datasource node. Therefore,
+ * the object must be constructed with a datasource node id.
  */
-struct Fields : public simfil::StringPool
+struct StringPool : public simfil::StringPool
 {
     enum StaticFieldIds : simfil::StringId {
         IdStr = NextStaticId,
@@ -42,9 +41,11 @@ struct Fields : public simfil::StringPool
         TypeStr,
         CoordinatesStr,
         ElevationStr,
+        SourceDataAddressStr,
+        SourceDataTypeStr,
     };
 
-    explicit Fields(const std::string_view& nodeId);
+    explicit StringPool(const std::string_view& nodeId);
 
     /**
      * Write is overloaded, because it prepends the stream with
@@ -54,7 +55,7 @@ struct Fields : public simfil::StringPool
     void write(std::ostream& outputStream, simfil::StringId offset) const override;
 
     /**
-     * Call this before calling read() to figure out which Fields-
+     * Call this before calling read() to figure out which strings-
      * object to call read() with.
      */
     static std::string readDataSourceNodeId(std::istream& inputStream);

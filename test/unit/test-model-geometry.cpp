@@ -74,7 +74,7 @@ auto makeTile() {
     })"_json);
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
+    auto fieldNames = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -98,7 +98,7 @@ auto makeTile() {
         env.functions["linestring"] = &LineStringFn::Fn; \
         auto ast = compile(env, query, false); \
         INFO("AST: " << ast->toString()); \
-        auto res = eval(env, *ast, *model_pool); \
+        auto res = eval(env, *ast, *model_pool->root(0)); \
         REQUIRE(res.size() == 1); \
         REQUIRE(res[0].as<type>() == result); \
     } while (false)
@@ -252,29 +252,29 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
 
     SECTION("Retrieve points") {
         // Check stored points in Point geometry
-        REQUIRE(point_geom->get(Fields::CoordinatesStr)->size() == 1);
-        REQUIRE(point_geom->get(Fields::CoordinatesStr)->at(0)->type() == ValueType::Array); // Point
-        REQUIRE(point_geom->get(Fields::CoordinatesStr)->at(0)->get(Fields::LonStr)->value() == ScalarValueType(a.x));
-        REQUIRE(point_geom->get(Fields::CoordinatesStr)->at(0)->get(Fields::LatStr)->value() == ScalarValueType(a.y));
+        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->size() == 1);
+        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->at(0)->type() == ValueType::Array); // Point
+        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(a.x));
+        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(a.y));
 
         // Check stored points in LineString geometry
-        REQUIRE(linestring_geom->get(Fields::CoordinatesStr)->size() == 2);
-        REQUIRE(linestring_geom->get(Fields::CoordinatesStr)->at(0)->get(Fields::LonStr)->value() == ScalarValueType(b.x));
-        REQUIRE(linestring_geom->get(Fields::CoordinatesStr)->at(0)->get(Fields::LatStr)->value() == ScalarValueType(b.y));
-        REQUIRE(linestring_geom->get(Fields::CoordinatesStr)->at(1)->get(Fields::LonStr)->value() == ScalarValueType(c.x));
-        REQUIRE(linestring_geom->get(Fields::CoordinatesStr)->at(1)->get(Fields::LatStr)->value() == ScalarValueType(c.y));
+        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->size() == 2);
+        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(b.x));
+        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(b.y));
+        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(1)->get(StringPool::LonStr)->value() == ScalarValueType(c.x));
+        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(1)->get(StringPool::LatStr)->value() == ScalarValueType(c.y));
 
         // Check stored points in Polygon geometry
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->size() == 1);
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->size() == 4);
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(0)->get(Fields::LonStr)->value() == ScalarValueType(d.x));
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(0)->get(Fields::LatStr)->value() == ScalarValueType(d.y));
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(1)->get(Fields::LonStr)->value() == ScalarValueType(e.x));
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(1)->get(Fields::LatStr)->value() == ScalarValueType(e.y));
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(2)->get(Fields::LonStr)->value() == ScalarValueType(f.x));
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(2)->get(Fields::LatStr)->value() == ScalarValueType(f.y));
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(3)->get(Fields::LonStr)->value() == ScalarValueType(d.x));
-        REQUIRE(polygon_geom->get(Fields::CoordinatesStr)->at(0)->at(3)->get(Fields::LatStr)->value() == ScalarValueType(d.y));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->size() == 1);
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->size() == 4);
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(d.x));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(d.y));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(1)->get(StringPool::LonStr)->value() == ScalarValueType(e.x));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(1)->get(StringPool::LatStr)->value() == ScalarValueType(e.y));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(2)->get(StringPool::LonStr)->value() == ScalarValueType(f.x));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(2)->get(StringPool::LatStr)->value() == ScalarValueType(f.y));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(3)->get(StringPool::LonStr)->value() == ScalarValueType(d.x));
+        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(3)->get(StringPool::LatStr)->value() == ScalarValueType(d.y));
     }
 
     SECTION("For-each") {

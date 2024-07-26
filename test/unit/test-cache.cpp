@@ -64,7 +64,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
     auto nodeId = "CacheTestingNode";
     auto mapId = "CacheMe";
     // Create empty shared autofilled field-name dictionary.
-    auto fieldNames = std::make_shared<Fields>(nodeId);
+    auto fieldNames = std::make_shared<StringPool>(nodeId);
     auto tile = std::make_shared<TileFeatureLayer>(
         tileId,
         nodeId,
@@ -86,13 +86,13 @@ TEST_CASE("RocksDBCache", "[Cache]")
     auto otherNodeId = "OtherCacheTestingNode";
     auto otherMapId = "CacheMeToo";
     // Create empty shared autofilled field-name dictionary.
-    auto otherFieldNames = std::make_shared<Fields>(otherNodeId);
+    auto otherStringPool = std::make_shared<StringPool>(otherNodeId);
     auto otherTile = std::make_shared<TileFeatureLayer>(
         otherTileId,
         otherNodeId,
         otherMapId,
         layerInfo,
-        otherFieldNames);
+        otherStringPool);
     // Create another DataSourceInfo object, but reuse the layer info.
     DataSourceInfo otherInfo(DataSourceInfo{
         otherNodeId,
@@ -105,7 +105,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
 
     auto testFieldsNodeId = "FieldDictsTestingNode";
-    auto testFieldsDictionary = Fields(testFieldsNodeId);
+    auto testFieldsDictionary = StringPool(testFieldsNodeId);
 
     // Write a field dict directly into cache, including the header
     // added in TileLayerStream::sendMessage.

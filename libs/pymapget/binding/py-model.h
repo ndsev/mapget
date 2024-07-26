@@ -368,9 +368,9 @@ struct BoundFeature : public BoundModelNode
                 py::arg("expression"),
                 "Evaluate a filter expression on this feature.")
             .def(
-                "to_geo_json",
-                [](BoundFeature& self) { return self.modelNodePtr_->toGeoJson(); },
-                "Convert the Feature to GeoJSON.")
+                "to_json",
+                [](BoundFeature& self) { return self.modelNodePtr_->toJson(); },
+                "Convert the Feature to JSON.")
             .def(
                 "geom",
                 [](BoundFeature& self)

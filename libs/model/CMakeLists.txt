@@ -1,7 +1,7 @@
 project(mapget-model CXX)
 
 add_library(mapget-model STATIC
-  include/mapget/model/fields.h
+  include/mapget/model/stringpool.h
   include/mapget/model/layer.h
   include/mapget/model/featurelayer.h
   include/mapget/model/info.h
@@ -18,7 +18,7 @@ add_library(mapget-model STATIC
   include/mapget/model/sourcedatalayer.h
   include/mapget/model/sourceinfo.h
 
-  src/fields.cpp
+  src/stringpool.cpp
   src/layer.cpp
   src/featurelayer.cpp
   src/info.cpp

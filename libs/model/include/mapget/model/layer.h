@@ -19,7 +19,7 @@ namespace mapget
  * Callback type for a function which returns a field name cache instance
  * for a given node identifier.
  */
-using FieldNameResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
+using StringResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
 
 /**
  * Callback type for a function which returns a layer info pointer for
@@ -176,7 +176,7 @@ public:
 protected:
     Version mapVersion_{0, 0, 0};
     TileId tileId_;
-    std::string nodeId_; // Identifier of the field dictionary/datasource instance
+    std::string nodeId_; // Identifier of the string-pool/datasource instance
     std::string mapId_;
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;
