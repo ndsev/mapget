@@ -77,15 +77,6 @@ struct SourceDataAddress
  */
 struct SourceDataReference
 {
-    /**
-     * Create a unique layer-id string form a combination of a
-     * layer target and a data-layer id.
-     */
-    static std::string makeLayerId(std::string_view target, uint64_t dataLayerId)
-    {
-        return fmt::format("SourceData-{}-{}", target, dataLayerId);
-    }
-
     /** Layer Id */
     simfil::StringId layerId_;
 
