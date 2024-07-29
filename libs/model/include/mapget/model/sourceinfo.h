@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include "simfil/model/string-pool.h"
 #include "fmt/format.h"
@@ -13,24 +14,16 @@ namespace mapget
  */
 struct SourceDataAddress
 {
-    union {
-        struct
-        {
-            unsigned low_  : 32;
-            unsigned high_ : 32;
-        };
-        uint64_t u64_;
-    } data_;
+    static constexpr uint64_t BitMask = 0xffffffff;
+
+    uint64_t value_ = 0u;
 
     SourceDataAddress()
-    {
-        data_.u64_ = 0u;
-    }
+    {}
 
     explicit SourceDataAddress(uint64_t value)
-    {
-        data_.u64_ = value;
-    }
+        : value_(value)
+    {}
 
     /**
      * Create a SourceDataAddress from an offset and size in bits, useful
@@ -38,25 +31,26 @@ struct SourceDataAddress
      */
     static SourceDataAddress fromBitPosition(size_t offset, size_t size)
     {
-        SourceDataAddress addr;
-        addr.data_.high_ = static_cast<uint32_t>(offset);
-        addr.data_.low_ = static_cast<uint32_t>(size);
-        return addr;
+        /* Assert that both values fit into a 32-bit integer. */
+        assert((offset & BitMask) == offset);
+        assert((size & BitMask) == size);
+
+        return SourceDataAddress{(offset << 32) | (size & BitMask)};
     }
 
     uint64_t u64() const
     {
-        return data_.u64_;
+        return value_;
     }
 
-    uint32_t low() const
+    uint32_t bitSize() const
     {
-        return data_.low_;
+        return value_ & BitMask;
     }
 
-    uint32_t high() const
+    uint32_t bitOffset() const
     {
-        return data_.high_;
+        return (value_ >> 32) & BitMask;
     }
 
     /**
@@ -65,7 +59,7 @@ struct SourceDataAddress
     template <typename S>
     void serialize(S& s)
     {
-        s.value8b(data_.u64_);
+        s.value8b(value_);
     }
 };
 
