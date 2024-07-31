@@ -32,7 +32,7 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
     if (!cb)
         return false;
     for (auto const& [_, value] : fields()) {
-        if (value->addr().column() != TileFeatureLayer::Attributes) {
+        if (value->addr().column() != TileFeatureLayer::ColumnId::Attributes) {
             log().warn("Don't add anything other than Attributes into AttributeLayers!");
             continue;
         }
@@ -72,7 +72,7 @@ bool AttributeLayerList::forEachLayer(
         return false;
     for(auto const& [fieldId, value] : fields()) {
         if (auto layerName = model().strings()->resolve(fieldId)) {
-            if (value->addr().column() != TileFeatureLayer::AttributeLayers) {
+            if (value->addr().column() != TileFeatureLayer::ColumnId::AttributeLayers) {
                 log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
                 continue;
             }

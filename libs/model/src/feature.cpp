@@ -197,7 +197,7 @@ void Feature::updateFields() {
             StringPool::PropertiesStr,
             Ptr::make(
                 model_,
-                simfil::ModelNodeAddress{TileFeatureLayer::FeatureProperties, addr().index()}));
+                simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureProperties, addr().index()}));
     if (data_->relations_)
         fields_.emplace_back(StringPool::RelationsStr, Ptr::make(model_, data_->relations_));
 }

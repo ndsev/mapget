@@ -119,13 +119,13 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
         switch (geomData_->type_) {
         case GeomType::Polygon:
             return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::Polygon, addr_.index()});
+                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Polygon, addr_.index()});
         case GeomType::Mesh:
             return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::Mesh, addr_.index()});
+                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Mesh, addr_.index()});
         default:
             return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::PointBuffers, addr_.index()});
+                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
         }
     }
     throw std::out_of_range("geom: Out of range.");
@@ -195,13 +195,13 @@ bool Geometry::iterate(const IterCallback& cb) const
 
 size_t Geometry::numPoints() const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::PointBuffers, addr_.index()}};
+    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     return vertexBufferNode.size();
 }
 
 Point Geometry::pointAt(size_t index) const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::PointBuffers, addr_.index()}};
+    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     VertexNode vertex{*vertexBufferNode.at((int64_t)index), vertexBufferNode.baseGeomData_};
     return vertex.point_;
 }
@@ -222,7 +222,7 @@ ModelNode::Ptr PolygonNode::at(int64_t index) const
     // Index 0 is the outer ring, all following rings are holes
     if (index == 0)
         return ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::LinearRing, addr_.index()});
+            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::LinearRing, addr_.index()});
 
     throw std::out_of_range("PolygonNode: index out of bounds.");
 }
@@ -254,7 +254,7 @@ MeshNode::MeshNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNode
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(pool), a), geomData_(geomData)
 {
     auto vertex_buffer = VertexBufferNode{
-        geomData_, model_, {TileFeatureLayer::PointBuffers, addr_.index()}};
+        geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     assert(vertex_buffer.size() % 3 == 0);
     size_ = vertex_buffer.size() / 3;
 }
@@ -268,7 +268,7 @@ ModelNode::Ptr MeshNode::at(int64_t index) const
 {
     if (0 <= index && index < size_)
         return ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::MeshTriangleCollection, addr_.index()}, index);
+            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleCollection, addr_.index()}, index);
 
     throw std::out_of_range("MeshNode: index out of bounds.");
 }
@@ -299,7 +299,7 @@ ValueType MeshTriangleCollectionNode::type() const
 ModelNode::Ptr MeshTriangleCollectionNode::at(int64_t index) const
 {
     if (index == 0)
-        return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::MeshTriangleLinearRing, addr_.index()}, index_);
+        return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleLinearRing, addr_.index()}, index_);
 
     throw std::out_of_range("MeshTriangleCollectionNode: index out of bounds.");
 }
@@ -423,7 +423,7 @@ uint32_t LinearRingNode::size() const
 model_ptr<VertexBufferNode> LinearRingNode::vertexBuffer() const
 {
     auto ptr = ModelNode::Ptr::make(
-        model_, ModelNodeAddress{TileFeatureLayer::PointBuffers, addr_.index()}, 0);
+        model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}, 0);
     return model().resolvePointBuffers(*ptr);
 }
 
@@ -465,7 +465,7 @@ ModelNode::Ptr VertexBufferNode::at(int64_t i) const {
     if (i < 0 || i >= size())
         throw std::out_of_range("vertex-buffer: Out of range.");
     i += offset_;
-    return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::Points, baseGeomAddress_.index()}, i);
+    return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, i);
 }
 
 uint32_t VertexBufferNode::size() const {
@@ -488,7 +488,7 @@ bool VertexBufferNode::iterate(const IterCallback& cb) const
     });
     for (auto i = 0u; i < size_; ++i) {
         resolveAndCb(*ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::Points, baseGeomAddress_.index()}, (int64_t)i+offset_));
+            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, (int64_t)i+offset_));
         if (!cont)
             break;
     }

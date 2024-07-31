@@ -1,15 +1,18 @@
 #pragma once
 
-#include "simfil/simfil.h"
-#include "simfil/model/arena.h"
-#include "simfil/environment.h"
+#include <span>
 
-#include "layer.h"
+#include "simfil/model/nodes.h"
+#include "simfil/simfil.h"
+
 #include "stringpool.h"
+#include "layer.h"
+#include "sourceinfo.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
 #include "geometry.h"
+#include "sourcedataaddress.h"
 
 namespace mapget
 {
@@ -35,6 +38,8 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class MeshNode;
     friend class MeshTriangleCollectionNode;
     friend class LinearRingNode;
+    friend class SourceDataAddressList;
+    friend class SourceDataAddressNode;
 
 public:
     /**
@@ -138,6 +143,12 @@ public:
      * Create a new geometry view.
      */
     model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base);
+
+    /**
+     * Create a single, or a fixed-size list of SourceData addresses.
+     */
+    model_ptr<SourceDataAddressList> newSourceDataAddress(std::string_view qualifier, SourceDataAddress address);
+    model_ptr<SourceDataAddressList> newSourceDataAddressList(std::span<std::tuple<std::string_view, SourceDataAddress>> list);
 
     /**
      * Return type for begin() and end() methods to support range-based
@@ -247,13 +258,15 @@ public:
     model_ptr<LinearRingNode> resolveMeshTriangleLinearRing(simfil::ModelNode const& n) const;
     model_ptr<PolygonNode> resolvePolygon(simfil::ModelNode const& n) const;
     model_ptr<LinearRingNode> resolveLinearRing(simfil::ModelNode const& n) const;
+    model_ptr<SourceDataAddressList> resolveSourceDataAddressList(simfil::ModelNode const& n) const;
+    model_ptr<SourceDataAddressNode> resolveSourceDataAddressNode(simfil::ModelNode const& n) const;
 
 protected:
     /**
-     * The FeatureTileColumnId enum provides identifiers for different
+     * The ColumnId enum provides identifiers for different
      * types of columns that can be associated with feature data.
      */
-    enum FeatureTileColumnId : uint8_t {
+    struct ColumnId { enum : uint8_t {
         Features = FirstCustomColumnId,
         FeatureProperties,
         FeatureIds,
@@ -270,7 +283,9 @@ protected:
         MeshTriangleLinearRing, // LinearRing with fixed size 3
         Polygon,
         LinearRing,
-    };
+        SourceDataAddressLists,
+        SourceDataAddressNodes,
+    }; };
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;

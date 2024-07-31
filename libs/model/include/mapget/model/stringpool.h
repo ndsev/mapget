@@ -42,7 +42,7 @@ struct StringPool : public simfil::StringPool
         CoordinatesStr,
         ElevationStr,
         SourceDataAddressStr,
-        SourceDataTypeStr,
+        SourceDataQualifierStr,
     };
 
     explicit StringPool(const std::string_view& nodeId);

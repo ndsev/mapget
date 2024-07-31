@@ -17,6 +17,7 @@ add_library(mapget-model STATIC
   include/mapget/model/sourcedata.h
   include/mapget/model/sourcedatalayer.h
   include/mapget/model/sourceinfo.h
+  include/mapget/model/sourcedataaddress.h
 
   src/stringpool.cpp
   src/layer.cpp
@@ -34,7 +35,8 @@ add_library(mapget-model STATIC
   src/simfil-geometry.cpp
   src/simfilutil.h
   src/sourcedata.cpp
-  src/sourcedatalayer.cpp)
+  src/sourcedatalayer.cpp
+  src/sourcedataaddress.cpp)
 
 target_include_directories(mapget-model
   PUBLIC

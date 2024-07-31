@@ -370,7 +370,7 @@ private:
 
 template <typename LambdaType, class ModelType>
 bool Geometry::forEachPoint(LambdaType const& callback) const {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {ModelType::PointBuffers, addr_.index()}};
+    VertexBufferNode vertexBufferNode{geomData_, model_, {ModelType::ColumnId::PointBuffers, addr_.index()}};
     for (auto i = 0; i < vertexBufferNode.size(); ++i) {
         VertexNode vertex{*vertexBufferNode.at(i), vertexBufferNode.baseGeomData_};
         if (!callback(vertex.point_))
