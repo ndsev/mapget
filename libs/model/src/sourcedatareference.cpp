@@ -37,13 +37,6 @@ bool SourceDataReferenceCollection::iterate(IterCallback const& cb) const
     return true;
 }
 
-/*
-std::span<QualifiedSourceDataAddress> SourceDataAddressList::items() const
-{
-    return items_;
-}
-*/
-
 SourceDataReferenceCollection::SourceDataReferenceCollection(uint32_t offset, uint32_t size, ModelConstPtr pool, ModelNodeAddress a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a), offset_(offset), size_(size)
 {}

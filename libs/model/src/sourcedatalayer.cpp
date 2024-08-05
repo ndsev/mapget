@@ -107,12 +107,10 @@ model_ptr<SourceDataCompoundNode> TileSourceDataLayer::resolveCompound(simfil::M
 
 void TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
 {
-    switch (n.addr().column()) {
-    case Compound:
+    if (n.addr().column() == Compound)
         return cb(*resolveCompound(n));
-    default:
+    else
         return ModelPool::resolve(n, cb);
-    }
 }
 
 void TileSourceDataLayer::write(std::ostream& outputStream)

@@ -37,7 +37,7 @@ std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
  */
 struct SimfilExpressionCache
 {
-    SimfilExpressionCache(std::unique_ptr<simfil::Environment> env)
+    explicit SimfilExpressionCache(std::unique_ptr<simfil::Environment> env)
         : env_(std::move(env))
     {}
 

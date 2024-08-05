@@ -3,7 +3,6 @@
 #include <cassert>
 #include <cstdint>
 #include "simfil/model/string-pool.h"
-#include "fmt/format.h"
 
 namespace mapget
 {
@@ -18,8 +17,7 @@ struct SourceDataAddress
 
     uint64_t value_ = 0u;
 
-    SourceDataAddress()
-    {}
+    SourceDataAddress() = default;
 
     explicit SourceDataAddress(uint64_t value)
         : value_(value)

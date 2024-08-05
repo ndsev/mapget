@@ -48,10 +48,10 @@ namespace
      * Views into the sourceDataAddresses_ array are stored as a single u32, which
      * uses 20 bits for the index and 4 bits for the length.
      */
-    static constexpr uint32_t SourceAddressArenaIndexBits = 20;
-    static constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaIndexBits);
-    static constexpr uint32_t SourceAddressArenaSizeBits  = 4;
-    static constexpr uint32_t SourceAddressArenaSizeMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaSizeBits);
+    constexpr uint32_t SourceAddressArenaIndexBits = 20;
+    constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaIndexBits);
+    constexpr uint32_t SourceAddressArenaSizeBits  = 4;
+    constexpr uint32_t SourceAddressArenaSizeMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaSizeBits);
 
     std::tuple<size_t, size_t> modelAddressToSourceDataAddressList(uint32_t addr)
     {
