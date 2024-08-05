@@ -128,10 +128,10 @@ public:
      * (2) Use an existing feature id for the target.
      * (3) Use an existing relation.
      */
-    void addRelation(std::string_view const& name, std::string_view const& targetType,
+    model_ptr<Relation> addRelation(std::string_view const& name, std::string_view const& targetType,
         KeyValueViewPairs const& targetIdParts);
-    void addRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
-    void addRelation(model_ptr<Relation> const& relation);
+    model_ptr<Relation> addRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
+    model_ptr<Relation> addRelation(model_ptr<Relation> const& relation);
 
     /**
      * Visit all added relations. Return false from the callback to abort.
@@ -147,6 +147,12 @@ public:
 
     /** Get a relation at a specific index. */
     [[nodiscard]] model_ptr<Relation> getRelation(uint32_t index) const;
+
+    /**
+     * SourceData accessors.
+     */
+    [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
+    void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
 
 protected:
     /**
@@ -178,6 +184,7 @@ protected:
         simfil::ModelNodeAddress attrLayers_;
         simfil::ModelNodeAddress attrs_;
         simfil::ModelNodeAddress relations_;
+        simfil::ModelNodeAddress sourceData_;
 
         template <typename S>
         void serialize(S& s)
@@ -187,6 +194,7 @@ protected:
             s.object(attrLayers_);
             s.object(attrs_);
             s.object(relations_);
+            s.object(sourceData_);
         }
     };
 

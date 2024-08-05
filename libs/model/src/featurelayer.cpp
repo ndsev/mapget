@@ -19,7 +19,7 @@
 #include "simfil/model/nodes.h"
 #include "mapget/log.h"
 #include "simfilutil.h"
-#include "sourcedataaddress.h"
+#include "sourcedatareference.h"
 #include "sourceinfo.h"
 
 /** Bitsery serialization traits */
@@ -84,8 +84,9 @@ struct TileFeatureLayer::Impl {
     sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayerLists_;
     sfl::segmented_vector<Relation::Data, simfil::detail::ColumnPageSize/2> relations_;
     sfl::segmented_vector<Geometry::Data, simfil::detail::ColumnPageSize/2> geom_;
-    sfl::segmented_vector<QualifiedSourceDataAddress, simfil::detail::ColumnPageSize/2> sourceDataAddresses_;
+    sfl::segmented_vector<QualifiedSourceDataReference, simfil::detail::ColumnPageSize/2> sourceDataReferences_;
     Geometry::Storage vertexBuffers_;
+    SourceDataAddressFormat sourceDataAddressFormat_ = SourceDataAddressFormat::Unknown;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -135,7 +136,8 @@ struct TileFeatureLayer::Impl {
         s.container(featureHashIndex_, maxColumnSize);
         s.container(geom_, maxColumnSize);
         s.ext(vertexBuffers_, bitsery::ext::ArrayArenaExt{});
-        s.container(sourceDataAddresses_, maxColumnSize);
+        s.container(sourceDataReferences_, maxColumnSize);
+        s.value1b(sourceDataAddressFormat_);
     }
 
     explicit Impl(std::shared_ptr<simfil::StringPool> fieldDict)
@@ -461,29 +463,17 @@ model_ptr<Geometry> TileFeatureLayer::newGeometryView(
         {ColumnId::Geometries, (uint32_t)impl_->geom_.size() - 1});
 }
 
-
-model_ptr<SourceDataAddressList> TileFeatureLayer::newSourceDataAddress(std::string_view qualifier, SourceDataAddress address)
+model_ptr<SourceDataReferenceCollection> TileFeatureLayer::newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list)
 {
-    std::array<std::tuple<std::string_view, SourceDataAddress>, 1> list;
-    list[0] = std::make_tuple(qualifier, address);
-
-    return newSourceDataAddressList(list);
-}
-
-model_ptr<SourceDataAddressList> TileFeatureLayer::newSourceDataAddressList(std::span<std::tuple<std::string_view, SourceDataAddress>> list)
-{
-    auto& arena = impl_->sourceDataAddresses_;
+    auto& arena = impl_->sourceDataReferences_;
     const auto index = arena.size();
     const auto size = list.size();
 
-    arena.reserve(size + arena.size());
-    for (const auto& [qualifier, address] : list) {
-        arena.push_back({strings()->emplace(qualifier), address});
-    }
+    arena.insert(arena.end(), list.begin(), list.end());
 
     return {
-    SourceDataAddressList(index, size, shared_from_this(),
-        ModelNodeAddress(ColumnId::SourceDataAddressLists, sourceDataAddressListToModelAddress(index, size)))};
+    SourceDataReferenceCollection(index, size, shared_from_this(),
+        ModelNodeAddress(ColumnId::SourceDataReferenceCollections, sourceDataAddressListToModelAddress(index, size)))};
 }
 
 model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelNode const& n) const
@@ -605,25 +595,25 @@ TileFeatureLayer::resolveGeometryCollection(const simfil::ModelNode& n) const
         shared_from_this(), n.addr());
 }
 
-model_ptr<SourceDataAddressList>
-TileFeatureLayer::resolveSourceDataAddressList(const simfil::ModelNode& n) const
+model_ptr<SourceDataReferenceCollection>
+TileFeatureLayer::resolveSourceDataReferenceCollection(const simfil::ModelNode& n) const
 {
-    if (n.addr().column() != ColumnId::SourceDataAddressLists)
-        raise("Cannot cast this node to an SourceDataAddressList.");
+    if (n.addr().column() != ColumnId::SourceDataReferenceCollections)
+        raise("Cannot cast this node to an SourceDataReferenceCollection.");
 
     auto [index, size] = modelAddressToSourceDataAddressList(n.addr().index());
-    const auto& data = impl_->sourceDataAddresses_;
-    return SourceDataAddressList(index, size, shared_from_this(), n.addr());
+    const auto& data = impl_->sourceDataReferences_;
+    return SourceDataReferenceCollection(index, size, shared_from_this(), n.addr());
 }
 
-model_ptr<SourceDataAddressNode>
-TileFeatureLayer::resolveSourceDataAddressNode(const simfil::ModelNode& n) const
+model_ptr<SourceDataReferenceItem>
+TileFeatureLayer::resolveSourceDataReferenceItem(const simfil::ModelNode& n) const
 {
-    if (n.addr().column() != ColumnId::SourceDataAddressNodes)
-        raise("Cannot cast this node to an SourceDataAddressNode.");
+    if (n.addr().column() != ColumnId::SourceDataReferences)
+        raise("Cannot cast this node to an SourceDataReferenceItem.");
 
-    const auto* data = &impl_->sourceDataAddresses_.at(n.addr());
-    return SourceDataAddressNode(data, shared_from_this(), n.addr());
+    const auto* data = &impl_->sourceDataReferences_.at(n.addr().index());
+    return SourceDataReferenceItem(data, shared_from_this(), n.addr());
 }
 
 void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::ResolveFn& cb) const
@@ -666,10 +656,10 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
         return cb(*resolveMeshTriangleLinearRing(n));
     case ColumnId::LinearRing:
         return cb(*resolveLinearRing(n));
-    case ColumnId::SourceDataAddressLists:
-        return cb(*resolveSourceDataAddressList(n));
-    case ColumnId::SourceDataAddressNodes:
-        return cb(*resolveSourceDataAddressNode(n));
+    case ColumnId::SourceDataReferenceCollections:
+        return cb(*resolveSourceDataReferenceCollection(n));
+    case ColumnId::SourceDataReferences:
+        return cb(*resolveSourceDataReferenceItem(n));
     }
 
     return ModelPool::resolve(n, cb);
@@ -987,9 +977,16 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         newCacheNode = newNode;
         break;
     }
-    case ColumnId::SourceDataAddressLists:
-    case ColumnId::SourceDataAddressNodes:
-        throw 0xDEAD; // TODO(johannes): This needs to be implemented!
+    case ColumnId::SourceDataReferenceCollections: {
+        auto resolved = otherLayer->resolveSourceDataReferenceCollection(*otherNode);
+        auto items = std::vector<QualifiedSourceDataReference>(
+            otherLayer->impl_->sourceDataReferences_.begin() + resolved->offset_,
+            otherLayer->impl_->sourceDataReferences_.begin() + resolved->offset_ + resolved->size_);
+        newCacheNode = newSourceDataReferenceCollection({items.begin(), items.end()});
+        break;
+    }
+    case ColumnId::SourceDataReferences:
+        raise("Cannot clone a single source-data reference.");
     default: {
         newCacheNode = ModelNode::Ptr::make(shared_from_this(), otherNode->addr());
     }
@@ -1063,6 +1060,16 @@ void TileFeatureLayer::clone(
                 return true;
             });
     }
+}
+
+void TileFeatureLayer::setSourceDataAddressFormat(TileFeatureLayer::SourceDataAddressFormat f)
+{
+    impl_->sourceDataAddressFormat_ = f;
+}
+
+TileFeatureLayer::SourceDataAddressFormat TileFeatureLayer::sourceDataAddressFormat() const
+{
+    return impl_->sourceDataAddressFormat_;
 }
 
 Geometry::Storage& TileFeatureLayer::vertexBufferStorage()

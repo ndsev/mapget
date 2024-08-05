@@ -1,6 +1,8 @@
 #pragma once
 
 #include "featureid.h"
+#include "simfil/model/nodes.h"
+#include "sourcedatareference.h"
 
 namespace mapget
 {
@@ -44,6 +46,12 @@ public:
      */
     [[nodiscard]] model_ptr<FeatureId> target() const;
 
+    /**
+     * SourceData accessors.
+     */
+    [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
+    void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
+
 protected:
     /** ModelNode interface. */
     [[nodiscard]] simfil::ValueType type() const override;
@@ -59,6 +67,7 @@ protected:
         simfil::ModelNodeAddress targetFeatureId_;
         simfil::ModelNodeAddress sourceValidity_;
         simfil::ModelNodeAddress targetValidity_;
+        simfil::ModelNodeAddress sourceData_;
 
         template<typename S>
         void serialize(S& s) {
@@ -66,6 +75,7 @@ protected:
             s.object(targetFeatureId_);
             s.object(sourceValidity_);
             s.object(targetValidity_);
+            s.object(sourceData_);
         }
     };
 

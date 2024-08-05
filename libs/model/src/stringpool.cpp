@@ -28,8 +28,9 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(TypeStr, "type");
     addStaticKey(CoordinatesStr, "coordinates");
     addStaticKey(ElevationStr, "elevation");
-    addStaticKey(SourceDataAddressStr, "_address");
-    addStaticKey(SourceDataQualifierStr, "_qualifier");
+    addStaticKey(SourceDataStr, "_sourceData");
+    addStaticKey(AddressStr, "address");
+    addStaticKey(QualifierStr, "qualifier");
 }
 
 void StringPool::write(std::ostream& outputStream, simfil::StringId offset) const

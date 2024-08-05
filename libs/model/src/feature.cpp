@@ -1,6 +1,11 @@
 #include "feature.h"
+#include "featureid.h"
 #include "featurelayer.h"
 #include "geometry.h"
+#include "relation.h"
+#include "simfil/model/nodes.h"
+#include "simfil/model/string-pool.h"
+#include "stringpool.h"
 
 namespace mapget
 {
@@ -117,6 +122,11 @@ simfil::ValueType Feature::type() const
 
 simfil::ModelNode::Ptr Feature::at(int64_t i) const
 {
+    if (data_->sourceData_) {
+        if (i == 0)
+            return get(StringPool::SourceDataStr);
+        i -= 1;
+    }
     if (i < fields_.size())
         return fields_[i].second;
     return {};
@@ -124,19 +134,28 @@ simfil::ModelNode::Ptr Feature::at(int64_t i) const
 
 uint32_t Feature::size() const
 {
-    return fields_.size();
+    return fields_.size() + (data_->sourceData_ ? 1 : 0);
 }
 
 simfil::ModelNode::Ptr Feature::get(const simfil::StringId& f) const
 {
+    if (f == StringPool::SourceDataStr)
+        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceData_);
+
     for (auto const& [fieldName, fieldValue] : fields_)
         if (fieldName == f)
             return fieldValue;
+
     return {};
 }
 
 simfil::StringId Feature::keyAt(int64_t i) const
 {
+    if (data_->sourceData_) {
+        if (i == 0)
+            return StringPool::SourceDataStr;
+        i -= 1;
+    }
     if (i < fields_.size())
         return fields_[i].first;
     return {};
@@ -144,15 +163,11 @@ simfil::StringId Feature::keyAt(int64_t i) const
 
 bool Feature::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
-    auto& resolver = model();
-    auto resolveAndCb = [&cb, &resolver](auto&& nodeNameAndValue){
-        bool cont = true;
-        resolver.resolve(*nodeNameAndValue.second, simfil::Model::Lambda([&cont, &cb](auto&& resolved){
-            cont = cb(resolved);
-        }));
-        return cont;
-    };
-    return std::all_of(fields_.begin(), fields_.end(), resolveAndCb);
+    for (auto i = 0; i < size(); ++i)
+        if (!cb(*at(i)))
+            return false;
+
+    return true;
 }
 
 void Feature::updateFields() {
@@ -239,22 +254,23 @@ void Feature::addPoly(const std::vector<Point>& points) {
         newGeom->append(p);
 }
 
-void Feature::addRelation(
+model_ptr<Relation> Feature::addRelation(
     const std::string_view& name,
     const std::string_view& targetType,
     const KeyValueViewPairs& targetIdParts)
 {
-    addRelation(name, model().newFeatureId(targetType, targetIdParts));
+    return addRelation(name, model().newFeatureId(targetType, targetIdParts));
 }
 
-void Feature::addRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
+model_ptr<Relation> Feature::addRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
 {
-    addRelation(model().newRelation(name, target));
+    return addRelation(model().newRelation(name, target));
 }
 
-void Feature::addRelation(const model_ptr<Relation>& relation)
+model_ptr<Relation> Feature::addRelation(const model_ptr<Relation>& relation)
 {
     relations()->append(relation);
+    return relation;
 }
 
 uint32_t Feature::numRelations() const
@@ -314,6 +330,16 @@ Feature::filterRelations(const std::string_view& name) const
     return result;
 }
 
+model_ptr<SourceDataReferenceCollection> Feature::sourceDataReferences() const
+{
+    return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+}
+
+void Feature::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
+{
+    data_->sourceData_ = addresses->addr();
+}
+
 //////////////////////////////////////////
 
 Feature::FeaturePropertyView::FeaturePropertyView(
@@ -351,7 +377,7 @@ uint32_t Feature::FeaturePropertyView::size() const
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::StringId& f) const
 {
-    if (data_->attrLayers_ && f == StringPool::LayerStr)
+    if (f == StringPool::LayerStr && data_->attrLayers_)
         return Ptr::make(model_, data_->attrLayers_);
     if (attrs_)
         return attrs_->get(f);

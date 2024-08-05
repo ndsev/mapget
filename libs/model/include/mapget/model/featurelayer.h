@@ -12,7 +12,7 @@
 #include "attrlayer.h"
 #include "relation.h"
 #include "geometry.h"
-#include "sourcedataaddress.h"
+#include "sourcedatareference.h"
 
 namespace mapget
 {
@@ -38,8 +38,8 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class MeshNode;
     friend class MeshTriangleCollectionNode;
     friend class LinearRingNode;
-    friend class SourceDataAddressList;
-    friend class SourceDataAddressNode;
+    friend class SourceDataReferenceCollection;
+    friend class SourceDataReferenceItem;
 
 public:
     /**
@@ -145,10 +145,9 @@ public:
     model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base);
 
     /**
-     * Create a single, or a fixed-size list of SourceData addresses.
+     * Create a new list of qualified source-data references.
      */
-    model_ptr<SourceDataAddressList> newSourceDataAddress(std::string_view qualifier, SourceDataAddress address);
-    model_ptr<SourceDataAddressList> newSourceDataAddressList(std::span<std::tuple<std::string_view, SourceDataAddress>> list);
+    model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list);
 
     /**
      * Return type for begin() and end() methods to support range-based
@@ -258,8 +257,23 @@ public:
     model_ptr<LinearRingNode> resolveMeshTriangleLinearRing(simfil::ModelNode const& n) const;
     model_ptr<PolygonNode> resolvePolygon(simfil::ModelNode const& n) const;
     model_ptr<LinearRingNode> resolveLinearRing(simfil::ModelNode const& n) const;
-    model_ptr<SourceDataAddressList> resolveSourceDataAddressList(simfil::ModelNode const& n) const;
-    model_ptr<SourceDataAddressNode> resolveSourceDataAddressNode(simfil::ModelNode const& n) const;
+    model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollection(simfil::ModelNode const& n) const;
+    model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItem(simfil::ModelNode const& n) const;
+
+    enum class SourceDataAddressFormat : uint8_t
+    {
+        /** Addresses are treated as opaque integers. */
+        Unknown,
+        /** Addresses represent a 32 bit offset and 32 bit length in bits. */
+        BitRange,
+    };
+
+    /**
+     * Accessors for the source-data address format of all
+     * source-data reference addresses this layer exposes.
+     */
+    void setSourceDataAddressFormat(SourceDataAddressFormat f);
+    SourceDataAddressFormat sourceDataAddressFormat() const;
 
 protected:
     /**
@@ -283,8 +297,8 @@ protected:
         MeshTriangleLinearRing, // LinearRing with fixed size 3
         Polygon,
         LinearRing,
-        SourceDataAddressLists,
-        SourceDataAddressNodes,
+        SourceDataReferenceCollections,
+        SourceDataReferences,
     }; };
 
     /** Get the primary id composition for the given feature type. */

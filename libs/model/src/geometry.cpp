@@ -1,7 +1,10 @@
 #include "geometry.h"
 #include "featurelayer.h"
 #include "simfil/model/nodes.h"
+#include "simfil/model/string-pool.h"
+#include "sourcedatareference.h"
 #include "sourceinfo.h"
+#include "stringpool.h"
 
 #include <cassert>
 #include <cstdint>
@@ -57,6 +60,7 @@ StringId GeometryCollection::keyAt(int64_t i) const {
         return singleGeomEntry->keyAt(i);
     if (i == 0) return StringPool::TypeStr;
     if (i == 1) return StringPool::GeometriesStr;
+    if (i == 1) return StringPool::SourceDataStr;
     throw std::out_of_range("geom collection: Out of range.");
 }
 
@@ -109,13 +113,35 @@ ValueType Geometry::type() const {
 }
 
 ModelNode::Ptr Geometry::at(int64_t i) const {
-    if (i == 0) return ValueNode(
-        geomData_->type_ == GeomType::Points  ? MultiPointStr :
-        geomData_->type_ == GeomType::Line    ? LineStringStr :
-        geomData_->type_ == GeomType::Polygon ? PolygonStr :
-        geomData_->type_ == GeomType::Mesh    ? MultiPolygonStr : "",
-        model_);
-    if (i == 1) {
+    if (geomData_->sourceDataReferences_) {
+        if (i == 0)
+            return get(StringPool::SourceDataStr);
+        i -= 1;
+    }
+    if (i == 0)
+        return get(StringPool::TypeStr);
+    if (i == 1)
+        return get(StringPool::CoordinatesStr);
+    throw std::out_of_range("geom: Out of range.");
+}
+
+uint32_t Geometry::size() const {
+    return 2 + (geomData_->sourceDataReferences_ ? 1 : 0);
+}
+
+ModelNode::Ptr Geometry::get(const StringId& f) const {
+    if (f == StringPool::SourceDataStr && geomData_->sourceDataReferences_) {
+        return ModelNode::Ptr::make(model_, geomData_->sourceDataReferences_);
+    }
+    if (f == StringPool::TypeStr) {
+        return ValueNode(
+            geomData_->type_ == GeomType::Points  ? MultiPointStr :
+            geomData_->type_ == GeomType::Line    ? LineStringStr :
+            geomData_->type_ == GeomType::Polygon ? PolygonStr :
+            geomData_->type_ == GeomType::Mesh    ? MultiPolygonStr : "",
+            model_);
+    }
+    if (f == StringPool::CoordinatesStr) {
         switch (geomData_->type_) {
         case GeomType::Polygon:
             return ModelNode::Ptr::make(
@@ -128,33 +154,28 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
                 model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
         }
     }
-    throw std::out_of_range("geom: Out of range.");
-}
-
-uint32_t Geometry::size() const {
-    return 2;
-}
-
-ModelNode::Ptr Geometry::get(const StringId& f) const {
-    if (f == StringPool::TypeStr) return at(0);
-    if (f == StringPool::CoordinatesStr) return at(1);
     return {};
 }
 
 StringId Geometry::keyAt(int64_t i) const {
+    if (geomData_->sourceDataReferences_) {
+        if (i == 0)
+            return StringPool::SourceDataStr;
+        i -= 1;
+    }
     if (i == 0) return StringPool::TypeStr;
     if (i == 1) return StringPool::CoordinatesStr;
     throw std::out_of_range("geom: Out of range.");
 }
 
-void Geometry::setSourceDataReference(SourceDataReference info)
+model_ptr<SourceDataReferenceCollection> Geometry::sourceDataReferences() const
 {
-    geomData_->sourceDataReference_ = std::move(info);
+    return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, geomData_->sourceDataReferences_));
 }
 
-SourceDataReference Geometry::sourceDataReference() const
+void Geometry::setSourceDataReferences(simfil::ModelNode::Ptr const& refs)
 {
-    return geomData_->sourceDataReference_;
+    geomData_->sourceDataReferences_ = refs->addr();
 }
 
 void Geometry::append(Point const& p)

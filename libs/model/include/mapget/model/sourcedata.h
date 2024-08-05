@@ -60,7 +60,7 @@ private:
     struct Data
     {
         simfil::ModelNodeAddress object_;
-        simfil::StringId schemaName_ = 0;
+        simfil::StringId schemaName_ = {};
         SourceDataAddress sourceAddress_;
 
         template <typename S>

@@ -4,6 +4,7 @@
 
 #include "point.h"
 #include "featureid.h"
+#include "sourcedatareference.h"
 #include "sourceinfo.h"
 
 #include <cstdint>
@@ -50,8 +51,8 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Source region */
-    void setSourceDataReference(SourceDataReference info);
-    SourceDataReference sourceDataReference() const;
+    model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
+    void setSourceDataReferences(simfil::ModelNode::Ptr const& refs);
 
     /** Add a point to the Geometry. */
     void append(Point const& p);
@@ -130,7 +131,7 @@ protected:
             } view_;
         } detail_;
 
-        SourceDataReference sourceDataReference_;
+        ModelNodeAddress sourceDataReferences_;
 
         template<typename S>
         void serialize(S& s) {
@@ -145,7 +146,7 @@ protected:
                 s.value4b(detail_.view_.size_);
                 s.object(detail_.view_.baseGeometry_);
             }
-            s.object(sourceDataReference_);
+            s.object(sourceDataReferences_);
         }
     };
 

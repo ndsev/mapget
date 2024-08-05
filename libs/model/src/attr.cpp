@@ -42,7 +42,8 @@ model_ptr<Geometry> Attribute::validity() const
     if (!hasValidity())
         throw std::runtime_error("Attempt to access null validity.");
     // TODO: We could remove this cast by passing the ModelPool through ProceduralObject->Object->...
-    return dynamic_cast<TileFeatureLayer&>(model()).resolveGeometry(*simfil::ModelNode::Ptr::make(model_, data_->validity_));
+    auto& layer = dynamic_cast<TileFeatureLayer&>(model());
+    return layer.resolveGeometry(*simfil::ModelNode::Ptr::make(model_, data_->validity_));
 }
 
 bool Attribute::hasValidity() const
@@ -92,6 +93,17 @@ bool Attribute::forEachField(
         }
     }
     return true;
+}
+
+model_ptr<SourceDataReferenceCollection> Attribute::sourceDataReferences() const
+{
+    auto& layer = dynamic_cast<TileFeatureLayer&>(model());
+    return layer.resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
+}
+
+void Attribute::setSourceDataReferences(simfil::ModelNode::Ptr const& node)
+{
+    data_->sourceDataRefs_ = node->addr();
 }
 
 }

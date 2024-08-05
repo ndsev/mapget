@@ -1,6 +1,7 @@
 #include "relation.h"
 #include "featurelayer.h"
 #include "mapget/log.h"
+#include "simfil/model/nodes.h"
 
 namespace mapget
 {
@@ -56,6 +57,16 @@ model_ptr<FeatureId> Relation::target() const
     return model().resolveFeatureId(*model_ptr<simfil::ModelNode>::make(model_, data_->targetFeatureId_));
 }
 
+model_ptr<SourceDataReferenceCollection> Relation::sourceDataReferences() const
+{
+    return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+}
+
+void Relation::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
+{
+    data_->sourceData_ = addresses->addr();
+}
+
 simfil::ValueType Relation::type() const
 {
     return simfil::ValueType::Object;
@@ -63,18 +74,7 @@ simfil::ValueType Relation::type() const
 
 simfil::ModelNode::Ptr Relation::at(int64_t i) const
 {
-    switch (i) {
-    case 0: // name
-        return model_ptr<simfil::ValueNode>::make(name(), model().shared_from_this());
-    case 1: // target
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->targetFeatureId_);
-    case 2: // source validity
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceValidity_);
-    case 3: // target validity
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->targetValidity_);
-    default:
-        return {};
-    }
+    return get(keyAt(i));
 }
 
 uint32_t Relation::size() const
@@ -93,6 +93,8 @@ simfil::ModelNode::Ptr Relation::get(const simfil::StringId& f) const
         return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceValidity_);
     case StringPool::TargetValidityStr: // target validity
         return ModelNode::Ptr::make(model().shared_from_this(), data_->targetValidity_);
+    case StringPool::SourceDataStr: // source data
+        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceData_);
     default:
         return {};
     }
@@ -105,6 +107,7 @@ simfil::StringId Relation::keyAt(int64_t i) const
     case 1: return StringPool::TargetStr;
     case 2: return StringPool::SourceValidityStr;
     case 3: return StringPool::TargetValidityStr;
+    case 4: return StringPool::SourceDataStr;
     default:
         return {};
     }
