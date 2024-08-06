@@ -26,12 +26,12 @@ struct HttpService::Impl
         std::string responseType_;
         std::unique_ptr<TileLayerStream::Writer> writer_;
         std::vector<LayerTilesRequest::Ptr> requests_;
-        TileLayerStream::StringOffsetMap fieldsOffsets_;
+        TileLayerStream::StringOffsetMap stringOffsets_;
 
         HttpTilesRequestState() {
             writer_ = std::make_unique<TileLayerStream::Writer>(
                 [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
-                fieldsOffsets_);
+                stringOffsets_);
         }
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
@@ -97,7 +97,7 @@ struct HttpService::Impl
         // Parse maxKnownFieldIds.
         if (j.contains("maxKnownFieldIds")) {
             for (auto& item : j["maxKnownFieldIds"].items()) {
-                state->fieldsOffsets_[item.key()] = item.value().get<simfil::StringId>();
+                state->stringOffsets_[item.key()] = item.value().get<simfil::StringId>();
             }
         }
 

@@ -33,7 +33,7 @@ struct SourceDataAddress
         assert((offset & BitMask) == offset);
         assert((size & BitMask) == size);
 
-        return SourceDataAddress{(offset << 32) | (size & BitMask)};
+        return SourceDataAddress{(static_cast<uint64_t>(offset) << 32) | (size & BitMask)};
     }
 
     uint64_t u64() const
