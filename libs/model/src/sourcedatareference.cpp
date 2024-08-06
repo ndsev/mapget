@@ -37,6 +37,14 @@ bool SourceDataReferenceCollection::iterate(IterCallback const& cb) const
     return true;
 }
 
+void SourceDataReferenceCollection::forEachReference(std::function<void(const SourceDataReferenceItem&)> fn) const
+{
+    const auto& m = model();
+    for (auto i = 0u; i < size(); ++i) {
+        fn(*m.resolveSourceDataReferenceItem(*at(i)));
+    }
+}
+
 SourceDataReferenceCollection::SourceDataReferenceCollection(uint32_t offset, uint32_t size, ModelConstPtr pool, ModelNodeAddress a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a), offset_(offset), size_(size)
 {}

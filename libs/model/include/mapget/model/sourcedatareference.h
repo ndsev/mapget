@@ -17,6 +17,7 @@ namespace mapget
 {
 
 class TileFeatureLayer;
+class SourceDataReferenceItem;
 
 struct QualifiedSourceDataReference {
     StringId qualifier_;
@@ -44,6 +45,12 @@ public:
     uint32_t size() const override;
     ModelNode::Ptr at(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;
+
+    /**
+     * Calls the callback `fn` for each SourceDataReferenceItem this
+     * collection contains.
+     */
+    void forEachReference(std::function<void(const SourceDataReferenceItem&)> fn) const;
 
 private:
     SourceDataReferenceCollection() = default;
