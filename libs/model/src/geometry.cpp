@@ -170,7 +170,9 @@ StringId Geometry::keyAt(int64_t i) const {
 
 model_ptr<SourceDataReferenceCollection> Geometry::sourceDataReferences() const
 {
-    return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, geomData_->sourceDataReferences_));
+    if (geomData_->sourceDataReferences_)
+        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, geomData_->sourceDataReferences_));
+    return {};
 }
 
 void Geometry::setSourceDataReferences(simfil::ModelNode::Ptr const& refs)

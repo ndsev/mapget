@@ -332,7 +332,9 @@ Feature::filterRelations(const std::string_view& name) const
 
 model_ptr<SourceDataReferenceCollection> Feature::sourceDataReferences() const
 {
-    return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+    if (data_->sourceData_)
+        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+    return {};
 }
 
 void Feature::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)

@@ -97,8 +97,11 @@ bool Attribute::forEachField(
 
 model_ptr<SourceDataReferenceCollection> Attribute::sourceDataReferences() const
 {
-    auto& layer = dynamic_cast<TileFeatureLayer&>(model());
-    return layer.resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
+    if (data_->sourceDataRefs_) {
+        auto& layer = dynamic_cast<TileFeatureLayer&>(model());
+        return layer.resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
+    }
+    return {};
 }
 
 void Attribute::setSourceDataReferences(simfil::ModelNode::Ptr const& node)

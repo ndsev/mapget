@@ -59,7 +59,9 @@ model_ptr<FeatureId> Relation::target() const
 
 model_ptr<SourceDataReferenceCollection> Relation::sourceDataReferences() const
 {
-    return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+    if (data_->sourceData_)
+        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+    return {};
 }
 
 void Relation::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
