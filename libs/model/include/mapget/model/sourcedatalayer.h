@@ -60,6 +60,8 @@ public:
     void write(std::ostream&) override;
     nlohmann::json toJson() const override;
 
+    void setStrings(std::shared_ptr<simfil::StringPool> const& newDict) override;
+
 private:
     /**
      * Generic node resolution overload.

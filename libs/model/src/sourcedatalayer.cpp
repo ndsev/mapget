@@ -125,4 +125,17 @@ nlohmann::json TileSourceDataLayer::toJson() const
     return ModelPool::toJson();
 }
 
+void TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
+{
+    for (auto& compound : impl_->compounds_) {
+        if (auto str = strings()->resolve(compound.schemaName_))
+            compound.schemaName_ = newDict->emplace(*str);
+    }
+
+
+    impl_->expressionCache_.reset(makeEnvironment(newDict));
+
+    ModelPool::setStrings(newDict);
+}
+
 }
