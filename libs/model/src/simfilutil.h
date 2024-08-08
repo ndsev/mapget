@@ -15,10 +15,10 @@ namespace mapget
 {
 
 /**
- * Callback type for a function which returns a field name cache instance
+ * Callback type for a function which returns a StringPool instance
  * for a given node identifier.
  */
-using StringResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
+using StringPoolResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
 
 template <class... Args>
 std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)

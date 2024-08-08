@@ -340,12 +340,12 @@ struct Service::Impl : public Service::Controller
     void addDataSource(DataSource::Ptr const& dataSource)
     {
         if (dataSource->info().nodeId_.empty()) {
-            // Unique node IDs are required for the field offsets.
+            // Unique node IDs are required for the string pool offsets.
             raise("Tried to create service worker for an unnamed node!");
         }
         for (auto& existingSource : dataSourceInfo_) {
             if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
-                // Unique node IDs are required for the field offsets.
+                // Unique node IDs are required for the string pool offsets.
                 raise(
                     fmt::format("Data source with node ID '{}' already registered!",
                                 dataSource->info().nodeId_));
@@ -460,14 +460,14 @@ struct Service::Impl : public Service::Controller
                     continue;
                 }
 
-                // Re-encode the base tile in a common field namespace.
-                // This is necessary, because the aux tile may introduce new field
-                // names to the base tile. Since we cannot manipulate the original
-                // node's field dict, we have to create a new one based on a new
+                // Re-encode the base tile in a common string namespace.
+                // This is necessary, because the aux tile may introduce new strings
+                // to the base tile. Since we cannot manipulate the original
+                // node's string pool, we have to create a new one based on a new
                 // artificial node id.
                 auto auxBaseNodeId = baseTile->nodeId() + "|" + auxTile->nodeId();
-                auto auxBaseFieldDict = cache_->getFieldDict(auxBaseNodeId);
-                baseTile->setStrings(auxBaseFieldDict);
+                auto auxBaseStringPool = cache_->getStringPool(auxBaseNodeId);
+                baseTile->setStrings(auxBaseStringPool);
                 baseTile->setNodeId(auxBaseNodeId);
 
                 // Adopt new attributes, features and relations for the base feature

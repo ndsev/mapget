@@ -20,7 +20,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     // TODO Make layer creation in test-model reusable.
     // Currently, TileFeatureLayer deserialization test in test-model.cpp
-    // fails if layerInfo and fieldNames access is replaced with
+    // fails if layerInfo and strings access is replaced with
     // TileFeatureLayer functions.
 
     auto layerInfo = LayerInfo::fromJson(R"({
@@ -63,14 +63,14 @@ TEST_CASE("RocksDBCache", "[Cache]")
     auto tileId = TileId::fromWgs84(42., 11., 13);
     auto nodeId = "CacheTestingNode";
     auto mapId = "CacheMe";
-    // Create empty shared autofilled field-name dictionary.
-    auto fieldNames = std::make_shared<StringPool>(nodeId);
+    // Create empty shared autofilled string dictionary.
+    auto strings = std::make_shared<StringPool>(nodeId);
     auto tile = std::make_shared<TileFeatureLayer>(
         tileId,
         nodeId,
         mapId,
         layerInfo,
-        fieldNames);
+        strings);
     // Create a DataSourceInfo object.
     DataSourceInfo info(DataSourceInfo{
         nodeId,
@@ -115,7 +115,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
     std::stringstream serializedMessage;
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(serializedMessage);
     s.object(TileLayerStream::CurrentProtocolVersion);
-    s.value1b(TileLayerStream::MessageType::Fields);
+    s.value1b(TileLayerStream::MessageType::StringPool);
     s.value4b((uint32_t)serializedFields.str().size());
     serializedMessage << serializedFields.str();
 
@@ -206,13 +206,13 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto cache = std::make_shared<mapget::RocksDBCache>();
         REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
 
-        cache->putFieldsBlob(testFieldsNodeId, serializedMessage.str());
-        auto returnedEntry = cache->getFieldsBlob(testFieldsNodeId);
+        cache->putStringPoolBlob(testFieldsNodeId, serializedMessage.str());
+        auto returnedEntry = cache->getStringPoolBlob(testFieldsNodeId);
 
         // Make sure field dict was properly stored.
         REQUIRE(returnedEntry.value() == serializedMessage.str());
 
-        // TODO this kind of access bypasses the creation of a fieldCacheOffsets_
+        // TODO this kind of access bypasses the creation of a stringPoolOffsets_
         //  entry in the cache -> decouple the cache storage logic clearly from
         //  tile layer writing logic.
         REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
@@ -224,7 +224,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 3);
 
         // Check that the same value can still be retrieved from field dict.
-        auto returnedEntry = cache->getFieldsBlob(testFieldsNodeId);
+        auto returnedEntry = cache->getStringPoolBlob(testFieldsNodeId);
         REQUIRE(returnedEntry.value() == serializedMessage.str());
     }
 

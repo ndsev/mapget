@@ -35,18 +35,18 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
 
 void StringPool::write(std::ostream& outputStream, simfil::StringId offset) const
 {
-    // Write the node id which identifies the fields dictionary
+    // Write the node id which identifies the string pool.
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
     simfil::StringPool::write(outputStream, offset);
 }
 
 std::string StringPool::readDataSourceNodeId(std::istream& inputStream) {
-    // Read the node id which identifies the fields dictionary
+    // Read the node id which identifies the string pool.
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
-    std::string fieldsDictNodeId;
-    s.text1b(fieldsDictNodeId, std::numeric_limits<uint32_t>::max());
-    return fieldsDictNodeId;
+    std::string stringPoolNodeId;
+    s.text1b(stringPoolNodeId, std::numeric_limits<uint32_t>::max());
+    return stringPoolNodeId;
 }
 
 }

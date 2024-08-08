@@ -24,10 +24,10 @@ struct DataSourceServer::Impl
         throw std::runtime_error("TileSourceDataLayer callback is unset!");
     };
     std::function<std::vector<LocateResponse>(const LocateRequest&)> locateCallback_;
-    std::shared_ptr<StringPool> fields_;
+    std::shared_ptr<StringPool> strings_;
 
     explicit Impl(DataSourceInfo info)
-        : info_(std::move(info)), fields_(std::make_shared<StringPool>(info_.nodeId_))
+        : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.nodeId_))
     {
     }
 };
@@ -76,10 +76,10 @@ void DataSourceServer::setup(httplib::Server& server)
             auto layer = impl_->info_.getLayer(layerIdParam);
 
             auto tileIdParam = TileId{std::stoull(req.get_param_value("tileId"))};
-            auto fieldsOffsetParam = (simfil::StringId)0;
-            if (req.has_param("fieldsOffset"))
-                fieldsOffsetParam = (simfil::StringId)
-                    std::stoul(req.get_param_value("fieldsOffset"));
+            auto stringPoolOffsetParam = (simfil::StringId)0;
+            if (req.has_param("stringPoolOffset"))
+                stringPoolOffsetParam = (simfil::StringId)
+                    std::stoul(req.get_param_value("stringPoolOffset"));
 
             std::string responseType = "binary";
             if (req.has_param("responseType"))
@@ -94,7 +94,7 @@ void DataSourceServer::setup(httplib::Server& server)
                         impl_->info_.nodeId_,
                         impl_->info_.mapId_,
                         layer,
-                        impl_->fields_);
+                        impl_->strings_);
                     impl_->tileFeatureCallback_(tileFeatureLayer);
                     return tileFeatureLayer;
                 }
@@ -104,7 +104,7 @@ void DataSourceServer::setup(httplib::Server& server)
                         impl_->info_.nodeId_,
                         impl_->info_.mapId_,
                         layer,
-                        impl_->fields_);
+                        impl_->strings_);
                     impl_->tileSourceDataCallback_(tileSourceLayer);
                     return tileSourceLayer;
                 }
@@ -116,11 +116,11 @@ void DataSourceServer::setup(httplib::Server& server)
             // Serialize TileLayer using TileLayerStream.
             if (responseType == "binary") {
                 std::stringstream content;
-                TileLayerStream::StringOffsetMap fieldOffsets{
-                    {impl_->info_.nodeId_, fieldsOffsetParam}};
+                TileLayerStream::StringPoolOffsetMap stringPoolOffsets{
+                    {impl_->info_.nodeId_, stringPoolOffsetParam}};
                 TileLayerStream::Writer layerWriter{
                     [&](auto&& msg, auto&& msgType) { content << msg; },
-                    fieldOffsets};
+                    stringPoolOffsets};
                 layerWriter.write(tileLayer);
                 res.set_content(content.str(), "application/binary");
             }

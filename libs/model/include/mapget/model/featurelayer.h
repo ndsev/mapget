@@ -53,7 +53,7 @@ public:
      *  Each feature in this layer must have a feature type which is also present in
      *  the layer. Therefore, feature ids from this layer can be verified to conform
      *  to one of the allowed feature id compositions for the feature type.
-     * @param fields Shared field name dictionary, which allows compressed storage
+     * @param strings Shared string dictionary, which allows compressed storage
      *  of object field name strings. It is auto-filled, and one instance may be used
      *  by multiple TileFeatureLayer instances.
      */
@@ -62,21 +62,20 @@ public:
         std::string const& nodeId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
-        std::shared_ptr<simfil::StringPool> const& fields
-    );
+        std::shared_ptr<simfil::StringPool> const& strings);
 
     /**
      * Constructor which parses a TileFeatureLayer from a binary stream.
      * @param inputStream The binary stream to parse.
      * @param layerInfoResolveFun Function which will be called to retrieve
      *  a layerInfo object for the layer name stored for the tile.
-     * @param fieldNameResolveFun Function which will be called to retrieve
-     *  a Fields dictionary object for the node name for the tile.
+     * @param stringPoolGetter Function which will be called to retrieve
+     *  a string pool for the node name of the tile.
      */
     TileFeatureLayer(
         std::istream& inputStream,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringResolveFun const& fieldNameResolveFun
+        StringPoolResolveFun const& stringPoolGetter
     );
 
     /**
@@ -211,7 +210,7 @@ public:
 
     /**
      * Change the string pool of this model to a different one.
-     * Note: This will potentially create new field entries in the newDict,
+     * Note: This will potentially create new string entries in the newDict,
      * for field names which were not there before.
      */
     void setStrings(std::shared_ptr<simfil::StringPool> const& newPool) override;

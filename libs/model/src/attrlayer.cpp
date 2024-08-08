@@ -70,8 +70,8 @@ bool AttributeLayerList::forEachLayer(
 {
     if (!cb)
         return false;
-    for(auto const& [fieldId, value] : fields()) {
-        if (auto layerName = model().strings()->resolve(fieldId)) {
+    for(auto const& [stringId, value] : fields()) {
+        if (auto layerName = model().strings()->resolve(stringId)) {
             if (value->addr().column() != TileFeatureLayer::ColumnId::AttributeLayers) {
                 log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
                 continue;

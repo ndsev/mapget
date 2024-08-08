@@ -73,7 +73,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     })"_json);
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<StringPool>("TastyTomatoSaladNode");
+    auto strings = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -81,7 +81,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         "TastyTomatoSaladNode",
         "Tropico",
         layerInfo,
-        fieldNames);
+        strings);
 
     // Set the tile's feature id prefix.
     tile->setIdPrefix({{"areaId", "TheBestArea"}});
@@ -227,7 +227,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             },
             [&](auto&& nodeId){
                 REQUIRE(nodeId == "TastyTomatoSaladNode");
-                return fieldNames;
+                return strings;
             }
         );
 
@@ -256,7 +256,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         auto messageCount = 0;
         std::stringstream byteStream;
-        TileLayerStream::StringOffsetMap stringOffsets;
+        TileLayerStream::StringPoolOffsetMap stringOffsets;
         TileLayerStream::Writer layerWriter{[&](auto&& msg, auto&& type){
             ++messageCount;
             byteStream << msg;

@@ -19,7 +19,7 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
     info_ = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
 
     if (info_.nodeId_.empty()) {
-        // Unique node IDs are required for the field offsets.
+        // Unique node IDs are required for the string pool offsets.
         raise(
             fmt::format("Remote data source is missing node ID! Source info: {}",
                 fetchedInfoJson->body));
@@ -55,10 +55,10 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
 
     // Send a GET tile request.
     auto tileResponse = client.Get(fmt::format(
-        "/tile?layer={}&tileId={}&fieldsOffset={}",
+        "/tile?layer={}&tileId={}&stringPoolOffset={}",
         k.layerId_,
         k.tileId_.value_,
-        cachedFieldsOffset(info.nodeId_, cache)));
+        cachedStringPoolOffset(info.nodeId_, cache)));
 
     // Check that the response is OK.
     if (!tileResponse || tileResponse->status >= 300) {

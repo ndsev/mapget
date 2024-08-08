@@ -35,8 +35,8 @@ struct TileSourceDataLayer::Impl
     // Simfil compiled expression and environment
     SimfilExpressionCache expressionCache_;
 
-    Impl(std::shared_ptr<simfil::StringPool> fields)
-        : expressionCache_(makeEnvironment(std::move(fields)))
+    Impl(std::shared_ptr<simfil::StringPool> stringPool)
+        : expressionCache_(makeEnvironment(std::move(stringPool)))
     {}
 
     // Bitsery (de-)serialization interface
@@ -52,21 +52,20 @@ TileSourceDataLayer::TileSourceDataLayer(
     std::string const& nodeId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    std::shared_ptr<simfil::StringPool> const& fields
-) :
+    std::shared_ptr<simfil::StringPool> const& stringPool) :
     TileLayer(tileId, nodeId, mapId, layerInfo),
-    ModelPool(fields),
-    impl_(std::make_unique<Impl>(fields))
+    ModelPool(stringPool),
+    impl_(std::make_unique<Impl>(stringPool))
 {}
 
 TileSourceDataLayer::TileSourceDataLayer(
     std::istream& in,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringResolveFun const& fieldNameResolveFun
+    StringPoolResolveFun const& stringPoolGetter
 ) :
     TileLayer(in, layerInfoResolveFun),
-    ModelPool(fieldNameResolveFun(nodeId_)),
-    impl_(std::make_unique<Impl>(fieldNameResolveFun(nodeId_)))
+    ModelPool(stringPoolGetter(nodeId_)),
+    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
 {
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(in);
     impl_->readWrite(s);

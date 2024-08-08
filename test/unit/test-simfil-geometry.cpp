@@ -72,7 +72,7 @@ auto makeLayer()
     })"_json);
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<StringPool>("TastyTomatoSaladNode");
+    auto strings = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -80,7 +80,7 @@ auto makeLayer()
         "TastyTomatoSaladNode",
         "Tropico",
         layerInfo,
-        fieldNames);
+        strings);
 
     // Set the tile's feature id prefix.
     tile->setIdPrefix({{"areaId", "TheBestArea"}});

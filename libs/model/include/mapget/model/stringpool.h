@@ -6,13 +6,13 @@ namespace mapget
 {
 
 /**
- * The StringPool class is a case-insensitive dictionary of uint16_t to field name strings.
+ * The StringPool class is a case-insensitive dictionary of uint16_t to strings and vice versa.
  * Multiple TileFeatureLayers can share the same pool, reducing the size of serialized FeatureLayers.
  *
- * The inherited mapget::StringPool contains static field IDs for various purposes.
+ * The inherited mapget::StringPool contains static string IDs for various purposes.
  *
  * String IDs are uint16 values, which are smaller and faster to work with than strings.
- * When querying strings by name, the pool is used to look up a field ID.
+ * When querying strings by name, the pool is used to look up a string ID.
  * Subsequent searches are performed using this 16-bit integer for improved efficiency.
  *
  * Note: A StringPool is always unique per datasource node. Therefore,
@@ -20,7 +20,7 @@ namespace mapget
  */
 struct StringPool : public simfil::StringPool
 {
-    enum StaticFieldIds : simfil::StringId {
+    enum StaticStringIds : simfil::StringId {
         IdStr = NextStaticId,
         TypeIdStr,
         MapIdStr,

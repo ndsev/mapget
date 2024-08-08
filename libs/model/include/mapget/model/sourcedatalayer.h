@@ -34,12 +34,12 @@ public:
         std::string const& nodeId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
-        std::shared_ptr<simfil::StringPool> const& fields);
+        std::shared_ptr<simfil::StringPool> const& stringPool);
 
     TileSourceDataLayer(
         std::istream&,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringResolveFun const& fieldNameResolveFun);
+        StringPoolResolveFun const& stringPoolGetter);
 
     ~TileSourceDataLayer() override;
 

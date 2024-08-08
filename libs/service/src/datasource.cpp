@@ -21,7 +21,7 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
             info.nodeId_,
             info.mapId_,
             info.getLayer(k.layerId_),
-            cache->getFieldDict(info.nodeId_));
+            cache->getStringPool(info.nodeId_));
         fill(result);
         return result;
     }
@@ -31,7 +31,7 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
             info.nodeId_,
             info.mapId_,
             info.getLayer(k.layerId_),
-            cache->getFieldDict(info.nodeId_));
+            cache->getStringPool(info.nodeId_));
         fill(result);
         return result;
     }
@@ -40,9 +40,9 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
     }
 }
 
-simfil::StringId DataSource::cachedFieldsOffset(const std::string& nodeId, Cache::Ptr const& cache)
+simfil::StringId DataSource::cachedStringPoolOffset(const std::string& nodeId, Cache::Ptr const& cache)
 {
-    return cache->cachedFieldsOffset(nodeId);
+    return cache->cachedStringPoolOffset(nodeId);
 }
 
 std::vector<LocateResponse> DataSource::locate(const LocateRequest& req)

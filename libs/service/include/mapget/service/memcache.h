@@ -29,11 +29,11 @@ public:
     /** Upsert a TileLayer blob. */
     void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
 
-    /** Retrieve a Fields-dict-blob for a sourceNodeId -> No-Op */
-    std::optional<std::string> getFieldsBlob(std::string_view const& sourceNodeId) override {return {};}
+    /** Retrieve a string-pool blob for a sourceNodeId -> No-Op */
+    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override {return {};}
 
-    /** Upsert a Fields-dict blob. -> No-Op */
-    void putFieldsBlob(std::string_view const& sourceNodeId, std::string const& v) override {}
+    /** Upsert a string-pool blob. -> No-Op */
+    void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override {}
 
     /** Enriches the statistics with info about the number of cached tiles. */
     nlohmann::json getStatistics() const override;

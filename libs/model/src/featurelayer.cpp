@@ -140,8 +140,8 @@ struct TileFeatureLayer::Impl {
         s.value1b(sourceDataAddressFormat_);
     }
 
-    explicit Impl(std::shared_ptr<simfil::StringPool> fieldDict)
-        : expressionCache_(makeEnvironment(std::move(fieldDict)))
+    explicit Impl(std::shared_ptr<simfil::StringPool> stringPool)
+        : expressionCache_(makeEnvironment(std::move(stringPool)))
     {
     }
 };
@@ -151,10 +151,9 @@ TileFeatureLayer::TileFeatureLayer(
     std::string const& nodeId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    std::shared_ptr<simfil::StringPool> const& fields
-) :
-    ModelPool(fields),
-    impl_(std::make_unique<Impl>(fields)),
+    std::shared_ptr<simfil::StringPool> const& strings) :
+    ModelPool(strings),
+    impl_(std::make_unique<Impl>(strings)),
     TileLayer(tileId, nodeId, mapId, layerInfo)
 {
 }
@@ -162,11 +161,11 @@ TileFeatureLayer::TileFeatureLayer(
 TileFeatureLayer::TileFeatureLayer(
     std::istream& inputStream,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringResolveFun const& fieldNameResolveFun
+    StringPoolResolveFun const& stringPoolGetter
 ) :
     TileLayer(inputStream, layerInfoResolveFun),
-    ModelPool(fieldNameResolveFun(nodeId_)),
-    impl_(std::make_unique<Impl>(fieldNameResolveFun(nodeId_)))
+    ModelPool(stringPoolGetter(nodeId_)),
+    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
 {
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
     impl_->readWrite(s);
@@ -810,7 +809,7 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
 
 void TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
-    // Re-map old field IDs to new field IDs
+    // Re-map old string IDs to new string IDs
     for (auto& attr : impl_->attributes_) {
         if (auto resolvedName = strings()->resolve(attr.name_)) {
             attr.name_ = newDict->emplace(*resolvedName);
