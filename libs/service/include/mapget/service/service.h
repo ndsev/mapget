@@ -2,11 +2,13 @@
 
 #include "cache.h"
 #include "datasource.h"
+#include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/layer.h"
 #include "memcache.h"
 
 #include <condition_variable>
 #include <mutex>
+#include <utility>
 
 namespace mapget
 {
@@ -35,8 +37,7 @@ public:
     LayerTilesRequest(
         std::string mapId,
         std::string layerId,
-        std::vector<TileId> tiles,
-        std::function<void(TileFeatureLayer::Ptr)> onResult);
+        std::vector<TileId> tiles);
 
     /** Get the current status of the request. */
     RequestStatus getStatus();
@@ -60,22 +61,32 @@ public:
     std::vector<TileId> tiles_;
 
     /**
-     * The callback function which is called when a result tile is available.
-     */
-    std::function<void(TileFeatureLayer::Ptr)> onResult_;
-
-    /**
      * The callback function which is called when all tiles have been processed.
      */
     std::function<void(RequestStatus)> onDone_;
 
+    /**
+     * The callback function which is called when all tiles have been processed.
+     */
+    template <class Fun>
+    LayerTilesRequest& onFeatureLayer(Fun&& callback) { onFeatureLayer_ = std::forward<Fun>(callback); return *this; }
+
+    template <class Fun>
+    LayerTilesRequest& onSourceDataLayer(Fun&& callback) { onSourceDataLayer_ = std::forward<Fun>(callback); return *this; }
+
 protected:
-    virtual void notifyResult(TileFeatureLayer::Ptr);
+    virtual void notifyResult(TileLayer::Ptr);
     void setStatus(RequestStatus s);
     void notifyStatus();
     nlohmann::json toJson();
 
 private:
+    /**
+     * The callback functions which are called when a result tile is available.
+     */
+    std::function<void(TileFeatureLayer::Ptr)> onFeatureLayer_;
+    std::function<void(TileSourceDataLayer::Ptr)> onSourceDataLayer_;
+
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;

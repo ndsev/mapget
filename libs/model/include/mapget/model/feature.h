@@ -112,9 +112,9 @@ public:
     std::vector<simfil::Value> evaluateAll(std::string_view const& expression);
 
     /**
-     * Convert the Feature to GeoJSON.
+     * Convert the Feature to (Geo-) JSON.
      */
-    nlohmann::json toGeoJson();
+    nlohmann::json toJson() const override;
 
     /**
      * Expose access to underlying TileFeatureLayer.
@@ -128,10 +128,10 @@ public:
      * (2) Use an existing feature id for the target.
      * (3) Use an existing relation.
      */
-    void addRelation(std::string_view const& name, std::string_view const& targetType,
+    model_ptr<Relation> addRelation(std::string_view const& name, std::string_view const& targetType,
         KeyValueViewPairs const& targetIdParts);
-    void addRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
-    void addRelation(model_ptr<Relation> const& relation);
+    model_ptr<Relation> addRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
+    model_ptr<Relation> addRelation(model_ptr<Relation> const& relation);
 
     /**
      * Visit all added relations. Return false from the callback to abort.
@@ -148,6 +148,12 @@ public:
     /** Get a relation at a specific index. */
     [[nodiscard]] model_ptr<Relation> getRelation(uint32_t index) const;
 
+    /**
+     * SourceData accessors.
+     */
+    [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
+    void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
+
 protected:
     /**
      * Simfil Model-Node Functions
@@ -155,8 +161,8 @@ protected:
     [[nodiscard]] simfil::ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId&) const override;
-    [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
+    [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
     /**
@@ -178,6 +184,7 @@ protected:
         simfil::ModelNodeAddress attrLayers_;
         simfil::ModelNodeAddress attrs_;
         simfil::ModelNodeAddress relations_;
+        simfil::ModelNodeAddress sourceData_;
 
         template <typename S>
         void serialize(S& s)
@@ -187,6 +194,7 @@ protected:
             s.object(attrLayers_);
             s.object(attrs_);
             s.object(relations_);
+            s.object(sourceData_);
         }
     };
 
@@ -198,7 +206,7 @@ protected:
     // We keep the fields in a tiny vector on the stack,
     // because their number is dynamic, as a variable number
     // of id-part fields is adopted from the feature id.
-    sfl::small_vector<std::pair<simfil::FieldId, simfil::ModelNode::Ptr>, 32> fields_;
+    sfl::small_vector<std::pair<simfil::StringId, simfil::ModelNode::Ptr>, 32> fields_;
     void updateFields();
 
     nlohmann::json toJsonPrivate(simfil::ModelNode const&);
@@ -208,8 +216,8 @@ protected:
         [[nodiscard]] simfil::ValueType type() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
-        [[nodiscard]] ModelNode::Ptr get(const simfil::FieldId&) const override;
-        [[nodiscard]] simfil::FieldId keyAt(int64_t) const override;
+        [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
+        [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
         [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
         FeaturePropertyView(Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);

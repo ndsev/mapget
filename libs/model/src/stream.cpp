@@ -1,21 +1,28 @@
 #include "stream.h"
+#include "sourcedatalayer.h"
+#include "info.h"
 #include "mapget/log.h"
+#include "simfil/model/nodes.h"
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
+#include <memory>
+
+#include "featurelayer.h"
+#include "sourcedatalayer.h"
 
 namespace mapget
 {
 
 TileLayerStream::Reader::Reader(
     LayerInfoResolveFun layerInfoProvider,
-    std::function<void(TileFeatureLayer::Ptr)> onParsedLayer,
-    std::shared_ptr<CachedFieldsProvider> fieldCacheProvider)
+    std::function<void(TileLayer::Ptr)> onParsedLayer,
+    std::shared_ptr<StringPoolCache> stringPoolProvider)
     : layerInfoProvider_(std::move(layerInfoProvider)),
-      cachedFieldsProvider_(
-          fieldCacheProvider ? std::move(fieldCacheProvider) :
-                               std::make_shared<TileLayerStream::CachedFieldsProvider>()),
+      stringPoolProvider_(
+          stringPoolProvider ? std::move(stringPoolProvider) :
+                               std::make_shared<TileLayerStream::StringPoolCache>()),
       onParsedLayer_(std::move(onParsedLayer))
 {
 }
@@ -51,29 +58,36 @@ bool TileLayerStream::Reader::continueReading()
     if (nextValueType_ == MessageType::TileFeatureLayer)
     {
         auto start = std::chrono::system_clock::now();
-        auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
-            buffer_,
-            layerInfoProvider_,
-            [this](auto&& nodeId){return cachedFieldsProvider_->getFieldDict(nodeId);});
+        auto layer = std::make_shared<TileFeatureLayer>(buffer_, layerInfoProvider_, [this](auto&& nodeId) {
+            return stringPoolProvider_->getStringPool(nodeId);
+        });
+
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
         log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
-        onParsedLayer_(tileFeatureLayer);
+        onParsedLayer_(layer);
     }
-    else if (nextValueType_ == MessageType::Fields)
+    else if (nextValueType_ == MessageType::TileSourceDataLayer)
     {
-        // Read the node id which identifies the fields' dictionary.
-        std::string fieldsDictNodeId = Fields::readDataSourceNodeId(buffer_);
-        cachedFieldsProvider_->getFieldDict(fieldsDictNodeId)->read(buffer_);
+        auto layer = std::make_shared<TileSourceDataLayer>(buffer_, layerInfoProvider_, [this](auto&& nodeId) {
+            return stringPoolProvider_->getStringPool(nodeId);
+        });
+        onParsedLayer_(layer);
+    }
+    else if (nextValueType_ == MessageType::StringPool)
+    {
+        // Read the node id which identifies the string pool.
+        std::string stringPoolNodeId = StringPool::readDataSourceNodeId(buffer_);
+        stringPoolProvider_->getStringPool(stringPoolNodeId)->read(buffer_);
     }
 
     currentPhase_ = Phase::ReadHeader;
     return true;
 }
 
-std::shared_ptr<TileLayerStream::CachedFieldsProvider> TileLayerStream::Reader::fieldDictCache()
+std::shared_ptr<TileLayerStream::StringPoolCache> TileLayerStream::Reader::stringPoolCache()
 {
-    return cachedFieldsProvider_;
+    return stringPoolProvider_;
 }
 
 bool TileLayerStream::Reader::readMessageHeader(std::stringstream & stream, MessageType& outType, uint32_t& outSize)
@@ -102,40 +116,57 @@ bool TileLayerStream::Reader::readMessageHeader(std::stringstream & stream, Mess
 
 TileLayerStream::Writer::Writer(
     std::function<void(std::string, MessageType)> onMessage,
-    FieldOffsetMap& fieldsOffsets,
-    bool differentialFieldUpdates)
+    StringPoolOffsetMap& stringPoolOffsets,
+    bool differentialStringUpdates)
     : onMessage_(std::move(onMessage)),
-      fieldsOffsets_(fieldsOffsets),
-      differentialFieldUpdates_(differentialFieldUpdates)
+      stringPoolOffsets_(stringPoolOffsets),
+      differentialStringUpdates_(differentialStringUpdates)
 {
 }
 
-void TileLayerStream::Writer::write(TileFeatureLayer::Ptr const& tileFeatureLayer)
+void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
 {
-    auto fields = tileFeatureLayer->fieldNames();
-    auto& highestFieldKnownToClient = fieldsOffsets_[tileFeatureLayer->nodeId()];
-    auto highestField = fields->highest();
+    if (auto modelPool = std::dynamic_pointer_cast<simfil::ModelPool>(tileLayer)) {
+        if (auto strings = modelPool->strings()) {
+            auto& highestStringKnownToClient = stringPoolOffsets_[tileLayer->nodeId()];
+            auto highestString = strings->highest();
 
-    if (highestFieldKnownToClient < highestField)
-    {
-        // Need to send the client an update for the Fields dictionary
-        std::stringstream serializedFields;
-        auto fieldUpdateOffset = 0;
-        if (differentialFieldUpdates_)
-            fieldUpdateOffset = highestFieldKnownToClient+1;
-        fields->write(serializedFields, fieldUpdateOffset);
-        sendMessage(serializedFields.str(), MessageType::Fields);
-        highestFieldKnownToClient = highestField;
+            if (highestStringKnownToClient < highestString)
+            {
+                // Need to send the client an update for the string pool.
+                std::stringstream serializedStrings;
+                auto stringUpdateOffset = 0;
+                if (differentialStringUpdates_)
+                    stringUpdateOffset = highestStringKnownToClient + 1;
+                strings->write(serializedStrings, stringUpdateOffset);
+                sendMessage(serializedStrings.str(), MessageType::StringPool);
+                highestStringKnownToClient = highestString;
+            }
+        }
     }
 
-    // Send actual tileFeatureLayer
-    std::stringstream serializedFeatureLayer;
+    // Send the actual layer
+    std::stringstream serializedLayer;
     auto start = std::chrono::system_clock::now();
-    tileFeatureLayer->write(serializedFeatureLayer);
-    auto bytes = serializedFeatureLayer.str();
+    tileLayer->write(serializedLayer);
+    auto bytes = serializedLayer.str();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
     log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
-    sendMessage(std::move(bytes), MessageType::TileFeatureLayer);
+
+    const auto layerType = tileLayer->layerInfo()->type_;
+    const auto messageType = [&layerType]() {
+        switch (layerType) {
+        case mapget::LayerType::Features:
+            return MessageType::TileFeatureLayer;
+        case mapget::LayerType::SourceData:
+            return MessageType::TileSourceDataLayer;
+        default:
+            raiseFmt("Unsupported layer type: {}", static_cast<int>(layerType));
+        }
+        return MessageType::None;
+    }();
+
+    sendMessage(std::move(bytes), messageType);
 }
 
 void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::MessageType msgType)
@@ -167,32 +198,32 @@ void TileLayerStream::Writer::sendEndOfStream()
     sendMessage("", MessageType::EndOfStream);
 }
 
-std::shared_ptr<Fields> TileLayerStream::CachedFieldsProvider::getFieldDict(const std::string_view& nodeId)
+std::shared_ptr<StringPool> TileLayerStream::StringPoolCache::getStringPool(const std::string_view& nodeId)
 {
     {
-        std::shared_lock fieldCacheReadLock(fieldCacheMutex_);
-        auto it = fieldsPerNodeId_.find(std::string(nodeId));
-        if (it != fieldsPerNodeId_.end()) {
+        std::shared_lock stringPoolReadLock(stringPoolCacheMutex_);
+        auto it = stringPoolPerNodeId_.find(std::string(nodeId));
+        if (it != stringPoolPerNodeId_.end()) {
             return it->second;
         }
     }
     {
-        std::unique_lock fieldCacheWriteLock(fieldCacheMutex_, std::defer_lock);
+        std::unique_lock stringPoolWriteLock(stringPoolCacheMutex_, std::defer_lock);
         // Was it inserted already now?
-        auto it = fieldsPerNodeId_.find(std::string(nodeId));
-        if (it != fieldsPerNodeId_.end())
+        auto it = stringPoolPerNodeId_.find(std::string(nodeId));
+        if (it != stringPoolPerNodeId_.end())
             return it->second;
         auto [newIt, _] =
-            fieldsPerNodeId_.emplace(nodeId, std::make_shared<Fields>(std::string(nodeId)));
+            stringPoolPerNodeId_.emplace(nodeId, std::make_shared<StringPool>(std::string(nodeId)));
         return newIt->second;
     }
 }
 
-TileLayerStream::FieldOffsetMap TileLayerStream::CachedFieldsProvider::fieldDictOffsets() const
+TileLayerStream::StringPoolOffsetMap TileLayerStream::StringPoolCache::stringPoolOffsets() const
 {
-    auto result = FieldOffsetMap();
-    for (auto const& [nodeId, fieldsDict] : fieldsPerNodeId_)
-        result.emplace(nodeId, fieldsDict->highest());
+    auto result = StringPoolOffsetMap();
+    for (auto const& [nodeId, stringPool] : stringPoolPerNodeId_)
+        result.emplace(nodeId, stringPool->highest());
     return result;
 }
 

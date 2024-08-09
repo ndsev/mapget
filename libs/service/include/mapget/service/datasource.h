@@ -3,6 +3,9 @@
 #include "cache.h"
 #include "locate.h"
 
+#include "mapget/model/featurelayer.h"
+#include "mapget/model/sourcedatalayer.h"
+
 namespace mapget
 {
 
@@ -25,7 +28,7 @@ public:
     virtual DataSourceInfo info() = 0;
 
     /**
-     * Method which is called up to DataSourceInfo::maxParallelJobs_
+     * Methods which get called up to DataSourceInfo::maxParallelJobs_
      * times in parallel to satisfy data requests for a mapget Service.
      * @param featureTile A TileFeatureLayer object which this data source
      *  should fill according the available data. If any error occurs
@@ -34,6 +37,7 @@ public:
      *  TileLayer::setInfo() may be used.
      */
     virtual void fill(TileFeatureLayer::Ptr const& featureTile) = 0;
+    virtual void fill(TileSourceDataLayer::Ptr const& sourceData) = 0;
 
     /**
      * Obtain map tile keys where the feature with the specified ID may be found.
@@ -45,10 +49,10 @@ public:
     virtual std::vector<LocateResponse> locate(LocateRequest const& req);
 
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
-    virtual TileFeatureLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);
+    virtual TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);
 
 protected:
-    static simfil::FieldId cachedFieldsOffset(std::string const& nodeId, Cache::Ptr const& cache);
+    static simfil::StringId cachedStringPoolOffset(std::string const& nodeId, Cache::Ptr const& cache);
 };
 
 }

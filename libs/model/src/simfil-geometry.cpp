@@ -1,5 +1,5 @@
 #include "simfil-geometry.h"
-#include "fields.h"
+#include "stringpool.h"
 
 #include "simfil/value.h"
 #include "simfil/result.h"
@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <cmath>
 #include <array>
-#include <stdexcept>
 #include <string>
 
 using namespace std::string_literals;
@@ -236,7 +235,7 @@ auto Polygon::bbox() const -> BBox
 auto Polygon::area() const -> double
 {
     // The first LineString represents the exterior ring,
-    // all following LineStrings represent holes/interior rings.
+    // all following LineStringPool represent holes/interior rings.
     if (polys.empty())
         return 0.0;
 
@@ -775,7 +774,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
 
     auto getType = [&](Value v) -> std::optional<std::string> {
         if (v.node) {
-            if (auto typenode = v.node->get(Fields::TypeStr))
+            if (auto typenode = v.node->get(StringPool::TypeStr))
                 if (Value value = typenode->value();
                     value.isa(ValueType::String))
                     return value.as<ValueType::String>();
@@ -787,7 +786,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
         if (!v.node)
             return Result::Stop;
 
-        if (auto geonode = v.node->get(Fields::GeometryStr)) {
+        if (auto geonode = v.node->get(StringPool::GeometryStr)) {
             v = Value::field(geonode);
             if (!v.node)
                 return Result::Stop;
@@ -798,7 +797,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
             return Result::Stop;
 
         if (type == "GeometryCollection"s) {
-            auto node = v.node->get(Fields::GeometriesStr);
+            auto node = v.node->get(StringPool::GeometriesStr);
             if (!node)
                 return Result::Stop;
 
@@ -814,7 +813,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
         if (!v.node)
             return Result::Stop;
 
-        if (auto geonode = v.node->get(Fields::GeometryStr)) {
+        if (auto geonode = v.node->get(StringPool::GeometryStr)) {
             v = Value::field(geonode);
             if (!v.node)
                 return Result::Stop;
@@ -826,7 +825,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
         else
             return res(ctx, std::move(v));
 
-        if (auto coordnode = v.node->get(Fields::CoordinatesStr)) {
+        if (auto coordnode = v.node->get(StringPool::CoordinatesStr)) {
             auto getPt = [&](const ModelNode &node, Point &pt) {
                 auto nx = node.at(0), ny = node.at(1);
                 if (!nx || !ny)

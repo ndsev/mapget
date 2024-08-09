@@ -8,11 +8,11 @@ namespace mapget
 struct HttpClient::Impl {
     httplib::Client client_;
     std::map<std::string, DataSourceInfo> sources_;
-    std::shared_ptr<TileLayerStream::CachedFieldsProvider> fieldsProvider_;
+    std::shared_ptr<TileLayerStream::StringPoolCache> stringPoolProvider_;
 
     Impl(std::string const& host, uint16_t port) : client_(host, port)
     {
-        fieldsProvider_ = std::make_shared<TileLayerStream::CachedFieldsProvider>();
+        stringPoolProvider_ = std::make_shared<TileLayerStream::StringPoolCache>();
         client_.set_keep_alive(false);
         auto sourcesJson = client_.Get("/sources");
         if (!sourcesJson || sourcesJson->status != 200)
@@ -57,7 +57,7 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     auto reader = std::make_unique<TileLayerStream::Reader>(
         [this](auto&& mapId, auto&& layerId){return impl_->resolve(mapId, layerId);},
         [request](auto&& result) { request->notifyResult(result); },
-        impl_->fieldsProvider_);
+        impl_->stringPoolProvider_);
 
     using namespace nlohmann;
 
@@ -69,7 +69,7 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         "/tiles",
         json::object({
             {"requests", json::array({request->toJson()})},
-            {"maxKnownFieldIds", reader->fieldDictCache()->fieldDictOffsets()}
+            {"stringPoolOffsets", reader->stringPoolCache()->stringPoolOffsets()}
         }).dump(),
         "application/json");
 

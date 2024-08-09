@@ -1,6 +1,10 @@
 #include "geometry.h"
 #include "featurelayer.h"
 #include "simfil/model/nodes.h"
+#include "simfil/model/string-pool.h"
+#include "sourcedatareference.h"
+#include "sourceinfo.h"
+#include "stringpool.h"
 
 #include <cassert>
 #include <cstdint>
@@ -43,19 +47,20 @@ uint32_t GeometryCollection::size() const {
     return 2;
 }
 
-ModelNode::Ptr GeometryCollection::get(const FieldId& f) const {
+ModelNode::Ptr GeometryCollection::get(const StringId& f) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->get(f);
-    if (f == Fields::TypeStr) return at(0);
-    if (f == Fields::GeometriesStr) return at(1);
+    if (f == StringPool::TypeStr) return at(0);
+    if (f == StringPool::GeometriesStr) return at(1);
     return {};
 }
 
-FieldId GeometryCollection::keyAt(int64_t i) const {
+StringId GeometryCollection::keyAt(int64_t i) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->keyAt(i);
-    if (i == 0) return Fields::TypeStr;
-    if (i == 1) return Fields::GeometriesStr;
+    if (i == 0) return StringPool::TypeStr;
+    if (i == 1) return StringPool::GeometriesStr;
+    if (i == 1) return StringPool::SourceDataStr;
     throw std::out_of_range("geom collection: Out of range.");
 }
 
@@ -108,42 +113,71 @@ ValueType Geometry::type() const {
 }
 
 ModelNode::Ptr Geometry::at(int64_t i) const {
-    if (i == 0) return ValueNode(
-        geomData_->type_ == GeomType::Points  ? MultiPointStr :
-        geomData_->type_ == GeomType::Line    ? LineStringStr :
-        geomData_->type_ == GeomType::Polygon ? PolygonStr :
-        geomData_->type_ == GeomType::Mesh    ? MultiPolygonStr : "",
-        model_);
-    if (i == 1) {
-        switch (geomData_->type_) {
-        case GeomType::Polygon:
-            return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::Polygon, addr_.index()});
-        case GeomType::Mesh:
-            return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::Mesh, addr_.index()});
-        default:
-            return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::PointBuffers, addr_.index()});
-        }
+    if (geomData_->sourceDataReferences_) {
+        if (i == 0)
+            return get(StringPool::SourceDataStr);
+        i -= 1;
     }
+    if (i == 0)
+        return get(StringPool::TypeStr);
+    if (i == 1)
+        return get(StringPool::CoordinatesStr);
     throw std::out_of_range("geom: Out of range.");
 }
 
 uint32_t Geometry::size() const {
-    return 2;
+    return 2 + (geomData_->sourceDataReferences_ ? 1 : 0);
 }
 
-ModelNode::Ptr Geometry::get(const FieldId& f) const {
-    if (f == Fields::TypeStr) return at(0);
-    if (f == Fields::CoordinatesStr) return at(1);
+ModelNode::Ptr Geometry::get(const StringId& f) const {
+    if (f == StringPool::SourceDataStr && geomData_->sourceDataReferences_) {
+        return ModelNode::Ptr::make(model_, geomData_->sourceDataReferences_);
+    }
+    if (f == StringPool::TypeStr) {
+        return ValueNode(
+            geomData_->type_ == GeomType::Points  ? MultiPointStr :
+            geomData_->type_ == GeomType::Line    ? LineStringStr :
+            geomData_->type_ == GeomType::Polygon ? PolygonStr :
+            geomData_->type_ == GeomType::Mesh    ? MultiPolygonStr : "",
+            model_);
+    }
+    if (f == StringPool::CoordinatesStr) {
+        switch (geomData_->type_) {
+        case GeomType::Polygon:
+            return ModelNode::Ptr::make(
+                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Polygon, addr_.index()});
+        case GeomType::Mesh:
+            return ModelNode::Ptr::make(
+                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Mesh, addr_.index()});
+        default:
+            return ModelNode::Ptr::make(
+                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
+        }
+    }
     return {};
 }
 
-FieldId Geometry::keyAt(int64_t i) const {
-    if (i == 0) return Fields::TypeStr;
-    if (i == 1) return Fields::CoordinatesStr;
+StringId Geometry::keyAt(int64_t i) const {
+    if (geomData_->sourceDataReferences_) {
+        if (i == 0)
+            return StringPool::SourceDataStr;
+        i -= 1;
+    }
+    if (i == 0) return StringPool::TypeStr;
+    if (i == 1) return StringPool::CoordinatesStr;
     throw std::out_of_range("geom: Out of range.");
+}
+
+model_ptr<SourceDataReferenceCollection> Geometry::sourceDataReferences() const
+{
+    if (geomData_->sourceDataReferences_)
+        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, geomData_->sourceDataReferences_));
+    return {};
+}
+
+void Geometry::setSourceDataReferences(simfil::ModelNode::Ptr const& refs)
+{
+    geomData_->sourceDataReferences_ = refs->addr();
 }
 
 void Geometry::append(Point const& p)
@@ -184,13 +218,13 @@ bool Geometry::iterate(const IterCallback& cb) const
 
 size_t Geometry::numPoints() const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::PointBuffers, addr_.index()}};
+    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     return vertexBufferNode.size();
 }
 
 Point Geometry::pointAt(size_t index) const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::PointBuffers, addr_.index()}};
+    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     VertexNode vertex{*vertexBufferNode.at((int64_t)index), vertexBufferNode.baseGeomData_};
     return vertex.point_;
 }
@@ -211,7 +245,7 @@ ModelNode::Ptr PolygonNode::at(int64_t index) const
     // Index 0 is the outer ring, all following rings are holes
     if (index == 0)
         return ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::LinearRing, addr_.index()});
+            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::LinearRing, addr_.index()});
 
     throw std::out_of_range("PolygonNode: index out of bounds.");
 }
@@ -221,12 +255,12 @@ uint32_t PolygonNode::size() const
     return 1;
 }
 
-ModelNode::Ptr PolygonNode::get(const FieldId&) const
+ModelNode::Ptr PolygonNode::get(const StringId&) const
 {
     return {};
 }
 
-FieldId PolygonNode::keyAt(int64_t) const
+StringId PolygonNode::keyAt(int64_t) const
 {
     return {};
 }
@@ -243,7 +277,7 @@ MeshNode::MeshNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNode
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(pool), a), geomData_(geomData)
 {
     auto vertex_buffer = VertexBufferNode{
-        geomData_, model_, {TileFeatureLayer::PointBuffers, addr_.index()}};
+        geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     assert(vertex_buffer.size() % 3 == 0);
     size_ = vertex_buffer.size() / 3;
 }
@@ -257,7 +291,7 @@ ModelNode::Ptr MeshNode::at(int64_t index) const
 {
     if (0 <= index && index < size_)
         return ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::MeshTriangleCollection, addr_.index()}, index);
+            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleCollection, addr_.index()}, index);
 
     throw std::out_of_range("MeshNode: index out of bounds.");
 }
@@ -288,7 +322,7 @@ ValueType MeshTriangleCollectionNode::type() const
 ModelNode::Ptr MeshTriangleCollectionNode::at(int64_t index) const
 {
     if (index == 0)
-        return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::MeshTriangleLinearRing, addr_.index()}, index_);
+        return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleLinearRing, addr_.index()}, index_);
 
     throw std::out_of_range("MeshTriangleCollectionNode: index out of bounds.");
 }
@@ -386,12 +420,12 @@ ModelNode::Ptr LinearRingNode::at(int64_t index) const
     return buffer->at(index + offset_);
 }
 
-ModelNode::Ptr LinearRingNode::get(const FieldId&) const
+ModelNode::Ptr LinearRingNode::get(const StringId&) const
 {
     return {};
 }
 
-FieldId LinearRingNode::keyAt(int64_t) const
+StringId LinearRingNode::keyAt(int64_t) const
 {
     return {};
 }
@@ -412,7 +446,7 @@ uint32_t LinearRingNode::size() const
 model_ptr<VertexBufferNode> LinearRingNode::vertexBuffer() const
 {
     auto ptr = ModelNode::Ptr::make(
-        model_, ModelNodeAddress{TileFeatureLayer::PointBuffers, addr_.index()}, 0);
+        model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}, 0);
     return model().resolvePointBuffers(*ptr);
 }
 
@@ -454,18 +488,18 @@ ModelNode::Ptr VertexBufferNode::at(int64_t i) const {
     if (i < 0 || i >= size())
         throw std::out_of_range("vertex-buffer: Out of range.");
     i += offset_;
-    return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::Points, baseGeomAddress_.index()}, i);
+    return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, i);
 }
 
 uint32_t VertexBufferNode::size() const {
     return size_;
 }
 
-ModelNode::Ptr VertexBufferNode::get(const FieldId &) const {
+ModelNode::Ptr VertexBufferNode::get(const StringId &) const {
     return {};
 }
 
-FieldId VertexBufferNode::keyAt(int64_t) const {
+StringId VertexBufferNode::keyAt(int64_t) const {
     return {};
 }
 
@@ -477,7 +511,7 @@ bool VertexBufferNode::iterate(const IterCallback& cb) const
     });
     for (auto i = 0u; i < size_; ++i) {
         resolveAndCb(*ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::Points, baseGeomAddress_.index()}, (int64_t)i+offset_));
+            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, (int64_t)i+offset_));
         if (!cont)
             break;
     }
@@ -518,17 +552,17 @@ uint32_t VertexNode::size() const {
     return 3;
 }
 
-ModelNode::Ptr VertexNode::get(const FieldId & field) const {
-    if (field == Fields::LonStr) return at(0);
-    if (field == Fields::LatStr) return at(1);
-    if (field == Fields::ElevationStr) return at(2);
+ModelNode::Ptr VertexNode::get(const StringId & field) const {
+    if (field == StringPool::LonStr) return at(0);
+    if (field == StringPool::LatStr) return at(1);
+    if (field == StringPool::ElevationStr) return at(2);
     else return {};
 }
 
-FieldId VertexNode::keyAt(int64_t i) const {
-    if (i == 0) return Fields::LonStr;
-    if (i == 1) return Fields::LatStr;
-    if (i == 2) return Fields::ElevationStr;
+StringId VertexNode::keyAt(int64_t i) const {
+    if (i == 0) return StringPool::LonStr;
+    if (i == 1) return StringPool::LatStr;
+    if (i == 2) return StringPool::ElevationStr;
     throw std::out_of_range("vertex: Out of range.");
 }
 

@@ -223,4 +223,9 @@ MapTileKey TileLayer::id() const
     return MapTileKey(*this);
 }
 
+nlohmann::json TileLayer::toJson() const
+{
+    return {};
+}
+
 } // namespace mapget

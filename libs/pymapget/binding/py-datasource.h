@@ -37,12 +37,26 @@ void bindDataSourceServer(py::module_& m)
             )pbdoc",
             py::arg("info_dict"))
         .def(
-            "on_tile_request",
-            &DataSourceServer::onTileRequest,
+            "on_tile_feature_request",
+            &DataSourceServer::onTileFeatureRequest,
             py::arg("callback"),
             py::call_guard<py::gil_scoped_acquire>(),
             R"pbdoc(
-            Set the Callback which will be invoked when a `/tile`-request is received.
+            Set the Callback which will be invoked when a `/tile`-request for a
+            feature layer is received.
+            The callback argument is a fresh TileFeatureLayer, which the callback must
+            fill according to the set TileFeatureLayer's layer info and tile id. If an
+            error occurs while filling the tile, the callback can use
+            TileFeatureLayer::setError(...) to signal the error downstream.
+        )pbdoc")
+        .def(
+            "on_tile_sourcedata_request",
+            &DataSourceServer::onTileSourceDataRequest,
+            py::arg("callback"),
+            py::call_guard<py::gil_scoped_acquire>(),
+            R"pbdoc(
+            Set the Callback which will be invoked when a `/tile`-request for a
+            source-data layer is received.
             The callback argument is a fresh TileFeatureLayer, which the callback must
             fill according to the set TileFeatureLayer's layer info and tile id. If an
             error occurs while filling the tile, the callback can use

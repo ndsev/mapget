@@ -17,7 +17,7 @@ AttributeLayer::AttributeLayer(
 model_ptr<Attribute>
 AttributeLayer::newAttribute(const std::string_view& name, size_t initialCapacity)
 {
-    auto result = reinterpret_cast<TileFeatureLayer&>(model()).newAttribute(name, initialCapacity);
+    auto result = static_cast<TileFeatureLayer&>(model()).newAttribute(name, initialCapacity);
     addAttribute(result);
     return result;
 }
@@ -32,11 +32,11 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
     if (!cb)
         return false;
     for (auto const& [_, value] : fields()) {
-        if (value->addr().column() != TileFeatureLayer::Attributes) {
+        if (value->addr().column() != TileFeatureLayer::ColumnId::Attributes) {
             log().warn("Don't add anything other than Attributes into AttributeLayers!");
             continue;
         }
-        auto attr = reinterpret_cast<TileFeatureLayer&>(model()).resolveAttribute(*value);
+        auto attr = static_cast<TileFeatureLayer&>(model()).resolveAttribute(*value);
         if (!cb(attr))
             return false;
     }
@@ -70,13 +70,13 @@ bool AttributeLayerList::forEachLayer(
 {
     if (!cb)
         return false;
-    for(auto const& [fieldId, value] : fields()) {
-        if (auto layerName = model().fieldNames()->resolve(fieldId)) {
-            if (value->addr().column() != TileFeatureLayer::AttributeLayers) {
+    for(auto const& [stringId, value] : fields()) {
+        if (auto layerName = model().strings()->resolve(stringId)) {
+            if (value->addr().column() != TileFeatureLayer::ColumnId::AttributeLayers) {
                 log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
                 continue;
             }
-            auto attrLayer = reinterpret_cast<TileFeatureLayer&>(model()).resolveAttributeLayer(*value);
+            auto attrLayer = static_cast<TileFeatureLayer&>(model()).resolveAttributeLayer(*value);
             if (!cb(*layerName, attrLayer))
                 return false;
         }
