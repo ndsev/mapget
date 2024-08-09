@@ -86,7 +86,6 @@ struct TileFeatureLayer::Impl {
     sfl::segmented_vector<Geometry::Data, simfil::detail::ColumnPageSize/2> geom_;
     sfl::segmented_vector<QualifiedSourceDataReference, simfil::detail::ColumnPageSize/2> sourceDataReferences_;
     Geometry::Storage vertexBuffers_;
-    SourceDataAddressFormat sourceDataAddressFormat_ = SourceDataAddressFormat::Unknown;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -137,7 +136,6 @@ struct TileFeatureLayer::Impl {
         s.container(geom_, maxColumnSize);
         s.ext(vertexBuffers_, bitsery::ext::ArrayArenaExt{});
         s.container(sourceDataReferences_, maxColumnSize);
-        s.value1b(sourceDataAddressFormat_);
     }
 
     explicit Impl(std::shared_ptr<simfil::StringPool> stringPool)
@@ -1059,16 +1057,6 @@ void TileFeatureLayer::clone(
                 return true;
             });
     }
-}
-
-void TileFeatureLayer::setSourceDataAddressFormat(TileFeatureLayer::SourceDataAddressFormat f)
-{
-    impl_->sourceDataAddressFormat_ = f;
-}
-
-TileFeatureLayer::SourceDataAddressFormat TileFeatureLayer::sourceDataAddressFormat() const
-{
-    return impl_->sourceDataAddressFormat_;
 }
 
 Geometry::Storage& TileFeatureLayer::vertexBufferStorage()

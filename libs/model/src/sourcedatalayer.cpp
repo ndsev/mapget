@@ -29,7 +29,7 @@ namespace mapget
 
 struct TileSourceDataLayer::Impl
 {
-    // Pool data
+    SourceDataAddressFormat format_;
     sfl::segmented_vector<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
 
     // Simfil compiled expression and environment
@@ -37,6 +37,7 @@ struct TileSourceDataLayer::Impl
 
     Impl(std::shared_ptr<simfil::StringPool> stringPool)
         : expressionCache_(makeEnvironment(std::move(stringPool)))
+        , format_(SourceDataAddressFormat::BitRange)
     {}
 
     // Bitsery (de-)serialization interface
@@ -44,6 +45,7 @@ struct TileSourceDataLayer::Impl
     void readWrite(S& s) {
         constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
         s.container(compounds_, maxColumnSize);
+        s.value1b(format_);
     }
 };
 
@@ -132,10 +134,19 @@ void TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& 
             compound.schemaName_ = newDict->emplace(*str);
     }
 
-
     impl_->expressionCache_.reset(makeEnvironment(newDict));
 
     ModelPool::setStrings(newDict);
+}
+
+void TileSourceDataLayer::setSourceDataAddressFormat(SourceDataAddressFormat f)
+{
+    impl_->format_ = f;
+}
+
+TileSourceDataLayer::SourceDataAddressFormat TileSourceDataLayer::sourceDataAddressFormat() const
+{
+    return impl_->format_;
 }
 
 }

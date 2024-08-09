@@ -62,6 +62,21 @@ public:
 
     void setStrings(std::shared_ptr<simfil::StringPool> const& newDict) override;
 
+    enum class SourceDataAddressFormat : uint8_t
+    {
+        /** Addresses are treated as opaque integers. */
+        Unknown,
+        /** Addresses represent a 32 bit offset and 32 bit length in bits. */
+        BitRange,
+    };
+
+    /**
+     * Accessors for the source-data address format of all
+     * source-data reference addresses this layer exposes.
+     */
+    void setSourceDataAddressFormat(SourceDataAddressFormat f);
+    SourceDataAddressFormat sourceDataAddressFormat() const;
+
 private:
     /**
      * Generic node resolution overload.

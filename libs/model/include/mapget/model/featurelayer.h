@@ -259,21 +259,6 @@ public:
     model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollection(simfil::ModelNode const& n) const;
     model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItem(simfil::ModelNode const& n) const;
 
-    enum class SourceDataAddressFormat : uint8_t
-    {
-        /** Addresses are treated as opaque integers. */
-        Unknown,
-        /** Addresses represent a 32 bit offset and 32 bit length in bits. */
-        BitRange,
-    };
-
-    /**
-     * Accessors for the source-data address format of all
-     * source-data reference addresses this layer exposes.
-     */
-    void setSourceDataAddressFormat(SourceDataAddressFormat f);
-    SourceDataAddressFormat sourceDataAddressFormat() const;
-
 protected:
     /**
      * The ColumnId enum provides identifiers for different

@@ -45,7 +45,7 @@ public:
     {
         /**
          * Construct a Reader with a callback for parsed result layers,
-         * a CachedStringPoolCache which can supply and receive Fields
+         * a StringPoolCache which can supply and receive Fields
          * dictionaries for a node id, and a layerInfoProvider which
          * can provide LayerInfo objects for a (map-id, layer-id) combination.
          */
