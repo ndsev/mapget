@@ -372,4 +372,22 @@ TEST_CASE("TileId", "[TileId]") {
         REQUIRE_EQUAL(tile.ne(), {0, 90});
         REQUIRE_EQUAL(tile.size(), {180, 180});
     }
+
+    SECTION("Neighbor") {
+        TileId tile(0, 0, 1);
+        REQUIRE(tile.neighbor(1, 0) == TileId(1, 0, 1));
+        REQUIRE(tile.neighbor(0, 1) == TileId(0, 1, 1));
+        REQUIRE(tile.neighbor(-1, -1) == TileId(3, 0, 1));  // Wrap around
+
+        TileId tile2(3, 1, 1);
+        REQUIRE(tile2.neighbor(-1, -1) == TileId(2, 0, 1));
+        REQUIRE(tile2.neighbor(1, 1) == TileId(0, 1, 1));  // Wrap around
+
+        REQUIRE_THROWS(tile2.neighbor(2, -2));
+        REQUIRE_THROWS(tile2.neighbor(-2, 2));
+        REQUIRE_THROWS(tile2.neighbor(0, 3));
+        REQUIRE_THROWS(tile2.neighbor(0, -3));
+        REQUIRE_THROWS(tile2.neighbor(2, 0));
+        REQUIRE_THROWS(tile2.neighbor(-2, 0));
+    }
 }

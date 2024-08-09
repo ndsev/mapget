@@ -1,6 +1,7 @@
 #include "tileid.h"
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include "mapget/log.h"
 
 namespace mapget
 {
@@ -66,6 +67,30 @@ TileId TileId::fromWgs84(double longitude, double latitude, uint16_t zoomLevel)
         y = numRows - (y - numRows) - 1;
 
     return {(uint16_t)x, (uint16_t)y, zoomLevel};
+}
+
+TileId TileId::neighbor(int32_t offsetX, int32_t offsetY) const
+{
+    if (glm::abs(offsetX) > 1 || glm::abs(offsetY) > 1) {
+        raise("TileId::neighbor() called with offset value greater than 1 or less than -1.");
+    }
+
+    auto const maxCol = static_cast<int64_t>(1ull << (z() + 1)) - 1;
+    auto const maxRow = static_cast<int64_t>(1ull << z()) - 1;
+
+    auto resultX = x();
+    auto resultY = y();
+
+    if (offsetX == -1 && resultX == 0)
+        resultX = maxCol;
+    else if (offsetX == 1 && resultX == maxCol)
+        resultX = 0;
+    else
+        resultX += offsetX;
+
+    if (offsetY == -1 && resultY > 0 || offsetY == 1 && resultY < maxRow)
+        resultY += offsetY;
+    return TileId(resultX, resultY, z()).value_;
 }
 
 Point TileId::center() const {

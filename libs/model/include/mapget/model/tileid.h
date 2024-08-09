@@ -42,6 +42,13 @@ struct TileId
     static TileId fromWgs84(double longitude, double latitude, uint16_t zoomLevel);
 
     /**
+     * Get the neighbor for a mapget tile id. Tile row will be clamped to [0, maxForLevel],
+     * so a positive/negative wraparound is not possible. The tile id column will wrap at the
+     * antimeridian. Note: The implementation will only work for offset values [-1, 0, 1].
+     */
+    [[nodiscard]] TileId neighbor(int32_t offsetX, int32_t offsetY) const;
+
+    /**
      * Get the center of the tile in Wgs84.
      */
     [[nodiscard]] Point center() const;
