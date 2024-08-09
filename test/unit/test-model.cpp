@@ -382,5 +382,12 @@ TEST_CASE("TileId", "[TileId]") {
         TileId tile2(3, 1, 1);
         REQUIRE(tile2.neighbor(-1, -1) == TileId(2, 0, 1));
         REQUIRE(tile2.neighbor(1, 1) == TileId(0, 1, 1));  // Wrap around
+
+        REQUIRE_THROWS(tile2.neighbor(2, -2));
+        REQUIRE_THROWS(tile2.neighbor(-2, 2));
+        REQUIRE_THROWS(tile2.neighbor(0, 3));
+        REQUIRE_THROWS(tile2.neighbor(0, -3));
+        REQUIRE_THROWS(tile2.neighbor(2, 0));
+        REQUIRE_THROWS(tile2.neighbor(-2, 0));
     }
 }
