@@ -98,15 +98,100 @@ map.
 
 ## Map Features
 
-The atomic units of geographic data which are served by *mapget* are *Features*.
-The content of a *mapget* feature is aligned with that of a feature in *GeoJSON*:
-A feature consists of a unique ID, some attributes, and some geometry. *mapget*
-also allows features to have a list of child feature IDs. **Note:** Feature geometry
-in *mapget* may always be 3D.
+The atomic units of geographic data served by *mapget* are *Features*. The content of
+a *mapget* feature aligns with that of a feature in *GeoJSON*: A feature consists of
+a unique ID, some attributes, and some geometry. *mapget* also allows features to have
+a list of child feature IDs. **Note:** Feature geometry in *mapget* may always be 3D.
 
-* TODO: Document JSON representation.
-* TODO: Document Feature ID schemes.
-* TODO: Document Geometry Types.
+### JSON Representation
+
+While the feature uses compact column-based storage model internally, the logical view
+of a *Feature* in *mapget* is based on GeoJSON:
+
+```yaml
+{
+  type: "Feature",  // Mandatory for GeoJSON compliance
+  id: "<type-id>.<part-value-0>...<part-value-n>",
+  typeId: "<type-id>",
+  "<part-name-n>": "<part-value-n>",
+  "geometry": { /* GeoJSON geometry object */ },
+  "properties": {
+    "layers": {
+      "<attr-layer-name>": {
+        "<attr-name>": {
+          /* attr-fields ... */,
+          "direction": "<attr-direction>",
+          "validity": { /* attr-validity-geometry */ }
+        }
+      },
+      // Additional attribute layers
+    },
+    "<non-layer-attr-name>": "<non-layer-attr-value>",
+    // Additional non-layered attributes
+  },
+  "relations": [
+    {
+      "name": "<relation-name>",
+      "target": "<target-feature-id>",
+      "targetValidity": { /* geometry */ },
+      "sourceValidity": { /* geometry */ }
+    }
+    // Additional relations
+  ]
+}
+```
+
+This structure provides a clear, hierarchical representation of a *Feature*, where:
+
+- **`typeId`**: Indicates the feature type.
+- **`id`**: A composite identifier based on the `typeId` and additional `part-values`.
+- **`geometry`**: Encodes the spatial data of the feature in a format compliant with GeoJSON, but extended to support 3D geometries.
+- **`properties`**: Contains feature attributes, organized into layers.
+- **`relations`**: Defines relationships between this feature and others, including the spatial validity of these relationships.
+
+### Feature ID Schemes
+
+Each *Feature* in *mapget* is uniquely identified by an ID that is composed of
+a `typeId` and one or more `part-values`. This ID scheme ensures that each feature
+can be distinctly referenced across the map.
+
+- **`typeId`**: Represents the category or class of the feature (e.g., "road", "building").
+- **`part-values`**: A series of values that, together with the `typeId`, uniquely identify the feature. These might include elements like a database ID, a road section, or other unique identifiers.
+
+Example:
+
+```yaml
+"id": "Road.1234.7"
+```
+
+In this example, `"Road"` is the `typeId`, and `"1234.7"` are the `part-values` that
+make this feature's ID unique. The part values must be based on a valid feature id composition.
+Valid compositions are provided for each feature type in the respective `FeatureTypeInfo`.
+Multiple possible schemes may be provided - this is to facilitate indirect references.
+The feature itself must always use the first (primary) feature ID composition. But feature references
+may use a secondary scheme, which might for example reference the feature via its position rather than
+a unique integer. Such a secondary ID scheme may be resolved to the primary using the [locate](#about-locate)
+endpoint.
+
+### Geometry Types
+
+*mapget* supports simple GeoJSON geometry types, with a vertex component extension for 3D data.
+Each feature may zero, one or multiple of these via its `GeometryCollection`:
+
+- **Points**: A single coordinate point. Mapped to GeoJson ``
+- **Line**: A series of connected points forming a line.
+- **Polygon**: A closed shape formed by a series of connected points. In *mapget*, polygons must not have holes, and they are automatically closed.
+- **Mesh**: An array of triangles. This can be viewed as a GeoJson `MultiPolygon`.
+
+### Source Data References
+
+SourceDataReferences provide a mechanism for linking a *Feature* (or an aspect of it, like an
+attribute or relation) back to its original source data, e.g. to a blob.
+
+- **`SourceDataReferenceCollection`**: This collection holds all references to the source data for a particular feature.
+- **`SourceDataReferenceItem`**: Each item in the collection represents a single reference, which includes metadata about the `SourceDataLayer` and a qualifier.
+
+These references are useful for applications that need to maintain a link between the processed geographic data and its original, unprocessed form.
 
 ## Map Tiles
 
