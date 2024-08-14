@@ -85,7 +85,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
     auto otherTileId = TileId::fromWgs84(42., 12., 13);
     auto otherNodeId = "OtherCacheTestingNode";
     auto otherMapId = "CacheMeToo";
-    // Create empty shared autofilled field-name dictionary.
+    // Create empty shared autofilled string-pool.
     auto otherStringPool = std::make_shared<StringPool>(otherNodeId);
     auto otherTile = std::make_shared<TileFeatureLayer>(
         otherTileId,
@@ -104,20 +104,20 @@ TEST_CASE("RocksDBCache", "[Cache]")
         TileLayerStream::CurrentProtocolVersion});
 
 
-    auto testFieldsNodeId = "FieldDictsTestingNode";
-    auto testFieldsDictionary = StringPool(testFieldsNodeId);
+    auto testStringPoolNodeId = "StringPoolTestingNode";
+    auto testStringPool = StringPool(testStringPoolNodeId);
 
-    // Write a field dict directly into cache, including the header
+    // Write a string pool directly into the cache, including the header
     // added in TileLayerStream::sendMessage.
-    std::stringstream serializedFields;
-    testFieldsDictionary.write(serializedFields, 0);
+    std::stringstream serializedStrings;
+    testStringPool.write(serializedStrings, 0);
 
     std::stringstream serializedMessage;
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(serializedMessage);
     s.object(TileLayerStream::CurrentProtocolVersion);
     s.value1b(TileLayerStream::MessageType::StringPool);
-    s.value4b((uint32_t)serializedFields.str().size());
-    serializedMessage << serializedFields.str();
+    s.value4b((uint32_t)serializedStrings.str().size());
+    serializedMessage << serializedStrings.str();
 
     auto getFeatureLayer = [](auto& cache, auto tileId, auto info) {
         auto layer = cache->getTileLayer(tileId, info);
@@ -133,14 +133,14 @@ TEST_CASE("RocksDBCache", "[Cache]")
         // Open or create cache, clear any existing data.
         auto cache = std::make_shared<mapget::RocksDBCache>(
             1024, "mapget-cache", true);
-        auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        REQUIRE(fieldDictCount == 0);
+        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        REQUIRE(stringPoolCount == 0);
 
         // putTileLayer triggers both putTileLayerBlob and putFieldsBlob.
         cache->putTileLayer(tile);
         auto returnedTile = getFeatureLayer(cache, tile->id(), info);
-        fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        REQUIRE(fieldDictCount == 1);
+        stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        REQUIRE(stringPoolCount == 1);
 
         // Update a tile, check that cache returns the updated version.
         REQUIRE(returnedTile->size() == 0);
@@ -159,8 +159,8 @@ TEST_CASE("RocksDBCache", "[Cache]")
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>(
             1, "mapget-cache", false);
-        auto fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        REQUIRE(fieldDictCount == 1);
+        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        REQUIRE(stringPoolCount == 1);
 
         // Add a tile to trigger cache cleaning.
         cache->putTileLayer(otherTile);
@@ -168,9 +168,9 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto returnedTile = getFeatureLayer(cache, otherTile->id(), otherInfo);
         REQUIRE(returnedTile->nodeId() == otherTile->nodeId());
 
-        // Field dicts are updated with getTileLayer.
-        fieldDictCount = cache->getStatistics()["loaded-field-dicts"].get<int>();
-        REQUIRE(fieldDictCount == 2);
+        // String pools are updated with getTileLayer.
+        stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        REQUIRE(stringPoolCount == 2);
 
         // Query the first inserted layer - it should not be retrievable.
         auto missingTile = cache->getTileLayer(tile->id(), info);
@@ -201,30 +201,30 @@ TEST_CASE("RocksDBCache", "[Cache]")
         REQUIRE(cache->getStatistics()["cache-misses"] == 1);
     }
 
-    SECTION("Reopen cache, check loading of field dicts") {
+    SECTION("Reopen cache, check loading of string pools") {
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>();
-        REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
+        REQUIRE(cache->getStatistics()["loaded-string-pools"] == 2);
 
-        cache->putStringPoolBlob(testFieldsNodeId, serializedMessage.str());
-        auto returnedEntry = cache->getStringPoolBlob(testFieldsNodeId);
+        cache->putStringPoolBlob(testStringPoolNodeId, serializedMessage.str());
+        auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
 
-        // Make sure field dict was properly stored.
+        // Make sure the string pool was properly stored.
         REQUIRE(returnedEntry.value() == serializedMessage.str());
 
         // TODO this kind of access bypasses the creation of a stringPoolOffsets_
         //  entry in the cache -> decouple the cache storage logic clearly from
         //  tile layer writing logic.
-        REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 2);
+        REQUIRE(cache->getStatistics()["loaded-string-pools"] == 2);
     }
 
-    SECTION("Reopen cache again, check loading of field dicts again") {
+    SECTION("Reopen cache again, check loading of string pools again") {
         // Open existing cache.
         auto cache = std::make_shared<mapget::RocksDBCache>();
-        REQUIRE(cache->getStatistics()["loaded-field-dicts"] == 3);
+        REQUIRE(cache->getStatistics()["loaded-string-pools"] == 3);
 
-        // Check that the same value can still be retrieved from field dict.
-        auto returnedEntry = cache->getStringPoolBlob(testFieldsNodeId);
+        // Check that the same value can still be retrieved from string pooln.
+        auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
         REQUIRE(returnedEntry.value() == serializedMessage.str());
     }
 
