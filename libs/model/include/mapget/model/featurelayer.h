@@ -196,6 +196,7 @@ public:
     model_ptr<Feature> at(size_t i) const;
 
     /** Access feature through its id. */
+    model_ptr<Feature> find(std::string_view const& featureId);
     model_ptr<Feature> find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
 

@@ -312,12 +312,19 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(foundFeature01);
         REQUIRE(foundFeature01->addr() == feature0->addr());
 
+        auto foundFeature01_2 = tile->find("Way.TheBestArea.24");
+        REQUIRE(foundFeature01_2);
+        REQUIRE(foundFeature01_2->addr() == feature0->addr());
+
         auto foundFeature11 = tile->find("Way", KeyValueViewPairs{{"areaId", "TheBestArea"}, {"wayId", 42}});
         REQUIRE(foundFeature11);
         REQUIRE(foundFeature11->addr() == feature1->addr());
 
         auto foundFeature00 = tile->find("Way", KeyValueViewPairs{{"areaId", "MediocreArea"}, {"wayId", 24}});
         REQUIRE(!foundFeature00);
+
+        auto foundFeature00_2 = tile->find("Way.MediocreArea.24");
+        REQUIRE(!foundFeature00_2);
 
         auto foundFeature10 = tile->find("Way", KeyValueViewPairs{{"wayId", 42}});
         REQUIRE(!foundFeature10);
