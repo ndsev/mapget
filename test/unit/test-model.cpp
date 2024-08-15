@@ -73,7 +73,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     })"_json);
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
+    auto strings = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -81,7 +81,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         "TastyTomatoSaladNode",
         "Tropico",
         layerInfo,
-        fieldNames);
+        strings);
 
     // Set the tile's feature id prefix.
     tile->setIdPrefix({{"areaId", "TheBestArea"}});
@@ -143,7 +143,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(firstGeom->geomType() == GeomType::Line);
     }
 
-    SECTION("toGeoJSON")
+    SECTION("toJSON")
     {
         constexpr auto expected =
             R"({"areaId":"TheBestArea","geometry":{"geometries":[)"
@@ -160,7 +160,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":"POSITIVE","smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
-        auto res = feature1->toGeoJson();
+        auto res = feature1->toJson();
         auto exp = nlohmann::json::parse(expected);
 
         INFO(nlohmann::json::diff( exp, res).dump());
@@ -227,7 +227,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             },
             [&](auto&& nodeId){
                 REQUIRE(nodeId == "TastyTomatoSaladNode");
-                return fieldNames;
+                return strings;
             }
         );
 
@@ -241,7 +241,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->mapVersion() == tile->mapVersion());
         REQUIRE(deserializedTile->info() == tile->info());
 
-        REQUIRE(deserializedTile->fieldNames() == tile->fieldNames());
+        REQUIRE(deserializedTile->strings() == tile->strings());
         for (auto feature : *deserializedTile) {
             REQUIRE(feature->id()->toString().substr(0, 16) == "Way.TheBestArea.");
         }
@@ -256,11 +256,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         auto messageCount = 0;
         std::stringstream byteStream;
-        TileLayerStream::FieldOffsetMap fieldOffsets;
+        TileLayerStream::StringPoolOffsetMap stringOffsets;
         TileLayerStream::Writer layerWriter{[&](auto&& msg, auto&& type){
             ++messageCount;
             byteStream << msg;
-        }, fieldOffsets};
+        }, stringOffsets};
 
         layerWriter.write(tile);
         REQUIRE(messageCount == 2);
@@ -281,7 +281,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         std::vector<TileFeatureLayer::Ptr> readTiles;
         TileLayerStream::Reader reader{
             [&](auto&& mapId, auto&& layerId) { return layerInfo; },
-            [&](auto&& layerPtr) { readTiles.push_back(layerPtr); },
+            [&](auto&& layerPtr) {
+                if (auto featureLayer = std::dynamic_pointer_cast<TileFeatureLayer>(layerPtr))
+                    readTiles.push_back(featureLayer);
+            },
         };
 
         // Reading an empty buffer should not result in any tiles.
@@ -296,8 +299,8 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         REQUIRE(reader.eos());
         REQUIRE(readTiles.size() == 3);
-        REQUIRE(readTiles[0]->fieldNames() == readTiles[1]->fieldNames());
-        REQUIRE(readTiles[1]->fieldNames() == readTiles[2]->fieldNames());
+        REQUIRE(readTiles[0]->strings() == readTiles[1]->strings());
+        REQUIRE(readTiles[1]->strings() == readTiles[2]->strings());
         REQUIRE(readTiles[0]->numRoots() == 2);
         REQUIRE(readTiles[1]->numRoots() == 2);
         REQUIRE(readTiles[2]->numRoots() == 3);

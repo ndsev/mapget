@@ -1,3 +1,5 @@
+#include <stdexcept>
+#include "mapget/model/sourcedatalayer.h"
 #include "mapget/service/service.h"
 #include "mapget/log.h"
 
@@ -65,6 +67,10 @@ public:
         attr->setDirection(Attribute::Direction::Positive);
         attr->addField("smell", "neutral");
     }
+
+    void fill(TileSourceDataLayer::Ptr const& tile) override {
+        throw std::runtime_error("Not implemented");
+    }
 };
 
 int main(int argc, char** argv)
@@ -79,9 +85,8 @@ int main(int argc, char** argv)
     auto r = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId(12345), TileId(67689)},
-            [](auto&& result)
-            { log().info("Got {}", MapTileKey(*result).toString()); });
+            std::vector<TileId>{TileId(12345), TileId(67689)});
+    r->onFeatureLayer([](auto&& result) { log().info("Got {}", MapTileKey(*result).toString()); });
     service.request({r});
     r->wait();
     return 0;

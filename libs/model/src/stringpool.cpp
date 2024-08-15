@@ -1,4 +1,4 @@
-#include "fields.h"
+#include "stringpool.h"
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
@@ -7,7 +7,7 @@
 namespace mapget
 {
 
-Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
+StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(IdStr, "id");
     addStaticKey(TypeIdStr, "typeId");
     addStaticKey(MapIdStr, "mapId");
@@ -28,22 +28,25 @@ Fields::Fields(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(TypeStr, "type");
     addStaticKey(CoordinatesStr, "coordinates");
     addStaticKey(ElevationStr, "elevation");
+    addStaticKey(SourceDataStr, "_sourceData");
+    addStaticKey(AddressStr, "address");
+    addStaticKey(QualifierStr, "qualifier");
 }
 
-void Fields::write(std::ostream& outputStream, simfil::FieldId offset) const
+void StringPool::write(std::ostream& outputStream, simfil::StringId offset) const
 {
-    // Write the node id which identifies the fields dictionary
+    // Write the node id which identifies the string pool.
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
-    simfil::Fields::write(outputStream, offset);
+    simfil::StringPool::write(outputStream, offset);
 }
 
-std::string Fields::readDataSourceNodeId(std::istream& inputStream) {
-    // Read the node id which identifies the fields dictionary
+std::string StringPool::readDataSourceNodeId(std::istream& inputStream) {
+    // Read the node id which identifies the string pool.
     bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
-    std::string fieldsDictNodeId;
-    s.text1b(fieldsDictNodeId, std::numeric_limits<uint32_t>::max());
-    return fieldsDictNodeId;
+    std::string stringPoolNodeId;
+    s.text1b(stringPoolNodeId, std::numeric_limits<uint32_t>::max());
+    return stringPoolNodeId;
 }
 
 }

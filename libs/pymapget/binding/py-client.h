@@ -65,14 +65,14 @@ class PyRequest : public LayerTilesRequest
 public:
     using LayerTilesRequest::LayerTilesRequest;
 
-    void notifyResult(TileFeatureLayer::Ptr result) override {
+    void notifyResult(TileLayer::Ptr result) override {
         std::unique_lock lock(bufferMutex_);
         buffer_.push(result);
-        bufferSignal_.notify_one();  // Signal that a new result is available
+        bufferSignal_.notify_one(); // Signal that a new result is available
         LayerTilesRequest::notifyResult(result);
     }
 
-    TileFeatureLayer::Ptr next() {
+    TileLayer::Ptr next() {
         std::unique_lock lock(bufferMutex_);
         bufferSignal_.wait(lock, [this](){ return !buffer_.empty() ||
                                  this->getStatus() != RequestStatus::Open; });
@@ -86,7 +86,7 @@ public:
     }
 
 private:
-    std::queue<TileFeatureLayer::Ptr> buffer_;
+    std::queue<TileLayer::Ptr> buffer_;
     std::mutex bufferMutex_;
     std::condition_variable bufferSignal_;
 };
@@ -113,18 +113,22 @@ void bindHttpClient(py::module_& m)
                 [](const std::string& mapId,
                    const std::string& layerId,
                    std::vector<uint64_t> tiles,
-                   std::function<void(TileFeatureLayer::Ptr)> onResult)
+                   std::function<void(TileFeatureLayer::Ptr)> onFeatureResult,
+                   std::function<void(TileSourceDataLayer::Ptr)> onSourceDataResult)
                 {
-                    return std::make_shared<PyRequest>(
+                    auto req = std::make_shared<PyRequest>(
                         mapId,
                         layerId,
-                        std::vector<TileId>(tiles.begin(), tiles.end()),
-                        std::move(onResult));
+                        std::vector<TileId>(tiles.begin(), tiles.end()));
+                    req->onFeatureLayer(std::move(onFeatureResult));
+                    req->onSourceDataLayer(std::move(onSourceDataResult));
+                    return req;
                 }),
             py::arg("map_id"),
             py::arg("layer_id"),
             py::arg("tiles"),
-            py::arg("on_result") = py::none(),
+            py::arg("on_feature_result") = py::none(),
+            py::arg("on_sourcedata_result") = py::none(),
             py::call_guard<py::gil_scoped_acquire>(),
             R"pbdoc(
             Construct a Request.
@@ -133,8 +137,10 @@ void bindHttpClient(py::module_& m)
                 map_id: The map id for which this request is dedicated.
                 layer_id: The map layer id for which this request is dedicated.
                 tiles: The map tile ids for which this request is dedicated.
-                on_result: The callback function to be called when a result tile is available.
-                You can also iterate over this Request object instead of providing on_result.
+                on_feature_result: The callback function to be called when a result feature tile is available.
+                You can also iterate over this Request object instead of providing the callback.
+                on_sourcedata_result: The callback function to be callend when a result source-data tile
+                is available. You can also iterate over this Request object instead of porviding the callback.
 
             Note: The provided tile ids are processed in the given order.
         )pbdoc")

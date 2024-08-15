@@ -1,14 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "mapget/model/simfil-geometry.h"
 #include "mapget/model/point.h"
 #include "mapget/model/featurelayer.h"
-#include "mapget/model/fields.h"
+#include "mapget/model/stringpool.h"
 #include "simfil/model/nodes.h"
 #include "simfil/simfil.h"
 
 using namespace mapget;
-using DPoint = mapget::Point;
 using simfil::ValueType;
 
 auto makeLayer()
@@ -74,7 +72,7 @@ auto makeLayer()
     })"_json);
 
     // Create empty shared autofilled field-name dictionary
-    auto fieldNames = std::make_shared<Fields>("TastyTomatoSaladNode");
+    auto strings = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
     // Create a basic TileFeatureLayer
     auto tile = std::make_shared<TileFeatureLayer>(
@@ -82,7 +80,7 @@ auto makeLayer()
         "TastyTomatoSaladNode",
         "Tropico",
         layerInfo,
-        fieldNames);
+        strings);
 
     // Set the tile's feature id prefix.
     tile->setIdPrefix({{"areaId", "TheBestArea"}});
@@ -95,10 +93,7 @@ auto makeLayer()
 #define REQUIRE_QUERY(query, type, result)              \
     do {                                                \
         auto pool = makeLayer();                        \
-        auto& env = pool->evaluationEnvironment();      \
-        auto ast = simfil::compile(env, query, false);  \
-        INFO("simfil ast: " << ast->toString());        \
-        auto res = simfil::eval(env, *ast, *pool);      \
+        auto res = pool->evaluate(query);               \
         REQUIRE(res.size() == 1);                       \
         INFO("simifil res: " << res[0].toString());     \
         REQUIRE(res[0].as<type>() == result);           \

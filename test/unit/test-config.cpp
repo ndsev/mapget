@@ -27,7 +27,8 @@ struct TestDataSource : public DataSource
         )"_json);
     };
 
-    void fill(TileFeatureLayer::Ptr const& featureTile) override {};
+    void fill(TileFeatureLayer::Ptr const&) override {};
+    void fill(TileSourceDataLayer::Ptr const&) override {};
 };
 
 std::string generateTimestampedDirectoryName(const std::string& baseName)

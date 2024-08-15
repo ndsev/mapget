@@ -313,9 +313,13 @@ nlohmann::json Coverage::toJson() const
 std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::string const& layerId)
 {
     try {
+        const auto type = j.value("type", LayerType::Features);
+
         std::vector<FeatureTypeInfo> featureTypes;
-        for (auto& item : j.at("featureTypes")) {
-            featureTypes.push_back(FeatureTypeInfo::fromJson(item));
+        if (type == LayerType::Features) {
+            for (auto& item : j.at("featureTypes")) {
+                featureTypes.push_back(FeatureTypeInfo::fromJson(item));
+            }
         }
 
         std::vector<Coverage> coverages;
@@ -326,7 +330,7 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
 
         return std::make_shared<LayerInfo>(LayerInfo{
             j.value("layerId", layerId),
-            j.value("type", LayerType::Features),
+            type,
             featureTypes,
             j.value("zoomLevels", std::vector<int>()),
             coverages,

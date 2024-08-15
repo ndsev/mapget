@@ -81,7 +81,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
     })
 
 /** Enum to represent the possible layer types */
-enum class LayerType {Features, Heightmap, OrthoImage, GLTF};
+enum class LayerType {Features, Heightmap, OrthoImage, GLTF, SourceData};
 NLOHMANN_JSON_SERIALIZE_ENUM(
     LayerType,
     {
@@ -89,6 +89,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {LayerType::Heightmap, "Heightmap"},
         {LayerType::OrthoImage, "OrthoImage"},
         {LayerType::GLTF, "GLTF"},
+        {LayerType::SourceData, "SourceData"},
     })
 
 /** Structure to represent a part of a feature id composition. */
@@ -296,7 +297,7 @@ struct DataSourceInfo
     /** Unique identifier of the map */
     std::string mapId_;
 
-    /** List of layers */
+    /** List of layers (layerId -> LayerInfo) */
     std::map<std::string, std::shared_ptr<LayerInfo>> layers_;
 
     /** Maximum number of parallel jobs */
@@ -346,7 +347,7 @@ struct DataSourceInfo
      *   },
      *   "nodeId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
      *                                        // Note: Only provide this if you have a good reason.
-     *   "addOn": <bool>                     // Optional: Declare the datasource as add-on.
+     *   "addOn": <bool>                      // Optional: Declare the datasource as add-on.
      * }
      *
      * Each LayerType, FeatureTypeInfo, and Coverage object has its own specific JSON structure,

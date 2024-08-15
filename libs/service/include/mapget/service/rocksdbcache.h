@@ -8,7 +8,7 @@ namespace mapget
 {
 
 /**
- * A persistent cache implementation that stores layers and field dictionaries
+ * A persistent cache implementation that stores layers and string pools
  * in RocksDB. Oldest tiles are removed automatically in FIFO order when cacheMaxTiles is
  * reached.
  */
@@ -23,8 +23,8 @@ public:
 
     std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override;
     void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
-    std::optional<std::string> getFieldsBlob(std::string_view const& sourceNodeId) override;
-    void putFieldsBlob(std::string_view const& sourceNodeId, std::string const& v) override;
+    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override;
+    void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override;
 
 private:
     rocksdb::DB* db_{};

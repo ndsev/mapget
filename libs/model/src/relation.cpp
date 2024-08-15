@@ -1,6 +1,7 @@
 #include "relation.h"
 #include "featurelayer.h"
 #include "mapget/log.h"
+#include "simfil/model/nodes.h"
 
 namespace mapget
 {
@@ -46,7 +47,7 @@ void Relation::setTargetValidity(const model_ptr<Geometry>& validityGeom)
 
 std::string_view Relation::name() const
 {
-    if (auto s = model().fieldNames()->resolve(data_->name_))
+    if (auto s = model().strings()->resolve(data_->name_))
         return *s;
     raise("Relation name is not known to string pool.");
 }
@@ -56,6 +57,18 @@ model_ptr<FeatureId> Relation::target() const
     return model().resolveFeatureId(*model_ptr<simfil::ModelNode>::make(model_, data_->targetFeatureId_));
 }
 
+model_ptr<SourceDataReferenceCollection> Relation::sourceDataReferences() const
+{
+    if (data_->sourceData_)
+        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+    return {};
+}
+
+void Relation::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
+{
+    data_->sourceData_ = addresses->addr();
+}
+
 simfil::ValueType Relation::type() const
 {
     return simfil::ValueType::Object;
@@ -63,18 +76,7 @@ simfil::ValueType Relation::type() const
 
 simfil::ModelNode::Ptr Relation::at(int64_t i) const
 {
-    switch (i) {
-    case 0: // name
-        return model_ptr<simfil::ValueNode>::make(name(), model().shared_from_this());
-    case 1: // target
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->targetFeatureId_);
-    case 2: // source validity
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceValidity_);
-    case 3: // target validity
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->targetValidity_);
-    default:
-        return {};
-    }
+    return get(keyAt(i));
 }
 
 uint32_t Relation::size() const
@@ -82,29 +84,32 @@ uint32_t Relation::size() const
     return 2 + (data_->sourceValidity_ || data_->targetValidity_ ? 2 : 0);
 }
 
-simfil::ModelNode::Ptr Relation::get(const simfil::FieldId& f) const
+simfil::ModelNode::Ptr Relation::get(const simfil::StringId& f) const
 {
     switch (f) {
-    case Fields::NameStr: // name
+    case StringPool::NameStr: // name
         return model_ptr<simfil::ValueNode>::make(name(), model().shared_from_this());
-    case Fields::TargetStr: // target
+    case StringPool::TargetStr: // target
         return ModelNode::Ptr::make(model().shared_from_this(), data_->targetFeatureId_);
-    case Fields::SourceValidityStr: // source validity
+    case StringPool::SourceValidityStr: // source validity
         return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceValidity_);
-    case Fields::TargetValidityStr: // target validity
+    case StringPool::TargetValidityStr: // target validity
         return ModelNode::Ptr::make(model().shared_from_this(), data_->targetValidity_);
+    case StringPool::SourceDataStr: // source data
+        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceData_);
     default:
         return {};
     }
 }
 
-simfil::FieldId Relation::keyAt(int64_t i) const
+simfil::StringId Relation::keyAt(int64_t i) const
 {
     switch (i) {
-    case 0: return Fields::NameStr;
-    case 1: return Fields::TargetStr;
-    case 2: return Fields::SourceValidityStr;
-    case 3: return Fields::TargetValidityStr;
+    case 0: return StringPool::NameStr;
+    case 1: return StringPool::TargetStr;
+    case 2: return StringPool::SourceValidityStr;
+    case 3: return StringPool::TargetValidityStr;
+    case 4: return StringPool::SourceDataStr;
     default:
         return {};
     }

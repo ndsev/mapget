@@ -15,8 +15,8 @@ static uint8_t COL_TIMESTAMP = 0;
 static uint8_t COL_TIMESTAMP_REVERSE = 1;
 // Stores the actual tileId->tile data.
 static uint8_t COL_TILES = 2;
-// Field dicts. No data gets deleted from there unless clearCache=true is set.
-static uint8_t COL_FIELD_DICTS = 3;
+// String Pools. No data gets deleted from there unless clearCache=true is set.
+static uint8_t COL_STRING_POOLS = 3;
 
 RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool clearCache)
     : max_key_count_(cacheMaxTiles)
@@ -25,7 +25,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
     options_.create_if_missing = true;
     options_.create_missing_column_families = true;
 
-    // Create separate column families for tile layers and fields.
+    // Create separate column families for tile layers and string pools.
     // RocksDB requires a default column family, we use that for
     // the timestamp->tile column.
     std::vector<rocksdb::ColumnFamilyDescriptor> columnFamilies;
@@ -39,7 +39,7 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
         "Tiles",
         rocksdb::ColumnFamilyOptions()));
     columnFamilies.push_back(rocksdb::ColumnFamilyDescriptor(
-        "FieldDicts",
+        "StringPools",
         rocksdb::ColumnFamilyOptions()));
 
     namespace fs = std::filesystem;
@@ -81,10 +81,10 @@ RocksDBCache::RocksDBCache(uint32_t cacheMaxTiles, std::string cachePath, bool c
                 // Count existing tiles, since we're not clearing the cache.
                 key_count_++;
             }
-            else if (handle->GetName() == "FieldDicts") {
-                // Update fieldCacheOffsets_ (superclass member)
+            else if (handle->GetName() == "StringPools") {
+                // Update stringPoolOffsets_ (superclass member)
                 // for each node ID by triggering cache lookup.
-                Cache::getFieldDict(it->key().ToString());
+                Cache::getStringPool(it->key().ToString());
             }
         }
     }
@@ -200,14 +200,14 @@ void RocksDBCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
     }
 }
 
-std::optional<std::string> RocksDBCache::getFieldsBlob(std::string_view const& sourceNodeId)
+std::optional<std::string> RocksDBCache::getStringPoolBlob(std::string_view const& sourceNodeId)
 {
     std::string read_value;
     auto status =
-        db_->Get(read_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, &read_value);
+        db_->Get(read_options_, column_family_handles_[COL_STRING_POOLS], sourceNodeId, &read_value);
 
     if (status.ok()) {
-        log().trace(fmt::format("Node: {} | Field dict size: {}", sourceNodeId, read_value.size()));
+        log().trace(fmt::format("Node: {} | String pool size: {}", sourceNodeId, read_value.size()));
         return read_value;
     }
     else if (status.IsNotFound()) {
@@ -217,10 +217,10 @@ std::optional<std::string> RocksDBCache::getFieldsBlob(std::string_view const& s
     raise(fmt::format("Error reading from database: {}", status.ToString()));
 }
 
-void RocksDBCache::putFieldsBlob(std::string_view const& sourceNodeId, std::string const& v)
+void RocksDBCache::putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v)
 {
     auto status =
-        db_->Put(write_options_, column_family_handles_[COL_FIELD_DICTS], sourceNodeId, v);
+        db_->Put(write_options_, column_family_handles_[COL_STRING_POOLS], sourceNodeId, v);
 
     if (!status.ok()) {
         raise(fmt::format("Error writing to database: {}", status.ToString()));

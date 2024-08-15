@@ -1,7 +1,7 @@
 project(mapget-model CXX)
 
 add_library(mapget-model STATIC
-  include/mapget/model/fields.h
+  include/mapget/model/stringpool.h
   include/mapget/model/layer.h
   include/mapget/model/featurelayer.h
   include/mapget/model/info.h
@@ -14,8 +14,12 @@ add_library(mapget-model STATIC
   include/mapget/model/relation.h
   include/mapget/model/geometry.h
   include/mapget/model/simfil-geometry.h
+  include/mapget/model/sourcedata.h
+  include/mapget/model/sourcedatalayer.h
+  include/mapget/model/sourceinfo.h
+  include/mapget/model/sourcedatareference.h
 
-  src/fields.cpp
+  src/stringpool.cpp
   src/layer.cpp
   src/featurelayer.cpp
   src/info.cpp
@@ -27,8 +31,12 @@ add_library(mapget-model STATIC
   src/relation.cpp
   src/stream.cpp
   src/geometry.cpp
+  src/point.cpp
   src/simfil-geometry.cpp
-  src/point.cpp)
+  src/simfilutil.h
+  src/sourcedata.cpp
+  src/sourcedatalayer.cpp
+  src/sourcedatareference.cpp)
 
 target_include_directories(mapget-model
   PUBLIC

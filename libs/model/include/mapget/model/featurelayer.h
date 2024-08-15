@@ -1,24 +1,21 @@
 #pragma once
 
-#include "simfil/simfil.h"
-#include "simfil/model/arena.h"
-#include "simfil/environment.h"
+#include <span>
 
-#include "fields.h"
+#include "simfil/model/nodes.h"
+#include "simfil/simfil.h"
+
+#include "stringpool.h"
 #include "layer.h"
+#include "sourceinfo.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
 #include "geometry.h"
+#include "sourcedatareference.h"
 
 namespace mapget
 {
-
-/**
- * Callback type for a function which returns a field name cache instance
- * for a given node identifier.
- */
-using FieldNameResolveFun = std::function<std::shared_ptr<Fields>(std::string_view const&)>;
 
 /**
  * The TileFeatureLayer class represents a specific map layer
@@ -41,6 +38,8 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class MeshNode;
     friend class MeshTriangleCollectionNode;
     friend class LinearRingNode;
+    friend class SourceDataReferenceCollection;
+    friend class SourceDataReferenceItem;
 
 public:
     /**
@@ -54,7 +53,7 @@ public:
      *  Each feature in this layer must have a feature type which is also present in
      *  the layer. Therefore, feature ids from this layer can be verified to conform
      *  to one of the allowed feature id compositions for the feature type.
-     * @param fields Shared field name dictionary, which allows compressed storage
+     * @param strings Shared string dictionary, which allows compressed storage
      *  of object field name strings. It is auto-filled, and one instance may be used
      *  by multiple TileFeatureLayer instances.
      */
@@ -63,21 +62,20 @@ public:
         std::string const& nodeId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
-        std::shared_ptr<simfil::Fields> const& fields
-    );
+        std::shared_ptr<simfil::StringPool> const& strings);
 
     /**
      * Constructor which parses a TileFeatureLayer from a binary stream.
      * @param inputStream The binary stream to parse.
      * @param layerInfoResolveFun Function which will be called to retrieve
      *  a layerInfo object for the layer name stored for the tile.
-     * @param fieldNameResolveFun Function which will be called to retrieve
-     *  a Fields dictionary object for the node name for the tile.
+     * @param stringPoolGetter Function which will be called to retrieve
+     *  a string pool for the node name of the tile.
      */
     TileFeatureLayer(
         std::istream& inputStream,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        FieldNameResolveFun const& fieldNameResolveFun
+        StringPoolResolveFun const& stringPoolGetter
     );
 
     /**
@@ -146,6 +144,11 @@ public:
     model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base);
 
     /**
+     * Create a new list of qualified source-data references.
+     */
+    model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list);
+
+    /**
      * Return type for begin() and end() methods to support range-based
      * for-loops to iterate over all features in a TileFeatureLayer.
      */
@@ -183,8 +186,8 @@ public:
     /** (De-)Serialization */
     void write(std::ostream& outputStream) override;
 
-    /** Convert to GeoJSON geometry collection. */
-    nlohmann::json toGeoJson() const;
+    /** Convert to (Geo-) JSON. */
+    nlohmann::json toJson() const override;
 
     /** Access number of stored features */
     size_t size() const;
@@ -200,21 +203,17 @@ public:
     using Ptr = std::shared_ptr<TileFeatureLayer>;
 
     /**
-     * Get this pool's simfil evaluation environment.
+     * Evaluate a (potentially cached) simfil query on this pool
      */
-    simfil::Environment& evaluationEnvironment();
+    std::vector<simfil::Value> evaluate(std::string_view query);
+    std::vector<simfil::Value> evaluate(std::string_view query, ModelNode const& node);
 
     /**
-     * Get a potentially cached compiled simfil expression for a simfil string.
-     */
-    simfil::ExprPtr const& compiledExpression(std::string_view const& expr);
-
-    /**
-     * Change the fields dict of this model to a different one.
-     * Note: This will potentially create new field entries in the newDict,
+     * Change the string pool of this model to a different one.
+     * Note: This will potentially create new string entries in the newDict,
      * for field names which were not there before.
      */
-    void setFieldNames(std::shared_ptr<simfil::Fields> const& newDict) override;
+    void setStrings(std::shared_ptr<simfil::StringPool> const& newPool) override;
 
     /**
      * Create a copy of otherFeature in this layer with the given type
@@ -257,13 +256,15 @@ public:
     model_ptr<LinearRingNode> resolveMeshTriangleLinearRing(simfil::ModelNode const& n) const;
     model_ptr<PolygonNode> resolvePolygon(simfil::ModelNode const& n) const;
     model_ptr<LinearRingNode> resolveLinearRing(simfil::ModelNode const& n) const;
+    model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollection(simfil::ModelNode const& n) const;
+    model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItem(simfil::ModelNode const& n) const;
 
 protected:
     /**
-     * The FeatureTileColumnId enum provides identifiers for different
+     * The ColumnId enum provides identifiers for different
      * types of columns that can be associated with feature data.
      */
-    enum FeatureTileColumnId : uint8_t {
+    struct ColumnId { enum : uint8_t {
         Features = FirstCustomColumnId,
         FeatureProperties,
         FeatureIds,
@@ -280,7 +281,9 @@ protected:
         MeshTriangleLinearRing, // LinearRing with fixed size 3
         Polygon,
         LinearRing,
-    };
+        SourceDataReferenceCollections,
+        SourceDataReferences,
+    }; };
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;

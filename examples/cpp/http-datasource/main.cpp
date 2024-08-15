@@ -22,7 +22,7 @@ public:
         : ds(loadDataSourceInfoFromJson(jsonFilename)), port(port)
     {
         // Handle tile requests
-        ds.onTileRequest(
+        ds.onTileFeatureRequest(
             [this](auto&& tile)
             {
                 fill(tile);

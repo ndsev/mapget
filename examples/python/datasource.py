@@ -75,7 +75,7 @@ ds = mapget.DataSourceServer({
 })
 
 # Set the callback which is invoked when a tile is requested.
-ds.on_tile_request(handle_tile_request)
+ds.on_tile_feature_request(handle_tile_request)
 
 # Parse port as optional first argument
 port = 0  # Pick random free port

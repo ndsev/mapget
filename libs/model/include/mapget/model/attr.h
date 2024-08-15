@@ -1,6 +1,7 @@
 #pragma once
 
 #include "featureid.h"
+#include "sourcedatareference.h"
 
 namespace mapget
 {
@@ -54,6 +55,12 @@ public:
      */
     bool forEachField(std::function<bool(std::string_view const& k, simfil::ModelNode::Ptr const& val)> const& cb) const;
 
+    /**
+     * Source data related accessors.
+     */
+    model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
+    void setSourceDataReferences(simfil::ModelNode::Ptr const& node);
+
 protected:
 
     /** Actual per-attribute data that is stored in the model's attributes-column. */
@@ -61,7 +68,8 @@ protected:
         Direction direction_ = Empty;
         simfil::ModelNodeAddress validity_;
         simfil::ArrayIndex fields_ = -1;
-        simfil::FieldId name_ = 0;
+        simfil::StringId name_ = 0;
+        simfil::ModelNodeAddress sourceDataRefs_;
 
         template<typename S>
         void serialize(S& s) {
@@ -69,6 +77,7 @@ protected:
             s.object(validity_);
             s.value4b(fields_);
             s.value2b(name_);
+            s.object(sourceDataRefs_);
         }
     };
 

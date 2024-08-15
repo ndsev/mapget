@@ -1,6 +1,11 @@
 #include "feature.h"
+#include "featureid.h"
 #include "featurelayer.h"
 #include "geometry.h"
+#include "relation.h"
+#include "simfil/model/nodes.h"
+#include "simfil/model/string-pool.h"
+#include "stringpool.h"
 
 namespace mapget
 {
@@ -99,14 +104,11 @@ std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expressi
     // contains only references to feature nodes, in the order
     // of the feature node column. We could think about protected inheritance
     // of the ModelPool to safeguard this.
-    return simfil::eval(
-        model().evaluationEnvironment(),
-        *model().compiledExpression(expression),
-        model(),
-        addr().index());
+    return model().evaluate(expression, *this);
 }
 
-simfil::Value Feature::evaluate(const std::string_view& expression) {
+simfil::Value Feature::evaluate(const std::string_view& expression)
+{
     auto results = evaluateAll(expression);
     if (results.empty())
         return simfil::Value::null();
@@ -120,6 +122,11 @@ simfil::ValueType Feature::type() const
 
 simfil::ModelNode::Ptr Feature::at(int64_t i) const
 {
+    if (data_->sourceData_) {
+        if (i == 0)
+            return get(StringPool::SourceDataStr);
+        i -= 1;
+    }
     if (i < fields_.size())
         return fields_[i].second;
     return {};
@@ -127,19 +134,28 @@ simfil::ModelNode::Ptr Feature::at(int64_t i) const
 
 uint32_t Feature::size() const
 {
-    return fields_.size();
+    return fields_.size() + (data_->sourceData_ ? 1 : 0);
 }
 
-simfil::ModelNode::Ptr Feature::get(const simfil::FieldId& f) const
+simfil::ModelNode::Ptr Feature::get(const simfil::StringId& f) const
 {
+    if (f == StringPool::SourceDataStr)
+        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceData_);
+
     for (auto const& [fieldName, fieldValue] : fields_)
         if (fieldName == f)
             return fieldValue;
+
     return {};
 }
 
-simfil::FieldId Feature::keyAt(int64_t i) const
+simfil::StringId Feature::keyAt(int64_t i) const
 {
+    if (data_->sourceData_) {
+        if (i == 0)
+            return StringPool::SourceDataStr;
+        i -= 1;
+    }
     if (i < fields_.size())
         return fields_[i].first;
     return {};
@@ -147,38 +163,34 @@ simfil::FieldId Feature::keyAt(int64_t i) const
 
 bool Feature::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
-    auto& resolver = model();
-    auto resolveAndCb = [&cb, &resolver](auto&& nodeNameAndValue){
-        bool cont = true;
-        resolver.resolve(*nodeNameAndValue.second, simfil::Model::Lambda([&cont, &cb](auto&& resolved){
-            cont = cb(resolved);
-        }));
-        return cont;
-    };
-    return std::all_of(fields_.begin(), fields_.end(), resolveAndCb);
+    for (auto i = 0; i < size(); ++i)
+        if (!cb(*at(i)))
+            return false;
+
+    return true;
 }
 
 void Feature::updateFields() {
     fields_.clear();
 
     // Add type field
-    fields_.emplace_back(Fields::TypeStr, simfil::ValueNode(std::string_view("Feature"), model_));
+    fields_.emplace_back(StringPool::TypeStr, simfil::ValueNode(std::string_view("Feature"), model_));
 
     // Add id field
-    fields_.emplace_back(Fields::IdStr, Ptr::make(model_, data_->id_));
+    fields_.emplace_back(StringPool::IdStr, Ptr::make(model_, data_->id_));
     auto idNode = model().resolveFeatureId(*fields_.back().second);
 
     // Add type id field
     fields_.emplace_back(
-        Fields::TypeIdStr,
+        StringPool::TypeIdStr,
         model_ptr<simfil::ValueNode>::make(idNode->typeId(), model_));
 
     // Add map and layer ids.
     fields_.emplace_back(
-        Fields::MapIdStr,
+        StringPool::MapIdStr,
         model_ptr<simfil::ValueNode>::make(model().mapId(), model_));
     fields_.emplace_back(
-        Fields::LayerIdStr,
+        StringPool::LayerIdStr,
         model_ptr<simfil::ValueNode>::make(model().layerInfo()->layerId_, model_));
 
     // Add common id-part fields
@@ -194,59 +206,23 @@ void Feature::updateFields() {
 
     // Add other fields
     if (data_->geom_)
-        fields_.emplace_back(Fields::GeometryStr, Ptr::make(model_, data_->geom_));
+        fields_.emplace_back(StringPool::GeometryStr, Ptr::make(model_, data_->geom_));
     if (data_->attrLayers_ || data_->attrs_)
         fields_.emplace_back(
-            Fields::PropertiesStr,
+            StringPool::PropertiesStr,
             Ptr::make(
                 model_,
-                simfil::ModelNodeAddress{TileFeatureLayer::FeatureProperties, addr().index()}));
+                simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureProperties, addr().index()}));
     if (data_->relations_)
-        fields_.emplace_back(Fields::RelationsStr, Ptr::make(model_, data_->relations_));
+        fields_.emplace_back(StringPool::RelationsStr, Ptr::make(model_, data_->relations_));
 }
 
-nlohmann::json Feature::toGeoJson()
+nlohmann::json Feature::toJson() const
 {
     // Ensure that properties and geometry exist
-    attributes();
-    geom();
-    return toJsonPrivate(*this);
-}
-
-nlohmann::json Feature::toJsonPrivate(const simfil::ModelNode& n)
-{
-    // We can identify geometry via its column
-    //if (n.addr().column() == TileFeatureLayer::Geometries) {
-    //    return model().resolveGeometry(n)->toGeoJson();
-    //}
-    
-    if (n.type() == simfil::ValueType::Object) {
-        auto j = nlohmann::json::object();
-        for (const auto& [fieldId, childNode] : n.fields()) {
-            if (auto resolvedField = model().fieldNames()->resolve(fieldId))
-                j[*resolvedField] = toJsonPrivate(*childNode);
-        }
-        return j;
-    }
-    else if (n.type() == simfil::ValueType::Array) {
-        auto j = nlohmann::json::array();
-        for (const auto& i : n)
-            j.push_back(toJsonPrivate(*i));
-        return j;
-    }
-    else {
-        nlohmann::json j;
-        std::visit(
-            [&j](auto&& v)
-            {
-                if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>)
-                    j = v;
-                else
-                    j = nullptr;
-            },
-            n.value());
-        return j;
-    }
+    (void)attributes();
+    (void)geom();
+    return simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
 }
 
 void Feature::addPoint(const Point& p) {
@@ -278,22 +254,23 @@ void Feature::addPoly(const std::vector<Point>& points) {
         newGeom->append(p);
 }
 
-void Feature::addRelation(
+model_ptr<Relation> Feature::addRelation(
     const std::string_view& name,
     const std::string_view& targetType,
     const KeyValueViewPairs& targetIdParts)
 {
-    addRelation(name, model().newFeatureId(targetType, targetIdParts));
+    return addRelation(name, model().newFeatureId(targetType, targetIdParts));
 }
 
-void Feature::addRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
+model_ptr<Relation> Feature::addRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
 {
-    addRelation(model().newRelation(name, target));
+    return addRelation(model().newRelation(name, target));
 }
 
-void Feature::addRelation(const model_ptr<Relation>& relation)
+model_ptr<Relation> Feature::addRelation(const model_ptr<Relation>& relation)
 {
     relations()->append(relation);
+    return relation;
 }
 
 uint32_t Feature::numRelations() const
@@ -353,6 +330,18 @@ Feature::filterRelations(const std::string_view& name) const
     return result;
 }
 
+model_ptr<SourceDataReferenceCollection> Feature::sourceDataReferences() const
+{
+    if (data_->sourceData_)
+        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+    return {};
+}
+
+void Feature::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
+{
+    data_->sourceData_ = addresses->addr();
+}
+
 //////////////////////////////////////////
 
 Feature::FeaturePropertyView::FeaturePropertyView(
@@ -388,20 +377,20 @@ uint32_t Feature::FeaturePropertyView::size() const
     return (data_->attrLayers_ ? 1 : 0) + (attrs_ ? attrs_->size() : 0);
 }
 
-simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::FieldId& f) const
+simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::StringId& f) const
 {
-    if (data_->attrLayers_ && f == Fields::LayerStr)
+    if (f == StringPool::LayerStr && data_->attrLayers_)
         return Ptr::make(model_, data_->attrLayers_);
     if (attrs_)
         return attrs_->get(f);
     return {};
 }
 
-simfil::FieldId Feature::FeaturePropertyView::keyAt(int64_t i) const
+simfil::StringId Feature::FeaturePropertyView::keyAt(int64_t i) const
 {
     if (data_->attrLayers_) {
         if (i == 0)
-            return Fields::LayerStr;
+            return StringPool::LayerStr;
         i -= 1;
     }
     if (attrs_)
