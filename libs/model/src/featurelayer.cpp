@@ -1064,7 +1064,7 @@ Geometry::Storage& TileFeatureLayer::vertexBufferStorage()
     return impl_->vertexBuffers_;
 }
 
-model_ptr<Feature> TileFeatureLayer::find(const std::string_view& featureId)
+model_ptr<Feature> TileFeatureLayer::find(const std::string_view& featureId) const
 {
     using namespace std::ranges;
     auto tokensRange = featureId | views::split('.');
