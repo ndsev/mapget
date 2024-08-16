@@ -1064,4 +1064,60 @@ Geometry::Storage& TileFeatureLayer::vertexBufferStorage()
     return impl_->vertexBuffers_;
 }
 
+model_ptr<Feature> TileFeatureLayer::find(const std::string_view& featureId)
+{
+    using namespace std::ranges;
+    auto tokensRange = featureId | views::split('.');
+    auto tokens = std::vector<decltype(*tokensRange.begin())>(tokensRange.begin(), tokensRange.end());
+
+    if (tokens.empty()) {
+        return {};
+    }
+    auto tokenAt = [&tokens](auto&& i) {
+        return std::string_view(&*tokens[i].begin(), distance(tokens[i]));
+    };
+
+    auto typeInfo = layerInfo_->getTypeInfo(tokenAt(0), false);
+    if (!typeInfo || typeInfo->uniqueIdCompositions_.empty())
+        return {};
+
+    // Convert the part strings to key-value pairs using the first (primary) ID composition.
+    KeyValuePairs kvPairs;
+    for (auto withOptionalParts : {true, false}) {
+        size_t tokenIndex = 1;
+        bool error = false;
+        kvPairs.clear();
+
+        for (const auto& part : typeInfo->uniqueIdCompositions_[0]) {
+            if (part.isOptional_ && !withOptionalParts)
+                continue;
+
+            if (tokenIndex >= tokens.size()) {
+                error = true;
+                break;
+            }
+
+            std::variant<int64_t, std::string> parsedValue = std::string(tokenAt(tokenIndex++));
+            if (!part.validate(parsedValue)) {
+                error = true;
+                break;
+            }
+
+            kvPairs.emplace_back(part.idPartLabel_, parsedValue);
+        }
+
+        if (tokenIndex < tokens.size()) {
+            error = true;
+        }
+
+        if (error) {
+            if (!withOptionalParts)
+                return {};
+            // Go on to try without optional parts.
+        }
+    }
+
+    return find(typeInfo->name_, kvPairs);
+}
+
 }
