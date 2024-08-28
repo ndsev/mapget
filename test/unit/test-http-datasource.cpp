@@ -286,15 +286,6 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
     REQUIRE(ds.isRunning() == false);
 }
 
-// Additional helper function to write initial configuration for testing
-void setupConfigFile(const std::string& path, const std::string& content) {
-    std::ofstream configFile(path);
-    if (configFile.is_open()) {
-        configFile << content;
-        configFile.close();
-    }
-}
-
 TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 {
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
@@ -308,8 +299,10 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     httplib::Client cli("localhost", service.port());
 
     // Set up the config file.
-    setupConfigFile(tempConfigPath, "initial: config");
-    DataSourceConfigService::get().setConfigFilePath(tempConfigPath);
+    std::ofstream configFile(tempConfigPath);
+    configFile << "initial: config";
+    configFile.close();
+    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
 
     SECTION("Get Configuration - Not Enabled") {
         auto res = cli.Get("/config");
