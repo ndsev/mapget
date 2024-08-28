@@ -1,7 +1,16 @@
 #include "http-service.h"
 #include "mapget/log.h"
+#include "mapget/service/config.h"
 
+#include "cli.h"
 #include "httplib.h"
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <condition_variable>
+#include <mutex>
 
 namespace mapget
 {
@@ -242,6 +251,81 @@ struct HttpService::Impl
             nlohmann::json::object({{"responses", allResponsesJson}}).dump(),
             "application/json");
     }
+
+    void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res) {
+        if (!isConfigEndpointEnabled()) {
+            res.status = 403;  // Forbidden.
+            res.set_content("The /config endpoint is not enabled by the server administrator.", "text/plain");
+            return;
+        }
+
+        auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
+        std::filesystem::path path = *configFilePath;
+        if (!configFilePath || !std::filesystem::exists(path)) {
+            res.status = 404;  // Not found.
+            res.set_content("The server does not have a config file.", "text/plain");
+            return;
+        }
+
+        std::ifstream file(path);
+        if (!file) {
+            res.status = 500;  // Internal Server Error.
+            res.set_content("Failed to open config file.", "text/plain");
+            return;
+        }
+
+        std::stringstream buffer;
+        buffer << file.rdbuf();  // Read the whole file into a string stream.
+        res.status = 200;  // OK.
+        res.set_content(buffer.str(), "text/plain");  // Set the content of the response.
+    }
+
+    void handlePostConfigRequest(const httplib::Request& req, httplib::Response& res) {
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool update_done = false;
+
+        // Obtain the configuration file path
+        auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
+        if (!configFilePath) {
+            res.status = 404;  // Not found.
+            res.set_content("Configuration file path is undefined.", "text/plain");
+            return;
+        }
+
+        // Subscribe to configuration changes
+        auto subscription = DataSourceConfigService::get().subscribe(
+            [&](const std::vector<YAML::Node>& serviceConfigNodes) {
+                std::lock_guard<std::mutex> lock(mtx);
+                res.status = 200;
+                res.set_content("Configuration updated and applied successfully.", "text/plain");
+                update_done = true;
+                cv.notify_one();
+            },
+            [&](const std::string& error) {
+                std::lock_guard<std::mutex> lock(mtx);
+                res.status = 500;
+                res.set_content("Error applying the configuration: " + error, "text/plain");
+                update_done = true;
+                cv.notify_one();
+            }
+        );
+
+        // Write the new configuration to the file
+        std::filesystem::path path = *configFilePath;
+        std::ofstream file(path);
+        if (!file) {
+            res.status = 500;  // Internal Server Error.
+            res.set_content("Failed to open the configuration file for writing.", "text/plain");
+            return;
+        }
+        file << req.body;
+        file.close();
+
+        // Wait for the subscription callback
+        std::unique_lock<std::mutex> lk(mtx);
+        cv.wait(lk, [&] { return update_done; });
+    }
 };
 
 HttpService::HttpService(Cache::Ptr cache, bool watchConfig)
@@ -278,6 +362,20 @@ void HttpService::setup(httplib::Server& server)
         [this](const httplib::Request& req, httplib::Response& res)
         {
             impl_->handleLocateRequest(req, res);
+        });
+
+    server.Get(
+        "/config",
+        [this](const httplib::Request& req, httplib::Response& res)
+        {
+            impl_->handleGetConfigRequest(req, res);
+        });
+
+    server.Post(
+        "/config",
+        [this](const httplib::Request& req, httplib::Response& res)
+        {
+            impl_->handlePostConfigRequest(req, res);
         });
 }
 

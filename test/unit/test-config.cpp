@@ -5,6 +5,7 @@
 #include <fstream>
 #include <future>
 
+#include "utility.h"
 #include "mapget/http-service/cli.h"
 #include "mapget/log.h"
 #include "mapget/service/config.h"
@@ -31,14 +32,6 @@ struct TestDataSource : public DataSource
     void fill(TileSourceDataLayer::Ptr const&) override {};
 };
 
-std::string generateTimestampedDirectoryName(const std::string& baseName)
-{
-    auto now = std::chrono::system_clock::now();
-    auto duration = now.time_since_epoch();
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    return baseName + "_" + std::to_string(millis);
-}
-
 void waitForUpdate(std::future<void>& future)
 {
     if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
@@ -48,7 +41,7 @@ void waitForUpdate(std::future<void>& future)
 
 TEST_CASE("Mapget Config", "[MapgetConfig]")
 {
-    auto tempDir = fs::temp_directory_path() / generateTimestampedDirectoryName("mapget_test");
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
@@ -74,7 +67,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
 {
     setLogLevel("trace", log());
 
-    auto tempDir = fs::temp_directory_path() / generateTimestampedDirectoryName("mapget_test");
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 

@@ -135,6 +135,7 @@ void registerDefaultDatasourceTypes() {
         });
 }
 
+bool isConfigEndpointEnabled_ = false;
 }
 
 struct ServeCommand
@@ -184,6 +185,10 @@ struct ServeCommand
             "-w,--webapp",
             webapp_,
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
+        serveCmd->add_option(
+            "--allow-config-access",
+            isConfigEndpointEnabled_,
+            "Allow the GET/POST datasources and http-settings config endpoints.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -352,6 +357,16 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
         return 1;
     }
     return 0;
+}
+
+bool isConfigEndpointEnabled()
+{
+    return isConfigEndpointEnabled_;
+}
+
+void setConfigEndpointEnabled(bool enabled)
+{
+    isConfigEndpointEnabled_ = enabled;
 }
 
 }  // namespace mapget
