@@ -57,6 +57,7 @@ class MapgetRecipe(ConanFile):
             self.requires("cli11/2.3.2")
             self.requires("cpp-httplib/0.15.3", transitive_headers=True)
             self.requires("yaml-cpp/0.8.0")
+            self.requires("json-schema-validator/2.3.0")
         if self.options.with_service or self.options.with_httplib:
             self.requires("rocksdb/9.1.0")
         if self.options.with_wheel:
@@ -105,7 +106,7 @@ class MapgetRecipe(ConanFile):
         if self.options.with_httplib:
             self.cpp_info.components["http-service"].libs = ["mapget-http-service"]
             self.cpp_info.components["http-service"].set_property("cmake_target_name", "mapget::http-service")
-            self.cpp_info.components["http-service"].requires = ["service", "http-datasource", "cpp-httplib::cpp-httplib", "cli11::cli11"]
+            self.cpp_info.components["http-service"].requires = ["service", "http-datasource", "cpp-httplib::cpp-httplib", "cli11::cli11",  "json-schema-validator::json-schema-validator"]
             self.cpp_info.components["http-datasource"].libs = ["mapget-http-datasource"]
             self.cpp_info.components["http-datasource"].set_property("cmake_target_name", "mapget::http-datasource")
             self.cpp_info.components["http-datasource"].requires = ["model", "service", "cpp-httplib::cpp-httplib"]

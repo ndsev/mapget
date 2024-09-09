@@ -321,10 +321,12 @@ struct FetchCommand
     }
 };
 
+std::string pathToSchema;
 int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     std::string log_level_;
+
     app.add_option(
            "--log-level",
            log_level_,
@@ -334,6 +336,11 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
         "--config",
         "",
         "Optional path to a file with configuration arguments for mapget.");
+    app.add_option(
+        "--config-schema",
+        pathToSchema,
+        "Optional path to a file with configuration schema for mapget.")
+        ->default_val("<DEFAULT-DIR>");
     app.config_formatter(std::make_shared<ConfigYAML>());
 
     if (requireSubcommand)
@@ -367,6 +374,11 @@ bool isConfigEndpointEnabled()
 void setConfigEndpointEnabled(bool enabled)
 {
     isConfigEndpointEnabled_ = enabled;
+}
+
+const std::string &getPathToSchema()
+{
+    return pathToSchema;
 }
 
 }  // namespace mapget
