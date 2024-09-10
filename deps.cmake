@@ -65,6 +65,11 @@ else()
     GIT_TAG        v2.3.2
     GIT_SHALLOW    ON)
 
+  FetchContent_Declare(nlohmann_json_schema_validator
+    GIT_REPOSITORY "https://github.com/pboettch/json-schema-validator"
+    GIT_TAG        "2.3.0"
+    GIT_SHALLOW    ON)
+
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
     FetchContent_Declare(pybind11
       GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
@@ -106,7 +111,7 @@ else()
   endif()
 
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-    FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11)
+    FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator)
   endif()
 
   FetchContent_GetProperties(cpp-httplib)

@@ -12,11 +12,35 @@
 #include <vector>
 #include <yaml-cpp/yaml.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#elif __APPLE__
+#include <mach-o/dyld.h>
+#elif __linux__
+#include <unistd.h>
+#endif
+
 namespace mapget
 {
 
 namespace
 {
+
+std::filesystem::path getExecutablePath() {
+    char buffer[1024];
+#ifdef _WIN32
+    GetModuleFileNameA(NULL, buffer, sizeof(buffer));
+#elif __APPLE__
+    uint32_t size = sizeof(buffer);
+    _NSGetExecutablePath(buffer, &size);
+#elif __linux__
+    ssize_t count = readlink("/proc/self/exe", buffer, sizeof(buffer));
+    if (count != -1) {
+        buffer[count] = '\0';
+    }
+#endif
+    return std::filesystem::path(buffer).parent_path();
+}
 
 class ConfigYAML : public CLI::Config
 {
@@ -185,7 +209,7 @@ struct ServeCommand
             "-w,--webapp",
             webapp_,
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
-        serveCmd->add_option(
+        serveCmd->add_flag(
             "--allow-config-access",
             isConfigEndpointEnabled_,
             "Allow the GET/POST datasources and http-settings config endpoints.");
@@ -328,9 +352,9 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
     std::string log_level_;
 
     app.add_option(
-           "--log-level",
-           log_level_,
-           "From [trace|debug|info|warn|error|critical], overrides MAPGET_LOG_LEVEL.")
+        "--log-level",
+        log_level_,
+        "From [trace|debug|info|warn|error|critical], overrides MAPGET_LOG_LEVEL.")
         ->default_val("");
     app.set_config(
         "--config",
@@ -340,7 +364,7 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
         "--config-schema",
         pathToSchema,
         "Optional path to a file with configuration schema for mapget.")
-        ->default_val("<DEFAULT-DIR>");
+        ->default_val(getExecutablePath() / "default_config_schema.json"); // TODO: Add a test
     app.config_formatter(std::make_shared<ConfigYAML>());
 
     if (requireSubcommand)

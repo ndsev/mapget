@@ -106,7 +106,7 @@ class MapgetRecipe(ConanFile):
         if self.options.with_httplib:
             self.cpp_info.components["http-service"].libs = ["mapget-http-service"]
             self.cpp_info.components["http-service"].set_property("cmake_target_name", "mapget::http-service")
-            self.cpp_info.components["http-service"].requires = ["service", "http-datasource", "cpp-httplib::cpp-httplib", "cli11::cli11",  "json-schema-validator::json-schema-validator"]
+            self.cpp_info.components["http-service"].requires = ["service", "http-datasource", "cpp-httplib::cpp-httplib", "cli11::cli11"]
             self.cpp_info.components["http-datasource"].libs = ["mapget-http-datasource"]
             self.cpp_info.components["http-datasource"].set_property("cmake_target_name", "mapget::http-datasource")
             self.cpp_info.components["http-datasource"].requires = ["model", "service", "cpp-httplib::cpp-httplib"]

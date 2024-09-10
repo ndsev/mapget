@@ -326,7 +326,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     }
 
     SECTION("Post Configuration - Datasource Entry") {
-        std::string newConfig = "sources: {type: TestDataSource}";
+        std::string newConfig = "{'sources': {'type': 'TestDataSource'}}";
         auto res = cli.Post("/config", newConfig, "text/plain");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 200);

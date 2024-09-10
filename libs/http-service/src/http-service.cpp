@@ -2,24 +2,26 @@
 #include "mapget/log.h"
 #include "mapget/service/config.h"
 
-#include "cli.h"
-#include "httplib.h"
-#include "nlohmann/json.hpp"
-//#include "nlohmann/json-schema.hpp"
-#include "yaml-cpp/yaml.h"
-#include "openssl/sha.h"
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <vector>
-#include <condition_variable>
-#include <mutex>
+#include "cli.h"
+#include "httplib.h"
+#include "nlohmann/json-schema.hpp"
+#include "nlohmann/json.hpp"
+#include "openssl/sha.h"
+#include "yaml-cpp/yaml.h"
 
 namespace mapget
 {
 
-// TODO: Where to put this?
-std::string stringToHash(const std::string& input) {
+namespace
+{
+std::string stringToHash(const std::string& input)
+{
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256((unsigned char*)input.c_str(), input.length(), hash);
 
@@ -29,6 +31,7 @@ std::string stringToHash(const std::string& input) {
     }
     return ss.str();
 }
+}  // namespace
 
 struct HttpService::Impl
 {
@@ -52,7 +55,8 @@ struct HttpService::Impl
         std::vector<LayerTilesRequest::Ptr> requests_;
         TileLayerStream::StringPoolOffsetMap stringOffsets_;
 
-        HttpTilesRequestState() {
+        HttpTilesRequestState()
+        {
             writer_ = std::make_unique<TileLayerStream::Writer>(
                 [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
                 stringOffsets_);
@@ -66,8 +70,8 @@ struct HttpService::Impl
             tileIds.reserve(requestJson["tileIds"].size());
             for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>())
                 tileIds.emplace_back(tid);
-            requests_.push_back(
-                std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
+            requests_
+                .push_back(std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
         }
 
         void setResponseType(std::string const& s)
@@ -94,7 +98,7 @@ struct HttpService::Impl
             }
             else {
                 // JSON response
-                buffer_ << nlohmann::to_string(result->toJson())+"\n";
+                buffer_ << nlohmann::to_string(result->toJson()) + "\n";
             }
             resultEvent_.notify_one();
         }
@@ -130,14 +134,8 @@ struct HttpService::Impl
 
         // Process requests.
         for (auto& request : state->requests_) {
-            request->onFeatureLayer([state](auto&& layer)
-            {
-                state->addResult(layer);
-            });
-            request->onSourceDataLayer([state](auto&& layer)
-            {
-                state->addResult(layer);
-            });
+            request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
+            request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
             request->onDone_ = [state](RequestStatus r)
             {
                 state->resultEvent_.notify_one();
@@ -271,14 +269,18 @@ struct HttpService::Impl
     {
         if (!isConfigEndpointEnabled()) {
             res.status = 403;  // Forbidden.
-            res.set_content("The /config endpoint is not enabled by the server administrator.", "text/plain");
+            res.set_content(
+                "The /config endpoint is not enabled by the server administrator.",
+                "text/plain");
             return;
         }
 
         auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
         if (!configFilePath.has_value()) {
             res.status = 404;  // Not found.
-            res.set_content("The config file path is not set. Check the server configuration.", "text/plain");
+            res.set_content(
+                "The config file path is not set. Check the server configuration.",
+                "text/plain");
             return;
         }
 
@@ -299,7 +301,9 @@ struct HttpService::Impl
         const auto& schemaFilePath = mapget::getPathToSchema();
         if (schemaFilePath.empty()) {
             res.status = 404;  // Not found.
-            res.set_content("The schema file path is not set. Check the server configuration.", "text/plain");
+            res.set_content(
+                "The schema file path is not set. Check the server configuration.",
+                "text/plain");
             return;
         }
 
@@ -327,16 +331,33 @@ struct HttpService::Impl
             nlohmann::json jsonConfig;
 
             // Function to convert a YAML node to JSON, with special handling for sensitive fields
-            std::function<void(const YAML::Node&, nlohmann::json&)> yamlToJson = [&](const YAML::Node& yamlNode, nlohmann::json& jsonNode)
+            std::function<void(const YAML::Node&, nlohmann::json&)> yamlToJson =
+                [&](const YAML::Node& yamlNode, nlohmann::json& jsonNode)
             {
                 for (const auto& item : yamlNode) {
                     auto key = item.first.as<std::string>();
                     if (item.second.IsScalar()) {
-                        auto value = item.second.as<std::string>();
+                        nlohmann::json value;
+                        try {
+                            value = item.second.as<int>();
+                        }
+                        catch (const YAML::BadConversion&) {
+                            try {
+                                value = item.second.as<double>();
+                            }
+                            catch (const YAML::BadConversion&) {
+                                try {
+                                    value = item.second.as<bool>();
+                                }
+                                catch (const YAML::BadConversion&) {
+                                    // Fallback to string
+                                    value = item.second.as<std::string>();
+                                }
+                            }
+                        }
                         // Mask sensitive fields
-                        // TODO: Use an easy and secure hash function instead
                         if (key == "api-key" || key == "password") {
-                            value = "MASKED:"+stringToHash(value);
+                            value = "MASKED:" + stringToHash(value);
                         }
                         jsonNode[key] = value;
                     }
@@ -352,7 +373,9 @@ struct HttpService::Impl
             for (const auto& key : keys) {
                 if (!configYaml[key]) {
                     res.status = 400;  // Bad Request
-                    res.set_content("The config file does not contain '" + key + "'.", "text/plain");
+                    res.set_content(
+                        "The config file does not contain '" + key + "'.",
+                        "text/plain");
                     return;
                 }
 
@@ -388,27 +411,30 @@ struct HttpService::Impl
         auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
         if (!configFilePath || !configFilePath.has_value()) {
             res.status = 404;  // Not found.
-            res.set_content("The config file path is not set. Check the server configuration.", "text/plain");
+            res.set_content(
+                "The config file path is not set. Check the server configuration.",
+                "text/plain");
             return;
         }
 
         // Subscribe to configuration changes
         auto subscription = DataSourceConfigService::get().subscribe(
-            [&](const std::vector<YAML::Node>& serviceConfigNodes){
+            [&](const std::vector<YAML::Node>& serviceConfigNodes)
+            {
                 std::lock_guard<std::mutex> lock(mtx);
                 res.status = 200;
                 res.set_content("Configuration updated and applied successfully.", "text/plain");
                 update_done = true;
                 cv.notify_one();
             },
-            [&](const std::string& error){
+            [&](const std::string& error)
+            {
                 std::lock_guard<std::mutex> lock(mtx);
                 res.status = 500;
                 res.set_content("Error applying the configuration: " + error, "text/plain");
                 update_done = true;
                 cv.notify_one();
-            }
-        );
+            });
 
         // Parse the JSON from the request body
         nlohmann::json jsonConfig;
@@ -426,7 +452,9 @@ struct HttpService::Impl
             const auto& schemaFilePath = mapget::getPathToSchema();
             if (schemaFilePath.empty()) {
                 res.status = 404;  // Not found.
-                res.set_content("The schema file path is not set. Check the server configuration.", "text/plain");
+                res.set_content(
+                    "The schema file path is not set. Check the server configuration.",
+                    "text/plain");
                 return;
             }
 
@@ -449,13 +477,11 @@ struct HttpService::Impl
             schemaFile.close();
 
             // Validate with json-schema-validator
-//            nlohmann::json_schema::json_validator validator;
-//            validator.set_root_schema(jsonSchema);
-//            validator.validate(jsonConfig);
-            std::cout << "JSON is valid!" << std::endl;
-
+            nlohmann::json_schema::json_validator validator;
+            validator.set_root_schema(jsonSchema);
+            validator.validate(jsonConfig);
         }
-        catch (const std::exception &e) {
+        catch (const std::exception& e) {
             res.status = 500;  // Internal Server Error.
             res.set_content("Validation failed: " + std::string(e.what()), "text/plain");
             return;
@@ -465,7 +491,8 @@ struct HttpService::Impl
         YAML::Node httpSettings;
 
         // Lambda to recursively convert JSON to YAML
-        std::function<YAML::Node(const nlohmann::json&)> jsonToYaml = [&](const nlohmann::json& json) -> YAML::Node
+        std::function<YAML::Node(const nlohmann::json&)> jsonToYaml =
+            [&](const nlohmann::json& json) -> YAML::Node
         {
             YAML::Node node;
             if (json.is_object()) {
@@ -474,7 +501,8 @@ struct HttpService::Impl
                     for (auto it = json.begin(); it != json.end(); ++it) {
                         // Un-mask sensitive fields
                         if ((it.key() == "api-key" || it.key() == "password") &&
-                            it.value().dump().starts_with("MASKED:")) {
+                            it.value().dump().starts_with("MASKED:"))
+                        {
                             auto found = false;
                             auto value = it.value().dump().erase(0, 7);
                             if (httpSettings.IsSequence()) {
@@ -488,8 +516,10 @@ struct HttpService::Impl
                                                 node[it.key()] = jsonToYaml(apiKey);
                                             }
                                         }
-                                        if (entry["basic-auth"] && entry["basic-auth"]["password"]) {
-                                            auto password = entry["basic-auth"]["password"].as<std::string>();
+                                        if (entry["basic-auth"] && entry["basic-auth"]["password"])
+                                        {
+                                            auto password =
+                                                entry["basic-auth"]["password"].as<std::string>();
                                             auto hashPassword = stringToHash(password);
                                             if (hashPassword == value) {
                                                 found == true;
@@ -550,18 +580,22 @@ struct HttpService::Impl
             res.set_content("Invalid JSON: 'http-settings' missing.", "text/plain");
             return;
         }
-        httpSettings = YAML::Load(path)["http-settings"];
+
+        // Assign previous setting to httpSettings so we can match masked secrets
+        std::ifstream previousConfigFile(path);
+        httpSettings = YAML::Load(previousConfigFile);
+        httpSettings = httpSettings["http-settings"];
         configYaml["http-settings"] = jsonToYaml(jsonConfig["http-settings"]);
 
         // Write the YAML to configFilePath
-        std::ofstream file(path);
-        if (!file) {
+        std::ofstream newConfigFile(path);
+        if (!newConfigFile) {
             res.status = 500;  // Internal Server Error.
             res.set_content("Failed to open the configuration file for writing.", "text/plain");
             return;
         }
-        file << configYaml;
-        file.close();
+        newConfigFile << configYaml;
+        newConfigFile.close();
 
         // Wait for the subscription callback
         std::unique_lock<std::mutex> lk(mtx);
@@ -571,7 +605,8 @@ struct HttpService::Impl
 
 HttpService::HttpService(Cache::Ptr cache, bool watchConfig)
     : Service(std::move(cache), watchConfig), impl_(std::make_unique<Impl>(*this))
-{}
+{
+}
 
 HttpService::~HttpService() = default;
 
@@ -580,44 +615,32 @@ void HttpService::setup(httplib::Server& server)
     server.Post(
         "/tiles",
         [&](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleTilesRequest(req, res);
-        });
+        { impl_->handleTilesRequest(req, res); });
 
     server.Get(
         "/sources",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleSourcesRequest(req, res);
-        });
+        { impl_->handleSourcesRequest(req, res); });
 
     server.Get(
         "/status",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleStatusRequest(req, res);
-        });
+        { impl_->handleStatusRequest(req, res); });
 
     server.Post(
         "/locate",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleLocateRequest(req, res);
-        });
+        { impl_->handleLocateRequest(req, res); });
 
     server.Get(
         "/config",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleGetConfigRequest(req, res);
-        });
+        { impl_->handleGetConfigRequest(req, res); });
 
     server.Post(
         "/config",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handlePostConfigRequest(req, res);
-        });
+        { impl_->handlePostConfigRequest(req, res); });
 }
 
 }  // namespace mapget

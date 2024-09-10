@@ -44,3 +44,5 @@ endif()
 install(TARGETS mapget-http-service)
 install(DIRECTORY include/mapget/http-service
   DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
+
+configure_file(default_config_schema.json ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default_config_schema.json)
