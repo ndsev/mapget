@@ -31,6 +31,121 @@ std::string stringToHash(const std::string& input)
     }
     return ss.str();
 }
+
+// Recursively convert a YAML node to a JSON object.
+// With special handling for sensitive fields.
+nlohmann::json& yamlToJson(const YAML::Node& yamlNode, nlohmann::json& jsonNode)
+{
+    for (const auto& item : yamlNode) {
+        auto key = item.first.as<std::string>();
+        if (item.second.IsScalar()) {
+            nlohmann::json value;
+            try {
+                value = item.second.as<int>();
+            }
+            catch (const YAML::BadConversion&) {
+                try {
+                    value = item.second.as<double>();
+                }
+                catch (const YAML::BadConversion&) {
+                    try {
+                        value = item.second.as<bool>();
+                    }
+                    catch (const YAML::BadConversion&) {
+                        // Fallback to string
+                        value = item.second.as<std::string>();
+                    }
+                }
+            }
+            // Mask sensitive fields
+            if (key == "api-key" || key == "password") {
+                value = "MASKED:" + stringToHash(value);
+            }
+            jsonNode[key] = value;
+        }
+        else if (item.second.IsSequence() || item.second.IsMap()) {
+            nlohmann::json childJson;
+            yamlToJson(item.second, childJson);
+            jsonNode[key] = childJson;
+        }
+    }
+};
+
+// Recursively convert a JSON object to a YAML node.
+// With special handling for sensitive fields.
+YAML::Node jsonToYaml(const nlohmann::json& json, const YAML::Node& httpSettings)
+{
+    YAML::Node node;
+    if (json.is_object()) {
+        if (json.contains("scope")) {
+            auto scope = json["scope"].dump();
+            for (auto it = json.begin(); it != json.end(); ++it) {
+                // Un-mask sensitive fields
+                // We need to match against the previous state of "http-settings"
+                if ((it.key() == "api-key" || it.key() == "password") &&
+                    it.value().dump().starts_with("MASKED:"))
+                {
+                    auto found = false;
+                    auto value = it.value().dump().erase(0, 7);
+                    if (httpSettings.IsSequence()) {
+                        for (const auto& entry : httpSettings) {
+                            if (entry["scope"].as<std::string>() == scope) {
+                                if (entry["api-key"]) {
+                                    auto apiKey = entry["api-key"].as<std::string>();
+                                    auto hashApiKey = stringToHash(apiKey);
+                                    if (hashApiKey == value) {
+                                        found == true;
+                                        node[it.key()] = jsonToYaml(apiKey, httpSettings);
+                                    }
+                                }
+                                if (entry["basic-auth"] && entry["basic-auth"]["password"])
+                                {
+                                    auto password =
+                                        entry["basic-auth"]["password"].as<std::string>();
+                                    auto hashPassword = stringToHash(password);
+                                    if (hashPassword == value) {
+                                        found == true;
+                                        node[it.key()] = jsonToYaml(password, httpSettings);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                else {
+                    node[it.key()] = jsonToYaml(it.value(), httpSettings);
+                }
+            }
+        }
+        else {
+            for (auto it = json.begin(); it != json.end(); ++it) {
+                node[it.key()] = jsonToYaml(it.value(), httpSettings);
+            }
+        }
+    }
+    else if (json.is_array()) {
+        for (const auto& item : json) {
+            node.push_back(jsonToYaml(item, httpSettings));
+        }
+    }
+    else if (json.is_string()) {
+        node = json.get<std::string>();
+    }
+    else if (json.is_number_integer()) {
+        node = json.get<int>();
+    }
+    else if (json.is_number_float()) {
+        node = json.get<double>();
+    }
+    else if (json.is_boolean()) {
+        node = json.get<bool>();
+    }
+    else if (json.is_null()) {
+        node = YAML::Node(YAML::NodeType::Null);
+    }
+
+    return node;
+}
 }  // namespace
 
 struct HttpService::Impl
@@ -330,45 +445,6 @@ struct HttpService::Impl
             YAML::Node configYaml = YAML::Load(file);
             nlohmann::json jsonConfig;
 
-            // Function to convert a YAML node to JSON, with special handling for sensitive fields
-            std::function<void(const YAML::Node&, nlohmann::json&)> yamlToJson =
-                [&](const YAML::Node& yamlNode, nlohmann::json& jsonNode)
-            {
-                for (const auto& item : yamlNode) {
-                    auto key = item.first.as<std::string>();
-                    if (item.second.IsScalar()) {
-                        nlohmann::json value;
-                        try {
-                            value = item.second.as<int>();
-                        }
-                        catch (const YAML::BadConversion&) {
-                            try {
-                                value = item.second.as<double>();
-                            }
-                            catch (const YAML::BadConversion&) {
-                                try {
-                                    value = item.second.as<bool>();
-                                }
-                                catch (const YAML::BadConversion&) {
-                                    // Fallback to string
-                                    value = item.second.as<std::string>();
-                                }
-                            }
-                        }
-                        // Mask sensitive fields
-                        if (key == "api-key" || key == "password") {
-                            value = "MASKED:" + stringToHash(value);
-                        }
-                        jsonNode[key] = value;
-                    }
-                    else if (item.second.IsSequence() || item.second.IsMap()) {
-                        nlohmann::json childJson;
-                        yamlToJson(item.second, childJson);
-                        jsonNode[key] = childJson;
-                    }
-                }
-            };
-
             std::vector<std::string> keys = {"sources", "http-settings"};
             for (const auto& key : keys) {
                 if (!configYaml[key]) {
@@ -488,104 +564,25 @@ struct HttpService::Impl
         }
 
         // We will need to load it to match for sensitive data.
-        YAML::Node httpSettings;
-
-        // Lambda to recursively convert JSON to YAML
-        std::function<YAML::Node(const nlohmann::json&)> jsonToYaml =
-            [&](const nlohmann::json& json) -> YAML::Node
-        {
-            YAML::Node node;
-            if (json.is_object()) {
-                if (json.contains("scope")) {
-                    auto scope = json["scope"].dump();
-                    for (auto it = json.begin(); it != json.end(); ++it) {
-                        // Un-mask sensitive fields
-                        if ((it.key() == "api-key" || it.key() == "password") &&
-                            it.value().dump().starts_with("MASKED:"))
-                        {
-                            auto found = false;
-                            auto value = it.value().dump().erase(0, 7);
-                            if (httpSettings.IsSequence()) {
-                                for (const auto& entry : httpSettings) {
-                                    if (entry["scope"].as<std::string>() == scope) {
-                                        if (entry["api-key"]) {
-                                            auto apiKey = entry["api-key"].as<std::string>();
-                                            auto hashApiKey = stringToHash(apiKey);
-                                            if (hashApiKey == value) {
-                                                found == true;
-                                                node[it.key()] = jsonToYaml(apiKey);
-                                            }
-                                        }
-                                        if (entry["basic-auth"] && entry["basic-auth"]["password"])
-                                        {
-                                            auto password =
-                                                entry["basic-auth"]["password"].as<std::string>();
-                                            auto hashPassword = stringToHash(password);
-                                            if (hashPassword == value) {
-                                                found == true;
-                                                node[it.key()] = jsonToYaml(password);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        else {
-                            node[it.key()] = jsonToYaml(it.value());
-                        }
-                    }
-                }
-                else {
-                    for (auto it = json.begin(); it != json.end(); ++it) {
-                        node[it.key()] = jsonToYaml(it.value());
-                    }
-                }
-            }
-            else if (json.is_array()) {
-                for (const auto& item : json) {
-                    node.push_back(jsonToYaml(item));
-                }
-            }
-            else if (json.is_string()) {
-                node = json.get<std::string>();
-            }
-            else if (json.is_number_integer()) {
-                node = json.get<int>();
-            }
-            else if (json.is_number_float()) {
-                node = json.get<double>();
-            }
-            else if (json.is_boolean()) {
-                node = json.get<bool>();
-            }
-            else if (json.is_null()) {
-                node = YAML::Node(YAML::NodeType::Null);
-            }
-
-            return node;
-        };
-
+        YAML::Node yamlConfig;
         std::filesystem::path path = *configFilePath;
+        std::ifstream previousConfigFile(path);
+        yamlConfig = YAML::Load(previousConfigFile);
+        previousConfigFile.close();
 
-        // Create a unified YAML node for both http-settings and sources
-        YAML::Node configYaml = YAML::Node(YAML::NodeType::Map);
+        // Create YAML nodes for both http-settings and sources
         if (!jsonConfig.contains("sources")) {
             res.status = 400;  // Bad Request
             res.set_content("Invalid JSON: 'sources' missing.", "text/plain");
             return;
         }
-        configYaml["sources"] = jsonToYaml(jsonConfig["sources"]);
+        yamlConfig["sources"] = jsonToYaml(jsonConfig["sources"], yamlConfig["http-settings"]);
         if (!jsonConfig.contains("http-settings")) {
             res.status = 400;  // Bad Request
             res.set_content("Invalid JSON: 'http-settings' missing.", "text/plain");
             return;
         }
-
-        // Assign previous setting to httpSettings so we can match masked secrets
-        std::ifstream previousConfigFile(path);
-        httpSettings = YAML::Load(previousConfigFile);
-        httpSettings = httpSettings["http-settings"];
-        configYaml["http-settings"] = jsonToYaml(jsonConfig["http-settings"]);
+        yamlConfig["http-settings"] = jsonToYaml(jsonConfig["http-settings"], yamlConfig["http-settings"]);
 
         // Write the YAML to configFilePath
         std::ofstream newConfigFile(path);
@@ -594,7 +591,7 @@ struct HttpService::Impl
             res.set_content("Failed to open the configuration file for writing.", "text/plain");
             return;
         }
-        newConfigFile << configYaml;
+        newConfigFile << yamlConfig;
         newConfigFile.close();
 
         // Wait for the subscription callback
