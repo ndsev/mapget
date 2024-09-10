@@ -11,4 +11,5 @@ namespace mapget
     void setConfigEndpointEnabled(bool enabled);
 
     const std::string &getPathToSchema();
+    void setPathToSchema(const std::string &path);
 }

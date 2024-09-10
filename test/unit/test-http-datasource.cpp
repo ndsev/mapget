@@ -291,6 +291,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
+    auto tempSchemaPath = tempDir / "temp_schema.json";
 
     // Setting up the server and client.
     HttpService service;
@@ -300,9 +301,24 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     // Set up the config file.
     std::ofstream configFile(tempConfigPath);
-    configFile << "initial: config";
+    configFile << "sources: []\nhttp-settings: []";  // Update http-settings to an array.
     configFile.close();
     DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
+
+    // Set up the schema file.
+    std::ofstream schemaFile(tempSchemaPath);
+    schemaFile << R"(
+    {
+        "type": "object",
+        "properties": {
+            "sources": { "type": "array" },
+            "http-settings": { "type": "array" }
+        },
+        "required": ["sources", "http-settings"]
+    }
+    )";
+    schemaFile.close();
+    mapget::setPathToSchema(tempSchemaPath.string());
 
     SECTION("Get Configuration - Not Enabled") {
         auto res = cli.Get("/config");
@@ -310,31 +326,72 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(res->status == 403);
     }
 
+    SECTION("Get Configuration - No Config File Path Set") {
+        DataSourceConfigService::get().setConfigFilePath("");  // Simulate no config path set.
+        setConfigEndpointEnabled(true);
+        auto res = cli.Get("/config");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 404);
+        REQUIRE(res->body == "The config file path is not set. Check the server configuration.");
+    }
+
+    SECTION("Get Configuration - Config File Not Found") {
+        fs::remove(tempConfigPath);  // Simulate missing config file.
+        setConfigEndpointEnabled(true);
+        auto res = cli.Get("/config");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 404);
+        REQUIRE(res->body == "The server does not have a config file.");
+    }
+
     SECTION("Get Configuration - Success") {
         setConfigEndpointEnabled(true);
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 200);
-        REQUIRE(res->body == "initial: config");
+        REQUIRE(res->body.find("sources") != std::string::npos);
+        REQUIRE(res->body.find("http-settings") != std::string::npos);
     }
 
-    SECTION("Post Configuration - Missing Datasources") {
-        std::string newConfig = "true";
-        auto res = cli.Post("/config", newConfig, "text/plain");
+    SECTION("Post Configuration - Invalid JSON Format") {
+        std::string invalidJson = "this is not valid json";
+        auto res = cli.Post("/config", invalidJson, "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 400);
+        REQUIRE(res->body.find("Invalid JSON format") != std::string::npos);
+    }
+
+    SECTION("Post Configuration - Missing Sources") {
+        std::string newConfig = R"({"http-settings": []})";
+        auto res = cli.Post("/config", newConfig, "application/json");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 500);
+        REQUIRE(res->body.starts_with("Validation failed"));
     }
 
-    SECTION("Post Configuration - Datasource Entry") {
-        std::string newConfig = "{'sources': {'type': 'TestDataSource'}}";
-        auto res = cli.Post("/config", newConfig, "text/plain");
+    SECTION("Post Configuration - Missing Http Settings") {
+        std::string newConfig = R"({"sources": []})";
+        auto res = cli.Post("/config", newConfig, "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 500);
+        REQUIRE(res->body.starts_with("Validation failed"));
+    }
+
+    SECTION("Post Configuration - Valid JSON Config") {
+        std::string newConfig = R"({
+            "sources": [{"type": "TestDataSource"}],
+            "http-settings": [{"scope": "https://example.com"}]
+        })";
+        auto res = cli.Post("/config", newConfig, "application/json");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 200);
+        REQUIRE(res->body == "Configuration updated and applied successfully.");
     }
 
     service.stop();
     REQUIRE(service.isRunning() == false);
 
-    // Clean up the test configuration file if necessary
+    // Clean up the test configuration files.
     fs::remove(tempConfigPath);
+    fs::remove(tempSchemaPath);
 }

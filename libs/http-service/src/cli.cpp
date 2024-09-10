@@ -405,4 +405,9 @@ const std::string &getPathToSchema()
     return pathToSchema;
 }
 
+void setPathToSchema(const std::string& path)
+{
+    pathToSchema = path;
+}
+
 }  // namespace mapget
