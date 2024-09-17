@@ -308,7 +308,7 @@ struct Service::Impl : public Service::Controller
                     }
                     else {
                         log().error(
-                            "Failed to makeDataSource datasource at index {}.", index);
+                            "Failed to make datasource at index {}.", index);
                     }
                     ++index;
                 }

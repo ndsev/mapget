@@ -364,7 +364,7 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
         "--config-schema",
         pathToSchema,
         "Optional path to a file with configuration schema for mapget.")
-        ->default_val(getExecutablePath() / "default_config_schema.json"); // TODO: Add a test
+        ->default_val((getExecutablePath() / "default_config_schema.json").string()); // TODO: Add a test
     app.config_formatter(std::make_shared<ConfigYAML>());
 
     if (requireSubcommand)
