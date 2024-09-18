@@ -22,7 +22,8 @@ target_link_libraries(mapget-http-service
     CLI11::CLI11
     nlohmann_json_schema_validator
     mapget-service
-    mapget-http-datasource)
+    mapget-http-datasource
+    picosha2)
 
 if (MSVC)
   target_compile_definitions(mapget-http-service

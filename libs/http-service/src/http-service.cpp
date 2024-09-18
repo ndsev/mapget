@@ -12,24 +12,23 @@
 #include "httplib.h"
 #include "nlohmann/json-schema.hpp"
 #include "nlohmann/json.hpp"
-#include "openssl/sha.h"
 #include "yaml-cpp/yaml.h"
+#include "picosha2.h"
 
 namespace mapget
 {
 
 namespace
 {
+
+/**
+ * Hash a string using the SHA256 implementation.
+ */
 std::string stringToHash(const std::string& input)
 {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256((unsigned char*)input.c_str(), input.length(), hash);
-
-    std::stringstream ss;
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-    }
-    return ss.str();
+    std::string result;
+    picosha2::hash256_hex_string(input, result);
+    return result;
 }
 
 // Recursively convert a YAML node to a JSON object.

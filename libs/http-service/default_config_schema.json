@@ -113,9 +113,7 @@
             "type": "string",
             "enum": [
               "DataSourceHost",
-              "DataSourceProcess",
-              "SmartLayerTileService",
-              "GeoJsonFolder"
+              "DataSourceProcess"
             ],
             "title": "Source Type"
           },
@@ -129,25 +127,10 @@
             "title": "Command",
             "description": "Command for DataSourceProcess"
           },
-          "uri": {
-            "type": "string",
-            "title": "URI",
-            "description": "URI for SmartLayerTileService"
-          },
           "mapId": {
             "type": "string",
             "title": "Map ID",
             "description": "Optional map ID for SmartLayerTileService"
-          },
-          "folder": {
-            "type": "string",
-            "title": "Folder Path",
-            "description": "Folder path for GeoJsonFolder"
-          },
-          "withAttrLayers": {
-            "type": "boolean",
-            "title": "With Attribute Layers",
-            "description": "Optional flag for GeoJsonFolder"
           }
         },
         "required": ["type"],
@@ -173,34 +156,6 @@
               }
             },
             "required": ["cmd"]
-          },
-          {
-            "properties": {
-              "type": {
-                "enum": ["SmartLayerTileService"]
-              },
-              "uri": {
-                "type": "string"
-              },
-              "mapId": {
-                "type": "string"
-              }
-            },
-            "required": ["uri"]
-          },
-          {
-            "properties": {
-              "type": {
-                "enum": ["GeoJsonFolder"]
-              },
-              "folder": {
-                "type": "string"
-              },
-              "withAttrLayers": {
-                "type": "boolean"
-              }
-            },
-            "required": ["folder"]
           }
         ],
         "additionalProperties": false

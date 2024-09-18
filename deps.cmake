@@ -17,6 +17,7 @@ if (MAPGET_CONAN)
     find_package(yaml-cpp    CONFIG REQUIRED)
     find_package(CLI11       CONFIG REQUIRED)
     find_package(nlohmann_json_schema_validator CONFIG REQUIRED)
+    find_package(picosha2    CONFIG REQUIRED)
   endif()
   if (MAPGET_WITH_WHEEL)
     find_package(pybind11    CONFIG REQUIRED)
@@ -70,6 +71,11 @@ else()
     GIT_TAG        "2.3.0"
     GIT_SHALLOW    ON)
 
+  FetchContent_Declare(picosha2
+    GIT_REPOSITORY "https://github.com/okdshin/PicoSHA2"
+    GIT_TAG        "27fcf6979298949e8a462e16d09a0351c18fcaf2"
+    GIT_SHALLOW    ON)
+
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
     FetchContent_Declare(pybind11
       GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
@@ -111,7 +117,7 @@ else()
   endif()
 
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-    FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator)
+    FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
   endif()
 
   FetchContent_GetProperties(cpp-httplib)
