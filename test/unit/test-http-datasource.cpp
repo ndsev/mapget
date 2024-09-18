@@ -301,7 +301,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     // Set up the config file.
     std::ofstream configFile(tempConfigPath);
-    configFile << "sources: []\nhttp-settings: []";  // Update http-settings to an array.
+    configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
     configFile.close();
     DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
 
@@ -351,6 +351,10 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(res->status == 200);
         REQUIRE(res->body.find("sources") != std::string::npos);
         REQUIRE(res->body.find("http-settings") != std::string::npos);
+
+        // Ensure that the password is masked.
+        REQUIRE(res->body.find("hunter2") == std::string::npos);
+        REQUIRE(res->body.find("MASKED") != std::string::npos);
     }
 
     SECTION("Post Configuration - Invalid JSON Format") {
