@@ -24,12 +24,14 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.3
       - name: Install Conan and newer Perl
         run: |
-          # OpenSSL Requires a newer perl: see https://github.com/openssl/openssl/issues/25366
-          yum update -y && yum install -y perl-IPC-Cmd rh-perl530
           pip install conan
           conan profile detect
+          # OpenSSL Requires a newer perl: see https://github.com/openssl/openssl/issues/25366
+          yum update -y && yum install -y perl-IPC-Cmd rh-perl530
+          ldconfig /opt/rh/rh-perl530/root/lib64/
       - name: Configure
         run: |
+          export PATH="/opt/rh/rh-perl530/root/bin:$PATH"
           python3 -m venv venv && . ./venv/bin/activate
           pip install -U setuptools wheel pip
           conan install . -s compiler.cppstd=20 -b missing -b editable \
