@@ -118,6 +118,7 @@ else()
 
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
+    add_library(picosha2::picosha2 ALIAS picosha2)
   endif()
 
   FetchContent_GetProperties(cpp-httplib)
