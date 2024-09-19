@@ -551,6 +551,7 @@ struct HttpService::Impl
             yamlConfig["http-settings"] = jsonToYaml(jsonConfig["http-settings"], maskedSecrets);
 
         // Write the YAML to configFilePath.
+        update_done = false;
         configFile.close();
         std::ofstream newConfigFile(*DataSourceConfigService::get().getConfigFilePath());
         newConfigFile << yamlConfig;
