@@ -352,9 +352,9 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(res->body.find("sources") != std::string::npos);
         REQUIRE(res->body.find("http-settings") != std::string::npos);
 
-        // Ensure that the password is masked.
+        // Ensure that the password is masked as SHA256.
         REQUIRE(res->body.find("hunter2") == std::string::npos);
-        REQUIRE(res->body.find("MASKED") != std::string::npos);
+        REQUIRE(res->body.find("MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
     }
 
     SECTION("Post Configuration - Invalid JSON Format") {
@@ -384,12 +384,19 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Post Configuration - Valid JSON Config") {
         std::string newConfig = R"({
             "sources": [{"type": "TestDataSource"}],
-            "http-settings": [{"scope": "https://example.com"}]
+            "http-settings": [{"scope": "https://example.com", "password": "MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
         })";
         auto res = cli.Post("/config", newConfig, "application/json");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 200);
         REQUIRE(res->body == "Configuration updated and applied successfully.");
+
+        // Check that the password SHA was re-substituted.
+        std::ifstream config(*mapget::DataSourceConfigService::get().getConfigFilePath());
+        std::stringstream configContentStream;
+        configContentStream << config.rdbuf();
+        auto configContent = configContentStream.str();
+        REQUIRE(configContent.find("hunter2") != std::string::npos);
     }
 
     service.stop();

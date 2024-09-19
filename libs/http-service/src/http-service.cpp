@@ -108,10 +108,10 @@ YAML::Node jsonToYaml(const nlohmann::json& json, std::map<std::string, std::str
     YAML::Node node;
     if (json.is_object()) {
         for (auto it = json.begin(); it != json.end(); ++it) {
-            if (it.key() == "api-key" || it.key() == "password")
+            if ((it.key() == "api-key" || it.key() == "password") && it.value().is_string())
             {
                 // Un-mask sensitive fields.
-                auto value = it.value().dump();
+                auto value = it.value().get<std::string>();
                 auto secretIt = maskedSecretMap.find(value);
                 if (secretIt != maskedSecretMap.end()) {
                     node[it.key()] = secretIt->second;
@@ -378,7 +378,7 @@ struct HttpService::Impl
             "application/json");
     }
 
-    static bool openConfigAndSchemaFile(std::fstream& configFile, std::fstream& schemaFile, httplib::Response& res)
+    static bool openConfigAndSchemaFile(std::ifstream& configFile, std::ifstream& schemaFile, httplib::Response& res)
     {
         if (!isConfigEndpointEnabled()) {
             res.status = 403;  // Forbidden.
@@ -440,7 +440,7 @@ struct HttpService::Impl
 
     static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
     {
-        std::fstream configFile, schemaFile;
+        std::ifstream configFile, schemaFile;
         if (!openConfigAndSchemaFile(configFile, schemaFile, res)) {
             return;
         }
@@ -486,7 +486,7 @@ struct HttpService::Impl
         std::condition_variable cv;
         bool update_done = false;
 
-        std::fstream configFile, schemaFile;
+        std::ifstream configFile, schemaFile;
         if (!openConfigAndSchemaFile(configFile, schemaFile, res)) {
             return;
         }
