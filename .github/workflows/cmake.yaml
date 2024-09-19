@@ -22,8 +22,10 @@ jobs:
           submodules: recursive
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.3
-      - name: Install Conan
+      - name: Install Conan and newer Perl
         run: |
+          # OpenSSL Requires a newer perl: see https://github.com/openssl/openssl/issues/25366
+          yum update -y && yum install -y perl-IPC-Cmd rh-perl530
           pip install conan
           conan profile detect
       - name: Configure
