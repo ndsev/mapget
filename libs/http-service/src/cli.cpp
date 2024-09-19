@@ -159,7 +159,7 @@ void registerDefaultDatasourceTypes() {
         });
 }
 
-bool isConfigEndpointEnabled_ = false;
+bool isPostConfigEndpointEnabled_ = false;
 }
 
 struct ServeCommand
@@ -186,13 +186,15 @@ struct ServeCommand
             "-d,--datasource-host",
             datasourceHosts_,
             "This option is deprecated. Use a config file instead!. "
-            "Data sources in format <host:port>. Can be specified multiple times."));
+            "Data sources in format <host:port>. Can be specified multiple times."),
+            "--config <yaml-file>");
         CLI::deprecate_option(serveCmd->add_option(
             "-e,--datasource-exe",
             datasourceExecutables_,
             "This option is deprecated. Use a config file instead!. "
             "Data source executable paths, including arguments. "
-            "Can be specified multiple times."));
+            "Can be specified multiple times."),
+            "--config <yaml-file>");
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory, rocksdb (Technology Preview).")
             ->default_val("memory");
@@ -211,8 +213,8 @@ struct ServeCommand
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
         serveCmd->add_flag(
             "--allow-config-access",
-            isConfigEndpointEnabled_,
-            "Allow the GET/POST datasources and http-settings config endpoints.");
+            isPostConfigEndpointEnabled_,
+            "Allow the POST /config endpoint.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -390,14 +392,14 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
     return 0;
 }
 
-bool isConfigEndpointEnabled()
+bool isPostConfigEndpointEnabled()
 {
-    return isConfigEndpointEnabled_;
+    return isPostConfigEndpointEnabled_;
 }
 
-void setConfigEndpointEnabled(bool enabled)
+void setPostConfigEndpointEnabled(bool enabled)
 {
-    isConfigEndpointEnabled_ = enabled;
+    isPostConfigEndpointEnabled_ = enabled;
 }
 
 const std::string &getPathToSchema()

@@ -320,15 +320,8 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     schemaFile.close();
     mapget::setPathToSchema(tempSchemaPath.string());
 
-    SECTION("Get Configuration - Not Enabled") {
-        auto res = cli.Get("/config");
-        REQUIRE(res != nullptr);
-        REQUIRE(res->status == 403);
-    }
-
     SECTION("Get Configuration - No Config File Path Set") {
         DataSourceConfigService::get().setConfigFilePath("");  // Simulate no config path set.
-        setConfigEndpointEnabled(true);
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 404);
@@ -337,7 +330,6 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     SECTION("Get Configuration - Config File Not Found") {
         fs::remove(tempConfigPath);  // Simulate missing config file.
-        setConfigEndpointEnabled(true);
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 404);
@@ -345,7 +337,6 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     }
 
     SECTION("Get Configuration - Success") {
-        setConfigEndpointEnabled(true);
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 200);
@@ -357,7 +348,15 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(res->body.find("MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
     }
 
+    SECTION("Post Configuration - Not Enabled") {
+        setPostConfigEndpointEnabled(false);
+        auto res = cli.Post("/config", "", "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 403);
+    }
+
     SECTION("Post Configuration - Invalid JSON Format") {
+        setPostConfigEndpointEnabled(true);
         std::string invalidJson = "this is not valid json";
         auto res = cli.Post("/config", invalidJson, "application/json");
         REQUIRE(res != nullptr);

@@ -380,14 +380,6 @@ struct HttpService::Impl
 
     static bool openConfigAndSchemaFile(std::ifstream& configFile, std::ifstream& schemaFile, httplib::Response& res)
     {
-        if (!isConfigEndpointEnabled()) {
-            res.status = 403;  // Forbidden.
-            res.set_content(
-                "The /config endpoint is not enabled by the server administrator.",
-                "text/plain");
-            return false;
-        }
-
         auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
         if (!configFilePath.has_value()) {
             res.status = 404;  // Not found.
@@ -469,6 +461,7 @@ struct HttpService::Impl
             nlohmann::json combinedJson;
             combinedJson["schema"] = jsonSchema;
             combinedJson["model"] = jsonConfig;
+            combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
 
             // Set the response
             res.status = 200;  // OK
@@ -482,6 +475,14 @@ struct HttpService::Impl
 
     static void handlePostConfigRequest(const httplib::Request& req, httplib::Response& res)
     {
+        if (!isPostConfigEndpointEnabled()) {
+            res.status = 403;  // Forbidden.
+            res.set_content(
+                "The POST /config endpoint is not enabled by the server administrator.",
+                "text/plain");
+            return;
+        }
+
         std::mutex mtx;
         std::condition_variable cv;
         bool update_done = false;
