@@ -176,7 +176,7 @@ void DataSourceConfigService::restartFileWatchThread()
 
                 if (currentModTime && !lastModTime) {
                     // The file has appeared since the last check.
-                    log().debug("The config file exists now (t={}).", toStr(*lastModTime));
+                    log().debug("The config file exists now (t={}).", toStr(*currentModTime));
                     loadConfig();
                 }
                 else if (!currentModTime && lastModTime) {

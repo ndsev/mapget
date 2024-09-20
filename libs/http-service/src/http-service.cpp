@@ -430,6 +430,11 @@ struct HttpService::Impl
         return true;
     }
 
+    static auto sharedTopLevelConfigKeys()
+    {
+        return std::array{"sources", "http-settings"};
+    }
+
     static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
     {
         std::ifstream configFile, schemaFile;
@@ -445,17 +450,9 @@ struct HttpService::Impl
             // Load config YAML
             YAML::Node configYaml = YAML::Load(configFile);
             nlohmann::json jsonConfig;
-
-            std::vector<std::string> keys = {"sources", "http-settings"};
-            for (const auto& key : keys) {
-                if (!configYaml[key]) {
-                    res.status = 400;  // Bad Request
-                    res.set_content(
-                        "The config file does not contain '" + key + "'.",
-                        "text/plain");
-                    return;
-                }
-                jsonConfig[key] = yamlToJson(configYaml[key]);
+            for (const auto& key : sharedTopLevelConfigKeys()) {
+                if (auto configYamlEntry = configYaml[key])
+                    jsonConfig[key] = yamlToJson(configYaml[key]);
             }
 
             nlohmann::json combinedJson;
@@ -544,11 +541,11 @@ struct HttpService::Impl
         std::map<std::string, std::string> maskedSecrets;
         yamlToJson(yamlConfig, &maskedSecrets);
 
-        // Create YAML nodes for both http-settings and sources.
-        if (jsonConfig.contains("sources"))
-            yamlConfig["sources"] = jsonToYaml(jsonConfig["sources"], maskedSecrets);
-        if (jsonConfig.contains("http-settings"))
-            yamlConfig["http-settings"] = jsonToYaml(jsonConfig["http-settings"], maskedSecrets);
+        // Create YAML nodes for from JSON nodes.
+        for (auto const& key : sharedTopLevelConfigKeys()) {
+            if (jsonConfig.contains(key))
+                yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
+        }
 
         // Write the YAML to configFilePath.
         update_done = false;

@@ -299,12 +299,6 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     REQUIRE(service.isRunning() == true);
     httplib::Client cli("localhost", service.port());
 
-    // Set up the config file.
-    std::ofstream configFile(tempConfigPath);
-    configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
-    configFile.close();
-    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
-
     // Set up the schema file.
     std::ofstream schemaFile(tempSchemaPath);
     schemaFile << R"(
@@ -320,20 +314,26 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     schemaFile.close();
     mapget::setPathToSchema(tempSchemaPath.string());
 
+    // Set up the config file.
+    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
+
+    SECTION("Get Configuration - Config File Not Found") {
+        auto res = cli.Get("/config");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 404);
+        REQUIRE(res->body == "The server does not have a config file.");
+    }
+
+    std::ofstream configFile(tempConfigPath);
+    configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
+    configFile.close();
+
     SECTION("Get Configuration - No Config File Path Set") {
         DataSourceConfigService::get().setConfigFilePath("");  // Simulate no config path set.
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 404);
         REQUIRE(res->body == "The config file path is not set. Check the server configuration.");
-    }
-
-    SECTION("Get Configuration - Config File Not Found") {
-        fs::remove(tempConfigPath);  // Simulate missing config file.
-        auto res = cli.Get("/config");
-        REQUIRE(res != nullptr);
-        REQUIRE(res->status == 404);
-        REQUIRE(res->body == "The server does not have a config file.");
     }
 
     SECTION("Get Configuration - Success") {
