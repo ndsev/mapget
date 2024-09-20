@@ -212,7 +212,7 @@ struct ServeCommand
             webapp_,
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
         serveCmd->add_flag(
-            "--allow-config-access",
+            "--allow-post-config",
             isPostConfigEndpointEnabled_,
             "Allow the POST /config endpoint.");
         serveCmd->callback([this]() { serve(); });
