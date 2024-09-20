@@ -550,13 +550,17 @@ struct HttpService::Impl
         // Write the YAML to configFilePath.
         update_done = false;
         configFile.close();
+        log().trace("Writing new config.");
         std::ofstream newConfigFile(*DataSourceConfigService::get().getConfigFilePath());
         newConfigFile << yamlConfig;
         newConfigFile.close();
 
         // Wait for the subscription callback.
         std::unique_lock<std::mutex> lk(mtx);
-        cv.wait(lk, [&] { return update_done; });
+        if (!cv.wait_for(lk, std::chrono::seconds(60), [&] { return update_done; })) {
+            res.status = 500;  // Internal Server Error.
+            res.set_content("Timeout while waiting for config to update.", "text/plain");
+        }
     }
 };
 

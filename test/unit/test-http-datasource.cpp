@@ -385,6 +385,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
             "sources": [{"type": "TestDataSource"}],
             "http-settings": [{"scope": "https://example.com", "password": "MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
         })";
+        log().set_level(spdlog::level::trace);
         auto res = cli.Post("/config", newConfig, "application/json");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 200);
