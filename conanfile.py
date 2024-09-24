@@ -51,6 +51,7 @@ class MapgetRecipe(ConanFile):
         self.requires("simfil/0.3.2", transitive_headers=True)
         self.requires("spdlog/[~1]", transitive_headers=True)
         self.requires("bitsery/[~5]")
+        # The override=True for is needed, until simfil 0.3.3 is released.
         self.requires("nlohmann_json/3.11.3", override=True, transitive_headers=True)
         self.requires("glm/cci.20230113", transitive_headers=True)
         if self.options.with_httplib:
