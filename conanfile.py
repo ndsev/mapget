@@ -48,15 +48,18 @@ class MapgetRecipe(ConanFile):
 
     def requirements(self):
         self.requires("fmt/10.2.1", override=True)
-        self.requires("simfil/0.3.1", transitive_headers=True)
+        self.requires("simfil/0.3.2", transitive_headers=True)
         self.requires("spdlog/[~1]", transitive_headers=True)
         self.requires("bitsery/[~5]")
-        self.requires("nlohmann_json/3.11.2", transitive_headers=True)
+        # The override=True for is needed, until simfil 0.3.3 is released.
+        self.requires("nlohmann_json/3.11.3", override=True, transitive_headers=True)
         self.requires("glm/cci.20230113", transitive_headers=True)
         if self.options.with_httplib:
             self.requires("cli11/2.3.2")
             self.requires("cpp-httplib/0.15.3", transitive_headers=True)
             self.requires("yaml-cpp/0.8.0")
+            self.requires("json-schema-validator/2.3.0")
+            self.requires("picosha2/cci.20220808", transitive_headers=True)
         if self.options.with_service or self.options.with_httplib:
             self.requires("rocksdb/9.1.0")
         if self.options.with_wheel:

@@ -1,19 +1,26 @@
 #include <catch2/catch_test_macros.hpp>
+#include <filesystem>
 #include "httplib.h"
 #include "mapget/log.h"
 
+#include "utility.h"
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/http-datasource/datasource-server.h"
 #include "mapget/http-service/http-client.h"
 #include "mapget/http-service/http-service.h"
 #include "mapget/model/stream.h"
+#include "mapget/service/config.h"
+#include "mapget/http-service/cli.h"
+
+using namespace mapget;
+namespace fs = std::filesystem;
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
-    mapget::setLogLevel("trace", mapget::log());
+    setLogLevel("trace", log());
 
     // Create DataSourceInfo.
-    auto info = mapget::DataSourceInfo::fromJson(R"(
+    auto info = DataSourceInfo::fromJson(R"(
     {
         "mapId": "Tropico",
         "layers": {
@@ -48,14 +55,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
     )"_json);
 
     // Initialize a DataSource.
-    mapget::DataSourceServer ds(info);
+    DataSourceServer ds(info);
     std::atomic_uint32_t dataSourceFeatureRequestCount = 0;
     std::atomic_uint32_t dataSourceSourceDataRequestCount = 0;
     ds.onTileFeatureRequest(
         [&](const auto& tile)
         {
             auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
-            auto g = f->geom()->newGeometry(mapget::GeomType::Line);
+            auto g = f->geom()->newGeometry(GeomType::Line);
             g->append({42., 11});
             g->append({42., 12});
             ++dataSourceFeatureRequestCount;
@@ -65,13 +72,13 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             ++dataSourceSourceDataRequestCount;
         });
     ds.onLocateRequest(
-        [&](mapget::LocateRequest const& request) -> std::vector<mapget::LocateResponse>
+        [&](LocateRequest const& request) -> std::vector<LocateResponse>
         {
             REQUIRE(request.mapId_ == "Tropico");
             REQUIRE(request.typeId_ == "Way");
-            REQUIRE(request.featureId_ == mapget::KeyValuePairs{{"wayId", 0}});
+            REQUIRE(request.featureId_ == KeyValuePairs{{"wayId", 0}});
 
-            mapget::LocateResponse response(request);
+            LocateResponse response(request);
             response.tileKey_.layerId_ = "WayLayer";
             response.tileKey_.tileId_.value_ = 1;
             return {response};
@@ -91,7 +98,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         // Send a GET info request.
         auto fetchedInfoJson = cli.Get("/info");
         auto fetchedInfo =
-            mapget::DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
+            DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
         REQUIRE(fetchedInfo.toJson() == info.toJson());
     }
 
@@ -109,14 +116,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
         // Check the response body for expected content.
         auto receivedTileCount = 0;
-        mapget::TileLayerStream::Reader reader(
+        TileLayerStream::Reader reader(
             [&](auto&& mapId, auto&& layerId)
             {
                 REQUIRE(mapId == info.mapId_);
                 return info.getLayer(std::string(layerId));
             },
             [&](auto&& tile) {
-                REQUIRE(tile->id().layer_ == mapget::LayerType::Features);
+                REQUIRE(tile->id().layer_ == LayerType::Features);
                 receivedTileCount++;
             });
         reader.read(tileResponse->body);
@@ -137,14 +144,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
         // Check the response body for expected content.
         auto receivedTileCount = 0;
-        mapget::TileLayerStream::Reader reader(
+        TileLayerStream::Reader reader(
             [&](auto&& mapId, auto&& layerId)
             {
                 REQUIRE(mapId == info.mapId_);
                 return info.getLayer(std::string(layerId));
             },
             [&](auto&& tile) {
-                REQUIRE(tile->id().layer_ == mapget::LayerType::SourceData);
+                REQUIRE(tile->id().layer_ == LayerType::SourceData);
                 receivedTileCount++;
             });
         reader.read(tileResponse->body);
@@ -169,9 +176,9 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(response->status == 200);
 
         // Check the response body for expected content.
-        mapget::LocateResponse responseParsed(nlohmann::json::parse(response->body)[0]);
+        LocateResponse responseParsed(nlohmann::json::parse(response->body)[0]);
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
-        REQUIRE(responseParsed.tileKey_.layer_ == mapget::LayerType::Features);
+        REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
         REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
     }
@@ -181,7 +188,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         auto countReceivedTiles = [](auto& client, auto mapId, auto layerId, auto tiles) {
             auto tileCount = 0;
 
-            auto request = std::make_shared<mapget::LayerTilesRequest>(mapId, layerId, tiles);
+            auto request = std::make_shared<LayerTilesRequest>(mapId, layerId, tiles);
             request->onFeatureLayer([&](auto&& tile) { tileCount++; });
             //request->onSourceDataLayer([&](auto&& tile) { tileCount++; });
 
@@ -189,20 +196,20 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             return std::make_tuple(request, tileCount);
         };
 
-        mapget::HttpService service;
-        service.add(std::make_shared<mapget::RemoteDataSource>("localhost", ds.port()));
+        HttpService service;
+        service.add(std::make_shared<RemoteDataSource>("localhost", ds.port()));
 
         service.go();
 
         SECTION("Query through mapget HTTP service")
         {
-            mapget::HttpClient client("localhost", service.port());
+            HttpClient client("localhost", service.port());
 
             auto [request, receivedTileCount] = countReceivedTiles(
                 client,
                 "Tropico",
                 "WayLayer",
-                std::vector<mapget::TileId>{{1234, 5678, 9112, 1234}});
+                std::vector<TileId>{{1234, 5678, 9112, 1234}});
 
             REQUIRE(receivedTileCount == 4);
             // One tile requested twice, so the cache was used.
@@ -211,15 +218,15 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
         SECTION("Trigger 400 responses")
         {
-            mapget::HttpClient client("localhost", service.port());
+            HttpClient client("localhost", service.port());
 
             {
                 auto [request, receivedTileCount] = countReceivedTiles(
                     client,
                     "UnknownMap",
                     "WayLayer",
-                    std::vector<mapget::TileId>{{1234}});
-                REQUIRE(request->getStatus() == mapget::RequestStatus::NoDataSource);
+                    std::vector<TileId>{{1234}});
+                REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
 
@@ -228,8 +235,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     client,
                     "Tropico",
                     "UnknownLayer",
-                    std::vector<mapget::TileId>{{1234}});
-                REQUIRE(request->getStatus() == mapget::RequestStatus::NoDataSource);
+                    std::vector<TileId>{{1234}});
+                REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
         }
@@ -256,9 +263,9 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(responseJsonLists.size() == 1);
             auto responseJsonList = responseJsonLists[0];
             REQUIRE(responseJsonList.size() == 1);
-            mapget::LocateResponse responseParsed(responseJsonList[0]);
+            LocateResponse responseParsed(responseJsonList[0]);
             REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
-            REQUIRE(responseParsed.tileKey_.layer_ == mapget::LayerType::Features);
+            REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
             REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
             REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
         }
@@ -277,4 +284,125 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     ds.stop();
     REQUIRE(ds.isRunning() == false);
+}
+
+TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
+{
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
+    fs::create_directory(tempDir);
+    auto tempConfigPath = tempDir / "temp_config.yaml";
+    auto tempSchemaPath = tempDir / "temp_schema.json";
+
+    // Setting up the server and client.
+    HttpService service;
+    service.go();
+    REQUIRE(service.isRunning() == true);
+    httplib::Client cli("localhost", service.port());
+
+    // Set up the schema file.
+    std::ofstream schemaFile(tempSchemaPath);
+    schemaFile << R"(
+    {
+        "type": "object",
+        "properties": {
+            "sources": { "type": "array" },
+            "http-settings": { "type": "array" }
+        },
+        "required": ["sources", "http-settings"]
+    }
+    )";
+    schemaFile.close();
+    mapget::setPathToSchema(tempSchemaPath.string());
+
+    // Set up the config file.
+    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
+
+    SECTION("Get Configuration - Config File Not Found") {
+        auto res = cli.Get("/config");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 404);
+        REQUIRE(res->body == "The server does not have a config file.");
+    }
+
+    std::ofstream configFile(tempConfigPath);
+    configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
+    configFile.close();
+
+    SECTION("Get Configuration - No Config File Path Set") {
+        DataSourceConfigService::get().setConfigFilePath("");  // Simulate no config path set.
+        auto res = cli.Get("/config");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 404);
+        REQUIRE(res->body == "The config file path is not set. Check the server configuration.");
+    }
+
+    SECTION("Get Configuration - Success") {
+        auto res = cli.Get("/config");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 200);
+        REQUIRE(res->body.find("sources") != std::string::npos);
+        REQUIRE(res->body.find("http-settings") != std::string::npos);
+
+        // Ensure that the password is masked as SHA256.
+        REQUIRE(res->body.find("hunter2") == std::string::npos);
+        REQUIRE(res->body.find("MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
+    }
+
+    SECTION("Post Configuration - Not Enabled") {
+        setPostConfigEndpointEnabled(false);
+        auto res = cli.Post("/config", "", "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 403);
+    }
+
+    SECTION("Post Configuration - Invalid JSON Format") {
+        setPostConfigEndpointEnabled(true);
+        std::string invalidJson = "this is not valid json";
+        auto res = cli.Post("/config", invalidJson, "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 400);
+        REQUIRE(res->body.find("Invalid JSON format") != std::string::npos);
+    }
+
+    SECTION("Post Configuration - Missing Sources") {
+        std::string newConfig = R"({"http-settings": []})";
+        auto res = cli.Post("/config", newConfig, "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 500);
+        REQUIRE(res->body.starts_with("Validation failed"));
+    }
+
+    SECTION("Post Configuration - Missing Http Settings") {
+        std::string newConfig = R"({"sources": []})";
+        auto res = cli.Post("/config", newConfig, "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 500);
+        REQUIRE(res->body.starts_with("Validation failed"));
+    }
+
+    SECTION("Post Configuration - Valid JSON Config") {
+        std::string newConfig = R"({
+            "sources": [{"type": "TestDataSource"}],
+            "http-settings": [{"scope": "https://example.com", "password": "MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
+        })";
+        log().set_level(spdlog::level::trace);
+        auto res = cli.Post("/config", newConfig, "application/json");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 200);
+        REQUIRE(res->body == "Configuration updated and applied successfully.");
+
+        // Check that the password SHA was re-substituted.
+        std::ifstream config(*mapget::DataSourceConfigService::get().getConfigFilePath());
+        std::stringstream configContentStream;
+        configContentStream << config.rdbuf();
+        auto configContent = configContentStream.str();
+        REQUIRE(configContent.find("hunter2") != std::string::npos);
+    }
+
+    service.stop();
+    REQUIRE(service.isRunning() == false);
+
+    // Clean up the test configuration files.
+    fs::remove(tempConfigPath);
+    fs::remove(tempSchemaPath);
 }

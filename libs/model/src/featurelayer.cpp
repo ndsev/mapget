@@ -142,6 +142,7 @@ struct TileFeatureLayer::Impl {
         : expressionCache_(makeEnvironment(std::move(stringPool)))
     {
     }
+
 };
 
 TileFeatureLayer::TileFeatureLayer(

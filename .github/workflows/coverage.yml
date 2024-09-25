@@ -34,6 +34,8 @@ jobs:
     - name: Configure
       run: |
         cmake --preset conan-debug \
+            -DCMAKE_CXX_FLAGS=" -fprofile-arcs -ftest-coverage " \
+            -DCMAKE_EXE_LINKER_FLAGS=" --coverage -lgcov " \
             -DMAPGET_ENABLE_TESTING=YES \
             -DWITH_COVERAGE=YES \
             -GNinja

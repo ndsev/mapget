@@ -25,19 +25,20 @@ DataSourceConfigService::Subscription::~Subscription()
 DataSourceConfigService::Subscription::Subscription(uint32_t id) : id_(id) {}
 
 std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::subscribe(
-    std::function<void(std::vector<YAML::Node> const&)> const& callback)
+    std::function<void(std::vector<YAML::Node> const&)> const& successCallback,
+    std::function<void(std::string const&)> const& errorCallback)
 {
-    if (!callback) {
+    if (!successCallback) {
         log().warn("Refusing to register config subscription with NULL callback.");
         return nullptr;
     }
 
     std::lock_guard memberAccessLock(memberAccessMutex_);
     auto sub = std::make_unique<Subscription>(nextSubscriptionId_++);
-    subscriptions_[sub->id_] = callback;
+    subscriptions_[sub->id_] = {successCallback, errorCallback};
     // Optionally, trigger the callback with the current configuration immediately
     if (!currentConfig_.empty()) {
-        callback(currentConfig_);
+        successCallback(currentConfig_);
     }
     return sub;
 }
@@ -56,6 +57,7 @@ void DataSourceConfigService::setConfigFilePath(std::string const& path)
 
 void DataSourceConfigService::loadConfig()
 {
+    std::optional<std::string> error;
     try {
         YAML::Node config = YAML::LoadFile(configFilePath_);
         if (auto sourcesNode = config["sources"]) {
@@ -65,15 +67,24 @@ void DataSourceConfigService::loadConfig()
                 currentConfig_.push_back(node);
             for (const auto& [subId, subCb] : subscriptions_) {
                 log().debug("Calling subscriber {}", subId);
-                subCb(currentConfig_);
+                subCb.success_(currentConfig_);
             }
         }
         else {
-            log().debug("The config file {} does not have a sources node.", configFilePath_);
+            error = fmt::format("The config file {} does not have a sources node.", configFilePath_);
+            log().debug(*error);
         }
     }
     catch (const YAML::Exception& e) {
-        log().error("Failed to load YAML config {}: {}", configFilePath_, e.what());
+        error = fmt::format("Failed to load YAML config {}: {}", configFilePath_, e.what());
+        log().error(*error);
+    }
+
+    if (error) {
+        for (const auto& [subId, subCb] : subscriptions_) {
+            if (subCb.error_)
+                subCb.error_(*error);
+        }
     }
 }
 
@@ -165,7 +176,7 @@ void DataSourceConfigService::restartFileWatchThread()
 
                 if (currentModTime && !lastModTime) {
                     // The file has appeared since the last check.
-                    log().debug("The config file exists now (t={}).", toStr(*lastModTime));
+                    log().debug("The config file exists now (t={}).", toStr(*currentModTime));
                     loadConfig();
                 }
                 else if (!currentModTime && lastModTime) {
@@ -206,6 +217,13 @@ void DataSourceConfigService::end()
     if (watchThread_ && watchThread_->joinable()) {
         watchThread_->join();  // Wait for the thread to finish.
     }
+}
+
+std::optional<std::string> DataSourceConfigService::getConfigFilePath() const
+{
+    if (!configFilePath_.empty())
+        return configFilePath_;
+    return {};
 }
 
 }  // namespace mapget

@@ -12,11 +12,35 @@
 #include <vector>
 #include <yaml-cpp/yaml.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#elif __APPLE__
+#include <mach-o/dyld.h>
+#elif __linux__
+#include <unistd.h>
+#endif
+
 namespace mapget
 {
 
 namespace
 {
+
+std::filesystem::path getExecutablePath() {
+    char buffer[1024];
+#ifdef _WIN32
+    GetModuleFileNameA(NULL, buffer, sizeof(buffer));
+#elif __APPLE__
+    uint32_t size = sizeof(buffer);
+    _NSGetExecutablePath(buffer, &size);
+#elif __linux__
+    ssize_t count = readlink("/proc/self/exe", buffer, sizeof(buffer));
+    if (count != -1) {
+        buffer[count] = '\0';
+    }
+#endif
+    return std::filesystem::path(buffer).parent_path();
+}
 
 class ConfigYAML : public CLI::Config
 {
@@ -135,6 +159,7 @@ void registerDefaultDatasourceTypes() {
         });
 }
 
+bool isPostConfigEndpointEnabled_ = false;
 }
 
 struct ServeCommand
@@ -161,13 +186,15 @@ struct ServeCommand
             "-d,--datasource-host",
             datasourceHosts_,
             "This option is deprecated. Use a config file instead!. "
-            "Data sources in format <host:port>. Can be specified multiple times."));
+            "Data sources in format <host:port>. Can be specified multiple times."),
+            "--config <yaml-file>");
         CLI::deprecate_option(serveCmd->add_option(
             "-e,--datasource-exe",
             datasourceExecutables_,
             "This option is deprecated. Use a config file instead!. "
             "Data source executable paths, including arguments. "
-            "Can be specified multiple times."));
+            "Can be specified multiple times."),
+            "--config <yaml-file>");
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory, rocksdb (Technology Preview).")
             ->default_val("memory");
@@ -184,6 +211,10 @@ struct ServeCommand
             "-w,--webapp",
             webapp_,
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
+        serveCmd->add_flag(
+            "--allow-post-config",
+            isPostConfigEndpointEnabled_,
+            "Allow the POST /config endpoint.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -316,19 +347,26 @@ struct FetchCommand
     }
 };
 
+std::string pathToSchema;
 int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     std::string log_level_;
+
     app.add_option(
-           "--log-level",
-           log_level_,
-           "From [trace|debug|info|warn|error|critical], overrides MAPGET_LOG_LEVEL.")
+        "--log-level",
+        log_level_,
+        "From [trace|debug|info|warn|error|critical], overrides MAPGET_LOG_LEVEL.")
         ->default_val("");
     app.set_config(
         "--config",
         "",
         "Optional path to a file with configuration arguments for mapget.");
+    app.add_option(
+        "--config-schema",
+        pathToSchema,
+        "Optional path to a file with configuration schema for mapget.")
+        ->default_val((getExecutablePath() / "default_config_schema.json").string()); // TODO: Add a test
     app.config_formatter(std::make_shared<ConfigYAML>());
 
     if (requireSubcommand)
@@ -352,6 +390,26 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
         return 1;
     }
     return 0;
+}
+
+bool isPostConfigEndpointEnabled()
+{
+    return isPostConfigEndpointEnabled_;
+}
+
+void setPostConfigEndpointEnabled(bool enabled)
+{
+    isPostConfigEndpointEnabled_ = enabled;
+}
+
+const std::string &getPathToSchema()
+{
+    return pathToSchema;
+}
+
+void setPathToSchema(const std::string& path)
+{
+    pathToSchema = path;
 }
 
 }  // namespace mapget

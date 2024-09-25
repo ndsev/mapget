@@ -186,6 +186,7 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
             "Timeout waiting for the child process to initialize the remote data source.");
     }
 #else
+    log().warn("Using Debug build: will wait forever!");
     cv_.wait(lock, [this] { return remoteSource_ != nullptr; });
 #endif
 }

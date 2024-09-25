@@ -20,8 +20,11 @@ target_link_libraries(mapget-http-service
     httplib::httplib
     yaml-cpp
     CLI11::CLI11
+    nlohmann_json_schema_validator
     mapget-service
-    mapget-http-datasource)
+    mapget-http-datasource
+  PRIVATE
+    picosha2::picosha2)
 
 if (MSVC)
   target_compile_definitions(mapget-http-service
@@ -43,3 +46,5 @@ endif()
 install(TARGETS mapget-http-service)
 install(DIRECTORY include/mapget/http-service
   DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
+
+configure_file(default_config_schema.json ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default_config_schema.json)

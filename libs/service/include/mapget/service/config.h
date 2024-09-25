@@ -60,17 +60,24 @@ public:
      * Subscribes to configuration changes.
      * The callback will be triggered once immediately, then whenever
      * the config file path or content changes.
-     * @param callback Function to call with the current set of service config nodes.
+     * @param successCallback Function to call with the current (new) set of service config nodes.
+     * @param errorCallback Function to call when applying the config failed.
      * @return Unique pointer to a Subscription object.
      */
     std::unique_ptr<Subscription> subscribe(
-        std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> const& callback);
+        std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> const& successCallback,
+        std::function<void(std::string const& error)> const& errorCallback={});
 
     /**
      * Sets the path to the YAML configuration file to watch.
      * @param path The file path to the YAML configuration file.
      */
     void setConfigFilePath(std::string const& path);
+
+    /**
+     * Get the path to the YAML configuration file (if set).
+     */
+    std::optional<std::string> getConfigFilePath() const;
 
     /**
      * Instantiates a data source based on the provided descriptor.
@@ -121,7 +128,11 @@ private:
     std::string configFilePath_;
 
     // Map of subscription IDs to their respective callback functions.
-    std::map<uint32_t, std::function<void(std::vector<YAML::Node> const&)>> subscriptions_;
+    struct SubscriptionCallbacks {
+        std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> success_;
+        std::function<void(std::string const& error)> error_;
+    };
+    std::map<uint32_t, SubscriptionCallbacks> subscriptions_;
 
     // Map of data source type names to their respective constructor functions.
     std::map<std::string, std::function<DataSource::Ptr(YAML::Node const&)>> constructors_;

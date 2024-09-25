@@ -22,12 +22,16 @@ jobs:
           submodules: recursive
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.3
-      - name: Install Conan
+      - name: Install Conan and newer Perl
         run: |
           pip install conan
           conan profile detect
+          # OpenSSL Requires a newer perl: see https://github.com/openssl/openssl/issues/25366
+          yum update -y && yum install -y perl-IPC-Cmd rh-perl530
+          ldconfig /opt/rh/rh-perl530/root/lib64/
       - name: Configure
         run: |
+          export PATH="/opt/rh/rh-perl530/root/bin:$PATH"
           python3 -m venv venv && . ./venv/bin/activate
           pip install -U setuptools wheel pip
           conan install . -s compiler.cppstd=20 -b missing -b editable \
@@ -51,7 +55,7 @@ jobs:
           . ./venv/bin/activate
           ctest --preset conan-release -C Release --verbose --no-tests=error
       - name: Deploy
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest
           path: build/Release/bin/wheel/*.whl
@@ -116,7 +120,7 @@ jobs:
                 -DMAPGET_BUILD_EXAMPLES=YES
           cmake --build --preset conan-release
       - name: Deploy
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
           path: build/**/bin/wheel/*.whl

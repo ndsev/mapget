@@ -1,10 +1,150 @@
 #include "http-service.h"
 #include "mapget/log.h"
+#include "mapget/service/config.h"
 
+#include <condition_variable>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <sstream>
+#include <vector>
+#include "cli.h"
 #include "httplib.h"
+#include "nlohmann/json-schema.hpp"
+#include "nlohmann/json.hpp"
+#include "yaml-cpp/yaml.h"
+#include "picosha2.h"
 
 namespace mapget
 {
+
+namespace
+{
+
+/**
+ * Hash a string using the SHA256 implementation.
+ */
+std::string stringToHash(const std::string& input)
+{
+    std::string result;
+    picosha2::hash256_hex_string(input, result);
+    return result;
+}
+
+/**
+ * Recursively convert a YAML node to a JSON object,
+ * with special handling for sensitive fields.
+ * The function returns a nlohmann::json object and updates maskedSecretMap.
+ */
+nlohmann::json yamlToJson(
+    const YAML::Node& yamlNode,
+    std::map<std::string, std::string>* maskedSecretMap = nullptr,
+    const bool mask = false)
+{
+    if (yamlNode.IsScalar()) {
+        if (mask) {
+            auto stringToMask = yamlNode.as<std::string>();
+            auto stringMask = "MASKED:"+stringToHash(stringToMask);
+            if (maskedSecretMap) {
+                maskedSecretMap->insert({stringMask, stringToMask});
+            }
+            return stringMask;
+        }
+
+        try {
+            return yamlNode.as<int>();
+        }
+        catch (const YAML::BadConversion&) {
+            try {
+                return yamlNode.as<double>();
+            }
+            catch (const YAML::BadConversion&) {
+                try {
+                    return yamlNode.as<bool>();
+                }
+                catch (const YAML::BadConversion&) {
+                    return yamlNode.as<std::string>();
+                }
+            }
+        }
+    }
+
+    if (mask) {
+        log().critical("Cannot mask non-scalar value!");
+        return {};
+    }
+
+    if (yamlNode.IsSequence()) {
+        auto arrayJson = nlohmann::json::array();
+        for (const auto& elem : yamlNode) {
+            arrayJson.push_back(yamlToJson(elem, maskedSecretMap));
+        }
+        return arrayJson;
+    }
+
+    if (yamlNode.IsMap()) {
+        auto objectJson = nlohmann::json::object();
+        for (const auto& item : yamlNode) {
+            auto key = item.first.as<std::string>();
+            const YAML::Node& valueNode = item.second;
+            objectJson[key] = yamlToJson(
+                valueNode,
+                maskedSecretMap,
+                key == "api-key" || key == "password");
+        }
+        return objectJson;
+    }
+
+    log().warn("Could not convert {} to JSON!", YAML::Dump(yamlNode));
+    return {};
+}
+
+/**
+ * Recursively convert a JSON object to a YAML node,
+ * with special handling for sensitive fields.
+ */
+YAML::Node jsonToYaml(const nlohmann::json& json, std::map<std::string, std::string> const& maskedSecretMap)
+{
+    YAML::Node node;
+    if (json.is_object()) {
+        for (auto it = json.begin(); it != json.end(); ++it) {
+            if ((it.key() == "api-key" || it.key() == "password") && it.value().is_string())
+            {
+                // Un-mask sensitive fields.
+                auto value = it.value().get<std::string>();
+                auto secretIt = maskedSecretMap.find(value);
+                if (secretIt != maskedSecretMap.end()) {
+                    node[it.key()] = secretIt->second;
+                    continue;
+                }
+            }
+            node[it.key()] = jsonToYaml(it.value(), maskedSecretMap);
+        }
+    }
+    else if (json.is_array()) {
+        for (const auto& item : json) {
+            node.push_back(jsonToYaml(item, maskedSecretMap));
+        }
+    }
+    else if (json.is_string()) {
+        node = json.get<std::string>();
+    }
+    else if (json.is_number_integer()) {
+        node = json.get<int>();
+    }
+    else if (json.is_number_float()) {
+        node = json.get<double>();
+    }
+    else if (json.is_boolean()) {
+        node = json.get<bool>();
+    }
+    else if (json.is_null()) {
+        node = YAML::Node(YAML::NodeType::Null);
+    }
+
+    return node;
+}
+}  // namespace
 
 struct HttpService::Impl
 {
@@ -28,7 +168,8 @@ struct HttpService::Impl
         std::vector<LayerTilesRequest::Ptr> requests_;
         TileLayerStream::StringPoolOffsetMap stringOffsets_;
 
-        HttpTilesRequestState() {
+        HttpTilesRequestState()
+        {
             writer_ = std::make_unique<TileLayerStream::Writer>(
                 [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
                 stringOffsets_);
@@ -42,8 +183,8 @@ struct HttpService::Impl
             tileIds.reserve(requestJson["tileIds"].size());
             for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>())
                 tileIds.emplace_back(tid);
-            requests_.push_back(
-                std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
+            requests_
+                .push_back(std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
         }
 
         void setResponseType(std::string const& s)
@@ -70,7 +211,7 @@ struct HttpService::Impl
             }
             else {
                 // JSON response
-                buffer_ << nlohmann::to_string(result->toJson())+"\n";
+                buffer_ << nlohmann::to_string(result->toJson()) + "\n";
             }
             resultEvent_.notify_one();
         }
@@ -80,7 +221,7 @@ struct HttpService::Impl
      * Wraps around the generic mapget service's request() function
      * to include httplib request decoding and response encoding.
      */
-    void handleTilesRequest(const httplib::Request& req, httplib::Response& res)
+    void handleTilesRequest(const httplib::Request& req, httplib::Response& res) const
     {
         // Parse the JSON request.
         nlohmann::json j = nlohmann::json::parse(req.body);
@@ -106,14 +247,8 @@ struct HttpService::Impl
 
         // Process requests.
         for (auto& request : state->requests_) {
-            request->onFeatureLayer([state](auto&& layer)
-            {
-                state->addResult(layer);
-            });
-            request->onSourceDataLayer([state](auto&& layer)
-            {
-                state->addResult(layer);
-            });
+            request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
+            request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
             request->onDone_ = [state](RequestStatus r)
             {
                 state->resultEvent_.notify_one();
@@ -242,11 +377,197 @@ struct HttpService::Impl
             nlohmann::json::object({{"responses", allResponsesJson}}).dump(),
             "application/json");
     }
+
+    static bool openConfigAndSchemaFile(std::ifstream& configFile, std::ifstream& schemaFile, httplib::Response& res)
+    {
+        auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
+        if (!configFilePath.has_value()) {
+            res.status = 404;  // Not found.
+            res.set_content(
+                "The config file path is not set. Check the server configuration.",
+                "text/plain");
+            return false;
+        }
+
+        std::filesystem::path path = *configFilePath;
+        if (!configFilePath || !std::filesystem::exists(path)) {
+            res.status = 404;  // Not found.
+            res.set_content("The server does not have a config file.", "text/plain");
+            return false;
+        }
+
+        configFile.open(*configFilePath);
+        if (!configFile) {
+            res.status = 500;  // Internal Server Error.
+            res.set_content("Failed to open config file.", "text/plain");
+            return false;
+        }
+
+        const auto& schemaFilePath = mapget::getPathToSchema();
+        if (schemaFilePath.empty()) {
+            res.status = 404;  // Not found.
+            res.set_content(
+                "The schema file path is not set. Check the server configuration.",
+                "text/plain");
+            return false;
+        }
+
+        std::filesystem::path schemaPath = schemaFilePath;
+        if (!std::filesystem::exists(schemaPath)) {
+            res.status = 404;  // Not found.
+            res.set_content("The server does not have a schema file.", "text/plain");
+            return false;
+        }
+
+
+        schemaFile.open(schemaPath);
+        if (!schemaFile) {
+            res.status = 500;  // Internal Server Error.
+            res.set_content("Failed to open schema file.", "text/plain");
+            return false;
+        }
+
+        return true;
+    }
+
+    static auto sharedTopLevelConfigKeys()
+    {
+        return std::array{"sources", "http-settings"};
+    }
+
+    static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
+    {
+        std::ifstream configFile, schemaFile;
+        if (!openConfigAndSchemaFile(configFile, schemaFile, res)) {
+            return;
+        }
+
+        nlohmann::json jsonSchema;
+        schemaFile >> jsonSchema;
+        schemaFile.close();
+
+        try {
+            // Load config YAML
+            YAML::Node configYaml = YAML::Load(configFile);
+            nlohmann::json jsonConfig;
+            for (const auto& key : sharedTopLevelConfigKeys()) {
+                if (auto configYamlEntry = configYaml[key])
+                    jsonConfig[key] = yamlToJson(configYaml[key]);
+            }
+
+            nlohmann::json combinedJson;
+            combinedJson["schema"] = jsonSchema;
+            combinedJson["model"] = jsonConfig;
+            combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
+
+            // Set the response
+            res.status = 200;  // OK
+            res.set_content(combinedJson.dump(2), "application/json");
+        }
+        catch (const std::exception& e) {
+            res.status = 500;  // Internal Server Error
+            res.set_content("Error processing config file: " + std::string(e.what()), "text/plain");
+        }
+    }
+
+    static void handlePostConfigRequest(const httplib::Request& req, httplib::Response& res)
+    {
+        if (!isPostConfigEndpointEnabled()) {
+            res.status = 403;  // Forbidden.
+            res.set_content(
+                "The POST /config endpoint is not enabled by the server administrator.",
+                "text/plain");
+            return;
+        }
+
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool update_done = false;
+
+        std::ifstream configFile, schemaFile;
+        if (!openConfigAndSchemaFile(configFile, schemaFile, res)) {
+            return;
+        }
+
+        // Subscribe to configuration changes.
+        auto subscription = DataSourceConfigService::get().subscribe(
+            [&](const std::vector<YAML::Node>& serviceConfigNodes)
+            {
+                std::lock_guard lock(mtx);
+                res.status = 200;
+                res.set_content("Configuration updated and applied successfully.", "text/plain");
+                update_done = true;
+                cv.notify_one();
+            },
+            [&](const std::string& error)
+            {
+                std::lock_guard lock(mtx);
+                res.status = 500;
+                res.set_content("Error applying the configuration: " + error, "text/plain");
+                update_done = true;
+                cv.notify_one();
+            });
+
+        // Parse the JSON from the request body.
+        nlohmann::json jsonConfig;
+        try {
+            jsonConfig = nlohmann::json::parse(req.body);
+        }
+        catch (const nlohmann::json::parse_error& e) {
+            res.status = 400;  // Bad Request
+            res.set_content("Invalid JSON format: " + std::string(e.what()), "text/plain");
+            return;
+        }
+
+        // Validate JSON against schema.
+        try {
+            nlohmann::json jsonSchema;
+            schemaFile >> jsonSchema;
+            schemaFile.close();
+
+            // Validate with json-schema-validator
+            nlohmann::json_schema::json_validator validator;
+            validator.set_root_schema(jsonSchema);
+            auto _ = validator.validate(jsonConfig);
+        }
+        catch (const std::exception& e) {
+            res.status = 500;  // Internal Server Error.
+            res.set_content("Validation failed: " + std::string(e.what()), "text/plain");
+            return;
+        }
+
+        // Load the YAML, parse the secrets.
+        auto yamlConfig = YAML::Load(configFile);
+        std::map<std::string, std::string> maskedSecrets;
+        yamlToJson(yamlConfig, &maskedSecrets);
+
+        // Create YAML nodes for from JSON nodes.
+        for (auto const& key : sharedTopLevelConfigKeys()) {
+            if (jsonConfig.contains(key))
+                yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
+        }
+
+        // Write the YAML to configFilePath.
+        update_done = false;
+        configFile.close();
+        log().trace("Writing new config.");
+        std::ofstream newConfigFile(*DataSourceConfigService::get().getConfigFilePath());
+        newConfigFile << yamlConfig;
+        newConfigFile.close();
+
+        // Wait for the subscription callback.
+        std::unique_lock<std::mutex> lk(mtx);
+        if (!cv.wait_for(lk, std::chrono::seconds(60), [&] { return update_done; })) {
+            res.status = 500;  // Internal Server Error.
+            res.set_content("Timeout while waiting for config to update.", "text/plain");
+        }
+    }
 };
 
 HttpService::HttpService(Cache::Ptr cache, bool watchConfig)
     : Service(std::move(cache), watchConfig), impl_(std::make_unique<Impl>(*this))
-{}
+{
+}
 
 HttpService::~HttpService() = default;
 
@@ -255,30 +576,32 @@ void HttpService::setup(httplib::Server& server)
     server.Post(
         "/tiles",
         [&](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleTilesRequest(req, res);
-        });
+        { impl_->handleTilesRequest(req, res); });
 
     server.Get(
         "/sources",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleSourcesRequest(req, res);
-        });
+        { impl_->handleSourcesRequest(req, res); });
 
     server.Get(
         "/status",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleStatusRequest(req, res);
-        });
+        { impl_->handleStatusRequest(req, res); });
 
     server.Post(
         "/locate",
         [this](const httplib::Request& req, httplib::Response& res)
-        {
-            impl_->handleLocateRequest(req, res);
-        });
+        { impl_->handleLocateRequest(req, res); });
+
+    server.Get(
+        "/config",
+        [this](const httplib::Request& req, httplib::Response& res)
+        { impl_->handleGetConfigRequest(req, res); });
+
+    server.Post(
+        "/config",
+        [this](const httplib::Request& req, httplib::Response& res)
+        { impl_->handlePostConfigRequest(req, res); });
 }
 
 }  // namespace mapget

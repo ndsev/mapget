@@ -126,6 +126,13 @@ TileLayer::TileLayer(
     std::string infoJsonString;
     s.text1b(infoJsonString, std::numeric_limits<uint32_t>::max());
     info_ = json::parse(infoJsonString);
+
+    bool hasError = false;
+    s.value1b(hasError);
+    if (hasError) {
+        error_ = "";  // Tell the optional that it has a value.
+        s.text1b(*error_, std::numeric_limits<uint32_t>::max());
+    }
 }
 
 TileId TileLayer::tileId() const {
@@ -216,6 +223,9 @@ void TileLayer::write(std::ostream& outputStream)
     if (ttl_)
         s.value8b(ttl_->count());
     s.text1b(info_.dump(), std::numeric_limits<uint32_t>::max());
+    s.value1b(error_.has_value());
+    if (error_)
+        s.text1b(*error_, std::numeric_limits<uint32_t>::max());
 }
 
 MapTileKey TileLayer::id() const

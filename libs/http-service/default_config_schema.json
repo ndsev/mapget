@@ -1,0 +1,167 @@
+{
+  "type": "object",
+  "properties": {
+    "http-settings": {
+      "type": "array",
+      "title": "HTTP Settings",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "description": "URL scope for matching requests (regex or wildcard)"
+          },
+          "api-key": {
+            "type": "string",
+            "title": "API Key",
+            "description": "API Key for OpenAPI"
+          },
+          "basic-auth": {
+            "type": "object",
+            "title": "Basic Authentication",
+            "properties": {
+              "user": {
+                "type": "string",
+                "title": "Username"
+              },
+              "password": {
+                "type": "string",
+                "title": "Password"
+              },
+              "keychain": {
+                "type": "string",
+                "title": "Keychain",
+                "description": "Keychain string value"
+              }
+            },
+            "oneOf": [
+              {
+                "required": ["user", "password"]
+              },
+              {
+                "required": ["user", "keychain"]
+              }
+            ],
+            "additionalProperties": false
+          },
+          "proxy": {
+            "type": "object",
+            "title": "Proxy Settings",
+            "properties": {
+              "host": {
+                "type": "string",
+                "title": "Proxy Host"
+              },
+              "port": {
+                "type": "integer",
+                "title": "Proxy Port"
+              },
+              "user": {
+                "type": "string",
+                "title": "Proxy User"
+              },
+              "keychain": {
+                "type": "string",
+                "title": "Proxy Keychain"
+              }
+            },
+            "additionalProperties": false
+          },
+          "cookies": {
+            "type": "object",
+            "title": "Cookies",
+            "properties": {
+              "key": {
+                "type": "string",
+                "title": "Key"
+              }
+            }
+          },
+          "headers": {
+            "type": "object",
+            "title": "Headers",
+            "properties": {
+              "key": {
+                "type": "string",
+                "title": "Key"
+              }
+            }
+          },
+          "query": {
+            "type": "object",
+            "title": "Query Parameters",
+            "properties": {
+              "key": {
+                "type": "string",
+                "title": "Key"
+              }
+            }
+          }
+        },
+        "required": ["scope"],
+        "additionalProperties": false
+      }
+    },
+    "sources": {
+      "type": "array",
+      "title": "Sources",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "DataSourceHost",
+              "DataSourceProcess"
+            ],
+            "title": "Source Type"
+          },
+          "url": {
+            "type": "string",
+            "title": "URL",
+            "description": "URL for DataSourceHost or SmartLayerTileService"
+          },
+          "cmd": {
+            "type": "string",
+            "title": "Command",
+            "description": "Command for DataSourceProcess"
+          },
+          "mapId": {
+            "type": "string",
+            "title": "Map ID",
+            "description": "Optional map ID for SmartLayerTileService"
+          }
+        },
+        "required": ["type"],
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": ["DataSourceHost"]
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"]
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": ["DataSourceProcess"]
+              },
+              "cmd": {
+                "type": "string"
+              }
+            },
+            "required": ["cmd"]
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["http-settings", "sources"],
+  "additionalProperties": false
+}
