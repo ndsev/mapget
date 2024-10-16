@@ -162,6 +162,7 @@ struct HttpService::Impl
         std::mutex mutex_;
         std::condition_variable resultEvent_;
 
+        uint64_t requestId_;
         std::stringstream buffer_;
         std::string responseType_;
         std::unique_ptr<TileLayerStream::Writer> writer_;
@@ -170,9 +171,11 @@ struct HttpService::Impl
 
         HttpTilesRequestState()
         {
+            static std::atomic_uint64_t nextRequestId;
             writer_ = std::make_unique<TileLayerStream::Writer>(
                 [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
                 stringOffsets_);
+            requestId_ = nextRequestId++;
         }
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
@@ -231,6 +234,7 @@ struct HttpService::Impl
         // Within one HTTP request, all requested tiles from the same map+layer
         // combination should be in a single LayerTilesRequest.
         auto state = std::make_shared<HttpTilesRequestState>();
+        log().info("Processing tiles request {}", state->requestId_);
         for (auto& requestJson : requestsJson) {
             state->parseRequestFromJson(requestJson);
         }
@@ -319,11 +323,14 @@ struct HttpService::Impl
             // cleanup callback to abort the requests.
             [state, this](bool success)
             {
-                log().debug("Request finished, success: {}", success);
                 if (!success) {
+                    log().warn("Aborting tiles request {}", state->requestId_);
                     for (auto& request : state->requests_) {
                         self_.abort(request);
                     }
+                }
+                else {
+                    log().info("Tiles request {} was successful.", state->requestId_);
                 }
             });
     }
