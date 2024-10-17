@@ -220,6 +220,9 @@ struct HttpService::Impl
         }
     };
 
+    mutable std::mutex clientRequestMapMutex_;
+    mutable std::map<std::string, std::shared_ptr<HttpTilesRequestState>> requestStatePerClientId_;
+
     /**
      * Wraps around the generic mapget service's request() function
      * to include httplib request decoding and response encoding.
@@ -246,6 +249,24 @@ struct HttpService::Impl
             }
         }
 
+        // Parse/Process clientId.
+        if (j.contains("clientId")) {
+            std::unique_lock clientRequestMapAccess(clientRequestMapMutex_);
+            auto clientId = j["clientId"].get<std::string>();
+            auto clientRequestIt = requestStatePerClientId_.find(clientId);
+            if (clientRequestIt != requestStatePerClientId_.end()) {
+                // Ensure that any previous requests from the same clientId
+                // are finished post-haste!
+                for (auto const& req : clientRequestIt->second->requests_) {
+                    if (!req->isDone()) {
+                        self_.abort(req);
+                    }
+                }
+                requestStatePerClientId_.erase(clientRequestIt);
+            }
+            requestStatePerClientId_.emplace(clientId, state);
+        }
+
         // Determine response type.
         state->setResponseType(req.get_header_value("Accept"));
 
@@ -264,9 +285,9 @@ struct HttpService::Impl
             // Send a status report detailing for each request
             // whether its data source is unavailable or it was aborted.
             res.status = 400;
-            std::vector<int> requestStatuses{};
+            std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
             for (const auto& r : state->requests_) {
-                requestStatuses.push_back(r->getStatus());
+                requestStatuses.push_back(static_cast<std::underlying_type_t<RequestStatus>>(r->getStatus()));
             }
             res.set_content(
                 nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
