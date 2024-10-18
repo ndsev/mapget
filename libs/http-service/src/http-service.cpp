@@ -249,24 +249,6 @@ struct HttpService::Impl
             }
         }
 
-        // Parse/Process clientId.
-        if (j.contains("clientId")) {
-            std::unique_lock clientRequestMapAccess(clientRequestMapMutex_);
-            auto clientId = j["clientId"].get<std::string>();
-            auto clientRequestIt = requestStatePerClientId_.find(clientId);
-            if (clientRequestIt != requestStatePerClientId_.end()) {
-                // Ensure that any previous requests from the same clientId
-                // are finished post-haste!
-                for (auto const& req : clientRequestIt->second->requests_) {
-                    if (!req->isDone()) {
-                        self_.abort(req);
-                    }
-                }
-                requestStatePerClientId_.erase(clientRequestIt);
-            }
-            requestStatePerClientId_.emplace(clientId, state);
-        }
-
         // Determine response type.
         state->setResponseType(req.get_header_value("Accept"));
 
@@ -293,6 +275,24 @@ struct HttpService::Impl
                 nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
                 "application/json");
             return;
+        }
+
+        // Parse/Process clientId.
+        if (j.contains("clientId")) {
+            std::unique_lock clientRequestMapAccess(clientRequestMapMutex_);
+            auto clientId = j["clientId"].get<std::string>();
+            auto clientRequestIt = requestStatePerClientId_.find(clientId);
+            if (clientRequestIt != requestStatePerClientId_.end()) {
+                // Ensure that any previous requests from the same clientId
+                // are finished post-haste!
+                for (auto const& req : clientRequestIt->second->requests_) {
+                    if (!req->isDone()) {
+                        self_.abort(req);
+                    }
+                }
+                requestStatePerClientId_.erase(clientRequestIt);
+            }
+            requestStatePerClientId_.emplace(clientId, state);
         }
 
         // For efficiency, set up httplib to stream tile layer responses to client:
