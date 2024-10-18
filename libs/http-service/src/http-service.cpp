@@ -162,6 +162,7 @@ struct HttpService::Impl
         std::mutex mutex_;
         std::condition_variable resultEvent_;
 
+        uint64_t requestId_;
         std::stringstream buffer_;
         std::string responseType_;
         std::unique_ptr<TileLayerStream::Writer> writer_;
@@ -170,9 +171,11 @@ struct HttpService::Impl
 
         HttpTilesRequestState()
         {
+            static std::atomic_uint64_t nextRequestId;
             writer_ = std::make_unique<TileLayerStream::Writer>(
                 [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
                 stringOffsets_);
+            requestId_ = nextRequestId++;
         }
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
@@ -217,6 +220,9 @@ struct HttpService::Impl
         }
     };
 
+    mutable std::mutex clientRequestMapMutex_;
+    mutable std::map<std::string, std::shared_ptr<HttpTilesRequestState>> requestStatePerClientId_;
+
     /**
      * Wraps around the generic mapget service's request() function
      * to include httplib request decoding and response encoding.
@@ -231,6 +237,7 @@ struct HttpService::Impl
         // Within one HTTP request, all requested tiles from the same map+layer
         // combination should be in a single LayerTilesRequest.
         auto state = std::make_shared<HttpTilesRequestState>();
+        log().info("Processing tiles request {}", state->requestId_);
         for (auto& requestJson : requestsJson) {
             state->parseRequestFromJson(requestJson);
         }
@@ -260,14 +267,32 @@ struct HttpService::Impl
             // Send a status report detailing for each request
             // whether its data source is unavailable or it was aborted.
             res.status = 400;
-            std::vector<int> requestStatuses{};
+            std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
             for (const auto& r : state->requests_) {
-                requestStatuses.push_back(r->getStatus());
+                requestStatuses.push_back(static_cast<std::underlying_type_t<RequestStatus>>(r->getStatus()));
             }
             res.set_content(
                 nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
                 "application/json");
             return;
+        }
+
+        // Parse/Process clientId.
+        if (j.contains("clientId")) {
+            std::unique_lock clientRequestMapAccess(clientRequestMapMutex_);
+            auto clientId = j["clientId"].get<std::string>();
+            auto clientRequestIt = requestStatePerClientId_.find(clientId);
+            if (clientRequestIt != requestStatePerClientId_.end()) {
+                // Ensure that any previous requests from the same clientId
+                // are finished post-haste!
+                for (auto const& req : clientRequestIt->second->requests_) {
+                    if (!req->isDone()) {
+                        self_.abort(req);
+                    }
+                }
+                requestStatePerClientId_.erase(clientRequestIt);
+            }
+            requestStatePerClientId_.emplace(clientId, state);
         }
 
         // For efficiency, set up httplib to stream tile layer responses to client:
@@ -319,11 +344,14 @@ struct HttpService::Impl
             // cleanup callback to abort the requests.
             [state, this](bool success)
             {
-                log().debug("Request finished, success: {}", success);
                 if (!success) {
+                    log().warn("Aborting tiles request {}", state->requestId_);
                     for (auto& request : state->requests_) {
                         self_.abort(request);
                     }
+                }
+                else {
+                    log().info("Tiles request {} was successful.", state->requestId_);
                 }
             });
     }

@@ -1,6 +1,7 @@
 #include "datasource.h"
 #include <memory>
 #include <stdexcept>
+#include <chrono>
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/info.h"
 
@@ -14,30 +15,41 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
         throw std::runtime_error("Layer info is null");
 
     auto result = TileLayer::Ptr{};
+
+    auto start = std::chrono::steady_clock::now();
     switch (layerInfo->type_) {
     case mapget::LayerType::Features: {
-        auto result = std::make_shared<TileFeatureLayer>(
+        auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
             k.tileId_,
             info.nodeId_,
             info.mapId_,
             info.getLayer(k.layerId_),
             cache->getStringPool(info.nodeId_));
-        fill(result);
-        return result;
+        fill(tileFeatureLayer);
+        result = tileFeatureLayer;
+        break;
     }
     case mapget::LayerType::SourceData: {
-        auto result = std::make_shared<TileSourceDataLayer>(
+        auto tileSourceDataLayer = std::make_shared<TileSourceDataLayer>(
             k.tileId_,
             info.nodeId_,
             info.mapId_,
             info.getLayer(k.layerId_),
             cache->getStringPool(info.nodeId_));
-        fill(result);
-        return result;
+        fill(tileSourceDataLayer);
+        result = tileSourceDataLayer;
+        break;
     }
     default:
-        return nullptr;
+        break;
     }
+
+    // Notify the tile how long it took to fill.
+    if (result) {
+        auto duration = std::chrono::steady_clock::now() - start;
+        result->setInfo("fill-time", std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+    }
+    return result;
 }
 
 simfil::StringId DataSource::cachedStringPoolOffset(const std::string& nodeId, Cache::Ptr const& cache)
