@@ -47,7 +47,7 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
     // Notify the tile how long it took to fill.
     if (result) {
         auto duration = std::chrono::steady_clock::now() - start;
-        result->setInfo("fill-time", std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+        result->setInfo("fill-time-ms", std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
     }
     return result;
 }
