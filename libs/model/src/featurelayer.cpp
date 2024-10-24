@@ -808,27 +808,29 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
 
 void TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
+    auto oldDict = strings();
+    // Reset simfil environment and clear expression cache
+    impl_->expressionCache_.reset(makeEnvironment(newDict));
+    ModelPool::setStrings(newDict);
+    if (!oldDict || *newDict == *oldDict)
+        return;
+
     // Re-map old string IDs to new string IDs
     for (auto& attr : impl_->attributes_) {
-        if (auto resolvedName = strings()->resolve(attr.name_)) {
+        if (auto resolvedName = oldDict->resolve(attr.name_)) {
             attr.name_ = newDict->emplace(*resolvedName);
         }
     }
     for (auto& fid : impl_->featureIds_) {
-        if (auto resolvedName = strings()->resolve(fid.typeId_)) {
+        if (auto resolvedName = oldDict->resolve(fid.typeId_)) {
             fid.typeId_ = newDict->emplace(*resolvedName);
         }
     }
     for (auto& rel : impl_->relations_) {
-        if (auto resolvedName = strings()->resolve(rel.name_)) {
+        if (auto resolvedName = oldDict->resolve(rel.name_)) {
             rel.name_ = newDict->emplace(*resolvedName);
         }
     }
-
-    // Reset simfil environment and clear expression cache
-    impl_->expressionCache_.reset(makeEnvironment(newDict));
-
-    ModelPool::setStrings(newDict);
 }
 
 simfil::ModelNode::Ptr TileFeatureLayer::clone(

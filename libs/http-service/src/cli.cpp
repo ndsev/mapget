@@ -340,9 +340,9 @@ struct FetchCommand
         request->onSourceDataLayer(fn);
         cli.request(request)->wait();
 
-        if (request->getStatus() == NoDataSource)
+        if (request->getStatus() == RequestStatus::NoDataSource)
             raise("Failed to fetch sources: no matching data source.");
-        if (request->getStatus() == Aborted)
+        if (request->getStatus() == RequestStatus::Aborted)
             raise("Failed to fetch sources: request aborted.");
     }
 };

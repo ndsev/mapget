@@ -13,7 +13,7 @@
 namespace mapget
 {
 
-enum RequestStatus {
+enum class RequestStatus {
     Open = 0x0,
     Success = 0x1, /** The request has been fully satisfied. */
     NoDataSource = 0x2, /** No data source could provide the requested map + layer. */
@@ -97,7 +97,7 @@ private:
     // Mutex/condition variable for reading/setting request status.
     std::mutex statusMutex_;
     std::condition_variable statusConditionVariable_;
-    RequestStatus status_ = Open;
+    RequestStatus status_ = RequestStatus::Open;
 };
 
 /**
