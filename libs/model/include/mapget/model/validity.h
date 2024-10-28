@@ -11,27 +11,36 @@ class Geometry;
 /**
  * Represents an attribute validity which belongs to an
  * Attribute, and may have .... (TODO)
- *
+ * + *Validity -> Also use for Relations
+ *   + computeGeometry(Feature)
  * ~ Attribute
- *   + *Validity -> Also use for Relations
- *     + enum GeometryDescriptionType
- *       + Geometry = 0
- *       + GeoPosOffset = 1
- *       + BufferOffset = 2
- *       + RelLengthOffset = 3
- *       + AbsLengthOffset = 4
- *       + Point = 0 << 8
- *       + Range = 1 << 8
- *     + using GeometryDescription = std::variant<Range, Point, StringId, ModelNodeAddress>;
- *     + using Range = std::pair<Point, Point>
+ *   + validities() -> ValidityCollection
+ * ~ ValidityCollection
+ *   + newValidity(Point pos, std::string_view geomName={})
+ *   + newValidity(Point start, Point end, std::string_view geomName={})
+ *   + newValidity(offsetType, double pos, std::string_view geomName={})
+ *   + newValidity(offsetType, double start, double end, std::string_view geomName={})
+ *   + newValidity(model_ptr<Geometry>)
  * ~ Geometry
  *   + name: StringId
+ *   + name(): string_view
+ *   + setName(): string_view
+ * ~ Relation
+ *   + sourceValidities() -> ValidityCollection
+ *   + targetValidities() -> ValidityCollection
+ * ~ TileFeatureLayer
+ *   + newValidity(Point pos, std::string_view geomName={})
+ *   + newValidity(Point start, Point end, std::string_view geomName={})
+ *   + newValidity(offsetType, double pos, std::string_view geomName={})
+ *   + newValidity(offsetType, double start, double end, std::string_view geomName={})
+ *   + newValidity(model_ptr<Geometry>)
  */
-class Validity : public simfil::ProceduralObject<2, Validity>
+class Validity : public simfil::ProceduralObject<2, Validity, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     template <typename>
     friend struct simfil::shared_model_ptr;
+    friend class PointNode;
 
 public:
     /**
@@ -46,27 +55,66 @@ public:
     };
 
     /**
-     * Validity geometry type enumeration. PointValidity and RangeValidity
+     * Validity offset type enumeration. OffsetPointValidity and OffsetRangeValidity
      * may be combined with one of GeoPosOffset, BufferOffset, RelativeLengthOffset
      * or AbsoluteLengthOffset. In this case, the validity geometry is based on
      * an offset (range) of a feature's geometry. If SimpleGeometry is used,
      * then the validity just references a whole Geometry object.
      */
-    enum GeometryDescriptionType : uint16_t {
+    enum GeometryDescriptionType : uint8_t {
         SimpleGeometry = 0,
+        OffsetPointValidity = 1,
+        OffsetRangeValidity = 2,
+    };
+    enum GeometryOffsetType : uint8_t {
+        InvalidOffsetType = 0,
         GeoPosOffset = 1,
         BufferOffset = 2,
         RelativeLengthOffset = 3,
         AbsoluteLengthOffset = 4,
-        PointValidity = 0 << 8,
-        RangeValidity = 1 << 8,
     };
 
     /**
-     * Attribute direction accessors.
+     * Validity direction accessors.
      */
     [[nodiscard]] Direction direction() const;
     void setDirection(Direction const& v);
+
+    /**
+     * Read-only validity type info accessors.
+     */
+    [[nodiscard]] GeometryOffsetType geometryOffsetType() const;
+    [[nodiscard]] GeometryDescriptionType geometryDescriptionType() const;
+
+    /**
+     * Referenced geometry name accessors.
+     */
+    [[nodiscard]] std::optional<std::string_view> geometryName() const;
+    void setGeometryName(std::optional<std::string_view> const& geometryName);
+
+    /**
+     * Single offset point accessors. Note for the getter:
+     * If the offset type is 1D, i.e. BufferOffset/RelativeLengthOffset/AbsoluteLengthOffset,
+     * then the x component of the returned point reflects the used value.
+     */
+    void setOffsetPoint(Point pos);
+    void setOffsetPoint(GeometryOffsetType offsetType, double pos);
+    [[nodiscard]] std::optional<Point> offsetPoint() const;
+
+    /**
+     * Offset range accessors. Note for the getter:
+     * If the offset type is 1D, i.e. BufferOffset/RelativeLengthOffset/AbsoluteLengthOffset,
+     * then the x components of the returned points reflect the used values.
+     */
+    void setOffsetRange(Point start, Point end);
+    void setOffsetRange(GeometryOffsetType offsetType, double start, double end);
+    [[nodiscard]] std::optional<std::pair<Point, Point>> offsetRange() const;
+
+    /**
+     * Get or set a simple geometry for the validity.
+     */
+    void setSimpleGeometry(model_ptr<Geometry>);
+    [[nodiscard]] model_ptr<Geometry> simpleGeometry() const;
 
 protected:
     /** Actual per-attribute data that is stored in the model's attributes-column. */
@@ -77,6 +125,7 @@ protected:
 
         Direction direction_;
         GeometryDescriptionType geomDescrType_ = SimpleGeometry;
+        GeometryOffsetType geomOffsetType_ = InvalidOffsetType;
         GeometryDescription geomDescr_;
         StringId referencedGeomName_ = 0;
 
@@ -92,11 +141,11 @@ protected:
         void serialize(S& s)
         {
             s.value1b(direction_);
-            s.value2b(geomDescrType_);
-            auto pointOrRange = geomDescrType_ & 0xff00;
-            auto offsetType = geomDescrType_ & 0xff;
+            s.value1b(geomDescrType_);
+            s.value1b(geomOffsetType_);
 
-            if (offsetType == SimpleGeometry ) {
+            if (geomDescrType_ == SimpleGeometry) {
+                assert(geomOffsetType_ == InvalidOffsetType);
                 s.object(get_or_default_construct<ModelNodeAddress>(geomDescr_));
                 return;
             }
@@ -105,8 +154,10 @@ protected:
             // does not directly reference a geometry by a ModelNodeAddress.
             s.value2b(referencedGeomName_);
 
-            auto serializeOffsetPoint = [&s, &offsetType](Point& p) {
-                switch (offsetType) {
+            auto serializeOffsetPoint = [this, &s](Point& p) {
+                switch (geomOffsetType_) {
+                case InvalidOffsetType:
+                    break;
                 case GeoPosOffset:
                     s.object(p);
                     break;
@@ -118,24 +169,30 @@ protected:
                 }
             };
 
-            if (pointOrRange == RangeValidity) {
+            if (geomDescrType_ == OffsetRangeValidity) {
                 auto& [start, end] = get_or_default_construct<Range>(geomDescr_);
                 serializeOffsetPoint(start);
                 serializeOffsetPoint(end);
             }
             else {
-                serializeOffsetPoint(get_or_default_construct<Point>(geomDescr_))
+                serializeOffsetPoint(get_or_default_construct<Point>(geomDescr_));
             }
         }
     };
 
-    Validity(Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
+protected:
+    Validity(Data* data, simfil::ModelConstPtr layer, simfil::ModelNodeAddress a);
     Validity() = default;
 
     /**
      * Pointer to the actual data stored for the attribute.
      */
     Data* data_ = nullptr;
+};
+
+class ValidityCollection
+{
+
 };
 
 }

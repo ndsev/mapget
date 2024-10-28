@@ -399,7 +399,6 @@ TileFeatureLayer::newAttribute(const std::string_view& name, size_t initialCapac
 {
     auto attrIndex = impl_->attributes_.size();
     impl_->attributes_.emplace_back(Attribute::Data{
-        Attribute::Empty,
         {Null, 0},
         objectMemberStorage().new_array(initialCapacity),
         strings()->emplace(name)
@@ -534,9 +533,9 @@ model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n
         n.addr());
 }
 
-model_ptr<VertexNode> TileFeatureLayer::resolvePoints(const simfil::ModelNode& n) const
+model_ptr<PointNode> TileFeatureLayer::resolvePoints(const simfil::ModelNode& n) const
 {
-    return VertexNode(
+    return PointNode(
         n, &impl_->geom_.at(n.addr().index()));
 }
 
@@ -938,7 +937,6 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         if (resolved->hasValidity()) {
             newNode->setValidity(resolveGeometry(*clone(cache, otherLayer, resolved->validity())));
         }
-        newNode->setDirection(resolved->direction());
         resolved->forEachField(
             [this, &newNode, &cache, &otherLayer](auto&& key, auto&& value)
             {

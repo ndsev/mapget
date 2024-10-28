@@ -13,6 +13,7 @@
 #include "relation.h"
 #include "geometry.h"
 #include "sourcedatareference.h"
+#include "pointnode.h"
 
 namespace mapget
 {
@@ -32,7 +33,7 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class AttributeLayerList;
     friend class Geometry;
     friend class GeometryCollection;
-    friend class VertexNode;
+    friend class PointNode;
     friend class VertexBufferNode;
     friend class PolygonNode;
     friend class MeshNode;
@@ -40,6 +41,7 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class LinearRingNode;
     friend class SourceDataReferenceCollection;
     friend class SourceDataReferenceItem;
+    friend class Validity;
 
 public:
     /**
@@ -248,7 +250,7 @@ public:
     model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
     model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
     model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
-    model_ptr<VertexNode> resolvePoints(simfil::ModelNode const& n) const;
+    model_ptr<PointNode> resolvePoints(simfil::ModelNode const& n) const;
     model_ptr<VertexBufferNode> resolvePointBuffers(simfil::ModelNode const& n) const;
     model_ptr<Geometry> resolveGeometry(simfil::ModelNode const& n) const;
     model_ptr<GeometryCollection> resolveGeometryCollection(simfil::ModelNode const& n) const;
@@ -284,6 +286,8 @@ protected:
         LinearRing,
         SourceDataReferenceCollections,
         SourceDataReferences,
+        Validities,
+        ValidityPoints,
     }; };
 
     /** Get the primary id composition for the given feature type. */

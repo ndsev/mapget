@@ -37,6 +37,7 @@ struct StringPool : public simfil::StringPool
         LonStr,
         LatStr,
         GeometryStr,
+        GeometryNameStr,
         GeometriesStr,
         TypeStr,
         CoordinatesStr,
@@ -44,6 +45,9 @@ struct StringPool : public simfil::StringPool
         SourceDataStr,
         AddressStr,
         QualifierStr,
+        StartStr,
+        EndStr,
+        PointStr,
     };
 
     explicit StringPool(const std::string_view& nodeId);

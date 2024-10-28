@@ -24,6 +24,7 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(LonStr, "lon");
     addStaticKey(LatStr, "lat");
     addStaticKey(GeometryStr, "geometry");
+    addStaticKey(GeometryNameStr, "geometryName");
     addStaticKey(GeometriesStr, "geometries");
     addStaticKey(TypeStr, "type");
     addStaticKey(CoordinatesStr, "coordinates");
@@ -31,6 +32,9 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(SourceDataStr, "_sourceData");
     addStaticKey(AddressStr, "address");
     addStaticKey(QualifierStr, "qualifier");
+    addStaticKey(StartStr, "start");
+    addStaticKey(EndStr, "end");
+    addStaticKey(PointStr, "point");
 }
 
 void StringPool::write(std::ostream& outputStream, simfil::StringId offset) const
