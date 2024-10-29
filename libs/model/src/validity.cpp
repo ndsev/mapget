@@ -92,7 +92,7 @@ Validity::Validity(
         exposeOffsetPoint(StringPool::StartStr, 1, start);
         exposeOffsetPoint(StringPool::EndStr, 2, end);
     }
-    else {
+    else if (data_->geomDescrType_ == OffsetPointValidity) {
         exposeOffsetPoint(StringPool::PointStr, 0, std::get<Point>(data_->geomDescr_));
     }
 }
@@ -172,7 +172,12 @@ std::optional<std::pair<Point, Point>> Validity::offsetRange() const
 }
 
 void Validity::setSimpleGeometry(model_ptr<Geometry> geom) {
-    data_->geomDescrType_ = SimpleGeometry;
+    if (geom) {
+        data_->geomDescrType_ = SimpleGeometry;
+    }
+    else {
+        data_->geomDescrType_ = NoGeometry;
+    }
     data_->geomOffsetType_ = InvalidOffsetType;
     data_->geomDescr_ = geom->addr();
 }
@@ -183,6 +188,78 @@ model_ptr<Geometry> Validity::simpleGeometry() const
         return {};
     }
     return model().resolveGeometry(*ModelNode::Ptr::make(model_, std::get<ModelNodeAddress>(data_->geomDescr_)));
+}
+
+model_ptr<Validity>
+ValidityCollection::newValidity(Point pos, std::string_view geomName, Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setOffsetPoint(pos);
+    result->setGeometryName(geomName);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> ValidityCollection::newValidity(
+    Point start,
+    Point end,
+    std::string_view geomName,
+    Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setOffsetRange(start, end);
+    result->setGeometryName(geomName);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> ValidityCollection::newValidity(
+    Validity::GeometryOffsetType offsetType,
+    double pos,
+    std::string_view geomName,
+    Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setOffsetPoint(offsetType, pos);
+    result->setGeometryName(geomName);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> ValidityCollection::newValidity(
+    Validity::GeometryOffsetType offsetType,
+    double start,
+    double end,
+    std::string_view geomName,
+    Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setOffsetRange(offsetType, start, end);
+    result->setGeometryName(geomName);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity>
+ValidityCollection::newValidity(model_ptr<Geometry> geom, Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setSimpleGeometry(geom);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> ValidityCollection::newValidity(Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setDirection(direction);
+    append(result);
+    return result;
 }
 
 }

@@ -11,38 +11,55 @@ Relation::Relation(Relation::Data* data, simfil::ModelConstPtr l, simfil::ModelN
 {
 }
 
-model_ptr<Geometry> Relation::sourceValidity() const
+model_ptr<ValidityCollection> Relation::sourceValidities(bool createIfMissing)
 {
-    if (!hasSourceValidity())
-        throw std::runtime_error("Attempt to access null validity.");
-    return model().resolveGeometry(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceValidity_));
+    if (data_->sourceValidities_) {
+        return sourceValidities();
+    }
+    if (createIfMissing) {
+        auto returnValue = model().newValidityCollection(1);
+        data_->sourceValidities_ = returnValue->addr();
+        return returnValue;
+    }
+    return {};
 }
 
-bool Relation::hasSourceValidity() const
+model_ptr<ValidityCollection> Relation::sourceValidities() const
 {
-    return data_->sourceValidity_;
+    if (!data_->sourceValidities_)
+        return {};
+    return model().resolveValidityCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceValidities_));
 }
 
-void Relation::setSourceValidity(const model_ptr<Geometry>& validityGeom)
+void Relation::setSourceValidities(const model_ptr<ValidityCollection>& validityColl)
 {
-    data_->sourceValidity_ = validityGeom->addr();
+    data_->sourceValidities_ = validityColl->addr();
 }
 
-model_ptr<Geometry> Relation::targetValidity() const
+model_ptr<ValidityCollection> Relation::targetValidities(bool createIfMissing)
 {
-    if (!hasTargetValidity())
-        throw std::runtime_error("Attempt to access null validity.");
-    return model().resolveGeometry(*model_ptr<simfil::ModelNode>::make(model_, data_->targetValidity_));
+    if (data_->targetValidities_) {
+        return targetValidities();
+    }
+    if (createIfMissing) {
+        auto returnValue = model().newValidityCollection(1);
+        data_->targetValidities_ = returnValue->addr();
+        return returnValue;
+    }
+    return {};
 }
 
-bool Relation::hasTargetValidity() const
+
+model_ptr<ValidityCollection> Relation::targetValidities() const
 {
-    return data_->targetValidity_;
+    if (!data_->targetValidities_)
+        return {};
+    return model().resolveValidityCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->targetValidities_));
 }
 
-void Relation::setTargetValidity(const model_ptr<Geometry>& validityGeom)
+void Relation::setTargetValidities(const model_ptr<ValidityCollection>& validityColl)
 {
-    data_->targetValidity_ = validityGeom->addr();
+    data_->targetValidities_ = validityColl->addr();
 }
 
 std::string_view Relation::name() const
@@ -81,7 +98,7 @@ simfil::ModelNode::Ptr Relation::at(int64_t i) const
 
 uint32_t Relation::size() const
 {
-    return 2 + (data_->sourceValidity_ || data_->targetValidity_ ? 2 : 0);
+    return 2 + (data_->sourceValidities_ || data_->targetValidities_ ? 2 : 0);
 }
 
 simfil::ModelNode::Ptr Relation::get(const simfil::StringId& f) const
@@ -91,10 +108,10 @@ simfil::ModelNode::Ptr Relation::get(const simfil::StringId& f) const
         return model_ptr<simfil::ValueNode>::make(name(), model().shared_from_this());
     case StringPool::TargetStr: // target
         return ModelNode::Ptr::make(model().shared_from_this(), data_->targetFeatureId_);
-    case StringPool::SourceValidityStr: // source validity
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceValidity_);
-    case StringPool::TargetValidityStr: // target validity
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->targetValidity_);
+    case StringPool::SourceValiditiesStr: // source validity
+        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceValidities_);
+    case StringPool::TargetValiditiesStr: // target validity
+        return ModelNode::Ptr::make(model().shared_from_this(), data_->targetValidities_);
     case StringPool::SourceDataStr: // source data
         return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceData_);
     default:
@@ -107,8 +124,8 @@ simfil::StringId Relation::keyAt(int64_t i) const
     switch (i) {
     case 0: return StringPool::NameStr;
     case 1: return StringPool::TargetStr;
-    case 2: return StringPool::SourceValidityStr;
-    case 3: return StringPool::TargetValidityStr;
+    case 2: return StringPool::SourceValiditiesStr;
+    case 3: return StringPool::TargetValiditiesStr;
     case 4: return StringPool::SourceDataStr;
     default:
         return {};

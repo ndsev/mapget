@@ -2,6 +2,7 @@
 
 #include "geometry.h"
 #include "sourcedatareference.h"
+#include "validity.h"
 
 namespace mapget
 {
@@ -22,9 +23,9 @@ public:
     /**
      * Attribute validity accessors.
      */
-    [[nodiscard]] bool hasValidity() const;
-    [[nodiscard]] model_ptr<Geometry> validity() const;
-    void setValidity(model_ptr<Geometry> const& validityGeom);
+    [[nodiscard]] model_ptr<ValidityCollection> validities(bool createIfMissing);
+    [[nodiscard]] model_ptr<ValidityCollection> validities() const;
+    void setValidities(model_ptr<ValidityCollection> const& validities) const;
 
     /**
      * Read-only attribute name accessor.
@@ -41,21 +42,21 @@ public:
     /**
      * Source data related accessors.
      */
-    model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
+    [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
     void setSourceDataReferences(simfil::ModelNode::Ptr const& node);
 
 protected:
 
     /** Actual per-attribute data that is stored in the model's attributes-column. */
     struct Data {
-        simfil::ModelNodeAddress validity_;
+        simfil::ModelNodeAddress validities_;
         simfil::ArrayIndex fields_ = -1;
         simfil::StringId name_ = 0;
         simfil::ModelNodeAddress sourceDataRefs_;
 
         template<typename S>
         void serialize(S& s) {
-            s.object(validity_);
+            s.object(validities_);
             s.value4b(fields_);
             s.value2b(name_);
             s.object(sourceDataRefs_);

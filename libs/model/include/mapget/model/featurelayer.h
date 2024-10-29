@@ -120,6 +120,7 @@ public:
     model_ptr<Relation> newRelation(
         std::string_view const& name,
         model_ptr<FeatureId> const& target);
+
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */

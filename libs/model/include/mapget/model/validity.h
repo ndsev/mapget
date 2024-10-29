@@ -13,27 +13,17 @@ class Geometry;
  * Attribute, and may have .... (TODO)
  * + *Validity -> Also use for Relations
  *   + computeGeometry(Feature)
- * ~ Attribute
- *   + validities() -> ValidityCollection
- * ~ ValidityCollection
- *   + newValidity(Point pos, std::string_view geomName={})
- *   + newValidity(Point start, Point end, std::string_view geomName={})
- *   + newValidity(offsetType, double pos, std::string_view geomName={})
- *   + newValidity(offsetType, double start, double end, std::string_view geomName={})
- *   + newValidity(model_ptr<Geometry>)
  * ~ Geometry
  *   + name: StringId
  *   + name(): string_view
  *   + setName(): string_view
- * ~ Relation
- *   + sourceValidities() -> ValidityCollection
- *   + targetValidities() -> ValidityCollection
- * ~ TileFeatureLayer
- *   + newValidity(Point pos, std::string_view geomName={})
- *   + newValidity(Point start, Point end, std::string_view geomName={})
- *   + newValidity(offsetType, double pos, std::string_view geomName={})
- *   + newValidity(offsetType, double start, double end, std::string_view geomName={})
- *   + newValidity(model_ptr<Geometry>)
+ * ~ ValidityCollection
+*   + newValidity(Point pos, std::string_view geomName={}, Direction = Empty)
+*   + newValidity(Point start, Point end, std::string_view geomName={}, Direction = Empty)
+*   + newValidity(offsetType, double pos, std::string_view geomName={}, Direction = Empty)
+*   + newValidity(offsetType, double start, double end, std::string_view geomName={}, Direction = Empty)
+*   + newValidity(model_ptr<Geometry>)
+*   + newValidity(Direction = Empty)
  */
 class Validity : public simfil::ProceduralObject<2, Validity, TileFeatureLayer>
 {
@@ -62,9 +52,10 @@ public:
      * then the validity just references a whole Geometry object.
      */
     enum GeometryDescriptionType : uint8_t {
-        SimpleGeometry = 0,
-        OffsetPointValidity = 1,
-        OffsetRangeValidity = 2,
+        NoGeometry = 0,
+        SimpleGeometry = 1,
+        OffsetPointValidity = 2,
+        OffsetRangeValidity = 3,
     };
     enum GeometryOffsetType : uint8_t {
         InvalidOffsetType = 0,
@@ -121,10 +112,10 @@ protected:
     struct Data
     {
         using Range = std::pair<Point, Point>;
-        using GeometryDescription = std::variant<ModelNodeAddress, Range, Point>;
+        using GeometryDescription = std::variant<std::monostate, ModelNodeAddress, Range, Point>;
 
         Direction direction_;
-        GeometryDescriptionType geomDescrType_ = SimpleGeometry;
+        GeometryDescriptionType geomDescrType_ = NoGeometry;
         GeometryOffsetType geomOffsetType_ = InvalidOffsetType;
         GeometryDescription geomDescr_;
         StringId referencedGeomName_ = 0;
@@ -174,7 +165,7 @@ protected:
                 serializeOffsetPoint(start);
                 serializeOffsetPoint(end);
             }
-            else {
+            else if (geomDescrType_ == OffsetPointValidity) {
                 serializeOffsetPoint(get_or_default_construct<Point>(geomDescr_));
             }
         }
@@ -190,11 +181,21 @@ protected:
     Data* data_ = nullptr;
 };
 
+/**
+ * Array of Validity objects with convenience constructors.
+ */
 struct ValidityCollection : public simfil::BaseArray<TileFeatureLayer, Validity>
 {
     friend class TileFeatureLayer;
     template <typename>
     friend struct simfil::shared_model_ptr;
+
+    model_ptr<Validity> newValidity(Point pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
+    model_ptr<Validity> newValidity(Point start, Point end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
+    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, double pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
+    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, double start, double end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
+    model_ptr<Validity> newValidity(model_ptr<Geometry>, Validity::Direction direction = Validity::Empty);
+    model_ptr<Validity> newValidity(Validity::Direction direction = Validity::Empty);
 
 private:
     using simfil::BaseArray<TileFeatureLayer, Validity>::BaseArray;

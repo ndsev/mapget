@@ -8,31 +8,12 @@ namespace mapget
 Attribute::Attribute(Attribute::Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
     : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(data->fields_, std::move(l), a), data_(data)
 {
-    if (data_->validity_)
+    if (data_->validities_)
         fields_.emplace_back(
             StringPool::ValidityStr,
             [](Attribute const& self) {
-                return model_ptr<simfil::ModelNode>::make(self.model_, self.data_->validity_);
+                return model_ptr<simfil::ModelNode>::make(self.model_, self.data_->validities_);
             });
-}
-
-model_ptr<Geometry> Attribute::validity() const
-{
-    if (!hasValidity())
-        throw std::runtime_error("Attempt to access null validity.");
-    // TODO: We could remove this cast by passing the ModelPool through ProceduralObject->Object->...
-    auto& layer = dynamic_cast<TileFeatureLayer&>(model());
-    return layer.resolveGeometry(*simfil::ModelNode::Ptr::make(model_, data_->validity_));
-}
-
-bool Attribute::hasValidity() const
-{
-    return data_->validity_;
-}
-
-void Attribute::setValidity(const model_ptr<Geometry>& validityGeom)
-{
-    data_->validity_ = validityGeom->addr();
 }
 
 std::string_view Attribute::name() const
@@ -75,6 +56,32 @@ model_ptr<SourceDataReferenceCollection> Attribute::sourceDataReferences() const
 void Attribute::setSourceDataReferences(simfil::ModelNode::Ptr const& node)
 {
     data_->sourceDataRefs_ = node->addr();
+}
+
+model_ptr<ValidityCollection> Attribute::validities(bool createIfMissing)
+{
+    if (auto returnValue = validities()) {
+        return returnValue;
+    }
+    if (createIfMissing) {
+        auto returnValue = model().newValidityCollection(1);
+        data_->validities_ = returnValue->addr();
+        return returnValue;
+    }
+    return {};
+}
+
+model_ptr<ValidityCollection> Attribute::validities() const
+{
+    if (!data_->validities_) {
+        return {};
+    }
+    return model().resolveValidityCollection(*ModelNode::Ptr::make(model_, data_->validities_));
+}
+
+void Attribute::setValidities(const model_ptr<ValidityCollection>& validities) const
+{
+    data_->validities_ = validities->addr();
 }
 
 }

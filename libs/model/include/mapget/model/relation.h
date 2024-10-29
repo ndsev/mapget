@@ -3,6 +3,7 @@
 #include "featureid.h"
 #include "simfil/model/nodes.h"
 #include "sourcedatareference.h"
+#include "validity.h"
 
 namespace mapget
 {
@@ -25,16 +26,16 @@ public:
     /**
      * Source validity accessors.
      */
-    [[nodiscard]] bool hasSourceValidity() const;
-    [[nodiscard]] model_ptr<Geometry> sourceValidity() const;
-    void setSourceValidity(model_ptr<Geometry> const& validityGeom);
+    [[nodiscard]] model_ptr<ValidityCollection> sourceValidities(bool createIfMissing);
+    [[nodiscard]] model_ptr<ValidityCollection> sourceValidities() const;
+    void setSourceValidities(model_ptr<ValidityCollection> const& validityGeom);
 
     /**
      * Target validity accessors.
      */
-    [[nodiscard]] bool hasTargetValidity() const;
-    [[nodiscard]] model_ptr<Geometry> targetValidity() const;
-    void setTargetValidity(model_ptr<Geometry> const& validityGeom);
+    [[nodiscard]] model_ptr<ValidityCollection> targetValidities(bool createIfMissing);
+    [[nodiscard]] model_ptr<ValidityCollection> targetValidities() const;
+    void setTargetValidities(model_ptr<ValidityCollection> const& validityGeom);
 
     /**
      * Read-only relation name accessor.
@@ -65,16 +66,16 @@ protected:
     struct Data {
         simfil::StringId name_ = 0;
         simfil::ModelNodeAddress targetFeatureId_;
-        simfil::ModelNodeAddress sourceValidity_;
-        simfil::ModelNodeAddress targetValidity_;
+        simfil::ModelNodeAddress sourceValidities_;
+        simfil::ModelNodeAddress targetValidities_;
         simfil::ModelNodeAddress sourceData_;
 
         template<typename S>
         void serialize(S& s) {
             s.value2b(name_);
             s.object(targetFeatureId_);
-            s.object(sourceValidity_);
-            s.object(targetValidity_);
+            s.object(sourceValidities_);
+            s.object(targetValidities_);
             s.object(sourceData_);
         }
     };
