@@ -6,7 +6,7 @@ namespace mapget
 {
 
 Attribute::Attribute(Attribute::Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<2, Attribute>(data->fields_, std::move(l), a), data_(data)
+    : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(data->fields_, std::move(l), a), data_(data)
 {
     if (data_->validity_)
         fields_.emplace_back(
@@ -67,8 +67,7 @@ bool Attribute::forEachField(
 model_ptr<SourceDataReferenceCollection> Attribute::sourceDataReferences() const
 {
     if (data_->sourceDataRefs_) {
-        auto& layer = dynamic_cast<TileFeatureLayer&>(model());
-        return layer.resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
+        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
     }
     return {};
 }

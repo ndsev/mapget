@@ -12,6 +12,7 @@ class AttributeLayerList;
  * Represents a collection of Attributes which are semantically related.
  * For example, all feature attributes which refer to road rules, such
  * as speed limits, might belong to the same attribute layer.
+ * TODO: Convert to use BaseObject
  */
 class AttributeLayer : public simfil::Object
 {
@@ -47,6 +48,7 @@ protected:
 /**
  * Collection of attribute layers - this is merely a typed dict which
  * stores (layer-name, layer) pairs.
+ * TODO: Convert to use BaseObject
  */
 class AttributeLayerList : public simfil::Object
 {

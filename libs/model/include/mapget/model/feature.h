@@ -121,6 +121,8 @@ public:
      */
     using simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::model;
 
+    // TODO: Change relations to use a RelationCollection derived from BaseArray
+
     /**
      * Create a new named relation and immediately insert it into the feature.
      * Variants:

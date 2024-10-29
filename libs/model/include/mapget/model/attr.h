@@ -13,7 +13,7 @@ class Geometry;
  * AttributeLayer, and may have typed `direction` and
  * `validity` fields in addition to other arbitrary object fields.
  */
-class Attribute : public simfil::ProceduralObject<2, Attribute>
+class Attribute : public simfil::ProceduralObject<2, Attribute, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     template<typename> friend struct simfil::shared_model_ptr;
