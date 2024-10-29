@@ -9,21 +9,14 @@ namespace mapget
 class Geometry;
 
 /**
- * Represents an attribute validity which belongs to an
- * Attribute, and may have .... (TODO)
+ * Represents an attribute or relation validity with respect to a feature's geometry.
+ *
  * + *Validity -> Also use for Relations
- *   + computeGeometry(Feature)
+ *   +
  * ~ Geometry
  *   + name: StringId
  *   + name(): string_view
  *   + setName(): string_view
- * ~ ValidityCollection
-*   + newValidity(Point pos, std::string_view geomName={}, Direction = Empty)
-*   + newValidity(Point start, Point end, std::string_view geomName={}, Direction = Empty)
-*   + newValidity(offsetType, double pos, std::string_view geomName={}, Direction = Empty)
-*   + newValidity(offsetType, double start, double end, std::string_view geomName={}, Direction = Empty)
-*   + newValidity(model_ptr<Geometry>)
-*   + newValidity(Direction = Empty)
  */
 class Validity : public simfil::ProceduralObject<2, Validity, TileFeatureLayer>
 {
@@ -106,6 +99,17 @@ public:
      */
     void setSimpleGeometry(model_ptr<Geometry>);
     [[nodiscard]] model_ptr<Geometry> simpleGeometry() const;
+
+    /**
+     * Compute the actual shape-points of the validity with respect to one
+     * of the geometries in the given collection. The geometry is picked based
+     * on the validity's geometryName. The return value may be one of the following:
+     * - An empty vector, indicating that the validity could not be applied.
+     *   If an error string was passed, then it would be set to an error message.
+     * - A vector containing a single point, if the validity resolved to a point geometry.
+     * - A vector containing more than one point, if the validity resolved to a poly-line.
+     */
+     std::vector<Point> computeGeometry(model_ptr<GeometryCollection> const& geometryCollection, std::string* error=nullptr);
 
 protected:
     /** Actual per-validity data that is stored in the model's attributes-column. */

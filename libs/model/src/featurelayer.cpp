@@ -924,14 +924,9 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
-    case ColumnId::Geometries:
-    case ColumnId::Points:
-    case ColumnId::Mesh:
-    case ColumnId::MeshTriangleCollection:
-    case ColumnId::MeshTriangleLinearRing:
-    case ColumnId::Polygon:
-    case ColumnId::LinearRing:
-    case ColumnId::PointBuffers: {
+    case ColumnId::Geometries: {
+        // TODO: This implementation is not great, because it does not respect
+        //  Geometry views - it just converts every Geometry to a self-contained one.
         auto resolved = otherLayer->resolveGeometry(*otherNode);
         auto newNode = newGeometry(resolved->geomType(), resolved->numPoints());
         newCacheNode = newNode;
@@ -993,10 +988,9 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto resolved = otherLayer->resolveAttribute(*otherNode);
         auto newNode = newAttribute(resolved->name());
         newCacheNode = newNode;
-        // FIXME
-        // if (resolved->hasValidity()) {
-        //     newNode->setValidity(resolveGeometry(*clone(cache, otherLayer, resolved->validity())));
-        // }
+        if (resolved->validities()) {
+            newNode->setValidities(resolveValidityCollection(*clone(cache, otherLayer, resolved->validities())));
+        }
         resolved->forEachField(
             [this, &newNode, &cache, &otherLayer](auto&& key, auto&& value)
             {
@@ -1005,12 +999,34 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
             });
         break;
     }
-    case ColumnId::ValidityPoints:
     case ColumnId::Validities: {
         auto resolved = otherLayer->resolveValidity(*otherNode);
-        // FIXME
-        // auto newNode = newValidity(...);
-        // newCacheNode = newNode;
+        auto newNode = newValidity();
+        newCacheNode = newNode;
+        newNode->setDirection(resolved->direction());
+        switch (resolved->geometryDescriptionType()) {
+        case Validity::NoGeometry:
+            break;
+        case Validity::SimpleGeometry:
+            newNode->setSimpleGeometry(resolveGeometry(*clone(cache, otherLayer, resolved->simpleGeometry())));
+            break;
+        case Validity::OffsetPointValidity:
+            if (resolved->geometryOffsetType() == Validity::GeoPosOffset) {
+                newNode->setOffsetPoint(*resolved->offsetPoint());
+            }
+            else {
+                newNode->setOffsetPoint(resolved->geometryOffsetType(), resolved->offsetPoint()->x);
+            }
+            break;
+        case Validity::OffsetRangeValidity:
+            if (resolved->geometryOffsetType() == Validity::GeoPosOffset) {
+                newNode->setOffsetRange(resolved->offsetRange()->first, resolved->offsetRange()->second);
+            }
+            else {
+                newNode->setOffsetRange(resolved->geometryOffsetType(), resolved->offsetRange()->first.x, resolved->offsetRange()->second.x);
+            }
+            break;
+        }
         break;
     }
     case ColumnId::ValidityCollections: {
@@ -1049,6 +1065,12 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newRelation(
             resolved->name(),
             resolveFeatureId(*clone(cache, otherLayer, resolved->target())));
+        if (resolved->sourceValidities()) {
+            newNode->setSourceValidities(resolveValidityCollection(*clone(cache, otherLayer, resolved->sourceValidities())));
+        }
+        if (resolved->targetValidities()) {
+            newNode->setTargetValidities(resolveValidityCollection(*clone(cache, otherLayer, resolved->targetValidities())));
+        }
         newCacheNode = newNode;
         break;
     }
@@ -1060,8 +1082,16 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         newCacheNode = newSourceDataReferenceCollection({items.begin(), items.end()});
         break;
     }
+    case ColumnId::Points:
+    case ColumnId::Mesh:
+    case ColumnId::MeshTriangleCollection:
+    case ColumnId::MeshTriangleLinearRing:
+    case ColumnId::Polygon:
+    case ColumnId::LinearRing:
+    case ColumnId::PointBuffers: 
     case ColumnId::SourceDataReferences:
-        raise("Cannot clone a single source-data reference.");
+    case ColumnId::ValidityPoints:
+        raiseFmt("Encountered unexpected column type {} in clone().", otherNode->addr().column());
     default: {
         newCacheNode = ModelNode::Ptr::make(shared_from_this(), otherNode->addr());
     }
