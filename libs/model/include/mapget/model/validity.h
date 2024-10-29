@@ -117,7 +117,7 @@ public:
     [[nodiscard]] model_ptr<Geometry> simpleGeometry() const;
 
 protected:
-    /** Actual per-attribute data that is stored in the model's attributes-column. */
+    /** Actual per-validity data that is stored in the model's attributes-column. */
     struct Data
     {
         using Range = std::pair<Point, Point>;
@@ -164,7 +164,7 @@ protected:
                 case BufferOffset:
                 case RelativeLengthOffset:
                 case AbsoluteLengthOffset:
-                    s.value4b(p.x);
+                    s.value8b(p.x);
                     break;
                 }
             };
@@ -190,9 +190,14 @@ protected:
     Data* data_ = nullptr;
 };
 
-class ValidityCollection
+struct ValidityCollection : public simfil::BaseArray<TileFeatureLayer, Validity>
 {
+    friend class TileFeatureLayer;
+    template <typename>
+    friend struct simfil::shared_model_ptr;
 
+private:
+    using simfil::BaseArray<TileFeatureLayer, Validity>::BaseArray;
 };
 
 }

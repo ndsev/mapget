@@ -34,7 +34,7 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class Geometry;
     friend class GeometryCollection;
     friend class PointNode;
-    friend class VertexBufferNode;
+    friend class PointBufferNode;
     friend class PolygonNode;
     friend class MeshNode;
     friend class MeshTriangleCollectionNode;
@@ -151,6 +151,16 @@ public:
     model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list);
 
     /**
+     * Create a new validity.
+     */
+    model_ptr<Validity> newValidity();
+
+    /**
+     * Create a new validity collection.
+     */
+    model_ptr<ValidityCollection> newValidityCollection(size_t initialCapacity = 1);
+
+    /**
      * Return type for begin() and end() methods to support range-based
      * for-loops to iterate over all features in a TileFeatureLayer.
      */
@@ -250,8 +260,8 @@ public:
     model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
     model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
     model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
-    model_ptr<PointNode> resolvePoints(simfil::ModelNode const& n) const;
-    model_ptr<VertexBufferNode> resolvePointBuffers(simfil::ModelNode const& n) const;
+    model_ptr<PointNode> resolvePoint(const simfil::ModelNode& n) const;
+    model_ptr<PointBufferNode> resolvePointBuffer(const simfil::ModelNode& n) const;
     model_ptr<Geometry> resolveGeometry(simfil::ModelNode const& n) const;
     model_ptr<GeometryCollection> resolveGeometryCollection(simfil::ModelNode const& n) const;
     model_ptr<MeshNode> resolveMesh(simfil::ModelNode const& n) const;
@@ -261,6 +271,9 @@ public:
     model_ptr<LinearRingNode> resolveLinearRing(simfil::ModelNode const& n) const;
     model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollection(simfil::ModelNode const& n) const;
     model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItem(simfil::ModelNode const& n) const;
+    model_ptr<PointNode> resolveValidityPoint(const simfil::ModelNode& n) const;
+    model_ptr<Validity> resolveValidity(simfil::ModelNode const& n) const;
+    model_ptr<ValidityCollection> resolveValidityCollection(simfil::ModelNode const& n) const;
 
 protected:
     /**
@@ -288,6 +301,7 @@ protected:
         SourceDataReferences,
         Validities,
         ValidityPoints,
+        ValidityCollections,
     }; };
 
     /** Get the primary id composition for the given feature type. */

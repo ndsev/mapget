@@ -16,7 +16,7 @@ public:
     template<typename> friend struct simfil::shared_model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
-    friend class VertexBufferNode;
+    friend class PointBufferNode;
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -36,7 +36,7 @@ private:
 
 template <typename LambdaType, class ModelType>
 bool Geometry::forEachPoint(LambdaType const& callback) const {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {ModelType::ColumnId::PointBuffers, addr_.index()}};
+    PointBufferNode vertexBufferNode{geomData_, model_, {ModelType::ColumnId::PointBuffers, addr_.index()}};
     for (auto i = 0; i < vertexBufferNode.size(); ++i) {
         PointNode vertex{*vertexBufferNode.at(i), vertexBufferNode.baseGeomData_};
         if (!callback(vertex.point_))

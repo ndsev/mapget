@@ -39,7 +39,7 @@ public:
     friend class TileFeatureLayer;
     friend class PointNode;
     friend class LinearRingNode;
-    friend class VertexBufferNode;
+    friend class PointBufferNode;
     friend class PolygonNode;
     friend class MeshNode;
 
@@ -215,7 +215,7 @@ private:
 
 /** VertexBuffer Node */
 
-class VertexBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class PointBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
     template<typename> friend struct simfil::shared_model_ptr;
@@ -232,10 +232,10 @@ public:
 
     Point pointAt(int64_t) const;
 
-    VertexBufferNode() = delete;
+    PointBufferNode() = delete;
 
 private:
-    VertexBufferNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
+    PointBufferNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
 
     Geometry::Data const* baseGeomData_ = nullptr;
     ModelNodeAddress baseGeomAddress_;
@@ -335,7 +335,7 @@ public:
 private:
     explicit LinearRingNode(const ModelNode& base, std::optional<size_t> length = {});
 
-    model_ptr<VertexBufferNode> vertexBuffer() const;
+    model_ptr<PointBufferNode> vertexBuffer() const;
 
     enum class Orientation : uint8_t { CW, CCW };
     Orientation orientation_ = Orientation::CW;

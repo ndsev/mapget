@@ -79,13 +79,14 @@ struct TileFeatureLayer::Impl {
 
     sfl::segmented_vector<Feature::Data, simfil::detail::ColumnPageSize/4> features_;
     sfl::segmented_vector<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
+    sfl::segmented_vector<Validity::Data, simfil::detail::ColumnPageSize> validities_;
     sfl::segmented_vector<FeatureId::Data, simfil::detail::ColumnPageSize/2> featureIds_;
     sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayers_;
     sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayerLists_;
     sfl::segmented_vector<Relation::Data, simfil::detail::ColumnPageSize/2> relations_;
     sfl::segmented_vector<Geometry::Data, simfil::detail::ColumnPageSize/2> geom_;
     sfl::segmented_vector<QualifiedSourceDataReference, simfil::detail::ColumnPageSize/2> sourceDataReferences_;
-    Geometry::Storage vertexBuffers_;
+    Geometry::Storage pointBuffers_;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -126,6 +127,7 @@ struct TileFeatureLayer::Impl {
         constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
         s.container(features_, maxColumnSize);
         s.container(attributes_, maxColumnSize);
+        s.container(validities_, maxColumnSize);
         s.container(featureIds_, maxColumnSize);
         s.container(attrLayers_, maxColumnSize);
         s.container(attrLayerLists_, maxColumnSize);
@@ -134,7 +136,7 @@ struct TileFeatureLayer::Impl {
         sortFeatureHashIndex();
         s.container(featureHashIndex_, maxColumnSize);
         s.container(geom_, maxColumnSize);
-        s.ext(vertexBuffers_, bitsery::ext::ArrayArenaExt{});
+        s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
         s.container(sourceDataReferences_, maxColumnSize);
     }
 
@@ -473,6 +475,23 @@ model_ptr<SourceDataReferenceCollection> TileFeatureLayer::newSourceDataReferenc
         ModelNodeAddress(ColumnId::SourceDataReferenceCollections, sourceDataAddressListToModelAddress(index, size)))};
 }
 
+model_ptr<Validity> TileFeatureLayer::newValidity()
+{
+    impl_->validities_.emplace_back();
+    return Validity(
+        &impl_->validities_.back(),
+        shared_from_this(),
+        {ColumnId::Validities, (uint32_t)impl_->validities_.size() - 1});
+}
+
+model_ptr<ValidityCollection> TileFeatureLayer::newValidityCollection(size_t initialCapacity)
+{
+    auto validityArrId = arrayMemberStorage().new_array(initialCapacity);
+    return ValidityCollection(
+        shared_from_this(),
+        {ColumnId::ValidityCollections, (uint32_t)validityArrId});
+}
+
 model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelNode const& n) const
 {
     if (n.addr().column() != ColumnId::AttributeLayers)
@@ -533,15 +552,44 @@ model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n
         n.addr());
 }
 
-model_ptr<PointNode> TileFeatureLayer::resolvePoints(const simfil::ModelNode& n) const
+model_ptr<PointNode> TileFeatureLayer::resolvePoint(const simfil::ModelNode& n) const
 {
+    if (n.addr().column() != ColumnId::Points)
+        raise("Cannot cast this node to a Point.");
     return PointNode(
         n, &impl_->geom_.at(n.addr().index()));
 }
 
-model_ptr<VertexBufferNode> TileFeatureLayer::resolvePointBuffers(const simfil::ModelNode& n) const
+model_ptr<PointNode> TileFeatureLayer::resolveValidityPoint(const simfil::ModelNode& n) const
 {
-    return VertexBufferNode(
+    if (n.addr().column() != ColumnId::ValidityPoints)
+        raise("Cannot cast this node to a ValidityPoint.");
+    return PointNode(
+        n, &impl_->validities_.at(n.addr().index()));
+}
+
+model_ptr<Validity> TileFeatureLayer::resolveValidity(simfil::ModelNode const& n) const
+{
+    if (n.addr().column() != ColumnId::Validities)
+        raise("Cannot cast this node to a Validity.");
+    return Validity(
+        &impl_->validities_[n.addr().index()],
+        shared_from_this(),
+        n.addr());
+}
+
+model_ptr<ValidityCollection> TileFeatureLayer::resolveValidityCollection(const simfil::ModelNode& n) const
+{
+    if (n.addr().column() != ColumnId::ValidityCollections)
+        raise("Cannot cast this node to a ValidityCollection.");
+    return ValidityCollection(
+        shared_from_this(),
+        n.addr());
+}
+
+model_ptr<PointBufferNode> TileFeatureLayer::resolvePointBuffer(const simfil::ModelNode& n) const
+{
+    return PointBufferNode(
         &impl_->geom_.at(n.addr().index()),
         shared_from_this(),
         n.addr());
@@ -636,9 +684,9 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
     case ColumnId::Relations:
         return cb(*resolveRelation(n));
     case ColumnId::Points:
-        return cb(*resolvePoints(n));
+        return cb(*resolvePoint(n));
     case ColumnId::PointBuffers:
-        return cb(*resolvePointBuffers(n));
+        return cb(*resolvePointBuffer(n));
     case ColumnId::Geometries:
         return cb(*resolveGeometry(n));
     case ColumnId::GeometryCollections:
@@ -657,6 +705,12 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
         return cb(*resolveSourceDataReferenceCollection(n));
     case ColumnId::SourceDataReferences:
         return cb(*resolveSourceDataReferenceItem(n));
+    case ColumnId::Validities:
+        return cb(*resolveValidity(n));
+    case ColumnId::ValidityPoints:
+        return cb(*resolveValidityPoint(n));
+    case ColumnId::ValidityCollections:
+        return cb(*resolveValidityCollection(n));
     }
 
     return ModelPool::resolve(n, cb);
@@ -820,6 +874,11 @@ void TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& new
             attr.name_ = newDict->emplace(*resolvedName);
         }
     }
+    for (auto& validity : impl_->validities_) {
+        if (auto resolvedName = strings()->resolve(validity.referencedGeomName_)) {
+            validity.referencedGeomName_ = newDict->emplace(*resolvedName);
+        }
+    }
     for (auto& fid : impl_->featureIds_) {
         if (auto resolvedName = oldDict->resolve(fid.typeId_)) {
             fid.typeId_ = newDict->emplace(*resolvedName);
@@ -934,15 +993,33 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto resolved = otherLayer->resolveAttribute(*otherNode);
         auto newNode = newAttribute(resolved->name());
         newCacheNode = newNode;
-        if (resolved->hasValidity()) {
-            newNode->setValidity(resolveGeometry(*clone(cache, otherLayer, resolved->validity())));
-        }
+        // FIXME
+        // if (resolved->hasValidity()) {
+        //     newNode->setValidity(resolveGeometry(*clone(cache, otherLayer, resolved->validity())));
+        // }
         resolved->forEachField(
             [this, &newNode, &cache, &otherLayer](auto&& key, auto&& value)
             {
                 newNode->addField(key, clone(cache, otherLayer, value));
                 return true;
             });
+        break;
+    }
+    case ColumnId::ValidityPoints:
+    case ColumnId::Validities: {
+        auto resolved = otherLayer->resolveValidity(*otherNode);
+        // FIXME
+        // auto newNode = newValidity(...);
+        // newCacheNode = newNode;
+        break;
+    }
+    case ColumnId::ValidityCollections: {
+        auto resolved = otherLayer->resolveValidityCollection(*otherNode);
+        auto newNode = newValidityCollection(resolved->size());
+        newCacheNode = newNode;
+        for (auto value : *resolved) {
+            newNode->append(clone(cache, otherLayer, value));
+        }
         break;
     }
     case ColumnId::AttributeLayers: {
@@ -1062,7 +1139,7 @@ void TileFeatureLayer::clone(
 
 Geometry::Storage& TileFeatureLayer::vertexBufferStorage()
 {
-    return impl_->vertexBuffers_;
+    return impl_->pointBuffers_;
 }
 
 model_ptr<Feature> TileFeatureLayer::find(const std::string_view& featureId) const

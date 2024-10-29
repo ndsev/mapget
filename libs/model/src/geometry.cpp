@@ -220,13 +220,13 @@ bool Geometry::iterate(const IterCallback& cb) const
 
 size_t Geometry::numPoints() const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
+    PointBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     return vertexBufferNode.size();
 }
 
 Point Geometry::pointAt(size_t index) const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
+    PointBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     PointNode vertex{*vertexBufferNode.at((int64_t)index), vertexBufferNode.baseGeomData_};
     return vertex.point_;
 }
@@ -278,7 +278,7 @@ bool PolygonNode::iterate(IterCallback const& cb) const
 MeshNode::MeshNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(pool), a), geomData_(geomData)
 {
-    auto vertex_buffer = VertexBufferNode{
+    auto vertex_buffer = PointBufferNode{
         geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     assert(vertex_buffer.size() % 3 == 0);
     size_ = vertex_buffer.size() / 3;
@@ -445,16 +445,16 @@ uint32_t LinearRingNode::size() const
     return size_ + (closed_ ? 0 : 1);
 }
 
-model_ptr<VertexBufferNode> LinearRingNode::vertexBuffer() const
+model_ptr<PointBufferNode> LinearRingNode::vertexBuffer() const
 {
     auto ptr = ModelNode::Ptr::make(
         model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}, 0);
-    return model().resolvePointBuffers(*ptr);
+    return model().resolvePointBuffer(*ptr);
 }
 
 /** ModelNode impls. for VertexBufferNode */
 
-VertexBufferNode::VertexBufferNode(Geometry::Data const* geomData, ModelConstPtr pool_, ModelNodeAddress const& a)
+PointBufferNode::PointBufferNode(Geometry::Data const* geomData, ModelConstPtr pool_, ModelNodeAddress const& a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(pool_), a), baseGeomData_(geomData), baseGeomAddress_(a)
 {
     storage_ = &model().vertexBufferStorage();
@@ -482,30 +482,30 @@ VertexBufferNode::VertexBufferNode(Geometry::Data const* geomData, ModelConstPtr
     }
 }
 
-ValueType VertexBufferNode::type() const {
+ValueType PointBufferNode::type() const {
     return ValueType::Array;
 }
 
-ModelNode::Ptr VertexBufferNode::at(int64_t i) const {
+ModelNode::Ptr PointBufferNode::at(int64_t i) const {
     if (i < 0 || i >= size())
         throw std::out_of_range("vertex-buffer: Out of range.");
     i += offset_;
     return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, i);
 }
 
-uint32_t VertexBufferNode::size() const {
+uint32_t PointBufferNode::size() const {
     return size_;
 }
 
-ModelNode::Ptr VertexBufferNode::get(const StringId &) const {
+ModelNode::Ptr PointBufferNode::get(const StringId &) const {
     return {};
 }
 
-StringId VertexBufferNode::keyAt(int64_t) const {
+StringId PointBufferNode::keyAt(int64_t) const {
     return {};
 }
 
-bool VertexBufferNode::iterate(const IterCallback& cb) const
+bool PointBufferNode::iterate(const IterCallback& cb) const
 {
     auto cont = true;
     auto resolveAndCb = Model::Lambda([&cb, &cont](auto && node){
@@ -520,7 +520,7 @@ bool VertexBufferNode::iterate(const IterCallback& cb) const
     return cont;
 }
 
-Point VertexBufferNode::pointAt(int64_t index) const
+Point PointBufferNode::pointAt(int64_t index) const
 {
     PointNode vertex{*at(index), baseGeomData_};
     return vertex.point_;
