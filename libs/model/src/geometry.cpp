@@ -231,6 +231,19 @@ Point Geometry::pointAt(size_t index) const
     return vertex.point_;
 }
 
+std::optional<std::string_view> Geometry::name()
+{
+    if (geomData_->geomName_ == StringPool::Empty) {
+        return {};
+    }
+    return model().strings()->resolve(geomData_->geomName_);
+}
+
+void Geometry::setName(const std::string_view& newName)
+{
+    geomData_->geomName_ = model().strings()->emplace(newName);
+}
+
 /** ModelNode impls. for PolygonNode */
 
 PolygonNode::PolygonNode(ModelConstPtr pool, ModelNodeAddress const& a)

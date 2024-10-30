@@ -368,7 +368,123 @@ std::vector<Point> Validity::computeGeometry(
     const model_ptr<GeometryCollection>& geometryCollection,
     std::string* error)
 {
-    // TODO!!!
+    if (data_->geomDescrType_ == SimpleGeometry) {
+        // Return the self-contained geometry points.
+        auto simpleGeom = simpleGeometry();
+        assert(simpleGeom);
+        std::vector<Point> result;
+        result.reserve(simpleGeom->numPoints());
+        simpleGeom->forEachPoint([&result](auto&& point){
+             result.emplace_back(point);
+             return true;
+        });
+        return result;
+    }
+
+    // Find a geometry with a matching name.
+    auto requiredGeomName = geometryName();
+    model_ptr<Geometry> geometry;
+    geometryCollection->forEachGeometry([&requiredGeomName, &geometry](auto&& geom){
+        if (geom->name() == requiredGeomName && geom->geomType() == GeomType::Line) {
+            geometry = geom;
+            return false;  // abort iteration.
+        }
+        return true;
+    });
+
+    if (!geometry) {
+        if (error) {
+            *error = fmt::format("Failed to find geometry for {}", requiredGeomName ? *requiredGeomName : "");
+        }
+        return {};
+    }
+
+    // No geometry description from the attribute - just return the whole
+    // geometry from the collection.
+    if (data_->geomDescrType_ == NoGeometry) {
+        std::vector<Point> result;
+        result.reserve(geometry->numPoints());
+        geometry->forEachPoint([&result](auto&& point){
+             result.emplace_back(point);
+             return true;
+        });
+        return result;
+    }
+
+    // Now we have OffsetPointValidity or OffsetRangeValidity
+    auto offsetType = geometryOffsetType();
+    if (offsetType == InvalidOffsetType) {
+        if (error) {
+            *error = fmt::format("Encountered InvalidOffsetType in Validity::computeGeometry.");
+        }
+        return {};
+    }
+
+    Point startPoint;
+    std::optional<Point> endPoint;
+    if (data_->geomDescrType_ == OffsetPointValidity) {
+        startPoint = *offsetPoint();
+    }
+    else {
+        auto rangePair = *offsetRange();
+        startPoint = rangePair.first;
+        endPoint = rangePair.second;
+    }
+
+    // Handle GeoPosOffset (a range of the geometry line, bound by two positions).
+    if (offsetType == GeoPosOffset) {
+        return geometryFromPositionBound(geometry, startPoint, endPoint);
+    }
+
+    // Handle BufferOffset (a range of the geometry bound by two indices).
+    if (offsetType == BufferOffset) {
+        auto startPointIndex = static_cast<uint32_t>(startPoint.x);
+        if (startPointIndex >= geometry->numPoints()) {
+            if (error) {
+                *error = fmt::format("Validity::computeGeometry: Start point index {} is out-of-bounds.",
+                    startPointIndex);
+            }
+            return {};
+        }
+
+        auto endPointIndex = endPoint ? static_cast<uint32_t>(endPoint->x) : startPointIndex;
+        if (endPointIndex >= geometry->numPoints()) {
+            if (error) {
+                *error = fmt::format("Validity::computeGeometry: End point index {} is out-of-bounds.",
+                    startPointIndex);
+            }
+            return {};
+        }
+
+        if (endPointIndex < startPointIndex) {
+            std::swap(startPointIndex, endPointIndex);
+        }
+
+        std::vector<Point> result;
+        for (auto pointIndex = startPointIndex; pointIndex <= endPointIndex; ++pointIndex) {
+            result.emplace_back(geometry->pointAt(pointIndex));
+        }
+        return result;
+    }
+
+    // Handle RelativeLengthOffset (a percentage range of the geometry).
+    //  - we convert the percentages to length values, and then fall through to AbsoluteLengthOffset.
+    if (offsetType == RelativeLengthOffset) {
+        auto lineLength = calcLineLengthInM(*geometry);
+        startPoint.x *= lineLength;
+        if (endPoint) {
+            endPoint->x *= lineLength;
+        }
+    }
+
+    // Handle AbsoluteLengthOffset (a length range of the geometry in meters).
+    if (offsetType == AbsoluteLengthOffset || offsetType == RelativeLengthOffset) {
+        return geometryFromLengthBound(geometry, startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
+    }
+
+    if (error) {
+        *error = fmt::format("Validity::computeGeometry: Unexpected invalid offsetType {}", static_cast<uint32_t>(offsetType));
+    }
     return {};
 }
 

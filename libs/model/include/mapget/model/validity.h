@@ -10,13 +10,6 @@ class Geometry;
 
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
- *
- * + *Validity -> Also use for Relations
- *   +
- * ~ Geometry
- *   + name: StringId
- *   + name(): string_view
- *   + setName(): string_view
  */
 class Validity : public simfil::ProceduralObject<2, Validity, TileFeatureLayer>
 {

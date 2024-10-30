@@ -43,13 +43,6 @@ public:
     friend class PolygonNode;
     friend class MeshNode;
 
-    [[nodiscard]] ValueType type() const override;
-    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
-    [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
-    [[nodiscard]] StringId keyAt(int64_t) const override;
-    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
-
     /** Source region */
     model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
     void setSourceDataReferences(simfil::ModelNode::Ptr const& refs);
@@ -65,6 +58,12 @@ public:
 
     /** Get a point at an index. */
     [[nodiscard]] Point pointAt(size_t index) const;
+
+    /**
+     * Get and set geometry name.
+     */
+    [[nodiscard]] std::optional<std::string_view> name();
+    void setName(const std::string_view &newName);
 
     /** Iterate over all Points in the geometry.
      * @param callback Function which is called for each contained point.
@@ -82,6 +81,13 @@ public:
     bool forEachPoint(LambdaType const& callback) const;
 
 protected:
+    [[nodiscard]] ValueType type() const override;
+    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
+    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
     struct Data
     {
         Data() = default;
@@ -101,6 +107,9 @@ protected:
         // Geometry type. A view can have a different geometry type
         // than the base geometry.
         GeomType type_ = GeomType::Points;
+
+        // Geometry reference name if applicable.
+        StringId geomName_ = 0;
 
         union GeomDetails
         {
@@ -137,6 +146,7 @@ protected:
         void serialize(S& s) {
             s.value1b(isView_);
             s.value1b(type_);
+            s.value2b(geomName_);
             if (!isView_) {
                 s.value4b(detail_.geom_.vertexArray_);
                 s.object(detail_.geom_.offset_);
@@ -170,13 +180,6 @@ public:
 
     using Storage = simfil::Array::Storage;
 
-    [[nodiscard]] ValueType type() const override;
-    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
-    [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
-    [[nodiscard]] StringId keyAt(int64_t) const override;
-    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
-
     /** Adds a new Geometry to the collection and returns a reference. */
     model_ptr<Geometry> newGeometry(GeomType type, size_t initialCapacity=4);
 
@@ -209,6 +212,13 @@ public:
 private:
     GeometryCollection() = default;
     GeometryCollection(ModelConstPtr pool, ModelNodeAddress);
+
+    [[nodiscard]] ValueType type() const override;
+    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
+    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     ModelNode::Ptr singleGeom() const;
 };
