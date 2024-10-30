@@ -126,7 +126,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     // Add an attribute layer
     auto attrLayer = feature1->attributeLayers()->newLayer("cheese");
     auto attr = attrLayer->newAttribute("mozzarella");
-    attr->setDirection(Attribute::Direction::Positive);
+    attr->validities()->newValidity(Validity::Direction::Positive);
     attr->addField("smell", "neutral");
 
     // Add feature ids using secondary ID compositions

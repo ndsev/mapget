@@ -436,7 +436,7 @@ std::vector<Point> Validity::computeGeometry(
         return geometryFromPositionBound(geometry, startPoint, endPoint);
     }
 
-    // Handle BufferOffset (a range of the geometry bound by two indices).
+    // Handle BufferOffset (a range of the goemetry bound by two indices).
     if (offsetType == BufferOffset) {
         auto startPointIndex = static_cast<uint32_t>(startPoint.x);
         if (startPointIndex >= geometry->numPoints()) {
@@ -529,6 +529,15 @@ model_ptr<Validity> ValidityCollection::newValidity(
 
 model_ptr<Validity> ValidityCollection::newValidity(
     Validity::GeometryOffsetType offsetType,
+    int32_t pos,
+    std::string_view geomName,
+    Validity::Direction direction)
+{
+    return newValidity(offsetType, static_cast<double>(pos), geomName, direction);
+}
+
+model_ptr<Validity> ValidityCollection::newValidity(
+    Validity::GeometryOffsetType offsetType,
     double start,
     double end,
     std::string_view geomName,
@@ -540,6 +549,16 @@ model_ptr<Validity> ValidityCollection::newValidity(
     result->setDirection(direction);
     append(result);
     return result;
+}
+
+model_ptr<Validity> ValidityCollection::newValidity(
+    Validity::GeometryOffsetType offsetType,
+    int32_t start,
+    int32_t end,
+    std::string_view geomName,
+    Validity::Direction direction)
+{
+    return newValidity(offsetType, static_cast<double>(start), static_cast<double>(end), geomName, direction);
 }
 
 model_ptr<Validity>

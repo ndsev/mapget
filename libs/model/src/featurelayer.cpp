@@ -1034,7 +1034,7 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newValidityCollection(resolved->size());
         newCacheNode = newNode;
         for (auto value : *resolved) {
-            newNode->append(clone(cache, otherLayer, value));
+            newNode->append(resolveValidity(*clone(cache, otherLayer, value)));
         }
         break;
     }

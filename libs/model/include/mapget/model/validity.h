@@ -190,7 +190,9 @@ struct ValidityCollection : public simfil::BaseArray<TileFeatureLayer, Validity>
     model_ptr<Validity> newValidity(Point pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
     model_ptr<Validity> newValidity(Point start, Point end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
     model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, double pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
+    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, int32_t pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
     model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, double start, double end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
+    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, int32_t start, int32_t end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
     model_ptr<Validity> newValidity(model_ptr<Geometry>, Validity::Direction direction = Validity::Empty);
     model_ptr<Validity> newValidity(Validity::Direction direction = Validity::Empty);
 
