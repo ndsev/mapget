@@ -58,20 +58,17 @@ void Attribute::setSourceDataReferences(simfil::ModelNode::Ptr const& node)
     data_->sourceDataRefs_ = node->addr();
 }
 
-model_ptr<ValidityCollection> Attribute::validities(bool createIfMissing)
+model_ptr<MultiValidity> Attribute::validity()
 {
-    if (auto returnValue = validities()) {
+    if (auto returnValue = validityOrNull()) {
         return returnValue;
     }
-    if (createIfMissing) {
-        auto returnValue = model().newValidityCollection(1);
-        data_->validities_ = returnValue->addr();
-        return returnValue;
-    }
-    return {};
+    auto returnValue = model().newValidityCollection(1);
+    data_->validities_ = returnValue->addr();
+    return returnValue;
 }
 
-model_ptr<ValidityCollection> Attribute::validities() const
+model_ptr<MultiValidity> Attribute::validityOrNull() const
 {
     if (!data_->validities_) {
         return {};
@@ -79,7 +76,7 @@ model_ptr<ValidityCollection> Attribute::validities() const
     return model().resolveValidityCollection(*ModelNode::Ptr::make(model_, data_->validities_));
 }
 
-void Attribute::setValidities(const model_ptr<ValidityCollection>& validities) const
+void Attribute::setValidity(const model_ptr<MultiValidity>& validities) const
 {
     data_->validities_ = validities->addr();
 }

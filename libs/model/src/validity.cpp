@@ -153,7 +153,6 @@ std::vector<Point> geometryFromLengthBound(
     bool startReached = false;
     for (auto i = 0; i < lineGeom->numPoints()-1; ++i)
     {
-        innerIndexStart = 0;
         auto pos = lineGeom->pointAt(i);
         auto posNext = lineGeom->pointAt(i+1);
         auto dist = pos.geographicDistanceTo(posNext);
@@ -162,7 +161,9 @@ std::vector<Point> geometryFromLengthBound(
         if (!startReached && start <= coveredLength)
         {
             innerIndexStart = i;
-            // TODO: Determine, if this fast calculation (opposed to using Wgs84::move) is accurate enough.
+            // Note: We use a fast linear calculation here instead of proper geodesic trigonometry.
+            // I calculated, that the approximate error for this is roughly 0.001% at the equator, so
+            // the error on a 1km long line would be about 1 centimeter.
             auto lerp = static_cast<double>(dist - (coveredLength - start)) / static_cast<double>(dist);
             startPos = pos + (posNext - pos) * lerp;
             startReached = true;
@@ -195,11 +196,10 @@ std::vector<Point> geometryFromLengthBound(
 }
 }
 
-Validity::Validity(
-    Validity::Data* data,
+Validity::Validity(Validity::Data* data,
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<2, Validity, TileFeatureLayer>(std::move(layer), a), data_(data)
+    : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(std::move(layer), a), data_(data)
 {
     if (data_->direction_)
         fields_.emplace_back(
@@ -255,7 +255,7 @@ Validity::Validity(
                         pointIndex);
                 case BufferOffset:
                 case RelativeLengthOffset:
-                case AbsoluteLengthOffset:
+                case MetricLengthOffset:
                     return model_ptr<simfil::ValueNode>::make(p.x, self.model_);
                 }
                 return {};
@@ -367,7 +367,7 @@ model_ptr<Geometry> Validity::simpleGeometry() const
 
 std::vector<Point> Validity::computeGeometry(
     const model_ptr<GeometryCollection>& geometryCollection,
-    std::string* error)
+    std::string* error) const
 {
     if (data_->geomDescrType_ == SimpleGeometry) {
         // Return the self-contained geometry points.
@@ -469,7 +469,7 @@ std::vector<Point> Validity::computeGeometry(
     }
 
     // Handle RelativeLengthOffset (a percentage range of the geometry).
-    //  - we convert the percentages to length values, and then fall through to AbsoluteLengthOffset.
+    //  - we convert the percentages to length values, and then fall through to MetricLengthOffset.
     if (offsetType == RelativeLengthOffset) {
         auto lineLength = calcLineLengthInM(*geometry);
         startPoint.x *= lineLength;
@@ -478,8 +478,8 @@ std::vector<Point> Validity::computeGeometry(
         }
     }
 
-    // Handle AbsoluteLengthOffset (a length range of the geometry in meters).
-    if (offsetType == AbsoluteLengthOffset || offsetType == RelativeLengthOffset) {
+    // Handle MetricLengthOffset (a length range of the geometry in meters).
+    if (offsetType == MetricLengthOffset || offsetType == RelativeLengthOffset) {
         return geometryFromLengthBound(geometry, startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
     }
 
@@ -490,7 +490,7 @@ std::vector<Point> Validity::computeGeometry(
 }
 
 model_ptr<Validity>
-ValidityCollection::newValidity(Point pos, std::string_view geomName, Validity::Direction direction)
+MultiValidity::newPoint(Point pos, std::string_view geomName, Validity::Direction direction)
 {
     auto result = model().newValidity();
     result->setOffsetPoint(pos);
@@ -500,7 +500,7 @@ ValidityCollection::newValidity(Point pos, std::string_view geomName, Validity::
     return result;
 }
 
-model_ptr<Validity> ValidityCollection::newValidity(
+model_ptr<Validity> MultiValidity::newRange(
     Point start,
     Point end,
     std::string_view geomName,
@@ -514,7 +514,7 @@ model_ptr<Validity> ValidityCollection::newValidity(
     return result;
 }
 
-model_ptr<Validity> ValidityCollection::newValidity(
+model_ptr<Validity> MultiValidity::newPoint(
     Validity::GeometryOffsetType offsetType,
     double pos,
     std::string_view geomName,
@@ -528,16 +528,16 @@ model_ptr<Validity> ValidityCollection::newValidity(
     return result;
 }
 
-model_ptr<Validity> ValidityCollection::newValidity(
+model_ptr<Validity> MultiValidity::newPoint(
     Validity::GeometryOffsetType offsetType,
     int32_t pos,
     std::string_view geomName,
     Validity::Direction direction)
 {
-    return newValidity(offsetType, static_cast<double>(pos), geomName, direction);
+    return newPoint(offsetType, static_cast<double>(pos), geomName, direction);
 }
 
-model_ptr<Validity> ValidityCollection::newValidity(
+model_ptr<Validity> MultiValidity::newRange(
     Validity::GeometryOffsetType offsetType,
     double start,
     double end,
@@ -552,18 +552,23 @@ model_ptr<Validity> ValidityCollection::newValidity(
     return result;
 }
 
-model_ptr<Validity> ValidityCollection::newValidity(
+model_ptr<Validity> MultiValidity::newRange(
     Validity::GeometryOffsetType offsetType,
     int32_t start,
     int32_t end,
     std::string_view geomName,
     Validity::Direction direction)
 {
-    return newValidity(offsetType, static_cast<double>(start), static_cast<double>(end), geomName, direction);
+    return newRange(
+        offsetType,
+        static_cast<double>(start),
+        static_cast<double>(end),
+        geomName,
+        direction);
 }
 
 model_ptr<Validity>
-ValidityCollection::newValidity(model_ptr<Geometry> geom, Validity::Direction direction)
+MultiValidity::newGeometry(model_ptr<Geometry> geom, Validity::Direction direction)
 {
     auto result = model().newValidity();
     result->setSimpleGeometry(geom);
@@ -572,7 +577,7 @@ ValidityCollection::newValidity(model_ptr<Geometry> geom, Validity::Direction di
     return result;
 }
 
-model_ptr<Validity> ValidityCollection::newValidity(Validity::Direction direction)
+model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
 {
     auto result = model().newValidity();
     result->setDirection(direction);

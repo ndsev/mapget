@@ -159,7 +159,7 @@ public:
     /**
      * Create a new validity collection.
      */
-    model_ptr<ValidityCollection> newValidityCollection(size_t initialCapacity = 1);
+    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 1);
 
     /**
      * Return type for begin() and end() methods to support range-based
@@ -274,7 +274,7 @@ public:
     model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItem(simfil::ModelNode const& n) const;
     model_ptr<PointNode> resolveValidityPoint(const simfil::ModelNode& n) const;
     model_ptr<Validity> resolveValidity(simfil::ModelNode const& n) const;
-    model_ptr<ValidityCollection> resolveValidityCollection(simfil::ModelNode const& n) const;
+    model_ptr<MultiValidity> resolveValidityCollection(simfil::ModelNode const& n) const;
 
 protected:
     /**

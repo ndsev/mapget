@@ -19,8 +19,8 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(PropertiesStr, "properties");
     addStaticKey(NameStr, "name");
     addStaticKey(TargetStr, "target");
-    addStaticKey(SourceValiditiesStr, "sourceValidities");
-    addStaticKey(TargetValiditiesStr, "targetValidities");
+    addStaticKey(SourceValidityStr, "sourceValidity");
+    addStaticKey(TargetValidityStr, "targetValidity");
     addStaticKey(LonStr, "lon");
     addStaticKey(LatStr, "lat");
     addStaticKey(GeometryStr, "geometry");

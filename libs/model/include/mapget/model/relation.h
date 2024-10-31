@@ -16,7 +16,7 @@ class Geometry;
  * source feature, and points to a destination feature
  * by its id. It may also have a validity geometry on either side.
  */
-class Relation : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class Relation : public simfil::ProceduralObject<6, Relation, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class Feature;
@@ -26,16 +26,16 @@ public:
     /**
      * Source validity accessors.
      */
-    [[nodiscard]] model_ptr<ValidityCollection> sourceValidities(bool createIfMissing);
-    [[nodiscard]] model_ptr<ValidityCollection> sourceValidities() const;
-    void setSourceValidities(model_ptr<ValidityCollection> const& validityGeom);
+    [[nodiscard]] model_ptr<MultiValidity> sourceValidity();
+    [[nodiscard]] model_ptr<MultiValidity> sourceValidityOrNull() const;
+    void setSourceValidity(const model_ptr<MultiValidity>& validityGeom);
 
     /**
      * Target validity accessors.
      */
-    [[nodiscard]] model_ptr<ValidityCollection> targetValidities(bool createIfMissing);
-    [[nodiscard]] model_ptr<ValidityCollection> targetValidities() const;
-    void setTargetValidities(model_ptr<ValidityCollection> const& validityGeom);
+    [[nodiscard]] model_ptr<MultiValidity> targetValidity();
+    [[nodiscard]] model_ptr<MultiValidity> targetValidityOrNull() const;
+    void setTargetValidity(const model_ptr<MultiValidity>& validityGeom);
 
     /**
      * Read-only relation name accessor.
@@ -54,28 +54,20 @@ public:
     void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
 
 protected:
-    /** ModelNode interface. */
-    [[nodiscard]] simfil::ValueType type() const override;
-    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
-    [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const simfil::StringId &) const override;
-    [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
-    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
-
     /** Actual per-attribute data that is stored in the model's attributes-column. */
     struct Data {
         simfil::StringId name_ = 0;
         simfil::ModelNodeAddress targetFeatureId_;
-        simfil::ModelNodeAddress sourceValidities_;
-        simfil::ModelNodeAddress targetValidities_;
+        simfil::ModelNodeAddress sourceValidity_;
+        simfil::ModelNodeAddress targetValidity_;
         simfil::ModelNodeAddress sourceData_;
 
         template<typename S>
         void serialize(S& s) {
             s.value2b(name_);
             s.object(targetFeatureId_);
-            s.object(sourceValidities_);
-            s.object(targetValidities_);
+            s.object(sourceValidity_);
+            s.object(targetValidity_);
             s.object(sourceData_);
         }
     };

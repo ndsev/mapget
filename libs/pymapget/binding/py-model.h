@@ -261,28 +261,18 @@ struct BoundAttribute : public BoundObject<Attribute>
 {
     static void bind(py::module_& m)
     {
-        py::enum_<Attribute::Direction>(m, "Direction")
-            .value("EMPTY", Attribute::Direction::Empty)
-            .value("POSITIVE", Attribute::Direction::Positive)
-            .value("NEGATIVE", Attribute::Direction::Negative)
-            .value("BOTH", Attribute::Direction::Both)
-            .value("NONE", Attribute::Direction::None);
+        py::enum_<Validity::Direction>(m, "Direction")
+            .value("EMPTY", Validity::Direction::Empty)
+            .value("POSITIVE", Validity::Direction::Positive)
+            .value("NEGATIVE", Validity::Direction::Negative)
+            .value("BOTH", Validity::Direction::Both)
+            .value("NONE", Validity::Direction::None);
 
         auto boundClass =
             py::class_<BoundAttribute, BoundModelNode>(m, "Attribute")
                 .def(
-                    "direction",
-                    [](BoundAttribute& self) { return self.modelNodePtr_->direction(); },
-                    "Get the direction of the attribute.")
-                .def(
-                    "set_direction",
-                    [](BoundAttribute& self, Attribute::Direction const& v)
-                    { self.modelNodePtr_->setDirection(v); },
-                    py::arg("v"),
-                    "Set the direction of the attribute.")
-                .def(
                     "validity",
-                    [](BoundAttribute& self) { return self.modelNodePtr_->validity(); },
+                    [](BoundAttribute& self) { return self.modelNodePtr_->validityOrNull(); },
                     "Get the validity of the attribute.")
                 .def(
                     "name",

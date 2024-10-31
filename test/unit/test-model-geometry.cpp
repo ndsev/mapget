@@ -1,5 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
@@ -340,31 +340,97 @@ TEST_CASE("Attribute Validity", "[validity]") {
     linestringGeomNamed->setName("BestGeometry");
 
     // Create a validity collection.
-    auto metresAtFortyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-.1, -.1})) * 0.4;
-    auto metresAtEightyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-.1, -.1})) * 0.8;
+    auto metresAtFortyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-1., -1.})) * 0.4;
+    auto metresAtEightyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-1., -1.})) * 0.8;
     auto validities = modelPool->newValidityCollection();
-    validities->newValidity(Validity::Direction::Positive);
-    validities->newValidity(linestringGeom);
-    validities->newValidity({.2, .25});
-    validities->newValidity({.2, .25}, {.75, .7});
-    validities->newValidity(Validity::BufferOffset, 0);
-    validities->newValidity(Validity::RelativeLengthOffset, .4);
-    validities->newValidity(Validity::AbsoluteLengthOffset, metresAtFortyPercent);
-    validities->newValidity(Validity::BufferOffset, 0, 1);
-    validities->newValidity(Validity::RelativeLengthOffset, .4, .8);
-    validities->newValidity(Validity::AbsoluteLengthOffset, metresAtFortyPercent, metresAtEightyPercent);
-    validities->newValidity(linestringGeomNamed);
-    validities->newValidity({.2, .25}, "BestGeometry");
-    validities->newValidity({.2, .25}, {.75, .7}, "BestGeometry");
-    validities->newValidity(Validity::BufferOffset, 0, "BestGeometry");
-    validities->newValidity(Validity::RelativeLengthOffset, .4, "BestGeometry");
-    validities->newValidity(Validity::AbsoluteLengthOffset, metresAtFortyPercent, "BestGeometry");
-    validities->newValidity(Validity::BufferOffset, 0, 1, "BestGeometry");
-    validities->newValidity(Validity::RelativeLengthOffset, .4, .8, "BestGeometry");
-    validities->newValidity(Validity::AbsoluteLengthOffset, metresAtFortyPercent, metresAtEightyPercent, "BestGeometry");
-
+    validities->newDirection(Validity::Direction::Positive);
+    validities->newGeometry(linestringGeom);
+    validities->newPoint({.2, .25});
+    validities->newRange({.2, .25}, {.75, .7});
+    validities->newPoint(Validity::BufferOffset, 0);
+    validities->newPoint(Validity::RelativeLengthOffset, .4);
+    validities->newPoint(Validity::MetricLengthOffset, metresAtFortyPercent);
+    validities->newRange(Validity::BufferOffset, 0, 1);
+    validities->newRange(Validity::RelativeLengthOffset, .4, .8);
+    validities
+        ->newRange(Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent);
+    validities->newGeometry(linestringGeomNamed);
+    validities->newPoint({-.2, -.25}, "BestGeometry");
+    validities->newRange({-.2, -.25}, {-.75, -.7}, "BestGeometry");
+    validities->newPoint(Validity::BufferOffset, 0, "BestGeometry");
+    validities->newPoint(Validity::RelativeLengthOffset, .4, "BestGeometry");
+    validities->newPoint(Validity::MetricLengthOffset, metresAtFortyPercent, "BestGeometry");
+    validities->newRange(Validity::BufferOffset, 0, 1, "BestGeometry");
+    validities->newRange(Validity::RelativeLengthOffset, .4, .8, "BestGeometry");
+    validities->newRange(
+        Validity::MetricLengthOffset,
+        metresAtFortyPercent,
+        metresAtEightyPercent,
+        "BestGeometry");
     auto json = validities->toJson();
-    log().info(validities->toJson().dump(4));
+    REQUIRE(json.size() == 19);
 
-    REQUIRE(!json.empty());
+    // Fill out the expectedGeometry vector.
+    std::vector<std::vector<Point>> expectedGeometry = {
+        // Validity::Direction::Positive 💚
+        {{0.0,0.0,0.0}, {0.5,0.5,0.0}, {1.0,1.0,0.0}},
+        // linestringGeom 💚
+        {{0.0,0.0,0.0}, {0.5,0.5,0.0}, {1.0,1.0,0.0}},
+        // {.2, .25} 💚
+        {{0.225,0.225,0.0}},
+        // {.2, .25}, {.75, .7} 💚
+        {{0.225,0.225,0.0}, {0.5,0.5,0.0}, {0.725,0.725,0.0}},
+        // Validity::BufferOffset, 0 💚
+        {{0.0,0.0,0.0}},
+        // Validity::RelativeLengthOffset, .4 💚
+        {{0.39999238466117465,0.39999238466117465,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent 💚
+        {{0.39999238400870357,0.39999238400870357,0.0}},
+        // Validity::BufferOffset, 0, 1 💚
+        {{0.0,0.0,0.0}, {0.5,0.5,0.0}},
+        // Validity::RelativeLengthOffset, .4, .8 💚
+        {{0.39999238466117465,0.39999238466117465,0.0}, {0.5,0.5,0.0}, {0.7999961921855985,0.7999961921855985,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent 💚
+        {{0.39999238400870357,0.39999238400870357,0.0}, {0.5,0.5,0.0}, {0.7999961908806066,0.7999961908806066,0.0}},
+        // linestringGeomNamed 💚
+        {{-0.0,-0.0,0.0}, {-0.5,-0.5,0.0}, {-1.0,-1.0,0.0}},
+        // {-.2, -.25}, "BestGeometry" 💚
+        {{-0.225,-0.225,0.0}},
+        // {-.2, -.25}, {-.75, -.7}, "BestGeometry" 💚
+        {{-0.225,-0.225,0.0}, {-0.5,-0.5,0.0}, {-0.725,-0.725,0.0}},
+        // Validity::BufferOffset, 0, "BestGeometry" 💚
+        {{-0.0,-0.0,0.0}},
+        // Validity::RelativeLengthOffset, .4, "BestGeometry" 💚
+        {{-0.39999238466117465,-0.39999238466117465,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent, "BestGeometry" 💚
+        {{-0.39999238400870357,-0.39999238400870357,0.0}},
+        // Validity::BufferOffset, 0, 1, "BestGeometry" 💚
+        {{-0.0,-0.0,0.0}, {-0.5,-0.5,0.0}},
+        // Validity::RelativeLengthOffset, .4, .8, "BestGeometry" 💚
+        {{-0.39999238466117465,-0.39999238466117465,0.0}, {-0.5,-0.5,0.0}, {-0.7999961921855985,-0.7999961921855985,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent, "BestGeometry" 💚
+        {{-0.39999238400870357,-0.39999238400870357,0.0}, {-0.5,-0.5,0.0}, {-0.7999961908806066,-0.7999961908806066,0.0}},
+    };
+
+    // Compare expected validity geometries against computed ones.
+    auto validityIndex = 0;
+    validities->forEach([&validityIndex, &geometryCollection, &expectedGeometry](auto&& validity) {
+        DYNAMIC_SECTION(fmt::format("Validity Index #{}", validityIndex))
+        {
+            auto wgsPoints = validity.computeGeometry(geometryCollection);
+            log().info("Points #{}: {}", validityIndex, nlohmann::json(wgsPoints).dump());
+            auto const& expectedWgsPoints = expectedGeometry[validityIndex];
+            REQUIRE(wgsPoints.size() == expectedWgsPoints.size());
+            for (auto pointIndex = 0; pointIndex < wgsPoints.size(); ++pointIndex) {
+                auto const& computedPoint = wgsPoints[pointIndex];
+                auto const& expectedPoint = expectedWgsPoints[pointIndex];
+                using namespace Catch::Matchers;
+                REQUIRE_THAT(computedPoint.x, WithinRel(expectedPoint.x));
+                REQUIRE_THAT(computedPoint.y, WithinRel(expectedPoint.y));
+                REQUIRE_THAT(computedPoint.z, WithinRel(expectedPoint.z));
+            }
+        }
+        ++validityIndex;
+        return true;
+    });
 }

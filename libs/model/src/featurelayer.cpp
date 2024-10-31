@@ -484,10 +484,10 @@ model_ptr<Validity> TileFeatureLayer::newValidity()
         {ColumnId::Validities, (uint32_t)impl_->validities_.size() - 1});
 }
 
-model_ptr<ValidityCollection> TileFeatureLayer::newValidityCollection(size_t initialCapacity)
+model_ptr<MultiValidity> TileFeatureLayer::newValidityCollection(size_t initialCapacity)
 {
     auto validityArrId = arrayMemberStorage().new_array(initialCapacity);
-    return ValidityCollection(
+    return MultiValidity(
         shared_from_this(),
         {ColumnId::ValidityCollections, (uint32_t)validityArrId});
 }
@@ -578,11 +578,11 @@ model_ptr<Validity> TileFeatureLayer::resolveValidity(simfil::ModelNode const& n
         n.addr());
 }
 
-model_ptr<ValidityCollection> TileFeatureLayer::resolveValidityCollection(const simfil::ModelNode& n) const
+model_ptr<MultiValidity> TileFeatureLayer::resolveValidityCollection(const simfil::ModelNode& n) const
 {
     if (n.addr().column() != ColumnId::ValidityCollections)
         raise("Cannot cast this node to a ValidityCollection.");
-    return ValidityCollection(
+    return MultiValidity(
         shared_from_this(),
         n.addr());
 }
@@ -989,8 +989,9 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto resolved = otherLayer->resolveAttribute(*otherNode);
         auto newNode = newAttribute(resolved->name());
         newCacheNode = newNode;
-        if (resolved->validities()) {
-            newNode->setValidities(resolveValidityCollection(*clone(cache, otherLayer, resolved->validities())));
+        if (resolved->validityOrNull()) {
+            newNode->setValidity(
+                resolveValidityCollection(*clone(cache, otherLayer, resolved->validityOrNull())));
         }
         resolved->forEachField(
             [this, &newNode, &cache, &otherLayer](auto&& key, auto&& value)
@@ -1066,11 +1067,13 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newRelation(
             resolved->name(),
             resolveFeatureId(*clone(cache, otherLayer, resolved->target())));
-        if (resolved->sourceValidities()) {
-            newNode->setSourceValidities(resolveValidityCollection(*clone(cache, otherLayer, resolved->sourceValidities())));
+        if (resolved->sourceValidityOrNull()) {
+            newNode->setSourceValidity(resolveValidityCollection(
+                *clone(cache, otherLayer, resolved->sourceValidityOrNull())));
         }
-        if (resolved->targetValidities()) {
-            newNode->setTargetValidities(resolveValidityCollection(*clone(cache, otherLayer, resolved->targetValidities())));
+        if (resolved->targetValidityOrNull()) {
+            newNode->setTargetValidity(resolveValidityCollection(
+                *clone(cache, otherLayer, resolved->targetValidityOrNull())));
         }
         newCacheNode = newNode;
         break;
@@ -1125,7 +1128,7 @@ void TileFeatureLayer::clone(
     };
 
     // Adopt attributes
-    if (auto attrs = otherFeature.attributes()) {
+    if (auto attrs = otherFeature.attributesOrNull()) {
         auto baseAttrs = cloneTarget->attributes();
         for (auto const& [key, value] : attrs->fields()) {
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
@@ -1135,7 +1138,7 @@ void TileFeatureLayer::clone(
     }
 
     // Adopt attribute layers
-    if (auto attrLayers = otherFeature.attributeLayers()) {
+    if (auto attrLayers = otherFeature.attributeLayersOrNull()) {
         auto baseAttrLayers = cloneTarget->attributeLayers();
         for (auto const& [key, value] : attrLayers->fields()) {
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
@@ -1145,7 +1148,7 @@ void TileFeatureLayer::clone(
     }
 
     // Adopt geometries
-    if (auto geom = otherFeature.geom()) {
+    if (auto geom = otherFeature.geomOrNull()) {
         auto baseGeom = cloneTarget->geom();
         geom->forEachGeometry(
             [this, &baseGeom, &lookupOrClone](auto&& geomElement)

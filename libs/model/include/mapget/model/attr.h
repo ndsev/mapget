@@ -11,8 +11,8 @@ class Geometry;
 
 /**
  * Represents a feature attribute which belongs to an
- * AttributeLayer, and may have typed `direction` and
- * `validity` fields in addition to other arbitrary object fields.
+ * AttributeLayer, and may have reference several
+ * `Validity` objects in addition to other arbitrary object fields.
  */
 class Attribute : public simfil::ProceduralObject<2, Attribute, TileFeatureLayer>
 {
@@ -23,9 +23,9 @@ public:
     /**
      * Attribute validity accessors.
      */
-    [[nodiscard]] model_ptr<ValidityCollection> validities(bool createIfMissing);
-    [[nodiscard]] model_ptr<ValidityCollection> validities() const;
-    void setValidities(model_ptr<ValidityCollection> const& validities) const;
+    [[nodiscard]] model_ptr<MultiValidity> validity();
+    [[nodiscard]] model_ptr<MultiValidity> validityOrNull() const;
+    void setValidity(const model_ptr<MultiValidity>& validities) const;
 
     /**
      * Read-only attribute name accessor.

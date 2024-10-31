@@ -11,7 +11,7 @@ class Geometry;
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
  */
-class Validity : public simfil::ProceduralObject<2, Validity, TileFeatureLayer>
+class Validity : public simfil::ProceduralObject<6, Validity, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     template <typename>
@@ -33,7 +33,7 @@ public:
     /**
      * Validity offset type enumeration. OffsetPointValidity and OffsetRangeValidity
      * may be combined with one of GeoPosOffset, BufferOffset, RelativeLengthOffset
-     * or AbsoluteLengthOffset. In this case, the validity geometry is based on
+     * or MetricLengthOffset. In this case, the validity geometry is based on
      * an offset (range) of a feature's geometry. If SimpleGeometry is used,
      * then the validity just references a whole Geometry object.
      */
@@ -48,7 +48,7 @@ public:
         GeoPosOffset = 1,
         BufferOffset = 2,
         RelativeLengthOffset = 3,
-        AbsoluteLengthOffset = 4,
+        MetricLengthOffset = 4,
     };
 
     /**
@@ -71,7 +71,7 @@ public:
 
     /**
      * Single offset point accessors. Note for the getter:
-     * If the offset type is 1D, i.e. BufferOffset/RelativeLengthOffset/AbsoluteLengthOffset,
+     * If the offset type is 1D, i.e. BufferOffset/RelativeLengthOffset/MetricLengthOffset,
      * then the x component of the returned point reflects the used value.
      */
     void setOffsetPoint(Point pos);
@@ -80,7 +80,7 @@ public:
 
     /**
      * Offset range accessors. Note for the getter:
-     * If the offset type is 1D, i.e. BufferOffset/RelativeLengthOffset/AbsoluteLengthOffset,
+     * If the offset type is 1D, i.e. BufferOffset/RelativeLengthOffset/MetricLengthOffset,
      * then the x components of the returned points reflect the used values.
      */
     void setOffsetRange(Point start, Point end);
@@ -102,7 +102,7 @@ public:
      * - A vector containing a single point, if the validity resolved to a point geometry.
      * - A vector containing more than one point, if the validity resolved to a poly-line.
      */
-     std::vector<Point> computeGeometry(model_ptr<GeometryCollection> const& geometryCollection, std::string* error=nullptr);
+     std::vector<Point> computeGeometry(model_ptr<GeometryCollection> const& geometryCollection, std::string* error=nullptr) const;
 
 protected:
     /** Actual per-validity data that is stored in the model's attributes-column. */
@@ -151,7 +151,7 @@ protected:
                     break;
                 case BufferOffset:
                 case RelativeLengthOffset:
-                case AbsoluteLengthOffset:
+                case MetricLengthOffset:
                     s.value8b(p.x);
                     break;
                 }
@@ -181,20 +181,90 @@ protected:
 /**
  * Array of Validity objects with convenience constructors.
  */
-struct ValidityCollection : public simfil::BaseArray<TileFeatureLayer, Validity>
+struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
 {
     friend class TileFeatureLayer;
     template <typename>
     friend struct simfil::model_ptr;
 
-    model_ptr<Validity> newValidity(Point pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
-    model_ptr<Validity> newValidity(Point start, Point end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
-    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, double pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
-    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, int32_t pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
-    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, double start, double end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
-    model_ptr<Validity> newValidity(Validity::GeometryOffsetType offsetType, int32_t start, int32_t end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
-    model_ptr<Validity> newValidity(model_ptr<Geometry>, Validity::Direction direction = Validity::Empty);
-    model_ptr<Validity> newValidity(Validity::Direction direction = Validity::Empty);
+    /**
+     * Append a new line position validity based on an absolute geographic position.
+     */
+    model_ptr<Validity> newPoint(
+        Point pos,
+        std::string_view geomName = {},
+        Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a new line range validity based on absolute geographic positions.
+     */
+    model_ptr<Validity> newRange(
+        Point start,
+        Point end,
+        std::string_view geomName = {},
+        Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a new line position validity based on a fractional offset.
+     * Examples:
+     *   (RelativeLengthOffset, 0.1) -> Validity at 10% linestring length along the digitization direction.
+     *   (MetricLengthOffset, 31.1) -> Validity at 31.1m along the digitization direction.
+     */
+    model_ptr<Validity> newPoint(
+        Validity::GeometryOffsetType offsetType,
+        double pos,
+        std::string_view geomName = {},
+        Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a new line position validity based on an integer offset.
+     * Examples:
+     *   (BufferOffset, 0) -> Validity at point #0 in the referenced geometry.
+     */
+    model_ptr<Validity> newPoint(
+        Validity::GeometryOffsetType offsetType,
+        int32_t pos,
+        std::string_view geomName = {},
+        Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a new line range validity based on fractional offsets.
+     * Examples:
+     *   (RelativeLengthOffset, 0.1, 0.5) -> Validity from 10% to 50% linestring length along the digitization direction.
+     *   (MetricLengthOffset, 31.1, 57.6) -> Validity from 31.1m to 57.6m along the digitization direction
+     */
+    model_ptr<Validity> newRange(
+        Validity::GeometryOffsetType offsetType,
+        double start,
+        double end,
+        std::string_view geomName = {},
+        Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a new line range validity based on integer offsets.
+     * Examples:
+     *   (BufferOffset, 5, 7) -> Validity from point #5 to #7 (inclusive) in the referenced geometry.
+     */
+    model_ptr<Validity> newRange(
+        Validity::GeometryOffsetType offsetType,
+        int32_t start,
+        int32_t end,
+        std::string_view geomName = {},
+        Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append an arbitrary validity geometry. Note: You may use non-line geometries here.
+     */
+    model_ptr<Validity>
+    newGeometry(model_ptr<Geometry>, Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a direction validity without further restricting the range.
+     * The direction value controls, in which direction along the referenced
+     * geometry the attribute applies. Positive means "in digitization direction",
+     * "negative" means opposite.
+     */
+    model_ptr<Validity> newDirection(Validity::Direction direction = Validity::Empty);
 
 private:
     using simfil::BaseArray<TileFeatureLayer, Validity>::BaseArray;
