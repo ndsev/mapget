@@ -35,6 +35,12 @@ public:
     static DataSourceConfigService& get();
 
     /**
+     * Clear subscriptions, constructor, current config content and path,
+     * stop the file watch thread.
+     */
+    void reset();
+
+    /**
      * Class representing a subscription to the configuration changes.
      */
     class Subscription
