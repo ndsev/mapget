@@ -17,7 +17,7 @@ class Geometry;
 class Attribute : public simfil::ProceduralObject<2, Attribute, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**

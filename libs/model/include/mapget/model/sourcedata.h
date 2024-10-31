@@ -20,7 +20,7 @@ class SourceDataCompoundNode : public simfil::MandatoryDerivedModelNodeBase<Tile
 {
     struct Data;
     friend class TileSourceDataLayer;
-    friend struct simfil::shared_model_ptr<SourceDataCompoundNode>;
+    friend struct simfil::model_ptr<SourceDataCompoundNode>;
 
 public:
     SourceDataCompoundNode() = delete;
@@ -39,8 +39,8 @@ public:
     /**
      * Get this compounds object node
      */
-    simfil::shared_model_ptr<simfil::Object> object();
-    simfil::shared_model_ptr<const simfil::Object> object() const;
+    simfil::model_ptr<simfil::Object> object();
+    simfil::model_ptr<const simfil::Object> object() const;
 
     /**
      * Simfil Model-Node Functions

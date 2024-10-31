@@ -55,7 +55,7 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class bitsery::Access;
     friend class TileFeatureLayer;
     friend class BoundFeature;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /** Get the name of this feature's type. */

@@ -41,7 +41,7 @@ struct QualifiedSourceDataReference {
 class SourceDataReferenceCollection final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
 
     ValueType type() const override;
@@ -69,7 +69,7 @@ private:
 class SourceDataReferenceItem final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class SourceDataReferenceCollection;
     friend class TileFeatureLayer;
 

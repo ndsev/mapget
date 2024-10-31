@@ -48,7 +48,7 @@ struct BoundModelNodeBase : public BoundModelNode
         py::class_<BoundModelNode>(m, "ModelNode")
             .def(
                 "value",
-                [](const shared_model_ptr<ModelNode>& node) { return node->value(); },
+                [](const model_ptr<ModelNode>& node) { return node->value(); },
                 R"pbdoc(
             Get the node's scalar value if it has one.
         )pbdoc");
@@ -57,7 +57,7 @@ struct BoundModelNodeBase : public BoundModelNode
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
 
-    shared_model_ptr<ModelNode> modelNodePtr_;
+    model_ptr<ModelNode> modelNodePtr_;
 };
 
 using ModelVariant =
@@ -170,7 +170,7 @@ struct BoundObject : public BoundModelNode
 
     explicit BoundObject(model_ptr<NodeType> const& ptr) : modelNodePtr_(ptr) {}
 
-    shared_model_ptr<NodeType> modelNodePtr_;
+    model_ptr<NodeType> modelNodePtr_;
 };
 
 struct BoundArray : public BoundModelNode
@@ -192,7 +192,7 @@ struct BoundArray : public BoundModelNode
 
     explicit BoundArray(model_ptr<Array> const& ptr) : modelNodePtr_(ptr) {}
 
-    shared_model_ptr<Array> modelNodePtr_;
+    model_ptr<Array> modelNodePtr_;
 };
 
 struct BoundGeometry : public BoundModelNode
@@ -232,7 +232,7 @@ struct BoundGeometry : public BoundModelNode
 
     explicit BoundGeometry(model_ptr<Geometry> const& ptr) : modelNodePtr_(ptr) {}
 
-    shared_model_ptr<Geometry> modelNodePtr_;
+    model_ptr<Geometry> modelNodePtr_;
 };
 
 struct BoundGeometryCollection : public BoundModelNode
@@ -254,7 +254,7 @@ struct BoundGeometryCollection : public BoundModelNode
     {
     }
 
-    shared_model_ptr<GeometryCollection> modelNodePtr_;
+    model_ptr<GeometryCollection> modelNodePtr_;
 };
 
 struct BoundAttribute : public BoundObject<Attribute>
@@ -318,7 +318,7 @@ struct BoundAttributeLayer : public BoundModelNode
 
     explicit BoundAttributeLayer(model_ptr<AttributeLayer> const& ptr) : modelNodePtr_(ptr) {}
 
-    shared_model_ptr<AttributeLayer> modelNodePtr_;
+    model_ptr<AttributeLayer> modelNodePtr_;
 };
 
 struct BoundAttributeLayerList : public BoundModelNode
@@ -349,7 +349,7 @@ struct BoundAttributeLayerList : public BoundModelNode
     {
     }
 
-    shared_model_ptr<AttributeLayerList> modelNodePtr_;
+    model_ptr<AttributeLayerList> modelNodePtr_;
 };
 
 struct BoundFeature : public BoundModelNode
@@ -430,7 +430,7 @@ struct BoundFeature : public BoundModelNode
 
     explicit BoundFeature(model_ptr<Feature> const& ptr) : modelNodePtr_(ptr) {}
 
-    shared_model_ptr<Feature> modelNodePtr_;
+    model_ptr<Feature> modelNodePtr_;
 };
 
 struct BoundFeatureId : public BoundModelNode
@@ -452,7 +452,7 @@ struct BoundFeatureId : public BoundModelNode
 
     explicit BoundFeatureId(model_ptr<FeatureId> const& ptr) : modelNodePtr_(ptr) {}
 
-    shared_model_ptr<FeatureId> modelNodePtr_;
+    model_ptr<FeatureId> modelNodePtr_;
 };
 
 }  // namespace mapget

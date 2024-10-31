@@ -18,7 +18,7 @@ class AttributeLayer : public simfil::Object
 {
     friend class TileFeatureLayer;
     friend class bitsery::Access;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**
@@ -55,7 +55,7 @@ class AttributeLayerList : public simfil::Object
     friend class TileFeatureLayer;
     friend class bitsery::Access;
     friend class Feature;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**

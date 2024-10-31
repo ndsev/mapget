@@ -35,7 +35,7 @@ enum class GeomType: uint8_t {
 class Geometry final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class PointNode;
     friend class LinearRingNode;
@@ -174,7 +174,7 @@ protected:
 class GeometryCollection : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Feature;
 
@@ -194,7 +194,7 @@ public:
      *  Must return true to continue iteration, false to abort iteration.
      * @return True if all geometries were visited, false if the callback ever returned false.
      * @example
-     *   collection->forEachGeometry([](simfil::shared_model_ptr<Geometry> const& geom){
+     *   collection->forEachGeometry([](simfil::model_ptr<Geometry> const& geom){
      *      std::cout << geom->type() << std::endl;
      *      return true;
      *   })
@@ -228,7 +228,7 @@ private:
 class PointBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
     friend class MeshNode;
@@ -259,7 +259,7 @@ private:
 class PolygonNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -281,7 +281,7 @@ private:
 class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -304,7 +304,7 @@ private:
 class MeshTriangleCollectionNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -329,7 +329,7 @@ private:
 class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 

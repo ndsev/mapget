@@ -13,7 +13,7 @@ namespace mapget
 class PointNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
     friend class PointBufferNode;

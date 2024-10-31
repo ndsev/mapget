@@ -15,7 +15,7 @@ class Validity : public simfil::ProceduralObject<2, Validity, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     template <typename>
-    friend struct simfil::shared_model_ptr;
+    friend struct simfil::model_ptr;
     friend class PointNode;
 
 public:
@@ -185,7 +185,7 @@ struct ValidityCollection : public simfil::BaseArray<TileFeatureLayer, Validity>
 {
     friend class TileFeatureLayer;
     template <typename>
-    friend struct simfil::shared_model_ptr;
+    friend struct simfil::model_ptr;
 
     model_ptr<Validity> newValidity(Point pos, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);
     model_ptr<Validity> newValidity(Point start, Point end, std::string_view geomName={}, Validity::Direction direction = Validity::Empty);

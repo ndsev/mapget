@@ -258,6 +258,7 @@ Validity::Validity(
                 case AbsoluteLengthOffset:
                     return model_ptr<simfil::ValueNode>::make(p.x, self.model_);
                 }
+                return {};
             });
     };
 

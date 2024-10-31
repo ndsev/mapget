@@ -20,7 +20,7 @@ class Relation : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class Feature;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**

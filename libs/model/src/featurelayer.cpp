@@ -289,7 +289,7 @@ uint64_t hashFeatureId(const std::string_view& type, const KeyValueViewPairs& id
 
 }  // namespace
 
-simfil::shared_model_ptr<Feature> TileFeatureLayer::newFeature(
+simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     const std::string_view& typeId,
     const KeyValueViewPairs& featureIdParts)
 {
@@ -927,6 +927,7 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
     case ColumnId::Geometries: {
         // TODO: This implementation is not great, because it does not respect
         //  Geometry views - it just converts every Geometry to a self-contained one.
+        // TODO: Clone geometry name.
         auto resolved = otherLayer->resolveGeometry(*otherNode);
         auto newNode = newGeometry(resolved->geomType(), resolved->numPoints());
         newCacheNode = newNode;
