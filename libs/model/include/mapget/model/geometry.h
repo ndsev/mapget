@@ -29,6 +29,16 @@ enum class GeomType: uint8_t {
 };
 
 /**
+ * Small interface container type which may be used
+ * to pass around geometry data.
+ */
+struct SelfContainedGeometry
+{
+    std::vector<Point> points_;
+    GeomType geomType_ = GeomType::Points;
+};
+
+/**
  * Geometry object, which stores a point collection, a line-string,
  * or a triangle mesh.
  */
@@ -79,6 +89,12 @@ public:
      */
     template <typename LambdaType, class ModelType = TileFeatureLayer>
     bool forEachPoint(LambdaType const& callback) const;
+
+    /**
+     * Turn the points and type from this geometry into a self-contained
+     * struct which can be passed around.
+     */
+    [[nodiscard]] SelfContainedGeometry toSelfContained() const;
 
 protected:
     [[nodiscard]] ValueType type() const override;

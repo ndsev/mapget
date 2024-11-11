@@ -418,11 +418,11 @@ TEST_CASE("Attribute Validity", "[validity]") {
         DYNAMIC_SECTION(fmt::format("Validity Index #{}", validityIndex))
         {
             auto wgsPoints = validity.computeGeometry(geometryCollection);
-            log().info("Points #{}: {}", validityIndex, nlohmann::json(wgsPoints).dump());
+            log().info("Points #{}: {}", validityIndex, nlohmann::json(wgsPoints.points_).dump());
             auto const& expectedWgsPoints = expectedGeometry[validityIndex];
-            REQUIRE(wgsPoints.size() == expectedWgsPoints.size());
-            for (auto pointIndex = 0; pointIndex < wgsPoints.size(); ++pointIndex) {
-                auto const& computedPoint = wgsPoints[pointIndex];
+            REQUIRE(wgsPoints.points_.size() == expectedWgsPoints.size());
+            for (auto pointIndex = 0; pointIndex < wgsPoints.points_.size(); ++pointIndex) {
+                auto const& computedPoint = wgsPoints.points_[pointIndex];
                 auto const& expectedPoint = expectedWgsPoints[pointIndex];
                 using namespace Catch::Matchers;
                 REQUIRE_THAT(computedPoint.x, WithinRel(expectedPoint.x));

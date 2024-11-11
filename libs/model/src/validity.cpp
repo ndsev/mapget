@@ -365,7 +365,7 @@ model_ptr<Geometry> Validity::simpleGeometry() const
     return model().resolveGeometry(*ModelNode::Ptr::make(model_, std::get<ModelNodeAddress>(data_->geomDescr_)));
 }
 
-std::vector<Point> Validity::computeGeometry(
+SelfContainedGeometry Validity::computeGeometry(
     const model_ptr<GeometryCollection>& geometryCollection,
     std::string* error) const
 {
@@ -373,13 +373,7 @@ std::vector<Point> Validity::computeGeometry(
         // Return the self-contained geometry points.
         auto simpleGeom = simpleGeometry();
         assert(simpleGeom);
-        std::vector<Point> result;
-        result.reserve(simpleGeom->numPoints());
-        simpleGeom->forEachPoint([&result](auto&& point){
-             result.emplace_back(point);
-             return true;
-        });
-        return result;
+        return simpleGeom->toSelfContained();
     }
 
     // Find a geometry with a matching name.
@@ -403,13 +397,7 @@ std::vector<Point> Validity::computeGeometry(
     // No geometry description from the attribute - just return the whole
     // geometry from the collection.
     if (data_->geomDescrType_ == NoGeometry) {
-        std::vector<Point> result;
-        result.reserve(geometry->numPoints());
-        geometry->forEachPoint([&result](auto&& point){
-             result.emplace_back(point);
-             return true;
-        });
-        return result;
+        return geometry->toSelfContained();
     }
 
     // Now we have OffsetPointValidity or OffsetRangeValidity
@@ -434,7 +422,8 @@ std::vector<Point> Validity::computeGeometry(
 
     // Handle GeoPosOffset (a range of the geometry line, bound by two positions).
     if (offsetType == GeoPosOffset) {
-        return geometryFromPositionBound(geometry, startPoint, endPoint);
+        auto points = geometryFromPositionBound(geometry, startPoint, endPoint);
+        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
     // Handle BufferOffset (a range of the goemetry bound by two indices).
@@ -461,11 +450,11 @@ std::vector<Point> Validity::computeGeometry(
             std::swap(startPointIndex, endPointIndex);
         }
 
-        std::vector<Point> result;
+        std::vector<Point> points;
         for (auto pointIndex = startPointIndex; pointIndex <= endPointIndex; ++pointIndex) {
-            result.emplace_back(geometry->pointAt(pointIndex));
+            points.emplace_back(geometry->pointAt(pointIndex));
         }
-        return result;
+        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
     // Handle RelativeLengthOffset (a percentage range of the geometry).
@@ -480,7 +469,8 @@ std::vector<Point> Validity::computeGeometry(
 
     // Handle MetricLengthOffset (a length range of the geometry in meters).
     if (offsetType == MetricLengthOffset || offsetType == RelativeLengthOffset) {
-        return geometryFromLengthBound(geometry, startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
+        auto points = geometryFromLengthBound(geometry, startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
+        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
     if (error) {

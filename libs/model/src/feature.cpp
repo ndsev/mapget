@@ -296,7 +296,7 @@ bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> co
     return true;
 }
 
-model_ptr<Geometry> Feature::firstGeometry() const
+SelfContainedGeometry Feature::firstGeometry() const
 {
     model_ptr<Geometry> result;
     if (auto geometryCollection = geomOrNull()) {
@@ -307,7 +307,9 @@ model_ptr<Geometry> Feature::firstGeometry() const
                 return false;
             });
     }
-    return result;
+    if (result)
+        return result->toSelfContained();
+    return {};
 }
 
 std::optional<std::vector<model_ptr<Relation>>>

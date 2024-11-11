@@ -110,6 +110,18 @@ Geometry::Geometry(Data* data, ModelConstPtr pool_, ModelNodeAddress a)
     storage_ = &model().vertexBufferStorage();
 }
 
+SelfContainedGeometry Geometry::toSelfContained() const
+{
+    SelfContainedGeometry result{{}, geomType()};
+    result.points_.reserve(numPoints());
+    forEachPoint([&result](auto&& pt)
+    {
+        result.points_.emplace_back(pt);
+        return true;
+    });
+    return result;
+}
+
 ValueType Geometry::type() const {
     return ValueType::Object;
 }
@@ -124,11 +136,13 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
         return get(StringPool::TypeStr);
     if (i == 1)
         return get(StringPool::CoordinatesStr);
+    if (i == 2)
+        return get(StringPool::NameStr);
     throw std::out_of_range("geom: Out of range.");
 }
 
 uint32_t Geometry::size() const {
-    return 2 + (geomData_->sourceDataReferences_ ? 1 : 0);
+    return 3 + (geomData_->sourceDataReferences_ ? 1 : 0);
 }
 
 ModelNode::Ptr Geometry::get(const StringId& f) const {
@@ -156,6 +170,14 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
                 model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
         }
     }
+    if (f == StringPool::NameStr) {
+        auto resolvedString = model().strings()->resolve(geomData_->geomName_);
+        return model_ptr<ValueNode>::make(
+            resolvedString ?
+                *resolvedString :
+                std::string_view("<Could not resolve geometry name>"),
+            model_);
+    }
     return {};
 }
 
@@ -167,6 +189,7 @@ StringId Geometry::keyAt(int64_t i) const {
     }
     if (i == 0) return StringPool::TypeStr;
     if (i == 1) return StringPool::CoordinatesStr;
+    if (i == 2) return StringPool::NameStr;
     throw std::out_of_range("geom: Out of range.");
 }
 
@@ -213,8 +236,9 @@ GeomType Geometry::geomType() const {
 
 bool Geometry::iterate(const IterCallback& cb) const
 {
-    if (!cb(*at(0))) return false;
-    if (!cb(*at(1))) return false;
+    for (auto i = 0; i < size(); ++i) {
+        if (!cb(*at(i))) return false;
+    }
     return true;
 }
 

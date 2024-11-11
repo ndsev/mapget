@@ -70,7 +70,7 @@ public:
      */
     model_ptr<GeometryCollection> geom();
     [[nodiscard]] model_ptr<GeometryCollection> geomOrNull() const;
-    [[nodiscard]] model_ptr<Geometry> firstGeometry() const;
+    [[nodiscard]] SelfContainedGeometry firstGeometry() const;
 
     /**
      * Get this feature's Attribute layers. The non-const version adds a
