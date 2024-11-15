@@ -78,7 +78,7 @@ model_ptr<MultiValidity> Attribute::validityOrNull() const
 
 void Attribute::setValidity(const model_ptr<MultiValidity>& validities) const
 {
-    data_->validities_ = validities->addr();
+    data_->validities_ = validities ? validities->addr() : ModelNodeAddress();;
 }
 
 }

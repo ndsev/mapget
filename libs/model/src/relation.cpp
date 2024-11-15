@@ -59,7 +59,7 @@ model_ptr<MultiValidity> Relation::sourceValidityOrNull() const
 
 void Relation::setSourceValidity(const model_ptr<MultiValidity>& validityGeom)
 {
-    data_->sourceValidity_ = validityGeom->addr();
+    data_->sourceValidity_ = validityGeom ? validityGeom->addr() : ModelNodeAddress();
 }
 
 model_ptr<MultiValidity> Relation::targetValidity()
@@ -82,7 +82,7 @@ model_ptr<MultiValidity> Relation::targetValidityOrNull() const
 
 void Relation::setTargetValidity(const model_ptr<MultiValidity>& validityGeom)
 {
-    data_->targetValidity_ = validityGeom->addr();
+    data_->targetValidity_ = validityGeom ? validityGeom->addr() : ModelNodeAddress();;
 }
 
 std::string_view Relation::name() const
