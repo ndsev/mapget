@@ -38,7 +38,7 @@ public:
     static constexpr Version CurrentProtocolVersion{0, 1, 1};
 
     /** Map to keep track of the highest sent string id per datasource node. */
-    using StringPoolOffsetMap = std::map<std::string, simfil::StringId>;
+    using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
 
     /** The Reader turns bytes into TileLayer objects. */
     struct Reader
