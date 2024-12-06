@@ -371,8 +371,6 @@ struct HttpService::Impl
     {
         // Parse the JSON request.
         nlohmann::json j = nlohmann::json::parse(req.body);
-        auto requestsJson = j["requests"];
-
         if (j.contains("clientId")) {
             auto const clientId = j["clientId"].get<std::string>();
             abortRequestsForClientId(clientId);
