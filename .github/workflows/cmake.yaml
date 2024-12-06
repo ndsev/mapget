@@ -26,6 +26,7 @@ jobs:
         run: |
           pip install conan
           conan profile detect
+          conan remote update --url https://center2.conan.io conancenter
           # OpenSSL Requires a newer perl: see https://github.com/openssl/openssl/issues/25366
           yum update -y && yum install -y perl-IPC-Cmd rh-perl530
           ldconfig /opt/rh/rh-perl530/root/lib64/
@@ -81,6 +82,7 @@ jobs:
         run: |
           pip install conan
           conan profile detect
+          conan remote update --url https://center2.conan.io conancenter
       - run: python -m pip install setuptools wheel ninja
       - name: Build (macOS)
         if: matrix.os == 'macos-13'
