@@ -27,6 +27,7 @@ jobs:
       run: |
         pip install conan
         conan profile detect
+        conan remote update --url https://center2.conan.io conancenter
     - name: Setup
       run: |
         conan install . -s compiler.cppstd=20 -s build_type=Debug -b missing \

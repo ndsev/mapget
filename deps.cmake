@@ -34,7 +34,7 @@ else()
 
   FetchContent_Declare(fmt
     GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
-    GIT_TAG        "10.0.0"
+    GIT_TAG        "11.0.2"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(fmt)
 
@@ -111,7 +111,7 @@ else()
     set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
     FetchContent_Declare(simfil
       GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-      GIT_TAG        "v0.3.2"
+      GIT_TAG        "v0.3.3"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(simfil)
   endif()

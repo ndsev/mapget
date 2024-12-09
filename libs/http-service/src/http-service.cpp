@@ -162,6 +162,7 @@ struct HttpService::Impl
         std::mutex mutex_;
         std::condition_variable resultEvent_;
 
+        uint64_t requestId_;
         std::stringstream buffer_;
         std::string responseType_;
         std::unique_ptr<TileLayerStream::Writer> writer_;
@@ -170,9 +171,11 @@ struct HttpService::Impl
 
         HttpTilesRequestState()
         {
+            static std::atomic_uint64_t nextRequestId;
             writer_ = std::make_unique<TileLayerStream::Writer>(
                 [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
                 stringOffsets_);
+            requestId_ = nextRequestId++;
         }
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
@@ -217,6 +220,32 @@ struct HttpService::Impl
         }
     };
 
+    mutable std::mutex clientRequestMapMutex_;
+    mutable std::map<std::string, std::shared_ptr<HttpTilesRequestState>> requestStatePerClientId_;
+
+    void abortRequestsForClientId(std::string clientId, std::shared_ptr<HttpTilesRequestState> newState = nullptr) const
+    {
+        std::unique_lock clientRequestMapAccess(clientRequestMapMutex_);
+        auto clientRequestIt = requestStatePerClientId_.find(clientId);
+        if (clientRequestIt != requestStatePerClientId_.end()) {
+            // Ensure that any previous requests from the same clientId
+            // are finished post-haste!
+            bool anySoftAbort = false;
+            for (auto const& req : clientRequestIt->second->requests_) {
+                if (!req->isDone()) {
+                    self_.abort(req);
+                    anySoftAbort = true;
+                }
+            }
+            if (anySoftAbort)
+                log().warn("Soft-aborting tiles request {}", clientRequestIt->second->requestId_);
+            requestStatePerClientId_.erase(clientRequestIt);
+        }
+        if (newState) {
+            requestStatePerClientId_.emplace(clientId, newState);
+        }
+    }
+
     /**
      * Wraps around the generic mapget service's request() function
      * to include httplib request decoding and response encoding.
@@ -231,6 +260,7 @@ struct HttpService::Impl
         // Within one HTTP request, all requested tiles from the same map+layer
         // combination should be in a single LayerTilesRequest.
         auto state = std::make_shared<HttpTilesRequestState>();
+        log().info("Processing tiles request {}", state->requestId_);
         for (auto& requestJson : requestsJson) {
             state->parseRequestFromJson(requestJson);
         }
@@ -260,14 +290,20 @@ struct HttpService::Impl
             // Send a status report detailing for each request
             // whether its data source is unavailable or it was aborted.
             res.status = 400;
-            std::vector<int> requestStatuses{};
+            std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
             for (const auto& r : state->requests_) {
-                requestStatuses.push_back(r->getStatus());
+                requestStatuses.push_back(static_cast<std::underlying_type_t<RequestStatus>>(r->getStatus()));
             }
             res.set_content(
                 nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
                 "application/json");
             return;
+        }
+
+        // Parse/Process clientId.
+        if (j.contains("clientId")) {
+            auto clientId = j["clientId"].get<std::string>();
+            abortRequestsForClientId(clientId, state);
         }
 
         // For efficiency, set up httplib to stream tile layer responses to client:
@@ -319,16 +355,33 @@ struct HttpService::Impl
             // cleanup callback to abort the requests.
             [state, this](bool success)
             {
-                log().debug("Request finished, success: {}", success);
                 if (!success) {
+                    log().warn("Aborting tiles request {}", state->requestId_);
                     for (auto& request : state->requests_) {
                         self_.abort(request);
                     }
                 }
+                else {
+                    log().info("Tiles request {} was successful.", state->requestId_);
+                }
             });
     }
 
-    void handleSourcesRequest(const httplib::Request&, httplib::Response& res)
+    void handleAbortRequest(const httplib::Request& req, httplib::Response& res) const
+    {
+        // Parse the JSON request.
+        nlohmann::json j = nlohmann::json::parse(req.body);
+        if (j.contains("clientId")) {
+            auto const clientId = j["clientId"].get<std::string>();
+            abortRequestsForClientId(clientId);
+        }
+        else {
+            res.status = 400;
+            res.set_content("Missing clientId", "text/plain");
+        }
+    }
+
+    void handleSourcesRequest(const httplib::Request&, httplib::Response& res) const
     {
         auto sourcesInfo = nlohmann::json::array();
         for (auto& source : self_.info()) {
@@ -337,7 +390,7 @@ struct HttpService::Impl
         res.set_content(sourcesInfo.dump(), "application/json");
     }
 
-    void handleStatusRequest(const httplib::Request&, httplib::Response& res)
+    void handleStatusRequest(const httplib::Request&, httplib::Response& res) const
     {
         auto serviceStats = self_.getStatistics();
         auto cacheStats = self_.cache()->getStatistics();
@@ -358,7 +411,7 @@ struct HttpService::Impl
         res.set_content(oss.str(), "text/html");
     }
 
-    void handleLocateRequest(const httplib::Request& req, httplib::Response& res)
+    void handleLocateRequest(const httplib::Request& req, httplib::Response& res) const
     {
         // Parse the JSON request.
         nlohmann::json j = nlohmann::json::parse(req.body);
@@ -577,6 +630,11 @@ void HttpService::setup(httplib::Server& server)
         "/tiles",
         [&](const httplib::Request& req, httplib::Response& res)
         { impl_->handleTilesRequest(req, res); });
+
+    server.Post(
+        "/abort",
+        [&](const httplib::Request& req, httplib::Response& res)
+        { impl_->handleAbortRequest(req, res); });
 
     server.Get(
         "/sources",

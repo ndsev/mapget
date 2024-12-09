@@ -420,7 +420,11 @@ struct Service::Impl : public Service::Controller
     {
         std::unique_lock lock(jobsMutex_);
         // Remove the request from the list of requests.
-        requests_.remove_if([r](auto&& request) { return r == request; });
+        auto numRemoved = requests_.remove_if([r](auto&& request) { return r == request; });
+        // Clear its jobs to mark it as done.
+        if (numRemoved) {
+            r->setStatus(RequestStatus::Aborted);
+        }
     }
 
     std::vector<DataSourceInfo> getDataSourceInfos()
