@@ -72,7 +72,7 @@ public:
     /**
      * Get and set geometry name.
      */
-    [[nodiscard]] std::optional<std::string_view> name();
+    [[nodiscard]] std::optional<std::string_view> name() const;
     void setName(const std::string_view &newName);
 
     /** Iterate over all Points in the geometry.

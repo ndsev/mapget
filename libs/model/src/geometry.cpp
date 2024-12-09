@@ -255,7 +255,7 @@ Point Geometry::pointAt(size_t index) const
     return vertex.point_;
 }
 
-std::optional<std::string_view> Geometry::name()
+std::optional<std::string_view> Geometry::name() const
 {
     if (geomData_->geomName_ == StringPool::Empty) {
         return {};
