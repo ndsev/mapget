@@ -111,7 +111,7 @@ else()
     set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
     FetchContent_Declare(simfil
       GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-      GIT_TAG        "fix-compiler-confusion"
+      GIT_TAG        "main"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(simfil)
   endif()
