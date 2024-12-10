@@ -140,7 +140,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("firstGeometry")
     {
         auto firstGeom = feature1->firstGeometry();
-        REQUIRE(firstGeom->geomType() == GeomType::Line);
+        REQUIRE(firstGeom.geomType_ == GeomType::Line);
     }
 
     SECTION("toJSON")

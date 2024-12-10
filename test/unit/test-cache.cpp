@@ -48,7 +48,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
     })"_json);
 
     // Create one LayerInfo to be re-used by all DataSourceInfos.
-    std::map<std::string, std::shared_ptr<LayerInfo>> layers;
+    std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
     layers[layerInfo->layerId_] = std::make_shared<LayerInfo>(LayerInfo{
         layerInfo->layerId_,
         layerInfo->type_,

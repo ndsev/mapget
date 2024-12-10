@@ -32,11 +32,7 @@ struct QualifiedSourceDataReference {
 };
 
 /**
- * Proxy node that represents an array of Qualifier-String + SourceDataReference tuples:
- * SourceDataAddressNode.
- *
- * 8b column id
- * 24b column offset (or data)
+ * Proxy node that represents an array of Qualifier-String + SourceDataReference tuples.
  */
 class SourceDataReferenceCollection final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
