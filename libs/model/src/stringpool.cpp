@@ -27,6 +27,7 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(GeometryNameStr, "geometryName");
     addStaticKey(GeometriesStr, "geometries");
     addStaticKey(TypeStr, "type");
+    addStaticKey(OffsetTypeStr, "offsetType");
     addStaticKey(CoordinatesStr, "coordinates");
     addStaticKey(ElevationStr, "elevation");
     addStaticKey(SourceDataStr, "_sourceData");

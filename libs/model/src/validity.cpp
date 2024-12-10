@@ -238,6 +238,23 @@ Validity::Validity(Validity::Data* data,
             });
     }
 
+    if (data_->geomOffsetType_ != InvalidOffsetType) {
+        fields_.emplace_back(
+            StringPool::OffsetTypeStr,
+            [](Validity const& self)
+            {
+                std::string_view resultString = "Invalid";
+                switch (self.geometryOffsetType()) {
+                case InvalidOffsetType: break;
+                case GeoPosOffset: resultString = "GeoPosOffset"; break;
+                case BufferOffset: resultString = "BufferOffset"; break;
+                case RelativeLengthOffset: resultString = "RelativeLengthOffset"; break;
+                case MetricLengthOffset: resultString = "MetricLengthOffset"; break;
+                }
+                return model_ptr<simfil::ValueNode>::make(resultString, self.model_);
+            });
+    }
+
     auto exposeOffsetPoint = [this](StringId fieldName, uint32_t pointIndex, Point const& p)
     {
         fields_.emplace_back(

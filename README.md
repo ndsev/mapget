@@ -114,14 +114,21 @@ of a *Feature* in *mapget* is based on GeoJSON:
   id: "<type-id>.<part-value-0>...<part-value-n>",
   typeId: "<type-id>",
   "<part-name-n>": "<part-value-n>",
-  "geometry": { /* GeoJSON geometry object */ },
+  "geometry": { /* GeoJSON geometry object with additional `name` field. */ },
   "properties": {
     "layers": {
       "<attr-layer-name>": {
         "<attr-name>": {
           /* attr-fields ... */,
-          "direction": "<attr-direction>",
-          "validity": { /* attr-validity-geometry */ }
+          "validity": [{
+            direction: "<Optional validity direction along the feature>",
+            geometryName: { /* Optional reference to a specific feature geometry by name. */ },
+            geometry: { /* Optional nested GeoJSON geometry object. */ },
+            start: { /* Optional WGS84 point or scalar depending on type, indicating range. */ },
+            end: { /* Optional WGS84 point or scalar depending on type, indicating range. */ },
+            point: { /* Optional WGS84 point or scalar depending on type, indicating single position. */ },
+            offsetType: "GeoPosOffset|BufferOffset|RelativeLengthOffset|MetricLengthOffset",
+          }]
         }
       },
       // Additional attribute layers
@@ -133,8 +140,8 @@ of a *Feature* in *mapget* is based on GeoJSON:
     {
       "name": "<relation-name>",
       "target": "<target-feature-id>",
-      "targetValidity": { /* geometry */ },
-      "sourceValidity": { /* geometry */ }
+      "targetValidity": [{ /* optional target validity-geom-description. see above for fields. */ }],
+      "sourceValidity": [{ /* optional source validity-geom-description. see above for fields. */ }]
     }
     // Additional relations
   ]
@@ -146,7 +153,7 @@ This structure provides a clear, hierarchical representation of a *Feature*, whe
 - **`typeId`**: Indicates the feature type.
 - **`id`**: A composite identifier based on the `typeId` and additional `part-values`.
 - **`geometry`**: Encodes the spatial data of the feature in a format compliant with GeoJSON, but extended to support 3D geometries.
-- **`properties`**: Contains feature attributes, organized into layers.
+- **`properties`**: Contains both basic and layered feature attributes.
 - **`relations`**: Defines relationships between this feature and others, including the spatial validity of these relationships.
 
 ### Feature ID Schemes

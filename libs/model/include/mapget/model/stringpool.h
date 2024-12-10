@@ -39,6 +39,7 @@ struct StringPool : public simfil::StringPool
         GeometryStr,
         GeometryNameStr,
         GeometriesStr,
+        OffsetTypeStr,
         TypeStr,
         CoordinatesStr,
         ElevationStr,
