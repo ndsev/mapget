@@ -393,6 +393,10 @@ SelfContainedGeometry Validity::computeGeometry(
         return simpleGeom->toSelfContained();
     }
 
+    if (!geometryCollection) {
+        return {};
+    }
+
     // Find a geometry with a matching name.
     auto requiredGeomName = geometryName();
     model_ptr<Geometry> geometry;
