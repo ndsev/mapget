@@ -276,7 +276,6 @@ public:
     model_ptr<Validity> resolveValidity(simfil::ModelNode const& n) const;
     model_ptr<MultiValidity> resolveValidityCollection(simfil::ModelNode const& n) const;
 
-protected:
     /**
      * The ColumnId enum provides identifiers for different
      * types of columns that can be associated with feature data.
@@ -304,6 +303,8 @@ protected:
         ValidityPoints,
         ValidityCollections,
     }; };
+    
+protected:
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
