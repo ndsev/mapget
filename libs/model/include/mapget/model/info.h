@@ -298,7 +298,7 @@ struct DataSourceInfo
     std::string mapId_;
 
     /** List of layers (layerId -> LayerInfo) */
-    std::map<std::string, std::shared_ptr<LayerInfo>> layers_;
+    std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers_;
 
     /** Maximum number of parallel jobs */
     int maxParallelJobs_ = 8;

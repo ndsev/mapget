@@ -27,6 +27,20 @@ bool Point::operator==(const Point& o) const
     return x == o.x && y == o.y && z == o.z;
 }
 
+double Point::geographicDistanceTo(const glm::dvec3& other) const
+{
+    constexpr double EARTH_RADIUS_IN_METERS = 6371000.8;
+    const double dLat = glm::radians(other.y - y);
+    const double dLon = glm::radians(other.x - x);
+    const double a = glm::sin(dLat * 0.5) *
+        glm::sin(dLat * 0.5) + glm::cos(glm::radians(y)) *
+        glm::cos(glm::radians(other.y)) *
+        glm::sin(dLon * 0.5) *
+        glm::sin(dLon * 0.5);
+    const double c = 2 * glm::atan(glm::sqrt(a), glm::sqrt(1 - a));
+    return EARTH_RADIUS_IN_METERS * c;
+}
+
 void to_json(nlohmann::json& j, const Point& p)
 {
     j = nlohmann::json::array({p.x, p.y, p.z});

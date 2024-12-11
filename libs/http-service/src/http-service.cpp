@@ -38,7 +38,7 @@ std::string stringToHash(const std::string& input)
  */
 nlohmann::json yamlToJson(
     const YAML::Node& yamlNode,
-    std::map<std::string, std::string>* maskedSecretMap = nullptr,
+    std::unordered_map<std::string, std::string>* maskedSecretMap = nullptr,
     const bool mask = false)
 {
     if (yamlNode.IsScalar()) {
@@ -103,7 +103,7 @@ nlohmann::json yamlToJson(
  * Recursively convert a JSON object to a YAML node,
  * with special handling for sensitive fields.
  */
-YAML::Node jsonToYaml(const nlohmann::json& json, std::map<std::string, std::string> const& maskedSecretMap)
+YAML::Node jsonToYaml(const nlohmann::json& json, std::unordered_map<std::string, std::string> const& maskedSecretMap)
 {
     YAML::Node node;
     if (json.is_object()) {
@@ -221,7 +221,7 @@ struct HttpService::Impl
     };
 
     mutable std::mutex clientRequestMapMutex_;
-    mutable std::map<std::string, std::shared_ptr<HttpTilesRequestState>> requestStatePerClientId_;
+    mutable std::unordered_map<std::string, std::shared_ptr<HttpTilesRequestState>> requestStatePerClientId_;
 
     void abortRequestsForClientId(std::string clientId, std::shared_ptr<HttpTilesRequestState> newState = nullptr) const
     {
@@ -591,7 +591,7 @@ struct HttpService::Impl
 
         // Load the YAML, parse the secrets.
         auto yamlConfig = YAML::Load(configFile);
-        std::map<std::string, std::string> maskedSecrets;
+        std::unordered_map<std::string, std::string> maskedSecrets;
         yamlToJson(yamlConfig, &maskedSecrets);
 
         // Create YAML nodes for from JSON nodes.

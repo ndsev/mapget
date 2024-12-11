@@ -96,7 +96,7 @@ StringId SourceDataReferenceItem::keyAt(const int64_t index) const
 bool SourceDataReferenceItem::iterate(const IterCallback& cb) const
 {
     for (auto i = 0u; i < size(); ++i)
-        if (!cb(*get(at(i))))
+        if (!cb(*at(i)))
             return false;
     return true;
 }

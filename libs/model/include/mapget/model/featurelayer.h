@@ -13,6 +13,7 @@
 #include "relation.h"
 #include "geometry.h"
 #include "sourcedatareference.h"
+#include "pointnode.h"
 
 namespace mapget
 {
@@ -32,14 +33,15 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class AttributeLayerList;
     friend class Geometry;
     friend class GeometryCollection;
-    friend class VertexNode;
-    friend class VertexBufferNode;
+    friend class PointNode;
+    friend class PointBufferNode;
     friend class PolygonNode;
     friend class MeshNode;
     friend class MeshTriangleCollectionNode;
     friend class LinearRingNode;
     friend class SourceDataReferenceCollection;
     friend class SourceDataReferenceItem;
+    friend class Validity;
 
 public:
     /**
@@ -118,6 +120,7 @@ public:
     model_ptr<Relation> newRelation(
         std::string_view const& name,
         model_ptr<FeatureId> const& target);
+
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */
@@ -147,6 +150,16 @@ public:
      * Create a new list of qualified source-data references.
      */
     model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list);
+
+    /**
+     * Create a new validity.
+     */
+    model_ptr<Validity> newValidity();
+
+    /**
+     * Create a new validity collection.
+     */
+    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 1);
 
     /**
      * Return type for begin() and end() methods to support range-based
@@ -248,8 +261,8 @@ public:
     model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
     model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
     model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
-    model_ptr<VertexNode> resolvePoints(simfil::ModelNode const& n) const;
-    model_ptr<VertexBufferNode> resolvePointBuffers(simfil::ModelNode const& n) const;
+    model_ptr<PointNode> resolvePoint(const simfil::ModelNode& n) const;
+    model_ptr<PointBufferNode> resolvePointBuffer(const simfil::ModelNode& n) const;
     model_ptr<Geometry> resolveGeometry(simfil::ModelNode const& n) const;
     model_ptr<GeometryCollection> resolveGeometryCollection(simfil::ModelNode const& n) const;
     model_ptr<MeshNode> resolveMesh(simfil::ModelNode const& n) const;
@@ -259,8 +272,10 @@ public:
     model_ptr<LinearRingNode> resolveLinearRing(simfil::ModelNode const& n) const;
     model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollection(simfil::ModelNode const& n) const;
     model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItem(simfil::ModelNode const& n) const;
+    model_ptr<PointNode> resolveValidityPoint(const simfil::ModelNode& n) const;
+    model_ptr<Validity> resolveValidity(simfil::ModelNode const& n) const;
+    model_ptr<MultiValidity> resolveValidityCollection(simfil::ModelNode const& n) const;
 
-protected:
     /**
      * The ColumnId enum provides identifiers for different
      * types of columns that can be associated with feature data.
@@ -284,7 +299,12 @@ protected:
         LinearRing,
         SourceDataReferenceCollections,
         SourceDataReferences,
+        Validities,
+        ValidityPoints,
+        ValidityCollections,
     }; };
+    
+protected:
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;

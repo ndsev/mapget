@@ -41,7 +41,7 @@ void waitForUpdate(std::future<void>& future)
 
 TEST_CASE("Mapget Config", "[MapgetConfig]")
 {
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
@@ -67,10 +67,11 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
 {
     setLogLevel("trace", log());
 
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_ds_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
+    DataSourceConfigService::get().reset();
     DataSourceConfigService::get().registerDataSourceType(
         "TestDataSource",
         [](const YAML::Node& config) -> DataSource::Ptr
@@ -78,6 +79,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
 
     auto cache = std::make_shared<MemCache>();
     Service service(cache, true);
+    log().info(service.info().empty() ? "Info is empty." : service.info()[0].toJson().dump(4));
     REQUIRE(service.info().empty());
 
     std::promise<void> updatePromise;

@@ -12,7 +12,7 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
 
 
     // Create a DataSourceInfo object.
-    std::map<std::string, std::shared_ptr<LayerInfo>> layers;
+    std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
     layers["testLayer"] = std::make_shared<LayerInfo>(LayerInfo{
         "testLayer",
         LayerType::Features,

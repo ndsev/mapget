@@ -217,6 +217,7 @@ void DataSourceConfigService::end()
     if (watchThread_ && watchThread_->joinable()) {
         watchThread_->join();  // Wait for the thread to finish.
     }
+    watchThread_ = {};
 }
 
 std::optional<std::string> DataSourceConfigService::getConfigFilePath() const
@@ -224,6 +225,14 @@ std::optional<std::string> DataSourceConfigService::getConfigFilePath() const
     if (!configFilePath_.empty())
         return configFilePath_;
     return {};
+}
+
+void DataSourceConfigService::reset() {
+    subscriptions_.clear();
+    constructors_.clear();
+    currentConfig_.clear();
+    configFilePath_.clear();
+    end();
 }
 
 }  // namespace mapget

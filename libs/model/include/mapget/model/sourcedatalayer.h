@@ -20,7 +20,7 @@ public:
     using ConstPtr = std::shared_ptr<const TileSourceDataLayer>;
 
     template <class T>
-    using model_ptr = simfil::shared_model_ptr<T>;
+    using model_ptr = simfil::model_ptr<T>;
 
     /**
      * ModelPool colunm ids

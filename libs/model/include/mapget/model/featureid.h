@@ -10,7 +10,7 @@ class TileFeatureLayer;
 using FeatureLayerConstPtr = std::shared_ptr<TileFeatureLayer const>;
 
 template<typename T>
-using model_ptr = simfil::shared_model_ptr<T>;
+using model_ptr = simfil::model_ptr<T>;
 
 using Object = simfil::Object;
 using Array = simfil::Array;
@@ -24,7 +24,7 @@ class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class Feature;
     friend class Relation;
     friend class bitsery::Access;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /** Convert the FeatureId to a string like `<type-id>.<part-value-0>...<part-value-n>` */

@@ -288,7 +288,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
 TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 {
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_http_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
     auto tempSchemaPath = tempDir / "temp_schema.json";
@@ -315,6 +315,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     mapget::setPathToSchema(tempSchemaPath.string());
 
     // Set up the config file.
+    DataSourceConfigService::get().reset();
     DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
 
     SECTION("Get Configuration - Config File Not Found") {

@@ -5,6 +5,8 @@
 #include "sourcedatareference.h"
 #include "sourceinfo.h"
 #include "stringpool.h"
+#include "validity.h"
+#include "pointnode.h"
 
 #include <cassert>
 #include <cstdint>
@@ -17,6 +19,40 @@ static const std::string_view MultiPointStr("MultiPoint");
 static const std::string_view LineStringStr("LineString");
 static const std::string_view PolygonStr("Polygon");
 static const std::string_view MultiPolygonStr("MultiPolygon");
+
+namespace
+{
+std::optional<glm::dvec3>
+projectPointOnLine(const glm::dvec3& point, const glm::dvec3& a, const glm::dvec3& b)
+{
+    // Check if A and B are the same point (zero-length line segment).
+    if (a == b) {
+        return std::nullopt; // Projection is undefined for a zero-length line segment.
+    }
+
+    // Calculate 2d vectors AB and AP (from A to Point).
+    glm::dvec2 AB = b - a;
+    glm::dvec2 AP = point - a;
+
+    // Calculate the squared length of AB to check for numerical stability.
+    double lengthSquaredAB = glm::dot(AB, AB);
+    if (lengthSquaredAB == 0.0) {
+        return std::nullopt; // Avoid division by zero.
+    }
+
+    // Project AP onto AB using dot product.
+    double dotProduct = glm::dot(AP, AB);
+    double projectionFactor = dotProduct / lengthSquaredAB;
+
+    // Check if projection extends beyond A or B.
+    if (projectionFactor < 0 || projectionFactor > 1) {
+        return std::nullopt; // Projection outside the segment AB.
+    }
+
+    // Calculate the 3d projection point.
+    return projectionFactor * (b - a);
+}
+}
 
 namespace mapget
 {
@@ -108,6 +144,18 @@ Geometry::Geometry(Data* data, ModelConstPtr pool_, ModelNodeAddress a)
     storage_ = &model().vertexBufferStorage();
 }
 
+SelfContainedGeometry Geometry::toSelfContained() const
+{
+    SelfContainedGeometry result{{}, geomType()};
+    result.points_.reserve(numPoints());
+    forEachPoint([&result](auto&& pt)
+    {
+        result.points_.emplace_back(pt);
+        return true;
+    });
+    return result;
+}
+
 ValueType Geometry::type() const {
     return ValueType::Object;
 }
@@ -122,11 +170,13 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
         return get(StringPool::TypeStr);
     if (i == 1)
         return get(StringPool::CoordinatesStr);
+    if (i == 2)
+        return get(StringPool::NameStr);
     throw std::out_of_range("geom: Out of range.");
 }
 
 uint32_t Geometry::size() const {
-    return 2 + (geomData_->sourceDataReferences_ ? 1 : 0);
+    return 3 + (geomData_->sourceDataReferences_ ? 1 : 0);
 }
 
 ModelNode::Ptr Geometry::get(const StringId& f) const {
@@ -154,6 +204,14 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
                 model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
         }
     }
+    if (f == StringPool::NameStr) {
+        auto resolvedString = model().strings()->resolve(geomData_->geomName_);
+        return model_ptr<ValueNode>::make(
+            resolvedString ?
+                *resolvedString :
+                std::string_view("<Could not resolve geometry name>"),
+            model_);
+    }
     return {};
 }
 
@@ -165,6 +223,7 @@ StringId Geometry::keyAt(int64_t i) const {
     }
     if (i == 0) return StringPool::TypeStr;
     if (i == 1) return StringPool::CoordinatesStr;
+    if (i == 2) return StringPool::NameStr;
     throw std::out_of_range("geom: Out of range.");
 }
 
@@ -211,22 +270,167 @@ GeomType Geometry::geomType() const {
 
 bool Geometry::iterate(const IterCallback& cb) const
 {
-    if (!cb(*at(0))) return false;
-    if (!cb(*at(1))) return false;
+    for (auto i = 0; i < size(); ++i) {
+        if (!cb(*at(i))) return false;
+    }
     return true;
 }
 
 size_t Geometry::numPoints() const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
+    PointBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     return vertexBufferNode.size();
 }
 
 Point Geometry::pointAt(size_t index) const
 {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
-    VertexNode vertex{*vertexBufferNode.at((int64_t)index), vertexBufferNode.baseGeomData_};
+    PointBufferNode vertexBufferNode{geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
+    PointNode vertex{*vertexBufferNode.at((int64_t)index), vertexBufferNode.baseGeomData_};
     return vertex.point_;
+}
+
+std::optional<std::string_view> Geometry::name() const
+{
+    if (geomData_->geomName_ == StringPool::Empty) {
+        return {};
+    }
+    return model().strings()->resolve(geomData_->geomName_);
+}
+
+void Geometry::setName(const std::string_view& newName)
+{
+    geomData_->geomName_ = model().strings()->emplace(newName);
+}
+
+double Geometry::length() const
+{
+    auto length = 0.0;
+    if (numPoints() < 2) return length;
+    for (auto i = 0; i < numPoints()-1; ++i)
+    {
+        auto pos = pointAt(i);
+        auto posNext = pointAt(i+1);
+        length += pos.geographicDistanceTo(posNext);
+    }
+    return length;
+}
+
+std::vector<Point> Geometry::pointsFromPositionBound(const Point& start, const std::optional<Point>& end) const
+{
+    // Find the line segments which are closest to start/end.
+    uint32_t startClosestIndex = 0;
+    uint32_t endClosestIndex = 0;
+    double startClosestDistance = std::numeric_limits<double>::max();
+    double endClosestDistance = std::numeric_limits<double>::max();
+    glm::dvec3 startOffsetFromClosest;
+    glm::dvec3 endOffsetFromClosest;
+
+    // Function which works generically for start or end in the loop below.
+    // Updates index, offset and distance if the line segment [newIndex->newIndex+1]
+    // is closer to the point than [index->index+1].
+    auto updateClosestIndex = [&](auto& index, auto& offset, auto& distance, auto newIndex, auto const& point) {
+        auto linePointA = pointAt(newIndex);
+        auto linePointB = pointAt(newIndex+1);
+        auto newDistance = glm::distance(glm::vec2(linePointA), glm::vec2(point));
+        auto newOffset = projectPointOnLine(point, linePointA, linePointB);
+        if (newDistance < distance && newOffset) {
+            distance = newDistance;
+            index = newIndex;
+            offset = *newOffset;
+        }
+    };
+
+    // Loop which actually finds the closest indices of the line shape points.
+    for (auto i = 0; i <  numPoints()-1; ++i) {
+        updateClosestIndex(startClosestIndex, startOffsetFromClosest, startClosestDistance, i, start);
+        if (end)
+            updateClosestIndex(endClosestIndex, endOffsetFromClosest, endClosestDistance, i, *end);
+    }
+
+    // Make sure that end comes after start.
+    if (end && endClosestIndex < startClosestIndex) {
+        std::swap(startClosestIndex, endClosestIndex);
+        std::swap(startClosestDistance, endClosestDistance);
+        std::swap(startOffsetFromClosest, endOffsetFromClosest);
+    }
+
+    // Assemble geometry - just a point if end is not given.
+    std::vector<Point> result;
+
+    // Add the start point.
+    auto startClosestPoint = pointAt(startClosestIndex);
+    result.emplace_back(
+         startClosestPoint.x + startOffsetFromClosest.x,
+         startClosestPoint.y + startOffsetFromClosest.y,
+         startClosestPoint.z + startOffsetFromClosest.z);
+
+    // Add additional line points.
+    if (end) {
+        for (auto i = startClosestIndex + 1; i <= endClosestIndex; ++i) {
+            result.emplace_back(pointAt(i));
+        }
+        auto endClosestPoint = pointAt(endClosestIndex);
+        result.emplace_back(
+            endClosestPoint.x + endOffsetFromClosest.x,
+            endClosestPoint.y + endOffsetFromClosest.y,
+            endClosestPoint.z + endOffsetFromClosest.z);
+    }
+
+    return result;
+}
+
+std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<double> end) const
+{
+    // Make sure that end comes after start.
+    if (end && *end < start) {
+        std::swap(start, *end);
+    }
+    int32_t innerIndexStart = 0, innerIndexEnd = 0;
+    auto startPos = pointAt(innerIndexStart), endPos = pointAt(innerIndexEnd);
+    double coveredLength = 0;
+    bool startReached = false;
+    for (auto i = 0; i < numPoints()-1; ++i)
+    {
+        auto pos = pointAt(i);
+        auto posNext = pointAt(i+1);
+        auto dist = pos.geographicDistanceTo(posNext);
+        coveredLength += dist;
+
+        if (!startReached && start <= coveredLength)
+        {
+            innerIndexStart = i;
+            // Note: We use a fast linear calculation here instead of proper geodesic trigonometry.
+            // I calculated, that the approximate error for this is roughly 0.001% at the equator, so
+            // the error on a 1km long line would be about 1 centimeter.
+            auto lerp = static_cast<double>(dist - (coveredLength - start)) / static_cast<double>(dist);
+            startPos = pos + (posNext - pos) * lerp;
+            startReached = true;
+            if (!end)
+                break;
+        }
+        if (startReached && end && *end <= coveredLength) {
+            innerIndexEnd = i;
+            auto lerp = static_cast<double>(dist - (coveredLength - *end)) / static_cast<double>(dist);
+            endPos = pos + (posNext - pos) * lerp;
+            break;
+        }
+    }
+
+    // Assemble geometry - just a point if end is not given.
+    std::vector<Point> result;
+
+    // Add the start point.
+    result.emplace_back(startPos);
+
+    // Add additional line points.
+    if (end) {
+        for (auto i = innerIndexStart + 1; i <= innerIndexEnd; ++i) {
+            result.emplace_back(pointAt(i));
+        }
+        result.emplace_back(endPos);
+    }
+
+    return result;
 }
 
 /** ModelNode impls. for PolygonNode */
@@ -276,7 +480,7 @@ bool PolygonNode::iterate(IterCallback const& cb) const
 MeshNode::MeshNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(pool), a), geomData_(geomData)
 {
-    auto vertex_buffer = VertexBufferNode{
+    auto vertex_buffer = PointBufferNode{
         geomData_, model_, {TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}};
     assert(vertex_buffer.size() % 3 == 0);
     size_ = vertex_buffer.size() / 3;
@@ -443,16 +647,16 @@ uint32_t LinearRingNode::size() const
     return size_ + (closed_ ? 0 : 1);
 }
 
-model_ptr<VertexBufferNode> LinearRingNode::vertexBuffer() const
+model_ptr<PointBufferNode> LinearRingNode::vertexBuffer() const
 {
     auto ptr = ModelNode::Ptr::make(
         model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}, 0);
-    return model().resolvePointBuffers(*ptr);
+    return model().resolvePointBuffer(*ptr);
 }
 
 /** ModelNode impls. for VertexBufferNode */
 
-VertexBufferNode::VertexBufferNode(Geometry::Data const* geomData, ModelConstPtr pool_, ModelNodeAddress const& a)
+PointBufferNode::PointBufferNode(Geometry::Data const* geomData, ModelConstPtr pool_, ModelNodeAddress const& a)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(pool_), a), baseGeomData_(geomData), baseGeomAddress_(a)
 {
     storage_ = &model().vertexBufferStorage();
@@ -480,30 +684,30 @@ VertexBufferNode::VertexBufferNode(Geometry::Data const* geomData, ModelConstPtr
     }
 }
 
-ValueType VertexBufferNode::type() const {
+ValueType PointBufferNode::type() const {
     return ValueType::Array;
 }
 
-ModelNode::Ptr VertexBufferNode::at(int64_t i) const {
+ModelNode::Ptr PointBufferNode::at(int64_t i) const {
     if (i < 0 || i >= size())
         throw std::out_of_range("vertex-buffer: Out of range.");
     i += offset_;
     return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, i);
 }
 
-uint32_t VertexBufferNode::size() const {
+uint32_t PointBufferNode::size() const {
     return size_;
 }
 
-ModelNode::Ptr VertexBufferNode::get(const StringId &) const {
+ModelNode::Ptr PointBufferNode::get(const StringId &) const {
     return {};
 }
 
-StringId VertexBufferNode::keyAt(int64_t) const {
+StringId PointBufferNode::keyAt(int64_t) const {
     return {};
 }
 
-bool VertexBufferNode::iterate(const IterCallback& cb) const
+bool PointBufferNode::iterate(const IterCallback& cb) const
 {
     auto cont = true;
     auto resolveAndCb = Model::Lambda([&cb, &cont](auto && node){
@@ -518,60 +722,10 @@ bool VertexBufferNode::iterate(const IterCallback& cb) const
     return cont;
 }
 
-Point VertexBufferNode::pointAt(int64_t index) const
+Point PointBufferNode::pointAt(int64_t index) const
 {
-    VertexNode vertex{*at(index), baseGeomData_};
+    PointNode vertex{*at(index), baseGeomData_};
     return vertex.point_;
-}
-
-/** Model node impls for VertexNode. */
-
-VertexNode::VertexNode(ModelNode const& baseNode, Geometry::Data const* geomData)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode)
-{
-    if (geomData->isView_)
-        throw std::runtime_error("Point must be constructed through VertexBuffer which resolves view to geometry.");
-    auto i = std::get<int64_t>(data_);
-    point_ = geomData->detail_.geom_.offset_;
-    if (i > 0)
-        point_ += model().vertexBufferStorage().at(geomData->detail_.geom_.vertexArray_, i - 1);
-}
-
-ValueType VertexNode::type() const {
-    return ValueType::Array;
-}
-
-ModelNode::Ptr VertexNode::at(int64_t i) const {
-    if (i == 0) return model_ptr<ValueNode>::make(point_.x, model_);
-    if (i == 1) return model_ptr<ValueNode>::make(point_.y, model_);
-    if (i == 2) return model_ptr<ValueNode>::make(point_.z, model_);
-    throw std::out_of_range("vertex: Out of range.");
-}
-
-uint32_t VertexNode::size() const {
-    return 3;
-}
-
-ModelNode::Ptr VertexNode::get(const StringId & field) const {
-    if (field == StringPool::LonStr) return at(0);
-    if (field == StringPool::LatStr) return at(1);
-    if (field == StringPool::ElevationStr) return at(2);
-    else return {};
-}
-
-StringId VertexNode::keyAt(int64_t i) const {
-    if (i == 0) return StringPool::LonStr;
-    if (i == 1) return StringPool::LatStr;
-    if (i == 2) return StringPool::ElevationStr;
-    throw std::out_of_range("vertex: Out of range.");
-}
-
-bool VertexNode::iterate(const IterCallback& cb) const
-{
-    if (!cb(ValueNode(point_.x, model_))) return false;
-    if (!cb(ValueNode(point_.y, model_))) return false;
-    if (!cb(ValueNode(point_.z, model_))) return false;
-    return true;
 }
 
 }

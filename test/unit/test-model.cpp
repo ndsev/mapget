@@ -126,7 +126,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     // Add an attribute layer
     auto attrLayer = feature1->attributeLayers()->newLayer("cheese");
     auto attr = attrLayer->newAttribute("mozzarella");
-    attr->setDirection(Attribute::Direction::Positive);
+    attr->validity()->newDirection(Validity::Direction::Positive);
     attr->addField("smell", "neutral");
 
     // Add feature ids using secondary ID compositions
@@ -140,7 +140,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("firstGeometry")
     {
         auto firstGeom = feature1->firstGeometry();
-        REQUIRE(firstGeom->geomType() == GeomType::Line);
+        REQUIRE(firstGeom.geomType_ == GeomType::Line);
     }
 
     SECTION("toJSON")
@@ -157,7 +157,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"type":"Polygon"},)"  // Closed, CCW
             R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"type":"Polygon"},)"  // Closed, CW, Z!=0
             R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"type":"MultiPolygon"})"  // Mesh
-            R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"direction":"POSITIVE","smell":"neutral"}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
+            R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":[{"direction":"POSITIVE"}]}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
         auto res = feature1->toJson();

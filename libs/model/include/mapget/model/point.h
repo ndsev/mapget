@@ -46,6 +46,8 @@ struct Point : public glm::dvec3
 
     [[nodiscard]] double distanceTo(const glm::dvec3& o) const;
 
+    [[nodiscard]] double geographicDistanceTo(const glm::dvec3& other) const;
+
     bool operator==(const Point& o) const;
 };
 

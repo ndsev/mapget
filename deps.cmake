@@ -28,7 +28,7 @@ if (MAPGET_CONAN)
 else()
   FetchContent_Declare(glm
     GIT_REPOSITORY "https://github.com/g-truc/glm.git"
-    GIT_TAG        "0.9.9.8"
+    GIT_TAG        "1.0.1"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(glm)
 
@@ -111,7 +111,7 @@ else()
     set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
     FetchContent_Declare(simfil
       GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-      GIT_TAG        "v0.3.3"
+      GIT_TAG        "v0.3.4"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(simfil)
   endif()

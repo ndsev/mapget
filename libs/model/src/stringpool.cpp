@@ -24,13 +24,19 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(LonStr, "lon");
     addStaticKey(LatStr, "lat");
     addStaticKey(GeometryStr, "geometry");
+    addStaticKey(GeometryNameStr, "geometryName");
     addStaticKey(GeometriesStr, "geometries");
     addStaticKey(TypeStr, "type");
+    addStaticKey(OffsetTypeStr, "offsetType");
     addStaticKey(CoordinatesStr, "coordinates");
     addStaticKey(ElevationStr, "elevation");
     addStaticKey(SourceDataStr, "_sourceData");
     addStaticKey(AddressStr, "address");
     addStaticKey(QualifierStr, "qualifier");
+    addStaticKey(StartStr, "start");
+    addStaticKey(EndStr, "end");
+    addStaticKey(PointStr, "point");
+    addStaticKey(FeatureIdStr, "featureId");
 }
 
 void StringPool::write(std::ostream& outputStream, simfil::StringId offset) const

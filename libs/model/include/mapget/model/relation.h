@@ -3,6 +3,7 @@
 #include "featureid.h"
 #include "simfil/model/nodes.h"
 #include "sourcedatareference.h"
+#include "validity.h"
 
 namespace mapget
 {
@@ -15,26 +16,26 @@ class Geometry;
  * source feature, and points to a destination feature
  * by its id. It may also have a validity geometry on either side.
  */
-class Relation : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class Relation : public simfil::ProceduralObject<6, Relation, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class Feature;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**
      * Source validity accessors.
      */
-    [[nodiscard]] bool hasSourceValidity() const;
-    [[nodiscard]] model_ptr<Geometry> sourceValidity() const;
-    void setSourceValidity(model_ptr<Geometry> const& validityGeom);
+    [[nodiscard]] model_ptr<MultiValidity> sourceValidity();
+    [[nodiscard]] model_ptr<MultiValidity> sourceValidityOrNull() const;
+    void setSourceValidity(const model_ptr<MultiValidity>& validityGeom);
 
     /**
      * Target validity accessors.
      */
-    [[nodiscard]] bool hasTargetValidity() const;
-    [[nodiscard]] model_ptr<Geometry> targetValidity() const;
-    void setTargetValidity(model_ptr<Geometry> const& validityGeom);
+    [[nodiscard]] model_ptr<MultiValidity> targetValidity();
+    [[nodiscard]] model_ptr<MultiValidity> targetValidityOrNull() const;
+    void setTargetValidity(const model_ptr<MultiValidity>& validityGeom);
 
     /**
      * Read-only relation name accessor.
@@ -53,14 +54,6 @@ public:
     void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
 
 protected:
-    /** ModelNode interface. */
-    [[nodiscard]] simfil::ValueType type() const override;
-    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
-    [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const simfil::StringId &) const override;
-    [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
-    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
-
     /** Actual per-attribute data that is stored in the model's attributes-column. */
     struct Data {
         simfil::StringId name_ = 0;
