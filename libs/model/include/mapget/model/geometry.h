@@ -91,6 +91,29 @@ public:
     bool forEachPoint(LambdaType const& callback) const;
 
     /**
+     * Get total length of the geometry in metres assuming it's a Polyline.
+     */
+    [[nodiscard]] double length() const;
+
+    /**
+     * Return geometric points on the Polyline (if the geometry is a Polyline)
+     * within the defined position range boundaries.
+     * @param start is the beginning of the bounded range.
+     * @param end is the optional end of the bounded range
+     *            (otherwise, returns only a single position at start if the end is not passed).
+     */
+    [[nodiscard]] std::vector<Point> pointsFromPositionBound(const Point& start, const std::optional<Point>& end) const;
+
+    /**
+     * Return geometric points on the Polyline (if the geometry is a Polyline)
+     * within the defined length range boundaries.
+     * @param start is the beginning of the bounded range.
+     * @param end is the optional end of the bounded range
+     *            (otherwise, returns only a single position at start if the end is not passed).
+     */
+    [[nodiscard]] std::vector<Point> pointsFromLengthBound(double start, std::optional<double> end) const;
+
+    /**
      * Turn the points and type from this geometry into a self-contained
      * struct which can be passed around.
      */

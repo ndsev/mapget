@@ -20,6 +20,40 @@ static const std::string_view LineStringStr("LineString");
 static const std::string_view PolygonStr("Polygon");
 static const std::string_view MultiPolygonStr("MultiPolygon");
 
+namespace
+{
+std::optional<glm::dvec3>
+projectPointOnLine(const glm::dvec3& point, const glm::dvec3& a, const glm::dvec3& b)
+{
+    // Check if A and B are the same point (zero-length line segment).
+    if (a == b) {
+        return std::nullopt; // Projection is undefined for a zero-length line segment.
+    }
+
+    // Calculate 2d vectors AB and AP (from A to Point).
+    glm::dvec2 AB = b - a;
+    glm::dvec2 AP = point - a;
+
+    // Calculate the squared length of AB to check for numerical stability.
+    double lengthSquaredAB = glm::dot(AB, AB);
+    if (lengthSquaredAB == 0.0) {
+        return std::nullopt; // Avoid division by zero.
+    }
+
+    // Project AP onto AB using dot product.
+    double dotProduct = glm::dot(AP, AB);
+    double projectionFactor = dotProduct / lengthSquaredAB;
+
+    // Check if projection extends beyond A or B.
+    if (projectionFactor < 0 || projectionFactor > 1) {
+        return std::nullopt; // Projection outside the segment AB.
+    }
+
+    // Calculate the 3d projection point.
+    return projectionFactor * (b - a);
+}
+}
+
 namespace mapget
 {
 
@@ -266,6 +300,137 @@ std::optional<std::string_view> Geometry::name() const
 void Geometry::setName(const std::string_view& newName)
 {
     geomData_->geomName_ = model().strings()->emplace(newName);
+}
+
+double Geometry::length() const
+{
+    auto length = 0.0;
+    if (numPoints() < 2) return length;
+    for (auto i = 0; i < numPoints()-1; ++i)
+    {
+        auto pos = pointAt(i);
+        auto posNext = pointAt(i+1);
+        length += pos.geographicDistanceTo(posNext);
+    }
+    return length;
+}
+
+std::vector<Point> Geometry::pointsFromPositionBound(const Point& start, const std::optional<Point>& end) const
+{
+    // Find the line segments which are closest to start/end.
+    uint32_t startClosestIndex = 0;
+    uint32_t endClosestIndex = 0;
+    double startClosestDistance = std::numeric_limits<double>::max();
+    double endClosestDistance = std::numeric_limits<double>::max();
+    glm::dvec3 startOffsetFromClosest;
+    glm::dvec3 endOffsetFromClosest;
+
+    // Function which works generically for start or end in the loop below.
+    // Updates index, offset and distance if the line segment [newIndex->newIndex+1]
+    // is closer to the point than [index->index+1].
+    auto updateClosestIndex = [&](auto& index, auto& offset, auto& distance, auto newIndex, auto const& point) {
+        auto linePointA = pointAt(newIndex);
+        auto linePointB = pointAt(newIndex+1);
+        auto newDistance = glm::distance(glm::vec2(linePointA), glm::vec2(point));
+        auto newOffset = projectPointOnLine(point, linePointA, linePointB);
+        if (newDistance < distance && newOffset) {
+            distance = newDistance;
+            index = newIndex;
+            offset = *newOffset;
+        }
+    };
+
+    // Loop which actually finds the closest indices of the line shape points.
+    for (auto i = 0; i <  numPoints()-1; ++i) {
+        updateClosestIndex(startClosestIndex, startOffsetFromClosest, startClosestDistance, i, start);
+        if (end)
+            updateClosestIndex(endClosestIndex, endOffsetFromClosest, endClosestDistance, i, *end);
+    }
+
+    // Make sure that end comes after start.
+    if (end && endClosestIndex < startClosestIndex) {
+        std::swap(startClosestIndex, endClosestIndex);
+        std::swap(startClosestDistance, endClosestDistance);
+        std::swap(startOffsetFromClosest, endOffsetFromClosest);
+    }
+
+    // Assemble geometry - just a point if end is not given.
+    std::vector<Point> result;
+
+    // Add the start point.
+    auto startClosestPoint = pointAt(startClosestIndex);
+    result.emplace_back(
+         startClosestPoint.x + startOffsetFromClosest.x,
+         startClosestPoint.y + startOffsetFromClosest.y,
+         startClosestPoint.z + startOffsetFromClosest.z);
+
+    // Add additional line points.
+    if (end) {
+        for (auto i = startClosestIndex + 1; i <= endClosestIndex; ++i) {
+            result.emplace_back(pointAt(i));
+        }
+        auto endClosestPoint = pointAt(endClosestIndex);
+        result.emplace_back(
+            endClosestPoint.x + endOffsetFromClosest.x,
+            endClosestPoint.y + endOffsetFromClosest.y,
+            endClosestPoint.z + endOffsetFromClosest.z);
+    }
+
+    return result;
+}
+
+std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<double> end) const
+{
+    // Make sure that end comes after start.
+    if (end && *end < start) {
+        std::swap(start, *end);
+    }
+    int32_t innerIndexStart = 0, innerIndexEnd = 0;
+    auto startPos = pointAt(innerIndexStart), endPos = pointAt(innerIndexEnd);
+    double coveredLength = 0;
+    bool startReached = false;
+    for (auto i = 0; i < numPoints()-1; ++i)
+    {
+        auto pos = pointAt(i);
+        auto posNext = pointAt(i+1);
+        auto dist = pos.geographicDistanceTo(posNext);
+        coveredLength += dist;
+
+        if (!startReached && start <= coveredLength)
+        {
+            innerIndexStart = i;
+            // Note: We use a fast linear calculation here instead of proper geodesic trigonometry.
+            // I calculated, that the approximate error for this is roughly 0.001% at the equator, so
+            // the error on a 1km long line would be about 1 centimeter.
+            auto lerp = static_cast<double>(dist - (coveredLength - start)) / static_cast<double>(dist);
+            startPos = pos + (posNext - pos) * lerp;
+            startReached = true;
+            if (!end)
+                break;
+        }
+        if (startReached && end && *end <= coveredLength) {
+            innerIndexEnd = i;
+            auto lerp = static_cast<double>(dist - (coveredLength - *end)) / static_cast<double>(dist);
+            endPos = pos + (posNext - pos) * lerp;
+            break;
+        }
+    }
+
+    // Assemble geometry - just a point if end is not given.
+    std::vector<Point> result;
+
+    // Add the start point.
+    result.emplace_back(startPos);
+
+    // Add additional line points.
+    if (end) {
+        for (auto i = innerIndexStart + 1; i <= innerIndexEnd; ++i) {
+            result.emplace_back(pointAt(i));
+        }
+        result.emplace_back(endPos);
+    }
+
+    return result;
 }
 
 /** ModelNode impls. for PolygonNode */
