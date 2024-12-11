@@ -52,6 +52,12 @@ public:
     };
 
     /**
+     * Feature on which the validity applies.
+     */
+    [[nodiscard]] model_ptr<FeatureId> featureId() const;
+    void setFeatureId(model_ptr<FeatureId> feature);
+
+    /**
      * Validity direction accessors.
      */
     [[nodiscard]] Direction direction() const;
@@ -95,14 +101,15 @@ public:
 
     /**
      * Compute the actual shape-points of the validity with respect to one
-     * of the geometries in the given collection. The geometry is picked based
+     * of the geometries in the given collection, or the geometry collection of
+     * the directly referenced feature. The geometry is picked based
      * on the validity's geometryName. The return value may be one of the following:
      * - An empty vector, indicating that the validity could not be applied.
      *   If an error string was passed, then it would be set to an error message.
      * - A vector containing a single point, if the validity resolved to a point geometry.
      * - A vector containing more than one point, if the validity resolved to a poly-line.
      */
-     SelfContainedGeometry computeGeometry(model_ptr<GeometryCollection> const& geometryCollection, std::string* error=nullptr) const;
+     SelfContainedGeometry computeGeometry(model_ptr<GeometryCollection> geometryCollection, std::string* error=nullptr) const;
 
 protected:
     /** Actual per-validity data that is stored in the model's attributes-column. */
@@ -116,6 +123,7 @@ protected:
         GeometryOffsetType geomOffsetType_ = InvalidOffsetType;
         GeometryDescription geomDescr_;
         StringId referencedGeomName_ = 0;
+        ModelNodeAddress featureAddress_;
 
         template<typename T, typename... Types>
         static T& get_or_default_construct(std::variant<Types...>& v) {
@@ -165,6 +173,8 @@ protected:
             else if (geomDescrType_ == OffsetPointValidity) {
                 serializeOffsetPoint(get_or_default_construct<Point>(geomDescr_));
             }
+
+            s.object(featureAddress_);
         }
     };
 

@@ -36,6 +36,7 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(StartStr, "start");
     addStaticKey(EndStr, "end");
     addStaticKey(PointStr, "point");
+    addStaticKey(FeatureIdStr, "featureId");
 }
 
 void StringPool::write(std::ostream& outputStream, simfil::StringId offset) const

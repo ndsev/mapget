@@ -49,6 +49,7 @@ struct StringPool : public simfil::StringPool
         StartStr,
         EndStr,
         PointStr,
+        FeatureIdStr
     };
 
     explicit StringPool(const std::string_view& nodeId);

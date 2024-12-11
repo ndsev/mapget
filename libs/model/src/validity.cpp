@@ -22,6 +22,23 @@ std::string_view directionToString(Validity::Direction const& d)
 
 }
 
+model_ptr<FeatureId> Validity::featureId() const
+{
+    if (!data_->featureAddress_) {
+        return {};
+    }
+    return model().resolveFeatureId(*ModelNode::Ptr::make(model_, data_->featureAddress_));
+}
+
+void Validity::setFeatureId(model_ptr<FeatureId> feature)
+{
+    if (!feature) {
+        data_->featureAddress_ = {};
+        return;
+    }
+    data_->featureAddress_ = feature->addr();
+}
+
 Validity::Validity(Validity::Data* data,
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a)
@@ -112,6 +129,17 @@ Validity::Validity(Validity::Data* data,
     }
     else if (data_->geomDescrType_ == OffsetPointValidity) {
         exposeOffsetPoint(StringPool::PointStr, 0, std::get<Point>(data_->geomDescr_));
+    }
+
+    if (data_->featureAddress_) {
+        fields_.emplace_back(
+            StringPool::FeatureIdStr,
+            [](Validity const& self)
+            {
+                return model_ptr<simfil::ValueNode>::make(
+                    self.featureId()->toString(),
+                    self.model_);
+            });
     }
 }
 
@@ -209,7 +237,7 @@ model_ptr<Geometry> Validity::simpleGeometry() const
 }
 
 SelfContainedGeometry Validity::computeGeometry(
-    const model_ptr<GeometryCollection>& geometryCollection,
+    model_ptr<GeometryCollection> geometryCollection,
     std::string* error) const
 {
     if (data_->geomDescrType_ == SimpleGeometry) {
@@ -217,6 +245,17 @@ SelfContainedGeometry Validity::computeGeometry(
         auto simpleGeom = simpleGeometry();
         assert(simpleGeom);
         return simpleGeom->toSelfContained();
+    }
+
+    // If this validity references some feature directly,
+    // use the geometry collection of that feature.
+    if (data_->featureAddress_) {
+        auto feature = model().find(featureId()->typeId(), featureId()->keyValuePairs());
+        if (feature) {
+            geometryCollection = feature->geomOrNull();
+        } else {
+            mapget::log().warn("Could not find feature by its ID {}", featureId()->toString());
+        }
     }
 
     if (!geometryCollection) {

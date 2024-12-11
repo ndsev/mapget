@@ -128,6 +128,7 @@ of a *Feature* in *mapget* is based on GeoJSON:
             end: { /* Optional WGS84 point or scalar depending on type, indicating range. */ },
             point: { /* Optional WGS84 point or scalar depending on type, indicating single position. */ },
             offsetType: "GeoPosOffset|BufferOffset|RelativeLengthOffset|MetricLengthOffset",
+            featureId: id of the directly referenced feature if any, used to reference geometry of another feature
           }]
         }
       },
