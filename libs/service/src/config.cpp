@@ -52,6 +52,10 @@ void DataSourceConfigService::unsubscribe(uint32_t id)
 void DataSourceConfigService::setConfigFilePath(std::string const& path)
 {
     configFilePath_ = path;
+    // Notify subscribers immediately to allow dependent apps to proceed
+    // This is needed as there otherwise apps would have to wait manually
+    // for the callback to be called before they can continue.
+    loadConfig();
     restartFileWatchThread();
 }
 
