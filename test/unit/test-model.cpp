@@ -147,16 +147,16 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         constexpr auto expected =
             R"({"areaId":"TheBestArea","geometry":{"geometries":[)"
-            R"({"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},)"
-            R"({"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},)"
-            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"MultiPoint"},)"
-            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"type":"LineString"},)"
-            R"({"coordinates":[[[[41.5,10.5,0.0],[41.5,10.299999997019768,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.5,0.0]]]],"type":"MultiPolygon"},)"
-            R"({"coordinates":[[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0],[41.5,10.5,0.0]]],"type":"Polygon"},)"
-            R"({"coordinates":[[[0,1,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]]],"type":"Polygon"},)"  // Unclosed, CW
-            R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"type":"Polygon"},)"  // Closed, CCW
-            R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"type":"Polygon"},)"  // Closed, CW, Z!=0
-            R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"type":"MultiPolygon"})"  // Mesh
+            R"({"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"name":"","type":"LineString"},)"
+            R"({"coordinates":[[41.5,10.5,0.0]],"name":"","type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"name":"","type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"name":"","type":"LineString"},)"
+            R"({"coordinates":[[[[41.5,10.5,0.0],[41.5,10.299999997019768,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.5,0.0]]]],"name":"","type":"MultiPolygon"},)"
+            R"({"coordinates":[[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0],[41.5,10.5,0.0]]],"name":"","type":"Polygon"},)"
+            R"({"coordinates":[[[0,1,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]]],"name":"","type":"Polygon"},)"  // Unclosed, CW
+            R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"name":"","type":"Polygon"},)"  // Closed, CCW
+            R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"name":"","type":"Polygon"},)"  // Closed, CW, Z!=0
+            R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"name":"","type":"MultiPolygon"})"  // Mesh
             R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":[{"direction":"POSITIVE"}]}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
