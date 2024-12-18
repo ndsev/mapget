@@ -31,7 +31,7 @@ std::string_view SourceDataCompoundNode::schemaName() const
     return model().strings()->resolve(data_->schemaName_).value_or("");
 }
 
-simfil::shared_model_ptr<simfil::Object> SourceDataCompoundNode::object()
+simfil::model_ptr<simfil::Object> SourceDataCompoundNode::object()
 {
     if (!data_->object_) {
         auto object = model().newObject();
@@ -42,7 +42,7 @@ simfil::shared_model_ptr<simfil::Object> SourceDataCompoundNode::object()
     return const_cast<const SourceDataCompoundNode*>(this)->object();
 }
 
-simfil::shared_model_ptr<const simfil::Object> SourceDataCompoundNode::object() const
+simfil::model_ptr<const simfil::Object> SourceDataCompoundNode::object() const
 {
     if (!data_->object_)
         return {};

@@ -53,7 +53,7 @@ public:
         // Add an attribute layer
         auto attrLayer = feature1->attributeLayers()->newLayer("cheese");
         auto attr = attrLayer->newAttribute("mozzarella");
-        attr->setDirection(Attribute::Direction::Positive);
+        attr->validity()->newDirection(Validity::Direction::Positive);
         attr->addField("smell", "neutral");
 
         // Set some additional info on the tile

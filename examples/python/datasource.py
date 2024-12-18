@@ -48,7 +48,8 @@ def handle_tile_request(tile: mapget.TileFeatureLayer):
     # Add an attribute layer
     attr_layer: mapget.Object = feature.attribute_layers().new_layer("rules")
     attr: mapget.Attribute = attr_layer.new_attribute("SPEED_LIMIT")
-    attr.set_direction(mapget.Direction.POSITIVE)
+    # TODO: Add Python bindings for validities.
+    # attr.set_direction(mapget.Direction.POSITIVE)
     attr.add_field("speedLimit", 50)
 
     # Add a child feature ID

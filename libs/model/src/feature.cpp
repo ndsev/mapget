@@ -34,10 +34,10 @@ model_ptr<GeometryCollection> Feature::geom()
         updateFields();
         return result;
     }
-    return const_cast<const Feature*>(this)->geom();
+    return const_cast<const Feature*>(this)->geomOrNull();
 }
 
-model_ptr<GeometryCollection> Feature::geom() const
+model_ptr<GeometryCollection> Feature::geomOrNull() const
 {
     if (!data_->geom_)
         return {};
@@ -52,10 +52,10 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
         updateFields();
         return result;
     }
-    return const_cast<const Feature*>(this)->attributeLayers();
+    return const_cast<const Feature*>(this)->attributeLayersOrNull();
 }
 
-model_ptr<AttributeLayerList> Feature::attributeLayers() const
+model_ptr<AttributeLayerList> Feature::attributeLayersOrNull() const
 {
     if (!data_->attrLayers_)
         return {};
@@ -70,10 +70,10 @@ model_ptr<Object> Feature::attributes()
         updateFields();
         return result;
     }
-    return const_cast<const Feature*>(this)->attributes();
+    return const_cast<const Feature*>(this)->attributesOrNull();
 }
 
-model_ptr<Object> Feature::attributes() const
+model_ptr<Object> Feature::attributesOrNull() const
 {
     if (!data_->attrs_)
         return {};
@@ -88,10 +88,10 @@ model_ptr<Array> Feature::relations()
         updateFields();
         return result;
     }
-    return const_cast<const Feature*>(this)->relations();
+    return const_cast<const Feature*>(this)->relationsOrNull();
 }
 
-model_ptr<Array> Feature::relations() const
+model_ptr<Array> Feature::relationsOrNull() const
 {
     if (!data_->relations_)
         return {};
@@ -219,9 +219,6 @@ void Feature::updateFields() {
 
 nlohmann::json Feature::toJson() const
 {
-    // Ensure that properties and geometry exist
-    (void)attributes();
-    (void)geom();
     return simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
 }
 
@@ -276,20 +273,20 @@ model_ptr<Relation> Feature::addRelation(const model_ptr<Relation>& relation)
 uint32_t Feature::numRelations() const
 {
     if (data_->relations_)
-        return relations()->size();
+        return relationsOrNull()->size();
     return 0;
 }
 
 model_ptr<Relation> Feature::getRelation(uint32_t index) const
 {
     if (data_->relations_)
-        return model().resolveRelation(*relations()->at(index));
+        return model().resolveRelation(*relationsOrNull()->at(index));
     return {};
 }
 
 bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> const& callback) const
 {
-    auto relationsPtr = relations();
+    auto relationsPtr = relationsOrNull();
     if (!relationsPtr || !callback)
         return true;
     for (auto const& relation : *relationsPtr) {
@@ -299,10 +296,10 @@ bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> co
     return true;
 }
 
-model_ptr<Geometry> Feature::firstGeometry() const
+SelfContainedGeometry Feature::firstGeometry() const
 {
     model_ptr<Geometry> result;
-    if (auto geometryCollection = geom()) {
+    if (auto geometryCollection = geomOrNull()) {
         geometryCollection->forEachGeometry(
             [&result](auto&& geometry)
             {
@@ -310,7 +307,9 @@ model_ptr<Geometry> Feature::firstGeometry() const
                 return false;
             });
     }
-    return result;
+    if (result)
+        return result->toSelfContained();
+    return {};
 }
 
 std::optional<std::vector<model_ptr<Relation>>>

@@ -55,7 +55,7 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class bitsery::Access;
     friend class TileFeatureLayer;
     friend class BoundFeature;
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
 
 public:
     /** Get the name of this feature's type. */
@@ -69,22 +69,22 @@ public:
      * GeometryCollection if the feature does not have one yet.
      */
     model_ptr<GeometryCollection> geom();
-    [[nodiscard]] model_ptr<GeometryCollection> geom() const;
-    [[nodiscard]] model_ptr<Geometry> firstGeometry() const;
+    [[nodiscard]] model_ptr<GeometryCollection> geomOrNull() const;
+    [[nodiscard]] SelfContainedGeometry firstGeometry() const;
 
     /**
      * Get this feature's Attribute layers. The non-const version adds a
      * AttributeLayerList if the feature does not have one yet.
      */
     model_ptr<AttributeLayerList> attributeLayers();
-    [[nodiscard]] model_ptr<AttributeLayerList> attributeLayers() const;
+    [[nodiscard]] model_ptr<AttributeLayerList> attributeLayersOrNull() const;
 
     /**
      * Get this feature's un-layered attributes.The non-const version adds a
      * generic attribute storage if the feature does not have one yet.
      */
     model_ptr<Object> attributes();
-    [[nodiscard]] model_ptr<Object> attributes() const;
+    [[nodiscard]] model_ptr<Object> attributesOrNull() const;
 
     /** Add a point to the feature. */
     void addPoint(Point const& p);
@@ -170,9 +170,10 @@ protected:
      * Relation list if the feature does not have one yet.
      * Note: This accessor is private, to ensure that the relations
      * array really only ever contains relations.
+     * TODO: Change relations to use a RelationCollection derived from BaseArray
      */
     [[nodiscard]] model_ptr<Array> relations();
-    [[nodiscard]] model_ptr<Array> relations() const;
+    [[nodiscard]] model_ptr<Array> relationsOrNull() const;
 
     /**
      * Feature Data
@@ -208,8 +209,6 @@ protected:
     // of id-part fields is adopted from the feature id.
     sfl::small_vector<std::pair<simfil::StringId, simfil::ModelNode::Ptr>, 32> fields_;
     void updateFields();
-
-    nlohmann::json toJsonPrivate(simfil::ModelNode const&);
 
     struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {

@@ -7,7 +7,7 @@ namespace mapget
 
 struct HttpClient::Impl {
     httplib::Client client_;
-    std::map<std::string, DataSourceInfo> sources_;
+    std::unordered_map<std::string, DataSourceInfo> sources_;
     std::shared_ptr<TileLayerStream::StringPoolCache> stringPoolProvider_;
 
     Impl(std::string const& host, uint16_t port) : client_(host, port)

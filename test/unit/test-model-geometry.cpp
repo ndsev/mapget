@@ -1,5 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
@@ -13,6 +13,12 @@ using namespace mapget;
 using simfil::Environment;
 using simfil::ValueType;
 using simfil::ScalarValueType;
+
+template<class T>
+ModelNode const& asModelNode(model_ptr<T> const& modelNodeDerived)
+{
+    return static_cast<ModelNode const&>(*modelNodeDerived);
+}
 
 auto makeTile() {
     auto layerInfo = LayerInfo::fromJson(R"({
@@ -152,13 +158,13 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
 
     SECTION("Construct GeometryCollection")
     {
-        REQUIRE(geometry_collection->type() == ValueType::Object);
-        REQUIRE(geometry_collection->size() == 2); // 'type' and 'geometries' fields
+        REQUIRE(asModelNode(geometry_collection).type() == ValueType::Object);
+        REQUIRE(asModelNode(geometry_collection).size() == 3); // 'type' and 'geometries' fields
     }
 
     SECTION("Recover geometry")
     {
-        REQUIRE(point_geom->type() == ValueType::Object);
+        REQUIRE(asModelNode(point_geom).type() == ValueType::Object);
         REQUIRE(point_geom->geomType() == GeomType::Points);
         REQUIRE(point_geom->numPoints() == 4);
         REQUIRE(point_geom->pointAt(0).x == .0);
@@ -172,16 +178,16 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
         // Since the collection only contains one geometry,
         // it hides itself and directly presents the nested geometry,
         // conforming to GeoJSON (a collection must have >1 geometries).
-        REQUIRE(geometry_collection->size() == 2); // 'type' and 'geometry' fields
-        REQUIRE(geometry_collection->at(1)->type() == ValueType::Array); // 'geometry' field
-        REQUIRE(geometry_collection->at(1)->size() == 4); // four points
+        REQUIRE(asModelNode(geometry_collection).size() == 3); // 'type' and 'geometry' fields
+        REQUIRE(asModelNode(geometry_collection).at(1)->type() == ValueType::Array); // 'geometry' field
+        REQUIRE(asModelNode(geometry_collection).at(1)->size() == 4); // four points
 
         // Add nested geometry again two more times, now the view changes.
         geometry_collection->addGeometry(point_geom);
         geometry_collection->addGeometry(point_geom);
 
         REQUIRE(geometry_collection->numGeometries() == 3);
-        REQUIRE(geometry_collection->at(1)->size() == 3); // Three geometries
+        REQUIRE(asModelNode(geometry_collection).at(1)->size() == 3); // Three geometries
     }
 
     SECTION("Geometry View") {
@@ -252,29 +258,29 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
 
     SECTION("Retrieve points") {
         // Check stored points in Point geometry
-        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->size() == 1);
-        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->at(0)->type() == ValueType::Array); // Point
-        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(a.x));
-        REQUIRE(point_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(a.y));
+        REQUIRE(asModelNode(point_geom).get(StringPool::CoordinatesStr)->size() == 1);
+        REQUIRE(asModelNode(point_geom).get(StringPool::CoordinatesStr)->at(0)->type() == ValueType::Array); // Point
+        REQUIRE(asModelNode(point_geom).get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(a.x));
+        REQUIRE(asModelNode(point_geom).get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(a.y));
 
         // Check stored points in LineString geometry
-        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->size() == 2);
-        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(b.x));
-        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(b.y));
-        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(1)->get(StringPool::LonStr)->value() == ScalarValueType(c.x));
-        REQUIRE(linestring_geom->get(StringPool::CoordinatesStr)->at(1)->get(StringPool::LatStr)->value() == ScalarValueType(c.y));
+        REQUIRE(asModelNode(linestring_geom).get(StringPool::CoordinatesStr)->size() == 2);
+        REQUIRE(asModelNode(linestring_geom).get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(b.x));
+        REQUIRE(asModelNode(linestring_geom).get(StringPool::CoordinatesStr)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(b.y));
+        REQUIRE(asModelNode(linestring_geom).get(StringPool::CoordinatesStr)->at(1)->get(StringPool::LonStr)->value() == ScalarValueType(c.x));
+        REQUIRE(asModelNode(linestring_geom).get(StringPool::CoordinatesStr)->at(1)->get(StringPool::LatStr)->value() == ScalarValueType(c.y));
 
         // Check stored points in Polygon geometry
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->size() == 1);
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->size() == 4);
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(d.x));
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(d.y));
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(1)->get(StringPool::LonStr)->value() == ScalarValueType(e.x));
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(1)->get(StringPool::LatStr)->value() == ScalarValueType(e.y));
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(2)->get(StringPool::LonStr)->value() == ScalarValueType(f.x));
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(2)->get(StringPool::LatStr)->value() == ScalarValueType(f.y));
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(3)->get(StringPool::LonStr)->value() == ScalarValueType(d.x));
-        REQUIRE(polygon_geom->get(StringPool::CoordinatesStr)->at(0)->at(3)->get(StringPool::LatStr)->value() == ScalarValueType(d.y));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->size() == 1);
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->size() == 4);
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(0)->get(StringPool::LonStr)->value() == ScalarValueType(d.x));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(0)->get(StringPool::LatStr)->value() == ScalarValueType(d.y));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(1)->get(StringPool::LonStr)->value() == ScalarValueType(e.x));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(1)->get(StringPool::LatStr)->value() == ScalarValueType(e.y));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(2)->get(StringPool::LonStr)->value() == ScalarValueType(f.x));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(2)->get(StringPool::LatStr)->value() == ScalarValueType(f.y));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(3)->get(StringPool::LonStr)->value() == ScalarValueType(d.x));
+        REQUIRE(asModelNode(polygon_geom).get(StringPool::CoordinatesStr)->at(0)->at(3)->get(StringPool::LatStr)->value() == ScalarValueType(d.y));
     }
 
     SECTION("For-each") {
@@ -312,4 +318,119 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
         // Explicit pass geometry object
         REQUIRE_EVAL_1("count(geo(geometry))", ValueType::Int, 3);
     }
+}
+
+TEST_CASE("Attribute Validity", "[validity]") {
+    auto modelPool = makeTile();
+
+    // Create a GeometryCollection.
+    auto geometryCollection = modelPool->newGeometryCollection();
+
+    // Create and add LineString geometry without name.
+    auto linestringGeom = geometryCollection->newGeometry(GeomType::Line);
+    linestringGeom->append({0., 0.});
+    linestringGeom->append({.5, .5});
+    linestringGeom->append({1., 1.});
+
+    // Create and add LineString geometry with name.
+    auto linestringGeomNamed = geometryCollection->newGeometry(GeomType::Line);
+    linestringGeomNamed->append({-0., -0.});
+    linestringGeomNamed->append({-.5, -.5});
+    linestringGeomNamed->append({-1., -1.});
+    linestringGeomNamed->setName("BestGeometry");
+
+    // Create a validity collection.
+    auto metresAtFortyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-1., -1.})) * 0.4;
+    auto metresAtEightyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-1., -1.})) * 0.8;
+    auto validities = modelPool->newValidityCollection();
+    validities->newDirection(Validity::Direction::Positive);
+    validities->newGeometry(linestringGeom);
+    validities->newPoint({.2, .25});
+    validities->newRange({.2, .25}, {.75, .7});
+    validities->newPoint(Validity::BufferOffset, 0);
+    validities->newPoint(Validity::RelativeLengthOffset, .4);
+    validities->newPoint(Validity::MetricLengthOffset, metresAtFortyPercent);
+    validities->newRange(Validity::BufferOffset, 0, 1);
+    validities->newRange(Validity::RelativeLengthOffset, .4, .8);
+    validities
+        ->newRange(Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent);
+    validities->newGeometry(linestringGeomNamed);
+    validities->newPoint({-.2, -.25}, "BestGeometry");
+    validities->newRange({-.2, -.25}, {-.75, -.7}, "BestGeometry");
+    validities->newPoint(Validity::BufferOffset, 0, "BestGeometry");
+    validities->newPoint(Validity::RelativeLengthOffset, .4, "BestGeometry");
+    validities->newPoint(Validity::MetricLengthOffset, metresAtFortyPercent, "BestGeometry");
+    validities->newRange(Validity::BufferOffset, 0, 1, "BestGeometry");
+    validities->newRange(Validity::RelativeLengthOffset, .4, .8, "BestGeometry");
+    validities->newRange(
+        Validity::MetricLengthOffset,
+        metresAtFortyPercent,
+        metresAtEightyPercent,
+        "BestGeometry");
+    auto json = validities->toJson();
+    REQUIRE(json.size() == 19);
+
+    // Fill out the expectedGeometry vector.
+    std::vector<std::vector<Point>> expectedGeometry = {
+        // Validity::Direction::Positive 💚
+        {{0.0,0.0,0.0}, {0.5,0.5,0.0}, {1.0,1.0,0.0}},
+        // linestringGeom 💚
+        {{0.0,0.0,0.0}, {0.5,0.5,0.0}, {1.0,1.0,0.0}},
+        // {.2, .25} 💚
+        {{0.225,0.225,0.0}},
+        // {.2, .25}, {.75, .7} 💚
+        {{0.225,0.225,0.0}, {0.5,0.5,0.0}, {0.725,0.725,0.0}},
+        // Validity::BufferOffset, 0 💚
+        {{0.0,0.0,0.0}},
+        // Validity::RelativeLengthOffset, .4 💚
+        {{0.39999238466117465,0.39999238466117465,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent 💚
+        {{0.39999238400870357,0.39999238400870357,0.0}},
+        // Validity::BufferOffset, 0, 1 💚
+        {{0.0,0.0,0.0}, {0.5,0.5,0.0}},
+        // Validity::RelativeLengthOffset, .4, .8 💚
+        {{0.39999238466117465,0.39999238466117465,0.0}, {0.5,0.5,0.0}, {0.7999961921855985,0.7999961921855985,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent 💚
+        {{0.39999238400870357,0.39999238400870357,0.0}, {0.5,0.5,0.0}, {0.7999961908806066,0.7999961908806066,0.0}},
+        // linestringGeomNamed 💚
+        {{-0.0,-0.0,0.0}, {-0.5,-0.5,0.0}, {-1.0,-1.0,0.0}},
+        // {-.2, -.25}, "BestGeometry" 💚
+        {{-0.225,-0.225,0.0}},
+        // {-.2, -.25}, {-.75, -.7}, "BestGeometry" 💚
+        {{-0.225,-0.225,0.0}, {-0.5,-0.5,0.0}, {-0.725,-0.725,0.0}},
+        // Validity::BufferOffset, 0, "BestGeometry" 💚
+        {{-0.0,-0.0,0.0}},
+        // Validity::RelativeLengthOffset, .4, "BestGeometry" 💚
+        {{-0.39999238466117465,-0.39999238466117465,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent, "BestGeometry" 💚
+        {{-0.39999238400870357,-0.39999238400870357,0.0}},
+        // Validity::BufferOffset, 0, 1, "BestGeometry" 💚
+        {{-0.0,-0.0,0.0}, {-0.5,-0.5,0.0}},
+        // Validity::RelativeLengthOffset, .4, .8, "BestGeometry" 💚
+        {{-0.39999238466117465,-0.39999238466117465,0.0}, {-0.5,-0.5,0.0}, {-0.7999961921855985,-0.7999961921855985,0.0}},
+        // Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent, "BestGeometry" 💚
+        {{-0.39999238400870357,-0.39999238400870357,0.0}, {-0.5,-0.5,0.0}, {-0.7999961908806066,-0.7999961908806066,0.0}},
+    };
+
+    // Compare expected validity geometries against computed ones.
+    auto validityIndex = 0;
+    validities->forEach([&validityIndex, &geometryCollection, &expectedGeometry](auto&& validity) {
+        DYNAMIC_SECTION(fmt::format("Validity Index #{}", validityIndex))
+        {
+            auto wgsPoints = validity.computeGeometry(geometryCollection);
+            log().info("Points #{}: {}", validityIndex, nlohmann::json(wgsPoints.points_).dump());
+            auto const& expectedWgsPoints = expectedGeometry[validityIndex];
+            REQUIRE(wgsPoints.points_.size() == expectedWgsPoints.size());
+            for (auto pointIndex = 0; pointIndex < wgsPoints.points_.size(); ++pointIndex) {
+                auto const& computedPoint = wgsPoints.points_[pointIndex];
+                auto const& expectedPoint = expectedWgsPoints[pointIndex];
+                using namespace Catch::Matchers;
+                REQUIRE_THAT(computedPoint.x, WithinRel(expectedPoint.x));
+                REQUIRE_THAT(computedPoint.y, WithinRel(expectedPoint.y));
+                REQUIRE_THAT(computedPoint.z, WithinRel(expectedPoint.z));
+            }
+        }
+        ++validityIndex;
+        return true;
+    });
 }

@@ -35,6 +35,12 @@ public:
     static DataSourceConfigService& get();
 
     /**
+     * Clear subscriptions, constructor, current config content and path,
+     * stop the file watch thread.
+     */
+    void reset();
+
+    /**
      * Class representing a subscription to the configuration changes.
      */
     class Subscription
@@ -132,10 +138,10 @@ private:
         std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> success_;
         std::function<void(std::string const& error)> error_;
     };
-    std::map<uint32_t, SubscriptionCallbacks> subscriptions_;
+    std::unordered_map<uint32_t, SubscriptionCallbacks> subscriptions_;
 
     // Map of data source type names to their respective constructor functions.
-    std::map<std::string, std::function<DataSource::Ptr(YAML::Node const&)>> constructors_;
+    std::unordered_map<std::string, std::function<DataSource::Ptr(YAML::Node const&)>> constructors_;
 
     // Current configuration nodes.
     std::vector<YAML::Node> currentConfig_;

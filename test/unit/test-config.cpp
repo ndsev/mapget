@@ -41,7 +41,7 @@ void waitForUpdate(std::future<void>& future)
 
 TEST_CASE("Mapget Config", "[MapgetConfig]")
 {
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
@@ -67,24 +67,30 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
 {
     setLogLevel("trace", log());
 
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test");
+    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_ds_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
+    log().info("Created temp directory at: {}", tempDir.string());
+    log().info("Config file path: {}", tempConfigPath.string());
+
+    DataSourceConfigService::get().reset();
     DataSourceConfigService::get().registerDataSourceType(
         "TestDataSource",
-        [](const YAML::Node& config) -> DataSource::Ptr
+        [](const YAML::Node&) -> DataSource::Ptr
         { return std::make_shared<TestDataSource>(); });
 
     auto cache = std::make_shared<MemCache>();
     Service service(cache, true);
+    log().info(service.info().empty() ? "Info is empty." : service.info()[0].toJson().dump(4));
     REQUIRE(service.info().empty());
 
+    std::atomic<bool> updateReceived{false};
     std::promise<void> updatePromise;
     auto updateFuture = updatePromise.get_future();
     auto prepareNextUpdate = [&]()
     {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        updateReceived = false;
         updatePromise = std::promise<void>();
         updateFuture = updatePromise.get_future();
     };
@@ -93,17 +99,31 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
         [&](auto&&)
         {
             log().debug("Configuration update detected.");
-            updatePromise.set_value();
+            if (!updateReceived.exchange(true)) {
+                updatePromise.set_value();
+            }
         });
 
-    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
-
     // Initial empty configuration
-    prepareNextUpdate();
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
+        if (!out.is_open()) {
+            log().error("Failed to open config file for writing");
+            FAIL("Could not open config file");
+        }
         out << "sources: []" << std::endl;
+        out.close();
+        
+        if (!fs::exists(tempConfigPath)) {
+            log().error("Config file was not created");
+            FAIL("Config file does not exist after writing");
+        }
+        
+        log().info("Written initial empty config, file size: {} bytes", fs::file_size(tempConfigPath));
     }
+
+    prepareNextUpdate();
+    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
     waitForUpdate(updateFuture);
     REQUIRE(service.info().empty());
 
@@ -111,12 +131,11 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     prepareNextUpdate();
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
-        out << R"(
-        sources:
-          - type: TestDataSource
-        )" << std::endl;
+        out << "sources:\n  - type: TestDataSource\n";
+        out.close();
     }
     waitForUpdate(updateFuture);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     auto dataSourceInfos = service.info();
     REQUIRE(dataSourceInfos.size() == 1);
     REQUIRE(dataSourceInfos[0].mapId_ == "Catan");
@@ -126,13 +145,13 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     {
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []" << std::endl;
+        out.close();
     }
     waitForUpdate(updateFuture);
     REQUIRE(service.info().empty());
 
     // Cleanup
     fs::remove_all(tempDir);
-    // Wait for "The config file disappeared" message :)
     std::this_thread::sleep_for(std::chrono::seconds(2));
     DataSourceConfigService::get().end();
 }

@@ -29,26 +29,29 @@ enum class GeomType: uint8_t {
 };
 
 /**
+ * Small interface container type which may be used
+ * to pass around geometry data.
+ */
+struct SelfContainedGeometry
+{
+    std::vector<Point> points_;
+    GeomType geomType_ = GeomType::Points;
+};
+
+/**
  * Geometry object, which stores a point collection, a line-string,
  * or a triangle mesh.
  */
 class Geometry final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
-    friend class VertexNode;
+    friend class PointNode;
     friend class LinearRingNode;
-    friend class VertexBufferNode;
+    friend class PointBufferNode;
     friend class PolygonNode;
     friend class MeshNode;
-
-    [[nodiscard]] ValueType type() const override;
-    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
-    [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
-    [[nodiscard]] StringId keyAt(int64_t) const override;
-    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Source region */
     model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
@@ -66,6 +69,12 @@ public:
     /** Get a point at an index. */
     [[nodiscard]] Point pointAt(size_t index) const;
 
+    /**
+     * Get and set geometry name.
+     */
+    [[nodiscard]] std::optional<std::string_view> name() const;
+    void setName(const std::string_view &newName);
+
     /** Iterate over all Points in the geometry.
      * @param callback Function which is called for each contained point.
      *  Must return true to continue iteration, false to abort iteration.
@@ -81,7 +90,43 @@ public:
     template <typename LambdaType, class ModelType = TileFeatureLayer>
     bool forEachPoint(LambdaType const& callback) const;
 
+    /**
+     * Get total length of the geometry in metres assuming it's a Polyline.
+     */
+    [[nodiscard]] double length() const;
+
+    /**
+     * Return geometric points on the Polyline (if the geometry is a Polyline)
+     * within the defined position range boundaries.
+     * @param start is the beginning of the bounded range.
+     * @param end is the optional end of the bounded range
+     *            (otherwise, returns only a single position at start if the end is not passed).
+     */
+    [[nodiscard]] std::vector<Point> pointsFromPositionBound(const Point& start, const std::optional<Point>& end) const;
+
+    /**
+     * Return geometric points on the Polyline (if the geometry is a Polyline)
+     * within the defined length range boundaries.
+     * @param start is the beginning of the bounded range.
+     * @param end is the optional end of the bounded range
+     *            (otherwise, returns only a single position at start if the end is not passed).
+     */
+    [[nodiscard]] std::vector<Point> pointsFromLengthBound(double start, std::optional<double> end) const;
+
+    /**
+     * Turn the points and type from this geometry into a self-contained
+     * struct which can be passed around.
+     */
+    [[nodiscard]] SelfContainedGeometry toSelfContained() const;
+
 protected:
+    [[nodiscard]] ValueType type() const override;
+    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
+    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
     struct Data
     {
         Data() = default;
@@ -101,6 +146,9 @@ protected:
         // Geometry type. A view can have a different geometry type
         // than the base geometry.
         GeomType type_ = GeomType::Points;
+
+        // Geometry reference name if applicable.
+        StringId geomName_ = 0;
 
         union GeomDetails
         {
@@ -137,6 +185,7 @@ protected:
         void serialize(S& s) {
             s.value1b(isView_);
             s.value1b(type_);
+            s.value2b(geomName_);
             if (!isView_) {
                 s.value4b(detail_.geom_.vertexArray_);
                 s.object(detail_.geom_.offset_);
@@ -164,18 +213,11 @@ protected:
 class GeometryCollection : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Feature;
 
     using Storage = simfil::Array::Storage;
-
-    [[nodiscard]] ValueType type() const override;
-    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
-    [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
-    [[nodiscard]] StringId keyAt(int64_t) const override;
-    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     /** Adds a new Geometry to the collection and returns a reference. */
     model_ptr<Geometry> newGeometry(GeomType type, size_t initialCapacity=4);
@@ -191,7 +233,7 @@ public:
      *  Must return true to continue iteration, false to abort iteration.
      * @return True if all geometries were visited, false if the callback ever returned false.
      * @example
-     *   collection->forEachGeometry([](simfil::shared_model_ptr<Geometry> const& geom){
+     *   collection->forEachGeometry([](simfil::model_ptr<Geometry> const& geom){
      *      std::cout << geom->type() << std::endl;
      *      return true;
      *   })
@@ -210,15 +252,22 @@ private:
     GeometryCollection() = default;
     GeometryCollection(ModelConstPtr pool, ModelNodeAddress);
 
+    [[nodiscard]] ValueType type() const override;
+    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
+    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
     ModelNode::Ptr singleGeom() const;
 };
 
 /** VertexBuffer Node */
 
-class VertexBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class PointBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
     friend class MeshNode;
@@ -232,10 +281,10 @@ public:
 
     Point pointAt(int64_t) const;
 
-    VertexBufferNode() = delete;
+    PointBufferNode() = delete;
 
 private:
-    VertexBufferNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
+    PointBufferNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
 
     Geometry::Data const* baseGeomData_ = nullptr;
     ModelNodeAddress baseGeomAddress_;
@@ -249,7 +298,7 @@ private:
 class PolygonNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -271,7 +320,7 @@ private:
 class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -294,7 +343,7 @@ private:
 class MeshTriangleCollectionNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -319,7 +368,7 @@ private:
 class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::shared_model_ptr;
+    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -335,7 +384,7 @@ public:
 private:
     explicit LinearRingNode(const ModelNode& base, std::optional<size_t> length = {});
 
-    model_ptr<VertexBufferNode> vertexBuffer() const;
+    model_ptr<PointBufferNode> vertexBuffer() const;
 
     enum class Orientation : uint8_t { CW, CCW };
     Orientation orientation_ = Orientation::CW;
@@ -343,41 +392,5 @@ private:
     uint32_t offset_ = 0;
     uint32_t size_ = 0;
 };
-
-/** Vertex Node */
-
-class VertexNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
-{
-public:
-    template<typename> friend struct simfil::shared_model_ptr;
-    friend class TileFeatureLayer;
-    friend class Geometry;
-    friend class VertexBufferNode;
-
-    [[nodiscard]] ValueType type() const override;
-    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
-    [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const StringId &) const override;
-    [[nodiscard]] StringId keyAt(int64_t) const override;
-    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
-
-    VertexNode() = delete;
-
-private:
-    VertexNode(ModelNode const& baseNode, Geometry::Data const* geomData);
-
-    Point point_;
-};
-
-template <typename LambdaType, class ModelType>
-bool Geometry::forEachPoint(LambdaType const& callback) const {
-    VertexBufferNode vertexBufferNode{geomData_, model_, {ModelType::ColumnId::PointBuffers, addr_.index()}};
-    for (auto i = 0; i < vertexBufferNode.size(); ++i) {
-        VertexNode vertex{*vertexBufferNode.at(i), vertexBufferNode.baseGeomData_};
-        if (!callback(vertex.point_))
-            return false;
-    }
-    return true;
-}
 
 }

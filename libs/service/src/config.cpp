@@ -52,6 +52,10 @@ void DataSourceConfigService::unsubscribe(uint32_t id)
 void DataSourceConfigService::setConfigFilePath(std::string const& path)
 {
     configFilePath_ = path;
+    // Notify subscribers immediately to allow dependent apps to proceed
+    // This is needed as there otherwise apps would have to wait manually
+    // for the callback to be called before they can continue.
+    loadConfig();
     restartFileWatchThread();
 }
 
@@ -217,6 +221,7 @@ void DataSourceConfigService::end()
     if (watchThread_ && watchThread_->joinable()) {
         watchThread_->join();  // Wait for the thread to finish.
     }
+    watchThread_ = {};
 }
 
 std::optional<std::string> DataSourceConfigService::getConfigFilePath() const
@@ -224,6 +229,14 @@ std::optional<std::string> DataSourceConfigService::getConfigFilePath() const
     if (!configFilePath_.empty())
         return configFilePath_;
     return {};
+}
+
+void DataSourceConfigService::reset() {
+    subscriptions_.clear();
+    constructors_.clear();
+    currentConfig_.clear();
+    configFilePath_.clear();
+    end();
 }
 
 }  // namespace mapget

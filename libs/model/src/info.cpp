@@ -426,7 +426,7 @@ std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId, 
 DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
 {
     try {
-        std::map<std::string, std::shared_ptr<LayerInfo>> layers;
+        std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
         for (auto& item : j.at("layers").items()) {
             layers[item.key()] = LayerInfo::fromJson(item.value(), item.key());
         }
