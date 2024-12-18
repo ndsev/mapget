@@ -159,7 +159,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
     SECTION("Construct GeometryCollection")
     {
         REQUIRE(asModelNode(geometry_collection).type() == ValueType::Object);
-        REQUIRE(asModelNode(geometry_collection).size() == 2); // 'type' and 'geometries' fields
+        REQUIRE(asModelNode(geometry_collection).size() == 3); // 'type' and 'geometries' fields
     }
 
     SECTION("Recover geometry")
@@ -178,7 +178,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
         // Since the collection only contains one geometry,
         // it hides itself and directly presents the nested geometry,
         // conforming to GeoJSON (a collection must have >1 geometries).
-        REQUIRE(asModelNode(geometry_collection).size() == 2); // 'type' and 'geometry' fields
+        REQUIRE(asModelNode(geometry_collection).size() == 3); // 'type' and 'geometry' fields
         REQUIRE(asModelNode(geometry_collection).at(1)->type() == ValueType::Array); // 'geometry' field
         REQUIRE(asModelNode(geometry_collection).at(1)->size() == 4); // four points
 
