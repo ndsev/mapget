@@ -169,6 +169,12 @@ public:
     [[nodiscard]] nlohmann::json info() const;
     void setInfo(std::string const& k, nlohmann::json const& v);
 
+    /**
+     * Getter and setter for this tile's copyright information.
+     */
+    [[nodiscard]] std::optional<std::string> legalInfo() const;
+    void setLegalInfo(const std::string& legalInfoString);
+
     /** Serialization */
     virtual void write(std::ostream& outputStream);
     virtual nlohmann::json toJson() const;
@@ -183,6 +189,7 @@ protected:
     std::chrono::time_point<std::chrono::system_clock> timestamp_;
     std::optional<std::chrono::milliseconds> ttl_;
     nlohmann::json info_;
+    std::optional<std::string> legalInfo_; // Copyright-related information
 };
 
 }

@@ -133,6 +133,13 @@ TileLayer::TileLayer(
         error_ = "";  // Tell the optional that it has a value.
         s.text1b(*error_, std::numeric_limits<uint32_t>::max());
     }
+
+    bool hasLegalInfo = false;
+    s.value1b(hasLegalInfo);
+    if (hasLegalInfo) {
+        legalInfo_ = "";  // Tell the optional that it has a value.
+        s.text1b(*legalInfo_, std::numeric_limits<uint32_t>::max());
+    }
 }
 
 TileId TileLayer::tileId() const {
@@ -171,6 +178,11 @@ nlohmann::json TileLayer::info() const {
     return info_;
 }
 
+std::optional<std::string> TileLayer::legalInfo() const
+{
+    return legalInfo_;
+}
+
 void TileLayer::setTileId(const TileId& id) {
     tileId_ = id;
 }
@@ -207,6 +219,11 @@ void TileLayer::setInfo(std::string const& k, nlohmann::json const& v) {
     info_[k] = v;
 }
 
+void TileLayer::setLegalInfo(const std::string& legalInfoString)
+{
+    legalInfo_ = legalInfoString;
+}
+
 void TileLayer::write(std::ostream& outputStream)
 {
     using namespace std::chrono;
@@ -226,6 +243,10 @@ void TileLayer::write(std::ostream& outputStream)
     s.value1b(error_.has_value());
     if (error_)
         s.text1b(*error_, std::numeric_limits<uint32_t>::max());
+    s.value1b(legalInfo_.has_value());
+    if (legalInfo_.has_value()) {
+        s.text1b(legalInfo_.value(), std::numeric_limits<uint32_t>::max());
+    }
 }
 
 MapTileKey TileLayer::id() const
