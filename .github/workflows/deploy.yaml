@@ -14,7 +14,7 @@ jobs:
       - name: Fetch
         # Use official download-artifact action once fixed:
         # https://github.com/actions/download-artifact/issues/3
-        uses: dawidd6/action-download-artifact@v2
+        uses: dawidd6/action-download-artifact@v6
         with:
           workflow: cmake.yaml
           name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
