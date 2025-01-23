@@ -3,20 +3,15 @@
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
 #include "sourcedatareference.h"
-#include "sourceinfo.h"
 #include "stringpool.h"
-#include "validity.h"
 #include "pointnode.h"
 
 #include <cassert>
 #include <cstdint>
-#include <execution>
 #include <numeric>
 #include <stdexcept>
 #include <string_view>
 #include <variant>
-
-#include "mapget/log.h"
 
 static const std::string_view GeometryCollectionStr("GeometryCollection");
 static const std::string_view MultiPointStr("MultiPoint");
@@ -440,7 +435,7 @@ std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<d
 Point Geometry::percentagePositionFromGeometries(std::vector<model_ptr<Geometry>> const& geoms,
     std::vector<double> const& lengths, uint32_t numBits, double position)
 {
-    double totalLength = std::reduce(std::execution::par_unseq, lengths.begin(), lengths.end(), 0.0);
+    double totalLength = std::accumulate(lengths.begin(), lengths.end(), 0.0);
     auto maxPos = static_cast<double>((1 << numBits) - 1);
     auto percentagePosition = (position / maxPos) * totalLength;
     Point positionPoint;
@@ -451,7 +446,6 @@ Point Geometry::percentagePositionFromGeometries(std::vector<model_ptr<Geometry>
         else {
             auto points = geoms[i]->pointsFromLengthBound(percentagePosition, std::nullopt);
             if (points.empty()) {
-                log().error("Could not find any points from length bound");
                 break;
             }
             positionPoint = points[0];
