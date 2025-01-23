@@ -114,6 +114,19 @@ public:
     [[nodiscard]] std::vector<Point> pointsFromLengthBound(double start, std::optional<double> end) const;
 
     /**
+     * Return percentage position point on the entire combined line geometries.
+     * @param geoms vector of line geometries to determine the position on their entire length.
+     * @param lengths vector of each geomtery length.
+     * @param numBits number of bits to store the percentage value.
+     * @param position percentage position on the geometries.
+     */
+    [[nodiscard]] static Point percentagePositionFromGeometries(
+        std::vector<model_ptr<Geometry>> const& geoms,
+        std::vector<double> const& lengths,
+        uint32_t numBits,
+        double position);
+
+    /**
      * Turn the points and type from this geometry into a self-contained
      * struct which can be passed around.
      */
