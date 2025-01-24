@@ -91,7 +91,7 @@ struct TileFeatureLayer::Impl {
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
      * in a vector, which is kept in a sorted state. This allows finding a
-     * feature by it's id in O(log(n)) time.
+     * feature by its id in O(log(n)) time.
      */
     struct FeatureAddrWithIdHash
     {
@@ -780,7 +780,7 @@ nlohmann::json TileFeatureLayer::toJson() const
         features.push_back(f->toJson());
     return nlohmann::json::object({
         {"type", "FeatureCollection"},
-        {"features", features},
+        {"features", features}
     });
 }
 

@@ -3,13 +3,12 @@
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
 #include "sourcedatareference.h"
-#include "sourceinfo.h"
 #include "stringpool.h"
-#include "validity.h"
 #include "pointnode.h"
 
 #include <cassert>
 #include <cstdint>
+#include <numeric>
 #include <stdexcept>
 #include <string_view>
 #include <variant>
@@ -431,6 +430,29 @@ std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<d
     }
 
     return result;
+}
+
+Point Geometry::percentagePositionFromGeometries(std::vector<model_ptr<Geometry>> const& geoms,
+    std::vector<double> const& lengths, uint32_t numBits, double position)
+{
+    double totalLength = std::accumulate(lengths.begin(), lengths.end(), 0.0);
+    auto maxPos = static_cast<double>((1 << numBits) - 1);
+    auto percentagePosition = (position / maxPos) * totalLength;
+    Point positionPoint;
+    for (size_t i = 0; i < lengths.size(); i++) {
+        if (lengths[i] < percentagePosition) {
+            percentagePosition -= lengths[i];
+        }
+        else {
+            auto points = geoms[i]->pointsFromLengthBound(percentagePosition, std::nullopt);
+            if (points.empty()) {
+                break;
+            }
+            positionPoint = points[0];
+            break;
+        }
+    }
+    return positionPoint;
 }
 
 /** ModelNode impls. for PolygonNode */

@@ -13,7 +13,7 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         submodules: true
     - name: Run sccache-cache
@@ -58,7 +58,7 @@ jobs:
               --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
 
     - name: Publish Coverage HTML
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Test Coverage
         path: coverage

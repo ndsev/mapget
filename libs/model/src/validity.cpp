@@ -27,16 +27,16 @@ model_ptr<FeatureId> Validity::featureId() const
     if (!data_->featureAddress_) {
         return {};
     }
-    return model().resolveFeatureId(*ModelNode::Ptr::make(model_, data_->featureAddress_));
+    return model().resolveFeatureId(*Ptr::make(model_, data_->featureAddress_));
 }
 
-void Validity::setFeatureId(model_ptr<FeatureId> feature)
+void Validity::setFeatureId(model_ptr<FeatureId> featureId)
 {
-    if (!feature) {
+    if (!featureId) {
         data_->featureAddress_ = {};
         return;
     }
-    data_->featureAddress_ = feature->addr();
+    data_->featureAddress_ = featureId->addr();
 }
 
 Validity::Validity(Validity::Data* data,
@@ -254,7 +254,7 @@ SelfContainedGeometry Validity::computeGeometry(
         if (feature) {
             geometryCollection = feature->geomOrNull();
         } else {
-            mapget::log().warn("Could not find feature by its ID {}", featureId()->toString());
+            log().warn("Could not find feature by its ID {}", featureId()->toString());
         }
     }
 
@@ -312,7 +312,7 @@ SelfContainedGeometry Validity::computeGeometry(
         return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
-    // Handle BufferOffset (a range of the goemetry bound by two indices).
+    // Handle BufferOffset (a range of the geometry bound by two indices).
     if (offsetType == BufferOffset) {
         auto startPointIndex = static_cast<uint32_t>(startPoint.x);
         if (startPointIndex >= geometry->numPoints()) {
