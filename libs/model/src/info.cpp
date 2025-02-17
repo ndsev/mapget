@@ -235,9 +235,9 @@ bool IdPart::validate(std::variant<int64_t, std::string_view>& val, std::string*
     case IdPartDataType::I32:
         return expectInteger(INT32_MIN, INT32_MAX);
     case IdPartDataType::U32:
-        return expectInteger(0, INT32_MAX);
+        return expectInteger(0, UINT32_MAX);
     case IdPartDataType::U64:
-        return expectInteger(0, INT64_MAX);
+        return expectInteger(0, UINT64_MAX);
     case IdPartDataType::I64:
         return expectInteger(INT64_MIN, INT64_MAX);
     case IdPartDataType::UUID128:
