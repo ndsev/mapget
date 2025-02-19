@@ -101,6 +101,12 @@ DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descri
         if (it != constructors_.end()) {
             try {
                 if (auto result = it->second(descriptor)) {
+                    // Iterate over YAML key-value pairs.
+                    for (auto const& authOption : descriptor["auth-header"]) {
+                        auto key = authOption.first.as<std::string>();
+                        auto value = authOption.second.as<std::string>();
+                        result->requireAuthHeaderRegexMatchOption(key, std::regex(value));
+                    }
                     return result;
                 }
                 log().error("Datasource constructor for type {} returned NULL.", type);

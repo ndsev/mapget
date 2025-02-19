@@ -17,6 +17,8 @@
 #include <thread>
 #include <list>
 
+#include "simfil/types.h"
+
 namespace mapget
 {
 
@@ -427,12 +429,14 @@ struct Service::Impl : public Service::Controller
         }
     }
 
-    std::vector<DataSourceInfo> getDataSourceInfos()
+    std::vector<DataSourceInfo> getDataSourceInfos(std::optional<AuthHeaders> const& clientHeaders)
     {
         std::vector<DataSourceInfo> infos;
         infos.reserve(dataSourceInfo_.size());
         for (const auto& [dataSource, info] : dataSourceInfo_) {
-            infos.push_back(info);
+            if (!clientHeaders || dataSource->isDataSourceAuthorized(*clientHeaders)) {
+                infos.push_back(info);
+            }
         }
         return std::move(infos);
     }
@@ -546,22 +550,33 @@ void Service::remove(const DataSource::Ptr& dataSource)
     impl_->removeDataSource(dataSource);
 }
 
-bool Service::request(std::vector<LayerTilesRequest::Ptr> requests)
+bool Service::request(std::vector<LayerTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders)
 {
     bool dataSourcesAvailable = true;
     for (const auto& r : requests) {
-        if (!hasLayer(r->mapId_, r->layerId_)) {
+        switch (hasLayerAndCanAccess(r->mapId_, r->layerId_, clientHeaders))
+        {
+        case RequestStatus::NoDataSource:
             dataSourcesAvailable = false;
             log().debug("No data source can provide requested map and layer: {}::{}",
                 r->mapId_,
                 r->layerId_);
             r->setStatus(RequestStatus::NoDataSource);
+        case RequestStatus::Unauthorized:
+            dataSourcesAvailable = false;
+            log().debug("Not authorized to access requested map and layer: {}::{}",
+                r->mapId_,
+                r->layerId_);
+            r->setStatus(RequestStatus::Unauthorized);
+        default: {}
+            // Nothing to do.
         }
     }
+
     // Second pass either aborts requests or add all to job queue.
     for (const auto& r : requests) {
         if (!dataSourcesAvailable) {
-            if (r->getStatus() != RequestStatus::NoDataSource) {
+            if (r->getStatus() == RequestStatus::Open) {
                 log().debug("Aborting unfulfillable request!");
                 r->setStatus(RequestStatus::Aborted);
             }
@@ -589,9 +604,9 @@ void Service::abort(const LayerTilesRequest::Ptr& r)
     impl_->abortRequest(r);
 }
 
-std::vector<DataSourceInfo> Service::info()
+std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clientHeaders)
 {
-    return impl_->getDataSourceInfos();
+    return impl_->getDataSourceInfos(clientHeaders);
 }
 
 Cache::Ptr Service::cache()
@@ -599,7 +614,10 @@ Cache::Ptr Service::cache()
     return impl_->cache_;
 }
 
-bool Service::hasLayer(std::string const& mapId, std::string const& layerId)
+RequestStatus Service::hasLayerAndCanAccess(
+    std::string const& mapId,
+    std::string const& layerId,
+    std::optional<AuthHeaders> const& clientHeaders) const
 {
     std::unique_lock lock(impl_->jobsMutex_);
     // Check that one of the data sources can fulfill the request.
@@ -607,10 +625,13 @@ bool Service::hasLayer(std::string const& mapId, std::string const& layerId)
         if (mapId != info.mapId_)
             continue;
         if (info.layers_.find(layerId) != info.layers_.end()) {
-            return true;
+            if (clientHeaders && !ds->isDataSourceAuthorized(*clientHeaders)) {
+                return RequestStatus::Unauthorized;
+            }
+            return RequestStatus::Success;
         }
     }
-    return false;
+    return RequestStatus::NoDataSource;
 }
 
 nlohmann::json Service::getStatistics() const
