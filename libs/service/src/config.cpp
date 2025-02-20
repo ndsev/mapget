@@ -102,7 +102,7 @@ DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descri
             try {
                 if (auto result = it->second(descriptor)) {
                     // Iterate over YAML key-value pairs.
-                    for (auto const& authOption : descriptor["auth-header"]) {
+                    for (auto authOption : descriptor["auth-header"]) {
                         auto key = authOption.first.as<std::string>();
                         auto value = authOption.second.as<std::string>();
                         result->requireAuthHeaderRegexMatchOption(key, std::regex(value));

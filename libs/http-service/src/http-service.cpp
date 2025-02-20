@@ -284,7 +284,9 @@ struct HttpService::Impl
                 state->resultEvent_.notify_one();
             };
         }
-        auto canProcess = self_.request(state->requests_);
+        auto canProcess = self_.request(
+            state->requests_,
+            AuthHeaders{req.headers.begin(), req.headers.end()});
 
         if (!canProcess) {
             // Send a status report detailing for each request
@@ -293,6 +295,9 @@ struct HttpService::Impl
             std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
             for (const auto& r : state->requests_) {
                 requestStatuses.push_back(static_cast<std::underlying_type_t<RequestStatus>>(r->getStatus()));
+                if (r->getStatus() == RequestStatus::Unauthorized) {
+                    res.status = 401;
+                }
             }
             res.set_content(
                 nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
@@ -381,10 +386,10 @@ struct HttpService::Impl
         }
     }
 
-    void handleSourcesRequest(const httplib::Request&, httplib::Response& res) const
+    void handleSourcesRequest(const httplib::Request& req, httplib::Response& res) const
     {
         auto sourcesInfo = nlohmann::json::array();
-        for (auto& source : self_.info()) {
+        for (auto& source : self_.info(AuthHeaders{req.headers.begin(), req.headers.end()})) {
             sourcesInfo.push_back(source.toJson());
         }
         res.set_content(sourcesInfo.dump(), "application/json");
