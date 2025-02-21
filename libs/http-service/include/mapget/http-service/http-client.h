@@ -17,7 +17,7 @@ public:
      * Connect to a running mapget HTTP service. Immediately calls the /sources
      * endpoint, and caches the result for the lifetime of this object.
      */
-    explicit HttpClient(std::string const& host, uint16_t port);
+    explicit HttpClient(std::string const& host, uint16_t port, httplib::Headers headers = {});
     ~HttpClient();
 
     /**

@@ -130,6 +130,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
         REQUIRE(receivedTileCount == 1);
     }
+
     SECTION("Fetch /tile SourceData")
     {
         // Initialize an httplib client.
@@ -197,7 +198,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         };
 
         HttpService service;
-        service.add(std::make_shared<RemoteDataSource>("localhost", ds.port()));
+        auto remoteDataSource = std::make_shared<RemoteDataSource>("localhost", ds.port());
+        service.add(remoteDataSource);
 
         service.go();
 
@@ -268,6 +270,43 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
             REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
             REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
+        }
+
+        SECTION("Test auth header requirement")
+        {
+            remoteDataSource->requireAuthHeaderRegexMatchOption(
+                "X-USER-ROLE",
+                std::regex("\\bTropico-Viewer\\b"));
+
+            HttpClient badClient("localhost", service.port());
+            HttpClient goodClient("localhost", service.port(), {{"X-USER-ROLE", "Tropico-Viewer"}});
+
+            // Check sources
+            REQUIRE(badClient.sources().empty());
+            REQUIRE(goodClient.sources().size() == 1);
+
+            // Try to load tiles with bad client
+            {
+                auto [request, receivedTileCount] = countReceivedTiles(
+                    badClient,
+                    "Tropico",
+                    "WayLayer",
+                    std::vector<TileId>{{1234}});
+                REQUIRE(request->getStatus() == RequestStatus::Unauthorized);
+                REQUIRE(receivedTileCount == 0);
+            }
+
+            // Try to load tiles with good client
+            {
+                auto [request, receivedTileCount] = countReceivedTiles(
+                    goodClient,
+                    "Tropico",
+                    "WayLayer",
+                    std::vector<TileId>{{1234}});
+                REQUIRE(request->getStatus() == RequestStatus::Success);
+                REQUIRE(receivedTileCount == 1);
+            }
+
         }
 
         service.stop();

@@ -562,12 +562,14 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> const& requests, std::
                 r->mapId_,
                 r->layerId_);
             r->setStatus(RequestStatus::NoDataSource);
+            break;
         case RequestStatus::Unauthorized:
             dataSourcesAvailable = false;
             log().debug("Not authorized to access requested map and layer: {}::{}",
                 r->mapId_,
                 r->layerId_);
             r->setStatus(RequestStatus::Unauthorized);
+            break;
         default: {}
             // Nothing to do.
         }
