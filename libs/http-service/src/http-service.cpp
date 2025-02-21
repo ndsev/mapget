@@ -495,6 +495,14 @@ struct HttpService::Impl
 
     static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
     {
+        if (!isGetConfigEndpointEnabled()) {
+            res.status = 403;  // Forbidden.
+            res.set_content(
+                "The GET /config endpoint is disabled by the server administrator.",
+                "text/plain");
+            return;
+        }
+
         std::ifstream configFile, schemaFile;
         if (!openConfigAndSchemaFile(configFile, schemaFile, res)) {
             return;

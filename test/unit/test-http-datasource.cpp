@@ -306,7 +306,6 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(request->getStatus() == RequestStatus::Success);
                 REQUIRE(receivedTileCount == 1);
             }
-
         }
 
         service.stop();
@@ -368,7 +367,15 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
     configFile.close();
 
+    SECTION("Get Configuration - Not allowed") {
+        setGetConfigEndpointEnabled(false);
+        auto res = cli.Get("/config");
+        REQUIRE(res != nullptr);
+        REQUIRE(res->status == 403);
+    }
+
     SECTION("Get Configuration - No Config File Path Set") {
+        setGetConfigEndpointEnabled(true);
         DataSourceConfigService::get().setConfigFilePath("");  // Simulate no config path set.
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
