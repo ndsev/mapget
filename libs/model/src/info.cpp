@@ -114,7 +114,8 @@ bool IdPart::idPartsMatchComposition(
     uint32_t compositionMatchStartIdx,
     const KeyValueViewPairs& featureIdParts,
     size_t matchLength,
-    bool requireCompositionEnd)
+    bool requireCompositionEnd,
+    std::string* error)
 {
     auto featureIdIter = featureIdParts.begin();
     auto compositionIter = candidateComposition.begin();
@@ -142,7 +143,7 @@ bool IdPart::idPartsMatchComposition(
         }
 
         // Does the ID part's value match?
-        if (!compositionIter->validate(idPartValue))
+        if (!compositionIter->validate(idPartValue, error))
             return false;
 
         ++featureIdIter;
