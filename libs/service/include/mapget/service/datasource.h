@@ -6,8 +6,15 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatalayer.h"
 
+#include <regex>
+
 namespace mapget
 {
+/**
+ * Dict which is used to store and forward authorization information
+ * from the client to the datasource.
+ */
+using AuthHeaders = std::unordered_map<std::string, std::string>;
 
 /**
  * Abstract class which defines the behavior of a mapget data source,
@@ -51,8 +58,20 @@ public:
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
     virtual TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);
 
+    /** Add an authorization header-regex pair for this datasource. */
+    void requireAuthHeaderRegexMatchOption(std::string header, std::regex re);
+
+    /**
+     * Validate that one of the given authorization header-value pairs authorizes
+     * use of this datasource, if it is restricted.
+     */
+    [[nodiscard]] bool isDataSourceAuthorized(AuthHeaders const& clientHeaders) const;
+
 protected:
-    static simfil::StringId cachedStringPoolOffset(std::string const& nodeId, Cache::Ptr const& cache);
+    static StringId cachedStringPoolOffset(std::string const& nodeId, Cache::Ptr const& cache);
+
+    /** Map of authorization header-regex pairs which can be entered into the datasource YAML config. */
+    std::unordered_map<std::string, std::regex> authHeaderAlternatives_;
 };
 
 }

@@ -160,6 +160,7 @@ void registerDefaultDatasourceTypes() {
 }
 
 bool isPostConfigEndpointEnabled_ = false;
+bool isGetConfigEndpointEnabled_ = true;
 }
 
 struct ServeCommand
@@ -215,6 +216,10 @@ struct ServeCommand
             "--allow-post-config",
             isPostConfigEndpointEnabled_,
             "Allow the POST /config endpoint.");
+        serveCmd->add_flag(
+            "--no-get-config",
+            isGetConfigEndpointEnabled_,
+            "Allow the GET /config endpoint.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -397,9 +402,19 @@ bool isPostConfigEndpointEnabled()
     return isPostConfigEndpointEnabled_;
 }
 
+bool isGetConfigEndpointEnabled()
+{
+    return isGetConfigEndpointEnabled_;
+}
+
 void setPostConfigEndpointEnabled(bool enabled)
 {
     isPostConfigEndpointEnabled_ = enabled;
+}
+
+void setGetConfigEndpointEnabled(bool enabled)
+{
+    isGetConfigEndpointEnabled_ = enabled;
 }
 
 const std::string &getPathToSchema()

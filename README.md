@@ -43,7 +43,7 @@ Note, that changes in this section are not applied while mapget is running, you 
 Sample configuration files can be found under `examples/config`:
 
 - [sample-first-datasource.yaml](examples/config/sample-first-datasource.yaml) and [sample-second-datasource.yaml](examples/config/sample-second-datasource.yaml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
-- [sample-service.yaml](examples/config/sample-service.yaml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
+- [sample-service.yaml](examples/config/sample-service.yaml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.yaml` configs above.
 
 ### The `sources` YAML key
 
@@ -55,10 +55,10 @@ represents a datasource. The entry must have a `type` key, which denotes the spe
 constructor to call. You may register additional datasource types using the
 `DatasourceConfigService` from `mapget/service/config.h`. By default, the following datasource types are supported:
 
-| Data Source Type        | Required Configurations | Optional Configurations     |
-|-------------------------|-------------------------|-----------------------------|
-| `DataSourceHost`        | `url`                   | N/A                         |
-| `DataSourceProcess`     | `cmd`                   | N/A                         |
+| Data Source Type        | Required Configurations | Optional Configurations |
+|-------------------------|-------------------------|-------------------------|
+| `DataSourceHost`        | `url`                   | `auth-header`           |
+| `DataSourceProcess`     | `cmd`                   | `auth-header`           |
 
 For example, the following would be a valid configuration:
 
@@ -66,6 +66,18 @@ For example, the following would be a valid configuration:
 sources:
   - type: DataSourceProcess
     cmd: cpp-sample-http-datasource
+```
+
+**Note:** You can restrict the visibility of a datasource by using the **`auth-header`**
+config field, which holds a dictionary of required header-value-regex options. For example,
+the following datasource would be restricted to users, which pass an `X-User-Role: privileged` header:
+
+```yaml
+sources:
+  - type: DataSourceHost
+    url: ...
+    auth-header:
+      X-User-Role: privileged
 ```
 
 ### Cache
@@ -320,7 +332,7 @@ which is implemented in `mapget::Service`. Detailed endpoint descriptions:
 | `/abort`   | POST   | Abort a currently running `/tiles` request by its `clientId`.                                                     | `clientId`                                                                                                                                          | `text/plain`                                                                                                                                                                                                                                                      |
 | `/status`  | GET    | Server status page                                                                                                | None                                                                                                                                                | `text/html`                                                                                                                                                                                                                                                       |
 | `/locate`  | POST   | Obtain a list of tile-layer combinations providing a feature that satisfies given ID field constraints.           | `application/json`: List of external references, where each is a Request object with `mapId`, `typeId` and `featureId` (list of external ID parts). | `application/json`: List of lists of Resolution objects, where each corresponds to the Request object index. Each Resolution object includes `tileId`, `typeId`, and `featureId`.                                                                                 |
-| `/config`  | GET    | Access the config yaml-file content.                                                                              | None                                                                                                                                                | `application/json`: Contains the `sources` and `http-settings` from the config-yaml as a JSON representation. The returned JSON object has a `model`, `schema` and `readOnly` key. The schema is controlled through the `--config-schema` command line parameter. |
+| `/config`  | GET    | Access the config yaml-file content. Disabled iff `--no-get-config` is passed to mapget.                          | None                                                                                                                                                | `application/json`: Contains the `sources` and `http-settings` from the config-yaml as a JSON representation. The returned JSON object has a `model`, `schema` and `readOnly` key. The schema is controlled through the `--config-schema` command line parameter. |
 | `/config`  | POST   | Write the config yaml-file content. Enabled iff `--allow-post-config` is passed to mapget.                        | `application/json`                                                                                                                                  | `text/plain` (if an error occurs)                                                                                                                                                                                                                                 |
 
 ### Curl Call Example

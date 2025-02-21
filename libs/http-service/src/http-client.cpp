@@ -9,12 +9,15 @@ struct HttpClient::Impl {
     httplib::Client client_;
     std::unordered_map<std::string, DataSourceInfo> sources_;
     std::shared_ptr<TileLayerStream::StringPoolCache> stringPoolProvider_;
+    httplib::Headers headers_;
 
-    Impl(std::string const& host, uint16_t port) : client_(host, port)
+    Impl(std::string const& host, uint16_t port, httplib::Headers headers) :
+        client_(host, port),
+        headers_(std::move(headers))
     {
         stringPoolProvider_ = std::make_shared<TileLayerStream::StringPoolCache>();
         client_.set_keep_alive(false);
-        auto sourcesJson = client_.Get("/sources");
+        auto sourcesJson = client_.Get("/sources", headers_);
         if (!sourcesJson || sourcesJson->status != 200)
             raise(
                 fmt::format("Failed to fetch sources: [{}]", sourcesJson->status));
@@ -34,7 +37,8 @@ struct HttpClient::Impl {
     }
 };
 
-HttpClient::HttpClient(const std::string& host, uint16_t port) : impl_(std::make_unique<Impl>(host, port)) {}
+HttpClient::HttpClient(const std::string& host, uint16_t port, httplib::Headers headers) : impl_(
+    std::make_unique<Impl>(host, port, std::move(headers))) {}
 
 HttpClient::~HttpClient() = default;
 
@@ -67,6 +71,7 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     //  is fully able to process async responses as it uses the browser fetch()-API.
     auto tileResponse = impl_->client_.Post(
         "/tiles",
+        impl_->headers_,
         json::object({
             {"requests", json::array({request->toJson()})},
             {"stringPoolOffsets", reader->stringPoolCache()->stringPoolOffsets()}
@@ -78,7 +83,10 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
             reader->read(tileResponse->body);
         }
         else if (tileResponse->status == 400) {
-            request->setStatus(mapget::RequestStatus::NoDataSource);
+            request->setStatus(RequestStatus::NoDataSource);
+        }
+        else if (tileResponse->status == 403) {
+            request->setStatus(RequestStatus::Unauthorized);
         }
         // TODO if multiple LayerTileRequests are ever sent by this client,
         //  additionally handle RequestStatus::Aborted.
