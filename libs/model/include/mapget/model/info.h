@@ -135,7 +135,8 @@ struct IdPart
         uint32_t compositionMatchStartIdx,
         KeyValueViewPairs const& featureIdParts,
         size_t matchLength,
-        bool requireCompositionEnd);
+        bool requireCompositionEnd,
+        std::string* error = nullptr);
 };
 
 /** Structure to represent the feature type info */
