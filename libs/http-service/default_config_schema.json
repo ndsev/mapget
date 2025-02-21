@@ -142,6 +142,9 @@
               },
               "url": {
                 "type": "string"
+              },
+              "auth-header": {
+                "type": "object"
               }
             },
             "required": ["url"]
@@ -153,6 +156,9 @@
               },
               "cmd": {
                 "type": "string"
+              },
+              "auth-header": {
+                "type": "object"
               }
             },
             "required": ["cmd"]

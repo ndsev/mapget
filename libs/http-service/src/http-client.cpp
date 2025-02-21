@@ -85,7 +85,7 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         else if (tileResponse->status == 400) {
             request->setStatus(RequestStatus::NoDataSource);
         }
-        else if (tileResponse->status == 401) {
+        else if (tileResponse->status == 403) {
             request->setStatus(RequestStatus::Unauthorized);
         }
         // TODO if multiple LayerTileRequests are ever sent by this client,

@@ -296,7 +296,7 @@ struct HttpService::Impl
             for (const auto& r : state->requests_) {
                 requestStatuses.push_back(static_cast<std::underlying_type_t<RequestStatus>>(r->getStatus()));
                 if (r->getStatus() == RequestStatus::Unauthorized) {
-                    res.status = 401;
+                    res.status = 403;  // Forbidden.
                 }
             }
             res.set_content(

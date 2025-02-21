@@ -43,7 +43,7 @@ Note, that changes in this section are not applied while mapget is running, you 
 Sample configuration files can be found under `examples/config`:
 
 - [sample-first-datasource.yaml](examples/config/sample-first-datasource.yaml) and [sample-second-datasource.yaml](examples/config/sample-second-datasource.yaml) will configure mapget to run a simple datasource with sample data. Note: the two formats in config files for subcommand parameters can be used interchangeably.
-- [sample-service.yaml](examples/config/sample-service.yaml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.toml` configs above.
+- [sample-service.yaml](examples/config/sample-service.yaml) to execute the `mapget serve` command. The instance will fetch and serve data from sources started with `sample-*-datasource.yaml` configs above.
 
 ### The `sources` YAML key
 
@@ -55,10 +55,10 @@ represents a datasource. The entry must have a `type` key, which denotes the spe
 constructor to call. You may register additional datasource types using the
 `DatasourceConfigService` from `mapget/service/config.h`. By default, the following datasource types are supported:
 
-| Data Source Type        | Required Configurations | Optional Configurations     |
-|-------------------------|-------------------------|-----------------------------|
-| `DataSourceHost`        | `url`                   | N/A                         |
-| `DataSourceProcess`     | `cmd`                   | N/A                         |
+| Data Source Type        | Required Configurations | Optional Configurations |
+|-------------------------|-------------------------|-------------------------|
+| `DataSourceHost`        | `url`                   | `auth-header`           |
+| `DataSourceProcess`     | `cmd`                   | `auth-header`           |
 
 For example, the following would be a valid configuration:
 
@@ -66,6 +66,18 @@ For example, the following would be a valid configuration:
 sources:
   - type: DataSourceProcess
     cmd: cpp-sample-http-datasource
+```
+
+**Note:** You can restrict the visibility of a datasource by using the **`auth-header`**
+config field, which holds a dictionary of required header-value-regex options. For example,
+the following datasource would be restricted to users, which pass an `X-User-Role: privileged` header:
+
+```yaml
+sources:
+  - type: DataSourceHost
+    url: ...
+    auth-header:
+      X-User-Role: privileged
 ```
 
 ### Cache
