@@ -114,7 +114,8 @@ bool IdPart::idPartsMatchComposition(
     uint32_t compositionMatchStartIdx,
     const KeyValueViewPairs& featureIdParts,
     size_t matchLength,
-    bool requireCompositionEnd)
+    bool requireCompositionEnd,
+    std::string* error)
 {
     auto featureIdIter = featureIdParts.begin();
     auto compositionIter = candidateComposition.begin();
@@ -142,7 +143,7 @@ bool IdPart::idPartsMatchComposition(
         }
 
         // Does the ID part's value match?
-        if (!compositionIter->validate(idPartValue))
+        if (!compositionIter->validate(idPartValue, error))
             return false;
 
         ++featureIdIter;
@@ -235,9 +236,9 @@ bool IdPart::validate(std::variant<int64_t, std::string_view>& val, std::string*
     case IdPartDataType::I32:
         return expectInteger(INT32_MIN, INT32_MAX);
     case IdPartDataType::U32:
-        return expectInteger(0, INT32_MAX);
+        return expectInteger(0, UINT32_MAX);
     case IdPartDataType::U64:
-        return expectInteger(0, INT64_MAX);
+        return expectInteger(0, UINT64_MAX);
     case IdPartDataType::I64:
         return expectInteger(INT64_MIN, INT64_MAX);
     case IdPartDataType::UUID128:

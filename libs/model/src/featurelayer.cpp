@@ -736,10 +736,19 @@ void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
     // The primary id composition is the first one in the list.
     for (auto& featureType : this->layerInfo_->featureTypes_) {
         for (auto& candidateComposition : featureType.uniqueIdCompositions_) {
-            if (!IdPart::idPartsMatchComposition(candidateComposition, 0, prefix, prefix.size(), false)) {
+            std::string error;
+            auto compositionMatched = IdPart::idPartsMatchComposition(
+                candidateComposition,
+                0,
+                prefix,
+                prefix.size(),
+                false,
+                &error);
+            if (!compositionMatched) {
                 raise(fmt::format(
-                    "Prefix not compatible with an id composite in type: {}",
-                    featureType.name_));
+                    "Tile feature ID prefix is not compatible with an id composite in type {}: {}",
+                    featureType.name_,
+                    error));
             }
             break;
         }
