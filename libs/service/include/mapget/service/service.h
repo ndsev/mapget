@@ -17,7 +17,8 @@ enum class RequestStatus {
     Open = 0x0,
     Success = 0x1, /** The request has been fully satisfied. */
     NoDataSource = 0x2, /** No data source could provide the requested map + layer. */
-    Aborted = 0x3 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
+    Unauthorized = 0x3, /** The user is not authorized to access the requested data source. */
+    Aborted = 0x4 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
 };
 
 /**
@@ -151,7 +152,7 @@ public:
      * @return false if the requested map+layer is not available
      * from any connected DataSource, true otherwise.
      */
-    bool request(std::vector<LayerTilesRequest::Ptr> requests);
+    bool request(std::vector<LayerTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
      * Trigger queries to all connected data sources to check
@@ -167,10 +168,18 @@ public:
     void abort(LayerTilesRequest::Ptr const& r);
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
-    std::vector<DataSourceInfo> info();
+    std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
 
-    /** Checks if a DataSource can serve the requested map+layer combination. */
-    bool hasLayer(std::string const& mapId, std::string const& layerId);
+    /**
+     * Checks if any DataSource can serve the requested map+layer combination,
+     * then returns Success. Otherwise returns NoDataSource, or Unauthorized
+     * if clientHeaders is passed and does not validate against the datasource's
+     * auth requirements.
+     */
+    [[nodiscard]] RequestStatus hasLayerAndCanAccess(
+        std::string const& mapId,
+        std::string const& layerId,
+        std::optional<AuthHeaders> const& clientHeaders) const;
 
     /**
      * Get Statistics about the operation of this service.
