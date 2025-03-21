@@ -72,16 +72,6 @@ namespace
             throw std::out_of_range("Size out of range");
         return (index << SourceAddressArenaSizeBits) | size;
     }
-
-    /* Set the given list of enumeration values to the simfil environment.
-     */
-    void updateEnumerationValues(std::vector<std::string> const& enums, simfil::Environment& env)
-    {
-        env.constants.clear();
-        for (const auto& id : enums) {
-            env.constants.emplace(id, simfil::Value::make(id));
-        }
-    }
 }
 
 namespace mapget
@@ -99,7 +89,6 @@ struct TileFeatureLayer::Impl {
     sfl::segmented_vector<Relation::Data, simfil::detail::ColumnPageSize/2> relations_;
     sfl::segmented_vector<Geometry::Data, simfil::detail::ColumnPageSize/2> geom_;
     sfl::segmented_vector<QualifiedSourceDataReference, simfil::detail::ColumnPageSize/2> sourceDataReferences_;
-    std::vector<std::string> enums_; /* List of all used enumeration values. We cannot use StringPool here, because it is not case preserving. */
     Geometry::Storage pointBuffers_;
 
     /**
@@ -152,9 +141,6 @@ struct TileFeatureLayer::Impl {
         s.container(geom_, maxColumnSize);
         s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
         s.container(sourceDataReferences_, maxColumnSize);
-        s.container(enums_, maxColumnSize, [](S& s, std::string& str) {
-            s.text1b(str, maxColumnSize);
-        });
     }
 
     explicit Impl(std::shared_ptr<simfil::StringPool> stringPool)
@@ -735,7 +721,6 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
 
 std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool anyMode)
 {
-    updateEnumerationValues(impl_->enums_, *impl_->expressionCache_.env_);
     return impl_->expressionCache_.eval(query, node, anyMode);
 }
 
@@ -884,11 +869,6 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
         raise(fmt::format("No composition for feature type {}!", typeId));
     }
     return typeIt->uniqueIdCompositions_.front();
-}
-
-void TileFeatureLayer::setEnumerations(std::vector<std::string> enums)
-{
-    impl_->enums_ = std::move(enums);
 }
 
 void TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
