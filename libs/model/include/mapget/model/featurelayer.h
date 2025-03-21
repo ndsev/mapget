@@ -228,12 +228,6 @@ public:
     std::vector<simfil::Value> evaluate(std::string_view query, bool anyMode);
 
     /**
-     * Set a list of enumeration values used by this tile.
-     * This list is used to generate simifil constants.
-     */
-    void setEnumerations(std::vector<std::string> enums);
-
-    /**
      * Change the string pool of this model to a different one.
      * Note: This will potentially create new string entries in the newDict,
      * for field names which were not there before.
