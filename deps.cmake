@@ -111,7 +111,8 @@ else()
     set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
     FetchContent_Declare(simfil
       GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-      GIT_TAG        "v0.3.4"
+      # TODO: Replace with released version 
+      GIT_TAG        "4b5f946"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(simfil)
   endif()
