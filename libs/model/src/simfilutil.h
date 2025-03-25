@@ -41,7 +41,7 @@ struct SimfilExpressionCache
         : env_(std::move(env))
     {}
 
-    auto eval(std::string_view query, bool anyMode, std::function<std::vector<simfil::Value>(const simfil::Expr&)> evalFun)
+    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<std::vector<simfil::Value>(const simfil::Expr&)> evalFun)
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -52,18 +52,18 @@ struct SimfilExpressionCache
         std::unique_lock u(mtx_);
         auto [newIter, _] = cache_.emplace(
             std::string(query),
-            simfil::compile(*env_, query, anyMode, true)
+            simfil::compile(*env_, query, anyMode, autoWildcard)
         );
         return evalFun(*newIter->second);
     }
 
-    std::vector<simfil::Value> eval(std::string_view query, simfil::ModelNode const& node, bool anyMode)
+    std::vector<simfil::Value> eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
     {
         auto evalFun = [&](auto&& expr) {
             return simfil::eval(*env_, expr, node);
         };
 
-        return eval(query, anyMode, evalFun);
+        return eval(query, anyMode, autoWildcard, evalFun);
     }
 
     const simfil::ExprPtr& compile(std::string_view query, bool anyMode)
