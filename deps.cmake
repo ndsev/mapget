@@ -9,7 +9,8 @@ endif()
 if (MAPGET_CONAN)
   find_package(spdlog        CONFIG REQUIRED)
   find_package(Bitsery       CONFIG REQUIRED)
-  find_package(simfil        CONFIG REQUIRED)
+  # See todo below
+  # find_package(simfil        CONFIG REQUIRED)
   find_package(nlohmann_json CONFIG REQUIRED)
   find_package(glm           CONFIG REQUIRED)
   if (MAPGET_WITH_HTTPLIB)
@@ -105,17 +106,23 @@ else()
       add_library(RocksDB::rocksdb ALIAS rocksdb)
     endblock()
   endif()
+endif()
 
-  if (NOT TARGET simfil)
-    set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
-    set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
-    FetchContent_Declare(simfil
-      GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-      GIT_TAG        "v0.3.5"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(simfil)
-  endif()
+# TODO: Temporarily disable fetching simfil via Conan to enable faster iterations.
+# Since mapget is the only project utilizing simfil, we should discuss the best approach moving forward.
+# Options include fully transitioning to FetchContent for simfil and eliminating Conan support,
+# or potentially integrating simfil's sources directly into mapget.
+if (NOT TARGET simfil)
+  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
+  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
+  FetchContent_Declare(simfil
+    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
+    GIT_TAG        "v0.3.5"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(simfil)
+endif()
 
+if (NOT MAPGET_CONAN)
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
     add_library(picosha2::picosha2 ALIAS picosha2)
