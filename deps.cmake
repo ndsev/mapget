@@ -135,6 +135,16 @@ if (NOT MAPGET_CONAN)
   endif()
 endif()
 
+if (NOT TARGET simfil)
+  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
+  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
+  FetchContent_Declare(simfil
+    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
+    GIT_TAG        "v0.3.4"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(simfil)
+endif()
+
 if (MAPGET_WITH_WHEEL)
   FetchContent_Declare(python-cmake-wheel
     GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
