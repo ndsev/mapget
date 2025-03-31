@@ -9,7 +9,6 @@ endif()
 if (MAPGET_CONAN)
   find_package(spdlog        CONFIG REQUIRED)
   find_package(Bitsery       CONFIG REQUIRED)
-  find_package(simfil        CONFIG REQUIRED)
   find_package(nlohmann_json CONFIG REQUIRED)
   find_package(glm           CONFIG REQUIRED)
   if (MAPGET_WITH_HTTPLIB)
@@ -106,16 +105,6 @@ else()
     endblock()
   endif()
 
-  if (NOT TARGET simfil)
-    set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
-    set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
-    FetchContent_Declare(simfil
-      GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-      GIT_TAG        "v0.3.4"
-      GIT_SHALLOW    ON)
-    FetchContent_MakeAvailable(simfil)
-  endif()
-
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
     add_library(picosha2::picosha2 ALIAS picosha2)
@@ -129,6 +118,16 @@ else()
         CPPHTTPLIB_OPENSSL_SUPPORT)
     target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)
   endif()
+endif()
+
+if (NOT TARGET simfil)
+  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
+  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
+  FetchContent_Declare(simfil
+    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
+    GIT_TAG        "v0.3.4"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(simfil)
 endif()
 
 if (MAPGET_WITH_WHEEL)
