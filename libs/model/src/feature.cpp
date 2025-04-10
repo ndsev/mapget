@@ -104,7 +104,7 @@ std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expressi
     // contains only references to feature nodes, in the order
     // of the feature node column. We could think about protected inheritance
     // of the ModelPool to safeguard this.
-    return model().evaluate(expression, *this);
+    return model().evaluate(expression, *this, false);
 }
 
 simfil::Value Feature::evaluate(const std::string_view& expression)

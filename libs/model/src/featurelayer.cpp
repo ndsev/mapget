@@ -8,16 +8,19 @@
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
+#include <bitsery/traits/vector.h>
 #include "sfl/segmented_vector.hpp"
 
 #include "simfil/model/arena.h"
 #include "simfil/model/bitsery-traits.h"
 #include "simfil/model/nodes.h"
 #include "mapget/log.h"
+#include "simfil/model/string-pool.h"
 #include "simfilutil.h"
 #include "sourcedatareference.h"
 #include "sourceinfo.h"
@@ -716,14 +719,14 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
     return ModelPool::resolve(n, cb);
 }
 
-std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query)
+std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool anyMode, bool autoWildcard)
 {
-    return impl_->expressionCache_.eval(query, *root(0));
+    return impl_->expressionCache_.eval(query, node, anyMode, autoWildcard);
 }
 
-std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node)
+std::vector<simfil::Value> TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildcard)
 {
-    return impl_->expressionCache_.eval(query, node);
+    return evaluate(query, *root(0), anyMode, autoWildcard);
 }
 
 void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)

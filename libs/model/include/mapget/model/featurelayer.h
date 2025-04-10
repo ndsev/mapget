@@ -3,6 +3,7 @@
 #include <span>
 
 #include "simfil/model/nodes.h"
+#include "simfil/model/string-pool.h"
 #include "simfil/simfil.h"
 
 #include "stringpool.h"
@@ -218,9 +219,14 @@ public:
 
     /**
      * Evaluate a (potentially cached) simfil query on this pool
+     *
+     * @param query         Simfil query
+     * @param node          Model root node to query
+     * @param anyMode       Auto-wrap expression in `any(...)`
+     * @param autoWildcard  Auto expand constant expressions to `** = <expr>`
      */
-    std::vector<simfil::Value> evaluate(std::string_view query);
-    std::vector<simfil::Value> evaluate(std::string_view query, ModelNode const& node);
+    std::vector<simfil::Value> evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
+    std::vector<simfil::Value> evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
 
     /**
      * Change the string pool of this model to a different one.
