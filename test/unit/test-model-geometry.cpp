@@ -103,8 +103,8 @@ auto makeTile() {
         env.functions["bbox"] = &BBoxFn::Fn; \
         env.functions["linestring"] = &LineStringFn::Fn; \
         auto ast = compile(env, query, false); \
-        INFO("AST: " << ast->toString()); \
-        auto res = eval(env, *ast, *model_pool->root(0)); \
+        INFO("AST: " << ast->expr().toString()); \
+        auto res = eval(env, *ast, *model_pool->root(0), nullptr); \
         REQUIRE(res.size() == 1); \
         REQUIRE(res[0].as<type>() == result); \
     } while (false)

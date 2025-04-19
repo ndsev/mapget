@@ -107,7 +107,7 @@ else()
   endif()
 endif()
 
-# Simfil is no longer available via conan, therefore it 
+# Simfil is no longer available via conan, therefore it
 # is always fetched via CMake's FetchContent
 if (NOT TARGET simfil)
   set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
@@ -140,7 +140,7 @@ if (NOT TARGET simfil)
   set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "v0.3.4"
+    GIT_TAG        "diagnostics"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()
