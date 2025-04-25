@@ -37,11 +37,24 @@ std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
  */
 struct SimfilExpressionCache
 {
+    struct Result {
+        Result(const simfil::AST& ast)
+            : diagnostics(ast)
+        {}
+
+        Result(Result&&) = default;
+        Result(const Result&) = delete;
+
+        std::vector<simfil::Value> values;
+        std::map<std::string, simfil::Trace> traces;
+        simfil::Diagnostics diagnostics;
+    };
+
     explicit SimfilExpressionCache(std::unique_ptr<simfil::Environment> env)
         : env_(std::move(env))
     {}
 
-    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<std::vector<simfil::Value>(const simfil::AST&)> evalFun)
+    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<Result(const simfil::AST&)> evalFun) -> Result
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -57,10 +70,14 @@ struct SimfilExpressionCache
         return evalFun(*newIter->second);
     }
 
-    std::vector<simfil::Value> eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
+    auto eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
     {
-        auto evalFun = [&](auto&& expr) {
-            return simfil::eval(*env_, expr, node, nullptr); // TODO jwl
+        auto evalFun = [&](auto&& ast) {
+            Result r(ast);
+            r.values = simfil::eval(*env_, ast, node, &r.diagnostics);
+            r.traces = env_->traces;
+
+            return r;
         };
 
         return eval(query, anyMode, autoWildcard, evalFun);
@@ -80,6 +97,16 @@ struct SimfilExpressionCache
             simfil::compile(*env_, query, anyMode, true)
         );
         return newIter->second;
+    }
+
+    auto diagnostics(std::string_view query, const simfil::Diagnostics& diag) -> std::vector<simfil::Diagnostics::Message>
+    {
+        std::shared_lock s(mtx_);
+        auto iter = cache_.find(query);
+        if (iter == cache_.end())
+            return {};
+
+        return simfil::diagnostics(environment(), *iter->second, diag);
     }
 
     void reset(std::unique_ptr<simfil::Environment> env)

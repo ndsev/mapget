@@ -1,7 +1,9 @@
 #pragma once
 
 #include <span>
+#include <string_view>
 
+#include "simfil/environment.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
 #include "simfil/simfil.h"
@@ -225,8 +227,17 @@ public:
      * @param anyMode       Auto-wrap expression in `any(...)`
      * @param autoWildcard  Auto expand constant expressions to `** = <expr>`
      */
-    std::vector<simfil::Value> evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
-    std::vector<simfil::Value> evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
+    struct QueryResult {
+        std::vector<simfil::Value> values;
+        std::map<std::string, simfil::Trace> traces;
+        simfil::Diagnostics diagnostics;
+    };
+    QueryResult evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
+    QueryResult evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
+
+    /**
+     */
+    std::vector<simfil::Diagnostics::Message> collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diagnostics);
 
     /**
      * Change the string pool of this model to a different one.
