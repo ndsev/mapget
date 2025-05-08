@@ -46,7 +46,7 @@ class MapgetRecipe(ConanFile):
 
     def requirements(self):
         self.requires("fmt/11.1.4", override=True)
-        self.requires("spdlog/[~1]", transitive_headers=True)
+        self.requires("spdlog/1.15.1", transitive_headers=True)
         self.requires("bitsery/[~5]")
         self.requires("nlohmann_json/3.11.3", transitive_headers=True)
         self.requires("glm/cci.20230113", transitive_headers=True)

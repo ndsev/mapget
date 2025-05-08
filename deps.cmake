@@ -40,7 +40,7 @@ else()
   set (SPDLOG_FMT_EXTERNAL ON)
   FetchContent_Declare(spdlog
     GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
-    GIT_TAG        "v1.x"
+    GIT_TAG        "v1.15.1"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(spdlog)
 
