@@ -59,6 +59,7 @@ class MapgetRecipe(ConanFile):
             self.requires("cpp-httplib/0.15.3", transitive_headers=True)
             self.requires("yaml-cpp/0.8.0")
             self.requires("json-schema-validator/2.3.0")
+            # TODO: Use picosha2 1.0.1+ (not yet available via conan)
             self.requires("picosha2/cci.20220808", transitive_headers=True)
         if self.options.with_service or self.options.with_httplib:
             self.requires("rocksdb/9.1.0")
