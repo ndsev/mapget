@@ -36,7 +36,8 @@ else()
   FetchContent_Declare(fmt
     GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
     GIT_TAG        "11.1.4"
-    GIT_SHALLOW    ON)
+    GIT_SHALLOW    ON
+    CMAKE_ARGS     -DFMT_HEADER_ONLY=OFF)
   FetchContent_MakeAvailable(fmt)
 
   set (SPDLOG_FMT_EXTERNAL ON)
@@ -80,7 +81,7 @@ else()
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
     FetchContent_Declare(pybind11
       GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
-      GIT_TAG        "v2.11.1"
+      GIT_TAG        "v2.13.6"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(pybind11)
   endif()
