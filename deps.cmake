@@ -35,8 +35,9 @@ else()
 
   FetchContent_Declare(fmt
     GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
-    GIT_TAG        "11.0.2"
-    GIT_SHALLOW    ON)
+    GIT_TAG        "11.1.4"
+    GIT_SHALLOW    ON
+    CMAKE_ARGS     -DFMT_HEADER_ONLY=OFF)
   FetchContent_MakeAvailable(fmt)
 
   set (SPDLOG_FMT_EXTERNAL ON)
@@ -48,23 +49,23 @@ else()
 
   FetchContent_Declare(bitsery
     GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
-    GIT_TAG        "master"
+    GIT_TAG        "v5.2.4"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(bitsery)
 
   FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-    GIT_TAG        "v0.14.3"
+    GIT_TAG        "v0.15.3"
     GIT_SHALLOW    ON)
 
   FetchContent_Declare(yaml-cpp
     GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
-    GIT_TAG        "master"
+    GIT_TAG        "0.8.0"
     GIT_SHALLOW    ON)
 
   FetchContent_Declare(cli11
     GIT_REPOSITORY "https://github.com/CLIUtils/CLI11"
-    GIT_TAG        v2.3.2
+    GIT_TAG        "v2.3.2"
     GIT_SHALLOW    ON)
 
   FetchContent_Declare(nlohmann_json_schema_validator
@@ -80,7 +81,7 @@ else()
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
     FetchContent_Declare(pybind11
       GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
-      GIT_TAG        v2.11.1
+      GIT_TAG        "v2.13.6"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(pybind11)
   endif()
@@ -149,6 +150,6 @@ endif()
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(tiny-process-library
   GIT_REPOSITORY "https://gitlab.com/eidheim/tiny-process-library"
-  GIT_TAG        v2.0.4
+  GIT_TAG        "v2.0.4"
   GIT_SHALLOW    ON)
 FetchContent_MakeAvailable(tiny-process-library)

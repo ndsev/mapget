@@ -47,8 +47,7 @@ class MapgetRecipe(ConanFile):
         check_min_cppstd(self, "20")
 
     def requirements(self):
-        self.requires("fmt/10.2.1", override=True)
-        self.requires("simfil/0.3.4", transitive_headers=True)
+        self.requires("fmt/11.1.4", override=True)
         self.requires("spdlog/[~1]", transitive_headers=True)
         self.requires("bitsery/[~5]")
         # The override=True for is needed, until simfil 0.3.3 is released.
