@@ -74,7 +74,7 @@ else()
 
   FetchContent_Declare(picosha2
     GIT_REPOSITORY "https://github.com/okdshin/PicoSHA2"
-    GIT_TAG        "27fcf6979298949e8a462e16d09a0351c18fcaf2"
+    GIT_TAG        "v1.0.1"
     GIT_SHALLOW    ON)
 
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
