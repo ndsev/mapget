@@ -228,8 +228,15 @@ public:
      * @param autoWildcard  Auto expand constant expressions to `** = <expr>`
      */
     struct QueryResult {
+        // The list of values resulting from the query evaluation.
         std::vector<simfil::Value> values;
+
+        // A map of traces for debugging or understanding query execution,
+        // where the key is a string identifier and the value is a trace object.
         std::map<std::string, simfil::Trace> traces;
+
+        // Diagnostics information, such as warnings or errors,
+        // generated during query evaluation.
         simfil::Diagnostics diagnostics;
     };
     QueryResult evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
