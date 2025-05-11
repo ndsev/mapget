@@ -107,18 +107,6 @@ else()
   endif()
 endif()
 
-# Simfil is no longer available via conan, therefore it
-# is always fetched via CMake's FetchContent
-if (NOT TARGET simfil)
-  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
-  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
-  FetchContent_Declare(simfil
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "v0.3.5"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(simfil)
-endif()
-
 if (NOT MAPGET_CONAN)
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
