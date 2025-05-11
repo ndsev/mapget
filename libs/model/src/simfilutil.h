@@ -38,7 +38,7 @@ std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
 struct SimfilExpressionCache
 {
     struct Result {
-        Result(const simfil::AST& ast)
+        explicit Result(const simfil::AST& ast)
             : diagnostics(ast)
         {}
 
