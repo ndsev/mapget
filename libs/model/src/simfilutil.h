@@ -38,10 +38,7 @@ std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
 struct SimfilExpressionCache
 {
     struct Result {
-        explicit Result(const simfil::AST& ast)
-            : diagnostics(ast)
-        {}
-
+        Result() = default;
         Result(Result&&) = default;
         Result(const Result&) = delete;
 
@@ -73,7 +70,7 @@ struct SimfilExpressionCache
     auto eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
     {
         auto evalFun = [&](auto&& ast) {
-            Result r(ast);
+            Result r;
             r.values = simfil::eval(*env_, ast, node, &r.diagnostics);
             r.traces = env_->traces;
 
