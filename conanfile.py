@@ -45,7 +45,7 @@ class MapgetRecipe(ConanFile):
         check_min_cppstd(self, "20")
 
     def requirements(self):
-        self.requires("fmt/11.1.4", override=True)
+        self.requires("fmt/11.1.3", override=True)
         self.requires("spdlog/1.15.1", transitive_headers=True)
         self.requires("bitsery/[~5]")
         self.requires("nlohmann_json/3.11.3", transitive_headers=True)
@@ -111,4 +111,4 @@ class MapgetRecipe(ConanFile):
             self.cpp_info.components["http-datasource"].requires = ["model", "service", "cpp-httplib::cpp-httplib"]
             if self.options.with_wheel:
                 self.cpp_info.components["pymapget"].libs = []
-                self.cpp_info.components["pymapget"].requires = ["model", "http-datasource", "pybind11::pybind11"]
+                self.cpp_info.components["pymapget"].requires = ["model", "http-datasource", "fmt::fmt", "pybind11::pybind11"]

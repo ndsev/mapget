@@ -33,7 +33,7 @@ else()
 
   FetchContent_Declare(fmt
     GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
-    GIT_TAG        "11.1.4"
+    GIT_TAG        "11.1.3"
     GIT_SHALLOW    ON
     CMAKE_ARGS     -DFMT_HEADER_ONLY=OFF)
   FetchContent_MakeAvailable(fmt)
