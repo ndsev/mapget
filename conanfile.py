@@ -36,8 +36,6 @@ class MapgetRecipe(ConanFile):
         "with_service": True,
         "with_httplib": True,
         "with_wheel": False,
-        "simfil/*:with_json": True,
-        "simfil/*:shared": False,
         "cpp-httplib/*:with_openssl": True,
         "cpp-httplib/*:with_zlib": True,
     }
@@ -48,10 +46,9 @@ class MapgetRecipe(ConanFile):
 
     def requirements(self):
         self.requires("fmt/11.1.4", override=True)
-        self.requires("spdlog/[~1]", transitive_headers=True)
+        self.requires("spdlog/1.15.1", transitive_headers=True)
         self.requires("bitsery/[~5]")
-        # The override=True for is needed, until simfil 0.3.3 is released.
-        self.requires("nlohmann_json/3.11.3", override=True, transitive_headers=True)
+        self.requires("nlohmann_json/3.11.3", transitive_headers=True)
         self.requires("glm/cci.20230113", transitive_headers=True)
         if self.options.with_httplib:
             self.requires("cli11/2.3.2")
@@ -99,7 +96,7 @@ class MapgetRecipe(ConanFile):
         self.cpp_info.components["log"].set_property("cmake_target_name", "mapget::log")
         self.cpp_info.components["log"].requires = ["spdlog::spdlog"]
         self.cpp_info.components["model"].libs = ["mapget-model"]
-        self.cpp_info.components["model"].requires = ["log", "simfil::simfil", "nlohmann_json::nlohmann_json", "bitsery::bitsery", "glm::glm"]
+        self.cpp_info.components["model"].requires = ["log", "nlohmann_json::nlohmann_json", "bitsery::bitsery", "glm::glm"]
         self.cpp_info.components["model"].set_property("cmake_target_name", "mapget::model")
         if self.options.with_service or self.options.with_httplib:
             self.cpp_info.components["service"].libs = ["mapget-service"]

@@ -9,8 +9,6 @@ endif()
 if (MAPGET_CONAN)
   find_package(spdlog        CONFIG REQUIRED)
   find_package(Bitsery       CONFIG REQUIRED)
-  # See todo below
-  # find_package(simfil        CONFIG REQUIRED)
   find_package(nlohmann_json CONFIG REQUIRED)
   find_package(glm           CONFIG REQUIRED)
   if (MAPGET_WITH_HTTPLIB)
@@ -109,10 +107,8 @@ else()
   endif()
 endif()
 
-# TODO: Temporarily disable fetching simfil via Conan to enable faster iterations.
-# Since mapget is the only project utilizing simfil, we should discuss the best approach moving forward.
-# Options include fully transitioning to FetchContent for simfil and eliminating Conan support,
-# or potentially integrating simfil's sources directly into mapget.
+# Simfil is no longer available via conan, therefore it 
+# is always fetched via CMake's FetchContent
 if (NOT TARGET simfil)
   set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
   set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
