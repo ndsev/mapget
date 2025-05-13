@@ -45,11 +45,13 @@ else()
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(spdlog)
 
-  FetchContent_Declare(bitsery
-    GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
-    GIT_TAG        "v5.2.4"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(bitsery)
+  if (NOT TARGET Bitsery::bitsery)
+    FetchContent_Declare(bitsery
+      GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
+      GIT_TAG        "v5.2.4"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(bitsery)
+  endif()
 
   FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
