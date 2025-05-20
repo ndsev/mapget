@@ -45,8 +45,8 @@ class MapgetRecipe(ConanFile):
         check_min_cppstd(self, "20")
 
     def requirements(self):
-        self.requires("fmt/10.2.1", override=True)
-        self.requires("spdlog/[~1]", transitive_headers=True)
+        self.requires("fmt/11.1.3", override=True)
+        self.requires("spdlog/1.15.1", transitive_headers=True)
         self.requires("bitsery/[~5]")
         self.requires("nlohmann_json/3.11.3", transitive_headers=True)
         self.requires("glm/cci.20230113", transitive_headers=True)
@@ -55,6 +55,7 @@ class MapgetRecipe(ConanFile):
             self.requires("cpp-httplib/0.15.3", transitive_headers=True)
             self.requires("yaml-cpp/0.8.0")
             self.requires("json-schema-validator/2.3.0")
+            # TODO: Use picosha2 1.0.1+ (not yet available via conan)
             self.requires("picosha2/cci.20220808", transitive_headers=True)
         if self.options.with_service or self.options.with_httplib:
             self.requires("rocksdb/9.1.0")
@@ -110,4 +111,4 @@ class MapgetRecipe(ConanFile):
             self.cpp_info.components["http-datasource"].requires = ["model", "service", "cpp-httplib::cpp-httplib"]
             if self.options.with_wheel:
                 self.cpp_info.components["pymapget"].libs = []
-                self.cpp_info.components["pymapget"].requires = ["model", "http-datasource", "pybind11::pybind11"]
+                self.cpp_info.components["pymapget"].requires = ["model", "http-datasource", "fmt::fmt", "pybind11::pybind11"]

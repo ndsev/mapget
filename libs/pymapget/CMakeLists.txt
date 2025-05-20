@@ -15,6 +15,7 @@ endif ()
 
 target_link_libraries(pymapget
   PRIVATE
+    fmt::fmt
     mapget-model
     mapget-http-datasource
     mapget-http-service)

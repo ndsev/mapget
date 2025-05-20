@@ -33,8 +33,9 @@ else()
 
   FetchContent_Declare(fmt
     GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
-    GIT_TAG        "11.0.2"
-    GIT_SHALLOW    ON)
+    GIT_TAG        "11.1.3"
+    GIT_SHALLOW    ON
+    CMAKE_ARGS     -DFMT_HEADER_ONLY=OFF)
   FetchContent_MakeAvailable(fmt)
 
   set (SPDLOG_FMT_EXTERNAL ON)
@@ -46,23 +47,23 @@ else()
 
   FetchContent_Declare(bitsery
     GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
-    GIT_TAG        "master"
+    GIT_TAG        "v5.2.4"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(bitsery)
 
   FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-    GIT_TAG        "v0.14.3"
+    GIT_TAG        "v0.15.3"
     GIT_SHALLOW    ON)
 
   FetchContent_Declare(yaml-cpp
     GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
-    GIT_TAG        "master"
+    GIT_TAG        "0.8.0"
     GIT_SHALLOW    ON)
 
   FetchContent_Declare(cli11
     GIT_REPOSITORY "https://github.com/CLIUtils/CLI11"
-    GIT_TAG        v2.3.2
+    GIT_TAG        "v2.3.2"
     GIT_SHALLOW    ON)
 
   FetchContent_Declare(nlohmann_json_schema_validator
@@ -72,13 +73,13 @@ else()
 
   FetchContent_Declare(picosha2
     GIT_REPOSITORY "https://github.com/okdshin/PicoSHA2"
-    GIT_TAG        "27fcf6979298949e8a462e16d09a0351c18fcaf2"
+    GIT_TAG        "v1.0.1"
     GIT_SHALLOW    ON)
 
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
     FetchContent_Declare(pybind11
       GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
-      GIT_TAG        v2.11.1
+      GIT_TAG        "v2.13.6"
       GIT_SHALLOW    ON)
     FetchContent_MakeAvailable(pybind11)
   endif()
@@ -104,7 +105,21 @@ else()
       add_library(RocksDB::rocksdb ALIAS rocksdb)
     endblock()
   endif()
+endif()
 
+# Simfil is no longer available via conan, therefore it 
+# is always fetched via CMake's FetchContent
+if (NOT TARGET simfil)
+  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
+  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
+  FetchContent_Declare(simfil
+    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
+    GIT_TAG        "v0.3.5"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(simfil)
+endif()
+
+if (NOT MAPGET_CONAN)
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
     add_library(picosha2::picosha2 ALIAS picosha2)
@@ -120,16 +135,6 @@ else()
   endif()
 endif()
 
-if (NOT TARGET simfil)
-  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
-  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
-  FetchContent_Declare(simfil
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "v0.3.5"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(simfil)
-endif()
-
 if (MAPGET_WITH_WHEEL)
   FetchContent_Declare(python-cmake-wheel
     GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
@@ -141,6 +146,6 @@ endif()
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(tiny-process-library
   GIT_REPOSITORY "https://gitlab.com/eidheim/tiny-process-library"
-  GIT_TAG        v2.0.4
+  GIT_TAG        "v2.0.4"
   GIT_SHALLOW    ON)
 FetchContent_MakeAvailable(tiny-process-library)
