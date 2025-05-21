@@ -4,6 +4,8 @@
 #include <mutex>
 #include <string_view>
 
+#include "featurelayer.h"
+
 #include "simfil/environment.h"
 #include "simfil/model/model.h"
 #include "simfil/model/nodes.h"
@@ -37,21 +39,11 @@ std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
  */
 struct SimfilExpressionCache
 {
-    struct Result {
-        Result() = default;
-        Result(Result&&) = default;
-        Result(const Result&) = delete;
-
-        std::vector<simfil::Value> values;
-        std::map<std::string, simfil::Trace> traces;
-        simfil::Diagnostics diagnostics;
-    };
-
     explicit SimfilExpressionCache(std::unique_ptr<simfil::Environment> env)
         : env_(std::move(env))
     {}
 
-    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<Result(const simfil::AST&)> evalFun) -> Result
+    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<TileFeatureLayer::QueryResult(const simfil::AST&)> evalFun) -> TileFeatureLayer::QueryResult
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -70,7 +62,7 @@ struct SimfilExpressionCache
     auto eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
     {
         auto evalFun = [&](auto&& ast) {
-            Result r;
+            TileFeatureLayer::QueryResult r;
             r.values = simfil::eval(*env_, ast, node, &r.diagnostics);
             r.traces = env_->traces;
 

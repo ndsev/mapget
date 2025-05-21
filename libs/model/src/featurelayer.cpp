@@ -721,19 +721,13 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
 
 TileFeatureLayer::QueryResult TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool anyMode, bool autoWildcard)
 {
-    auto r = impl_->expressionCache_.eval(query, node, anyMode, autoWildcard);
-    return QueryResult{
-      std::move(r.values),
-      std::move(r.traces),
-      std::move(r.diagnostics)
-    };
+    return impl_->expressionCache_.eval(query, node, anyMode, autoWildcard);
 }
 
 TileFeatureLayer::QueryResult TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildcard)
 {
     return evaluate(query, *root(0), anyMode, autoWildcard);
 }
-
 
 std::vector<simfil::Diagnostics::Message> TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag)
 {

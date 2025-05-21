@@ -243,6 +243,8 @@ public:
     QueryResult evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
 
     /**
+     * Collect query diagnostics for an evaluated query.
+     * If the query has not yet been evaluated, an empty list is returned.
      */
     std::vector<simfil::Diagnostics::Message> collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diagnostics);
 
