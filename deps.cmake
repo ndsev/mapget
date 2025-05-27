@@ -125,13 +125,19 @@ if (NOT MAPGET_CONAN)
     add_library(picosha2::picosha2 ALIAS picosha2)
   endif()
 
+  # Using option CPPHTTPLIB_USE_POLL to bypass hardcoded file descriptor limit on linux.
+  # FD_SETSIZE is fixed to 1024 on linux, which is also used for sockets. Once an
+  # application has opened more than 1024 files, cpp-httplib cannot respond to requests
+  # anymore, even if some files are closed inbetween.
+  # For details, see https://github.com/yhirose/cpp-httplib/issues/215
   FetchContent_GetProperties(cpp-httplib)
   if (cpp_httplib_POPULATED)
     find_package(OpenSSL REQUIRED)
     target_compile_definitions(cpp-httplib
       INTERFACE
-        CPPHTTPLIB_OPENSSL_SUPPORT)
-    target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)
+        CPPHTTPLIB_OPENSSL_SUPPORT
+        CPPHTTPLIB_USE_POLL)
+    target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)  
   endif()
 endif()
 
