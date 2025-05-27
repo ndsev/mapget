@@ -4,6 +4,8 @@
 #include <mutex>
 #include <string_view>
 
+#include "featurelayer.h"
+
 #include "simfil/environment.h"
 #include "simfil/model/model.h"
 #include "simfil/model/nodes.h"
@@ -41,7 +43,7 @@ struct SimfilExpressionCache
         : env_(std::move(env))
     {}
 
-    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<std::vector<simfil::Value>(const simfil::Expr&)> evalFun)
+    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<TileFeatureLayer::QueryResult(const simfil::AST&)> evalFun) -> TileFeatureLayer::QueryResult
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -57,16 +59,20 @@ struct SimfilExpressionCache
         return evalFun(*newIter->second);
     }
 
-    std::vector<simfil::Value> eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
+    auto eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
     {
-        auto evalFun = [&](auto&& expr) {
-            return simfil::eval(*env_, expr, node);
+        auto evalFun = [&](auto&& ast) {
+            TileFeatureLayer::QueryResult r;
+            r.values = simfil::eval(*env_, ast, node, &r.diagnostics);
+            r.traces = env_->traces;
+
+            return r;
         };
 
         return eval(query, anyMode, autoWildcard, evalFun);
     }
 
-    const simfil::ExprPtr& compile(std::string_view query, bool anyMode)
+    const simfil::ASTPtr& compile(std::string_view query, bool anyMode)
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -82,6 +88,16 @@ struct SimfilExpressionCache
         return newIter->second;
     }
 
+    auto diagnostics(std::string_view query, const simfil::Diagnostics& diag) -> std::vector<simfil::Diagnostics::Message>
+    {
+        std::shared_lock s(mtx_);
+        auto iter = cache_.find(query);
+        if (iter == cache_.end())
+            return {};
+
+        return simfil::diagnostics(environment(), *iter->second, diag);
+    }
+
     void reset(std::unique_ptr<simfil::Environment> env)
     {
         std::unique_lock l(mtx_);
@@ -95,7 +111,7 @@ struct SimfilExpressionCache
     }
 
     mutable std::shared_mutex mtx_;
-    std::map<std::string, simfil::ExprPtr, std::less<>> cache_;
+    std::map<std::string, simfil::ASTPtr, std::less<>> cache_;
     std::unique_ptr<simfil::Environment> env_;
 };
 
