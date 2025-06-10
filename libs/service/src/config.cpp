@@ -28,6 +28,11 @@ std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::
     std::function<void(std::vector<YAML::Node> const&)> const& successCallback,
     std::function<void(std::string const&)> const& errorCallback)
 {
+    if (blockedSubscriptions_)
+    {
+        log().error("Cannot add subscribers once the config has been loaded.");
+        return nullptr;
+    }
     if (!successCallback) {
         log().warn("Refusing to register config subscription with NULL callback.");
         return nullptr;
@@ -52,15 +57,12 @@ void DataSourceConfigService::unsubscribe(uint32_t id)
 void DataSourceConfigService::setConfigFilePath(std::string const& path)
 {
     configFilePath_ = path;
-    // Notify subscribers immediately to allow dependent apps to proceed
-    // This is needed as there otherwise apps would have to wait manually
-    // for the callback to be called before they can continue.
-    loadConfig();
-    restartFileWatchThread();
 }
 
 void DataSourceConfigService::loadConfig()
 {
+    blockedSubscriptions_ = true;
+
     std::optional<std::string> error;
     try {
         YAML::Node config = YAML::LoadFile(configFilePath_);
@@ -137,7 +139,7 @@ void DataSourceConfigService::registerDataSourceType(
     log().info("Registered data source type {}.", typeName);
 }
 
-void DataSourceConfigService::restartFileWatchThread()
+void DataSourceConfigService::startConfigFileWatchThread()
 {
     namespace fs = std::filesystem;
 
@@ -243,6 +245,7 @@ void DataSourceConfigService::reset() {
     currentConfig_.clear();
     configFilePath_.clear();
     end();
+    blockedSubscriptions_ = false;
 }
 
 }  // namespace mapget

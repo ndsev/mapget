@@ -86,6 +86,11 @@ public:
     std::optional<std::string> getConfigFilePath() const;
 
     /**
+     * Loads the configuration and starts watching the configuration file for changes.
+     */
+    void startConfigFileWatchThread();
+
+    /**
      * Instantiates a data source based on the provided descriptor.
      * @param descriptor The YAML node containing the data source descriptor.
      * @return Shared pointer to the instantiated data source, or nullptr if instantiation failed.
@@ -124,12 +129,6 @@ private:
      */
     void loadConfig();
 
-    /**
-     * Starts watching the configuration file for changes.
-     * @param path The file path to the YAML configuration file.
-     */
-    void restartFileWatchThread();
-
     // Path to the configuration file.
     std::string configFilePath_;
 
@@ -157,6 +156,9 @@ private:
 
     // Mutex to ensure that currentConfig_ and subscriptions_ are safely accessed.
     std::recursive_mutex memberAccessMutex_;
+
+    // Once the config file has been loaded, subscriptions are blocked.
+    bool blockedSubscriptions_ = false;
 };
 
 }  // namespace mapget

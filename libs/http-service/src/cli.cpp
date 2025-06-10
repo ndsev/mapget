@@ -246,7 +246,12 @@ struct ServeCommand
             DataSourceConfigService::get().setConfigFilePath(config->as<std::string>());
         }
 
+
+        // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, watchConfig);
+
+        // Load config and reload if changes occur.
+        DataSourceConfigService::get().startConfigFileWatchThread();
 
         if (!datasourceHosts_.empty()) {
             for (auto& ds : datasourceHosts_) {
