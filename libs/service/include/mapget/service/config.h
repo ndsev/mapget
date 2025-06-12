@@ -156,9 +156,6 @@ private:
 
     // Mutex to ensure that currentConfig_ and subscriptions_ are safely accessed.
     std::recursive_mutex memberAccessMutex_;
-
-    // Once the config file has been loaded, subscriptions are blocked.
-    bool blockedSubscriptions_ = false;
 };
 
 }  // namespace mapget

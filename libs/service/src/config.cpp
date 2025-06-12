@@ -28,11 +28,6 @@ std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::
     std::function<void(std::vector<YAML::Node> const&)> const& successCallback,
     std::function<void(std::string const&)> const& errorCallback)
 {
-    if (blockedSubscriptions_)
-    {
-        log().error("Cannot add subscribers once the config has been loaded.");
-        return nullptr;
-    }
     if (!successCallback) {
         log().warn("Refusing to register config subscription with NULL callback.");
         return nullptr;
@@ -61,8 +56,6 @@ void DataSourceConfigService::setConfigFilePath(std::string const& path)
 
 void DataSourceConfigService::loadConfig()
 {
-    blockedSubscriptions_ = true;
-
     std::optional<std::string> error;
     try {
         YAML::Node config = YAML::LoadFile(configFilePath_);
@@ -245,7 +238,6 @@ void DataSourceConfigService::reset() {
     currentConfig_.clear();
     configFilePath_.clear();
     end();
-    blockedSubscriptions_ = false;
 }
 
 }  // namespace mapget
