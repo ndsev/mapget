@@ -123,7 +123,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     }
 
     prepareNextUpdate();
-    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
+    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
     waitForUpdate(updateFuture);
     REQUIRE(service.info().empty());
 
