@@ -5,6 +5,7 @@
 #include <functional>
 #include <sstream>
 
+#include "picosha2.h"
 #include "config.h"
 #include "mapget/log.h"
 
@@ -49,21 +50,51 @@ void DataSourceConfigService::unsubscribe(uint32_t id)
     subscriptions_.erase(id);
 }
 
-void DataSourceConfigService::setConfigFilePath(std::string const& path)
+void DataSourceConfigService::loadConfig(std::string const& path, bool startWatchThread)
 {
     configFilePath_ = path;
+
+    // Force reload by clearing checksum.
+    lastConfigSHA256_.clear();
+
+    // Notify subscribers immediately to allow dependent apps to proceed
+    // This is needed as there otherwise apps would have to wait manually
+    // for the callback to be called before they can continue.
+    loadConfig();
+
+    if (startWatchThread)
+        startConfigFileWatchThread();
 }
 
 void DataSourceConfigService::loadConfig()
 {
     std::optional<std::string> error;
+
     try {
+        std::ifstream file(configFilePath_);
+        if (!file)
+            throw YAML::Exception(YAML::Mark::null_mark(), "The file does not exist.");
+
+        // Add current file name to input buffer to force a reload when file has been moved.
+        std::stringstream buffer;
+        buffer << file.rdbuf() << configFilePath_;
+
+        std::string sha256;
+        picosha2::hash256_hex_string(buffer.str(), sha256);
+
+        if (sha256 == lastConfigSHA256_)
+        {
+            log().info("Config file unchanged. No need to reload.");
+            return;
+        }
+
         YAML::Node config = YAML::LoadFile(configFilePath_);
         if (auto sourcesNode = config["sources"]) {
             std::lock_guard memberAccessLock(memberAccessMutex_);
             currentConfig_.clear();
             for (auto const& node : sourcesNode)
                 currentConfig_.push_back(node);
+            lastConfigSHA256_ = sha256;
             for (const auto& [subId, subCb] : subscriptions_) {
                 log().debug("Calling subscriber {}", subId);
                 subCb.success_(currentConfig_);

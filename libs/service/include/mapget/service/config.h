@@ -75,20 +75,16 @@ public:
         std::function<void(std::string const& error)> const& errorCallback={});
 
     /**
-     * Sets the path to the YAML configuration file to watch.
+     * Loads the configuration from the file.
      * @param path The file path to the YAML configuration file.
+     * @param startWatchThread True to automatically reload of changes to config file occur.
      */
-    void setConfigFilePath(std::string const& path);
+    void loadConfig(std::string const& path, bool startWatchThread = true);
 
     /**
      * Get the path to the YAML configuration file (if set).
      */
     std::optional<std::string> getConfigFilePath() const;
-
-    /**
-     * Loads the configuration and starts watching the configuration file for changes.
-     */
-    void startConfigFileWatchThread();
 
     /**
      * Instantiates a data source based on the provided descriptor.
@@ -125,12 +121,21 @@ private:
     void unsubscribe(uint32_t id);
 
     /**
-     * Loads the configuration from the file.
+     * Starts watching the configuration file for changes. Will load
+     * the config immmediately if not yet occurred.
+     */
+    void startConfigFileWatchThread();
+
+    /**
+     * Uses @see configFilePath_ to load the configuration.
      */
     void loadConfig();
 
     // Path to the configuration file.
     std::string configFilePath_;
+
+    // Last config loaded.
+    std::string lastConfigSHA256_;
 
     // Map of subscription IDs to their respective callback functions.
     struct SubscriptionCallbacks {

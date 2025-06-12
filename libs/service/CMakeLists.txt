@@ -28,7 +28,9 @@ target_link_libraries(mapget-service
     mapget-model
     mapget-log
     RocksDB::rocksdb
-    yaml-cpp::yaml-cpp)
+    yaml-cpp::yaml-cpp
+  PRIVATE
+    picosha2::picosha2)
 
 if (MSVC)
   target_compile_definitions(mapget-service
