@@ -1,7 +1,9 @@
 #pragma once
 
 #include <span>
+#include <string_view>
 
+#include "simfil/environment.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
 #include "simfil/simfil.h"
@@ -225,8 +227,26 @@ public:
      * @param anyMode       Auto-wrap expression in `any(...)`
      * @param autoWildcard  Auto expand constant expressions to `** = <expr>`
      */
-    std::vector<simfil::Value> evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
-    std::vector<simfil::Value> evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
+    struct QueryResult {
+        // The list of values resulting from the query evaluation.
+        std::vector<simfil::Value> values;
+
+        // A map of traces for debugging or understanding query execution,
+        // where the key is a string identifier and the value is a trace object.
+        std::map<std::string, simfil::Trace> traces;
+
+        // Diagnostics information, such as warnings or errors,
+        // generated during query evaluation.
+        simfil::Diagnostics diagnostics;
+    };
+    QueryResult evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
+    QueryResult evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
+
+    /**
+     * Collect query diagnostics for an evaluated query.
+     * If the query has not yet been evaluated, an empty list is returned.
+     */
+    std::vector<simfil::Diagnostics::Message> collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diagnostics);
 
     /**
      * Change the string pool of this model to a different one.
