@@ -90,13 +90,13 @@ auto makeLayer()
     return tile;
 }
 
-#define REQUIRE_QUERY(query, type, result)              \
-    do {                                                \
-        auto pool = makeLayer();                        \
-        auto res = pool->evaluate(query, false, false); \
-        REQUIRE(res.size() == 1);                       \
-        INFO("simifil res: " << res[0].toString());     \
-        REQUIRE(res[0].as<type>() == result);           \
+#define REQUIRE_QUERY(query, type, result)                     \
+    do {                                                       \
+        auto pool = makeLayer();                               \
+        auto res = pool->evaluate(query, false, false).values; \
+        REQUIRE(res.size() == 1);                              \
+        INFO("simifil res: " << res[0].toString());            \
+        REQUIRE(res[0].as<type>() == result);                  \
     } while (false)
 
 TEST_CASE("Construct Point", "[simfil.geometry]")

@@ -45,11 +45,13 @@ else()
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(spdlog)
 
-  FetchContent_Declare(bitsery
-    GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
-    GIT_TAG        "v5.2.4"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(bitsery)
+  if (NOT TARGET Bitsery::bitsery)
+    FetchContent_Declare(bitsery
+      GIT_REPOSITORY "https://github.com/fraillt/bitsery.git"
+      GIT_TAG        "v5.2.4"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(bitsery)
+  endif()
 
   FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
@@ -107,18 +109,6 @@ else()
   endif()
 endif()
 
-# Simfil is no longer available via conan, therefore it 
-# is always fetched via CMake's FetchContent
-if (NOT TARGET simfil)
-  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
-  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
-  FetchContent_Declare(simfil
-    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    GIT_TAG        "v0.3.5"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(simfil)
-endif()
-
 if (NOT MAPGET_CONAN)
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
@@ -139,6 +129,18 @@ if (NOT MAPGET_CONAN)
         CPPHTTPLIB_USE_POLL)
     target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)  
   endif()
+endif()
+
+if (NOT TARGET simfil)
+  set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
+  set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
+  FetchContent_Declare(simfil
+    GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
+    # TODO: We want to have the simfil diagnostics feature, there is
+    #       not yet an official release containing it -> activate main branch
+    GIT_TAG        "main"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(simfil)
 endif()
 
 if (MAPGET_WITH_WHEEL)
