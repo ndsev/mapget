@@ -354,7 +354,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     // Set up the config file.
     DataSourceConfigService::get().reset();
-    DataSourceConfigService::get().setConfigFilePath(tempConfigPath.string());
+    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
 
     SECTION("Get Configuration - Config File Not Found") {
         auto res = cli.Get("/config");
@@ -376,7 +376,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     SECTION("Get Configuration - No Config File Path Set") {
         setGetConfigEndpointEnabled(true);
-        DataSourceConfigService::get().setConfigFilePath("");  // Simulate no config path set.
+        DataSourceConfigService::get().loadConfig("");  // Simulate no config path set.
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 404);
