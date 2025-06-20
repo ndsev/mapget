@@ -239,14 +239,17 @@ struct ServeCommand
             raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
-        bool watchConfig = false;
-        if (auto config = app_.get_config_ptr()) {
-            watchConfig = true;
-            registerDefaultDatasourceTypes();
-            DataSourceConfigService::get().setConfigFilePath(config->as<std::string>());
-        }
+        auto config = app_.get_config_ptr();
+        bool watchConfig = config != nullptr;
 
+        // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, watchConfig);
+
+        if (config)
+        {
+            registerDefaultDatasourceTypes();
+            DataSourceConfigService::get().loadConfig(config->as<std::string>());
+        }
 
         if (!datasourceHosts_.empty()) {
             for (auto& ds : datasourceHosts_) {
