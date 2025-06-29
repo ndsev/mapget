@@ -729,6 +729,11 @@ TileFeatureLayer::QueryResult TileFeatureLayer::evaluate(std::string_view query,
     return evaluate(query, *root(0), anyMode, autoWildcard);
 }
 
+std::vector<simfil::CompletionCandidate> TileFeatureLayer::complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts)
+{
+    return impl_->expressionCache_.completions(query, point, node, opts);
+}
+
 std::vector<simfil::Diagnostics::Message> TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag)
 {
     return impl_->expressionCache_.diagnostics(query, diag);

@@ -243,6 +243,11 @@ public:
     QueryResult evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
 
     /**
+     * Get auto-completion candidates at `point` of a query.
+     */
+    std::vector<simfil::CompletionCandidate> complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts);
+
+    /**
      * Collect query diagnostics for an evaluated query.
      * If the query has not yet been evaluated, an empty list is returned.
      */

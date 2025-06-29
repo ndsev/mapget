@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -96,6 +97,11 @@ struct SimfilExpressionCache
             return {};
 
         return simfil::diagnostics(environment(), *iter->second, diag);
+    }
+
+    auto completions(std::string_view query, size_t point, simfil::ModelNode const& node, simfil::CompletionOptions const& opts) -> std::vector<simfil::CompletionCandidate>
+    {
+        return simfil::complete(environment(), query, point, node, opts);
     }
 
     void reset(std::unique_ptr<simfil::Environment> env)
