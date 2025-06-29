@@ -144,9 +144,7 @@ if (NOT TARGET simfil)
   set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    # TODO: We want to have the simfil diagnostics feature, there is
-    #       not yet an official release containing it -> activate main branch
-    GIT_TAG        "v0.4.0"
+    GIT_TAG        "v0.5.0"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()
