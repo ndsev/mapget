@@ -93,7 +93,7 @@ auto makeLayer()
 #define REQUIRE_QUERY(query, type, result)                     \
     do {                                                       \
         auto pool = makeLayer();                               \
-        auto res = pool->evaluate(query, false, false).values; \
+        auto res = pool->evaluate(query, false, false).value().values; \
         REQUIRE(res.size() == 1);                              \
         INFO("simifil res: " << res[0].toString());            \
         REQUIRE(res[0].as<type>() == result);                  \

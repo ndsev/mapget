@@ -57,6 +57,7 @@ target_link_libraries(mapget-model
     sfl::sfl
     Bitsery::bitsery
     simfil::simfil
+    tl::expected
     nlohmann_json::nlohmann_json)
 
 if (MSVC)

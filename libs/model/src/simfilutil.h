@@ -1,11 +1,15 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string_view>
 
 #include "featurelayer.h"
+
+#include "simfil/error.h"
+#include "tl/expected.hpp"
 
 #include "simfil/environment.h"
 #include "simfil/model/model.h"
@@ -44,7 +48,7 @@ struct SimfilExpressionCache
         : env_(std::move(env))
     {}
 
-    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<TileFeatureLayer::QueryResult(const simfil::AST&)> evalFun) -> TileFeatureLayer::QueryResult
+    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<tl::expected<TileFeatureLayer::QueryResult, simfil::Error>(const simfil::AST&)> evalFun) -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -53,18 +57,26 @@ struct SimfilExpressionCache
         s.unlock();
 
         std::unique_lock u(mtx_);
+        auto ast = simfil::compile(*env_, query, anyMode, autoWildcard);
+        if (!ast)
+            return tl::unexpected<simfil::Error>(std::move(ast.error()));
+
         auto [newIter, _] = cache_.emplace(
             std::string(query),
-            simfil::compile(*env_, query, anyMode, autoWildcard)
+            std::move(*ast)
         );
         return evalFun(*newIter->second);
     }
 
-    auto eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard)
+    auto eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard) -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
     {
-        auto evalFun = [&](auto&& ast) {
+        auto evalFun = [&](auto&& ast) -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error> {
             TileFeatureLayer::QueryResult r;
-            r.values = simfil::eval(*env_, ast, node, &r.diagnostics);
+            auto result = simfil::eval(*env_, ast, node, &r.diagnostics);
+            if (!result)
+                return tl::unexpected<simfil::Error>(std::move(result.error()));
+
+            r.values = std::move(*result);
             r.traces = env_->traces;
 
             return r;
@@ -73,7 +85,7 @@ struct SimfilExpressionCache
         return eval(query, anyMode, autoWildcard, evalFun);
     }
 
-    const simfil::ASTPtr& compile(std::string_view query, bool anyMode)
+    auto compile(std::string_view query, bool anyMode) -> tl::expected<std::reference_wrapper<const simfil::ASTPtr>, simfil::Error>
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -82,14 +94,18 @@ struct SimfilExpressionCache
         s.unlock();
 
         std::unique_lock u(mtx_);
+        auto ast = simfil::compile(*env_, query, anyMode, true);
+        if (!ast)
+            return tl::unexpected<simfil::Error>(std::move(ast.error()));
+
         auto [newIter, _] = cache_.emplace(
             std::string(query),
-            simfil::compile(*env_, query, anyMode, true)
+            std::move(*ast)
         );
         return newIter->second;
     }
 
-    auto diagnostics(std::string_view query, const simfil::Diagnostics& diag) -> std::vector<simfil::Diagnostics::Message>
+    auto diagnostics(std::string_view query, const simfil::Diagnostics& diag) -> tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
     {
         std::shared_lock s(mtx_);
         auto iter = cache_.find(query);
@@ -99,7 +115,7 @@ struct SimfilExpressionCache
         return simfil::diagnostics(environment(), *iter->second, diag);
     }
 
-    auto completions(std::string_view query, size_t point, simfil::ModelNode const& node, simfil::CompletionOptions const& opts) -> std::vector<simfil::CompletionCandidate>
+    auto completions(std::string_view query, size_t point, simfil::ModelNode const& node, simfil::CompletionOptions const& opts) -> tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
     {
         return simfil::complete(environment(), query, point, node, opts);
     }

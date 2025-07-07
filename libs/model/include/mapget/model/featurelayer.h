@@ -3,10 +3,13 @@
 #include <span>
 #include <string_view>
 
+#include "tl/expected.hpp"
+
+#include "simfil/simfil.h"
 #include "simfil/environment.h"
+#include "simfil/model/model.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
-#include "simfil/simfil.h"
 
 #include "stringpool.h"
 #include "layer.h"
@@ -239,19 +242,24 @@ public:
         // generated during query evaluation.
         simfil::Diagnostics diagnostics;
     };
-    QueryResult evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
-    QueryResult evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
+    tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
+    evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
+
+    tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
+    evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
 
     /**
      * Get auto-completion candidates at `point` of a query.
      */
-    std::vector<simfil::CompletionCandidate> complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts);
+    tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
+    complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts);
 
     /**
      * Collect query diagnostics for an evaluated query.
      * If the query has not yet been evaluated, an empty list is returned.
      */
-    std::vector<simfil::Diagnostics::Message> collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diagnostics);
+    tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
+    collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag);
 
     /**
      * Change the string pool of this model to a different one.

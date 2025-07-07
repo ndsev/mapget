@@ -149,6 +149,16 @@ if (NOT TARGET simfil)
   FetchContent_MakeAvailable(simfil)
 endif()
 
+if (NOT TARGET tl::expected)
+  set(EXPECTED_BUILD_TESTS NO)
+  set(EXPECTED_BUILD_PACKAGE_DEB NO)
+  FetchContent_Declare(expected
+    GIT_REPOSITORY "https://github.com/TartanLlama/expected.git"
+    GIT_TAG        "v1.1.0"
+    GIr_SHALLOW    ON)
+  FetchContent_MakeAvailable(expected)
+endif()
+
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
   FetchContent_Declare(python-cmake-wheel
     GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
