@@ -70,7 +70,7 @@ struct SimfilExpressionCache
 
     auto eval(std::string_view query, simfil::ModelNode const& node, bool anyMode, bool autoWildcard) -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
     {
-        auto evalFun = [&](auto&& ast) -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error> {
+        auto evalFun = [&](const simfil::AST& ast) -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error> {
             TileFeatureLayer::QueryResult r;
             auto result = simfil::eval(*env_, ast, node, &r.diagnostics);
             if (!result)
