@@ -9,9 +9,9 @@
 #include "relation.h"
 #include "geometry.h"
 
-#include "nlohmann/json.hpp"
-
+#include "tl/expected.hpp"
 #include "sfl/small_vector.hpp"
+#include "nlohmann/json.hpp"
 
 namespace mapget
 {
@@ -104,12 +104,14 @@ public:
     /**
      * Evaluate a filter expression on this feature, get the first (or Null) result.
      */
-    simfil::Value evaluate(std::string_view const& expression);
+    tl::expected<simfil::Value, simfil::Error>
+    evaluate(std::string_view const& expression);
 
     /**
      * Evaluate a filter expression on this feature, get all (or no) results.
      */
-    std::vector<simfil::Value> evaluateAll(std::string_view const& expression);
+    tl::expected<std::vector<simfil::Value>, simfil::Error>
+    evaluateAll(std::string_view const& expression);
 
     /**
      * Convert the Feature to (Geo-) JSON.
