@@ -7,8 +7,12 @@ jobs:
   deploy:
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
-        os: [macos-13, ubuntu-latest, windows-2019]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        os: [macos-13, macos-14, ubuntu-latest-x86_64, ubuntu-latest-aarch64, windows-2019]
+        exclude:
+          # Python 3.10 doesn't have ARM64 builds for macOS
+          - os: macos-14
+            python-version: "3.10"
     runs-on: ubuntu-latest
     steps:
       - name: Fetch
@@ -17,7 +21,7 @@ jobs:
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: cmake.yaml
-          name: mapget-py${{ matrix.python-version }}-${{ matrix.os }}
+          name: mapget-py${{ matrix.python-version }}-${{ matrix.os == 'ubuntu-latest-x86_64' && 'ubuntu-latest-x86_64' || matrix.os == 'ubuntu-latest-aarch64' && 'ubuntu-latest-aarch64' || matrix.os }}
           path: dist/
       - name: Upload
         env:
