@@ -25,25 +25,31 @@ if (MAPGET_CONAN)
     find_package(RocksDB     CONFIG REQUIRED)
   endif()
 else()
-  FetchContent_Declare(glm
-    GIT_REPOSITORY "https://github.com/g-truc/glm.git"
-    GIT_TAG        "1.0.1"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(glm)
+  if (NOT TARGET glm::glm)
+    FetchContent_Declare(glm
+      GIT_REPOSITORY "https://github.com/g-truc/glm.git"
+      GIT_TAG        "1.0.1"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(glm)
+  endif()
 
-  FetchContent_Declare(fmt
-    GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
-    GIT_TAG        "11.1.3"
-    GIT_SHALLOW    ON
-    CMAKE_ARGS     -DFMT_HEADER_ONLY=OFF)
-  FetchContent_MakeAvailable(fmt)
+  if (NOT TARGET fmt::fmt)
+    FetchContent_Declare(fmt
+      GIT_REPOSITORY "https://github.com/fmtlib/fmt.git"
+      GIT_TAG        "11.1.3"
+      GIT_SHALLOW    ON
+      CMAKE_ARGS     -DFMT_HEADER_ONLY=OFF)
+    FetchContent_MakeAvailable(fmt)
+  endif()
 
-  set (SPDLOG_FMT_EXTERNAL ON)
-  FetchContent_Declare(spdlog
-    GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
-    GIT_TAG        "v1.x"
-    GIT_SHALLOW    ON)
-  FetchContent_MakeAvailable(spdlog)
+  if (NOT TARGET spdlog::spdlog)
+    set (SPDLOG_FMT_EXTERNAL ON)
+    FetchContent_Declare(spdlog
+      GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
+      GIT_TAG        "v1.x"
+      GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(spdlog)
+  endif()
 
   if (NOT TARGET Bitsery::bitsery)
     FetchContent_Declare(bitsery
@@ -53,30 +59,40 @@ else()
     FetchContent_MakeAvailable(bitsery)
   endif()
 
-  FetchContent_Declare(cpp-httplib
-    GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-    GIT_TAG        "v0.15.3"
-    GIT_SHALLOW    ON)
+  if (NOT TARGET httplib::httplib)
+    FetchContent_Declare(cpp-httplib
+      GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
+      GIT_TAG        "v0.15.3"
+      GIT_SHALLOW    ON)
+  endif()
 
-  FetchContent_Declare(yaml-cpp
-    GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
-    GIT_TAG        "0.8.0"
-    GIT_SHALLOW    ON)
+  if (NOT TARGET yaml-cpp::yaml-cpp)
+    FetchContent_Declare(yaml-cpp
+      GIT_REPOSITORY "https://github.com/jbeder/yaml-cpp.git"
+      GIT_TAG        "0.8.0"
+      GIT_SHALLOW    ON)
+  endif()
 
-  FetchContent_Declare(cli11
-    GIT_REPOSITORY "https://github.com/CLIUtils/CLI11"
-    GIT_TAG        "v2.3.2"
-    GIT_SHALLOW    ON)
+  if (NOT TARGET CLI11::CLI11)
+    FetchContent_Declare(cli11
+      GIT_REPOSITORY "https://github.com/CLIUtils/CLI11"
+      GIT_TAG        "v2.3.2"
+      GIT_SHALLOW    ON)
+  endif()
 
-  FetchContent_Declare(nlohmann_json_schema_validator
-    GIT_REPOSITORY "https://github.com/pboettch/json-schema-validator"
-    GIT_TAG        "2.3.0"
-    GIT_SHALLOW    ON)
+  if (NOT TARGET nlohmann_json_schema_validator)
+    FetchContent_Declare(nlohmann_json_schema_validator
+      GIT_REPOSITORY "https://github.com/pboettch/json-schema-validator"
+      GIT_TAG        "2.3.0"
+      GIT_SHALLOW    ON)
+  endif()
 
-  FetchContent_Declare(picosha2
-    GIT_REPOSITORY "https://github.com/okdshin/PicoSHA2"
-    GIT_TAG        "v1.0.1"
-    GIT_SHALLOW    ON)
+  if (NOT TARGET picosha2::picosha2)
+    FetchContent_Declare(picosha2
+      GIT_REPOSITORY "https://github.com/okdshin/PicoSHA2"
+      GIT_TAG        "v1.0.1"
+      GIT_SHALLOW    ON)
+  endif()
 
   if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
     FetchContent_Declare(pybind11
@@ -111,8 +127,22 @@ endif()
 
 if (NOT MAPGET_CONAN)
   if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-    FetchContent_MakeAvailable(cpp-httplib yaml-cpp cli11 nlohmann_json_schema_validator picosha2)
-    add_library(picosha2::picosha2 ALIAS picosha2)
+    if (NOT TARGET httplib::httplib)
+      FetchContent_MakeAvailable(cpp-httplib)
+    endif()
+    if (NOT TARGET yaml-cpp::yaml-cpp)
+      FetchContent_MakeAvailable(yaml-cpp)
+    endif()
+    if (NOT TARGET CLI11::CLI11)
+      FetchContent_MakeAvailable(cli11)
+    endif()
+    if (NOT TARGET nlohmann_json_schema_validator)
+      FetchContent_MakeAvailable(nlohmann_json_schema_validator)
+    endif()
+    if (NOT TARGET picosha2::picosha2)
+      FetchContent_MakeAvailable(picosha2)
+      add_library(picosha2::picosha2 ALIAS picosha2)
+    endif()
   endif()
 
   # Using option CPPHTTPLIB_USE_POLL to bypass hardcoded file descriptor limit on linux.
@@ -143,7 +173,7 @@ if (NOT TARGET simfil)
   FetchContent_MakeAvailable(simfil)
 endif()
 
-if (MAPGET_WITH_WHEEL)
+if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
   FetchContent_Declare(python-cmake-wheel
     GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
     GIT_TAG        "v0.9.0"
@@ -151,9 +181,11 @@ if (MAPGET_WITH_WHEEL)
   FetchContent_MakeAvailable(python-cmake-wheel)
 endif()
 
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(tiny-process-library
-  GIT_REPOSITORY "https://gitlab.com/eidheim/tiny-process-library"
-  GIT_TAG        "v2.0.4"
-  GIT_SHALLOW    ON)
-FetchContent_MakeAvailable(tiny-process-library)
+if (NOT TARGET tiny-process-library)
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(tiny-process-library
+    GIT_REPOSITORY "https://gitlab.com/eidheim/tiny-process-library"
+    GIT_TAG        "v2.0.4"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(tiny-process-library)
+endif()
