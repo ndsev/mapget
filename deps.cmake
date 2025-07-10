@@ -138,7 +138,7 @@ if (NOT TARGET simfil)
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
     # TODO: We want to have the simfil diagnostics feature, there is
     #       not yet an official release containing it -> activate main branch
-    GIT_TAG        "main"
+    GIT_TAG        "v0.4.0"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
 endif()
