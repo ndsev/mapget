@@ -197,11 +197,19 @@ struct ServeCommand
             "Can be specified multiple times."),
             "--config <yaml-file>");
         serveCmd->add_option(
-            "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory, rocksdb (Technology Preview).")
+            "-c,--cache-type", cacheType_, 
+#ifdef MAPGET_WITH_ROCKSDB
+            "From [memory|rocksdb], default memory, rocksdb (Technology Preview)."
+#else
+            "Cache type (only 'memory' is available, RocksDB disabled at compile time)."
+#endif
+            )
             ->default_val("memory");
+#ifdef MAPGET_WITH_ROCKSDB
         serveCmd->add_option(
             "--cache-dir", cachePath_, "Path to store RocksDB cache.")
             ->default_val("mapget-cache");
+#endif
         serveCmd->add_option(
             "--cache-max-tiles", cacheMaxTiles_, "0 for unlimited, default 1024.")
             ->default_val(1024);
@@ -229,7 +237,12 @@ struct ServeCommand
 
         std::shared_ptr<Cache> cache;
         if (cacheType_ == "rocksdb") {
+#ifdef MAPGET_WITH_ROCKSDB
             cache = std::make_shared<RocksDBCache>(cacheMaxTiles_, cachePath_, clearCache_);
+#else
+            raise("RocksDB cache was requested but RocksDB support was disabled at compile time. "
+                  "Rebuild with -DMAPGET_WITH_ROCKSDB=ON or use --cache-type memory instead.");
+#endif
         }
         else if (cacheType_ == "memory") {
             log().info("Initializing in-memory cache.");

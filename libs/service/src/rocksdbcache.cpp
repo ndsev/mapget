@@ -1,4 +1,6 @@
+#ifdef MAPGET_WITH_ROCKSDB
 #include <rocksdb/db.h>
+#endif
 #include <filesystem>
 #include <iostream>
 
@@ -7,6 +9,8 @@
 
 namespace mapget
 {
+
+#ifdef MAPGET_WITH_ROCKSDB
 
 // Timestamp to the tileId stored at that time. Used to delete oldest entries.
 static uint8_t COL_TIMESTAMP = 0;
@@ -226,5 +230,7 @@ void RocksDBCache::putStringPoolBlob(std::string_view const& sourceNodeId, std::
         raise(fmt::format("Error writing to database: {}", status.ToString()));
     }
 }
+
+#endif  // MAPGET_WITH_ROCKSDB
 
 }  // namespace mapget
