@@ -23,29 +23,26 @@ jobs:
         sudo apt-get install ninja-build
         pip install gcovr
         gcovr --version
-    - name: Install Conan
-      run: |
-        pip install conan
-        conan profile detect
-        conan remote update --url https://center2.conan.io conancenter
-    - name: Setup
-      run: |
-        conan install . -s compiler.cppstd=20 -s build_type=Debug -b missing \
-            -o with_wheel=True -o with_service=True -o with_httplib=True
     - name: Configure
       run: |
-        cmake --preset conan-debug \
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS=" -fprofile-arcs -ftest-coverage " \
             -DCMAKE_EXE_LINKER_FLAGS=" --coverage -lgcov " \
             -DMAPGET_ENABLE_TESTING=YES \
+            -DMAPGET_WITH_WHEEL=True \
+            -DMAPGET_WITH_SERVICE=True \
+            -DMAPGET_WITH_HTTPLIB=True \
             -DWITH_COVERAGE=YES \
             -GNinja
     - name: Build
       run: |
-        cmake --build --preset conan-debug
+        cd build
+        cmake --build .
     - name: Run Test
       run: |
-        ctest --preset conan-debug -C Debug --verbose --no-tests=error
+        cd build
+        ctest --verbose --no-tests=error
     - name: Run Gcovr
       run: |
         mkdir coverage
