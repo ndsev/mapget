@@ -5,6 +5,7 @@
 
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/service/memcache.h"
+#include "mapget/service/nullcache.h"
 #include "mapget/service/rocksdbcache.h"
 #include "mapget/service/sqlitecache.h"
 #include "mapget/service/config.h"
@@ -201,9 +202,9 @@ struct ServeCommand
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, 
 #if defined(MAPGET_WITH_SQLITE) || defined(MAPGET_WITH_ROCKSDB)
-            "From [memory|persistent], default memory. 'persistent' uses SQLite for disk-based caching."
+            "From [memory|persistent|none], default memory. 'persistent' uses SQLite for disk-based caching, 'none' disables caching."
 #else
-            "Cache type (only 'memory' is available, persistent caches disabled at compile time)."
+            "From [memory|none], default memory. 'none' disables caching (persistent caches disabled at compile time)."
 #endif
             )
             ->default_val("memory");
@@ -258,6 +259,10 @@ struct ServeCommand
         else if (cacheType_ == "memory") {
             log().info("Initializing in-memory cache.");
             cache = std::make_shared<MemCache>(cacheMaxTiles_);
+        }
+        else if (cacheType_ == "none") {
+            log().info("Running without cache - all requests will go directly to data sources.");
+            cache = std::make_shared<NullCache>();
         }
         else {
             raise(fmt::format("Cache type {} not supported!", cacheType_));

@@ -5,6 +5,7 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/cache.h
   include/mapget/service/datasource.h
   include/mapget/service/memcache.h
+  include/mapget/service/nullcache.h
   include/mapget/service/locate.h
   include/mapget/service/config.h
 
@@ -12,6 +13,7 @@ set(MAPGET_SERVICE_SOURCES
   src/cache.cpp
   src/datasource.cpp
   src/memcache.cpp
+  src/nullcache.cpp
   src/locate.cpp
   src/config.cpp)
 
