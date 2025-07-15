@@ -154,7 +154,7 @@ endif()
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
   FetchContent_Declare(python-cmake-wheel
     GIT_REPOSITORY "https://github.com/klebert-engineering/python-cmake-wheel.git"
-    GIT_TAG        "v0.9.0"
+    GIT_TAG        "v1.0.0"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(python-cmake-wheel)
 endif()
