@@ -6,6 +6,12 @@ else()
   set(WANTS_ROCKSDB NO)
 endif()
 
+if (MAPGET_WITH_SQLITE AND (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING))
+  set(WANTS_SQLITE YES)
+else()
+  set(WANTS_SQLITE NO)
+endif()
+
 if (NOT TARGET glm::glm)
   FetchContent_Declare(glm
     GIT_REPOSITORY "https://github.com/g-truc/glm.git"
@@ -103,6 +109,30 @@ if (WANTS_ROCKSDB AND NOT TARGET rocksdb)
     FetchContent_MakeAvailable(RocksDB)
     add_library(RocksDB::rocksdb ALIAS rocksdb)
   endblock()
+endif()
+
+if (WANTS_SQLITE AND NOT TARGET SQLite3)
+  FetchContent_Declare(sqlite3
+    URL "https://www.sqlite.org/2024/sqlite-amalgamation-3470200.zip"
+    URL_HASH SHA256=2892031aba3cbf1ac0175c1c7880e1467752a2e4e69e90fca96326e909ac1b8a
+    DOWNLOAD_EXTRACT_TIMESTAMP ON)
+  FetchContent_MakeAvailable(sqlite3)
+  
+  # Create library target from amalgamation
+  add_library(SQLite3 STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
+  target_include_directories(SQLite3 PUBLIC ${sqlite3_SOURCE_DIR})
+  set_target_properties(SQLite3 PROPERTIES 
+    POSITION_INDEPENDENT_CODE ON
+    C_STANDARD 99)
+  
+  # Enable recommended compile options
+  target_compile_definitions(SQLite3 PRIVATE
+    SQLITE_ENABLE_FTS5
+    SQLITE_ENABLE_RTREE
+    SQLITE_ENABLE_JSON1
+    SQLITE_THREADSAFE=2
+    SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
+    SQLITE_DEFAULT_MEMSTATUS=0)
 endif()
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)

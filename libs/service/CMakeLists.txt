@@ -21,6 +21,12 @@ if (MAPGET_WITH_ROCKSDB)
     src/rocksdbcache.cpp)
 endif()
 
+if (MAPGET_WITH_SQLITE)
+  list(APPEND MAPGET_SERVICE_SOURCES
+    include/mapget/service/sqlitecache.h
+    src/sqlitecache.cpp)
+endif()
+
 add_library(mapget-service STATIC ${MAPGET_SERVICE_SOURCES})
 
 target_include_directories(mapget-service
@@ -40,6 +46,11 @@ target_link_libraries(mapget-service
 if (MAPGET_WITH_ROCKSDB)
   target_link_libraries(mapget-service PUBLIC RocksDB::rocksdb)
   target_compile_definitions(mapget-service PUBLIC MAPGET_WITH_ROCKSDB)
+endif()
+
+if (MAPGET_WITH_SQLITE)
+  target_link_libraries(mapget-service PUBLIC SQLite3)
+  target_compile_definitions(mapget-service PUBLIC MAPGET_WITH_SQLITE)
 endif()
 
 if (MSVC)
