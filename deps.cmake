@@ -6,6 +6,12 @@ else()
   set(WANTS_ROCKSDB NO)
 endif()
 
+if (MAPGET_WITH_SQLITE AND (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING))
+  set(WANTS_SQLITE YES)
+else()
+  set(WANTS_SQLITE NO)
+endif()
+
 if (NOT TARGET glm::glm)
   FetchContent_Declare(glm
     GIT_REPOSITORY "https://github.com/g-truc/glm.git"
@@ -103,6 +109,23 @@ if (WANTS_ROCKSDB AND NOT TARGET rocksdb)
     FetchContent_MakeAvailable(RocksDB)
     add_library(RocksDB::rocksdb ALIAS rocksdb)
   endblock()
+endif()
+
+if (WANTS_SQLITE AND NOT TARGET SQLite::SQLite3)
+  # Use our clean SQLite integration
+  include(${CMAKE_CURRENT_LIST_DIR}/cmake/sqlite.cmake)
+  
+  add_sqlite(
+    VERSION 3.50.2
+    TARGET_NAME SQLite3
+    NAMESPACE SQLite
+    ENABLE_FTS5 ON
+    ENABLE_RTREE ON
+    ENABLE_JSON1 ON
+    ENABLE_MATH ON
+    ENABLE_COLUMN_METADATA ON
+    THREADSAFE 1
+  )
 endif()
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)

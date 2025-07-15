@@ -10,12 +10,44 @@
 #include "mapget/log.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
+#ifdef MAPGET_WITH_ROCKSDB
 #include "mapget/service/rocksdbcache.h"
+#endif
+#include "mapget/service/sqlitecache.h"
 
 using namespace mapget;
 
-TEST_CASE("RocksDBCache", "[Cache]")
-{
+// Cache traits to handle differences between cache implementations
+template<typename CacheType>
+struct CacheTraits;
+
+#ifdef MAPGET_WITH_ROCKSDB
+template<>
+struct CacheTraits<RocksDBCache> {
+    static constexpr const char* nodeIdPrefix = "CacheTestingNode";
+    static constexpr const char* otherNodeIdPrefix = "OtherCacheTestingNode";
+    static constexpr const char* stringPoolNodeIdPrefix = "StringPoolTestingNode";
+    static constexpr const char* defaultCacheName = "mapget-cache";
+    static constexpr const char* testDirPrefix = "rocksdb-unit-test-";
+    static constexpr bool needsDbExtension = false;
+};
+#endif
+
+template<>
+struct CacheTraits<SQLiteCache> {
+    static constexpr const char* nodeIdPrefix = "SQLiteCacheTestingNode";
+    static constexpr const char* otherNodeIdPrefix = "OtherSQLiteCacheTestingNode";
+    static constexpr const char* stringPoolNodeIdPrefix = "SQLiteStringPoolTestingNode";
+    static constexpr const char* defaultCacheName = "mapget-cache.db";
+    static constexpr const char* testDirPrefix = "sqlite-unit-test-";
+    static constexpr bool needsDbExtension = true;
+};
+
+// Common test function for both cache implementations
+template<typename CacheType>
+void testCacheImplementation() {
+    using Traits = CacheTraits<CacheType>;
+    
     mapget::setLogLevel("trace", log());
 
     // TODO Make layer creation in test-model reusable.
@@ -61,7 +93,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     // Create a basic TileFeatureLayer.
     auto tileId = TileId::fromWgs84(42., 11., 13);
-    auto nodeId = "CacheTestingNode";
+    auto nodeId = Traits::nodeIdPrefix;
     auto mapId = "CacheMe";
     // Create empty shared autofilled string dictionary.
     auto strings = std::make_shared<StringPool>(nodeId);
@@ -83,7 +115,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     // Create another basic TileFeatureLayer for a different node.
     auto otherTileId = TileId::fromWgs84(42., 12., 13);
-    auto otherNodeId = "OtherCacheTestingNode";
+    auto otherNodeId = Traits::otherNodeIdPrefix;
     auto otherMapId = "CacheMeToo";
     // Create empty shared autofilled string-pool.
     auto otherStringPool = std::make_shared<StringPool>(otherNodeId);
@@ -104,7 +136,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         TileLayerStream::CurrentProtocolVersion});
 
 
-    auto testStringPoolNodeId = "StringPoolTestingNode";
+    auto testStringPoolNodeId = Traits::stringPoolNodeIdPrefix;
     auto testStringPool = StringPool(testStringPoolNodeId);
 
     // Write a string pool directly into the cache, including the header
@@ -131,15 +163,15 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     SECTION("Insert, retrieve, and update feature layer") {
         // Open or create cache, clear any existing data.
-        auto cache = std::make_shared<mapget::RocksDBCache>(
-            1024, "mapget-cache", true);
-        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        auto cache = std::make_shared<CacheType>(
+            1024, Traits::defaultCacheName, true);
+        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].template get<int>();
         REQUIRE(stringPoolCount == 0);
 
         // putTileLayer triggers both putTileLayerBlob and putFieldsBlob.
         cache->putTileLayer(tile);
         auto returnedTile = getFeatureLayer(cache, tile->id(), info);
-        stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        stringPoolCount = cache->getStatistics()["loaded-string-pools"].template get<int>();
         REQUIRE(stringPoolCount == 1);
 
         // Update a tile, check that cache returns the updated version.
@@ -157,9 +189,9 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     SECTION("Reopen cache with maxTileCount=1, insert another layer") {
         // Open existing cache.
-        auto cache = std::make_shared<mapget::RocksDBCache>(
-            1, "mapget-cache", false);
-        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        auto cache = std::make_shared<CacheType>(
+            1, Traits::defaultCacheName, false);
+        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].template get<int>();
         REQUIRE(stringPoolCount == 1);
 
         // Add a tile to trigger cache cleaning.
@@ -169,7 +201,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
         REQUIRE(returnedTile->nodeId() == otherTile->nodeId());
 
         // String pools are updated with getTileLayer.
-        stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
+        stringPoolCount = cache->getStatistics()["loaded-string-pools"].template get<int>();
         REQUIRE(stringPoolCount == 2);
 
         // Query the first inserted layer - it should not be retrievable.
@@ -179,8 +211,8 @@ TEST_CASE("RocksDBCache", "[Cache]")
     }
 
     SECTION("Store another tile at unlimited cache size") {
-        auto cache = std::make_shared<mapget::RocksDBCache>(
-            0, "mapget-cache", false);
+        auto cache = std::make_shared<CacheType>(
+            0, Traits::defaultCacheName, false);
 
         // Insert another tile for the next test.
         cache->putTileLayer(tile);
@@ -192,8 +224,8 @@ TEST_CASE("RocksDBCache", "[Cache]")
     }
 
     SECTION("Reopen cache with maxTileCount=1, check older tile was deleted") {
-        auto cache = std::make_shared<mapget::RocksDBCache>(
-            1, "mapget-cache", false);
+        auto cache = std::make_shared<CacheType>(
+            1, Traits::defaultCacheName, false);
         REQUIRE(cache->getStatistics()["cache-misses"] == 0);
 
         // Query the first inserted layer - it should not be retrievable.
@@ -203,7 +235,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     SECTION("Reopen cache, check loading of string pools") {
         // Open existing cache.
-        auto cache = std::make_shared<mapget::RocksDBCache>();
+        auto cache = std::make_shared<CacheType>();
         REQUIRE(cache->getStatistics()["loaded-string-pools"] == 2);
 
         cache->putStringPoolBlob(testStringPoolNodeId, serializedMessage.str());
@@ -220,7 +252,7 @@ TEST_CASE("RocksDBCache", "[Cache]")
 
     SECTION("Reopen cache again, check loading of string pools again") {
         // Open existing cache.
-        auto cache = std::make_shared<mapget::RocksDBCache>();
+        auto cache = std::make_shared<CacheType>();
         REQUIRE(cache->getStatistics()["loaded-string-pools"] == 3);
 
         // Check that the same value can still be retrieved from string pooln.
@@ -233,7 +265,8 @@ TEST_CASE("RocksDBCache", "[Cache]")
         auto epoch_time = std::chrono::system_clock::to_time_t(now);
 
         std::filesystem::path test_cache = std::filesystem::temp_directory_path() /
-            ("rocksdb-unit-test-" + std::to_string(epoch_time));
+            (std::string(Traits::testDirPrefix) + std::to_string(epoch_time) + 
+             (Traits::needsDbExtension ? ".db" : ""));
         log().info(fmt::format("Test creating cache: {}", test_cache.string()));
 
         // Delete cache if it already exists, e.g. from a broken test case.
@@ -243,8 +276,20 @@ TEST_CASE("RocksDBCache", "[Cache]")
         REQUIRE(!std::filesystem::exists(test_cache));
 
         // Create cache and make sure it worked.
-        auto cache = std::make_shared<mapget::RocksDBCache>(
+        auto cache = std::make_shared<CacheType>(
             1024, test_cache.string(), true);
         REQUIRE(std::filesystem::exists(test_cache));
     }
+}
+
+#ifdef MAPGET_WITH_ROCKSDB
+TEST_CASE("RocksDBCache", "[Cache]")
+{
+    testCacheImplementation<RocksDBCache>();
+}
+#endif // MAPGET_WITH_ROCKSDB
+
+TEST_CASE("SQLiteCache", "[Cache]")
+{
+    testCacheImplementation<SQLiteCache>();
 }

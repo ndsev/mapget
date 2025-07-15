@@ -4,7 +4,9 @@
 #include "mapget/log.h"
 
 #include "mapget/http-datasource/datasource-client.h"
+#include "mapget/service/memcache.h"
 #include "mapget/service/rocksdbcache.h"
+#include "mapget/service/sqlitecache.h"
 #include "mapget/service/config.h"
 
 #include <CLI/CLI.hpp>
@@ -198,23 +200,23 @@ struct ServeCommand
             "--config <yaml-file>");
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, 
-#ifdef MAPGET_WITH_ROCKSDB
-            "From [memory|rocksdb], default memory, rocksdb (Technology Preview)."
+#if defined(MAPGET_WITH_SQLITE) || defined(MAPGET_WITH_ROCKSDB)
+            "From [memory|persistent], default memory. 'persistent' uses SQLite for disk-based caching."
 #else
-            "Cache type (only 'memory' is available, RocksDB disabled at compile time)."
+            "Cache type (only 'memory' is available, persistent caches disabled at compile time)."
 #endif
             )
             ->default_val("memory");
-#ifdef MAPGET_WITH_ROCKSDB
+#if defined(MAPGET_WITH_ROCKSDB) || defined(MAPGET_WITH_SQLITE)
         serveCmd->add_option(
-            "--cache-dir", cachePath_, "Path to store RocksDB cache.")
+            "--cache-dir", cachePath_, "Path to store persistent cache (SQLite DB file or RocksDB directory).")
             ->default_val("mapget-cache");
 #endif
         serveCmd->add_option(
             "--cache-max-tiles", cacheMaxTiles_, "0 for unlimited, default 1024.")
             ->default_val(1024);
         serveCmd->add_option(
-            "--clear-cache", clearCache_, "Clear existing cache at startup.")
+            "--clear-cache", clearCache_, "Clear existing persistent cache at startup.")
             ->default_val(false);
         serveCmd->add_option(
             "-w,--webapp",
@@ -237,11 +239,20 @@ struct ServeCommand
 
         std::shared_ptr<Cache> cache;
         if (cacheType_ == "rocksdb") {
-#ifdef MAPGET_WITH_ROCKSDB
+            log().warn("Cache type 'rocksdb' is no longer supported, falling back to 'persistent' option. "
+                       "Please use '--cache-type persistent' in the future.");
+            cacheType_ = "persistent";
+        }
+        
+        if (cacheType_ == "persistent") {
+#ifdef MAPGET_WITH_SQLITE
+            log().info("Initializing persistent SQLite cache.");
+            cache = std::make_shared<SQLiteCache>(cacheMaxTiles_, cachePath_, clearCache_);
+#elif MAPGET_WITH_ROCKSDB
+            log().info("Initializing persistent RocksDB cache (SQLite not available).");
             cache = std::make_shared<RocksDBCache>(cacheMaxTiles_, cachePath_, clearCache_);
 #else
-            raise("RocksDB cache was requested but RocksDB support was disabled at compile time. "
-                  "Rebuild with -DMAPGET_WITH_ROCKSDB=ON or use --cache-type memory instead.");
+            raise("Persistent cache was requested but neither SQLite nor RocksDB support was enabled at compile time.");
 #endif
         }
         else if (cacheType_ == "memory") {
