@@ -139,6 +139,14 @@ if (cpp_httplib_POPULATED)
   target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)
 endif()
 
+if (NOT TARGET nlohmann_json::nlohmann_json)
+  FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY "https://github.com/nlohmann/json.git"
+    GIT_TAG        "v3.11.3"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
 if (NOT TARGET simfil)
   set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
   set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
