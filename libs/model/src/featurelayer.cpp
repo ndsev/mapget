@@ -1131,9 +1131,9 @@ void TileFeatureLayer::clone(
     auto cloneTarget = find(type, idParts);
     if (!cloneTarget) {
         // Remove tile ID prefix from idParts to create a new feature.
-        if (getIdPrefix() && idParts.size() >= getIdPrefix()->size()) {
+        if (auto idPrefix = getIdPrefix(); idPrefix && idParts.size() >= idPrefix->size()) {
             idParts = KeyValueViewPairs(
-                idParts.begin()+getIdPrefix()->size(), idParts.end());
+                idParts.begin()+idPrefix->size(), idParts.end());
         }
         cloneTarget = newFeature(type, idParts);
     }
