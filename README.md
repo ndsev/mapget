@@ -418,3 +418,22 @@ TODO: expand and polish this section stub.
 
 3. A data source drops offline / `mapget` request fails during processing?
    - `cpp-httplib` cleanup callback returns timeout response (probably status code 408).
+
+## Making mapget Releases
+
+The `mapget` Python package is automatically deployed to PyPI through GitHub Actions:
+
+### Release Process
+
+1. **Update Version**: Set `MAPGET_VERSION` in `CMakeLists.txt` to the new version (e.g., `2025.3.1`)
+
+2. **Create GitHub Release**: Create a GitHub release with tag `v2025.3.1` (matching the CMakeLists.txt version)
+
+The GitHub Actions workflow will automatically:
+- Validate that the tag matches the CMakeLists.txt version
+- Build wheels for all supported platforms and Python versions
+- Upload the release to PyPI
+
+### Development Snapshots
+
+Every commit to `main` automatically deploys a development snapshot to PyPI with a version like `2025.3.0.dev3`. No manual intervention required.

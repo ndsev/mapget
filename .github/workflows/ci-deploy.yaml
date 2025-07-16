@@ -1,8 +1,9 @@
-name: CI
+name: CI and Deploy
 
 on:
   push:
     branches: [ master, main ]
+    tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ '**' ]
 
@@ -136,3 +137,73 @@ jobs:
         run: |
           cd build
           ctest -C Release --verbose --no-tests=error
+
+  deploy:
+    needs: [build-manylinux, build]
+    if: |
+      github.event_name == 'push' && 
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          pip install setuptools wheel setuptools_scm twine
+      
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python -c "import setuptools_scm; print(setuptools_scm.get_version(local_scheme='no-local-version'))")
+          echo "Version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Validate version
+        run: |
+          python .github/scripts/validate_version.py
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mapget-py*
+          path: dist/
+      
+      - name: Consolidate wheels
+        run: |
+          echo "Downloaded artifacts structure:"
+          find dist/ -type f -name "*.whl"
+          
+          # Move all wheels to dist/ root
+          mkdir -p dist_consolidated
+          find dist/ -name "*.whl" -type f -exec mv {} dist_consolidated/ \;
+          rm -rf dist
+          mv dist_consolidated dist
+          
+          echo "Consolidated wheels:"
+          ls -la dist/
+      
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.KE_PYPI_TOKEN }}
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "Uploading development snapshot version ${{ steps.version.outputs.version }} to PyPI..."
+          else
+            echo "Uploading release version ${{ steps.version.outputs.version }} to PyPI..."
+          fi
+          
+          twine upload \
+            --non-interactive \
+            --skip-existing \
+            --verbose \
+            --disable-progress-bar \
+            dist/*.whl
