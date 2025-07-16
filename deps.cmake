@@ -1,10 +1,5 @@
 include(FetchContent)
 
-if (MAPGET_WITH_ROCKSDB AND (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING))
-  set(WANTS_ROCKSDB YES)
-else()
-  set(WANTS_ROCKSDB NO)
-endif()
 
 if (MAPGET_WITH_SQLITE AND (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING))
   set(WANTS_SQLITE YES)
@@ -89,27 +84,6 @@ if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
   FetchContent_MakeAvailable(pybind11)
 endif()
 
-if (WANTS_ROCKSDB AND NOT TARGET rocksdb)
-  block()
-    set(WITH_GFLAGS NO CACHE BOOL "rocksdb without gflags")
-    set(WITH_TESTS NO CACHE BOOL "rocksdb without tests")
-    set(WITH_BENCHMARK_TOOLS NO CACHE BOOL "rocksdb without benchmarking")
-    set(BENCHMARK_ENABLE_GTEST_TESTS NO CACHE BOOL "rocksdb without gtest")
-    set(WITH_TOOLS NO CACHE BOOL "rocksdb without tools")
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-      # Due to a problem compiling rocksdb on GCC 14.1.1 we need to disable
-      # deprecated declaration errors
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
-    endif()
-    set(FAIL_ON_WARNINGS YES CACHE BOOL "rocksdb warnings are ok")
-    FetchContent_Declare(RocksDB
-      GIT_REPOSITORY "https://github.com/facebook/rocksdb.git"
-      GIT_TAG        "v9.1.0"
-      GIT_SHALLOW    OFF)
-    FetchContent_MakeAvailable(RocksDB)
-    add_library(RocksDB::rocksdb ALIAS rocksdb)
-  endblock()
-endif()
 
 if (WANTS_SQLITE AND NOT TARGET SQLite::SQLite3)
   # Use our clean SQLite integration

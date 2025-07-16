@@ -17,11 +17,6 @@ set(MAPGET_SERVICE_SOURCES
   src/locate.cpp
   src/config.cpp)
 
-if (MAPGET_WITH_ROCKSDB)
-  list(APPEND MAPGET_SERVICE_SOURCES
-    include/mapget/service/rocksdbcache.h
-    src/rocksdbcache.cpp)
-endif()
 
 if (MAPGET_WITH_SQLITE)
   list(APPEND MAPGET_SERVICE_SOURCES
@@ -45,10 +40,6 @@ target_link_libraries(mapget-service
   PRIVATE
     picosha2::picosha2)
 
-if (MAPGET_WITH_ROCKSDB)
-  target_link_libraries(mapget-service PUBLIC RocksDB::rocksdb)
-  target_compile_definitions(mapget-service PUBLIC MAPGET_WITH_ROCKSDB)
-endif()
 
 if (MAPGET_WITH_SQLITE)
   target_link_libraries(mapget-service PUBLIC SQLite::SQLite3)

@@ -10,9 +10,6 @@
 #include "mapget/log.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
-#ifdef MAPGET_WITH_ROCKSDB
-#include "mapget/service/rocksdbcache.h"
-#endif
 #include "mapget/service/sqlitecache.h"
 
 using namespace mapget;
@@ -21,17 +18,6 @@ using namespace mapget;
 template<typename CacheType>
 struct CacheTraits;
 
-#ifdef MAPGET_WITH_ROCKSDB
-template<>
-struct CacheTraits<RocksDBCache> {
-    static constexpr const char* nodeIdPrefix = "CacheTestingNode";
-    static constexpr const char* otherNodeIdPrefix = "OtherCacheTestingNode";
-    static constexpr const char* stringPoolNodeIdPrefix = "StringPoolTestingNode";
-    static constexpr const char* defaultCacheName = "mapget-cache";
-    static constexpr const char* testDirPrefix = "rocksdb-unit-test-";
-    static constexpr bool needsDbExtension = false;
-};
-#endif
 
 template<>
 struct CacheTraits<SQLiteCache> {
@@ -282,12 +268,6 @@ void testCacheImplementation() {
     }
 }
 
-#ifdef MAPGET_WITH_ROCKSDB
-TEST_CASE("RocksDBCache", "[Cache]")
-{
-    testCacheImplementation<RocksDBCache>();
-}
-#endif // MAPGET_WITH_ROCKSDB
 
 TEST_CASE("SQLiteCache", "[Cache]")
 {
