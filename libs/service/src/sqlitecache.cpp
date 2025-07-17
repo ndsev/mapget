@@ -39,8 +39,11 @@ SQLiteCache::SQLiteCache(uint32_t cacheMaxTiles, std::string cachePath, bool cle
     // Open the database
     int rc = sqlite3_open(dbPath_.c_str(), &db_);
     if (rc != SQLITE_OK) {
+        std::string error = sqlite3_errmsg(db_);
+        sqlite3_close(db_);
+        db_ = nullptr;
         raise(fmt::format("Error opening SQLite database at {}: {}",
-            dbPath_, sqlite3_errmsg(db_)));
+            dbPath_, error));
     }
 
     // Enable WAL mode for better concurrency
