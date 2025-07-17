@@ -11,6 +11,7 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
 #include "mapget/service/sqlitecache.h"
+#include "mapget/service/nullcache.h"
 
 using namespace mapget;
 
@@ -29,6 +30,85 @@ struct CacheTraits<SQLiteCache> {
     static constexpr bool needsDbExtension = true;
 };
 
+template<>
+struct CacheTraits<NullCache> {
+    static constexpr const char* nodeIdPrefix = "NullCacheTestingNode";
+    static constexpr const char* otherNodeIdPrefix = "OtherNullCacheTestingNode";
+    static constexpr const char* stringPoolNodeIdPrefix = "NullStringPoolTestingNode";
+    static constexpr const char* defaultCacheName = "";
+    static constexpr const char* testDirPrefix = "null-unit-test-";
+    static constexpr bool needsDbExtension = false;
+};
+
+// Common test data setup functions
+namespace {
+    std::shared_ptr<LayerInfo> createTestLayerInfo() {
+        auto layerInfo = LayerInfo::fromJson(R"({
+            "layerId": "WayLayer",
+            "type": "Features",
+            "featureTypes": [
+                {
+                    "name": "Way",
+                    "uniqueIdCompositions": [
+                        [
+                            {
+                                "partId": "areaId",
+                                "description": "String identifying the map area.",
+                                "datatype": "STR"
+                            },
+                            {
+                                "partId": "wayId",
+                                "description": "Globally Unique 32b integer.",
+                                "datatype": "U32"
+                            }
+                        ]
+                    ]
+                }
+            ]
+        })"_json);
+
+        return std::make_shared<LayerInfo>(LayerInfo{
+            layerInfo->layerId_,
+            layerInfo->type_,
+            layerInfo->featureTypes_,
+            std::vector<int>{0, 1, 2},
+            std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
+            true,
+            false,
+            Version{0, 0, 0}});
+    }
+
+    DataSourceInfo createTestDataSourceInfo(const std::string& nodeId, const std::string& mapId, std::shared_ptr<LayerInfo> layerInfo) {
+        std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
+        layers[layerInfo->layerId_] = layerInfo;
+        
+        return DataSourceInfo{
+            nodeId,
+            mapId,
+            layers,
+            5,
+            false,
+            nlohmann::json::object(),
+            TileLayerStream::CurrentProtocolVersion};
+    }
+
+    std::string createSerializedStringPoolMessage(const std::string& testStringPoolNodeId) {
+        auto testStringPool = StringPool(testStringPoolNodeId);
+        
+        std::stringstream serializedStrings;
+        testStringPool.write(serializedStrings, 0);
+
+        std::stringstream serializedMessage;
+        bitsery::Serializer<bitsery::OutputStreamAdapter> s(serializedMessage);
+        s.object(TileLayerStream::CurrentProtocolVersion);
+        s.value1b(TileLayerStream::MessageType::StringPool);
+        s.value4b((uint32_t)serializedStrings.str().size());
+        serializedMessage << serializedStrings.str();
+        
+        return serializedMessage.str();
+    }
+}
+
 // Common test function for both cache implementations
 template<typename CacheType>
 void testCacheImplementation() {
@@ -36,46 +116,8 @@ void testCacheImplementation() {
     
     mapget::setLogLevel("trace", log());
 
-    // TODO Make layer creation in test-model reusable.
-    // Currently, TileFeatureLayer deserialization test in test-model.cpp
-    // fails if layerInfo and strings access is replaced with
-    // TileFeatureLayer functions.
-
-    auto layerInfo = LayerInfo::fromJson(R"({
-        "layerId": "WayLayer",
-        "type": "Features",
-        "featureTypes": [
-            {
-                "name": "Way",
-                "uniqueIdCompositions": [
-                    [
-                        {
-                            "partId": "areaId",
-                            "description": "String identifying the map area.",
-                            "datatype": "STR"
-                        },
-                        {
-                            "partId": "wayId",
-                            "description": "Globally Unique 32b integer.",
-                            "datatype": "U32"
-                        }
-                    ]
-                ]
-            }
-        ]
-    })"_json);
-
-    // Create one LayerInfo to be re-used by all DataSourceInfos.
-    std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
-    layers[layerInfo->layerId_] = std::make_shared<LayerInfo>(LayerInfo{
-        layerInfo->layerId_,
-        layerInfo->type_,
-        std::vector<FeatureTypeInfo>(),
-        std::vector<int>{0, 1, 2},
-        std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
-        true,
-        false,
-        Version{0, 0, 0}});
+    // Use common test data setup
+    auto layerInfo = createTestLayerInfo();
 
     // Create a basic TileFeatureLayer.
     auto tileId = TileId::fromWgs84(42., 11., 13);
@@ -90,14 +132,7 @@ void testCacheImplementation() {
         layerInfo,
         strings);
     // Create a DataSourceInfo object.
-    DataSourceInfo info(DataSourceInfo{
-        nodeId,
-        mapId,
-        layers,
-        5,
-        false,
-        nlohmann::json::object(),
-        TileLayerStream::CurrentProtocolVersion});
+    DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
 
     // Create another basic TileFeatureLayer for a different node.
     auto otherTileId = TileId::fromWgs84(42., 12., 13);
@@ -112,30 +147,11 @@ void testCacheImplementation() {
         layerInfo,
         otherStringPool);
     // Create another DataSourceInfo object, but reuse the layer info.
-    DataSourceInfo otherInfo(DataSourceInfo{
-        otherNodeId,
-        otherMapId,
-        layers,
-        5,
-        false,
-        nlohmann::json::object(),
-        TileLayerStream::CurrentProtocolVersion});
+    DataSourceInfo otherInfo = createTestDataSourceInfo(otherNodeId, otherMapId, layerInfo);
 
 
     auto testStringPoolNodeId = Traits::stringPoolNodeIdPrefix;
-    auto testStringPool = StringPool(testStringPoolNodeId);
-
-    // Write a string pool directly into the cache, including the header
-    // added in TileLayerStream::sendMessage.
-    std::stringstream serializedStrings;
-    testStringPool.write(serializedStrings, 0);
-
-    std::stringstream serializedMessage;
-    bitsery::Serializer<bitsery::OutputStreamAdapter> s(serializedMessage);
-    s.object(TileLayerStream::CurrentProtocolVersion);
-    s.value1b(TileLayerStream::MessageType::StringPool);
-    s.value4b((uint32_t)serializedStrings.str().size());
-    serializedMessage << serializedStrings.str();
+    auto serializedMessage = createSerializedStringPoolMessage(testStringPoolNodeId);
 
     auto getFeatureLayer = [](auto& cache, auto tileId, auto info) {
         auto layer = cache->getTileLayer(tileId, info);
@@ -224,11 +240,11 @@ void testCacheImplementation() {
         auto cache = std::make_shared<CacheType>();
         REQUIRE(cache->getStatistics()["loaded-string-pools"] == 2);
 
-        cache->putStringPoolBlob(testStringPoolNodeId, serializedMessage.str());
+        cache->putStringPoolBlob(testStringPoolNodeId, serializedMessage);
         auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
 
         // Make sure the string pool was properly stored.
-        REQUIRE(returnedEntry.value() == serializedMessage.str());
+        REQUIRE(returnedEntry.value() == serializedMessage);
 
         // TODO this kind of access bypasses the creation of a stringPoolOffsets_
         //  entry in the cache -> decouple the cache storage logic clearly from
@@ -243,7 +259,7 @@ void testCacheImplementation() {
 
         // Check that the same value can still be retrieved from string pooln.
         auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
-        REQUIRE(returnedEntry.value() == serializedMessage.str());
+        REQUIRE(returnedEntry.value() == serializedMessage);
     }
 
     SECTION("Create cache under a custom path") {
@@ -269,7 +285,77 @@ void testCacheImplementation() {
 }
 
 
+// Specialized test function for NullCache
+void testNullCacheImplementation() {
+    using Traits = CacheTraits<NullCache>;
+    
+    mapget::setLogLevel("trace", log());
+
+    // Use common test data setup
+    auto layerInfo = createTestLayerInfo();
+
+    // Create a basic TileFeatureLayer.
+    auto tileId = TileId::fromWgs84(42., 11., 13);
+    auto nodeId = Traits::nodeIdPrefix;
+    auto mapId = "CacheMe";
+    // Create empty shared autofilled string dictionary.
+    auto strings = std::make_shared<StringPool>(nodeId);
+    auto tile = std::make_shared<TileFeatureLayer>(
+        tileId,
+        nodeId,
+        mapId,
+        layerInfo,
+        strings);
+    // Create a DataSourceInfo object.
+    DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+
+    auto testStringPoolNodeId = Traits::stringPoolNodeIdPrefix;
+    auto serializedMessage = createSerializedStringPoolMessage(testStringPoolNodeId);
+
+    SECTION("NullCache always returns empty/cache misses") {
+        // Create NullCache instance
+        auto cache = std::make_shared<NullCache>();
+        
+        // Verify initial statistics
+        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].template get<int>();
+        REQUIRE(stringPoolCount == 0);
+
+        // Try to store a tile - should succeed but not actually store anything
+        cache->putTileLayer(tile);
+        
+        // Try to retrieve the tile - should always return nullptr
+        auto returnedTile = cache->getTileLayer(tile->id(), info);
+        REQUIRE(!returnedTile);
+        
+        // Check cache statistics - should show cache miss
+        REQUIRE(cache->getStatistics()["cache-hits"] == 0);
+        REQUIRE(cache->getStatistics()["cache-misses"] == 1);
+        
+        // Try string pool operations
+        cache->putStringPoolBlob(testStringPoolNodeId, serializedMessage);
+        auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
+        
+        // String pool retrieval should also return empty
+        REQUIRE(!returnedEntry.has_value());
+        
+        // Multiple retrieval attempts should all result in cache misses
+        for (int i = 0; i < 5; ++i) {
+            auto missingTile = cache->getTileLayer(tile->id(), info);
+            REQUIRE(!missingTile);
+        }
+        
+        // Verify all attempts resulted in cache misses
+        REQUIRE(cache->getStatistics()["cache-hits"] == 0);
+        REQUIRE(cache->getStatistics()["cache-misses"] == 6); // 1 initial + 5 in loop
+    }
+}
+
 TEST_CASE("SQLiteCache", "[Cache]")
 {
     testCacheImplementation<SQLiteCache>();
+}
+
+TEST_CASE("NullCache", "[Cache]")
+{
+    testNullCacheImplementation();
 }

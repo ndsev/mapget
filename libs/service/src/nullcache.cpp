@@ -5,7 +5,6 @@ namespace mapget
 
 std::optional<std::string> NullCache::getTileLayerBlob(MapTileKey const& k)
 {
-    ++cacheMisses_;
     return std::nullopt;
 }
 
