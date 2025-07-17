@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <iostream>
 #include <chrono>
+#include <mutex>
 
 #include "mapget/log.h"
 #include "sqlitecache.h"
@@ -205,6 +206,8 @@ void SQLiteCache::prepareStatements()
 
 std::optional<std::string> SQLiteCache::getTileLayerBlob(MapTileKey const& k)
 {
+    std::lock_guard<std::mutex> lock(dbMutex_);
+    
     sqlite3_reset(stmts_.getTile);
     sqlite3_bind_text(stmts_.getTile, 1, k.toString().c_str(), -1, SQLITE_TRANSIENT);
 
@@ -229,6 +232,8 @@ std::optional<std::string> SQLiteCache::getTileLayerBlob(MapTileKey const& k)
 
 void SQLiteCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
 {
+    std::lock_guard<std::mutex> lock(dbMutex_);
+    
     auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
 
     sqlite3_reset(stmts_.putTile);
@@ -275,6 +280,8 @@ void SQLiteCache::cleanupOldestTiles()
 
 std::optional<std::string> SQLiteCache::getStringPoolBlob(std::string_view const& sourceNodeId)
 {
+    std::lock_guard<std::mutex> lock(dbMutex_);
+    
     sqlite3_reset(stmts_.getStringPool);
     sqlite3_bind_text(stmts_.getStringPool, 1, sourceNodeId.data(), sourceNodeId.size(), SQLITE_TRANSIENT);
 
@@ -297,6 +304,8 @@ std::optional<std::string> SQLiteCache::getStringPoolBlob(std::string_view const
 
 void SQLiteCache::putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v)
 {
+    std::lock_guard<std::mutex> lock(dbMutex_);
+    
     sqlite3_reset(stmts_.putStringPool);
     sqlite3_bind_text(stmts_.putStringPool, 1, sourceNodeId.data(), sourceNodeId.size(), SQLITE_TRANSIENT);
     sqlite3_bind_blob(stmts_.putStringPool, 2, v.data(), v.size(), SQLITE_TRANSIENT);

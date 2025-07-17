@@ -5,6 +5,7 @@
 #ifdef MAPGET_WITH_SQLITE
 #include <sqlite3.h>
 #include <memory>
+#include <mutex>
 #include <string>
 #endif
 
@@ -42,6 +43,7 @@ private:
     std::string dbPath_;
     uint32_t maxTileCount_;
     bool clearCache_;
+    mutable std::mutex dbMutex_;
 
     // Prepared statements for performance
     struct Statements {
