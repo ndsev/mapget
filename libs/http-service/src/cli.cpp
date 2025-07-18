@@ -200,18 +200,12 @@ struct ServeCommand
             "--config <yaml-file>");
         serveCmd->add_option(
             "-c,--cache-type", cacheType_, 
-#if defined(MAPGET_WITH_SQLITE)
             "From [memory|persistent|none], default memory. 'persistent' uses SQLite for disk-based caching, 'none' disables caching."
-#else
-            "From [memory|none], default memory. 'none' disables caching (persistent caches disabled at compile time)."
-#endif
             )
             ->default_val("memory");
-#if defined(MAPGET_WITH_SQLITE)
         serveCmd->add_option(
             "--cache-dir", cachePath_, "Path to store persistent cache (SQLite DB file).")
             ->default_val("mapget-cache");
-#endif
         serveCmd->add_option(
             "--cache-max-tiles", cacheMaxTiles_, "0 for unlimited, default 1024.")
             ->default_val(1024);
@@ -246,12 +240,8 @@ struct ServeCommand
         }
         
         if (cacheType_ == "persistent") {
-#ifdef MAPGET_WITH_SQLITE
             log().info("Initializing persistent SQLite cache.");
             cache = std::make_shared<SQLiteCache>(cacheMaxTiles_, cachePath_, clearCache_);
-#else
-            raise("Persistent cache was requested but SQLite support was not enabled at compile time.");
-#endif
         }
         else if (cacheType_ == "memory") {
             log().info("Initializing in-memory cache.");

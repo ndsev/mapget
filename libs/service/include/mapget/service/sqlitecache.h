@@ -1,18 +1,13 @@
 #pragma once
 
 #include "cache.h"
-
-#ifdef MAPGET_WITH_SQLITE
 #include <sqlite3.h>
 #include <memory>
 #include <mutex>
 #include <string>
-#endif
 
 namespace mapget
 {
-
-#ifdef MAPGET_WITH_SQLITE
 
 /**
  * A persistent cache implementation that stores layers and string pools
@@ -57,30 +52,5 @@ private:
         sqlite3_stmt* getTileCount{nullptr};
     } stmts_;
 };
-
-#else
-
-/**
- * Stub implementation when SQLite is disabled at compile time.
- * Throws an exception when instantiated.
- */
-class SQLiteCache : public Cache
-{
-public:
-    explicit SQLiteCache(
-        uint32_t cacheMaxTiles = 1024,
-        std::string cachePath = "mapget-cache.db",
-        bool clearCache = false)
-    {
-        throw std::runtime_error("SQLite support was disabled at compile time. Use -DMAPGET_WITH_SQLITE=ON to enable it.");
-    }
-
-    std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override { return {}; }
-    void putTileLayerBlob(MapTileKey const& k, std::string const& v) override {}
-    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override { return {}; }
-    void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override {}
-};
-
-#endif
 
 }  // namespace mapget

@@ -6,6 +6,7 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/datasource.h
   include/mapget/service/memcache.h
   include/mapget/service/nullcache.h
+  include/mapget/service/sqlitecache.h
   include/mapget/service/locate.h
   include/mapget/service/config.h
 
@@ -14,15 +15,9 @@ set(MAPGET_SERVICE_SOURCES
   src/datasource.cpp
   src/memcache.cpp
   src/nullcache.cpp
+  src/sqlitecache.cpp
   src/locate.cpp
   src/config.cpp)
-
-
-if (MAPGET_WITH_SQLITE)
-  list(APPEND MAPGET_SERVICE_SOURCES
-    include/mapget/service/sqlitecache.h
-    src/sqlitecache.cpp)
-endif()
 
 add_library(mapget-service STATIC ${MAPGET_SERVICE_SOURCES})
 
@@ -37,14 +32,9 @@ target_link_libraries(mapget-service
     mapget-model
     mapget-log
     yaml-cpp::yaml-cpp
+    SQLite::SQLite3
   PRIVATE
     picosha2::picosha2)
-
-
-if (MAPGET_WITH_SQLITE)
-  target_link_libraries(mapget-service PUBLIC SQLite::SQLite3)
-  target_compile_definitions(mapget-service PUBLIC MAPGET_WITH_SQLITE)
-endif()
 
 if (MSVC)
   target_compile_definitions(mapget-service

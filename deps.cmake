@@ -1,11 +1,6 @@
 include(FetchContent)
 
 
-if (MAPGET_WITH_SQLITE AND (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING))
-  set(WANTS_SQLITE YES)
-else()
-  set(WANTS_SQLITE NO)
-endif()
 
 if (NOT TARGET glm::glm)
   FetchContent_Declare(glm
@@ -85,7 +80,7 @@ if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
 endif()
 
 
-if (WANTS_SQLITE AND NOT TARGET SQLite::SQLite3)
+if ((MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING) AND NOT TARGET SQLite::SQLite3)
   # Use our clean SQLite integration
   include(${CMAKE_CURRENT_LIST_DIR}/cmake/sqlite.cmake)
   

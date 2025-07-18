@@ -1,6 +1,4 @@
-#ifdef MAPGET_WITH_SQLITE
 #include <sqlite3.h>
-#endif
 #include <filesystem>
 #include <iostream>
 #include <chrono>
@@ -11,8 +9,6 @@
 
 namespace mapget
 {
-
-#ifdef MAPGET_WITH_SQLITE
 
 SQLiteCache::SQLiteCache(uint32_t cacheMaxTiles, std::string cachePath, bool clearCache)
     : maxTileCount_(cacheMaxTiles), dbPath_(cachePath), clearCache_(clearCache)
@@ -318,7 +314,5 @@ void SQLiteCache::putStringPoolBlob(std::string_view const& sourceNodeId, std::s
         raise(fmt::format("Error writing to database: {}", sqlite3_errmsg(db_)));
     }
 }
-
-#endif  // MAPGET_WITH_SQLITE
 
 }  // namespace mapget
