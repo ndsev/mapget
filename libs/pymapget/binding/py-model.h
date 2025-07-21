@@ -354,7 +354,12 @@ struct BoundFeature : public BoundModelNode
             .def(
                 "evaluate",
                 [](BoundFeature& self, std::string_view const& expression)
-                { return self.modelNodePtr_->evaluate(expression).getScalar(); },
+                {
+                    auto res = self.modelNodePtr_->evaluate(expression);
+                    if (!res)
+                        throw std::runtime_error(res.error().message);
+                    return res->getScalar();
+                },
                 py::arg("expression"),
                 "Evaluate a filter expression on this feature.")
             .def(

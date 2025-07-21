@@ -6,6 +6,7 @@
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
 #include "stringpool.h"
+#include "tl/expected.hpp"
 
 namespace mapget
 {
@@ -98,21 +99,30 @@ model_ptr<Array> Feature::relationsOrNull() const
     return model().resolveArray(Ptr::make(model_, data_->relations_));
 }
 
-std::vector<simfil::Value> Feature::evaluateAll(const std::string_view& expression)
+tl::expected<std::vector<simfil::Value>, simfil::Error>
+Feature::evaluateAll(const std::string_view& expression)
 {
     // Note: Here we rely on the assertion that the root_ column
     // contains only references to feature nodes, in the order
     // of the feature node column. We could think about protected inheritance
     // of the ModelPool to safeguard this.
-    return model().evaluate(expression, *this, false).values;
+    auto result = model().evaluate(expression, *this, false);
+    if (!result)
+        tl::unexpected<simfil::Error>(std::move(result.error()));
+
+    return result->values;
 }
 
-simfil::Value Feature::evaluate(const std::string_view& expression)
+tl::expected<simfil::Value, simfil::Error> Feature::evaluate(const std::string_view& expression)
 {
     auto results = evaluateAll(expression);
-    if (results.empty())
+    if (!results)
+        return tl::unexpected<simfil::Error>(std::move(results.error()));
+
+    if (results->empty())
         return simfil::Value::null();
-    return std::move(results[0]);
+
+    return std::move((*results)[0]);
 }
 
 simfil::ValueType Feature::type() const

@@ -175,11 +175,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
     SECTION("Evaluate simfil filter")
     {
-        REQUIRE(feature1->evaluate("**.mozzarella.smell").toString() == "neutral");
-        REQUIRE(feature1->evaluate("properties.main_ingredient").toString() == "Pepper");
+        REQUIRE(feature1->evaluate("**.mozzarella.smell").value().toString() == "neutral");
+        REQUIRE(feature1->evaluate("properties.main_ingredient").value().toString() == "Pepper");
         REQUIRE(
-            feature1->evaluate("any(geo() within bbox(40., 9., 45., 12.))")
-                .toString() == "true");
+            feature1->evaluate("any(geo() within bbox(40., 9., 45., 12.))").value().toString() ==
+            "true");
     }
 
     SECTION("Range-based for loop")

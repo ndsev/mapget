@@ -139,16 +139,32 @@ if (cpp_httplib_POPULATED)
   target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)
 endif()
 
+if (NOT TARGET nlohmann_json::nlohmann_json)
+  FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY "https://github.com/nlohmann/json.git"
+    GIT_TAG        "v3.11.3"
+    GIT_SHALLOW    ON)
+  FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
 if (NOT TARGET simfil)
   set(SIMFIL_WITH_MODEL_JSON YES CACHE BOOL "Simfil with JSON support")
   set(SIMFIL_SHARED          NO  CACHE BOOL "Simfil as static library")
   FetchContent_Declare(simfil
     GIT_REPOSITORY "https://github.com/Klebert-Engineering/simfil.git"
-    # TODO: We want to have the simfil diagnostics feature, there is
-    #       not yet an official release containing it -> activate main branch
-    GIT_TAG        "v0.4.0"
+    GIT_TAG        "v0.5.2"
     GIT_SHALLOW    ON)
   FetchContent_MakeAvailable(simfil)
+endif()
+
+if (NOT TARGET tl::expected)
+  set(EXPECTED_BUILD_TESTS NO)
+  set(EXPECTED_BUILD_PACKAGE_DEB NO)
+  FetchContent_Declare(expected
+    GIT_REPOSITORY "https://github.com/TartanLlama/expected.git"
+    GIT_TAG        "v1.1.0"
+    GIr_SHALLOW    ON)
+  FetchContent_MakeAvailable(expected)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
