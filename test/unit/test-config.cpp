@@ -39,6 +39,18 @@ void waitForUpdate(std::future<void>& future)
     }
 }
 
+template<typename Predicate>
+void waitForCondition(Predicate pred, std::chrono::milliseconds timeout = std::chrono::seconds(5))
+{
+    auto start = std::chrono::steady_clock::now();
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() - start > timeout) {
+            throw std::runtime_error("Timeout waiting for condition.");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
 TEST_CASE("Mapget Config", "[MapgetConfig]")
 {
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_config");
@@ -125,6 +137,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     prepareNextUpdate();
     DataSourceConfigService::get().loadConfig(tempConfigPath.string());
     waitForUpdate(updateFuture);
+    waitForCondition([&service]() { return service.info().empty(); });
     REQUIRE(service.info().empty());
 
     // Adding a datasource
@@ -135,7 +148,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
         out.close();
     }
     waitForUpdate(updateFuture);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    waitForCondition([&service]() { return service.info().size() == 1; });
     auto dataSourceInfos = service.info();
     REQUIRE(dataSourceInfos.size() == 1);
     REQUIRE(dataSourceInfos[0].mapId_ == "Catan");
@@ -148,10 +161,10 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
         out.close();
     }
     waitForUpdate(updateFuture);
+    waitForCondition([&service]() { return service.info().empty(); });
     REQUIRE(service.info().empty());
 
     // Cleanup
     fs::remove_all(tempDir);
-    std::this_thread::sleep_for(std::chrono::seconds(2));
     DataSourceConfigService::get().end();
 }
