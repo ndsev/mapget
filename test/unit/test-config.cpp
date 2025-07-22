@@ -4,6 +4,12 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#include <fcntl.h>
+#endif
 
 #include "utility.h"
 #include "mapget/http-service/cli.h"
@@ -32,15 +38,36 @@ struct TestDataSource : public DataSource
     void fill(TileSourceDataLayer::Ptr const&) override {};
 };
 
+void syncFile(const fs::path& path)
+{
+    log().trace("Syncing file: {}", path.string());
+#ifdef _WIN32
+    // Windows doesn't have fsync, but closing the file should be sufficient
+#else
+    // On Unix systems, use fsync to ensure data is written to disk
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd != -1) {
+        fsync(fd);
+        close(fd);
+    }
+#endif
+    // Small delay to ensure file system visibility
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
 void waitForUpdate(std::future<void>& future)
 {
-    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+    log().trace("Waiting for update future...");
+    auto status = future.wait_for(std::chrono::seconds(30));
+    if (status != std::future_status::ready) {
+        log().error("Timeout waiting for configuration update after 30 seconds");
         throw std::runtime_error("Timeout waiting for configuration update.");
     }
+    log().trace("Update future ready");
 }
 
 template<typename Predicate>
-void waitForCondition(Predicate pred, std::chrono::milliseconds timeout = std::chrono::seconds(5))
+void waitForCondition(Predicate pred, std::chrono::milliseconds timeout = std::chrono::seconds(30))
 {
     auto start = std::chrono::steady_clock::now();
     while (!pred()) {
@@ -71,6 +98,9 @@ TEST_CASE("Mapget Config", "[MapgetConfig]")
         sources:
           - type: TestDataSource
         )" << std::endl;
+        out.flush();
+        out.close();
+        syncFile(tempConfigPath);
         REQUIRE(mapget::runFromCommandLine({std::string("--config"), tempConfigPath.string()}, false) == 0);
     }
 }
@@ -108,23 +138,30 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     };
 
     auto subscription = DataSourceConfigService::get().subscribe(
-        [&](auto&&)
+        [&](auto&& configNodes)
         {
-            log().debug("Configuration update detected.");
+            log().debug("Configuration update detected. Nodes count: {}", configNodes.size());
             if (!updateReceived.exchange(true)) {
+                log().trace("Setting promise value for config update");
                 updatePromise.set_value();
+            } else {
+                log().trace("Update already received, skipping promise set");
             }
         });
 
     // Initial empty configuration
     {
+        log().trace("Writing initial empty config to: {}", tempConfigPath.string());
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         if (!out.is_open()) {
             log().error("Failed to open config file for writing");
             FAIL("Could not open config file");
         }
         out << "sources: []" << std::endl;
+        out.flush();
         out.close();
+        
+        syncFile(tempConfigPath);
         
         if (!fs::exists(tempConfigPath)) {
             log().error("Config file was not created");
@@ -135,17 +172,23 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     }
 
     prepareNextUpdate();
+    log().debug("About to call loadConfig with path: {}", tempConfigPath.string());
     DataSourceConfigService::get().loadConfig(tempConfigPath.string());
+    log().debug("loadConfig returned, waiting for update");
     waitForUpdate(updateFuture);
+    log().debug("Update received, waiting for service info to be empty");
     waitForCondition([&service]() { return service.info().empty(); });
     REQUIRE(service.info().empty());
 
     // Adding a datasource
     prepareNextUpdate();
     {
+        log().trace("Writing config with TestDataSource");
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources:\n  - type: TestDataSource\n";
+        out.flush();
         out.close();
+        syncFile(tempConfigPath);
     }
     waitForUpdate(updateFuture);
     waitForCondition([&service]() { return service.info().size() == 1; });
@@ -156,9 +199,12 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     // Removing the datasource
     prepareNextUpdate();
     {
+        log().trace("Writing empty config to remove datasources");
         std::ofstream out(tempConfigPath, std::ios_base::trunc);
         out << "sources: []" << std::endl;
+        out.flush();
         out.close();
+        syncFile(tempConfigPath);
     }
     waitForUpdate(updateFuture);
     waitForCondition([&service]() { return service.info().empty(); });

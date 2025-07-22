@@ -1,5 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
+#include <thread>
+#include <chrono>
+#ifndef _WIN32
+#include <unistd.h>
+#include <fcntl.h>
+#endif
 #include "httplib.h"
 #include "mapget/log.h"
 
@@ -354,18 +360,38 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     // Set up the config file.
     DataSourceConfigService::get().reset();
-    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
 
     SECTION("Get Configuration - Config File Not Found") {
+        DataSourceConfigService::get().loadConfig(tempConfigPath.string());
         auto res = cli.Get("/config");
         REQUIRE(res != nullptr);
         REQUIRE(res->status == 404);
         REQUIRE(res->body == "The server does not have a config file.");
     }
 
-    std::ofstream configFile(tempConfigPath);
-    configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
-    configFile.close();
+    // Create config file for tests that need it
+    {
+        std::ofstream configFile(tempConfigPath);
+        configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
+        configFile.flush();
+        configFile.close();
+        
+        // Ensure file is synced to disk
+        #ifndef _WIN32
+        int fd = open(tempConfigPath.c_str(), O_RDONLY);
+        if (fd != -1) {
+            fsync(fd);
+            close(fd);
+        }
+        #endif
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    
+    // Load the config after file is created
+    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
+    
+    // Give the config watcher time to detect the file
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     SECTION("Get Configuration - Not allowed") {
         setGetConfigEndpointEnabled(false);
