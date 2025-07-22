@@ -5,6 +5,8 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/cache.h
   include/mapget/service/datasource.h
   include/mapget/service/memcache.h
+  include/mapget/service/nullcache.h
+  include/mapget/service/sqlitecache.h
   include/mapget/service/locate.h
   include/mapget/service/config.h
 
@@ -12,14 +14,10 @@ set(MAPGET_SERVICE_SOURCES
   src/cache.cpp
   src/datasource.cpp
   src/memcache.cpp
+  src/nullcache.cpp
+  src/sqlitecache.cpp
   src/locate.cpp
   src/config.cpp)
-
-if (MAPGET_WITH_ROCKSDB)
-  list(APPEND MAPGET_SERVICE_SOURCES
-    include/mapget/service/rocksdbcache.h
-    src/rocksdbcache.cpp)
-endif()
 
 add_library(mapget-service STATIC ${MAPGET_SERVICE_SOURCES})
 
@@ -34,13 +32,9 @@ target_link_libraries(mapget-service
     mapget-model
     mapget-log
     yaml-cpp::yaml-cpp
+    SQLite::SQLite3
   PRIVATE
     picosha2::picosha2)
-
-if (MAPGET_WITH_ROCKSDB)
-  target_link_libraries(mapget-service PUBLIC RocksDB::rocksdb)
-  target_compile_definitions(mapget-service PUBLIC MAPGET_WITH_ROCKSDB)
-endif()
 
 if (MSVC)
   target_compile_definitions(mapget-service
