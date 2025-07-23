@@ -55,7 +55,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest-${{ matrix.arch }}
-          path: build/Release/bin/wheel/*.whl
+          path: build/bin/wheel/*.whl
   build:
     runs-on: ${{ matrix.os }}
     strategy:
