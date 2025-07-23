@@ -4,7 +4,9 @@
 #include "mapget/log.h"
 
 #include "mapget/http-datasource/datasource-client.h"
-#include "mapget/service/rocksdbcache.h"
+#include "mapget/service/memcache.h"
+#include "mapget/service/nullcache.h"
+#include "mapget/service/sqlitecache.h"
 #include "mapget/service/config.h"
 
 #include <CLI/CLI.hpp>
@@ -197,16 +199,18 @@ struct ServeCommand
             "Can be specified multiple times."),
             "--config <yaml-file>");
         serveCmd->add_option(
-            "-c,--cache-type", cacheType_, "From [memory|rocksdb], default memory, rocksdb (Technology Preview).")
+            "-c,--cache-type", cacheType_, 
+            "From [memory|persistent|none], default memory. 'persistent' uses SQLite for disk-based caching, 'none' disables caching."
+            )
             ->default_val("memory");
         serveCmd->add_option(
-            "--cache-dir", cachePath_, "Path to store RocksDB cache.")
+            "--cache-dir", cachePath_, "Path to store persistent cache (SQLite DB file).")
             ->default_val("mapget-cache");
         serveCmd->add_option(
             "--cache-max-tiles", cacheMaxTiles_, "0 for unlimited, default 1024.")
             ->default_val(1024);
         serveCmd->add_option(
-            "--clear-cache", clearCache_, "Clear existing cache at startup.")
+            "--clear-cache", clearCache_, "Clear existing persistent cache at startup.")
             ->default_val(false);
         serveCmd->add_option(
             "-w,--webapp",
@@ -229,24 +233,39 @@ struct ServeCommand
 
         std::shared_ptr<Cache> cache;
         if (cacheType_ == "rocksdb") {
-            cache = std::make_shared<RocksDBCache>(cacheMaxTiles_, cachePath_, clearCache_);
+            log().warn("RocksDB cache support has been removed. Please use '--cache-type persistent' instead, "
+                       "which now uses SQLite for persistent caching. The '--cache-type rocksdb' option will be "
+                       "removed in a future version. Falling back to persistent cache using SQLite.");
+            cacheType_ = "persistent";
+        }
+        
+        if (cacheType_ == "persistent") {
+            log().info("Initializing persistent SQLite cache.");
+            cache = std::make_shared<SQLiteCache>(cacheMaxTiles_, cachePath_, clearCache_);
         }
         else if (cacheType_ == "memory") {
             log().info("Initializing in-memory cache.");
             cache = std::make_shared<MemCache>(cacheMaxTiles_);
         }
+        else if (cacheType_ == "none") {
+            log().info("Running without cache - all requests will go directly to data sources.");
+            cache = std::make_shared<NullCache>();
+        }
         else {
             raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
-        bool watchConfig = false;
-        if (auto config = app_.get_config_ptr()) {
-            watchConfig = true;
-            registerDefaultDatasourceTypes();
-            DataSourceConfigService::get().setConfigFilePath(config->as<std::string>());
-        }
+        auto config = app_.get_config_ptr();
+        bool watchConfig = config != nullptr;
 
+        // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, watchConfig);
+
+        if (config)
+        {
+            registerDefaultDatasourceTypes();
+            DataSourceConfigService::get().loadConfig(config->as<std::string>());
+        }
 
         if (!datasourceHosts_.empty()) {
             for (auto& ds : datasourceHosts_) {

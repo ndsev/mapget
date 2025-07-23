@@ -5,7 +5,7 @@
 **Main Capabilities:**
 
 * Coordinating requests for map data to various map data source processes.
-* Integrated map data cache based on RocksDB, or a simple in-memory cache.
+* Integrated map data cache with SQLite-based persistent storage or simple in-memory cache.
 * Simple data-source API with bindings for C++, Python and JS.
 * Compact GeoJSON feature storage model - [25 to 50% smaller than BSON/msgpack](docs/size-comparison/table.md).
 * Integrated deep [feature filter language](https://github.com/klebert-engineering/simfil) based on (a subset of) *JSONata*
@@ -82,13 +82,13 @@ sources:
 
 ### Cache
 
-`mapget` supports persistent tile caching using a RocksDB-backed cache, and non-persistent
-in-memory caching. The CLI options to configure caching behavior are:
+`mapget` supports persistent tile caching using SQLite-based backends, non-persistent
+in-memory caching, and a 'none' option to disable caching entirely. The CLI options to configure caching behavior are:
 
 | Option                   | Description                                                                                          | Default Value   |
 |--------------------------|------------------------------------------------------------------------------------------------------|-----------------|
-| `-c,--cache-type`        | Choose between "memory" or "rocksdb" (Technology Preview).                                           | memory          |
-| `--cache-dir`            | Path to store RocksDB cache.                                                                         | mapget-cache    |
+| `-c,--cache-type`        | Choose between "none", "memory", or "persistent" (SQLite-based).                                    | memory          |
+| `--cache-dir`            | Path to store persistent cache (SQLite database file).                                              | mapget-cache    |
 | `--cache-max-tiles`      | Number of tiles to store. Tiles are purged from cache in FIFO order. Set to 0 for unlimited storage. | 1024            |
 | `--clear-cache`          | Clear existing cache entries at startup.                                                             | false           |
 
@@ -418,3 +418,22 @@ TODO: expand and polish this section stub.
 
 3. A data source drops offline / `mapget` request fails during processing?
    - `cpp-httplib` cleanup callback returns timeout response (probably status code 408).
+
+## Making mapget Releases
+
+The `mapget` Python package is automatically deployed to PyPI through GitHub Actions:
+
+### Release Process
+
+1. **Update Version**: Set `MAPGET_VERSION` in `CMakeLists.txt` to the new version (e.g., `2025.3.1`)
+
+2. **Create GitHub Release**: Create a GitHub release with tag `v2025.3.1` (matching the CMakeLists.txt version)
+
+The GitHub Actions workflow will automatically:
+- Validate that the tag matches the CMakeLists.txt version
+- Build wheels for all supported platforms and Python versions
+- Upload the release to PyPI
+
+### Development Snapshots
+
+Every commit to `main` automatically deploys a development snapshot to PyPI with a version like `2025.3.0.dev3`. No manual intervention required.

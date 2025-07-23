@@ -16,6 +16,7 @@
 #include <bitsery/traits/vector.h>
 #include "sfl/segmented_vector.hpp"
 
+#include "simfil/environment.h"
 #include "simfil/model/arena.h"
 #include "simfil/model/bitsery-traits.h"
 #include "simfil/model/nodes.h"
@@ -719,19 +720,28 @@ void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::
     return ModelPool::resolve(n, cb);
 }
 
-TileFeatureLayer::QueryResult TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool anyMode, bool autoWildcard)
+tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
+TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool anyMode, bool autoWildcard)
 {
     return impl_->expressionCache_.eval(query, node, anyMode, autoWildcard);
 }
 
-TileFeatureLayer::QueryResult TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildcard)
+tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
+TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildcard)
 {
     return evaluate(query, *root(0), anyMode, autoWildcard);
 }
 
-std::vector<simfil::Diagnostics::Message> TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag)
+tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
+TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag)
 {
     return impl_->expressionCache_.diagnostics(query, diag);
+}
+
+tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
+TileFeatureLayer::complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts)
+{
+    return impl_->expressionCache_.completions(query, point, node, opts);
 }
 
 void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
@@ -1109,7 +1119,7 @@ simfil::ModelNode::Ptr TileFeatureLayer::clone(
     case ColumnId::MeshTriangleLinearRing:
     case ColumnId::Polygon:
     case ColumnId::LinearRing:
-    case ColumnId::PointBuffers: 
+    case ColumnId::PointBuffers:
     case ColumnId::SourceDataReferences:
     case ColumnId::ValidityPoints:
         raiseFmt("Encountered unexpected column type {} in clone().", otherNode->addr().column());
@@ -1131,9 +1141,9 @@ void TileFeatureLayer::clone(
     auto cloneTarget = find(type, idParts);
     if (!cloneTarget) {
         // Remove tile ID prefix from idParts to create a new feature.
-        if (getIdPrefix() && idParts.size() >= getIdPrefix()->size()) {
+        if (auto idPrefix = getIdPrefix(); idPrefix && idParts.size() >= idPrefix->size()) {
             idParts = KeyValueViewPairs(
-                idParts.begin()+getIdPrefix()->size(), idParts.end());
+                idParts.begin()+idPrefix->size(), idParts.end());
         }
         cloneTarget = newFeature(type, idParts);
     }

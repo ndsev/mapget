@@ -96,17 +96,24 @@ auto makeTile() {
     return tile;
 }
 
-#define REQUIRE_EVAL_1(query, type, result) \
-    do {\
-        Environment env(model_pool->strings()); \
-        env.functions["geo"] = &GeoFn::Fn; \
-        env.functions["bbox"] = &BBoxFn::Fn; \
-        env.functions["linestring"] = &LineStringFn::Fn; \
-        auto ast = compile(env, query, false); \
-        INFO("AST: " << ast->expr().toString()); \
-        auto res = eval(env, *ast, *model_pool->root(0), nullptr); \
-        REQUIRE(res.size() == 1); \
-        REQUIRE(res[0].as<type>() == result); \
+#define REQUIRE_EVAL_1(query, type, result)                         \
+    do {                                                            \
+        Environment env(model_pool->strings());                     \
+        env.functions["geo"] = &GeoFn::Fn;                          \
+        env.functions["bbox"] = &BBoxFn::Fn;                        \
+        env.functions["linestring"] = &LineStringFn::Fn;            \
+        auto ast = compile(env, query, false);                      \
+        if (!ast)                                                   \
+            INFO(ast.error().message);                              \
+        REQUIRE(ast.has_value());                                   \
+        INFO("AST: " << ast.value()->expr().toString());             \
+        auto res = eval(env, **ast, *model_pool->root(0), nullptr); \
+        if (!res)                                                   \
+            INFO(res.error().message);                              \
+        REQUIRE(res.has_value());                                   \
+        auto val = std::move(*res);                                 \
+        REQUIRE(val.size() == 1);                                   \
+        REQUIRE(val[0].as<type>() == result);                       \
     } while (false)
 
 TEST_CASE("Point", "[geo.point]") {

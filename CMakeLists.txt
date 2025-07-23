@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.20)
 cmake_policy(VERSION 3.20)
 cmake_policy(SET CMP0117 NEW)
 
-project(mapget CXX)
+project(mapget LANGUAGES CXX C)
 
-set(MAPGET_VERSION 2025.2.1)
+set(MAPGET_VERSION 2025.3.0)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

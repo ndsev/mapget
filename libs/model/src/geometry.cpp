@@ -143,6 +143,24 @@ Geometry::Geometry(Data* data, ModelConstPtr pool_, ModelNodeAddress a)
     storage_ = &model().vertexBufferStorage();
 }
 
+int64_t Geometry::getHash() const
+{
+    auto hashCombine = [](uint64_t& seed, uint64_t hash) {
+        seed ^= hash + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    };
+
+    const double precision = 1e-6;
+    uint64_t seed = std::hash<size_t>{}(this->numPoints());
+    for (size_t i = 0; i < this->numPoints(); i++) {
+        auto bx = std::bit_cast<uint64_t>(std::round(this->pointAt(i).x / precision));
+        auto by = std::bit_cast<uint64_t>(std::round(this->pointAt(i).y / precision));
+        hashCombine(seed, bx);
+        hashCombine(seed, by);
+    }
+
+    return std::bit_cast<int64_t>(seed);
+}
+
 SelfContainedGeometry Geometry::toSelfContained() const
 {
     SelfContainedGeometry result{{}, geomType()};
