@@ -421,19 +421,42 @@ TODO: expand and polish this section stub.
 
 ## Making mapget Releases
 
-The `mapget` Python package is automatically deployed to PyPI through GitHub Actions:
+The `mapget` Python package is deployed to PyPI through GitHub Actions with automatic version management:
 
 ### Release Process
 
-1. **Update Version**: Set `MAPGET_VERSION` in `CMakeLists.txt` to the new version (e.g., `2025.3.1`)
+#### Manual Steps:
+1. **Update Version**: Before creating a release, update `MAPGET_VERSION` in `CMakeLists.txt` to the new version (e.g., `2025.3.1`)
+2. **Commit and Push**: Commit this change to the `main` branch with a clear message like "Bump version to 2025.3.1"
+3. **Create GitHub Release**: 
+   - Go to the repository's "Releases" page on GitHub
+   - Click "Create a new release"
+   - Set the tag to `v2025.3.1` (matching the CMakeLists.txt version)
+   - Select "Create new tag on publish"
+   - Fill in release title and notes
+   - Publish the release
 
-2. **Create GitHub Release**: Create a GitHub release with tag `v2025.3.1` (matching the CMakeLists.txt version)
-
-The GitHub Actions workflow will automatically:
-- Validate that the tag matches the CMakeLists.txt version
-- Build wheels for all supported platforms and Python versions
-- Upload the release to PyPI
+#### Automated Process:
+When the release is published, GitHub Actions will automatically:
+- Use `setuptools_scm` to determine the version from the git tag
+- Pass this version to CMake during the build process (overriding the default in CMakeLists.txt)
+- Validate that the git tag matches the CMakeLists.txt version (release will fail if they don't match)
+- Build wheels for all supported platforms (Linux x86_64/aarch64, macOS Intel/ARM, Windows) and Python versions (3.10-3.13)
+- Upload the official release to PyPI
 
 ### Development Snapshots
 
-Every commit to `main` automatically deploys a development snapshot to PyPI with a version like `2025.3.0.dev3`. No manual intervention required.
+Every push to the `main` branch automatically triggers a development release:
+- Version is determined by `setuptools_scm` (e.g., `2025.3.0.dev61` for the 61st commit after the last tag)
+- Development versions are uploaded to PyPI and can be installed with `pip install mapget --pre`
+- No manual intervention required - the version is automatically derived from git history
+
+### Version Management
+
+The system uses a dual approach:
+- **CMakeLists.txt**: Contains the base version for local development and must match tagged releases
+- **setuptools_scm**: Automatically generates appropriate versions based on git state:
+  - Tagged commits: Clean version (e.g., `2025.3.0`)
+  - Untagged commits on main: Development version (e.g., `2025.3.0.dev61`)
+
+This ensures clear distinction between official releases and development snapshots on PyPI, while preventing version mismatches through automated validation.

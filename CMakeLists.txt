@@ -4,7 +4,11 @@ cmake_policy(SET CMP0117 NEW)
 
 project(mapget LANGUAGES CXX C)
 
-set(MAPGET_VERSION 2025.3.0)
+# Allow version to be set from command line for CI/CD
+# For local development, use the default version
+if(NOT DEFINED MAPGET_VERSION)
+  set(MAPGET_VERSION 2025.3.0)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

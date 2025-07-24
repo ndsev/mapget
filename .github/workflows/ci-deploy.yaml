@@ -8,7 +8,33 @@ on:
     branches: [ '**' ]
 
 jobs:
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install setuptools_scm
+        run: pip install setuptools_scm
+      
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python -c "import setuptools_scm; print(setuptools_scm.get_version(local_scheme='no-local-version'))")
+          echo "Version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
   build-manylinux:
+    needs: [determine-version]
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
@@ -37,6 +63,7 @@ jobs:
             -DMAPGET_WITH_WHEEL=True \
             -DMAPGET_WITH_SERVICE=True \
             -DMAPGET_WITH_HTTPLIB=True \
+            -DMAPGET_VERSION="${{ needs.determine-version.outputs.version }}" \
             -GNinja
       - name: Build
         run: |
@@ -57,6 +84,7 @@ jobs:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest-${{ matrix.arch }}
           path: build/bin/wheel/*.whl
   build:
+    needs: [determine-version]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -101,6 +129,7 @@ jobs:
                 -DMAPGET_WITH_WHEEL=True \
                 -DMAPGET_WITH_SERVICE=True \
                 -DMAPGET_WITH_HTTPLIB=True \
+                -DMAPGET_VERSION="${{ needs.determine-version.outputs.version }}" \
                 -GNinja
           cmake --build .
           mv bin/wheel bin/wheel-auditme  # Same as on Linux
@@ -125,7 +154,8 @@ jobs:
                 -DMAPGET_BUILD_EXAMPLES=YES `
                 -DMAPGET_WITH_WHEEL=True `
                 -DMAPGET_WITH_SERVICE=True `
-                -DMAPGET_WITH_HTTPLIB=True
+                -DMAPGET_WITH_HTTPLIB=True `
+                -DMAPGET_VERSION="${{ needs.determine-version.outputs.version }}"
           cmake --build . --config Release
       - name: Deploy
         uses: actions/upload-artifact@v4
@@ -139,7 +169,7 @@ jobs:
           ctest -C Release --verbose --no-tests=error
 
   deploy:
-    needs: [build-manylinux, build]
+    needs: [determine-version, build-manylinux, build]
     if: |
       github.event_name == 'push' && 
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
@@ -159,10 +189,10 @@ jobs:
         run: |
           pip install setuptools wheel setuptools_scm twine
       
-      - name: Get version
+      - name: Set version from determine-version job
         id: version
         run: |
-          VERSION=$(python -c "import setuptools_scm; print(setuptools_scm.get_version(local_scheme='no-local-version'))")
+          VERSION="${{ needs.determine-version.outputs.version }}"
           echo "Version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
       
