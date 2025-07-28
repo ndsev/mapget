@@ -733,9 +733,9 @@ TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildca
 }
 
 tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
-TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag)
+TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode)
 {
-    return impl_->expressionCache_.diagnostics(query, diag);
+    return impl_->expressionCache_.diagnostics(query, diag, anyMode);
 }
 
 tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>

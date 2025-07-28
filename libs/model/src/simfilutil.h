@@ -105,14 +105,13 @@ struct SimfilExpressionCache
         return newIter->second;
     }
 
-    auto diagnostics(std::string_view query, const simfil::Diagnostics& diag) -> tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
+    auto diagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode) -> tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
     {
-        std::shared_lock s(mtx_);
-        auto iter = cache_.find(query);
-        if (iter == cache_.end())
-            return {};
+        auto ast = compile(query, true);
+        if (!ast)
+            return tl::unexpected<simfil::Error>(std::move(ast.error()));
 
-        return simfil::diagnostics(environment(), *iter->second, diag);
+        return simfil::diagnostics(environment(), *ast->get(), diag);
     }
 
     auto completions(std::string_view query, size_t point, simfil::ModelNode const& node, simfil::CompletionOptions const& opts) -> tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
