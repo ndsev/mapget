@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 #include <yaml-cpp/yaml.h>
+#include <nlohmann/json-schema.hpp>
+#include "picosha2.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -24,6 +26,131 @@
 
 namespace mapget
 {
+
+const std::array<std::string_view, 2>& sharedTopLevelConfigKeys()
+{
+    static const std::array<std::string_view, 2> keys = { "sources", "http-settings" };
+    return keys;
+}
+
+/**
+ * Hash a string using the SHA256 implementation.
+ */
+std::string stringToHash(const std::string& input)
+{
+    std::string result;
+    picosha2::hash256_hex_string(input, result);
+    return result;
+}
+
+/**
+ * Recursively convert a YAML node to a JSON object,
+ * with special handling for sensitive fields.
+ * The function returns a nlohmann::json object and updates maskedSecretMap.
+ */
+nlohmann::json yamlToJson(
+    const YAML::Node& yamlNode,
+    std::unordered_map<std::string, std::string>* maskedSecretMap,
+    const bool mask)
+{
+    if (yamlNode.IsScalar()) {
+        if (mask) {
+            auto stringToMask = yamlNode.as<std::string>();
+            auto stringMask = "MASKED:"+stringToHash(stringToMask);
+            if (maskedSecretMap) {
+                maskedSecretMap->insert({stringMask, stringToMask});
+            }
+            return stringMask;
+        }
+
+        try {
+            return yamlNode.as<int>();
+        }
+        catch (const YAML::BadConversion&) {
+            try {
+                return yamlNode.as<double>();
+            }
+            catch (const YAML::BadConversion&) {
+                try {
+                    return yamlNode.as<bool>();
+                }
+                catch (const YAML::BadConversion&) {
+                    return yamlNode.as<std::string>();
+                }
+            }
+        }
+    }
+
+    if (mask) {
+        log().critical("Cannot mask non-scalar value!");
+        return {};
+    }
+
+    if (yamlNode.IsSequence()) {
+        auto arrayJson = nlohmann::json::array();
+        for (const auto& elem : yamlNode) {
+            arrayJson.push_back(yamlToJson(elem, maskedSecretMap));
+        }
+        return arrayJson;
+    }
+
+    if (yamlNode.IsMap()) {
+        auto objectJson = nlohmann::json::object();
+        for (const auto& item : yamlNode) {
+            auto key = item.first.as<std::string>();
+            const YAML::Node& valueNode = item.second;
+            objectJson[key] = yamlToJson(
+                valueNode,
+                maskedSecretMap,
+                key == "api-key" || key == "password");
+        }
+        return objectJson;
+    }
+
+    log().warn("Could not convert {} to JSON!", YAML::Dump(yamlNode));
+    return {};
+}
+
+class CustomErrorHandler : public nlohmann::json_schema::error_handler
+{
+public:
+    struct ValidationError {
+        std::string path;
+        std::string message;
+        nlohmann::json instance;
+    };
+
+    void error(const nlohmann::json_pointer<std::string>& ptr,
+               const nlohmann::json& instance,
+               const std::string& message) override
+    {
+        errors_.push_back({ptr.to_string(), message, instance});
+    }
+
+    bool hasErrors() const
+    {
+        return !errors_.empty();
+    }
+
+    std::vector<ValidationError> errors_;
+};
+
+bool validateConfig(const nlohmann::json &config, const nlohmann::json &schema)
+{
+    nlohmann::json_schema::json_validator validator;
+    validator.set_root_schema(schema);
+
+    bool success = true;
+    mapget::CustomErrorHandler errHandler;
+    validator.validate(config, errHandler);
+    for (const auto &error : errHandler.errors_)
+    {
+        success = false;
+        log().error("{}: {}", error.path, error.message);
+    }
+
+    return success;
+}
 
 namespace
 {
@@ -232,6 +359,7 @@ struct ServeCommand
         log().info("Starting server on port {}.", port_);
 
         std::shared_ptr<Cache> cache;
+
         if (cacheType_ == "rocksdb") {
             log().warn("RocksDB cache support has been removed. Please use '--cache-type persistent' instead, "
                        "which now uses SQLite for persistent caching. The '--cache-type rocksdb' option will be "
@@ -264,6 +392,37 @@ struct ServeCommand
         if (config)
         {
             registerDefaultDatasourceTypes();
+
+            // Schema-Validierung, wenn Schema-Pfad gesetzt ist
+            const std::string &pathToSchema = getPathToSchema();
+            if (!pathToSchema.empty())
+            {
+                std::ifstream schemaStream(pathToSchema);
+                if (!schemaStream)
+                {
+                   log().error("Cannot open config schema file: {}", pathToSchema);
+                   exit(1);
+                }
+
+                nlohmann::json schemaJson;
+                schemaStream >> schemaJson;
+
+                YAML::Node configYaml = YAML::LoadFile(config->as<std::string>());
+                nlohmann::json configJson;
+                for (const auto& key : sharedTopLevelConfigKeys())
+                {
+                    if (auto configYamlEntry = configYaml[key])
+                    {
+                        configJson[key] = yamlToJson(configYaml[key]);
+                    }
+                }
+
+                log().info("Validating config against schema: {}", pathToSchema);
+                if (!validateConfig(configJson, schemaJson))
+                {
+                    exit(1);
+                }
+            }
             DataSourceConfigService::get().loadConfig(config->as<std::string>());
         }
 

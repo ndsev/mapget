@@ -22,84 +22,6 @@ namespace
 {
 
 /**
- * Hash a string using the SHA256 implementation.
- */
-std::string stringToHash(const std::string& input)
-{
-    std::string result;
-    picosha2::hash256_hex_string(input, result);
-    return result;
-}
-
-/**
- * Recursively convert a YAML node to a JSON object,
- * with special handling for sensitive fields.
- * The function returns a nlohmann::json object and updates maskedSecretMap.
- */
-nlohmann::json yamlToJson(
-    const YAML::Node& yamlNode,
-    std::unordered_map<std::string, std::string>* maskedSecretMap = nullptr,
-    const bool mask = false)
-{
-    if (yamlNode.IsScalar()) {
-        if (mask) {
-            auto stringToMask = yamlNode.as<std::string>();
-            auto stringMask = "MASKED:"+stringToHash(stringToMask);
-            if (maskedSecretMap) {
-                maskedSecretMap->insert({stringMask, stringToMask});
-            }
-            return stringMask;
-        }
-
-        try {
-            return yamlNode.as<int>();
-        }
-        catch (const YAML::BadConversion&) {
-            try {
-                return yamlNode.as<double>();
-            }
-            catch (const YAML::BadConversion&) {
-                try {
-                    return yamlNode.as<bool>();
-                }
-                catch (const YAML::BadConversion&) {
-                    return yamlNode.as<std::string>();
-                }
-            }
-        }
-    }
-
-    if (mask) {
-        log().critical("Cannot mask non-scalar value!");
-        return {};
-    }
-
-    if (yamlNode.IsSequence()) {
-        auto arrayJson = nlohmann::json::array();
-        for (const auto& elem : yamlNode) {
-            arrayJson.push_back(yamlToJson(elem, maskedSecretMap));
-        }
-        return arrayJson;
-    }
-
-    if (yamlNode.IsMap()) {
-        auto objectJson = nlohmann::json::object();
-        for (const auto& item : yamlNode) {
-            auto key = item.first.as<std::string>();
-            const YAML::Node& valueNode = item.second;
-            objectJson[key] = yamlToJson(
-                valueNode,
-                maskedSecretMap,
-                key == "api-key" || key == "password");
-        }
-        return objectJson;
-    }
-
-    log().warn("Could not convert {} to JSON!", YAML::Dump(yamlNode));
-    return {};
-}
-
-/**
  * Recursively convert a JSON object to a YAML node,
  * with special handling for sensitive fields.
  */
@@ -477,7 +399,6 @@ struct HttpService::Impl
             return false;
         }
 
-
         schemaFile.open(schemaPath);
         if (!schemaFile) {
             res.status = 500;  // Internal Server Error.
@@ -486,11 +407,6 @@ struct HttpService::Impl
         }
 
         return true;
-    }
-
-    static auto sharedTopLevelConfigKeys()
-    {
-        return std::array{"sources", "http-settings"};
     }
 
     static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
@@ -526,9 +442,16 @@ struct HttpService::Impl
             combinedJson["model"] = jsonConfig;
             combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
 
-            // Set the response
-            res.status = 200;  // OK
-            res.set_content(combinedJson.dump(2), "application/json");
+            if (!validateConfig(jsonConfig, jsonSchema))
+            {
+                res.status = 500;  // Internal Server Error.
+                res.set_content("The configuration file did not pass schema validation.", "text/plain");
+            }
+            else
+            {
+                res.status = 200;  // OK
+                res.set_content(combinedJson.dump(2), "application/json");
+            }
         }
         catch (const std::exception& e) {
             res.status = 500;  // Internal Server Error
