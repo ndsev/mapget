@@ -256,10 +256,10 @@ public:
 
     /**
      * Collect query diagnostics for an evaluated query.
-     * If the query has not yet been evaluated, an empty list is returned.
+     * If the query has not yet been evaluated it gets compiled.
      */
     tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
-    collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag);
+    collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode = true);
 
     /**
      * Change the string pool of this model to a different one.
