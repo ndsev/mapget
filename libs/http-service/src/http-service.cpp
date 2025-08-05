@@ -2,6 +2,7 @@
 #include "mapget/log.h"
 #include "mapget/service/config.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +15,10 @@
 #include "nlohmann/json.hpp"
 #include "yaml-cpp/yaml.h"
 #include "picosha2.h"
+
+#ifdef __linux__
+#include <malloc.h>
+#endif
 
 namespace mapget
 {
@@ -149,8 +154,26 @@ YAML::Node jsonToYaml(const nlohmann::json& json, std::unordered_map<std::string
 struct HttpService::Impl
 {
     HttpService& self_;
+    mutable std::atomic<uint64_t> requestCounter_{0};
+    static constexpr uint64_t TRIM_INTERVAL = 100; // Trim memory every 100 requests
 
     explicit Impl(HttpService& self) : self_(self) {}
+
+    void tryMemoryTrim() const {
+#ifdef __linux__
+        auto count = requestCounter_.fetch_add(1, std::memory_order_relaxed);
+        if ((count % TRIM_INTERVAL) == 0) {
+            // Only log in debug builds to reduce overhead
+            #ifndef NDEBUG
+            log().debug("Trimming memory after {} requests", count);
+            #endif
+            malloc_trim(0);
+        }
+#else
+        // Still increment counter on non-Linux to maintain consistent behavior
+        requestCounter_.fetch_add(1, std::memory_order_relaxed);
+#endif
+    }
 
     // Use a shared buffer for the responses and a mutex for thread safety.
     struct HttpTilesRequestState
@@ -213,8 +236,9 @@ struct HttpService::Impl
                 writer_->write(result);
             }
             else {
-                // JSON response
-                buffer_ << nlohmann::to_string(result->toJson()) + "\n";
+                // JSON response - avoid temporary string allocation
+                auto json = result->toJson();
+                buffer_ << json.dump() << "\n";
             }
             resultEvent_.notify_one();
         }
@@ -368,6 +392,7 @@ struct HttpService::Impl
                 }
                 else {
                     log().info("Tiles request {} was successful.", state->requestId_);
+                    tryMemoryTrim(); // Trim memory after successful request
                 }
             });
     }
