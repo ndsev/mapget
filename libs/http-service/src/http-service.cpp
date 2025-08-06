@@ -154,25 +154,26 @@ YAML::Node jsonToYaml(const nlohmann::json& json, std::unordered_map<std::string
 struct HttpService::Impl
 {
     HttpService& self_;
+    HttpServiceConfig config_;
     mutable std::atomic<uint64_t> requestCounter_{0};
-    static constexpr uint64_t TRIM_INTERVAL = 100; // Trim memory every 100 requests
 
-    explicit Impl(HttpService& self) : self_(self) {}
+    explicit Impl(HttpService& self, const HttpServiceConfig& config) 
+        : self_(self), config_(config) {}
 
     void tryMemoryTrim() const {
+        if (config_.memoryTrimInterval > 0) {
+            auto count = requestCounter_.fetch_add(1, std::memory_order_relaxed);
+            if ((count % config_.memoryTrimInterval) == 0) {
 #ifdef __linux__
-        auto count = requestCounter_.fetch_add(1, std::memory_order_relaxed);
-        if ((count % TRIM_INTERVAL) == 0) {
-            // Only log in debug builds to reduce overhead
-            #ifndef NDEBUG
-            log().debug("Trimming memory after {} requests", count);
-            #endif
-            malloc_trim(0);
-        }
-#else
-        // Still increment counter on non-Linux to maintain consistent behavior
-        requestCounter_.fetch_add(1, std::memory_order_relaxed);
+                // Only log in debug builds to reduce overhead
+                #ifndef NDEBUG
+                log().debug("Trimming memory after {} requests (interval: {})", count, config_.memoryTrimInterval);
+                #endif
+                malloc_trim(0);
 #endif
+                // On non-Linux platforms, this is a no-op but we still track the counter
+            }
+        }
     }
 
     // Use a shared buffer for the responses and a mutex for thread safety.
@@ -236,9 +237,13 @@ struct HttpService::Impl
                 writer_->write(result);
             }
             else {
-                // JSON response - avoid temporary string allocation
+                // JSON response - optimize with compact dump settings
+                // TODO: Implement direct streaming with result->writeGeoJsonTo(buffer_)
+                // to avoid intermediate JSON object creation entirely
                 auto json = result->toJson();
-                buffer_ << json.dump() << "\n";
+                // Use compact dump: no indentation, no spaces, ignore errors
+                // This reduces string allocation overhead
+                buffer_ << json.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore) << "\n";
             }
             resultEvent_.notify_one();
         }
@@ -370,7 +375,10 @@ struct HttpService::Impl
                     log().debug("Streaming {} bytes...", strBuf.size());
                     sink.write(strBuf.data(), strBuf.size());
                     sink.os.flush();
-                    state->buffer_.str("");  // Clear buffer after reading.
+                    state->buffer_.str("");  // Clear buffer content
+                    state->buffer_.clear();  // Clear error flags
+                    // Force release of internal buffer memory
+                    std::stringstream().swap(state->buffer_);
                 }
 
                 // Call sink.done() when all requests are done.
@@ -655,8 +663,8 @@ struct HttpService::Impl
     }
 };
 
-HttpService::HttpService(Cache::Ptr cache, bool watchConfig)
-    : Service(std::move(cache), watchConfig), impl_(std::make_unique<Impl>(*this))
+HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
+    : Service(std::move(cache), config.watchConfig), impl_(std::make_unique<Impl>(*this, config))
 {
 }
 

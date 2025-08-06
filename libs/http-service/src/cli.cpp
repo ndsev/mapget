@@ -175,6 +175,7 @@ struct ServeCommand
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
     std::string webapp_;
+    uint64_t memoryTrimInterval_ = HttpServiceConfig{}.memoryTrimInterval;  // Use default from config
     CLI::App& app_;
 
     explicit ServeCommand(CLI::App& app) : app_(app)
@@ -224,6 +225,13 @@ struct ServeCommand
             "--no-get-config",
             isGetConfigEndpointEnabled_,
             "Allow the GET /config endpoint.");
+        serveCmd->add_option(
+            "--memory-trim-interval",
+            memoryTrimInterval_,
+            "Number of processed requests between explicit memory trimming to return unused memory to OS "
+            "(0=disabled, 1=after every request, N=after every N processed requests). "
+            "Only effective on platforms supporting allocator trimming (e.g., Linux).")
+            ->default_val(memoryTrimInterval_);
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -256,10 +264,24 @@ struct ServeCommand
         }
 
         auto config = app_.get_config_ptr();
-        bool watchConfig = config != nullptr;
+        
+        // Build HttpServiceConfig
+        HttpServiceConfig httpConfig;
+        httpConfig.watchConfig = (config != nullptr);
+        httpConfig.memoryTrimInterval = memoryTrimInterval_;
+        
+        if (memoryTrimInterval_ > 0) {
+#ifdef __linux__
+            log().info("Memory trim interval set to: {} requests", memoryTrimInterval_);
+#else
+            log().warn("Memory trim interval set to {} requests, but memory trimming is currently only supported on Linux. Setting will be ignored.", memoryTrimInterval_);
+#endif
+        } else {
+            log().info("Memory trimming disabled");
+        }
 
         // HttpService will subscribe to DataSourceConfigService.
-        HttpService srv(cache, watchConfig);
+        HttpService srv(cache, httpConfig);
 
         if (config)
         {
