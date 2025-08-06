@@ -155,19 +155,34 @@ struct HttpService::Impl
 {
     HttpService& self_;
     HttpServiceConfig config_;
-    mutable std::atomic<uint64_t> requestCounter_{0};
+    mutable std::atomic<uint64_t> binaryRequestCounter_{0};
+    mutable std::atomic<uint64_t> jsonRequestCounter_{0};
 
     explicit Impl(HttpService& self, const HttpServiceConfig& config) 
         : self_(self), config_(config) {}
 
-    void tryMemoryTrim() const {
-        if (config_.memoryTrimInterval > 0) {
-            auto count = requestCounter_.fetch_add(1, std::memory_order_relaxed);
-            if ((count % config_.memoryTrimInterval) == 0) {
+    enum class ResponseType {
+        Binary,
+        Json
+    };
+
+    void tryMemoryTrim(ResponseType responseType) const {
+        uint64_t interval = (responseType == ResponseType::Binary) 
+            ? config_.memoryTrimIntervalBinary 
+            : config_.memoryTrimIntervalJson;
+        
+        if (interval > 0) {
+            auto& counter = (responseType == ResponseType::Binary) 
+                ? binaryRequestCounter_ 
+                : jsonRequestCounter_;
+            
+            auto count = counter.fetch_add(1, std::memory_order_relaxed);
+            if ((count % interval) == 0) {
 #ifdef __linux__
                 // Only log in debug builds to reduce overhead
                 #ifndef NDEBUG
-                log().debug("Trimming memory after {} requests (interval: {})", count, config_.memoryTrimInterval);
+                const char* typeStr = (responseType == ResponseType::Binary) ? "binary" : "JSON";
+                log().debug("Trimming memory after {} {} requests (interval: {})", count, typeStr, interval);
                 #endif
                 malloc_trim(0);
 #endif
@@ -400,7 +415,11 @@ struct HttpService::Impl
                 }
                 else {
                     log().info("Tiles request {} was successful.", state->requestId_);
-                    tryMemoryTrim(); // Trim memory after successful request
+                    // Determine response type and trim accordingly
+                    ResponseType respType = (state->responseType_ == HttpTilesRequestState::binaryMimeType) 
+                        ? ResponseType::Binary 
+                        : ResponseType::Json;
+                    tryMemoryTrim(respType);
                 }
             });
     }
