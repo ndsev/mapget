@@ -15,6 +15,7 @@
 #include "nlohmann/json.hpp"
 #include "yaml-cpp/yaml.h"
 #include "picosha2.h"
+#include <zlib.h>
 
 #ifdef __linux__
 #include <malloc.h>
@@ -25,6 +26,61 @@ namespace mapget
 
 namespace
 {
+
+/**
+ * Simple gzip compressor for streaming compression
+ */
+class GzipCompressor {
+public:
+    GzipCompressor() {
+        strm_.zalloc = Z_NULL;
+        strm_.zfree = Z_NULL;
+        strm_.opaque = Z_NULL;
+        // 16+MAX_WBITS enables gzip format (not just deflate)
+        int ret = deflateInit2(&strm_, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+                              16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
+        if (ret != Z_OK) {
+            throw std::runtime_error("Failed to initialize gzip compressor");
+        }
+    }
+
+    ~GzipCompressor() {
+        deflateEnd(&strm_);
+    }
+
+    std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH) {
+        std::string result;
+        if (size == 0 && flush_mode == Z_NO_FLUSH) {
+            return result;
+        }
+
+        strm_.avail_in = static_cast<uInt>(size);
+        strm_.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data));
+
+        char outbuf[8192];
+        do {
+            strm_.avail_out = sizeof(outbuf);
+            strm_.next_out = reinterpret_cast<Bytef*>(outbuf);
+            
+            int ret = deflate(&strm_, flush_mode);
+            if (ret == Z_STREAM_ERROR) {
+                throw std::runtime_error("Gzip compression failed");
+            }
+            
+            size_t have = sizeof(outbuf) - strm_.avail_out;
+            result.append(outbuf, have);
+        } while (strm_.avail_out == 0);
+
+        return result;
+    }
+
+    std::string finish() {
+        return compress(nullptr, 0, Z_FINISH);
+    }
+
+private:
+    z_stream strm_{};
+};
 
 /**
  * Hash a string using the SHA256 implementation.
@@ -207,6 +263,7 @@ struct HttpService::Impl
         std::unique_ptr<TileLayerStream::Writer> writer_;
         std::vector<LayerTilesRequest::Ptr> requests_;
         TileLayerStream::StringPoolOffsetMap stringOffsets_;
+        std::unique_ptr<GzipCompressor> compressor_;  // Store compressor per request
 
         HttpTilesRequestState()
         {
@@ -355,15 +412,32 @@ struct HttpService::Impl
             abortRequestsForClientId(clientId, state);
         }
 
+        // Check if client accepts gzip compression
+        bool enableGzip = false;
+        if (req.has_header("Accept-Encoding")) {
+            std::string acceptEncoding = req.get_header_value("Accept-Encoding");
+            enableGzip = acceptEncoding.find("gzip") != std::string::npos;
+            log().info("Accept-Encoding header: '{}', enableGzip: {}", acceptEncoding, enableGzip);
+        } else {
+            log().info("No Accept-Encoding header present");
+        }
+
+        // Set Content-Encoding header if compression is enabled
+        if (enableGzip) {
+            res.set_header("Content-Encoding", "gzip");
+            state->compressor_ = std::make_unique<GzipCompressor>();
+            log().info("Set Content-Encoding: gzip header");
+        }
+
         // For efficiency, set up httplib to stream tile layer responses to client:
         // (1) Lambda continuously supplies response data to httplib's DataSink,
         //     picking up data from state->buffer_ until all tile requests are done.
         //     Then, signal sink->done() to close the stream with a 200 status.
-        //     See httplib::write_content_without_length(...) too.
+        //     Using chunked transfer encoding with optional manual compression.
         // (2) Lambda acts as a cleanup routine, triggered by httplib upon request wrap-up.
         //     The success flag indicates if wrap-up was due to sink->done() or external factors
         //     like network errors or request aborts in lengthy tile requests (e.g., map-viewer).
-        res.set_content_provider(
+        res.set_chunked_content_provider(
             state->responseType_,
             [state](size_t offset, httplib::DataSink& sink)
             {
@@ -387,8 +461,18 @@ struct HttpService::Impl
                     });
 
                 if (!strBuf.empty()) {
-                    log().debug("Streaming {} bytes...", strBuf.size());
-                    sink.write(strBuf.data(), strBuf.size());
+                    // Compress data if gzip is enabled
+                    if (state->compressor_) {
+                        std::string compressed = state->compressor_->compress(strBuf.data(), strBuf.size());
+                        if (!compressed.empty()) {
+                            log().info("Compressing: {} bytes -> {} bytes (request {})", 
+                                      strBuf.size(), compressed.size(), state->requestId_);
+                            sink.write(compressed.data(), compressed.size());
+                        }
+                    } else {
+                        log().debug("Streaming {} bytes (no compression)...", strBuf.size());
+                        sink.write(strBuf.data(), strBuf.size());
+                    }
                     sink.os.flush();
                     state->buffer_.str("");  // Clear buffer content
                     state->buffer_.clear();  // Clear error flags
@@ -398,6 +482,13 @@ struct HttpService::Impl
 
                 // Call sink.done() when all requests are done.
                 if (allDone) {
+                    // Finish compression if enabled
+                    if (state->compressor_) {
+                        std::string final_chunk = state->compressor_->finish();
+                        if (!final_chunk.empty()) {
+                            sink.write(final_chunk.data(), final_chunk.size());
+                        }
+                    }
                     sink.done();
                 }
 
