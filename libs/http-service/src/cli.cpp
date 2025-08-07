@@ -350,6 +350,7 @@ struct FetchCommand
     std::string server_, map_, layer_;
     std::vector<uint64_t> tiles_;
     bool mute_ = false;
+    bool noCompression_ = false;
 
     explicit FetchCommand(CLI::App& app)
     {
@@ -360,6 +361,8 @@ struct FetchCommand
         fetchCmd->add_option("-l,--layer", layer_, "Layer of the map to retrieve.")->required();
         fetchCmd->add_option("--mute",
             mute_, "Mute the actual tile GeoJSON output.");
+        fetchCmd->add_option("--no-compression",
+            noCompression_, "Disable gzip compression for responses.");
         fetchCmd
             ->add_option(
                 "-t,--tile",
@@ -389,7 +392,7 @@ struct FetchCommand
         std::string host = server_.substr(0, delimiterPos);
         int port = std::stoi(server_.substr(delimiterPos + 1, server_.size()));
 
-        mapget::HttpClient cli(host, port);
+        mapget::HttpClient cli(host, port, {}, !noCompression_);
         auto request = std::make_shared<LayerTilesRequest>(
             map_,
             layer_,
