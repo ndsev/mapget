@@ -175,6 +175,8 @@ struct ServeCommand
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
     std::string webapp_;
+    uint64_t memoryTrimIntervalBinary_ = HttpServiceConfig{}.memoryTrimIntervalBinary;  // Use default from config
+    uint64_t memoryTrimIntervalJson_ = HttpServiceConfig{}.memoryTrimIntervalJson;      // Use default from config
     CLI::App& app_;
 
     explicit ServeCommand(CLI::App& app) : app_(app)
@@ -224,6 +226,20 @@ struct ServeCommand
             "--no-get-config",
             isGetConfigEndpointEnabled_,
             "Allow the GET /config endpoint.");
+        serveCmd->add_option(
+            "--memory-trim-binary-interval",
+            memoryTrimIntervalBinary_,
+            "Number of processed binary requests between explicit memory trimming to return unused memory to OS "
+            "(0=disabled, 1=after every request, N=after every N binary requests). "
+            "Only effective on platforms supporting allocator trimming (e.g., Linux).")
+            ->default_val(memoryTrimIntervalBinary_);
+        serveCmd->add_option(
+            "--memory-trim-json-interval",
+            memoryTrimIntervalJson_,
+            "Number of processed JSON/GeoJSON requests between explicit memory trimming to return unused memory to OS "
+            "(0=disabled, 1=after every request, N=after every N JSON requests). "
+            "Only effective on platforms supporting allocator trimming (e.g., Linux).")
+            ->default_val(memoryTrimIntervalJson_);
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -256,10 +272,36 @@ struct ServeCommand
         }
 
         auto config = app_.get_config_ptr();
-        bool watchConfig = config != nullptr;
+        
+        // Build HttpServiceConfig
+        HttpServiceConfig httpConfig;
+        httpConfig.watchConfig = (config != nullptr);
+        httpConfig.memoryTrimIntervalBinary = memoryTrimIntervalBinary_;
+        httpConfig.memoryTrimIntervalJson = memoryTrimIntervalJson_;
+        
+        // Log memory trim configuration
+        bool anyTrimEnabled = (memoryTrimIntervalBinary_ > 0) || (memoryTrimIntervalJson_ > 0);
+        if (anyTrimEnabled) {
+#ifdef __linux__
+            if (memoryTrimIntervalBinary_ > 0)
+                log().info("Memory trim for binary responses: every {} requests", memoryTrimIntervalBinary_);
+            else
+                log().info("Memory trim for binary responses: disabled");
+                
+            if (memoryTrimIntervalJson_ > 0)
+                log().info("Memory trim for JSON responses: every {} requests", memoryTrimIntervalJson_);
+            else
+                log().info("Memory trim for JSON responses: disabled");
+#else
+            log().warn("Memory trim intervals set (binary: {}, JSON: {}), but memory trimming is currently only supported on Linux. Settings will be ignored.", 
+                      memoryTrimIntervalBinary_, memoryTrimIntervalJson_);
+#endif
+        } else {
+            log().info("Memory trimming disabled for all response types");
+        }
 
         // HttpService will subscribe to DataSourceConfigService.
-        HttpService srv(cache, watchConfig);
+        HttpService srv(cache, httpConfig);
 
         if (config)
         {
@@ -308,6 +350,7 @@ struct FetchCommand
     std::string server_, map_, layer_;
     std::vector<uint64_t> tiles_;
     bool mute_ = false;
+    bool noCompression_ = false;
 
     explicit FetchCommand(CLI::App& app)
     {
@@ -318,6 +361,8 @@ struct FetchCommand
         fetchCmd->add_option("-l,--layer", layer_, "Layer of the map to retrieve.")->required();
         fetchCmd->add_option("--mute",
             mute_, "Mute the actual tile GeoJSON output.");
+        fetchCmd->add_option("--no-compression",
+            noCompression_, "Disable gzip compression for responses.");
         fetchCmd
             ->add_option(
                 "-t,--tile",
@@ -347,7 +392,7 @@ struct FetchCommand
         std::string host = server_.substr(0, delimiterPos);
         int port = std::stoi(server_.substr(delimiterPos + 1, server_.size()));
 
-        mapget::HttpClient cli(host, port);
+        mapget::HttpClient cli(host, port, {}, !noCompression_);
         auto request = std::make_shared<LayerTilesRequest>(
             map_,
             layer_,

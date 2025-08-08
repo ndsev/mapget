@@ -1,6 +1,21 @@
 include(FetchContent)
 
-
+# zlib - used for tile compression/decompression
+if (NOT TARGET ZLIB::ZLIB)
+  # Disable zlib tests and examples to avoid build issues
+  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "Disable zlib examples")
+  set(BUILD_TESTING OFF CACHE BOOL "Disable zlib tests")
+  
+  FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG        "v1.3.1"
+    GIT_SHALLOW    ON
+  )
+  FetchContent_MakeAvailable(zlib)
+  # Create the ZLIB::ZLIB alias that CMake's FindZLIB would create
+  add_library(ZLIB::ZLIB ALIAS zlibstatic)
+endif()
 
 if (NOT TARGET glm::glm)
   FetchContent_Declare(glm
@@ -127,8 +142,10 @@ if (cpp_httplib_POPULATED)
   target_compile_definitions(cpp-httplib
     INTERFACE
       CPPHTTPLIB_OPENSSL_SUPPORT
-      CPPHTTPLIB_USE_POLL)
-  target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)
+      CPPHTTPLIB_USE_POLL
+      CPPHTTPLIB_ZLIB_SUPPORT)
+  # ZLIB is already available via FetchContent above
+  target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL ZLIB::ZLIB)
 endif()
 
 if (NOT TARGET nlohmann_json::nlohmann_json)

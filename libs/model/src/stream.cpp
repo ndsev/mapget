@@ -134,22 +134,32 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
             if (highestStringKnownToClient < highestString)
             {
                 // Need to send the client an update for the string pool.
-                std::stringstream serializedStrings;
-                auto stringUpdateOffset = 0;
-                if (differentialStringUpdates_)
-                    stringUpdateOffset = highestStringKnownToClient + 1;
-                strings->write(serializedStrings, stringUpdateOffset);
-                sendMessage(serializedStrings.str(), MessageType::StringPool);
+                std::string serializedStrings;
+                serializedStrings.reserve(1024); // Pre-allocate for typical string pool update
+                {
+                    std::ostringstream stringsStream;
+                    auto stringUpdateOffset = 0;
+                    if (differentialStringUpdates_)
+                        stringUpdateOffset = highestStringKnownToClient + 1;
+                    strings->write(stringsStream, stringUpdateOffset);
+                    serializedStrings = stringsStream.str();
+                }
+                sendMessage(std::move(serializedStrings), MessageType::StringPool);
                 highestStringKnownToClient = highestString;
             }
         }
     }
 
     // Send the actual layer
-    std::stringstream serializedLayer;
+    std::string serializedLayer;
+    serializedLayer.reserve(65536); // Pre-allocate 64KB for typical tile size
     auto start = std::chrono::system_clock::now();
-    tileLayer->write(serializedLayer);
-    auto bytes = serializedLayer.str();
+    {
+        std::ostringstream layerStream;
+        tileLayer->write(layerStream);
+        serializedLayer = layerStream.str();
+    }
+    auto& bytes = serializedLayer;
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
     log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
 
@@ -174,23 +184,33 @@ void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::
     // TODO refactor the preparation of tile layer & field dicts storage format
     //  such that the encoding logic is not split over multiple functions.
 
-    std::stringstream message;
-    bitsery::Serializer<bitsery::OutputStreamAdapter> s(message);
-
-    // Write protocol version
-    s.object(CurrentProtocolVersion);
-
-    // Write message type
-    s.value1b(msgType);
-
-    // Write content length
-    s.value4b((uint32_t)bytes.size());
-
-    // Write content
-    message << bytes;
-
-    // Notify result
-    onMessage_(message.str(), msgType);
+    // Calculate actual header size
+    // Protocol version: ~10 bytes (depending on version object size)
+    // Message type: 1 byte  
+    // Content length: 4 bytes
+    // Bitsery overhead: ~5 bytes
+    constexpr size_t estimatedHeaderSize = 20;
+    
+    // Build the complete message efficiently
+    std::string message;
+    message.reserve(estimatedHeaderSize + bytes.size());
+    
+    // Serialize header directly into the message string
+    {
+        std::ostringstream headerStream;
+        bitsery::Serializer<bitsery::OutputStreamAdapter> s(headerStream);
+        s.object(CurrentProtocolVersion);
+        s.value1b(msgType);
+        s.value4b(static_cast<uint32_t>(bytes.size()));
+        
+        message = headerStream.str();
+    }
+    
+    // Append content with move semantics
+    message.append(std::move(bytes));
+    
+    // Send with move semantics
+    onMessage_(std::move(message), msgType);
 }
 
 void TileLayerStream::Writer::sendEndOfStream()
