@@ -417,16 +417,16 @@ struct HttpService::Impl
         if (req.has_header("Accept-Encoding")) {
             std::string acceptEncoding = req.get_header_value("Accept-Encoding");
             enableGzip = acceptEncoding.find("gzip") != std::string::npos;
-            log().info("Accept-Encoding header: '{}', enableGzip: {}", acceptEncoding, enableGzip);
+            log().debug("Accept-Encoding header: '{}', enableGzip: {}", acceptEncoding, enableGzip);
         } else {
-            log().info("No Accept-Encoding header present");
+            log().debug("No Accept-Encoding header present");
         }
 
         // Set Content-Encoding header if compression is enabled
         if (enableGzip) {
             res.set_header("Content-Encoding", "gzip");
             state->compressor_ = std::make_unique<GzipCompressor>();
-            log().info("Set Content-Encoding: gzip header");
+            log().debug("Set Content-Encoding: gzip header");
         }
 
         // For efficiency, set up httplib to stream tile layer responses to client:
@@ -465,7 +465,7 @@ struct HttpService::Impl
                     if (state->compressor_) {
                         std::string compressed = state->compressor_->compress(strBuf.data(), strBuf.size());
                         if (!compressed.empty()) {
-                            log().info("Compressing: {} bytes -> {} bytes (request {})", 
+                            log().debug("Compressing: {} bytes -> {} bytes (request {})", 
                                       strBuf.size(), compressed.size(), state->requestId_);
                             sink.write(compressed.data(), compressed.size());
                         }
