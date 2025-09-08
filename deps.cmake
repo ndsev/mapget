@@ -24,7 +24,7 @@ if (NOT TARGET ZLIB::ZLIBSTATIC)
 
     add_custom_command(
       OUTPUT ${zlib_SOURCE_DIR}/Makefile
-      COMMAND ${zlib_SOURCE_DIR}/configure --prefix=${zlib_BUILD_DIR}
+      COMMAND sh ${zlib_SOURCE_DIR}/configure "--prefix=${zlib_BUILD_DIR}" --static
       WORKING_DIRECTORY ${zlib_SOURCE_DIR})
 
     add_custom_target(zlib_build ALL
