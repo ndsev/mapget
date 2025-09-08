@@ -1,20 +1,45 @@
 include(FetchContent)
 
-# zlib - used for tile compression/decompression
-if (NOT TARGET ZLIB::ZLIB)
-  # Disable zlib tests and examples to avoid build issues
-  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "Disable zlib examples")
-  set(BUILD_TESTING OFF CACHE BOOL "Disable zlib tests")
-  
-  FetchContent_Declare(
-    zlib
+if (NOT TARGET ZLIB::ZLIBSTATIC)
+  # With zlib > 1.3.1 we can use their CMakeLists.txt file
+  # and remove the call to `make`.
+  #
+  # set(ZLIB_BUILD_SHARED OFF CACHE BOOL "")
+  # set(ZLIB_BUILD_TESTING OFF CACHE BOOL "")
+  # set(ZLIB_INSTALL OFF CACHE BOOL "")
+  #
+  # FetchContent_Declare(zlib
+  #   GIT_REPOSITORY https://github.com/madler/zlib.git
+  #   GIT_TAG        "v1.3.2"
+  #   GIT_SHALLOW    ON)
+  # FetchContent_MakeAvailable(zlib)
+
+  FetchContent_Declare(zlib
     GIT_REPOSITORY https://github.com/madler/zlib.git
     GIT_TAG        "v1.3.1"
-    GIT_SHALLOW    ON
-  )
-  FetchContent_MakeAvailable(zlib)
-  # Create the ZLIB::ZLIB alias that CMake's FindZLIB would create
-  add_library(ZLIB::ZLIB ALIAS zlibstatic)
+    GIT_SHALLOW    ON)
+  FetchContent_GetProperties(zlib)
+  if (NOT zlib_POPULATED)
+    FetchContent_Populate(zlib)
+
+    add_custom_command(
+      OUTPUT ${zlib_SOURCE_DIR}/Makefile
+      COMMAND ${zlib_SOURCE_DIR}/configure --prefix=${zlib_BUILD_DIR}
+      WORKING_DIRECTORY ${zlib_SOURCE_DIR})
+
+    add_custom_target(zlib_build ALL
+      COMMAND make -C ${zlib_SOURCE_DIR}
+      BYPRODUCTS "${zlib_SOURCE_DIR}/libz.a"
+      WORKING_DIRECTORY ${zlib_SOURCE_DIR}
+      DEPENDS ${zlib_SOURCE_DIR}/Makefile)
+  endif()
+
+  add_library(ZLIB::ZLIBSTATIC STATIC IMPORTED)
+  set_target_properties(ZLIB::ZLIBSTATIC PROPERTIES
+    IMPORTED_LOCATION "${zlib_SOURCE_DIR}/libz.a"
+    INTERFACE_INCLUDE_DIRECTORY "${zlib_SOURCE_DIR}")
+
+  add_dependencies(ZLIB::ZLIBSTATIC zlib_build)
 endif()
 
 if (NOT TARGET glm::glm)
@@ -144,8 +169,7 @@ if (cpp_httplib_POPULATED)
       CPPHTTPLIB_OPENSSL_SUPPORT
       CPPHTTPLIB_USE_POLL
       CPPHTTPLIB_ZLIB_SUPPORT)
-  # ZLIB is already available via FetchContent above
-  target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL ZLIB::ZLIB)
+  target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL ZLIB::ZLIBSTATIC)
 endif()
 
 if (NOT TARGET nlohmann_json::nlohmann_json)
