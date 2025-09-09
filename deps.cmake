@@ -13,33 +13,13 @@ if (NOT TARGET ZLIB::ZLIBSTATIC)
   #   GIT_TAG        "v1.3.2"
   #   GIT_SHALLOW    ON)
   # FetchContent_MakeAvailable(zlib)
+  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "Disable zlib examples")
+  set(BUILD_TESTING OFF CACHE BOOL "Disable zlib tests")
 
   FetchContent_Declare(zlib
     GIT_REPOSITORY https://github.com/madler/zlib.git
     GIT_TAG        "v1.3.1"
     GIT_SHALLOW    ON)
-  FetchContent_GetProperties(zlib)
-  if (NOT zlib_POPULATED)
-    FetchContent_Populate(zlib)
-
-    add_custom_command(
-      OUTPUT ${zlib_SOURCE_DIR}/Makefile
-      COMMAND sh ${zlib_SOURCE_DIR}/configure "--prefix=${zlib_BUILD_DIR}" --static
-      WORKING_DIRECTORY ${zlib_SOURCE_DIR})
-
-    add_custom_target(zlib_build ALL
-      COMMAND make -C ${zlib_SOURCE_DIR}
-      BYPRODUCTS "${zlib_SOURCE_DIR}/libz.a"
-      WORKING_DIRECTORY ${zlib_SOURCE_DIR}
-      DEPENDS ${zlib_SOURCE_DIR}/Makefile)
-  endif()
-
-  add_library(ZLIB::ZLIBSTATIC STATIC IMPORTED)
-  set_target_properties(ZLIB::ZLIBSTATIC PROPERTIES
-    IMPORTED_LOCATION "${zlib_SOURCE_DIR}/libz.a"
-    INTERFACE_INCLUDE_DIRECTORY "${zlib_SOURCE_DIR}")
-
-  add_dependencies(ZLIB::ZLIBSTATIC zlib_build)
 endif()
 
 if (NOT TARGET glm::glm)
@@ -140,6 +120,8 @@ endif()
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   if (NOT TARGET httplib::httplib)
     FetchContent_MakeAvailable(cpp-httplib)
+    FetchContent_MakeAvailable(zlib)
+    add_library(ZLIB::ZLIBSTATIC ALIAS zlibstatic)
   endif()
   if (NOT TARGET yaml-cpp::yaml-cpp)
     FetchContent_MakeAvailable(yaml-cpp)
@@ -169,7 +151,10 @@ if (cpp_httplib_POPULATED)
       CPPHTTPLIB_OPENSSL_SUPPORT
       CPPHTTPLIB_USE_POLL
       CPPHTTPLIB_ZLIB_SUPPORT)
-  target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL ZLIB::ZLIBSTATIC)
+  target_link_libraries(cpp-httplib INTERFACE OpenSSL::SSL)
+  if (MAPGET_WITH_ZLIB)
+    target_link_libraries(cpp-httplib INTERFACE ZLIB::ZLIBSTATIC)
+  endif()
 endif()
 
 if (NOT TARGET nlohmann_json::nlohmann_json)

@@ -27,6 +27,12 @@ target_link_libraries(mapget-http-service
     picosha2::picosha2
     ZLIB::ZLIBSTATIC)
 
+if (MAPGET_WITH_ZLIB)
+  target_link_libraries(mapget-http-service
+    PRIVATE
+      ZLIB::ZLIBSTATIC)
+endif()
+
 if (MSVC)
   target_compile_definitions(mapget-http-service
     PRIVATE

@@ -24,7 +24,7 @@ if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set(MAPGET_BUILD_EXAMPLES ON CACHE BOOL "Build examples.")
 endif()
 
-option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
+option(MAPGET_WITH_WHEEL   "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
 option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
 
