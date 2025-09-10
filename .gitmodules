@@ -1,3 +1,6 @@
 [submodule "cmake/cmake-modules"]
 	path = cmake/cmake-modules
 	url = https://github.com/bilke/cmake-modules
+[submodule "cmake/CPM.cmake"]
+	path = cmake/CPM.cmake
+	url = https://github.com/cpm-cmake/CPM.cmake

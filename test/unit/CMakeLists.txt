@@ -1,17 +1,5 @@
 project(test.mapget.unit CXX)
 
-FetchContent_Declare(Catch2
-  GIT_REPOSITORY "https://github.com/catchorg/Catch2.git"
-  GIT_TAG        "v3.5.2"
-  GIT_SHALLOW    ON
-  FIND_PACKAGE_ARGS)
-FetchContent_MakeAvailable(Catch2)
-
-FetchContent_GetProperties(Catch2)
-if (Catch2_POPULATED)
-  list(APPEND CMAKE_MODULE_PATH "${CATCH2_SOURCE_DIR}/contrib")
-endif()
-
 add_executable(test.mapget
   test-model.cpp
   test-model-geometry.cpp
@@ -39,6 +27,7 @@ target_link_libraries(test.mapget.filelog
   mapget-log
   Catch2::Catch2WithMain)
 
+list(APPEND CMAKE_MODULE_PATH "${Catch2_SOURCE_DIR}/extras")
 include(Catch)
 include(CTest)
 catch_discover_tests(test.mapget)
