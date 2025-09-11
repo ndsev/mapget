@@ -1,13 +1,5 @@
 ### Dependencies via CPM (converted from FetchContent)
 
-CPMAddPackage(
-  URI "gh:madler/zlib@1.3.1"
-  OPTIONS
-    "ZLIB_BUILD_EXAMPLES OFF"
-    "BUILD_TESTING OFF")
-# Create the ZLIB::ZLIB alias that CMake's FindZLIB would create
-add_library(ZLIB::ZLIB ALIAS zlibstatic)
-
 CPMAddPackage("gh:g-truc/glm#1.0.1")
 CPMAddPackage(
   URI "gh:fmtlib/fmt#11.1.3"
@@ -35,6 +27,11 @@ CPMAddPackage(
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     set (OPENSSL_VERSION openssl-3.5.2)
     CPMAddPackage("gh:klebert-engineering/openssl-cmake@1.0.0")
+    CPMAddPackage(
+      URI "gh:madler/zlib@1.3.1"
+      OPTIONS
+        "ZLIB_BUILD_EXAMPLES OFF"
+        "BUILD_TESTING OFF")
     CPMAddPackage(
       URI "gh:yhirose/cpp-httplib@0.15.3"
       OPTIONS
@@ -73,6 +70,8 @@ if ((MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING) AND NO
     SQLITE_ENABLE_COLUMN_METADATA=1
     SQLITE_THREADSAFE=1
   )
+  # Link against libdl for dynamic loading functions
+  target_link_libraries(sqlite3 PRIVATE dl)
   # Create alias target
   add_library(SQLite::SQLite3 ALIAS sqlite3)
 endif()
