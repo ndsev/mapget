@@ -454,7 +454,7 @@ struct HttpService::Impl
                             state->requests_.begin(),
                             state->requests_.end(),
                             [](const auto& r) { return r->isDone(); });
-                        if (allDone)
+                        if (allDone && state->responseType_ == HttpTilesRequestState::binaryMimeType)
                             state->writer_->sendEndOfStream();
                         strBuf = state->buffer_.str();
                         return !strBuf.empty() || allDone;
