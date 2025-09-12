@@ -15,14 +15,11 @@ CPMAddPackage(
     "EXPECTED_BUILD_TESTS OFF"
     "EXPECTED_BUILD_PACKAGE_DEB OFF")
 CPMAddPackage(
-  URI "gh:Klebert-Engineering/simfil@0.5.4"
+  URI "gh:Klebert-Engineering/simfil@0.5.6"
   OPTIONS
     "SIMFIL_WITH_MODEL_JSON ON"
     "SIMFIL_SHARED ON")
-CPMAddPackage(
-  NAME tiny-process-library
-  GIT_REPOSITORY "https://gitlab.com/eidheim/tiny-process-library"
-  GIT_TAG "v2.0.4")
+CPMAddPackage("gl:eidheim/tiny-process-library#8bbb5a")  # Switch to release > 2.0.4 once available
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     set (OPENSSL_VERSION openssl-3.5.2)
@@ -39,12 +36,12 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
         "CPPHTTPLIB_USE_POLL ON"
         "CPPHTTPLIB_ZLIB_SUPPORT ON")
     CPMAddPackage(
-      URI "gh:jbeder/yaml-cpp#0.8.0"
+      URI "gh:jbeder/yaml-cpp#aa8d4e" # Swicth to release > 0.8.0 once available
       OPTIONS
         "YAML_CPP_BUILD_TESTS OFF"
         "YAML_CPP_BUILD_TOOLS OFF"
         "YAML_CPP_BUILD_CONTRIB OFF")
-    CPMAddPackage("gh:CLIUtils/CLI11@2.3.2")
+    CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
     CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
     CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 endif ()
@@ -54,26 +51,8 @@ if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
 endif()
 
 if ((MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING) AND NOT TARGET SQLite::SQLite3)
-  CPMAddPackage(
-    NAME sqlite3
-    URL https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip
-    URL_HASH SHA256=77823cb110929c2bcb0f5d48e4833b5c59a8a6e40cdea3936b99e199dbbe5784
-    DOWNLOAD_ONLY YES
-  )
-  # Create a library for SQLite3
-  add_library(sqlite3 STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
-  target_include_directories(sqlite3 PUBLIC ${sqlite3_SOURCE_DIR})
-  target_compile_definitions(sqlite3 PRIVATE
-    SQLITE_ENABLE_RTREE=1
-    SQLITE_ENABLE_FTS5=1
-    SQLITE_ENABLE_JSON1=1
-    SQLITE_ENABLE_COLUMN_METADATA=1
-    SQLITE_THREADSAFE=1
-  )
-  # Link against libdl for dynamic loading functions
-  target_link_libraries(sqlite3 PRIVATE dl)
-  # Create alias target
-  add_library(SQLite::SQLite3 ALIAS sqlite3)
+  CPMAddPackage("gh:ndsev/sqlite-cmake#fix-populate")
+  add_sqlite(BACKEND PUBLIC VERSION 3.50.2)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
