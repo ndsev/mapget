@@ -15,7 +15,8 @@ add_library(mapget-model STATIC
   include/mapget/model/point.h
   include/mapget/model/pointnode.h
   include/mapget/model/geometry.h
-  include/mapget/model/simfil-geometry.h
+  include/mapget/model/simfilgeometry.h
+  include/mapget/model/simfilutil.h
   include/mapget/model/sourcedata.h
   include/mapget/model/sourcedatalayer.h
   include/mapget/model/sourceinfo.h
@@ -36,8 +37,8 @@ add_library(mapget-model STATIC
   src/geometry.cpp
   src/point.cpp
   src/pointnode.cpp
-  src/simfil-geometry.cpp
-  src/simfilutil.h
+  src/simfilgeometry.cpp
+  src/simfilexpressioncache.h
   src/sourcedata.cpp
   src/sourcedatalayer.cpp
   src/sourcedatareference.cpp

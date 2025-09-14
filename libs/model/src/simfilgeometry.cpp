@@ -1,4 +1,4 @@
-#include "simfil-geometry.h"
+#include "simfilgeometry.h"
 #include "stringpool.h"
 
 #include "simfil/value.h"

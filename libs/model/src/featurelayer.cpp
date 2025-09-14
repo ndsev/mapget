@@ -23,6 +23,7 @@
 #include "mapget/log.h"
 #include "simfil/model/string-pool.h"
 #include "simfilutil.h"
+#include "simfilexpressioncache.h"
 #include "sourcedatareference.h"
 #include "sourceinfo.h"
 
