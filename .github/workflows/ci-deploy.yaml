@@ -120,6 +120,7 @@ jobs:
           fi
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
                 -DPython3_ROOT_DIR="$pythonLocation" \
                 -DPython3_FIND_FRAMEWORK=LAST \
                 -DCMAKE_C_COMPILER_LAUNCHER=sccache \
