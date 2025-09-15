@@ -105,6 +105,9 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         // TODO if multiple LayerTileRequests are ever sent by this client,
         //  additionally handle RequestStatus::Aborted.
     }
+    else {
+        request->setStatus(RequestStatus::Aborted);
+    }
 
     return request;
 }

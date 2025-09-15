@@ -142,6 +142,12 @@ jobs:
       - name: Build (Windows)
         if: matrix.os == 'windows-2022'
         run: |
+          # Install NASM and jom using chocolatey (required for OpenSSL build)
+          choco install nasm jom -y
+          # Add NASM to PATH for current session
+          $env:PATH = "$env:PATH;C:\Program Files\NASM"
+          # Verify NASM installation
+          nasm -v
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
           mkdir build
           cd build

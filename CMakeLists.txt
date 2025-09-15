@@ -71,7 +71,13 @@ endif()
 
 ##############
 # deps
-include(deps.cmake)
+set(CPM_DOWNLOAD_ALL ON)
+set(CPM_USE_LOCAL_PACKAGES OFF)
+# Include CPM.cmake
+if (NOT CPM_INITIALIZED)
+  add_subdirectory(cmake/CPM.cmake)
+endif ()
+include(cmake/deps.cmake)
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
