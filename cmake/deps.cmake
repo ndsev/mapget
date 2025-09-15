@@ -19,7 +19,10 @@ CPMAddPackage(
   OPTIONS
     "SIMFIL_WITH_MODEL_JSON ON"
     "SIMFIL_SHARED OFF")
-CPMAddPackage("gl:eidheim/tiny-process-library#8bbb5a")  # Switch to release > 2.0.4 once available
+CPMAddPackage(
+  URI "gl:eidheim/tiny-process-library#8bbb5a"  # Switch to release > 2.0.4 once available
+  OPTIONS
+    "BUILD_TESTING OFF")
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     set (OPENSSL_VERSION openssl-3.5.2)
@@ -29,12 +32,15 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
       OPTIONS
         "ZLIB_BUILD_EXAMPLES OFF"
         "BUILD_TESTING OFF")
+    if (NOT TARGET ZLIB::ZLIB)
+        add_library(ZLIB::ZLIB ALIAS zlibstatic)
+    endif ()
     CPMAddPackage(
       URI "gh:yhirose/cpp-httplib@0.15.3"
       OPTIONS
-        "CPPHTTPLIB_OPENSSL_SUPPORT ON"
+        "HTTPLIB_REQUIRE_OPENSSL ON"
         "CPPHTTPLIB_USE_POLL ON"
-        "CPPHTTPLIB_ZLIB_SUPPORT ON")
+        "HTTPLIB_REQUIRE_ZLIB ON")
     CPMAddPackage(
       URI "gh:jbeder/yaml-cpp#aa8d4e" # Switch to release > 0.8.0 once available
       OPTIONS

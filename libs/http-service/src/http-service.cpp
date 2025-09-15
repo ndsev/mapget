@@ -484,9 +484,12 @@ struct HttpService::Impl
                 if (allDone) {
                     // Finish compression if enabled
                     if (state->compressor_) {
-                        std::string final_chunk = state->compressor_->finish();
-                        if (!final_chunk.empty()) {
-                            sink.write(final_chunk.data(), final_chunk.size());
+                        std::string finalChunk = state->compressor_->finish();
+                        log().debug(
+                            "Final compression chunk is {} bytes.",
+                            strBuf.size(), finalChunk.size(), state->requestId_);
+                        if (!finalChunk.empty()) {
+                            sink.write(finalChunk.data(), finalChunk.size());
                         }
                     }
                     sink.done();
