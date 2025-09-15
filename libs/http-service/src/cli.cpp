@@ -49,7 +49,7 @@ class ConfigYAML : public CLI::Config
 public:
     std::string to_config(const CLI::App* app, bool defaultAlso, bool, std::string) const override
     {
-        std::string config_path = app->get_config_ptr() ?
+        std::string config_path = app->get_config_ptr() && *app->get_config_ptr() ?
             app->get_config_ptr()->as<std::string>() :
             "config.yaml";
         std::ifstream ifs(config_path);
@@ -275,7 +275,7 @@ struct ServeCommand
         
         // Build HttpServiceConfig
         HttpServiceConfig httpConfig;
-        httpConfig.watchConfig = (config != nullptr);
+        httpConfig.watchConfig = config && *config;
         httpConfig.memoryTrimIntervalBinary = memoryTrimIntervalBinary_;
         httpConfig.memoryTrimIntervalJson = memoryTrimIntervalJson_;
         
@@ -303,7 +303,7 @@ struct ServeCommand
         // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, httpConfig);
 
-        if (config)
+        if (config && *config)
         {
             registerDefaultDatasourceTypes();
             DataSourceConfigService::get().loadConfig(config->as<std::string>());
