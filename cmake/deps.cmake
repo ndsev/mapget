@@ -32,15 +32,32 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
       OPTIONS
         "ZLIB_BUILD_EXAMPLES OFF"
         "BUILD_TESTING OFF")
-    if (NOT TARGET ZLIB::ZLIB)
-        add_library(ZLIB::ZLIB ALIAS zlibstatic)
-    endif ()
+    set_target_properties(zlib PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    set_target_properties(zlibstatic PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    # Create ZLIB::ZLIB alias if it doesn't exist
+    if(NOT TARGET ZLIB::ZLIB)
+        if(TARGET zlib)
+            add_library(ZLIB::ZLIB ALIAS zlib)
+        elseif(TARGET zlibstatic)
+            add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        endif()
+    endif()
+
     CPMAddPackage(
       URI "gh:yhirose/cpp-httplib@0.15.3"
       OPTIONS
-        "HTTPLIB_REQUIRE_OPENSSL ON"
         "CPPHTTPLIB_USE_POLL ON"
-        "HTTPLIB_REQUIRE_ZLIB ON")
+        "HTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN OFF"
+        "HTTPLIB_INSTALL OFF"
+        "HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF"
+        "HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF")
+    # Manually enable openssl/zlib in httplib to avoid FindPackage calls.
+    target_compile_definitions(httplib INTERFACE
+      CPPHTTPLIB_OPENSSL_SUPPORT
+      CPPHTTPLIB_ZLIB_SUPPORT)
+    target_link_libraries(httplib INTERFACE
+      OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
+
     CPMAddPackage(
       URI "gh:jbeder/yaml-cpp#aa8d4e" # Switch to release > 0.8.0 once available
       OPTIONS
