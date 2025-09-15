@@ -18,7 +18,7 @@ CPMAddPackage(
   URI "gh:Klebert-Engineering/simfil@0.5.6"
   OPTIONS
     "SIMFIL_WITH_MODEL_JSON ON"
-    "SIMFIL_SHARED ON")
+    "SIMFIL_SHARED OFF")
 CPMAddPackage("gl:eidheim/tiny-process-library#8bbb5a")  # Switch to release > 2.0.4 once available
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
