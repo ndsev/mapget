@@ -36,11 +36,7 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     set_target_properties(zlibstatic PROPERTIES EXCLUDE_FROM_ALL TRUE)
     # Create ZLIB::ZLIB alias if it doesn't exist
     if(NOT TARGET ZLIB::ZLIB)
-        if(TARGET zlib)
-            add_library(ZLIB::ZLIB ALIAS zlib)
-        elseif(TARGET zlibstatic)
-            add_library(ZLIB::ZLIB ALIAS zlibstatic)
-        endif()
+        add_library(ZLIB::ZLIB ALIAS zlibstatic)
     endif()
 
     CPMAddPackage(
