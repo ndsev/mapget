@@ -2,7 +2,7 @@
 
 CPMAddPackage("gh:g-truc/glm#1.0.1")
 CPMAddPackage(
-  URI "gh:fmtlib/fmt#11.1.3"
+  URI "gh:fmtlib/fmt#11.1.4"
   OPTIONS "FMT_HEADER_ONLY OFF")
 CPMAddPackage(
   URI "gh:gabime/spdlog@1.15.3"
@@ -36,7 +36,7 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
         "CPPHTTPLIB_USE_POLL ON"
         "CPPHTTPLIB_ZLIB_SUPPORT ON")
     CPMAddPackage(
-      URI "gh:jbeder/yaml-cpp#aa8d4e" # Swicth to release > 0.8.0 once available
+      URI "gh:jbeder/yaml-cpp#aa8d4e" # Switch to release > 0.8.0 once available
       OPTIONS
         "YAML_CPP_BUILD_TESTS OFF"
         "YAML_CPP_BUILD_TOOLS OFF"
@@ -47,12 +47,11 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif ()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
-  CPMAddPackage("gh:pybind/pybind11@2.13.6")
+  CPMAddPackage("gh:pybind/pybind11@3.0.1")
 endif()
 
-if ((MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING) AND NOT TARGET SQLite::SQLite3)
-  CPMAddPackage("gh:ndsev/sqlite-cmake#fix-populate")
-  add_sqlite(BACKEND PUBLIC VERSION 3.50.2)
+if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+  CPMAddPackage("gh:ndsev/sqlite-cmake@0.2.3")
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
