@@ -70,7 +70,8 @@ if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
 endif()
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
-  CPMAddPackage("gh:ndsev/sqlite-cmake@0.2.3")
+  CPMAddPackage("gh:ndsev/sqlite-cmake@0.2.4")
+  add_sqlite(BACKEND PUBLIC)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
