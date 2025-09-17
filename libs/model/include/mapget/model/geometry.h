@@ -70,7 +70,7 @@ public:
     [[nodiscard]] Point pointAt(size_t index) const;
 
     /** Get a hash of the geometry. **/
-    [[nodiscard]] int64_t getHash() const;
+    [[nodiscard]] uint64_t getHash() const;
 
     /**
      * Get and set geometry name.

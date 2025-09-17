@@ -21,6 +21,7 @@ add_library(mapget-model STATIC
   include/mapget/model/sourceinfo.h
   include/mapget/model/sourcedatareference.h
   include/mapget/model/validity.h
+  include/mapget/model/hash.h
 
   src/stringpool.cpp
   src/layer.cpp
