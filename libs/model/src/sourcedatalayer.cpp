@@ -18,6 +18,7 @@
 #include "layer.h"
 #include "simfil/model/model.h"
 #include "simfilutil.h"
+#include "simfilexpressioncache.h"
 
 #include "simfil/environment.h"
 #include "simfil/model/nodes.h"
