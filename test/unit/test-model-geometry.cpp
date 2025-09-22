@@ -6,7 +6,7 @@
 #include "nlohmann/json.hpp"
 #include "mapget/log.h"
 
-#include "mapget/model/simfil-geometry.h"
+#include "mapget/model/simfilgeometry.h"
 #include "simfil/simfil.h"
 
 using namespace mapget;

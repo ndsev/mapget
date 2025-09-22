@@ -11,10 +11,24 @@ struct HttpClient::Impl {
     std::shared_ptr<TileLayerStream::StringPoolCache> stringPoolProvider_;
     httplib::Headers headers_;
 
-    Impl(std::string const& host, uint16_t port, httplib::Headers headers) :
+    Impl(std::string const& host, uint16_t port, httplib::Headers headers, bool enableCompression) :
         client_(host, port),
         headers_(std::move(headers))
     {
+        // Add Accept-Encoding header if compression is enabled and not already present
+        if (enableCompression) {
+            bool hasAcceptEncoding = false;
+            for (const auto& [key, value] : headers_) {
+                if (key == "Accept-Encoding") {
+                    hasAcceptEncoding = true;
+                    break;
+                }
+            }
+            if (!hasAcceptEncoding) {
+                headers_.emplace("Accept-Encoding", "gzip");
+            }
+        }
+        
         stringPoolProvider_ = std::make_shared<TileLayerStream::StringPoolCache>();
         client_.set_keep_alive(false);
         auto sourcesJson = client_.Get("/sources", headers_);
@@ -37,8 +51,8 @@ struct HttpClient::Impl {
     }
 };
 
-HttpClient::HttpClient(const std::string& host, uint16_t port, httplib::Headers headers) : impl_(
-    std::make_unique<Impl>(host, port, std::move(headers))) {}
+HttpClient::HttpClient(const std::string& host, uint16_t port, httplib::Headers headers, bool enableCompression) : impl_(
+    std::make_unique<Impl>(host, port, std::move(headers), enableCompression)) {}
 
 HttpClient::~HttpClient() = default;
 
@@ -90,6 +104,9 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         }
         // TODO if multiple LayerTileRequests are ever sent by this client,
         //  additionally handle RequestStatus::Aborted.
+    }
+    else {
+        request->setStatus(RequestStatus::Aborted);
     }
 
     return request;

@@ -24,7 +24,8 @@ target_link_libraries(mapget-http-service
     mapget-service
     mapget-http-datasource
   PRIVATE
-    picosha2::picosha2)
+    picosha2
+    zlibstatic)
 
 if (MSVC)
   target_compile_definitions(mapget-http-service

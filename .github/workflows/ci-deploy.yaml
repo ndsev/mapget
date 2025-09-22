@@ -120,6 +120,7 @@ jobs:
           fi
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
                 -DPython3_ROOT_DIR="$pythonLocation" \
                 -DPython3_FIND_FRAMEWORK=LAST \
                 -DCMAKE_C_COMPILER_LAUNCHER=sccache \
@@ -142,6 +143,12 @@ jobs:
       - name: Build (Windows)
         if: matrix.os == 'windows-2022'
         run: |
+          # Install NASM and jom using chocolatey (required for OpenSSL build)
+          choco install nasm jom -y
+          # Add NASM to PATH for current session
+          $env:PATH = "$env:PATH;C:\Program Files\NASM"
+          # Verify NASM installation
+          nasm -v
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
           mkdir build
           cd build

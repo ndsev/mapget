@@ -335,12 +335,20 @@ which is implemented in `mapget::Service`. Detailed endpoint descriptions:
 | `/config`  | GET    | Access the config yaml-file content. Disabled iff `--no-get-config` is passed to mapget.                          | None                                                                                                                                                | `application/json`: Contains the `sources` and `http-settings` from the config-yaml as a JSON representation. The returned JSON object has a `model`, `schema` and `readOnly` key. The schema is controlled through the `--config-schema` command line parameter. |
 | `/config`  | POST   | Write the config yaml-file content. Enabled iff `--allow-post-config` is passed to mapget.                        | `application/json`                                                                                                                                  | `text/plain` (if an error occurs)                                                                                                                                                                                                                                 |
 
+#### Why `application/jsonl` and not `application/json`?
+
+The `/tiles` endpoint uses JSONL (JSON Lines) format instead of regular JSON for efficient streaming. JSONL allows the server to send multiple JSON objects incrementally, one per line, without waiting for all tiles to be processed. This enables:
+- Lower latency - clients can start processing tiles as they arrive
+- Better memory efficiency - no need to buffer the entire response
+- Natural support for chunked transfer encoding
+
 ### Curl Call Example
 
 For example, the following curl call could be used to stream GeoJSON feature objects
 from the `MyMap` data source defined previously:
 
 ```bash
+# Standard request (uncompressed response)
 curl -X POST \
     -H "Content-Type: application/json" \
     -H "Accept: application/jsonl" \
@@ -354,7 +362,26 @@ curl -X POST \
        }
     ]
 }' "http://localhost:8080/tiles"
+
+# Request with gzip compression (reduces bandwidth by ~70-95%)
+curl -X POST \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/jsonl" \
+    -H "Accept-Encoding: gzip" \
+    -H "Connection: close" \
+    --compressed \
+    -d '{
+    "requests": [
+       {
+           "mapId": "Tropico",
+           "layerId": "WayLayer",
+           "tileIds": [1, 2, 3]
+       }
+    ]
+}' "http://localhost:8080/tiles"
 ```
+
+Note: The `--compressed` flag tells curl to automatically decompress the gzip response for display.
 
 ### C++ Call Example
 
@@ -370,7 +397,9 @@ using namespace mapget;
 
 void main(int argc, char const *argv[])
 {
+     // Create client with gzip compression enabled (default)
      HttpClient client("localhost", service.port());
+     // Or disable compression: HttpClient client("localhost", service.port(), {}, false);
 
      auto receivedTileCount = 0;
      client.request(std::make_shared<LayerTilesRequest>(

@@ -23,8 +23,10 @@
 #include "mapget/log.h"
 #include "simfil/model/string-pool.h"
 #include "simfilutil.h"
+#include "simfilexpressioncache.h"
 #include "sourcedatareference.h"
 #include "sourceinfo.h"
+#include "hash.h"
 
 /** Bitsery serialization traits */
 namespace bitsery
@@ -236,61 +238,6 @@ stripOptionalIdParts(KeyValueViewPairs const& keysAndValues, std::vector<IdPart>
     return result;
 }
 
-/**
- * Create a hash of the given feature-type-name + idParts combination.
- * We do not use std::hash, as it has different implementations on different
- * compilers. This hash must be stable across Emscripten/GCC/MSVC/etc.
- */
-uint64_t hashFeatureId(const std::string_view& type, const KeyValueViewPairs& idParts)
-{
-    // Constants for the FNV-1a hash algorithm
-    constexpr uint64_t FNV_prime = 1099511628211ULL;
-    constexpr uint64_t offset_basis = 14695981039346656037ULL;
-
-    // Lambda function for FNV-1a hash of a string view
-    auto fnv1a_hash = [](std::string_view str) -> uint64_t {
-        uint64_t hash = offset_basis;
-        for (char c : str) {
-            hash ^= static_cast<uint64_t>(c);
-            hash *= FNV_prime;
-        }
-        return hash;
-    };
-
-    // Lambda function to hash int64_t values
-    auto hash_int64 = [](int64_t value) -> uint64_t {
-        uint64_t hash = offset_basis;
-        for (size_t i = 0; i < sizeof(int64_t); ++i) {
-            hash ^= (value & 0xff);
-            hash *= FNV_prime;
-            value >>= 8;
-        }
-        return hash;
-    };
-
-    // Begin hashFeatureId implementation
-    uint64_t hash = fnv1a_hash(type);
-
-    for (const auto& [key, value] : idParts) {
-        // Combine the hash of the key
-        hash ^= fnv1a_hash(key);
-        hash *= FNV_prime;
-
-        // Combine the hash of the value
-        hash ^= std::visit([&](const auto& val) -> uint64_t {
-            using T = std::decay_t<decltype(val)>;
-            if constexpr (std::is_same_v<T, int64_t>) {
-                return hash_int64(val);
-            } else {
-                return fnv1a_hash(val);
-            }
-        }, value);
-        hash *= FNV_prime;
-    }
-
-    return hash;
-}
-
 }  // namespace
 
 simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
@@ -342,7 +289,7 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     // Add feature hash index entry.
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
     auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
-    auto hash = hashFeatureId(typeId, fullStrippedFeatureId);
+    auto hash = Hash().mix(typeId).mix(fullStrippedFeatureId).value();
     impl_->featureHashIndex_.emplace_back(TileFeatureLayer::Impl::FeatureAddrWithIdHash{result.addr(), hash});
     impl_->featureHashIndexNeedsSorting_ = true;
 
@@ -826,7 +773,7 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& qu
 {
     auto const& primaryIdComposition = getPrimaryIdComposition(type);
     auto queryIdPartsStripped = stripOptionalIdParts(queryIdParts, primaryIdComposition);
-    auto hash = hashFeatureId(type, queryIdPartsStripped);
+    auto hash = Hash().mix(type).mix(queryIdPartsStripped).value();
 
     impl_->sortFeatureHashIndex();
     auto it = std::lower_bound(

@@ -7,7 +7,7 @@ project(mapget LANGUAGES CXX C)
 # Allow version to be set from command line for CI/CD
 # For local development, use the default version
 if(NOT DEFINED MAPGET_VERSION)
-  set(MAPGET_VERSION 2025.3.0)
+  set(MAPGET_VERSION 2025.3.1)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -71,7 +71,13 @@ endif()
 
 ##############
 # deps
-include(deps.cmake)
+set(CPM_DOWNLOAD_ALL ON)
+set(CPM_USE_LOCAL_PACKAGES OFF)
+# Include CPM.cmake
+if (NOT CPM_INITIALIZED)
+  add_subdirectory(cmake/CPM.cmake)
+endif ()
+include(cmake/deps.cmake)
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
