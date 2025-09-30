@@ -203,7 +203,8 @@ public:
     Iterator end() const;
 
     /** (De-)Serialization */
-    void write(std::ostream& outputStream) override;
+    tl::expected<void, simfil::Error>
+    write(std::ostream& outputStream) override;
 
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
@@ -266,7 +267,8 @@ public:
      * Note: This will potentially create new string entries in the newDict,
      * for field names which were not there before.
      */
-    void setStrings(std::shared_ptr<simfil::StringPool> const& newPool) override;
+    tl::expected<void, simfil::Error>
+    setStrings(std::shared_ptr<simfil::StringPool> const& newPool) override;
 
     /**
      * Create a copy of otherFeature in this layer with the given type
@@ -356,7 +358,7 @@ protected:
     /**
      * Generic node resolution overload.
      */
-    void resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
+    tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 
     Geometry::Storage& vertexBufferStorage();
 

@@ -4,6 +4,7 @@
 #include "simfil/typed-meta-type.h"
 #include "point.h"
 
+using simfil::Error;
 using simfil::Result;
 using simfil::FnInfo;
 using simfil::Context;
@@ -91,7 +92,7 @@ public:
     GeoFn() = default;
 
     auto ident() const -> const FnInfo& override;
-    auto eval(Context, Value, const std::vector<ExprPtr>&, const ResultFn&) const -> Result override;
+    auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 
 /** GeoJSON geometry constructors */
@@ -103,7 +104,7 @@ public:
     PointFn() = default;
 
     auto ident() const -> const FnInfo& override;
-    auto eval(Context, Value, const std::vector<ExprPtr>&, const ResultFn&) const -> Result override;
+    auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 
 class BBoxFn : public simfil::Function
@@ -114,7 +115,7 @@ public:
     BBoxFn() = default;
 
     auto ident() const -> const FnInfo& override;
-    auto eval(Context, Value, const std::vector<ExprPtr>&, const ResultFn&) const -> Result override;
+    auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 
 class LineStringFn : public simfil::Function
@@ -125,7 +126,7 @@ public:
     LineStringFn() = default;
 
     auto ident() const -> const FnInfo& override;
-    auto eval(Context, Value, const std::vector<ExprPtr>&, const ResultFn&) const -> Result override;
+    auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 
 /* TODO: Not implemented
@@ -137,7 +138,7 @@ public:
     PolygonFn() = default;
 
     auto ident() const -> const FnInfo& override;
-    auto eval(Context, const std::vector<ExprPtr>&, const ResultFn&) const -> Result override;
+    auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 */
 
@@ -154,10 +155,10 @@ public:
 
     auto make(double x, double y) -> Value;
 
-    auto unaryOp(std::string_view op, const Point& p) const -> Value override;
-    auto binaryOp(std::string_view op, const Point& p, const Value& r) const -> Value override;
-    auto binaryOp(std::string_view op, const Value& l, const Point& r) const -> Value override;
-    auto unpack(const Point& p, std::function<bool(Value)> res) const -> void override;
+    auto unaryOp(std::string_view op, const Point& p) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const Point& p, const Value& r) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const Value& l, const Point& r) const -> tl::expected<Value, Error> override;
+    auto unpack(const Point& p, std::function<bool(Value)> res) const -> tl::expected<void, Error> override;
 };
 
 class BBoxType : public simfil::TypedMetaType<BBox>
@@ -170,10 +171,10 @@ public:
     auto make(BBox) -> Value;
     auto make(double x1, double y1, double x2, double y2) -> Value;
 
-    auto unaryOp(std::string_view op, const BBox& b) const -> Value override;
-    auto binaryOp(std::string_view op, const BBox& b, const Value& r) const -> Value override;
-    auto binaryOp(std::string_view op, const Value& l, const BBox& r) const -> Value override;
-    auto unpack(const BBox& b, std::function<bool(Value)> res) const -> void override;
+    auto unaryOp(std::string_view op, const BBox& b) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const BBox& b, const Value& r) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const Value& l, const BBox& r) const -> tl::expected<Value, Error> override;
+    auto unpack(const BBox& b, std::function<bool(Value)> res) const -> tl::expected<void, Error> override;
 };
 
 class LineStringType : public simfil::TypedMetaType<LineString>
@@ -185,10 +186,10 @@ public:
 
     auto make(std::vector<Point> pts) -> Value;
 
-    auto unaryOp(std::string_view op, const LineString& ls) const -> Value override;
-    auto binaryOp(std::string_view op, const LineString& ls, const Value& r) const -> Value override;
-    auto binaryOp(std::string_view op, const Value& l, const LineString& r) const -> Value override;
-    auto unpack(const LineString& ls, std::function<bool(Value)> res) const -> void override;
+    auto unaryOp(std::string_view op, const LineString& ls) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const LineString& ls, const Value& r) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const Value& l, const LineString& r) const -> tl::expected<Value, Error> override;
+    auto unpack(const LineString& ls, std::function<bool(Value)> res) const -> tl::expected<void, Error> override;
 };
 
 class PolygonType : public simfil::TypedMetaType<Polygon>
@@ -201,10 +202,10 @@ public:
     auto make(LineString outer) -> Value;
     auto make(std::vector<LineString> full) -> Value;
 
-    auto unaryOp(std::string_view op, const Polygon&) const -> Value override;
-    auto binaryOp(std::string_view op, const Polygon& l, const Value& r) const -> Value override;
-    auto binaryOp(std::string_view op, const Value& l, const Polygon& r) const -> Value override;
-    auto unpack(const Polygon&, std::function<bool(Value)> res) const -> void override;
+    auto unaryOp(std::string_view op, const Polygon&) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const Polygon& l, const Value& r) const -> tl::expected<Value, Error> override;
+    auto binaryOp(std::string_view op, const Value& l, const Polygon& r) const -> tl::expected<Value, Error> override;
+    auto unpack(const Polygon&, std::function<bool(Value)> res) const -> tl::expected<void, Error> override;
 };
 
 }

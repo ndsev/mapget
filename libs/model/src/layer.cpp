@@ -224,7 +224,7 @@ void TileLayer::setLegalInfo(const std::string& legalInfoString)
     legalInfo_ = legalInfoString;
 }
 
-void TileLayer::write(std::ostream& outputStream)
+tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
 {
     using namespace std::chrono;
     using namespace nlohmann;
@@ -247,6 +247,8 @@ void TileLayer::write(std::ostream& outputStream)
     if (legalInfo_.has_value()) {
         s.text1b(legalInfo_.value(), std::numeric_limits<uint32_t>::max());
     }
+
+    return {};
 }
 
 MapTileKey TileLayer::id() const

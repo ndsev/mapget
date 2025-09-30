@@ -59,7 +59,8 @@ struct StringPool : public simfil::StringPool
      * this dictionary's data source node id. On the read side, the
      * consumer must call readDataSourceNodeId() before calling read().
      */
-    void write(std::ostream& outputStream, simfil::StringId offset) const override;
+    tl::expected<void, simfil::Error>
+    write(std::ostream& outputStream, simfil::StringId offset) const override;
 
     /**
      * Call this before calling read() to figure out which strings-

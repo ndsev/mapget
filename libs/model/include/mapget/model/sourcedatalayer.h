@@ -57,10 +57,11 @@ public:
     /**
      * Serialize the layer.
      */
-    void write(std::ostream&) override;
+    tl::expected<void, simfil::Error> write(std::ostream&) override;
     nlohmann::json toJson() const override;
 
-    void setStrings(std::shared_ptr<simfil::StringPool> const& newDict) override;
+    tl::expected<void, simfil::Error>
+    setStrings(std::shared_ptr<simfil::StringPool> const& newDict) override;
 
     enum class SourceDataAddressFormat : uint8_t
     {
@@ -81,7 +82,7 @@ private:
     /**
      * Generic node resolution overload.
      */
-    void resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
+    tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

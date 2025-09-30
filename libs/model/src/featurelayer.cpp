@@ -261,9 +261,13 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
 
     auto featureIdIndex = impl_->featureIds_.size();
     auto featureIdObject = newObject(featureIdParts.size());
+    auto res = strings()->emplace(typeId);
+    if (!res)
+        raise(res.error().message);
+
     impl_->featureIds_.emplace_back(FeatureId::Data{
         true,
-        strings()->emplace(typeId),
+        *res,
         featureIdObject->addr()
     });
     for (auto const& [k, v] : featureIdParts) {
@@ -315,9 +319,12 @@ TileFeatureLayer::newFeatureId(
 
     auto featureIdObject = newObject(featureIdParts.size());
     auto featureIdIndex = impl_->featureIds_.size();
+    auto typeIdStringId = strings()->emplace(typeId);
+    if (!typeIdStringId)
+        raise(typeIdStringId.error().message);
     impl_->featureIds_.emplace_back(FeatureId::Data{
         false,
-        strings()->emplace(typeId),
+        *typeIdStringId,
         featureIdObject->addr()
     });
     for (auto const& [k, v] : featureIdParts) {
@@ -333,8 +340,11 @@ model_ptr<Relation>
 TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
 {
     auto relationIndex = impl_->relations_.size();
+    auto nameStringId = strings()->emplace(name);
+    if (!nameStringId)
+        raise(nameStringId.error().message);
     impl_->relations_.emplace_back(Relation::Data{
-        strings()->emplace(name),
+        *nameStringId,
         target->addr()
     });
     return Relation(&impl_->relations_.back(), shared_from_this(), {ColumnId::Relations, (uint32_t)relationIndex});
@@ -351,10 +361,13 @@ model_ptr<Attribute>
 TileFeatureLayer::newAttribute(const std::string_view& name, size_t initialCapacity)
 {
     auto attrIndex = impl_->attributes_.size();
+    auto nameStringId = strings()->emplace(name);
+    if (!nameStringId)
+        raise(nameStringId.error().message);
     impl_->attributes_.emplace_back(Attribute::Data{
         {Null, 0},
         objectMemberStorage().new_array(initialCapacity),
-        strings()->emplace(name)
+        *nameStringId,
     });
     return Attribute(
         &impl_->attributes_.back(),
@@ -612,56 +625,77 @@ TileFeatureLayer::resolveSourceDataReferenceItem(const simfil::ModelNode& n) con
     return SourceDataReferenceItem(data, shared_from_this(), n.addr());
 }
 
-void TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::ResolveFn& cb) const
+tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::ResolveFn& cb) const
 {
     switch (n.addr().column())
     {
     case ColumnId::Features:
-        return cb(*resolveFeature(n));
+        cb(*resolveFeature(n));
+        return {};
     case ColumnId::FeatureProperties:
-        return cb(Feature::FeaturePropertyView(
+        cb(Feature::FeaturePropertyView(
             impl_->features_[n.addr().index()],
             shared_from_this(),
             n.addr()
         ));
+        return {};
     case ColumnId::FeatureIds:
-        return cb(*resolveFeatureId(n));
+        cb(*resolveFeatureId(n));
+        return {};
     case ColumnId::Attributes:
-        return cb(*resolveAttribute(n));
+        cb(*resolveAttribute(n));
+        return {};
     case ColumnId::AttributeLayers:
-        return cb(*resolveAttributeLayer(n));
+        cb(*resolveAttributeLayer(n));
+        return {};
     case ColumnId::AttributeLayerLists:
-        return cb(*resolveAttributeLayerList(n));
+        cb(*resolveAttributeLayerList(n));
+        return {};
     case ColumnId::Relations:
-        return cb(*resolveRelation(n));
+        cb(*resolveRelation(n));
+        return {};
     case ColumnId::Points:
-        return cb(*resolvePoint(n));
+        cb(*resolvePoint(n));
+        return {};
     case ColumnId::PointBuffers:
-        return cb(*resolvePointBuffer(n));
+        cb(*resolvePointBuffer(n));
+        return {};
     case ColumnId::Geometries:
-        return cb(*resolveGeometry(n));
+        cb(*resolveGeometry(n));
+        return {};
     case ColumnId::GeometryCollections:
-        return cb(*resolveGeometryCollection(n));
+        cb(*resolveGeometryCollection(n));
+        return {};
     case ColumnId::Polygon:
-        return cb(*resolvePolygon(n));
+        cb(*resolvePolygon(n));
+        return {};
     case ColumnId::Mesh:
-        return cb(*resolveMesh(n));
+        cb(*resolveMesh(n));
+        return {};
     case ColumnId::MeshTriangleCollection:
-        return cb(*resolveMeshTriangleCollection(n));
+        cb(*resolveMeshTriangleCollection(n));
+        return {};
     case ColumnId::MeshTriangleLinearRing:
-        return cb(*resolveMeshTriangleLinearRing(n));
+        cb(*resolveMeshTriangleLinearRing(n));
+        return {};
     case ColumnId::LinearRing:
-        return cb(*resolveLinearRing(n));
+        cb(*resolveLinearRing(n));
+        return {};
     case ColumnId::SourceDataReferenceCollections:
-        return cb(*resolveSourceDataReferenceCollection(n));
+        cb(*resolveSourceDataReferenceCollection(n));
+        return {};
     case ColumnId::SourceDataReferences:
-        return cb(*resolveSourceDataReferenceItem(n));
+        cb(*resolveSourceDataReferenceItem(n));
+        return {};
     case ColumnId::Validities:
-        return cb(*resolveValidity(n));
+        cb(*resolveValidity(n));
+        return {};
     case ColumnId::ValidityPoints:
-        return cb(*resolveValidityPoint(n));
+        cb(*resolveValidityPoint(n));
+        return {};
     case ColumnId::ValidityCollections:
-        return cb(*resolveValidityCollection(n));
+        cb(*resolveValidityCollection(n));
+        return {};
     }
 
     return ModelPool::resolve(n, cb);
@@ -676,7 +710,11 @@ TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool a
 tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
 TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildcard)
 {
-    return evaluate(query, *root(0), anyMode, autoWildcard);
+    auto rootResult = root(0);
+    if (!rootResult) {
+        return tl::unexpected(rootResult.error());
+    }
+    return evaluate(query, **rootResult, anyMode, autoWildcard);
 }
 
 tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
@@ -739,12 +777,12 @@ TileFeatureLayer::Iterator TileFeatureLayer::end() const
     return TileFeatureLayer::Iterator{*this, size()};
 }
 
-void TileFeatureLayer::write(std::ostream& outputStream)
+tl::expected<void, simfil::Error> TileFeatureLayer::write(std::ostream& outputStream)
 {
     TileLayer::write(outputStream);
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     impl_->readWrite(s);
-    ModelPool::write(outputStream);
+    return ModelPool::write(outputStream);
 }
 
 nlohmann::json TileFeatureLayer::toJson() const
@@ -765,7 +803,10 @@ size_t TileFeatureLayer::size() const
 
 model_ptr<Feature> TileFeatureLayer::at(size_t i) const
 {
-    return resolveFeature(*root(i));
+    auto rootResult = root(i);
+    if (!rootResult)
+        return {};
+    return resolveFeature(**rootResult);
 }
 
 model_ptr<Feature>
@@ -833,36 +874,52 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
     return typeIt->uniqueIdCompositions_.front();
 }
 
-void TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
+tl::expected<void, simfil::Error>
+TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     auto oldDict = strings();
     // Reset simfil environment and clear expression cache
     impl_->expressionCache_.reset(makeEnvironment(newDict));
-    ModelPool::setStrings(newDict);
+    if (auto res = ModelPool::setStrings(newDict); !res)
+        return tl::unexpected<simfil::Error>(std::move(res.error()));
+
     if (!oldDict || *newDict == *oldDict)
-        return;
+        return {};
 
     // Re-map old string IDs to new string IDs
     for (auto& attr : impl_->attributes_) {
         if (auto resolvedName = oldDict->resolve(attr.name_)) {
-            attr.name_ = newDict->emplace(*resolvedName);
+            if (auto res = newDict->emplace(*resolvedName))
+                attr.name_ = *res;
+            else
+                return tl::unexpected<simfil::Error>(res.error());
         }
     }
     for (auto& validity : impl_->validities_) {
         if (auto resolvedName = strings()->resolve(validity.referencedGeomName_)) {
-            validity.referencedGeomName_ = newDict->emplace(*resolvedName);
+            if (auto res = newDict->emplace(*resolvedName))
+                validity.referencedGeomName_ = *res;
+            else
+                return tl::unexpected<simfil::Error>(res.error());
         }
     }
     for (auto& fid : impl_->featureIds_) {
         if (auto resolvedName = oldDict->resolve(fid.typeId_)) {
-            fid.typeId_ = newDict->emplace(*resolvedName);
+            if (auto res = newDict->emplace(*resolvedName))
+                fid.typeId_ = *res;
+            else
+                return tl::unexpected<simfil::Error>(res.error());
         }
     }
     for (auto& rel : impl_->relations_) {
         if (auto resolvedName = oldDict->resolve(rel.name_)) {
-            rel.name_ = newDict->emplace(*resolvedName);
+            if (auto res = newDict->emplace(*resolvedName))
+                rel.name_ = *res;
+            else
+                return tl::unexpected<simfil::Error>(res.error());
         }
     }
+    return {};
 }
 
 simfil::ModelNode::Ptr TileFeatureLayer::clone(

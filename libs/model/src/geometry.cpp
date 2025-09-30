@@ -6,6 +6,7 @@
 #include "stringpool.h"
 #include "pointnode.h"
 #include "hash.h"
+#include "mapget/log.h"
 
 #include <cassert>
 #include <cstdint>
@@ -310,7 +311,10 @@ std::optional<std::string_view> Geometry::name() const
 
 void Geometry::setName(const std::string_view& newName)
 {
-    geomData_->geomName_ = model().strings()->emplace(newName);
+    auto newNameId = model().strings()->emplace(newName);
+    if (!newNameId)
+        raise(newNameId.error().message);
+    geomData_->geomName_ = *newNameId;
 }
 
 double Geometry::length() const

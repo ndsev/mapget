@@ -16,8 +16,13 @@ PointNode::PointNode(ModelNode const& baseNode, Geometry::Data const* geomData)
         throw std::runtime_error("Point must be constructed through VertexBuffer which resolves view to geometry.");
     auto i = std::get<int64_t>(data_);
     point_ = geomData->detail_.geom_.offset_;
-    if (i > 0)
-        point_ += model().vertexBufferStorage().at(geomData->detail_.geom_.vertexArray_, i - 1);
+    if (i > 0) {
+        auto vertexResult = model().vertexBufferStorage().at(geomData->detail_.geom_.vertexArray_, i - 1);
+        if (!vertexResult) {
+            raise("Failed to get vertex from buffer");
+        }
+        point_ += vertexResult->get();
+    }
 }
 
 PointNode::PointNode(ModelNode const& baseNode, Validity::Data const* geomData)
