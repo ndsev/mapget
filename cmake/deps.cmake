@@ -55,7 +55,7 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
       OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 
     CPMAddPackage(
-      URI "gh:jbeder/yaml-cpp#aa8d4e" # Switch to release > 0.8.0 once available
+      URI "gh:jbeder/yaml-cpp#0.8.0" # Switch to release > 0.8.0 once available
       OPTIONS
         "YAML_CPP_BUILD_TESTS OFF"
         "YAML_CPP_BUILD_TOOLS OFF"
