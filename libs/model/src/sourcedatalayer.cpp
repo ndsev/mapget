@@ -107,20 +107,21 @@ model_ptr<SourceDataCompoundNode> TileSourceDataLayer::resolveCompound(simfil::M
     return SourceDataCompoundNode(&data, std::static_pointer_cast<const TileSourceDataLayer>(shared_from_this()), n.addr());
 }
 
-void TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
+tl::expected<void, simfil::Error> TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
 {
-    if (n.addr().column() == Compound)
-        return cb(*resolveCompound(n));
-    else
-        return ModelPool::resolve(n, cb);
+    if (n.addr().column() == Compound) {
+        cb(*resolveCompound(n));
+        return {};
+    }
+    return ModelPool::resolve(n, cb);
 }
 
-void TileSourceDataLayer::write(std::ostream& outputStream)
+tl::expected<void, simfil::Error> TileSourceDataLayer::write(std::ostream& outputStream)
 {
     TileLayer::write(outputStream);
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     impl_->readWrite(s);
-    ModelPool::write(outputStream);
+    return ModelPool::write(outputStream);
 }
 
 nlohmann::json TileSourceDataLayer::toJson() const
@@ -128,16 +129,22 @@ nlohmann::json TileSourceDataLayer::toJson() const
     return ModelPool::toJson();
 }
 
-void TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
+tl::expected<void, simfil::Error>
+TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     for (auto& compound : impl_->compounds_) {
-        if (auto str = strings()->resolve(compound.schemaName_))
-            compound.schemaName_ = newDict->emplace(*str);
+        if (auto str = strings()->resolve(compound.schemaName_)) {
+            if (auto res = newDict->emplace(*str)) {
+                compound.schemaName_ = *res;
+            } else {
+                raise(res.error().message);
+            }
+        }
     }
 
     impl_->expressionCache_.reset(makeEnvironment(newDict));
 
-    ModelPool::setStrings(newDict);
+    return ModelPool::setStrings(newDict);
 }
 
 void TileSourceDataLayer::setSourceDataAddressFormat(SourceDataAddressFormat f)

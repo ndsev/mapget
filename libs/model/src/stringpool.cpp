@@ -39,12 +39,13 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(FeatureIdStr, "featureId");
 }
 
-void StringPool::write(std::ostream& outputStream, simfil::StringId offset) const
+tl::expected<void, simfil::Error>
+StringPool::write(std::ostream& outputStream, simfil::StringId offset) const
 {
     // Write the node id which identifies the string pool.
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
-    simfil::StringPool::write(outputStream, offset);
+    return simfil::StringPool::write(outputStream, offset);
 }
 
 std::string StringPool::readDataSourceNodeId(std::istream& inputStream) {

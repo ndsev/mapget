@@ -163,8 +163,14 @@ Validity::GeometryDescriptionType Validity::geometryDescriptionType() const
     return data_->geomDescrType_;
 }
 
-void Validity::setGeometryName(const std::optional<std::string_view>& geometryName) {
-    data_->referencedGeomName_ = geometryName ? model().strings()->emplace(*geometryName) : Empty;
+void Validity::setGeometryName(const std::optional<std::string_view>& geometryName)
+{
+    simfil::StringId nameId = simfil::StringPool::Empty;
+    if (geometryName)
+        if (auto res = model().strings()->emplace(*geometryName); res)
+            nameId = *res;
+
+    data_->referencedGeomName_ = nameId;
 }
 
 std::optional<std::string_view> Validity::geometryName() const
