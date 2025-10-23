@@ -50,6 +50,9 @@ struct MapTileKey
     /** Constructor to create the cache key for any TileLayer object. */
     explicit MapTileKey(TileLayer const& data);
 
+    /** Constructor to create the cache key from raw components. */
+    explicit MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId);
+
     /** Allow default ctor. */
     MapTileKey() = default;
 

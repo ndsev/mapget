@@ -34,6 +34,10 @@ MapTileKey::MapTileKey(const std::string& str)
     std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
 }
 
+MapTileKey::MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId) :
+    layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), tileId_(tileId)
+{}
+
 MapTileKey::MapTileKey(const TileLayer& data)
 {
     layer_ = data.layerInfo()->type_;
