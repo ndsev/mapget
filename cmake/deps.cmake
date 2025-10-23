@@ -15,7 +15,7 @@ CPMAddPackage(
     "EXPECTED_BUILD_TESTS OFF"
     "EXPECTED_BUILD_PACKAGE_DEB OFF")
 CPMAddPackage(
-  URI "gh:Klebert-Engineering/simfil@0.5.6#f1a26a5"
+  URI "gh:Klebert-Engineering/simfil@0.6.0#make-simfil-even-more-exception-free"
   OPTIONS
     "SIMFIL_WITH_MODEL_JSON ON"
     "SIMFIL_SHARED OFF")
