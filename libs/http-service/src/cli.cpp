@@ -449,6 +449,7 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
     FetchCommand fetchCommand(app);
 
     try {
+        std::reverse(args.begin(), args.end());
         app.parse(std::move(args));
     }
     catch (const CLI::ParseError& e) {
