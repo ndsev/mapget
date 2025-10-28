@@ -99,21 +99,22 @@ void DataSourceConfigService::loadConfig()
         }
 
         YAML::Node config = YAML::LoadFile(configFilePath_);
-        if (auto sourcesNode = config["sources"]) {
+        {
             std::lock_guard memberAccessLock(memberAccessMutex_);
             currentConfig_.clear();
-            for (auto const& node : sourcesNode)
-                currentConfig_.push_back(node);
+            if (auto sourcesNode = config["sources"]) {
+                for (auto const& node : sourcesNode)
+                    currentConfig_.push_back(node);
+            }
+            else {
+                log().debug(fmt::format("The config file {} does not have a sources node.", configFilePath_));
+            }
             lastConfigSHA256_ = sha256;
             log().debug("Notifying {} subscribers", subscriptions_.size());
             for (const auto& [subId, subCb] : subscriptions_) {
                 log().debug("Calling subscriber {}", subId);
                 subCb.success_(currentConfig_);
             }
-        }
-        else {
-            error = fmt::format("The config file {} does not have a sources node.", configFilePath_);
-            log().debug(*error);
         }
     }
     catch (const YAML::Exception& e) {
