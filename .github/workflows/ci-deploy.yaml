@@ -133,10 +133,6 @@ jobs:
                 -DMAPGET_VERSION="${{ needs.determine-version.outputs.version }}" \
                 -GNinja
           cmake --build .
-          mv bin/wheel bin/wheel-auditme  # Same as on Linux
-          ./_deps/python-cmake-wheel-src/repair-wheel-macos.bash \
-                "$(pwd)"/bin/wheel-auditme/mapget*.whl \
-                "$(pwd)"/bin/wheel mapget
       - name: Enable Developer Command Prompt (Windows)
         uses: ilammy/msvc-dev-cmd@v1.12.1
         if: matrix.os == 'windows-2022'
