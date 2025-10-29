@@ -75,7 +75,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-  CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#improve-macos-support")
+  CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel@1.1.0")
 endif()
 
 if (MAPGET_ENABLE_TESTING)
