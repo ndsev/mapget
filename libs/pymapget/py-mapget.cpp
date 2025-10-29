@@ -28,5 +28,16 @@ PYBIND11_MODULE(pymapget, m)
     bindHttpService(m);
     bindHttpClient(m);
 
-    m.def("run", &mapget::runFromCommandLine, "Run the mapget command-line interface.");
+    // Note: We only expose the first two parameters of runFromCommandLine.
+    // The third parameter (additionalCommandLineSetupFun) is an advanced C++
+    // extension point for applications embedding mapget to add custom CLI11
+    // commands. It's not exposed to Python as it would require CLI11 Python
+    // bindings and has no practical use case for Python API users.
+    m.def("run",
+        [](const std::vector<std::string>& args, bool requireSubcommand) {
+            return mapget::runFromCommandLine(args, requireSubcommand);
+        },
+        "Run the mapget command-line interface.",
+        py::arg("args"),
+        py::arg("requireSubcommand") = true);
 }
