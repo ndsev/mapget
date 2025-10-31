@@ -29,6 +29,8 @@ struct BBox
 {
     Point p1, p2;
 
+    void extend(const Point& p);
+
     auto edges() const -> LineString;
     auto normalized() const -> BBox;
 
