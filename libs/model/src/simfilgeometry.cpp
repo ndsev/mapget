@@ -288,7 +288,7 @@ auto LineString::bbox() const -> BBox
     if (points.empty())
         return {{0, 0}, {0, 0}};
 
-    BBox bbox(points[0], points[0]);
+    BBox bbox{points[0], points[0]};
     for (const auto& p : points)
         bbox.extend(p);
 
