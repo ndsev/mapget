@@ -34,6 +34,10 @@ MapTileKey::MapTileKey(const std::string& str)
     std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
 }
 
+MapTileKey::MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId) :
+    layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), tileId_(tileId)
+{}
+
 MapTileKey::MapTileKey(const TileLayer& data)
 {
     layer_ = data.layerInfo()->type_;
@@ -224,7 +228,7 @@ void TileLayer::setLegalInfo(const std::string& legalInfoString)
     legalInfo_ = legalInfoString;
 }
 
-void TileLayer::write(std::ostream& outputStream)
+tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
 {
     using namespace std::chrono;
     using namespace nlohmann;
@@ -247,6 +251,8 @@ void TileLayer::write(std::ostream& outputStream)
     if (legalInfo_.has_value()) {
         s.text1b(legalInfo_.value(), std::numeric_limits<uint32_t>::max());
     }
+
+    return {};
 }
 
 MapTileKey TileLayer::id() const

@@ -19,6 +19,39 @@ using namespace simfil;
 namespace mapget
 {
 
+// Parse a single Point object from a node
+static auto parseCoordinatePoint(const ModelNode& node, Point& pt)
+{
+    auto nx = node.at(0);
+    auto ny = node.at(1);
+    if (!nx || !ny)
+        return false;
+
+    auto vx = nx->value();
+    auto vy = ny->value();
+    auto [xok, fx] = getNumeric<double>(vx);
+    if (!xok)
+        return false;
+    auto [yok, fy] = getNumeric<double>(vy);
+    if (!yok)
+        return false;
+
+    pt.x = fx;
+    pt.y = fy;
+    return true;
+}
+
+template <typename ResultFn>
+static auto handleNullResult(Context& ctx, const ResultFn& res, std::optional<Error>& capturedError) -> Result
+{
+    if (auto resVal = res(ctx, Value::null()); !resVal) {
+        capturedError = resVal.error();
+        return Result::Stop;
+    } else {
+        return resVal.value();
+    }
+}
+
 static auto inline min(double a, double b)
 {
     return std::min<double>(a, b);
@@ -145,6 +178,14 @@ auto LineString::toString() const -> std::string
     return str + "]";
 }
 
+void BBox::extend(const Point& p)
+{
+    p1.x = min(p1.x, p.x);
+    p1.y = min(p1.y, p.y);
+    p2.x = max(p2.x, p.x);
+    p2.y = max(p2.y, p.y);
+}
+
 auto BBox::normalized() const -> BBox
 {
     auto minx = std::min<double>(p1.x, p2.x);
@@ -164,13 +205,9 @@ auto BBox::edges() const -> LineString
 
 auto BBox::contains(const Point& p) const -> bool
 {
-    auto minx = std::min<double>(p1.x, p2.x);
-    auto maxx = std::max<double>(p1.x, p2.x);
-    auto miny = std::min<double>(p1.y, p2.y);
-    auto maxy = std::max<double>(p1.y, p2.y);
-
-    return minx <= p.x && p.x <= maxx &&
-           miny <= p.y && p.y <= maxy;
+    auto norm = normalized();
+    return norm.p1.x <= p.x && p.x <= norm.p2.x &&
+           norm.p1.y <= p.y && p.y <= norm.p2.y;
 }
 
 auto BBox::contains(const BBox& b) const -> bool
@@ -248,22 +285,14 @@ auto Polygon::area() const -> double
 
 auto LineString::bbox() const -> BBox
 {
-    auto minx = std::numeric_limits<double>::max();
-    auto maxx = std::numeric_limits<double>::min();
-    auto miny = std::numeric_limits<double>::max();
-    auto maxy = std::numeric_limits<double>::min();
-
     if (points.empty())
         return {{0, 0}, {0, 0}};
 
-    for (const auto& p : points) {
-        minx = std::min<double>(minx, p.x);
-        maxx = std::max<double>(maxx, p.x);
-        miny = std::min<double>(miny, p.y);
-        maxy = std::max<double>(maxy, p.y);
-    }
+    BBox bbox{points[0], points[0]};
+    for (const auto& p : points)
+        bbox.extend(p);
 
-    return {{minx, miny}, {maxx, maxy}};
+    return bbox;
 }
 
 auto LineString::linear_ring_signed_area() const -> double
@@ -433,6 +462,52 @@ namespace meta
             return Value::make(!(obj == *o));   \
     }
 
+template <typename Self>
+static auto handleIntersectionOp(const Self& self, const Value& r) -> Value {
+    if (r.isa(ValueType::Null))
+        return Value::f();
+
+    if constexpr (std::is_same_v<Self, Point>) {
+        if (auto o = getObject<BBox>(r, &BBoxType::Type))
+            return Value::make(o->contains(self));
+        if (auto o = getObject<Point>(r, &PointType::Type))
+            return Value::make(self == *o);
+        if (auto o = getObject<LineString>(r, &LineStringType::Type))
+            return Value::make(o->intersects(self));
+        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
+            return Value::make(o->contains(self));
+    } else if constexpr (std::is_same_v<Self, BBox>) {
+        if (auto o = getObject<BBox>(r, &BBoxType::Type))
+            return Value::make(self.intersects(*o));
+        if (auto o = getObject<Point>(r, &PointType::Type))
+            return Value::make(self.contains(*o));
+        if (auto o = getObject<LineString>(r, &LineStringType::Type))
+            return Value::make(self.intersects(*o));
+        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
+            return Value::make(o->intersects(self));
+    } else if constexpr (std::is_same_v<Self, LineString>) {
+        if (auto o = getObject<BBox>(r, &BBoxType::Type))
+            return Value::make(self.intersects(*o));
+        if (auto o = getObject<Point>(r, &PointType::Type))
+            return Value::make(self.intersects(*o));
+        if (auto o = getObject<LineString>(r, &LineStringType::Type))
+            return Value::make(self.intersects(*o));
+        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
+            return Value::make(self.intersects(*o));
+    } else if constexpr (std::is_same_v<Self, Polygon>) {
+        if (auto o = getObject<BBox>(r, &BBoxType::Type))
+            return Value::make(self.intersects(*o));
+        if (auto o = getObject<Point>(r, &PointType::Type))
+            return Value::make(self.contains(*o));
+        if (auto o = getObject<LineString>(r, &LineStringType::Type))
+            return Value::make(self.intersects(*o));
+        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
+            return Value::make(self.intersects(*o));
+    }
+
+    return Value::f();
+}
+
 PointType PointType::Type; /* Global Meta-Type */
 
 PointType::PointType()
@@ -449,14 +524,14 @@ auto PointType::make(double x, double y) -> Value
     return Value(ValueType::TransientObject, std::move(obj));
 }
 
-auto PointType::unaryOp(std::string_view op, const Point& self) const -> Value
+auto PointType::unaryOp(std::string_view op, const Point& self) const -> tl::expected<Value, Error>
 {
     COMMON_UNARY_OPS(self);
 
     mapget::raiseFmt("Invalid operator {} for operand {}", op, ident);
 }
 
-auto PointType::binaryOp(std::string_view op, const Point& p, const Value& r) const -> Value
+auto PointType::binaryOp(std::string_view op, const Point& p, const Value& r) const -> tl::expected<Value, Error>
 {
     COMPARISON_OPS(Point, p);
 
@@ -470,22 +545,13 @@ auto PointType::binaryOp(std::string_view op, const Point& p, const Value& r) co
     }
 
     if (op == OP_NAME_INTERSECTS) {
-        if (r.isa(ValueType::Null))
-            return Value::f();
-        if (auto o = getObject<BBox>(r, &BBoxType::Type))
-            return Value::make(o->contains(p));
-        if (auto o = getObject<Point>(r, &PointType::Type))
-            return Value::make(p == *o);
-        if (auto o = getObject<LineString>(r, &LineStringType::Type))
-            return Value::make(o->intersects(p));
-        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
-            return Value::make(o->contains(p));
+        return handleIntersectionOp(p, r);
     }
 
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, ident, valueType2String(r.type));
 }
 
-auto PointType::binaryOp(std::string_view op, const Value& l, const Point& r) const -> Value
+auto PointType::binaryOp(std::string_view op, const Value& l, const Point& r) const -> tl::expected<Value, Error>
 {
     if (op == OperatorEq::name() || op == OperatorNeq::name() || op == OP_NAME_INTERSECTS)
         return binaryOp(op, r, l);
@@ -493,10 +559,11 @@ auto PointType::binaryOp(std::string_view op, const Value& l, const Point& r) co
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, valueType2String(l.type), ident);
 }
 
-auto PointType::unpack(const Point& self, std::function<bool(Value)> res) const -> void
+auto PointType::unpack(const Point& self, std::function<bool(Value)> res) const -> tl::expected<void, Error>
 {
-    if (!res(Value(ValueType::Float, self.x))) return;
-    if (!res(Value(ValueType::Float, self.y))) return;
+    if (!res(Value(ValueType::Float, self.x))) return {};
+    if (!res(Value(ValueType::Float, self.y))) return {};
+    return {};
 }
 
 BBoxType BBoxType::Type;
@@ -524,14 +591,14 @@ auto BBoxType::make(double x1, double y1, double x2, double y2) -> Value
     return Value(ValueType::TransientObject, std::move(obj));
 }
 
-auto BBoxType::unaryOp(std::string_view op, const BBox& self) const -> Value
+auto BBoxType::unaryOp(std::string_view op, const BBox& self) const -> tl::expected<Value, Error>
 {
     COMMON_UNARY_OPS(self);
 
     mapget::raiseFmt("Invalid operator {} for operand {}", op, ident);
 }
 
-auto BBoxType::binaryOp(std::string_view op, const BBox& b, const Value& r) const -> Value
+auto BBoxType::binaryOp(std::string_view op, const BBox& b, const Value& r) const -> tl::expected<Value, Error>
 {
     COMPARISON_OPS(BBox, b);
 
@@ -558,22 +625,13 @@ auto BBoxType::binaryOp(std::string_view op, const BBox& b, const Value& r) cons
     }
 
     if (op == OP_NAME_INTERSECTS) {
-        if (r.isa(ValueType::Null))
-            return Value::f();
-        if (auto o = getObject<BBox>(r, &BBoxType::Type))
-            return Value::make(b.intersects(*o));
-        if (auto o = getObject<Point>(r, &PointType::Type))
-            return Value::make(b.contains(*o));
-        if (auto o = getObject<LineString>(r, &LineStringType::Type))
-            return Value::make(b.intersects(*o));
-        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
-            return Value::make(o->intersects(b));
+        return handleIntersectionOp(b, r);
     }
 
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, ident, valueType2String(r.type));
 }
 
-auto BBoxType::binaryOp(std::string_view op, const Value& l, const BBox& r) const -> Value
+auto BBoxType::binaryOp(std::string_view op, const Value& l, const BBox& r) const -> tl::expected<Value, Error>
 {
     if (op == OperatorEq::name() || op == OperatorNeq::name() || op == OP_NAME_INTERSECTS)
         return binaryOp(op, r, l);
@@ -581,10 +639,11 @@ auto BBoxType::binaryOp(std::string_view op, const Value& l, const BBox& r) cons
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, valueType2String(l.type), ident);
 }
 
-auto BBoxType::unpack(const BBox& self, std::function<bool(Value)> res) const -> void
+auto BBoxType::unpack(const BBox& self, std::function<bool(Value)> res) const -> tl::expected<void, Error>
 {
-    if (!res(PointType::Type.make(self.p1.x, self.p1.y))) return;
-    if (!res(PointType::Type.make(self.p2.x, self.p2.y))) return;
+    if (!res(PointType::Type.make(self.p1.x, self.p1.y))) return {};
+    if (!res(PointType::Type.make(self.p2.x, self.p2.y))) return {};
+    return {};
 }
 
 
@@ -603,7 +662,7 @@ auto LineStringType::make(std::vector<Point> pts) -> Value
     return Value(ValueType::TransientObject, std::move(obj));
 }
 
-auto LineStringType::unaryOp(std::string_view op, const LineString& self) const -> Value
+auto LineStringType::unaryOp(std::string_view op, const LineString& self) const -> tl::expected<Value, Error>
 {
     COMMON_UNARY_OPS(self);
 
@@ -613,7 +672,7 @@ auto LineStringType::unaryOp(std::string_view op, const LineString& self) const 
     mapget::raiseFmt("Invalid operator {} for operand {}", op, ident);
 }
 
-auto LineStringType::binaryOp(std::string_view op, const LineString& ls, const Value& r) const -> Value
+auto LineStringType::binaryOp(std::string_view op, const LineString& ls, const Value& r) const -> tl::expected<Value, Error>
 {
     COMPARISON_OPS(LineString, ls);
 
@@ -627,22 +686,13 @@ auto LineStringType::binaryOp(std::string_view op, const LineString& ls, const V
     }
 
     if (op == OP_NAME_INTERSECTS) {
-        if (r.isa(ValueType::Null))
-            return Value::f();
-        if (auto o = getObject<BBox>(r, &BBoxType::Type))
-            return Value::make(ls.intersects(*o));
-        if (auto o = getObject<Point>(r, &PointType::Type))
-            return Value::make(ls.intersects(*o));
-        if (auto o = getObject<LineString>(r, &LineStringType::Type))
-            return Value::make(ls.intersects(*o));
-        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
-            return Value::make(ls.intersects(*o));
+        return handleIntersectionOp(ls, r);
     }
 
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, ident, valueType2String(r.type));
 }
 
-auto LineStringType::binaryOp(std::string_view op, const Value& l, const LineString& r) const -> Value
+auto LineStringType::binaryOp(std::string_view op, const Value& l, const LineString& r) const -> tl::expected<Value, Error>
 {
     if (op == OperatorEq::name() || op == OperatorNeq::name() || op == OP_NAME_INTERSECTS)
         return binaryOp(op, r, l);
@@ -650,11 +700,12 @@ auto LineStringType::binaryOp(std::string_view op, const Value& l, const LineStr
     mapget::raiseFmt("Invalid operator {} for operands {} and {}", op, valueType2String(l.type), ident);
 }
 
-auto LineStringType::unpack(const LineString& ls, std::function<bool(Value)> res) const -> void
+auto LineStringType::unpack(const LineString& ls, std::function<bool(Value)> res) const -> tl::expected<void, Error>
 {
     for (const auto& p : ls.points) {
-        if (!res(PointType::Type.make(p.x, p.y))) return;
+        if (!res(PointType::Type.make(p.x, p.y))) return {};
     }
+    return {};
 }
 
 PolygonType PolygonType::Type;
@@ -681,7 +732,7 @@ auto PolygonType::make(std::vector<LineString> full) -> Value
     return Value(ValueType::TransientObject, std::move(obj));
 }
 
-auto PolygonType::unaryOp(std::string_view op, const Polygon& self) const -> Value
+auto PolygonType::unaryOp(std::string_view op, const Polygon& self) const -> tl::expected<Value, Error>
 {
     COMMON_UNARY_OPS(self);
 
@@ -691,7 +742,7 @@ auto PolygonType::unaryOp(std::string_view op, const Polygon& self) const -> Val
     mapget::raiseFmt<>("Invalid operator {} for operand {}", op, ident);
 }
 
-auto PolygonType::binaryOp(std::string_view op, const Polygon& l, const Value& r) const -> Value
+auto PolygonType::binaryOp(std::string_view op, const Polygon& l, const Value& r) const -> tl::expected<Value, Error>
 {
     COMPARISON_OPS(Polygon, l);
 
@@ -700,7 +751,7 @@ auto PolygonType::binaryOp(std::string_view op, const Polygon& l, const Value& r
             return Value::f();
         if (auto o = getObject<BBox>(r, &BBoxType::Type))
             return Value::make(o->contains(l));
-        // TODO: Polygon withing polygon is not implemented
+        // TODO: Polygon within polygon is not implemented
     }
 
     if (op == OP_NAME_CONTAINS) {
@@ -716,22 +767,13 @@ auto PolygonType::binaryOp(std::string_view op, const Polygon& l, const Value& r
     }
 
     if (op == OP_NAME_INTERSECTS) {
-        if (r.isa(ValueType::Null))
-            return Value::f();
-        if (auto o = getObject<BBox>(r, &BBoxType::Type))
-            return Value::make(l.intersects(*o));
-        if (auto o = getObject<Point>(r, &PointType::Type))
-            return Value::make(l.contains(*o));
-        if (auto o = getObject<LineString>(r, &LineStringType::Type))
-            return Value::make(l.intersects(*o));
-        if (auto o = getObject<Polygon>(r, &PolygonType::Type))
-            return Value::make(l.intersects(*o));
+        return handleIntersectionOp(l, r);
     }
 
     mapget::raiseFmt<>("Invalid operator {} for operands {} and {}", op, ident, valueType2String(r.type));
 }
 
-auto PolygonType::binaryOp(std::string_view op, const Value& l, const Polygon& r) const -> Value
+auto PolygonType::binaryOp(std::string_view op, const Value& l, const Polygon& r) const -> tl::expected<Value, Error>
 {
     if (op == OperatorEq::name() || op == OperatorNeq::name() || op == OP_NAME_INTERSECTS)
         return binaryOp(op, r, l);
@@ -739,11 +781,11 @@ auto PolygonType::binaryOp(std::string_view op, const Value& l, const Polygon& r
     mapget::raiseFmt<>("Invalid operator {} for operands {} and {}", op, valueType2String(l.type), ident);
 }
 
-auto PolygonType::unpack(const Polygon& self, std::function<bool(Value)> res) const -> void
+auto PolygonType::unpack(const Polygon& self, std::function<bool(Value)> res) const -> tl::expected<void, Error>
 {
     if (self.polys.empty()) {
         res(Value::null());
-        return;
+        return {};
     }
 
     /* Unpack the outer polygon only */
@@ -764,17 +806,19 @@ auto GeoFn::ident() const -> const FnInfo&
     return info;
 }
 
-auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> Result
+auto GeoFn::eval(Context ctx, const Value& val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> tl::expected<Result, Error>
 {
     if (args.size() > 1)
-        mapget::raise<ArgumentCountError>(*this, 0, 1, args.size());
+        return tl::unexpected(Error(Error::Type::InvalidArguments, "geo() expects 0 or 1 arguments"));
 
     if (ctx.phase == Context::Phase::Compilation)
         return res(ctx, Value::undef());
 
+    std::optional<Error> capturedError;
+    
     auto getType = [&](Value v) -> std::optional<std::string> {
-        if (v.node) {
-            if (auto typenode = v.node->get(StringPool::TypeStr))
+        if (v.node()) {
+            if (auto typenode = v.node()->get(StringPool::TypeStr))
                 if (Value value = typenode->value();
                     value.isa(ValueType::String))
                     return value.as<ValueType::String>();
@@ -783,12 +827,12 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
     };
 
     auto forEachGeometry = [&](Value v, auto&& callback) {
-        if (!v.node)
+        if (!v.node())
             return Result::Stop;
 
-        if (auto geonode = v.node->get(StringPool::GeometryStr)) {
+        if (auto geonode = v.node()->get(StringPool::GeometryStr)) {
             v = Value::field(geonode);
-            if (!v.node)
+            if (!v.node())
                 return Result::Stop;
         }
 
@@ -797,7 +841,7 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
             return Result::Stop;
 
         if (type == "GeometryCollection"s) {
-            auto node = v.node->get(StringPool::GeometriesStr);
+            auto node = v.node()->get(StringPool::GeometriesStr);
             if (!node)
                 return Result::Stop;
 
@@ -810,80 +854,88 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
     };
 
     auto evalValue = [&](Value v) {
-        if (!v.node)
+        if (!v.node())
             return Result::Stop;
 
-        if (auto geonode = v.node->get(StringPool::GeometryStr)) {
+        if (auto geonode = v.node()->get(StringPool::GeometryStr)) {
             v = Value::field(geonode);
-            if (!v.node)
+            if (!v.node())
                 return Result::Stop;
         }
 
         auto type = ""s;
-        if (auto typestr = getType(v))
+        if (auto typestr = getType(v)) {
             type = std::move(*typestr);
-        else
-            return res(ctx, std::move(v));
+        } else {
+            if (auto resVal = res(ctx, std::move(v)); !resVal) {
+                capturedError = resVal.error();
+                return Result::Stop;
+            } else {
+                return resVal.value();
+            }
+        }
 
-        if (auto coordnode = v.node->get(StringPool::CoordinatesStr)) {
-            auto getPt = [&](const ModelNode &node, Point &pt) {
-                auto nx = node.at(0), ny = node.at(1);
-                if (!nx || !ny)
-                    return false;
-
-                auto vx = nx->value(), vy = ny->value();
-                auto [xok, fx] = getNumeric<double>(vx);
-                if (!xok)
-                    return false;
-                auto [yok, fy] = getNumeric<double>(vy);
-                if (!yok)
-                    return false;
-
-                pt.x = fx;
-                pt.y = fy;
-                return true;
-            };
-
+        if (auto coordnode = v.node()->get(StringPool::CoordinatesStr)) {
             if (type == "Point") {
                 Point pt;
-                if (!getPt(*coordnode, pt))
-                    if (res(ctx, Value::null()) == Result::Stop)
-                        return Result::Stop;
+                if (!parseCoordinatePoint(*coordnode, pt)) {
+                    return handleNullResult(ctx, res, capturedError);
+                }
 
-                return res(ctx, meta::PointType::Type.make(pt.x, pt.y));
+                if (auto resVal = res(ctx, meta::PointType::Type.make(pt.x, pt.y)); !resVal) {
+                    capturedError = resVal.error();
+                    return Result::Stop;
+                } else {
+                    return resVal.value();
+                }
             } else if (type == "MultiPoint") {
                 for (auto i = 0; i < coordnode->size(); ++i) {
                     Point pt;
-                    if (!getPt(*coordnode->at(i), pt))
-                        if (res(ctx, Value::null()) == Result::Stop)
+                    if (!parseCoordinatePoint(*coordnode->at(i), pt)) {
+                        if (auto result = handleNullResult(ctx, res, capturedError); result == Result::Stop)
                             return Result::Stop;
+                    }
 
-                    return res(ctx, meta::PointType::Type.make(pt.x, pt.y));
+                    if (auto resVal = res(ctx, meta::PointType::Type.make(pt.x, pt.y)); !resVal) {
+                        capturedError = resVal.error();
+                        return Result::Stop;
+                    } else {
+                        return resVal.value();
+                    }
                 }
 
                 return Result::Continue;
             } else if (type == "LineString") {
                 std::vector<Point> pts;
                 for (auto i = 0; i < coordnode->size(); ++i) {
-                    if (!getPt(*coordnode->at(i), pts.emplace_back()))
-                        if (res(ctx, Value::null()) == Result::Stop)
+                    if (!parseCoordinatePoint(*coordnode->at(i), pts.emplace_back())) {
+                        if (auto result = handleNullResult(ctx, res, capturedError); result == Result::Stop)
                             return Result::Stop;
+                    }
                 }
 
-                return res(ctx, meta::LineStringType::Type.make(std::move(pts)));
+                if (auto resVal = res(ctx, meta::LineStringType::Type.make(std::move(pts))); !resVal) {
+                    capturedError = resVal.error();
+                    return Result::Stop;
+                } else {
+                    return resVal.value();
+                }
             } else if (type == "MultiLineString") {
                 for (auto i = 0; i < coordnode->size(); ++i) {
                     std::vector<Point> pts;
                     auto subline = coordnode->at(i);
                     for (auto i = 0; i < subline->size(); ++i) {
-                        if (!getPt(*subline->at(i), pts.emplace_back()))
-                            if (res(ctx, Value::null()) == Result::Stop)
+                        if (!parseCoordinatePoint(*subline->at(i), pts.emplace_back()))
+                            if (auto resVal = res(ctx, Value::null()); !resVal || resVal.value() == Result::Stop)
                                 return Result::Stop;
                     }
 
-                    if (res(ctx, meta::LineStringType::Type.make(std::move(pts))) ==
-                        Result::Stop)
+                    if (auto resVal = res(ctx, meta::LineStringType::Type.make(std::move(pts))); !resVal) {
+                        capturedError = resVal.error();
                         return Result::Stop;
+                    } else if (resVal.value() == Result::Stop) {
+                        return Result::Stop;
+                    }
                 }
 
                 return Result::Continue;
@@ -893,15 +945,20 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
                     std::vector<Point> pts;
                     auto subline = coordnode->at(i);
                     for (auto i = 0; i < subline->size(); ++i) {
-                        if (!getPt(*subline->at(i), pts.emplace_back()))
-                            if (res(ctx, Value::null()) == Result::Stop)
+                        if (!parseCoordinatePoint(*subline->at(i), pts.emplace_back()))
+                            if (auto resVal = res(ctx, Value::null()); !resVal || resVal.value() == Result::Stop)
                                 return Result::Stop;
                     }
 
                     polys.push_back({std::move(pts)});
                 }
 
-                return res(ctx, meta::PolygonType::Type.make(std::move(polys)));
+                if (auto resVal = res(ctx, meta::PolygonType::Type.make(std::move(polys))); !resVal) {
+                    capturedError = resVal.error();
+                    return Result::Stop;
+                } else {
+                    return resVal.value();
+                }
             } else if (type == "MultiPolygon") {
                 for (auto i = 0; i < coordnode->size(); ++i) {
                     std::vector<LineString> polys;
@@ -910,36 +967,58 @@ auto GeoFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const
                         std::vector<Point> pts;
                         auto subline = subpoly->at(i);
                         for (auto i = 0; i < subline->size(); ++i) {
-                            if (!getPt(*subline->at(i), pts.emplace_back()))
-                                if (res(ctx, Value::null()) == Result::Stop)
+                            if (!parseCoordinatePoint(*subline->at(i), pts.emplace_back()))
+                                if (auto resVal = res(ctx, Value::null()); !resVal || resVal.value() == Result::Stop)
                                     return Result::Stop;
                         }
 
                         polys.push_back({std::move(pts)});
                     }
 
-                    if (res(ctx, meta::PolygonType::Type.make(std::move(polys))) ==
-                        Result::Stop)
+                    if (auto resVal = res(ctx, meta::PolygonType::Type.make(std::move(polys))); !resVal) {
+                        capturedError = resVal.error();
                         return Result::Stop;
+                    } else if (resVal.value() == Result::Stop) {
+                        return Result::Stop;
+                    }
                 }
 
                 return Result::Continue;
             } else {
-                return res(ctx, Value::null());
+                if (auto resVal = res(ctx, Value::null()); !resVal) {
+                    capturedError = resVal.error();
+                    return Result::Stop;
+                } else {
+                    return resVal.value();
+                }
             }
         } else {
-            return res(ctx, Value::null());
+            if (auto resVal = res(ctx, Value::null()); !resVal) {
+                capturedError = resVal.error();
+                return Result::Stop;
+            } else {
+                return resVal.value();
+            }
         }
 
         return Result::Continue;
     };
 
-    if (!args.empty())
-        return args[0]->eval(ctx, std::move(val),
+    if (!args.empty()) {
+        auto result = args[0]->eval(ctx, std::move(val),
                              LambdaResultFn([&](auto ctx, auto v) {
                                  return forEachGeometry(std::move(v), evalValue);
                              }));
-    return forEachGeometry(std::move(val), evalValue);
+        if (capturedError) {
+            return tl::unexpected(*capturedError);
+        }
+        return result;
+    }
+    auto result = forEachGeometry(std::move(val), evalValue);
+    if (capturedError) {
+        return tl::unexpected(*capturedError);
+    }
+    return result;
 };
 
 PointFn PointFn::Fn;
@@ -953,26 +1032,26 @@ auto PointFn::ident() const -> const FnInfo&
     return info;
 }
 
-auto PointFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> Result
+auto PointFn::eval(Context ctx, const Value& val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> tl::expected<Result, Error>
 {
     if (args.size() != 2)
-        mapget::raise<ArgumentCountError>(*this, 2, 2, args.size());
+        return tl::unexpected(Error(Error::Type::InvalidArguments, fmt::format("point() expects 2 arguments, got {}", args.size())));
 
     auto [xok, xval] = util::evalArg1Any(ctx, val, args[0]);
     if (!xok)
-        mapget::raise<ArgumentValueCountError>(*this, 0);
+        return tl::unexpected(Error(Error::Type::ExpectedSingleValue, "point() expects single value for argument 0"));
 
     auto [yok, yval] = util::evalArg1Any(ctx, val, args[1]);
     if (!yok)
-        mapget::raise<ArgumentValueCountError>(*this, 1);
+        return tl::unexpected(Error(Error::Type::ExpectedSingleValue, "point() expects single value for argument 1"));
 
     auto [xtypeok, x] = getNumeric<double>(xval);
     if (!xtypeok)
-        mapget::raise<ArgumentTypeError>(*this, 0, "numeric", valueType2String(xval.type));
+        return tl::unexpected(Error(Error::Type::TypeMissmatch, fmt::format("point() argument 0 expects numeric type, got {}", valueType2String(xval.type))));
 
     auto [ytypeok, y] = getNumeric<double>(yval);
     if (!ytypeok)
-        mapget::raise<ArgumentTypeError>(*this, 1, "numeric", valueType2String(xval.type));
+        return tl::unexpected(Error(Error::Type::TypeMissmatch, fmt::format("point() argument 1 expects numeric type, got {}", valueType2String(yval.type))));
 
     return res(ctx, meta::PointType::Type.make(x, y));
 }
@@ -989,13 +1068,13 @@ auto BBoxFn::ident() const -> const FnInfo&
 }
 
 BBoxFn BBoxFn::Fn;
-auto BBoxFn::eval(Context ctx, Value v, const std::vector<ExprPtr>& args, const ResultFn& res) const -> Result
+auto BBoxFn::eval(Context ctx, const Value& v, const std::vector<ExprPtr>& args, const ResultFn& res) const -> tl::expected<Result, Error>
 {
     /* Get the bounding box of other geometry types */
     if (args.size() == 1) {
         auto [ok, val] = util::evalArg1Any(ctx, v, args[0]);
         if (!ok)
-            mapget::raise<ArgumentValueCountError>(*this, 0);
+            return tl::unexpected(Error(Error::Type::ExpectedSingleValue, "function expects single value for argument 0"));
 
         if (auto o = getObject<BBox>(val, &meta::BBoxType::Type))
             return res(ctx, meta::BBoxType::Type.make(*o));
@@ -1011,38 +1090,41 @@ auto BBoxFn::eval(Context ctx, Value v, const std::vector<ExprPtr>& args, const 
     if (args.size() == 2) {
         auto [p1ok, p1val] = util::evalArg1Any(ctx, v, args[0]);
         if (!p1ok)
-            mapget::raise<ArgumentValueCountError>(*this, 0);
+            return tl::unexpected(Error(Error::Type::ExpectedSingleValue, "function expects single value for argument 0"));
 
         auto [p2ok, p2val] = util::evalArg1Any(ctx, v, args[1]);
         if (!p2ok)
-            mapget::raise<ArgumentValueCountError>(*this, 1);
+            return tl::unexpected(Error(Error::Type::ExpectedSingleValue, "function expects single value for argument 1"));
 
         Point p1, p2;
-        if (auto a1 = getObject<Point>(p1val, &meta::PointType::Type))
+        if (auto a1 = getObject<Point>(p1val, &meta::PointType::Type)) {
             p1 = *a1;
-        else
-            mapget::raise<ArgumentTypeError>(*this, 0, "point", valueType2String(p1val.type));
-        if (auto a2 = getObject<Point>(p2val, &meta::PointType::Type))
+        } else {
+            return tl::unexpected(Error(Error::Type::TypeMissmatch, fmt::format("function argument 0 expects point type, got {}", valueType2String(p1val.type))));
+        }
+
+        if (auto a2 = getObject<Point>(p2val, &meta::PointType::Type)) {
             p2 = *a2;
-        else
-            mapget::raise<ArgumentTypeError>(*this, 1, "point", valueType2String(p2val.type));
+        } else {
+            return tl::unexpected(Error(Error::Type::TypeMissmatch, fmt::format("function argument 1 expects point type, got {}", valueType2String(p2val.type))));
+        }
 
         return res(ctx, meta::BBoxType::Type.make(p1.x, p1.y, p2.x, p2.y));
     }
 
     /* Construct with 4 values */
     if (args.size() != 4)
-        mapget::raise<ArgumentCountError>(*this, 1, 1, args.size());
+        return tl::unexpected(Error(Error::Type::InvalidArguments, fmt::format("bbox() expects 1, 2, or 4 arguments, got {}", args.size())));
 
     std::array<double, 4> fargs;
     for (auto i = 0; i < 4; ++i) {
         auto [ok, val] = util::evalArg1Any(ctx, v, args[i]);
         if (!ok)
-            mapget::raise<ArgumentValueCountError>(*this, i);
+            return tl::unexpected(Error(Error::Type::ExpectedSingleValue, fmt::format("function expects single value for argument {}", i)));
 
         auto [typeok, v] = getNumeric<double>(val);
         if (!typeok)
-            mapget::raise<ArgumentTypeError>(*this, i, "numeric", valueType2String(val.type));
+            return tl::unexpected(Error(Error::Type::TypeMissmatch, fmt::format("function argument {} expects numeric type, got {}", i, valueType2String(val.type))));
 
         fargs[i] = v;
     }
@@ -1062,10 +1144,10 @@ auto LineStringFn::ident() const -> const FnInfo&
     return info;
 }
 
-auto LineStringFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> Result
+auto LineStringFn::eval(Context ctx, const Value& val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> tl::expected<Result, Error>
 {
     if (args.size() < 1)
-        mapget::raise<ArgumentCountError>(*this, 1, 1, args.size());
+        return tl::unexpected(Error(Error::Type::InvalidArguments, fmt::format("function expects at least 1 argument, got {}", args.size())));
 
     enum class Mode {
         None,
@@ -1127,7 +1209,7 @@ auto PolyognFn::ident() const -> const FnInfo&
     return info;
 }
 
-auto PolygonFn::eval(Context ctx, Value val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> Result
+auto PolygonFn::eval(Context ctx, const Value& val, const std::vector<ExprPtr>& args, const ResultFn& res) const -> tl::expected<esult, Error>
 {
     TODO: Implement.
 }

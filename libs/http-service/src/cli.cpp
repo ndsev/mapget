@@ -417,7 +417,7 @@ struct FetchCommand
 };
 
 std::string pathToSchema;
-int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
+int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand, std::function<void(CLI::App&)> additionalCommandLineSetupFun)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     std::string log_level_;
@@ -447,6 +447,10 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand)
 
     ServeCommand serveCommand(app);
     FetchCommand fetchCommand(app);
+
+    if (additionalCommandLineSetupFun) {
+        additionalCommandLineSetupFun(app);
+    }
 
     try {
         std::reverse(args.begin(), args.end());

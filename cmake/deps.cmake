@@ -15,7 +15,7 @@ CPMAddPackage(
     "EXPECTED_BUILD_TESTS OFF"
     "EXPECTED_BUILD_PACKAGE_DEB OFF")
 CPMAddPackage(
-  URI "gh:Klebert-Engineering/simfil@0.5.6"
+  URI "gh:Klebert-Engineering/simfil@0.6.0"
   OPTIONS
     "SIMFIL_WITH_MODEL_JSON ON"
     "SIMFIL_SHARED OFF")
@@ -55,7 +55,7 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
       OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 
     CPMAddPackage(
-      URI "gh:jbeder/yaml-cpp#aa8d4e" # Switch to release > 0.8.0 once available
+      URI "gh:jbeder/yaml-cpp#0.8.0" # Switch to release > 0.8.0 once available
       OPTIONS
         "YAML_CPP_BUILD_TESTS OFF"
         "YAML_CPP_BUILD_TOOLS OFF"
@@ -75,7 +75,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-  CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel@1.0.1")
+  CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel@1.1.0")
 endif()
 
 if (MAPGET_ENABLE_TESTING)

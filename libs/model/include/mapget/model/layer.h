@@ -4,11 +4,13 @@
 #include "tileid.h"
 
 #include "nlohmann/json.hpp"
+#include "simfil/error.h"
 
 #include <string>
 #include <chrono>
 #include <optional>
 #include <memory>
+#include <tl/expected.hpp>
 
 namespace simfil { struct StringPool; }
 
@@ -49,6 +51,9 @@ struct MapTileKey
 
     /** Constructor to create the cache key for any TileLayer object. */
     explicit MapTileKey(TileLayer const& data);
+
+    /** Constructor to create the cache key from raw components. */
+    explicit MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId);
 
     /** Allow default ctor. */
     MapTileKey() = default;
@@ -176,7 +181,7 @@ public:
     void setLegalInfo(const std::string& legalInfoString);
 
     /** Serialization */
-    virtual void write(std::ostream& outputStream);
+    virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);
     virtual nlohmann::json toJson() const;
 
 protected:

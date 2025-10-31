@@ -96,24 +96,26 @@ auto makeTile() {
     return tile;
 }
 
-#define REQUIRE_EVAL_1(query, type, result)                         \
-    do {                                                            \
-        Environment env(model_pool->strings());                     \
-        env.functions["geo"] = &GeoFn::Fn;                          \
-        env.functions["bbox"] = &BBoxFn::Fn;                        \
-        env.functions["linestring"] = &LineStringFn::Fn;            \
-        auto ast = compile(env, query, false);                      \
-        if (!ast)                                                   \
-            INFO(ast.error().message);                              \
-        REQUIRE(ast.has_value());                                   \
-        INFO("AST: " << ast.value()->expr().toString());             \
-        auto res = eval(env, **ast, *model_pool->root(0), nullptr); \
-        if (!res)                                                   \
-            INFO(res.error().message);                              \
-        REQUIRE(res.has_value());                                   \
-        auto val = std::move(*res);                                 \
-        REQUIRE(val.size() == 1);                                   \
-        REQUIRE(val[0].as<type>() == result);                       \
+#define REQUIRE_EVAL_1(query, type, result)                 \
+    do {                                                    \
+        Environment env(model_pool->strings());             \
+        env.functions["geo"] = &GeoFn::Fn;                  \
+        env.functions["bbox"] = &BBoxFn::Fn;                \
+        env.functions["linestring"] = &LineStringFn::Fn;    \
+        auto ast = compile(env, query, false);              \
+        if (!ast)                                           \
+            INFO(ast.error().message);                      \
+        REQUIRE(ast.has_value());                           \
+        INFO("AST: " << ast.value()->expr().toString());    \
+        auto rootResult = model_pool->root(0);              \
+        REQUIRE(rootResult.has_value());                    \
+        auto res = eval(env, **ast, **rootResult, nullptr); \
+        if (!res)                                           \
+            INFO(res.error().message);                      \
+        REQUIRE(res.has_value());                           \
+        auto val = std::move(*res);                         \
+        REQUIRE(val.size() == 1);                           \
+        REQUIRE(val[0].as<type>() == result);               \
     } while (false)
 
 TEST_CASE("Point", "[geo.point]") {
@@ -216,9 +218,10 @@ TEST_CASE("Spatial Operators", "[spatial.ops]") {
     auto geometry_collection = model_pool->newGeometryCollection();
     auto point_geom = geometry_collection->newGeometry(GeomType::Points);
     point_geom->append({2., 3., 0.});
-    model_pool->addRoot(model_ptr<ModelNode>(model_pool->newObject()->addField(
-        "geometry",
-        point_geom)));
+    auto obj = model_pool->newObject();
+    auto addResult = obj->addField("geometry", point_geom);
+    REQUIRE(addResult.has_value());
+    model_pool->addRoot(model_ptr<ModelNode>(*addResult));
 
     Environment env(model_pool->strings());
 
@@ -259,9 +262,10 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
     polygon_geom->append(e);
     polygon_geom->append(f);
 
-    model_pool->addRoot(model_ptr<ModelNode>(model_pool->newObject()->addField(
-        "geometry",
-        ModelNode::Ptr(geometry_collection))));
+    auto obj2 = model_pool->newObject();
+    auto addResult2 = obj2->addField("geometry", ModelNode::Ptr(geometry_collection));
+    REQUIRE(addResult2.has_value());
+    model_pool->addRoot(model_ptr<ModelNode>(*addResult2));
 
     SECTION("Retrieve points") {
         // Check stored points in Point geometry

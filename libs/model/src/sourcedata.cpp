@@ -3,6 +3,7 @@
 #include "sourcedatalayer.h"
 #include "simfil/model/nodes.h"
 #include "sourceinfo.h"
+#include "mapget/log.h"
 
 using simfil::ValueType;
 using simfil::ModelNode;
@@ -23,7 +24,10 @@ SourceDataAddress SourceDataCompoundNode::sourceDataAddress() const
 
 void SourceDataCompoundNode::setSchemaName(std::string_view name)
 {
-    data_->schemaName_ = model().strings()->emplace(name);
+    auto res = model().strings()->emplace(name);
+    if (!res)
+        raise(res.error().message);
+    data_->schemaName_ = *res;
 }
 
 std::string_view SourceDataCompoundNode::schemaName() const
