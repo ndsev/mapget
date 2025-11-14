@@ -5,7 +5,7 @@
   - GeoJson DataSource
     (TODO: Migrate from mapget-live-cpp)
   - GridStream DataSource
-    (TODO: Migrate DevDataSource from mapviewer repo)
+    (TODO: Migrate GridDataSource from mapviewer repo)
 - REST API Guide (mapget-api.md)
 - Caching Guide (TTL, Clear Cache, in-memory vs sqlite vs no cache) (mapget-cache.md)
 - Layered Data Model (mapget-model.md)

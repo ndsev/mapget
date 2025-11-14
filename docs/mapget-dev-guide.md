@@ -1,8 +1,9 @@
 # Mapget Developer Guide
 
 - DataSource Development Interface
-- Component Diagram
+- DataSource Development Interface
 - Service
     - Caching
     - Concurrency
     - HTTP Service
+- Deployment

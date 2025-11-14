@@ -753,7 +753,7 @@ struct HttpService::Impl
         std::unordered_map<std::string, std::string> maskedSecrets;
         yamlToJson(yamlConfig, &maskedSecrets);
 
-        // Create YAML nodes for from JSON nodes.
+        // Create YAML nodes from JSON nodes.
         for (auto const& key : sharedTopLevelConfigKeys()) {
             if (jsonConfig.contains(key))
                 yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);

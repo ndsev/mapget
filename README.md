@@ -435,19 +435,6 @@ This design allows clients to batch queries for multiple features in a single re
 
 Note, that a locate resolution must be provided by a datasource for the specified map, which implements the `onLocateRequest` callback.
 
-### erdblick-mapget-datasource communication pattern
-
-TODO: expand and polish this section stub.
-
-1. Client (`erdblick` etc.) sends a composite list of requests to `mapget`. Requests are batched because browsers limit the number of concurrent requests to one domain, but we want to stream potentially hundreds of tiles.
-
-2. `mapget` checks if all requested map+layer combinations can be fulfilled with data sources
-   - yes: create tile requests, stream responses back to client,
-   - no: return 400 Bad Request (client needs to refresh its info on map availability).
-
-3. A data source drops offline / `mapget` request fails during processing?
-   - `cpp-httplib` cleanup callback returns timeout response (probably status code 408).
-
 ## Making mapget Releases
 
 The `mapget` Python package is deployed to PyPI through GitHub Actions with automatic version management:
@@ -455,6 +442,7 @@ The `mapget` Python package is deployed to PyPI through GitHub Actions with auto
 ### Release Process
 
 #### Manual Steps:
+
 1. **Update Version**: Before creating a release, update `MAPGET_VERSION` in `CMakeLists.txt` to the new version (e.g., `2025.3.1`)
 2. **Commit and Push**: Commit this change to the `main` branch with a clear message like "Bump version to 2025.3.1"
 3. **Create GitHub Release**: 
@@ -466,7 +454,9 @@ The `mapget` Python package is deployed to PyPI through GitHub Actions with auto
    - Publish the release
 
 #### Automated Process:
+
 When the release is published, GitHub Actions will automatically:
+
 - Use `setuptools_scm` to determine the version from the git tag
 - Pass this version to CMake during the build process (overriding the default in CMakeLists.txt)
 - Validate that the git tag matches the CMakeLists.txt version (release will fail if they don't match)
