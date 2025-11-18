@@ -14,6 +14,7 @@
 #include <string>
 #include <mutex>
 #include <optional>
+#include <map>
 
 // Hash function for TileId to use in unordered_map
 namespace std {
@@ -38,7 +39,7 @@ namespace std {
  * - Relations between features
  */
 
-namespace mapget {
+namespace mapget::gridsource {
 
 // Forward declarations
 struct TileSpatialContext;
@@ -296,8 +297,6 @@ private:
     mapget::Point closestPointOnSegment(mapget::Point p, mapget::Point a, mapget::Point b) const;
 };
 
-}  // namespace devds
-
 /**
  * Development data source with procedural generation
  */
@@ -314,51 +313,53 @@ public:
     std::vector<mapget::LocateResponse> locate(mapget::LocateRequest const& req) override;
 
 private:
-    devds::Config config_;
+    gridsource::Config config_;
     mutable std::mutex contextMutex_;
-    mutable std::unordered_map<mapget::TileId, std::shared_ptr<devds::TileSpatialContext>> contextCache_;
+    mutable std::unordered_map<mapget::TileId, std::shared_ptr<gridsource::TileSpatialContext>> contextCache_;
     static constexpr size_t MAX_CACHED_CONTEXTS = 1000;
 
     // Get or create spatial context for a tile
-    std::shared_ptr<devds::TileSpatialContext> getOrCreateContext(mapget::TileId tileId) const;
+    std::shared_ptr<gridsource::TileSpatialContext> getOrCreateContext(mapget::TileId tileId) const;
 
     // Layer generation methods
-    void generateRoadGrid(devds::TileSpatialContext& ctx,
-                         const devds::LayerConfig& config,
+    void generateRoadGrid(gridsource::TileSpatialContext& ctx,
+                         const gridsource::LayerConfig& config,
                          mapget::TileFeatureLayer::Ptr const& tile);
 
-    void generateBuildings(devds::TileSpatialContext& ctx,
-                          const devds::LayerConfig& config,
+    void generateBuildings(gridsource::TileSpatialContext& ctx,
+                          const gridsource::LayerConfig& config,
                           mapget::TileFeatureLayer::Ptr const& tile);
 
-    void generateRoads(devds::TileSpatialContext& ctx,
-                      const devds::LayerConfig& config,
+    void generateRoads(gridsource::TileSpatialContext& ctx,
+                      const gridsource::LayerConfig& config,
                       mapget::TileFeatureLayer::Ptr const& tile);
 
-    void generateIntersections(devds::TileSpatialContext& ctx,
-                              const devds::LayerConfig& config,
+    void generateIntersections(gridsource::TileSpatialContext& ctx,
+                              const gridsource::LayerConfig& config,
                               mapget::TileFeatureLayer::Ptr const& tile);
 
     // Attribute generation
     void generateAttributes(mapget::model_ptr<mapget::Feature> feature,
-                           const std::vector<devds::AttributeConfig>& attrs,
+                           const std::vector<gridsource::AttributeConfig>& attrs,
                            std::mt19937& gen,
                            uint32_t featureId);
 
     void generateLayeredAttributes(mapget::model_ptr<mapget::Feature> feature,
-                                   const std::vector<devds::AttributeLayerConfig>& layers,
+                                   const std::vector<gridsource::AttributeLayerConfig>& layers,
                                    std::mt19937& gen,
                                    uint32_t featureId);
 
     // Relation generation
     void generateRelations(mapget::model_ptr<mapget::Feature> feature,
-                          const devds::TileSpatialContext& ctx,
-                          const std::vector<devds::RelationConfig>& relations,
+                          const gridsource::TileSpatialContext& ctx,
+                          const std::vector<gridsource::RelationConfig>& relations,
                           mapget::Point featurePoint);
 
     // Helper for attribute value generation
-    std::string generateAttributeValue(const devds::AttributeConfig& attr,
+    std::string generateAttributeValue(const gridsource::AttributeConfig& attr,
                                        std::mt19937& gen,
                                        uint32_t featureId,
                                        const std::map<std::string, std::string>& computedValues = {});
 };
+
+}  // namespace mapget

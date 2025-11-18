@@ -23,6 +23,8 @@ target_link_libraries(mapget-http-service
     nlohmann_json_schema_validator
     mapget-service
     mapget-http-datasource
+    gridsource
+    geojsonsource
   PRIVATE
     picosha2
     zlibstatic)

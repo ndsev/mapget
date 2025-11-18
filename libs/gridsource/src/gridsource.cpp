@@ -9,6 +9,7 @@
 #include <fmt/format.h>
 
 using namespace mapget;
+using namespace mapget::gridsource;
 
 namespace {
 

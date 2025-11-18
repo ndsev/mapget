@@ -9,6 +9,9 @@
 #include "mapget/service/sqlitecache.h"
 #include "mapget/service/config.h"
 
+#include "gridsource/gridsource.h"
+#include "geojsonsource/geojsonsource.h"
+
 #include <CLI/CLI.hpp>
 #include <string>
 #include <vector>
@@ -158,6 +161,26 @@ void registerDefaultDatasourceTypes() {
                 return std::make_shared<RemoteDataSourceProcess>(cmd.as<std::string>());
             else
                 throw std::runtime_error("Missing `cmd` field.");
+        });
+    service.registerDataSourceType(
+        "GridDataSource",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            // Check if enabled flag is present and set to false
+            if (config["enabled"].IsDefined() && !config["enabled"].as<bool>()) {
+                return nullptr;  // Skip this datasource
+            }
+            return std::make_shared<gridsource::GridDataSource>(config);
+        });
+    service.registerDataSourceType(
+        "GeoJsonFolder",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            if (auto folder = config["folder"]) {
+                bool withAttributeLayers = false;
+                if (auto withAttributeLayersNode = config["withAttrLayers"])
+                    withAttributeLayers = withAttributeLayersNode.as<bool>();
+                return std::make_shared<geojsonsource::GeoJsonSource>(folder.as<std::string>(), withAttributeLayers);
+            }
+            throw std::runtime_error("Missing `folder` field.");
         });
 }
 

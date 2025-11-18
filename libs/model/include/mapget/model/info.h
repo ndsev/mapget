@@ -25,6 +25,28 @@ using KeyValuePairs =
 using KeyValuePairVec =
     std::vector<std::pair<std::string, std::variant<int64_t, std::string>>>;
 
+/**
+ * @brief Transforms a URI or path into a string by replacing special characters.
+ *
+ * This function takes any path or URL represented as a std::string,
+ * and modifies it in the following manner:
+ * 1. Converts all characters to lowercase.
+ * 2. Replaces special characters (`:`, `\`, `/`, `.`) with dashes `-`.
+ * 3. Merges consecutive dashes into a single dash.
+ * 4. If the resulting string ends with `-openapi-json`, that suffix is removed.
+ *
+ * Examples:
+ * "https://test.com/openapi.json" -> "https-test-com"
+ * "C:\\my-dir\\x.sqlite" -> "c-my-dir-x-sqlite"
+ *
+ * @param uri The original URI or path string.
+ * @return The transformed string.
+ */
+std::string mapNameFromUri(const std::string& uri);
+
+/** Generate a UUID which may be used as the node id. */
+std::string generateNodeHexUuid();
+
 /** Convert KeyValuePairs to KeyValuePairsView. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
 

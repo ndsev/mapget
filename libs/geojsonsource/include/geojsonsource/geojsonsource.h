@@ -1,14 +1,17 @@
 #pragma once
 
+#include <unordered_set>
+#include <string>
+
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/service/datasource.h"
 
-namespace livesource
+namespace mapget::geojsonsource
 {
 
 /**
- * Data Source which may be used to test the a directory which
+ * Data Source which may be used to test a directory which
  * contains feature tiles as legacy DBI/LiveLab GeoJSON exports.
  * Each tile in the designated directory must be named `<packed-tile-id>.geojson`.
  *
@@ -22,7 +25,7 @@ namespace livesource
  *  is understood by mapget, and a GeoJSON data source will be part
  *  of the mapget code base.
  */
-class LIVESOURCE_EXPORT GeoJsonSource : public mapget::DataSource
+class GeoJsonSource : public mapget::DataSource
 {
 public:
     /**
@@ -41,9 +44,9 @@ public:
 
 private:
     mapget::DataSourceInfo info_;
-    std::unordered_map<uint64_t, uint32_t> coveredMapgetTileIdsToPackedTileIds_;
+    std::unordered_set<uint64_t> coveredMapgetTileIds_;
     std::string inputDir_;
     bool withAttrLayers_ = true;
 };
 
-}
+}  // namespace mapget::geojsonsource

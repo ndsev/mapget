@@ -1,23 +1,21 @@
 // Copyright (c) Navigation Data Standard e.V. - See "LICENSE" file.
 
 #include "geojsonsource/geojsonsource.h"
-#include "mapget/model/sourcedatalayer.h"
-#include "utility.h"
-#include "log.h"
 
-#include "ndsmath/packedtileid.h"
+#include "mapget/log.h"
+#include "mapget/model/sourcedatalayer.h"
+
 #include "nlohmann/json.hpp"
 #include "fmt/format.h"
 
+#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <unordered_map>
 #include <thread>
+#include <unordered_map>
 
 namespace
 {
-
-using namespace livesource;
 
 simfil::ModelNode::Ptr jsonToMapget(  // NOLINT (recursive)
     mapget::TileFeatureLayer::Ptr const& tfl,
@@ -25,28 +23,28 @@ simfil::ModelNode::Ptr jsonToMapget(  // NOLINT (recursive)
 {
     if (j.is_string())
         return tfl->newValue(j.get<std::string>());
-    else if (j.is_number_integer())
+    if (j.is_number_integer())
         return tfl->newValue(j.get<int64_t>());
-    else if (j.is_number_float())
+    if (j.is_number_float())
         return tfl->newValue(j.get<double>());
-    else if (j.is_boolean())
+    if (j.is_boolean())
         return tfl->newSmallValue(j.get<bool>());
-    else if (j.is_null())
+    if (j.is_null())
         return {};
-    else if (j.is_object()) {
+    if (j.is_object()) {
         auto subObject = tfl->newObject(j.size());
         for (auto& el : j.items())
             subObject->addField(el.key(), jsonToMapget(tfl, el.value()));
         return subObject;
     }
-    else if (j.is_array()) {
+    if (j.is_array()) {
         auto subArray = tfl->newArray(j.size());
         for (auto& el : j.items())
             subArray->append(jsonToMapget(tfl, el.value()));
         return subArray;
     }
 
-    log().debug("Unhandled JSON type: {}", j.type_name());
+    mapget::log().debug("Unhandled JSON type: {}", j.type_name());
     return {};
 }
 
@@ -75,7 +73,7 @@ auto geoJsonLayerInfo = R"json(
 
 }  // namespace
 
-namespace livesource
+namespace mapget::geojsonsource
 {
 
 GeoJsonSource::GeoJsonSource(const std::string& inputDir, bool withAttrLayers, const std::string& mapId)
@@ -94,14 +92,13 @@ GeoJsonSource::GeoJsonSource(const std::string& inputDir, bool withAttrLayers, c
     // Initialize coverage
     auto layer = info_.getLayer("GeoJsonAny");
     for (const auto& file : std::filesystem::directory_iterator(inputDir)) {
-        log().debug("Found file {}", file.path().string());
+        mapget::log().debug("Found file {}", file.path().string());
         if (file.path().extension() == ".geojson") {
-            auto packedTileId = static_cast<uint32_t>(std::stoull(file.path().stem()));
-            auto tileId = packedTileIdToMapgetTileId(ndsmath::PackedTileId(packedTileId));
-            coveredMapgetTileIdsToPackedTileIds_[tileId.value_] = packedTileId;
+            auto tileId = static_cast<uint64_t>(std::stoull(file.path().stem()));
+            coveredMapgetTileIds_.insert(tileId);
             mapget::Coverage coverage({tileId, tileId, std::vector<bool>()});
             layer->coverage_.emplace_back(coverage);
-            log().debug("Added tile {}, packed tile id {}.", tileId.value_, packedTileId);
+            mapget::log().debug("Added tile {}", tileId);
         }
     }
 }
@@ -115,14 +112,14 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
 {
     using namespace mapget;
 
-    log().debug("Starting... ");
+    mapget::log().debug("Starting... ");
 
-    auto packedTileIdIt = coveredMapgetTileIdsToPackedTileIds_.find(tile->tileId().value_);
-    if (packedTileIdIt == coveredMapgetTileIdsToPackedTileIds_.end()) {
-        log().error("Tile not available: {}", tile->tileId().value_);
+    auto tileIdIt = coveredMapgetTileIds_.find(tile->tileId().value_);
+    if (tileIdIt == coveredMapgetTileIds_.end()) {
+        mapget::log().error("Tile not available: {}", tile->tileId().value_);
         return;
     }
-    auto packedTileId = packedTileIdIt->second;
+    auto packedTileId = *tileIdIt;
 
     // All features share the same packed tile id.
     tile->setIdPrefix({{"packedTileId", static_cast<int64_t>(packedTileId)}});
@@ -130,13 +127,13 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
     // Parse the GeoJSON file
     auto path = fmt::format("{}/{}.geojson", inputDir_, std::to_string(packedTileId));
 
-    log().debug("Opening: {}", path);
+    mapget::log().debug("Opening: {}", path);
 
     std::ifstream geojsonFile(path);
     nlohmann::json geojsonData;
     geojsonFile >> geojsonData;
 
-    log().debug("Processing {} features...", geojsonData["features"].size());
+    mapget::log().debug("Processing {} features...", geojsonData["features"].size());
 
     // Iterate over each feature in the GeoJSON data
     int featureId = 0;  // Initialize the running index
@@ -190,12 +187,12 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
         }
     }
 
-    log().debug("            done!");
-}
-
+    mapget::log().debug("            done!");
 }
 
 void GeoJsonSource::fill(mapget::TileSourceDataLayer::Ptr const&)
 {
     // Do nothing...
 }
+
+}  // namespace mapget::geojsonsource
