@@ -1,8 +1,6 @@
 # Layered Data Model
 
-Mapget represents all map content as tiles of structured features. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance. Measurements in the [size comparison table](size-comparison/table.md) show that the binary tile format is roughly 25–50 % smaller than equivalent JSON/bson/msgpack encodings, which is why the model is optimised around the simfil binary representation:
-
---8<-- "size-comparison/table.md"
+Mapget represents all map content as tiles of structured features. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance. 
 
 ## Features and properties
 
@@ -15,23 +13,62 @@ The `properties.layers` tree in a feature holds these layered attributes and the
 
 To make this as fast as possible, mapget uses the simfil binary format with a small VTLV message wrapper. This is explained in the following section.
 
-## Binary tile streaming
+## Datasource metadata
 
-To minimise overhead for large responses, mapget uses a compact binary format for tile streaming. The format is a sequence of messages with a simple header:
+Tiles do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
 
-- A fixed‑size version field that encodes the tile stream protocol version.
-- A message type byte.
-- A 32‑bit length field.
-- The message payload, whose structure depends on the message type.
+```mermaid
+classDiagram
+  class DataSourceInfo {
+    +string nodeId
+    +string mapId
+    +map<string, LayerInfo> layers
+    +int maxParallelJobs
+    +bool isAddOn
+    +Version protocolVersion
+  }
 
-The main message types are:
+  class LayerInfo {
+    +string layerId
+    +LayerType type
+    +vector<int> zoomLevels
+    +vector<Coverage> coverage
+    +bool canRead
+    +bool canWrite
+    +Version version
+    +vector<FeatureTypeInfo> featureTypes
+  }
 
-- String pool updates that carry field name dictionaries.
-- Feature tiles representing `TileFeatureLayer` instances.
-- Source data tiles representing `TileSourceDataLayer` instances.
-- An explicit end‑of‑stream marker.
+  class FeatureTypeInfo {
+    +string name
+    +vector<vector<IdPart>> uniqueIdCompositions
+  }
 
-On the receiving side, a tile stream reader validates the protocol version, updates or reuses string pools per datasource node and reconstructs tile layer objects as messages arrive. Clients that do not need the compact binary form can instead use `application/jsonl` and let the server handle the conversion to JSON at the cost of slightly higher bandwidth and CPU usage.
+  class IdPart {
+    +string partId
+    +IdPartDataType datatype
+    +bool isSynthetic
+    +bool isOptional
+  }
+
+  class Coverage {
+    +TileId min
+    +TileId max
+    +vector<bool> filled
+  }
+
+  DataSourceInfo "1" *-- "many" LayerInfo
+  LayerInfo "1" *-- "many" FeatureTypeInfo
+  FeatureTypeInfo "1" *-- "many" IdPart
+  LayerInfo "0..*" *-- "many" Coverage
+```
+
+- **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
+- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), zoom levels, coverage rectangles, read/write flags and the semantic version. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
+- **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
+- **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
+
+When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` and uses it to validate feature IDs and field layouts. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
 
 ## Feature IDs
 
@@ -275,6 +312,28 @@ classDiagram
 
 From a simfil perspective, each of the model classes shown above is either a direct `simfil::ModelNode` derivative or a thin wrapper built on simfil’s node types. `TileFeatureLayer` and `TileSourceDataLayer` act as model pools: they own the storage for all nodes in a tile and provide the environment required to evaluate simfil expressions directly against tile content.
 
+## Binary tile streaming
+
+To minimise overhead for large responses, mapget uses a compact binary format for tile streaming. The format is a sequence of messages with a simple header:
+
+- A fixed‑size version field that encodes the tile stream protocol version.
+- A message type byte.
+- A 32‑bit length field.
+- The message payload, whose structure depends on the message type.
+
+The main message types are:
+
+- String pool updates that carry field name dictionaries.
+- Feature tiles representing `TileFeatureLayer` instances.
+- Source data tiles representing `TileSourceDataLayer` instances.
+- An explicit end‑of‑stream marker.
+
+On the receiving side, a tile stream reader validates the protocol version, updates or reuses string pools per datasource node and reconstructs tile layer objects as messages arrive. Clients that do not need the compact binary form can instead use `application/jsonl` and let the server handle the conversion to JSON at the cost of much higher bandwidth and CPU usage.
+
+Measurements in the [size comparison table](size-comparison/table.md) show that the binary tile format is roughly 25–50 % smaller than equivalent JSON/bson/msgpack encodings, which is why the model is optimised around the simfil binary representation:
+
+--8<-- "size-comparison/table.md"
+
 ## JSON representation
 
 When a tile is streamed as JSON Lines, each `TileFeatureLayer` becomes a single JSON feature collection object that records the map and layer it came from:
@@ -338,65 +397,14 @@ Each feature inside that tile looks like this:
 }
 ```
 
-### Multi-map tiles and JSON
+Simfil objects (including `AttributeLayerList`, which inherits from `simfil::Object`) can legally contain overlapping field names. When `ModelNode::toJson()` detects duplicate keys it rewrites the structure so each key maps to an array of values and adds `_multimap: true` as a hint for the consumer. For layered attributes this means that multiple layers with the same name will show up as arrays:
 
-A single `/tiles` request can bundle multiple map/layer combinations. The JSONL response therefore contains one feature collection per requested combination, each tagged with its `mapId` and `layerId`. It is common to request two layers that share the same `layerId` but belong to different maps (e.g. `Roads` for “Europe” and “NorthAmerica”). Clients must read both the map and layer IDs to disambiguate the FeatureCollections.
-
-Simfil follows the same rule: each `TileFeatureLayer` evaluation context carries its `mapId`/`layerId`, so expressions do not mix features across maps. Worker processes simply evaluate the same simfil expression on each tile separately and merge the results. When serialising to GeoJSON for display, you should keep the collection boundaries intact instead of flattening all features, otherwise layers with the same `layerId` but different maps would become indistinguishable.
-
-## Datasource metadata
-
-Tiles do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
-
-```mermaid
-classDiagram
-  class DataSourceInfo {
-    +string nodeId
-    +string mapId
-    +map<string, LayerInfo> layers
-    +int maxParallelJobs
-    +bool isAddOn
-    +Version protocolVersion
-  }
-
-  class LayerInfo {
-    +string layerId
-    +LayerType type
-    +vector<int> zoomLevels
-    +vector<Coverage> coverage
-    +bool canRead
-    +bool canWrite
-    +Version version
-    +vector<FeatureTypeInfo> featureTypes
-  }
-
-  class FeatureTypeInfo {
-    +string name
-    +vector<vector<IdPart>> uniqueIdCompositions
-  }
-
-  class IdPart {
-    +string partId
-    +IdPartDataType datatype
-    +bool isSynthetic
-    +bool isOptional
-  }
-
-  class Coverage {
-    +TileId min
-    +TileId max
-    +vector<bool> filled
-  }
-
-  DataSourceInfo "1" *-- "many" LayerInfo
-  LayerInfo "1" *-- "many" FeatureTypeInfo
-  FeatureTypeInfo "1" *-- "many" IdPart
-  LayerInfo "0..*" *-- "many" Coverage
+```json
+"layers": {
+  "Traffic": [
+    { "speedLimit": { "value": 80 } },
+    { "speedLimit": { "value": 60 } }
+  ],
+  "_multimap": true
+}
 ```
-
-- **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
-- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), zoom levels, coverage rectangles, read/write flags and the semantic version. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
-- **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
-- **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
-
-When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` and uses it to validate feature IDs and field layouts. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
