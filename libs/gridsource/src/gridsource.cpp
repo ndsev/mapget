@@ -1,12 +1,15 @@
 // Copyright (c) Navigation Data Standard e.V. - See "LICENSE" file.
 
 #include "gridsource/gridsource.h"
-#include <mapget/log.h>
+
 #include <cmath>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
-#include <fmt/format.h>
+
+#include "mapget/log.h"
+#include "fmt/format.h"
+#include "glm/ext.hpp"
 
 using namespace mapget;
 using namespace mapget::gridsource;
@@ -646,7 +649,7 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
     const auto upperRight = tile->tileId().ne();
     double metersPerDegree = 111320.0;
     double avgLat = (lowerLeft.y + upperRight.y) / 2.0;
-    double metersPerDegreeLon = metersPerDegree * std::cos(avgLat * M_PI / 180.0);
+    double metersPerDegreeLon = metersPerDegree * std::cos(avgLat * glm::pi<double>() / 180.0);
 
     const double setbackMeters = 5.0;  // Building setback from block edge
     const double gapMeters = 3.0;      // Gap between buildings
@@ -756,7 +759,7 @@ void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
         // Convert meters to degrees
         double metersPerDegree = 111320.0;
         double avgLat = (lowerLeft.y + upperRight.y) / 2.0;
-        double metersPerDegreeLon = metersPerDegree * std::cos(avgLat * M_PI / 180.0);
+        double metersPerDegreeLon = metersPerDegree * std::cos(avgLat * glm::pi<double>() / 180.0);
 
         // Block size in meters (from config or default)
         const double blockSizeMeters = 80.0;  // ~80m blocks (typical US city block)
