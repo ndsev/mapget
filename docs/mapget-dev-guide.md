@@ -1,6 +1,6 @@
 # Mapget Developer Guide
 
-This guide is aimed at contributors and integrators who want to understand how mapget is structured internally, how datasources are implemented and how the HTTP service ties everything together. It assumes familiarity with C++ and basic HTTP concepts.
+This guide is aimed at contributors and integrators who want to understand how mapget is structured internally, how datasources are implemented and how the HTTP service ties everything together. It assumes familiarity with C++ and basic HTTP concepts. Source code is available at [github.com/ndsev/mapget](https://github.com/ndsev/mapget).
 
 ## Component overview
 
@@ -207,8 +207,16 @@ These endpoints are guarded by command‑line flags: `--no-get-config` disables 
 
 The model library provides both the binary tile encoding and the simfil query integration:
 
-- `TileLayerStream::Writer` and `TileLayerStream::Reader` handle versioned, type‑tagged messages for string pools and tile layers.
+- `TileLayerStream::Writer` and `TileLayerStream::Reader` handle versioned, type‑tagged messages for string pools and tile layers. Each message starts with a protocol version, a `MessageType` (string pool, feature tile, SourceData tile, end-of-stream), and a payload size.
 - `TileFeatureLayer` derives from `simfil::ModelPool` and exposes methods such as `evaluate(...)` and `complete(...)` to run simfil expressions and obtain completion candidates.
+
+String pools are streamed incrementally. The server keeps a `StringPoolOffsetMap` that tracks, for each datasource node ID, the highest string ID known to a given client. When a tile is written, `TileLayerStream::Writer` compares that offset with the current `StringPool::highest()` value:
+
+- If the client has never seen this node, the writer serialises the full string pool and prepends a `StringPool` message before the first tile message.
+- If new strings were added since the last request, the writer serialises only the suffix `[oldHighest+1, highest]` and sends this as a `StringPool` update before the tile.
+- Clients attach their current offsets as part of the `/tiles` request; the `TileLayerStream::Reader` merges incoming string pool chunks into a `StringPoolCache` so that subsequent tile messages can reference strings by ID without repeating them.
+
+For persistent caches the writer can be configured with `differentialStringUpdates=false` so that complete string pools are written to disk; for HTTP streaming it is normally enabled to minimise bandwidth.
 
 When used from C++ or from worker processes behind the HTTP API, these facilities allow you to:
 

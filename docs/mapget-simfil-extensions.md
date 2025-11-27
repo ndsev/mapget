@@ -14,6 +14,7 @@ Erdblick’s feature search dialog and the worker processes behind `/search` rel
 
 ## Geometry-aware operators
 
+<!-- --8<-- [start:geo-ops] -->
 Mapget enriches simfil with dedicated geometry meta types (`Point`, `BBox`, `LineString`, `Polygon`) and implements the spatial operators `within`, `contains`, and `intersects` for them. These operators are exposed as regular binary operators in simfil:
 
 | Example expression                        | Meaning                                                   |
@@ -23,23 +24,19 @@ Mapget enriches simfil with dedicated geometry meta types (`Point`, `BBox`, `Lin
 | `linestring(feature.geometry[0]) intersects bbox(...)` | Tests whether the first geometry intersects a screen-space bounding box. |
 | `geo(feature.geometry) contains point(x,y)` | Tests whether a polygon or mesh contains a point.        |
 
-Internally these operators map to the helpers in `mapget::BBox`, `mapget::LineString`, and `mapget::Polygon`, so they work with 2D and 3D coordinates alike. Because the operators are part of simfil’s normal precedence rules, you can combine them freely with other expressions (`geo(geom) within bbox && properties.layers.Road.speedLimit > 80`).
-
-## GeoJSON constructors
+These operators work with 2D and 3D coordinates alike.
+Because the operators are part of simfil’s normal precedence rules, you can combine them freely with other expressions, e.g. `geo() within bbox(...) && properties.**.speedLimit > 80`.
 
 To make geometry queries concise, mapget registers a set of constructor functions:
 
-- `geo(value)` – parses a GeoJSON object or string literal into a geometry value that can be used with the operators above.
-- `point(x, y, z?)` – creates a point meta type.
+- `geo(value?)` – parses a GeoJSON object or string literal into a geometry value that can be used with the operators above. Note, that the `value` argument is optional. If ommitted, it simply reads geometry from the current evaluation context.
+- `point(x, y, z?)` – creates a point.
 - `bbox(minX, minY, maxX, maxY)` – creates an axis-aligned bounding box.
-- `linestring([ [x0, y0], [x1, y1], ... ])` – creates a line string meta type from coordinate arrays.
+- `linestring([ [x0, y0], [x1, y1], ... ])` – creates a line string from coordinate arrays.
 
-These constructors return strongly typed simfil values, so you can pass them directly to `within`/`contains`/`intersects`, store them in local variables, or build helper expressions such as:
+These constructors return strongly typed simfil values, so you can pass them directly to `within`/`contains`/`intersects` operators.
 
-```text
-let screen = bbox($viewport.minLon, $viewport.minLat, $viewport.maxLon, $viewport.maxLat);
-geo(geometry) intersects screen
-```
+<!-- --8<-- [end:geo-ops] -->
 
 ## Typed meta types and helpers
 
@@ -49,13 +46,3 @@ The geometry constructors feed into dedicated meta types (`PointType`, `BBoxType
 - Each meta type exposes `unpack` support, which lets you iterate over coordinates or bounding boxes in simfil loops.
 
 Together with the binary operators, this gives you enough expressiveness to describe common map filters (“features whose geometry is within this ROI”) without resorting to custom code.
-
-## When to use these extensions
-
-Use the base language (`simfil-language.md`) for structural queries—filters on attributes, relations, or numeric comparisons. Reach for the mapget extensions when you need geometric predicates or convenience functions:
-
-- Spatial filtering in erdblick’s command palette (screen-based culling, bounding boxes).
-- Feature search scripts that mix relation checks (“roads connected to this junction”) with geometry checks (“…and pass through this bounding box”).
-- Server-side diagnostics that highlight invalid features by checking whether geometries intersect or fall outside required coverages.
-
-Because all of these helpers run inside simfil, they work the same way in the viewer UI, in CLI tooling, and in automated tests.

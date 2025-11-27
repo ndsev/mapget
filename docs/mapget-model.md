@@ -11,7 +11,7 @@ The atomic unit of data in mapget is the feature. Conceptually, a feature is clo
 
 The `properties.layers` tree in a feature holds these layered attributes and their validity arrays, while top-level entries under `properties` are regular attributes without layering.
 
-To make this as fast as possible, mapget uses the simfil binary format with a small VTLV message wrapper. This is explained in the following section.
+To make this as fast as possible, mapget uses the simfil binary format with a small VTLV (Version-Type-Length-Value) message wrapper. This is explained in the following section.
 
 ## Datasource metadata
 
@@ -19,6 +19,7 @@ Tiles do not exist in isolation: each datasource publishes metadata that tells c
 
 ```mermaid
 classDiagram
+  direction LR
   class DataSourceInfo {
     +string nodeId
     +string mapId
@@ -70,6 +71,18 @@ classDiagram
 
 When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` and uses it to validate feature IDs and field layouts. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
 
+### Add‑on datasources
+
+Add‑on datasources are registered with `isAddOn` and must share the same `mapId` (and layer IDs) as the base datasource they extend. The service registers them without their own worker threads and evaluates them only while serving feature tiles from the base datasource:
+
+- Clients request tiles for the base datasource map ID. When a base feature tile is loaded, the service also fetches the matching tile (same map, layer, and tile ID) from every add‑on datasource.
+- The base tile is re-encoded into a combined string pool so that strings introduced by the add‑on tile can be referenced.
+- Features from the add‑on tile are cloned into the base tile: attributes, attribute layers, geometries, and relations are merged into matching base features; if no match exists, a new feature is created in the base tile.
+- If an add‑on feature uses secondary IDs, the service issues a `locate` call against the base datasource to resolve them to primary IDs before merging.
+- Only feature layers participate in this overlay path; add‑ons cannot introduce standalone maps or layers that are not already present in the base datasource metadata.
+
+Clients see both base and add‑on entries in the `/sources` response (add‑ons are marked `isAddOn`), but the base datasource remains the entry point for tile requests. This mechanism is used by Python LiveSource overlays that attach Road and Lane attribute layers to an existing NDS.Live or NDS.Classic base map.
+
 ## Feature IDs
 
 Every feature in mapget is uniquely identified by a composite ID. Logically, it is made up of:
@@ -83,19 +96,20 @@ In JSON, the full ID is exposed as a string:
 { "id": "Road.1234.7" }
 ```
 
-The exact composition of the ID parts is defined per feature type in the metadata (`FeatureTypeInfo`). Mapget supports multiple ID compositions per type: the primary composition is used in stored features, while secondary compositions can be used for references or for resolving external identifiers via the `/locate` endpoint. For example, a `LaneBoundary` type might declare the following compositions:
+The exact composition of the ID parts is defined per feature type in the metadata (`FeatureTypeInfo`). Mapget supports multiple ID compositions per type: the primary composition is used in stored features, while secondary compositions can be used for references or for resolving external identifiers via the `/locate` endpoint. For example, a `Road` type might declare the following compositions:
 
 ```yaml
 uniqueIdCompositions:
   -  # primary, used for stored features
-    - { partId: tileId, datatype: U64 }
-    - { partId: featureIndex, datatype: U32 }
-  -  # secondary, used for references and locate requests
-    - { partId: roadId, datatype: U32 }
-    - { partId: offset, datatype: U16 }
+    - { partId: tileId, datatype: I64 }
+    - { partId: roadId, datatype: I64 }
+  -  # secondary, used for referencing the road via an intersection
+    - { partId: tileId, datatype: I64 }
+    - { partId: intersectionId, datatype: I64 }
+    - { partId: connectedRoadIndex, datatype: I64 }
 ```
 
-A datasource writes features using the primary `LaneBoundary.<tileId>.<featureIndex>` IDs, while an external system could send a locate request for `LaneBoundary.1234.5` (`roadId=1234`, `offset=5`) and receive the primary ID needed to fetch the feature.
+A datasource writes features using the primary `Road.<tileId>.<roadIs>` IDs, while an external system could send a locate request for `Road.1234.5.2` (`tileId=1234`, `intersectionId=5`, `connectedRoadId=2`) and receive the primary ID needed to fetch the feature.
 
 ## Geometry and validity
 
@@ -105,7 +119,7 @@ Mapget supports a range of geometry types, including:
 - Lines and polylines.
 - Polygons and derived meshes.
 
-All geometries may carry three‑dimensional coordinates. Internally, the model represents them as a geometry collection so that a feature can combine several geometry primitives if necessary.
+All geometries may carry three‑dimensional coordinates. Internally, the model represents them as a geometry collection so that a feature can combine several geometry primitives if necessary. Each geometry may also have a `name`, which can be referenced by attribute validity information.
 
 Validity information describes where and how an attribute or relation applies along a feature. A validity entry may include:
 
@@ -151,7 +165,7 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
 
 - **Direction** (`POSITIVE`, `NEGATIVE`, `BOTH`, `NONE`) describes whether the attribute applies relative to the digitisation direction of the referenced geometry.
 
-Attributes, relations and even source data references can attach their own `MultiValidity` lists, so a datasource can mix and match: an attribute may reference a geometric sub‑range via `OffsetRangeValidity`, while the relation that connects two features uses a separate `SimpleGeometry` to express a polygon of influence.
+Attributes and Relations can attach their own `MultiValidity` lists, so a datasource can mix and match: an attribute may reference a geometric sub‑range via `OffsetRangeValidity`, while the relation that connects two features uses a separate `SimpleGeometry` to express a polygon of influence.
 
 ## Source data references and relations
 
@@ -314,7 +328,7 @@ From a simfil perspective, each of the model classes shown above is either a dir
 
 ## Binary tile streaming
 
-To minimise overhead for large responses, mapget uses a compact binary format for tile streaming. The format is a sequence of messages with a simple header:
+To minimise overhead for large responses, mapget uses a compact binary format for tile streaming. Note, that this format is about 5-10x times larger than raw NDS tiles, but more suitable for untyped feature-centric filtering, visualization, styling and inspection. The format is a sequence of messages with a simple header:
 
 - A fixed‑size version field that encodes the tile stream protocol version.
 - A message type byte.

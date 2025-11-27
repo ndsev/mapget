@@ -1,6 +1,6 @@
 # Mapget Configuration
 
-Mapget uses a YAML configuration file to describe which datasources are available and, optionally, to persist HTTP‑related settings for tools and user interfaces. This document explains the structure of that file, the supported datasource types and the most important environment variables.
+Mapget uses a YAML configuration file to describe which datasources are available and, optionally, to persist HTTP‑related settings for data sources. This document explains the structure of that file, the supported datasource types and the most important environment variables.
 
 ## Configuration files and `--config`
 
@@ -14,8 +14,8 @@ the server remembers that path, subscribes to the file and watches it for change
 
 Two top‑level keys are relevant for mapget itself:
 
-- `mapget` (optional) contains command‑line options persisted by the CLI. It is typically created and updated by the `mapget` executable and rarely needs manual editing.
-- `sources` (required) lists the datasources that should be attached to the service. This section is described in detail below.
+- `mapget` (optional) - contains command‑line options.
+- `sources` (required) - lists the datasources that should be attached to the service. This section is described in detail below.
 
 For integration with configuration UIs there is an additional top‑level key:
 
@@ -38,6 +38,8 @@ Additional datasource types can be registered from C++ code using `DataSourceCon
 
 ### Restricting access with `auth-header`
 
+<!-- --8<-- [start:restrict-access] -->
+
 For all datasources you can restrict visibility by adding an `auth-header` field. It must be a mapping from header names to regular expressions. A datasource will only serve data if at least one of the required headers in the incoming request matches the configured regular expression.
 
 Example:
@@ -50,11 +52,16 @@ sources:
       X-User-Role: privileged
 ```
 
+<!-- --8<-- [end:restrict-access] -->
+
 With this configuration the datasource is only visible to clients that send an `X-User-Role` header whose value matches the `privileged` pattern.
 
 ## Built-in datasource types
 
+
 ### `DataSourceHost`
+
+<!-- --8<-- [start:dshost] -->
 
 `DataSourceHost` connects the service to an external HTTP datasource server.
 
@@ -75,7 +82,11 @@ sources:
     url: localhost:9000
 ```
 
+<!-- --8<-- [end:dshost] -->
+
 ### `DataSourceProcess`
+
+<!-- --8<-- [start:dsprocess] -->
 
 `DataSourceProcess` starts a datasource server process locally, monitors its lifetime and connects to it over HTTP. This is convenient for datasources implemented in other languages or built as separate executables.
 
@@ -98,7 +109,11 @@ sources:
 
 The process is expected to log a line indicating the port it is listening on, which mapget parses to connect the HTTP client.
 
+<!-- --8<-- [end:dsprocess] -->
+
 ### `GridDataSource`
+
+<!-- --8<-- [start:grid] -->
 
 `GridDataSource` is a procedural generator for synthetic map data. It is useful for load testing, demos and automated tests where no real map data is available. Configuration is fully contained in the YAML entry and follows a flexible schema.
 
@@ -147,7 +162,11 @@ sources:
 
 The generator will produce deterministic but varied features for any requested tile ID. The full set of fields is defined in the `gridsource` library and can be explored by looking at example configurations or the header file.
 
+<!-- --8<-- [end:grid] -->
+
 ### `GeoJsonFolder`
+
+<!-- --8<-- [start:geojson] -->
 
 `GeoJsonFolder` serves tiles from a directory containing GeoJSON files. Each file represents one tile and must be named with the tile’s numeric ID in the mapget tiling scheme, for example `123456.geojson`.
 
@@ -171,6 +190,8 @@ sources:
 
 The datasource scans the directory, infers coverage from the file names and converts each GeoJSON feature into mapget’s internal feature model when the corresponding tile is requested.
 
+<!-- --8<-- [end:geojson] -->
+
 ## HTTP settings for tools and UIs
 
 The optional `http-settings` top‑level key is reserved for HTTP‑related configuration used by tools and user interfaces. It is typically a list of objects that may contain fields such as `scope`, `api-key` or `password`.
@@ -178,6 +199,8 @@ The optional `http-settings` top‑level key is reserved for HTTP‑related conf
 Mapget itself treats this section as opaque data: it is read and written via the `/config` endpoint but not interpreted when serving tiles. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
 
 ## Environment variables
+
+<!-- --8<-- [start:env] -->
 
 Several environment variables control logging behaviour independently of the YAML configuration:
 
@@ -188,3 +211,32 @@ Several environment variables control logging behaviour independently of the YAM
 | `MAPGET_LOG_FILE_MAXSIZE` | Max size for the logfile in bytes. | string with unsigned integer                        |
 
 These settings apply to both the Python entry point (`python -m mapget`) and the native executable built from the CMake project.
+
+<!-- --8<-- [end:env] -->
+
+## Command-line options in YAML
+
+<!-- --8<-- [start:yamlconf] -->
+
+All of `mapget serve`’s command-line switches can be persisted in the same YAML file under a `mapget` key. Use the long option names without leading dashes; the server applies them on startup and then watches the rest of the file (`sources`, `http-settings`) for live changes.
+
+```yaml
+mapget:
+  serve:
+    port: 9000                  # --port
+    cache-type: persistent      # --cache-type [memory|persistent|none]
+    cache-dir: /var/lib/mapget/cache.db   # --cache-dir (used with persistent cache)
+    cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
+    clear-cache: false          # --clear-cache
+    allow-post-config: true     # --allow-post-config (enables POST /config)
+    no-get-config: false        # --no-get-config (set to true to disable GET /config)
+    memory-trim-binary-interval: 100  # --memory-trim-binary-interval
+    memory-trim-json-interval: 0      # --memory-trim-json-interval
+
+http-settings: ...
+sources: ...
+```
+
+Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled).
+
+<!-- --8<-- [end:yamlconf] -->

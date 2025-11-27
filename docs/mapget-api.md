@@ -1,4 +1,4 @@
-# REST API Guide
+# REST/GeoJSON API Guide
 
 Mapget exposes a small HTTP API that lets clients discover datasources, stream tiles, abort long‑running requests, locate features by ID and inspect or update the running configuration. This guide describes the endpoints and their request and response formats.
 
@@ -89,6 +89,8 @@ Datasources are free to implement more advanced resolution schemes (for example 
 
 The `/config` endpoint family exposes the YAML configuration used by `mapget` for datasource wiring and HTTP settings. It is optional and can be enabled or disabled from the command line.
 
+<!-- --8<-- [start:config-endpoints] -->
+
 ### `GET /config`
 
 - **Method:** `GET`
@@ -111,3 +113,4 @@ This call is disabled if the server is started with `--no-get-config`. When enab
 
 This call is only accepted if the server is started with `--allow-post-config`. When a valid configuration is posted, mapget rewrites the underlying YAML file, preserving real secret values where masked tokens were supplied, and then reloads the datasource configuration. Clients should be prepared for temporary 5xx errors if reloading fails.
 
+<!-- --8<-- [end:config-endpoints] -->
