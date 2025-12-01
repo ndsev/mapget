@@ -34,7 +34,8 @@ target_link_libraries(mapget-service
     yaml-cpp::yaml-cpp
     SQLite::SQLite3
   PRIVATE
-    picosha2)
+    picosha2
+    nlohmann_json_schema_validator)
 
 if (MSVC)
   target_compile_definitions(mapget-service

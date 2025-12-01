@@ -4,6 +4,10 @@
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <chrono>
+#include <algorithm>
+#include <nlohmann/json-schema.hpp>
+#include <fmt/format.h>
 
 #include "picosha2.h"
 #include "config.h"
@@ -11,6 +15,28 @@
 
 namespace mapget
 {
+namespace {
+
+nlohmann::json ttlSchema()
+{
+    return {
+        {"type", "integer"},
+        {"title", "TTL (seconds)"},
+        {"description", "Time-to-live for cached tiles produced by this datasource. 0 = infinite."}
+    };
+}
+
+nlohmann::json authHeaderSchema()
+{
+    return {
+        {"type", "object"},
+        {"title", "Authorization headers"},
+        {"description", "Map of header names to regular expressions. At least one must match for access."},
+        {"additionalProperties", {{"type", "string"}}}
+    };
+}
+
+} // namespace
 
 DataSourceConfigService& DataSourceConfigService::get()
 {
@@ -101,6 +127,18 @@ void DataSourceConfigService::loadConfig()
         YAML::Node config = YAML::LoadFile(configFilePath_);
         {
             std::lock_guard memberAccessLock(memberAccessMutex_);
+
+            if (validator_) {
+                try {
+                    validate(config);
+                }
+                catch (const std::exception& e) {
+                    error = fmt::format("Config validation failed: {}", e.what());
+                    log().error(*error);
+                    return;
+                }
+            }
+
             currentConfig_.clear();
             if (auto sourcesNode = config["sources"]) {
                 for (auto const& node : sourcesNode)
@@ -138,7 +176,15 @@ DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descri
         auto it = constructors_.find(type);
         if (it != constructors_.end()) {
             try {
-                if (auto result = it->second(descriptor)) {
+                if (auto result = it->second.constructor_(descriptor)) {
+                    if (auto ttlNode = descriptor["ttl"]) {
+                        auto ttlSeconds = ttlNode.as<int64_t>();
+                        if (ttlSeconds < 0) {
+                            throw std::runtime_error("`ttl` must be non-negative.");
+                        }
+                        result->setTtl(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::seconds(ttlSeconds)));
+                    }
                     // Iterate over YAML key-value pairs.
                     for (auto authOption : descriptor["auth-header"]) {
                         auto key = authOption.first.as<std::string>();
@@ -164,15 +210,246 @@ DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descri
 
 void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
-    std::function<DataSource::Ptr(YAML::Node const&)> constructor)
+    std::function<DataSource::Ptr(YAML::Node const&)> constructor,
+    nlohmann::json schema)
 {
     if (!constructor) {
         log().warn("Refusing to register NULL constructor for datasource type {}", typeName);
         return;
     }
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    constructors_[typeName] = std::move(constructor);
+    constructors_[typeName] = {std::move(constructor), std::move(schema)};
+    schema_.reset();
+    validator_.reset();
     log().info("Registered data source type {}.", typeName);
+}
+
+nlohmann::json yamlToJson(
+    const YAML::Node& yamlNode,
+    std::unordered_map<std::string, std::string>* maskedSecretMap,
+    bool maskSecret)
+{
+    if (maskSecret) {
+        if (!maskedSecretMap)
+            raise("maskedSecretMap must be provided when maskSecret=true");
+        auto value = yamlNode.as<std::string>();
+        auto token = fmt::format("secret-{}", maskedSecretMap->size());
+        maskedSecretMap->emplace(token, value);
+        return token;
+    }
+
+    if (yamlNode.IsScalar()) {
+        try { return yamlNode.as<bool>(); } catch (...) {}
+        try { return yamlNode.as<int64_t>(); } catch (...) {}
+        try { return yamlNode.as<double>(); } catch (...) {}
+        return yamlNode.as<std::string>();
+    }
+
+    if (yamlNode.IsSequence()) {
+        nlohmann::json arrayJson = nlohmann::json::array();
+        for (const auto& elem : yamlNode) {
+            arrayJson.push_back(yamlToJson(elem, maskedSecretMap));
+        }
+        return arrayJson;
+    }
+
+    if (yamlNode.IsMap()) {
+        auto objectJson = nlohmann::json::object();
+        for (const auto& item : yamlNode) {
+            auto key = item.first.as<std::string>();
+            const YAML::Node& valueNode = item.second;
+            objectJson[key] = yamlToJson(
+                valueNode,
+                maskedSecretMap,
+                key == "api-key" || key == "password");
+        }
+        return objectJson;
+    }
+
+    log().warn("Could not convert {} to JSON!", YAML::Dump(yamlNode));
+    return {};
+}
+
+YAML::Node jsonToYaml(
+    const nlohmann::json& json,
+    const std::unordered_map<std::string, std::string>& maskedSecretMap)
+{
+    YAML::Node node;
+    if (json.is_object()) {
+        for (auto it = json.begin(); it != json.end(); ++it) {
+            if ((it.key() == "api-key" || it.key() == "password") && it.value().is_string())
+            {
+                auto value = it.value().get<std::string>();
+                auto secretIt = maskedSecretMap.find(value);
+                if (secretIt != maskedSecretMap.end()) {
+                    node[it.key()] = secretIt->second;
+                    continue;
+                }
+            }
+            node[it.key()] = jsonToYaml(it.value(), maskedSecretMap);
+        }
+    }
+    else if (json.is_array()) {
+        for (const auto& item : json) {
+            node.push_back(jsonToYaml(item, maskedSecretMap));
+        }
+    }
+    else if (json.is_string()) {
+        node = json.get<std::string>();
+    }
+    else if (json.is_number_integer()) {
+        node = json.get<int64_t>();
+    }
+    else if (json.is_number_float()) {
+        node = json.get<double>();
+    }
+    else if (json.is_boolean()) {
+        node = json.get<bool>();
+    }
+    else if (json.is_null()) {
+        node = YAML::Node(YAML::NodeType::Null);
+    }
+
+    return node;
+}
+
+nlohmann::json mergeJsonObjects(nlohmann::json base, nlohmann::json const& patch)
+{
+    if (!base.is_object() || !patch.is_object())
+        return patch;
+    for (auto it = patch.begin(); it != patch.end(); ++it) {
+        auto key = it.key();
+        if (base.contains(key) && base[key].is_object() && it->is_object()) {
+            base[key] = mergeJsonObjects(base[key], *it);
+        }
+        else {
+            base[key] = *it;
+        }
+    }
+    return base;
+}
+
+nlohmann::json DataSourceConfigService::schema() const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    if (schema_) {
+        return *schema_;
+    }
+
+    nlohmann::json typeEnums = nlohmann::json::array();
+    nlohmann::json oneOf = nlohmann::json::array();
+
+    for (const auto& [typeName, registration] : constructors_) {
+        typeEnums.push_back(typeName);
+        nlohmann::json schema = registration.schema_.is_object()
+            ? registration.schema_
+            : nlohmann::json::object();
+
+        if (!schema.contains("type"))
+            schema["type"] = "object";
+
+        auto& properties = schema["properties"];
+        if (!properties.is_object())
+            properties = nlohmann::json::object();
+
+        properties["type"] = {
+            {"type", "string"},
+            {"enum", nlohmann::json::array({typeName})}
+        };
+
+        if (!properties.contains("ttl"))
+            properties["ttl"] = ttlSchema();
+        if (!properties.contains("auth-header"))
+            properties["auth-header"] = authHeaderSchema();
+
+        auto& required = schema["required"];
+        if (!required.is_array())
+            required = nlohmann::json::array();
+        if (std::find(required.begin(), required.end(), "type") == required.end())
+            required.push_back("type");
+
+        oneOf.push_back(schema);
+    }
+
+    nlohmann::json typeProperty = {{"type", "string"}};
+    if (!typeEnums.empty()) {
+        typeProperty["enum"] = typeEnums;
+    }
+
+    nlohmann::json sourcesItems = {
+        {"type", "object"},
+        {"properties", {
+            {"type", typeProperty},
+            {"ttl", ttlSchema()},
+            {"auth-header", authHeaderSchema()}
+        }},
+        {"required", nlohmann::json::array({"type"})},
+        {"additionalProperties", true}
+    };
+
+    if (!oneOf.empty()) {
+        sourcesItems["oneOf"] = oneOf;
+    }
+
+    nlohmann::json result = {
+        {"type", "object"},
+        {"properties", {
+            {"sources", nlohmann::json{
+                {"type", "array"},
+                {"title", "Sources"},
+                {"items", sourcesItems}
+            }},
+        }},
+        {"required", nlohmann::json::array({"sources"})},
+        {"additionalProperties", false}
+    };
+
+    schema_ = result;
+    if (schemaPatch_) {
+        schema_ = mergeJsonObjects(*schema_, *schemaPatch_);
+    }
+    validator_ = std::make_unique<nlohmann::json_schema::json_validator>();
+    validator_->set_root_schema(*schema_);
+    return *schema_;
+}
+
+void DataSourceConfigService::setSchemaPatch(nlohmann::json schemaPatch)
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    schemaPatch_ = schemaPatch;
+    schema_.reset();
+    validator_.reset();
+}
+
+std::vector<std::string> DataSourceConfigService::topLevelJsonKeys() const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    std::vector<std::string> keys;
+    schema();
+    if (schema_->contains("properties") && (*schema_)["properties"].is_object()) {
+        keys.clear();
+        for (auto it = (*schema_)["properties"].begin(); it != (*schema_)["properties"].end(); ++it)
+            keys.push_back(it.key());
+    }
+    return keys;
+}
+
+void DataSourceConfigService::validate(nlohmann::json json) const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    if (!validator_)
+        return;
+    validator_->validate(json);
+}
+
+void DataSourceConfigService::validate(YAML::Node yaml) const
+{
+    nlohmann::json filtered = nlohmann::json::object();
+    for (auto const& key : topLevelJsonKeys()) {
+        if (auto n = yaml[key])
+            filtered[key] = yamlToJson(n);
+    }
+    validate(filtered);
 }
 
 void DataSourceConfigService::startConfigFileWatchThread()
@@ -280,6 +557,8 @@ void DataSourceConfigService::reset() {
     constructors_.clear();
     currentConfig_.clear();
     configFilePath_.clear();
+    schema_.reset();
+    validator_.reset();
     end();
 }
 

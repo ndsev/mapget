@@ -8,6 +8,7 @@
 
 #include <mutex>
 #include <utility>
+#include <chrono>
 
 namespace mapget {
 
@@ -16,6 +17,7 @@ namespace mapget {
  */
 struct HttpServiceConfig {
     bool watchConfig = false;
+    std::chrono::milliseconds defaultTtl{0};
     
     /**
      * Memory trim intervals - control when to explicitly trim the allocator

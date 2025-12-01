@@ -83,8 +83,19 @@ TileLayer::Ptr Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInfo con
         shared_from_this());
 
     tileReader.read(*tileBlob);
-    ++cacheHits_;
-    log().debug("Returned tile from cache: {}", tileKey.tileId_.value_);
+    if (result) {
+        auto ttl = result->ttl();
+        if (ttl && ttl->count() > 0) {
+            auto expiresAt = result->timestamp() + *ttl;
+            if (std::chrono::system_clock::now() > expiresAt) {
+                log().debug("Cache entry expired for {}", tileKey.toString());
+                ++cacheMisses_;
+                return nullptr;
+            }
+        }
+        ++cacheHits_;
+        log().debug("Returned tile from cache: {}", tileKey.tileId_.value_);
+    }
     return result;
 }
 

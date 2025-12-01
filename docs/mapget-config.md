@@ -56,8 +56,29 @@ sources:
 
 With this configuration the datasource is only visible to clients that send an `X-User-Role` header whose value matches the `privileged` pattern.
 
-## Built-in datasource types
+### Tile TTL
 
+<!-- --8<-- [start:ttl] -->
+
+The CLI provides a `--ttl` option (seconds, `0 = infinite`) that sets the default cache time-to-live for all datasources.
+
+Individual datasource entries can override this with a `ttl` field in the corresponding YAML node, also expressed in seconds:
+
+```yaml
+sources:
+  - type: GeoJsonFolder
+    folder: /maps/my-geojson-tiles
+    ttl: 60  # Override default TTL, one minute for this datasource.
+mapget:
+  serve:
+    ttl: 86400 # Default TTL: One day (60s/m * 60m/h * 12h/d)
+```
+
+**Note:** The mapget TTL setting is only applied if the datasource itself has not already set a TTL for the tile.
+
+<!-- --8<-- [end:ttl] -->
+
+## Built-in datasource types
 
 ### `DataSourceHost`
 

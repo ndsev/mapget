@@ -9,13 +9,17 @@
 #include <mutex>
 #include <map>
 #include <vector>
+#include <unordered_map>
 #include "datasource.h"
 #include "yaml-cpp/yaml.h"
+#include "nlohmann/json.hpp"
+#include "nlohmann/json-schema.hpp"
 
 namespace mapget
 {
 
-/**
+
+    /**
  * Singleton class that watches a particular YAML config file path.
  * The config YAML must have a top-level `sources:` key, which hosts
  * a list of datasource descriptors. Each descriptor must have a `type:`
@@ -97,10 +101,25 @@ public:
      * Registers a constructor for a given data source type.
      * @param typeName The name of the data source type.
      * @param constructor The constructor function to call for this data source type.
+     * @param schema Config JSON schema for the received YAML node.
      */
     void registerDataSourceType(
         std::string const& typeName,
-        std::function<DataSource::Ptr(YAML::Node const& arguments)> constructor);
+        std::function<DataSource::Ptr(YAML::Node const& arguments)> constructor,
+        nlohmann::json schema = {});
+
+    /** Get (and lazily build) JSON schema that describes registered datasource types. */
+    [[nodiscard]] nlohmann::json schema() const;
+
+    /** TODO: Implement */
+    void validate(nlohmann::json json) const;
+    void validate(YAML::Node yaml) const;
+
+    /** Merge the provided patch into the current schema and refresh validator. */
+    void setSchemaPatch(nlohmann::json schemaPatch);
+
+    /** Top-level JSON keys allowed by current schema (properties keys). */
+    [[nodiscard]] std::vector<std::string> topLevelJsonKeys() const;
 
     /**
      * Call this to stop the config file watching thread.
@@ -144,14 +163,24 @@ private:
     };
     std::unordered_map<uint32_t, SubscriptionCallbacks> subscriptions_;
 
+    struct DataSourceRegistration {
+        std::function<DataSource::Ptr(YAML::Node const&)> constructor_;
+        nlohmann::json schema_;
+    };
+
     // Map of data source type names to their respective constructor functions.
-    std::unordered_map<std::string, std::function<DataSource::Ptr(YAML::Node const&)>> constructors_;
+    std::unordered_map<std::string, DataSourceRegistration> constructors_;
 
     // Current configuration nodes.
     std::vector<YAML::Node> currentConfig_;
 
     // Next available subscription ID.
     uint32_t nextSubscriptionId_ = 0;
+
+    // Optional schema and validator used when loading configs.
+    std::optional<nlohmann::json> schemaPatch_;
+    mutable std::optional<nlohmann::json> schema_;
+    mutable std::unique_ptr<nlohmann::json_schema::json_validator> validator_;
 
     // Atomic flag to control the file watching thread.
     std::atomic<bool> watching_ = false;
@@ -160,7 +189,18 @@ private:
     std::optional<std::thread> watchThread_;
 
     // Mutex to ensure that currentConfig_ and subscriptions_ are safely accessed.
-    std::recursive_mutex memberAccessMutex_;
+    mutable std::recursive_mutex memberAccessMutex_;
 };
+
+/** Convert YAML to JSON, with optional secret masking. */
+nlohmann::json yamlToJson(
+    const YAML::Node& yamlNode,
+    std::unordered_map<std::string, std::string>* maskedSecretMap = nullptr,
+    bool maskSecret = false);
+
+/** Convert JSON to YAML, resolving masked secrets if provided. */
+YAML::Node jsonToYaml(
+    const nlohmann::json& json,
+    const std::unordered_map<std::string, std::string>& maskedSecretMap = {});
 
 }  // namespace mapget

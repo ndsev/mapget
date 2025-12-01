@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <thread>
 #include <list>
+#include <chrono>
 
 #include "simfil/types.h"
 
@@ -115,11 +116,14 @@ struct Service::Controller
 
     std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
     Cache::Ptr cache_;                       // The cache for the service
+    std::optional<std::chrono::milliseconds> defaultTtl_; // Default TTL applied when datasource does not override
     std::list<LayerTilesRequest::Ptr> requests_;       // List of requests currently being processed
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
 
-    explicit Controller(Cache::Ptr cache) : cache_(std::move(cache))
+    explicit Controller(Cache::Ptr cache, std::optional<std::chrono::milliseconds> defaultTtl)
+        : cache_(std::move(cache)),
+          defaultTtl_(std::move(defaultTtl))
     {
         if (!cache_)
             raise("Cache must not be null!");
@@ -158,7 +162,6 @@ struct Service::Controller
                     // Cache lookup.
                     auto cachedResult = cache_->getTileLayer(result->first, i);
                     if (cachedResult) {
-                        // TODO: Consider TTL.
                         log().debug("Serving cached tile: {}", result->first.toString());
                         request->notifyResult(cachedResult);
                         result.reset();
@@ -257,6 +260,16 @@ struct Service::Worker
                 controller_.loadAddOnTiles(std::static_pointer_cast<TileFeatureLayer>(layer), *dataSource_);
             }
 
+            // Apply TTL override (datasource-specific or service default).
+            auto ttlFallback = dataSource_->ttl();
+            auto ttlExplicit = ttlFallback.has_value();
+            if (!ttlFallback) {
+                ttlFallback = controller_.defaultTtl_;
+            }
+            if (ttlFallback && (ttlExplicit || !layer->ttl())) {
+                layer->setTtl(ttlFallback);
+            }
+
             controller_.cache_->putTileLayer(layer);
 
             {
@@ -287,7 +300,11 @@ struct Service::Impl : public Service::Controller
     std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
     std::vector<DataSource::Ptr> dataSourcesFromConfig_;
 
-    explicit Impl(Cache::Ptr cache, bool useDataSourceConfig) : Controller(std::move(cache))
+    explicit Impl(
+        Cache::Ptr cache,
+        bool useDataSourceConfig,
+        std::optional<std::chrono::milliseconds> defaultTtl)
+        : Controller(std::move(cache), std::move(defaultTtl))
     {
         if (!useDataSourceConfig)
             return;
@@ -533,8 +550,8 @@ struct Service::Impl : public Service::Controller
     }
 };
 
-Service::Service(Cache::Ptr cache, bool useDataSourceConfig)
-    : impl_(std::make_unique<Impl>(std::move(cache), useDataSourceConfig))
+Service::Service(Cache::Ptr cache, bool useDataSourceConfig, std::optional<std::chrono::milliseconds> defaultTtl)
+    : impl_(std::make_unique<Impl>(std::move(cache), useDataSourceConfig, std::move(defaultTtl)))
 {
 }
 
