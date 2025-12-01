@@ -111,7 +111,10 @@ public:
     /** Get (and lazily build) JSON schema that describes registered datasource types. */
     [[nodiscard]] nlohmann::json schema() const;
 
-    /** TODO: Implement */
+    /**
+     * Validate the given config object against the config schema. Note: When validating
+     * YAML, only the top-level nodes mentioned in the JSON schema are validated.
+     */
     void validate(nlohmann::json json) const;
     void validate(YAML::Node yaml) const;
 
