@@ -349,7 +349,8 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         ~SchemaPatchGuard() {
             DataSourceConfigService::get().setDataSourceConfigSchemaPatch(nlohmann::json::object());
         }
-    } [[maybe_unused]] schemaPatchGuard;
+    } schemaPatchGuard;
+
     // Emulate the CLI-provided config-schema patch so http-settings participates in the auto schema.
     auto schemaPatch = nlohmann::json::parse(R"(
     {

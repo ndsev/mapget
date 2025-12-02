@@ -210,7 +210,7 @@ The model library provides both the binary tile encoding and the simfil query in
 - `TileLayerStream::Writer` and `TileLayerStream::Reader` handle versioned, type‑tagged messages for string pools and tile layers. Each message starts with a protocol version, a `MessageType` (string pool, feature tile, SourceData tile, end-of-stream), and a payload size.
 - `TileFeatureLayer` derives from `simfil::ModelPool` and exposes methods such as `evaluate(...)` and `complete(...)` to run simfil expressions and obtain completion candidates.
 
-String pools are streamed incrementally. The server keeps a `StringPoolOffsetMap` that tracks, for each datasource node ID, the highest string ID known to a given client. When a tile is written, `TileLayerStream::Writer` compares that offset with the current `StringPool::highest()` value:
+String pools are streamed incrementally. The server keeps a `StringPoolOffsetMap` that tracks, for each ongoing tile request, the highest string ID known to a given client per datasource node id. When a tile is written, `TileLayerStream::Writer` compares that offset with the current `StringPool::highest()` value:
 
 - If the client has never seen this node, the writer serialises the full string pool and prepends a `StringPool` message before the first tile message.
 - If new strings were added since the last request, the writer serialises only the suffix `[oldHighest+1, highest]` and sends this as a `StringPool` update before the tile.

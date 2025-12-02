@@ -2,6 +2,9 @@
 
 Mapget uses a YAML configuration file to describe which datasources are available and, optionally, to persist HTTP‑related settings for data sources. This document explains the structure of that file, the supported datasource types and the most important environment variables.
 
+!!! note "Share configuration files between tools"
+    The same YAML configuration format is used by the standalone `mapget` server, embedded deployments such as the MapViewer, and configuration UIs consuming `/config`. This makes it practical to reuse the same configuration file across local testing setups and containerised deployments.
+
 ## Configuration files and `--config`
 
 All `mapget` subcommands accept a `--config` option that points to a YAML file. When you start the HTTP server with:
