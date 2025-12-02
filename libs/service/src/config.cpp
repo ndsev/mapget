@@ -130,7 +130,7 @@ void DataSourceConfigService::loadConfig()
 
             if (validator_) {
                 try {
-                    validate(config);
+                    validateDataSourceConfig(config);
                 }
                 catch (const std::exception& e) {
                     error = fmt::format("Config validation failed: {}", e.what());
@@ -329,7 +329,7 @@ nlohmann::json mergeJsonObjects(nlohmann::json base, nlohmann::json const& patch
     return base;
 }
 
-nlohmann::json DataSourceConfigService::schema() const
+nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
 {
     std::lock_guard memberAccessLock(memberAccessMutex_);
     if (schema_) {
@@ -413,7 +413,7 @@ nlohmann::json DataSourceConfigService::schema() const
     return *schema_;
 }
 
-void DataSourceConfigService::setSchemaPatch(nlohmann::json schemaPatch)
+void DataSourceConfigService::setDataSourceConfigSchemaPatch(nlohmann::json schemaPatch)
 {
     std::lock_guard memberAccessLock(memberAccessMutex_);
     schemaPatch_ = schemaPatch;
@@ -421,11 +421,12 @@ void DataSourceConfigService::setSchemaPatch(nlohmann::json schemaPatch)
     validator_.reset();
 }
 
-std::vector<std::string> DataSourceConfigService::topLevelJsonKeys() const
+std::vector<std::string> DataSourceConfigService::topLevelDataSourceConfigKeys() const
 {
     std::lock_guard memberAccessLock(memberAccessMutex_);
     std::vector<std::string> keys;
-    schema();
+    // Ensure that schema_ is properly built.
+    auto _ = getDataSourceConfigSchema();
     if (schema_->contains("properties") && (*schema_)["properties"].is_object()) {
         keys.clear();
         for (auto it = (*schema_)["properties"].begin(); it != (*schema_)["properties"].end(); ++it)
@@ -434,22 +435,26 @@ std::vector<std::string> DataSourceConfigService::topLevelJsonKeys() const
     return keys;
 }
 
-void DataSourceConfigService::validate(nlohmann::json json) const
+void DataSourceConfigService::validateDataSourceConfig(nlohmann::json json) const
 {
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    if (!validator_)
-        return;
+    if (!validator_) {
+        // Ensure that data source schema/validator are created.
+        auto _ = getDataSourceConfigSchema();
+        if (!validator_)
+            return;
+    }
     validator_->validate(json);
 }
 
-void DataSourceConfigService::validate(YAML::Node yaml) const
+void DataSourceConfigService::validateDataSourceConfig(YAML::Node yaml) const
 {
     nlohmann::json filtered = nlohmann::json::object();
-    for (auto const& key : topLevelJsonKeys()) {
+    for (auto const& key : topLevelDataSourceConfigKeys()) {
         if (auto n = yaml[key])
             filtered[key] = yamlToJson(n);
     }
-    validate(filtered);
+    validateDataSourceConfig(filtered);
 }
 
 void DataSourceConfigService::startConfigFileWatchThread()

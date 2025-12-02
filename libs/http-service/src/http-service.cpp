@@ -516,13 +516,13 @@ struct HttpService::Impl
         if (!openConfigFile(configFile, res)) {
             return;
         }
-        nlohmann::json jsonSchema = DataSourceConfigService::get().schema();
+        nlohmann::json jsonSchema = DataSourceConfigService::get().getDataSourceConfigSchema();
 
         try {
-            // Load config YAML
+            // Load config YAML, expose the parts which clients may edit.
             YAML::Node configYaml = YAML::Load(configFile);
             nlohmann::json jsonConfig;
-            for (const auto& key : DataSourceConfigService::get().topLevelJsonKeys()) {
+            for (const auto& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
                 if (auto configYamlEntry = configYaml[key])
                     jsonConfig[key] = yamlToJson(configYaml[key]);
             }
@@ -593,7 +593,7 @@ struct HttpService::Impl
 
         // Validate JSON against schema.
         try {
-            DataSourceConfigService::get().validate(jsonConfig);
+            DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
         }
         catch (const std::exception& e) {
             res.status = 500;  // Internal Server Error.
@@ -607,7 +607,7 @@ struct HttpService::Impl
         yamlToJson(yamlConfig, &maskedSecrets);
 
         // Create YAML nodes from JSON nodes.
-        for (auto const& key : DataSourceConfigService::get().topLevelJsonKeys()) {
+        for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
             if (jsonConfig.contains(key))
                 yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
         }

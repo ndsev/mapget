@@ -251,7 +251,7 @@ void loadConfigSchemaPatch(const std::string& schemaPath)
             std::ifstream in(schemaPath);
             nlohmann::json extra;
             in >> extra;
-            DataSourceConfigService::get().setSchemaPatch(extra);
+            DataSourceConfigService::get().setDataSourceConfigSchemaPatch(extra);
         }
     }
     catch (const std::exception& e) {

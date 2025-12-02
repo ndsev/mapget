@@ -109,20 +109,20 @@ public:
         nlohmann::json schema = {});
 
     /** Get (and lazily build) JSON schema that describes registered datasource types. */
-    [[nodiscard]] nlohmann::json schema() const;
+    [[nodiscard]] nlohmann::json getDataSourceConfigSchema() const;
 
     /**
      * Validate the given config object against the config schema. Note: When validating
      * YAML, only the top-level nodes mentioned in the JSON schema are validated.
      */
-    void validate(nlohmann::json json) const;
-    void validate(YAML::Node yaml) const;
+    void validateDataSourceConfig(nlohmann::json json) const;
+    void validateDataSourceConfig(YAML::Node yaml) const;
 
     /** Merge the provided patch into the current schema and refresh validator. */
-    void setSchemaPatch(nlohmann::json schemaPatch);
+    void setDataSourceConfigSchemaPatch(nlohmann::json schemaPatch);
 
     /** Top-level JSON keys allowed by current schema (properties keys). */
-    [[nodiscard]] std::vector<std::string> topLevelJsonKeys() const;
+    [[nodiscard]] std::vector<std::string> topLevelDataSourceConfigKeys() const;
 
     /**
      * Call this to stop the config file watching thread.
