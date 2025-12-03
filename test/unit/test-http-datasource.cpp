@@ -421,7 +421,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
         // Ensure that the password is masked as SHA256.
         REQUIRE(res->body.find("hunter2") == std::string::npos);
-        REQUIRE(res->body.find("MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
+        REQUIRE(res->body.find("MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
     }
 
     SECTION("Post Configuration - Not Enabled") {
@@ -459,7 +459,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Post Configuration - Valid JSON Config") {
         std::string newConfig = R"({
             "sources": [{"type": "TestDataSource"}],
-            "http-settings": [{"scope": "https://example.com", "password": "MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
+            "http-settings": [{"scope": "https://example.com", "password": "MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
         })";
         log().set_level(spdlog::level::trace);
         auto res = cli.Post("/config", newConfig, "application/json");

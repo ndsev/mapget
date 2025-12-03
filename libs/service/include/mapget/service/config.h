@@ -198,8 +198,9 @@ private:
 /** Convert YAML to JSON, with optional secret masking. */
 nlohmann::json yamlToJson(
     const YAML::Node& yamlNode,
+    bool maskSecrets,
     std::unordered_map<std::string, std::string>* maskedSecretMap = nullptr,
-    bool maskSecret = false);
+    bool maskCurrentNode = false);
 
 /** Convert JSON to YAML, resolving masked secrets if provided. */
 YAML::Node jsonToYaml(

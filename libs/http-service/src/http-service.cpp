@@ -14,7 +14,6 @@
 #include "nlohmann/json-schema.hpp"
 #include "nlohmann/json.hpp"
 #include "yaml-cpp/yaml.h"
-#include "picosha2.h"
 #include <zlib.h>
 
 #ifdef __linux__
@@ -81,16 +80,6 @@ public:
 private:
     z_stream strm_{};
 };
-
-/**
- * Hash a string using the SHA256 implementation.
- */
-std::string stringToHash(const std::string& input)
-{
-    std::string result;
-    picosha2::hash256_hex_string(input, result);
-    return result;
-}
 
 /**
  * Recursively convert a YAML node to a JSON object,
@@ -522,9 +511,10 @@ struct HttpService::Impl
             // Load config YAML, expose the parts which clients may edit.
             YAML::Node configYaml = YAML::Load(configFile);
             nlohmann::json jsonConfig;
+            std::unordered_map<std::string, std::string> maskedSecretMap;
             for (const auto& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
                 if (auto configYamlEntry = configYaml[key])
-                    jsonConfig[key] = yamlToJson(configYaml[key]);
+                    jsonConfig[key] = yamlToJson(configYaml[key], true, &maskedSecretMap);
             }
 
             nlohmann::json combinedJson;
@@ -604,7 +594,7 @@ struct HttpService::Impl
         // Load the YAML, parse the secrets.
         auto yamlConfig = YAML::Load(configFile);
         std::unordered_map<std::string, std::string> maskedSecrets;
-        yamlToJson(yamlConfig, &maskedSecrets);
+        yamlToJson(yamlConfig, true, &maskedSecrets);
 
         // Create YAML nodes from JSON nodes.
         for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {

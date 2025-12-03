@@ -1,4 +1,5 @@
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -226,14 +227,17 @@ void DataSourceConfigService::registerDataSourceType(
 
 nlohmann::json yamlToJson(
     const YAML::Node& yamlNode,
+    bool maskSecrets,
     std::unordered_map<std::string, std::string>* maskedSecretMap,
-    bool maskSecret)
+    bool maskCurrentNode)
 {
-    if (maskSecret) {
+    if (maskSecrets && maskCurrentNode) {
         if (!maskedSecretMap)
-            raise("maskedSecretMap must be provided when maskSecret=true");
+            raise("maskedSecretMap must be provided when maskSecrets=true");
         auto value = yamlNode.as<std::string>();
-        auto token = fmt::format("secret-{}", maskedSecretMap->size());
+        std::string valueHash;
+        picosha2::hash256_hex_string(value, valueHash);
+        auto token = fmt::format("MASKED:{}:{}", maskedSecretMap->size(), valueHash);
         maskedSecretMap->emplace(token, value);
         return token;
     }
@@ -248,7 +252,7 @@ nlohmann::json yamlToJson(
     if (yamlNode.IsSequence()) {
         nlohmann::json arrayJson = nlohmann::json::array();
         for (const auto& elem : yamlNode) {
-            arrayJson.push_back(yamlToJson(elem, maskedSecretMap));
+            arrayJson.push_back(yamlToJson(elem, maskSecrets, maskedSecretMap));
         }
         return arrayJson;
     }
@@ -257,11 +261,20 @@ nlohmann::json yamlToJson(
         auto objectJson = nlohmann::json::object();
         for (const auto& item : yamlNode) {
             auto key = item.first.as<std::string>();
+            std::ranges::transform(
+                key,
+                key.begin(),
+                [](auto const& c) { return std::tolower(c); });
+
             const YAML::Node& valueNode = item.second;
             objectJson[key] = yamlToJson(
                 valueNode,
+                maskSecrets,
                 maskedSecretMap,
-                key == "api-key" || key == "password");
+                // mask secrets if key matches any of these (case-insensitive)
+                key == "api-key" ||
+                key.find("password") != std::string::npos ||
+                key.find("secret") != std::string::npos);
         }
         return objectJson;
     }
@@ -444,7 +457,7 @@ void DataSourceConfigService::validateDataSourceConfig(nlohmann::json json) cons
         if (!validator_)
             return;
     }
-    validator_->validate(json);
+    auto _ = validator_->validate(json);
 }
 
 void DataSourceConfigService::validateDataSourceConfig(YAML::Node yaml) const
@@ -452,7 +465,7 @@ void DataSourceConfigService::validateDataSourceConfig(YAML::Node yaml) const
     nlohmann::json filtered = nlohmann::json::object();
     for (auto const& key : topLevelDataSourceConfigKeys()) {
         if (auto n = yaml[key])
-            filtered[key] = yamlToJson(n);
+            filtered[key] = yamlToJson(n, false);
     }
     validateDataSourceConfig(filtered);
 }

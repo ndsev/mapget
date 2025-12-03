@@ -77,7 +77,7 @@ mapget:
     ttl: 86400 # Default TTL: One day (60s/m * 60m/h * 12h/d)
 ```
 
-**Note:** The mapget TTL setting is only applied if the datasource itself has not already set a TTL for the tile.
+**Note:** Any TTL default value is only applied if the datasource itself has not already set a TTL for the tile.
 
 <!-- --8<-- [end:ttl] -->
 
