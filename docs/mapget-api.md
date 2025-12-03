@@ -57,6 +57,80 @@ JSON Lines is better suited to streaming large responses than a single JSON arra
 
 Internally the service marks the matching tile requests as aborted and stops scheduling further work for them.
 
+### Curl Call Example
+
+For example, the following curl call could be used to stream GeoJSON feature objects
+from the `MyMap` data source defined previously:
+
+```bash
+# Standard request (uncompressed response)
+curl -X POST \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/jsonl" \
+    -H "Connection: close" \
+    -d '{
+    "requests": [
+       {
+           "mapId": "Tropico",
+           "layerId": "WayLayer",
+           "tileIds": [1, 2, 3]
+       }
+    ]
+}' "http://localhost:8080/tiles"
+
+# Request with gzip compression (reduces bandwidth by ~70-95%)
+curl -X POST \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/jsonl" \
+    -H "Accept-Encoding: gzip" \
+    -H "Connection: close" \
+    --compressed \
+    -d '{
+    "requests": [
+       {
+           "mapId": "Tropico",
+           "layerId": "WayLayer",
+           "tileIds": [1, 2, 3]
+       }
+    ]
+}' "http://localhost:8080/tiles"
+```
+
+Note: The `--compressed` flag tells curl to automatically decompress the gzip response for display.
+
+### C++ Call Example
+
+If we use `"Accept: application/binary"` instead, we get a binary stream of
+tile data which we can also parse in C++, Python or JS. Here is an example in C++, using
+the `mapget::HttpClient` class:
+
+```C++
+#include "mapget/http-service/http-client.h"
+#include <iostream>
+
+using namespace mapget;
+
+void main(int argc, char const *argv[])
+{
+     // Create client with gzip compression enabled (default)
+     HttpClient client("localhost", service.port());
+     // Or disable compression: HttpClient client("localhost", service.port(), {}, false);
+
+     auto receivedTileCount = 0;
+     client.request(std::make_shared<LayerTilesRequest>(
+         "Tropico",
+         "WayLayer",
+         std::vector<TileId>{{1234, 5678, 9112, 1234}},
+         [&](auto&& tile) { receivedTileCount++; }
+     ))->wait();
+
+     std::cout << receivedTileCount << std::endl;
+     service.stop();
+}
+```
+
+Keep in mind, that you can also run a `mapget` service without any RPCs in your application. Check out [`examples/cpp/local-datasource`](examples/cpp/local-datasource/main.cpp) on how to do that.
+
 ## `/status` – service and cache statistics
 
 `GET /status` returns a simple HTML page with diagnostic information.
