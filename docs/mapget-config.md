@@ -63,7 +63,9 @@ With this configuration the datasource is only visible to clients that send an `
 
 <!-- --8<-- [start:ttl] -->
 
-The CLI provides a `--ttl` option (seconds, `0 = infinite`) that sets the default cache time-to-live for all datasources.
+Mapget provides a time-to-live (TTL) option, which can be set via the command line which can be set via the YAML config
+or as a `--ttl` command line option. Time-to-live controls the time period for which the cached tile is valid.
+Note: the value is always indicated in seconds, and 0 means `infinite` (no cache expiry).
 
 Individual datasource entries can override this with a `ttl` field in the corresponding YAML node, also expressed in seconds:
 
@@ -77,7 +79,7 @@ mapget:
     ttl: 86400 # Default TTL: One day (60s/m * 60m/h * 12h/d)
 ```
 
-**Note:** Any TTL default value is only applied if the datasource itself has not already set a TTL for the tile.
+**Note:** Any TTL default value is only applied if the datasource itself has not already set a TTL directly for the tile.
 
 <!-- --8<-- [end:ttl] -->
 
