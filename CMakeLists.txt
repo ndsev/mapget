@@ -7,7 +7,7 @@ project(mapget LANGUAGES CXX C)
 # Allow version to be set from command line for CI/CD
 # For local development, use the default version
 if(NOT DEFINED MAPGET_VERSION)
-  set(MAPGET_VERSION 2025.4.0)
+  set(MAPGET_VERSION 2025.5.0)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)

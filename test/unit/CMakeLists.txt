@@ -7,6 +7,7 @@ add_executable(test.mapget
   test-info.cpp
   test-http-datasource.cpp
   test-cache.cpp
+  test-service-ttl.cpp
   test-config.cpp
   utility.cpp
   utility.h)
@@ -32,4 +33,3 @@ include(Catch)
 include(CTest)
 catch_discover_tests(test.mapget)
 catch_discover_tests(test.mapget.filelog)
-
