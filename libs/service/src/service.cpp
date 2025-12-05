@@ -112,7 +112,11 @@ bool LayerTilesRequest::isDone()
 
 struct Service::Controller
 {
-    using Job = std::pair<MapTileKey, LayerTilesRequest::Ptr>;
+    struct Job {
+        MapTileKey tileKey;
+        LayerTilesRequest::Ptr request;
+        std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
+    };
 
     std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
     Cache::Ptr cache_;                       // The cache for the service
@@ -153,39 +157,40 @@ struct Service::Controller
 
                     // Create result wrapper object.
                     auto tileId = request->tiles_[request->nextTileIndex_++];
-                    result = {MapTileKey(), request};
-                    result->first.layer_ = layerIt->second->type_;
-                    result->first.mapId_ = request->mapId_;
-                    result->first.layerId_ = request->layerId_;
-                    result->first.tileId_ = tileId;
+                    result = Job{MapTileKey(), request, std::nullopt};
+                    result->tileKey.layer_ = layerIt->second->type_;
+                    result->tileKey.mapId_ = request->mapId_;
+                    result->tileKey.layerId_ = request->layerId_;
+                    result->tileKey.tileId_ = tileId;
 
                     // Cache lookup.
-                    auto cachedResult = cache_->getTileLayer(result->first, i);
-                    if (cachedResult) {
-                        log().debug("Serving cached tile: {}", result->first.toString());
-                        request->notifyResult(cachedResult);
+                    auto cachedResult = cache_->getTileLayer(result->tileKey, i);
+                    if (cachedResult.tile) {
+                        log().debug("Serving cached tile: {}", result->tileKey.toString());
+                        request->notifyResult(cachedResult.tile);
                         result.reset();
                         cachedTilesServed = true;
                         continue;
                     }
+                    result->cacheExpiredAt = cachedResult.expiredAt;
 
-                    if (jobsInProgress_.find(result->first) != jobsInProgress_.end()) {
+                    if (jobsInProgress_.find(result->tileKey) != jobsInProgress_.end()) {
                         // Don't work on something that is already being worked on.
                         // Wait for the work to finish, then send the (hopefully cached) result.
                         log().debug("Delaying tile with job in progress: {}",
-                                    result->first.toString());
+                                    result->tileKey.toString());
                         --request->nextTileIndex_;
                         result.reset();
                         continue;
                     }
 
                     // Enter into the jobs-in-progress set.
-                    jobsInProgress_.insert(result->first);
+                    jobsInProgress_.insert(result->tileKey);
 
                     // Move this request to the end of the list, so others gain priority.
                     requests_.splice(requests_.end(), requests_, reqIt);
 
-                    log().debug("Working on tile: {}", result->first.toString());
+                    log().debug("Working on tile: {}", result->tileKey.toString());
                     break;
                 }
             }
@@ -247,11 +252,15 @@ struct Service::Worker
         if (shouldTerminate_)
             return false;
 
-        auto& [mapTileKey, request] = *nextJob;
+        auto& job = *nextJob;
 
         try
         {
-            auto layer = dataSource_->get(mapTileKey, controller_.cache_, info_);
+            if (job.cacheExpiredAt) {
+                dataSource_->onCacheExpired(job.tileKey, *job.cacheExpiredAt);
+            }
+
+            auto layer = dataSource_->get(job.tileKey, controller_.cache_, info_);
             if (!layer)
                 raise("DataSource::get() returned null.");
 
@@ -274,8 +283,8 @@ struct Service::Worker
 
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
-                controller_.jobsInProgress_.erase(mapTileKey);
-                request->notifyResult(layer);
+                controller_.jobsInProgress_.erase(job.tileKey);
+                job.request->notifyResult(layer);
                 // As we entered a tile into the cache, notify other workers
                 // that this tile can be served.
                 controller_.jobsAvailable_.notify_all();
@@ -283,7 +292,7 @@ struct Service::Worker
         }
         catch (std::exception& e) {
             log().error("Could not load tile {}: {}",
-                mapTileKey.toString(),
+                job.tileKey.toString(),
                 e.what());
         }
 

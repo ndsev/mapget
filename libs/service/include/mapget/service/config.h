@@ -160,11 +160,12 @@ private:
     std::string lastConfigSHA256_;
 
     // Map of subscription IDs to their respective callback functions.
+    // Note: This MUST be an ORDERED map, because the subscription call order is important.
     struct SubscriptionCallbacks {
         std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> success_;
         std::function<void(std::string const& error)> error_;
     };
-    std::unordered_map<uint32_t, SubscriptionCallbacks> subscriptions_;
+    std::map<uint32_t, SubscriptionCallbacks> subscriptions_;
 
     struct DataSourceRegistration {
         std::function<DataSource::Ptr(YAML::Node const&)> constructor_;

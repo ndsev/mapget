@@ -78,6 +78,9 @@ public:
     /** Get the currently configured TTL override (if any). */
     [[nodiscard]] std::optional<std::chrono::milliseconds> ttl() const;
 
+    /** Called when a cached tile was present but expired. Default no-op. */
+    virtual void onCacheExpired(const MapTileKey& /*tileKey*/, std::chrono::system_clock::time_point /*expiredAt*/) {}
+
 protected:
     static StringId cachedStringPoolOffset(std::string const& nodeId, Cache::Ptr const& cache);
 

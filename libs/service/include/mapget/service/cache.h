@@ -2,6 +2,8 @@
 
 #include <string>
 #include <mutex>
+#include <chrono>
+#include <optional>
 
 #include "mapget/model/info.h"
 #include "mapget/model/featurelayer.h"
@@ -21,6 +23,11 @@ class Cache : public TileLayerStream::StringPoolCache, public std::enable_shared
     friend class DataSource;
 
 public:
+    struct LookupResult {
+        TileLayer::Ptr tile;
+        std::optional<std::chrono::system_clock::time_point> expiredAt;
+    };
+
     using Ptr = std::shared_ptr<Cache>;
     // The following methods are already implemented,
     // they forward to the virtual methods on-demand.
@@ -32,7 +39,7 @@ public:
     void putTileLayer(TileLayer::Ptr const& l);
 
     /** Used by DataSource to retrieve a cached TileLayer. */
-    TileLayer::Ptr getTileLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
+    LookupResult getTileLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
 
     /** Override for CachedStringPoolCache::getStringPool() */
     std::shared_ptr<StringPool> getStringPool(std::string_view const&) override;

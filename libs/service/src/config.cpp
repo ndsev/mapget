@@ -261,9 +261,10 @@ nlohmann::json yamlToJson(
         auto objectJson = nlohmann::json::object();
         for (const auto& item : yamlNode) {
             auto key = item.first.as<std::string>();
+            auto lowerKey = key;
             std::ranges::transform(
-                key,
-                key.begin(),
+                lowerKey,
+                lowerKey.begin(),
                 [](auto const& c) { return std::tolower(c); });
 
             const YAML::Node& valueNode = item.second;
@@ -272,9 +273,9 @@ nlohmann::json yamlToJson(
                 maskSecrets,
                 maskedSecretMap,
                 // mask secrets if key matches any of these (case-insensitive)
-                key == "api-key" ||
-                key.find("password") != std::string::npos ||
-                key.find("secret") != std::string::npos);
+                lowerKey == "api-key" ||
+                lowerKey.find("password") != std::string::npos ||
+                lowerKey.find("secret") != std::string::npos);
         }
         return objectJson;
     }
