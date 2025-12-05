@@ -211,12 +211,12 @@ void testCacheImplementation() {
 
     auto getFeatureLayer = [](auto& cache, auto tileId, auto info) {
         auto layer = cache->getTileLayer(tileId, info);
-        REQUIRE(!!layer);
+        REQUIRE(!!layer.tile);
 
-        auto layerInfo = layer->layerInfo();
+        auto layerInfo = layer.tile->layerInfo();
         REQUIRE(!!layerInfo);
         REQUIRE(layerInfo->type_ == mapget::LayerType::Features);
-        return std::static_pointer_cast<TileFeatureLayer>(layer);
+        return std::static_pointer_cast<TileFeatureLayer>(layer.tile);
     };
 
     SECTION("Insert, retrieve, and update feature layer") {
@@ -265,7 +265,7 @@ void testCacheImplementation() {
         // Query the first inserted layer - it should not be retrievable.
         auto missingTile = cache->getTileLayer(tile->id(), info);
         REQUIRE(cache->getStatistics()["cache-misses"] == 1);
-        REQUIRE(!missingTile);
+        REQUIRE(!missingTile.tile);
     }
 
     SECTION("Store another tile at unlimited cache size") {
@@ -364,7 +364,7 @@ void testNullCacheImplementation() {
         auto cache = std::make_shared<NullCache>();
         
         // Verify initial statistics
-        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].template get<int>();
+        auto stringPoolCount = cache->getStatistics()["loaded-string-pools"].get<int>();
         REQUIRE(stringPoolCount == 0);
 
         // Try to store a tile - should succeed but not actually store anything
@@ -372,7 +372,7 @@ void testNullCacheImplementation() {
         
         // Try to retrieve the tile - should always return nullptr
         auto returnedTile = cache->getTileLayer(tile->id(), info);
-        REQUIRE(!returnedTile);
+        REQUIRE(!returnedTile.tile);
         
         // Check cache statistics - should show cache miss
         REQUIRE(cache->getStatistics()["cache-hits"] == 0);
@@ -388,7 +388,7 @@ void testNullCacheImplementation() {
         // Multiple retrieval attempts should all result in cache misses
         for (int i = 0; i < 5; ++i) {
             auto missingTile = cache->getTileLayer(tile->id(), info);
-            REQUIRE(!missingTile);
+            REQUIRE(!missingTile.tile);
         }
         
         // Verify all attempts resulted in cache misses
@@ -450,9 +450,9 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
                         // Read random tiles
                         int tileIndex = j % tiles.size();
                         auto tile = cache->getTileLayer(tiles[tileIndex]->id(), info);
-                        if (tile) {
+                        if (tile.tile) {
                             metrics.successfulReads++;
-                            auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile);
+                            auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile.tile);
                             
                             // Verify the tile data is correct
                             REQUIRE(featureLayer->size() > 0);
@@ -529,7 +529,7 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         
         // Verify the final state - all tiles should have multiple features
         for (size_t i = 0; i < tiles.size(); ++i) {
-            auto tile = cache->getTileLayer(tiles[i]->id(), info);
+            auto [tile, expiredAt] = cache->getTileLayer(tiles[i]->id(), info);
             REQUIRE(tile != nullptr);
             auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile);
             // Each tile should have more than the initial 1 feature
@@ -615,8 +615,8 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
                 auto tempTile = std::make_shared<TileFeatureLayer>(
                     tileId, nodeId, mapId, layerInfo, std::make_shared<StringPool>(nodeId));
                 auto tile = cache->getTileLayer(tempTile->id(), info);
-                REQUIRE(tile != nullptr);
-                auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile);
+                REQUIRE(tile.tile != nullptr);
+                auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile.tile);
                 REQUIRE(featureLayer->size() == 5); // Each tile should have 5 features
             }
         }
@@ -659,10 +659,10 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
                             auto tempTile = std::make_shared<TileFeatureLayer>(
                                 tileId, nodeId, mapId, layerInfo, strings);
                             auto tile = cache->getTileLayer(tempTile->id(), info);
-                            if (tile) {
+                            if (tile.tile) {
                                 metrics.successfulReads++;
                                 // Verify we can cast and access the data
-                                auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile);
+                                auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile.tile);
                                 REQUIRE(featureLayer->size() == 1);
                             }
                         }
