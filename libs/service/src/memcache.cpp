@@ -19,8 +19,10 @@ void MemCache::putTileLayerBlob(const MapTileKey& k, const std::string& v)
 {
     std::unique_lock cacheLock(cacheMutex_);
     auto ks = k.toString();
+    // Remove any existing entry for this key from the FIFO to avoid duplicates.
+    fifo_.erase(std::remove(fifo_.begin(), fifo_.end(), ks), fifo_.end());
     fifo_.push_front(ks);
-    cachedTiles_.emplace(ks, v);
+    cachedTiles_[ks] = v;
     while (fifo_.size() > maxCachedTiles_) {
         auto oldestTileKey = fifo_.back();
         fifo_.pop_back();
