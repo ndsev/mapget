@@ -9,10 +9,17 @@
 #include "mapget/service/sqlitecache.h"
 #include "mapget/service/config.h"
 
+#include "gridsource/gridsource.h"
+#include "geojsonsource/geojsonsource.h"
+
 #include <CLI/CLI.hpp>
 #include <string>
 #include <vector>
 #include <yaml-cpp/yaml.h>
+#include <chrono>
+#include <nlohmann/json.hpp>
+#include <filesystem>
+#include <fstream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -28,20 +35,71 @@ namespace mapget
 namespace
 {
 
-std::filesystem::path getExecutablePath() {
-    char buffer[1024];
-#ifdef _WIN32
-    GetModuleFileNameA(NULL, buffer, sizeof(buffer));
-#elif __APPLE__
-    uint32_t size = sizeof(buffer);
-    _NSGetExecutablePath(buffer, &size);
-#elif __linux__
-    ssize_t count = readlink("/proc/self/exe", buffer, sizeof(buffer));
-    if (count != -1) {
-        buffer[count] = '\0';
-    }
-#endif
-    return std::filesystem::path(buffer).parent_path();
+nlohmann::json dataSourceHostSchema()
+{
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"url", {
+                {"type", "string"},
+                {"title", "URL"},
+                {"description", "Host:port for the remote datasource server."}
+            }}
+        }},
+        {"required", nlohmann::json::array({"url"})},
+        {"additionalProperties", false}
+    };
+}
+
+nlohmann::json dataSourceProcessSchema()
+{
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"cmd", {
+                {"type", "string"},
+                {"title", "Command"},
+                {"description", "Command line to start the datasource process."}
+            }}
+        }},
+        {"required", nlohmann::json::array({"cmd"})},
+        {"additionalProperties", false}
+    };
+}
+
+nlohmann::json gridDataSourceSchema()
+{
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"enabled", {{"type", "boolean"}, {"title", "Enabled"}}},
+            {"mapId", {{"type", "string"}, {"title", "Map ID"}}},
+            {"spatialCoherence", {{"type", "boolean"}}},
+            {"collisionGridSize", {{"type", "number"}}},
+            {"layers", {{"type", "array"}}}
+        }},
+        {"additionalProperties", true}
+    };
+}
+
+nlohmann::json geoJsonFolderSchema()
+{
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"folder", {
+                {"type", "string"},
+                {"title", "Folder"},
+                {"description", "Path to a folder containing GeoJSON tiles."}
+            }},
+            {"withAttrLayers", {
+                {"type", "boolean"},
+                {"title", "With Attribute Layers"}
+            }}
+        }},
+        {"required", nlohmann::json::array({"folder"})},
+        {"additionalProperties", false}
+    };
 }
 
 class ConfigYAML : public CLI::Config
@@ -150,7 +208,8 @@ void registerDefaultDatasourceTypes() {
                 return RemoteDataSource::fromHostPort(url.as<std::string>());
             else
                 throw std::runtime_error("Missing `url` field.");
-        });
+        },
+        dataSourceHostSchema());
     service.registerDataSourceType(
         "DataSourceProcess",
         [](YAML::Node const& config) -> DataSource::Ptr {
@@ -158,7 +217,46 @@ void registerDefaultDatasourceTypes() {
                 return std::make_shared<RemoteDataSourceProcess>(cmd.as<std::string>());
             else
                 throw std::runtime_error("Missing `cmd` field.");
-        });
+        },
+        dataSourceProcessSchema());
+    service.registerDataSourceType(
+        "GridDataSource",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            // Check if enabled flag is present and set to false
+            if (config["enabled"].IsDefined() && !config["enabled"].as<bool>()) {
+                return nullptr;  // Skip this datasource
+            }
+            return std::make_shared<gridsource::GridDataSource>(config);
+        },
+        gridDataSourceSchema());
+    service.registerDataSourceType(
+        "GeoJsonFolder",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            if (auto folder = config["folder"]) {
+                bool withAttributeLayers = false;
+                if (auto withAttributeLayersNode = config["withAttrLayers"])
+                    withAttributeLayers = withAttributeLayersNode.as<bool>();
+                return std::make_shared<geojsonsource::GeoJsonSource>(folder.as<std::string>(), withAttributeLayers);
+            }
+            throw std::runtime_error("Missing `folder` field.");
+        },
+        geoJsonFolderSchema());
+}
+
+void loadConfigSchemaPatch(const std::string& schemaPath)
+{
+    namespace fs = std::filesystem;
+    try {
+        if (fs::exists(schemaPath)) {
+            std::ifstream in(schemaPath);
+            nlohmann::json extra;
+            in >> extra;
+            DataSourceConfigService::get().setDataSourceConfigSchemaPatch(extra);
+        }
+    }
+    catch (const std::exception& e) {
+        log().warn("Failed to initialize schema: {}", e.what());
+    }
 }
 
 bool isPostConfigEndpointEnabled_ = false;
@@ -175,6 +273,7 @@ struct ServeCommand
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
     std::string webapp_;
+    int64_t ttlSeconds_ = 0;
     uint64_t memoryTrimIntervalBinary_ = HttpServiceConfig{}.memoryTrimIntervalBinary;  // Use default from config
     uint64_t memoryTrimIntervalJson_ = HttpServiceConfig{}.memoryTrimIntervalJson;      // Use default from config
     CLI::App& app_;
@@ -215,6 +314,11 @@ struct ServeCommand
             "--clear-cache", clearCache_, "Clear existing persistent cache at startup.")
             ->default_val(false);
         serveCmd->add_option(
+            "--ttl",
+            ttlSeconds_,
+            "Default TTL for cached tiles in seconds (0 = infinite).")
+            ->default_val(ttlSeconds_);
+        serveCmd->add_option(
             "-w,--webapp",
             webapp_,
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
@@ -245,6 +349,9 @@ struct ServeCommand
 
     void serve()
     {
+        if (ttlSeconds_ < 0) {
+            raise("TTL must not be negative.");
+        }
         log().info("Starting server on port {}.", port_);
 
         std::shared_ptr<Cache> cache;
@@ -276,6 +383,8 @@ struct ServeCommand
         // Build HttpServiceConfig
         HttpServiceConfig httpConfig;
         httpConfig.watchConfig = config && *config;
+        httpConfig.defaultTtl = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::seconds(ttlSeconds_));
         httpConfig.memoryTrimIntervalBinary = memoryTrimIntervalBinary_;
         httpConfig.memoryTrimIntervalJson = memoryTrimIntervalJson_;
         
@@ -306,6 +415,7 @@ struct ServeCommand
         if (config && *config)
         {
             registerDefaultDatasourceTypes();
+            loadConfigSchemaPatch(getPathToSchemaPatch());
             DataSourceConfigService::get().loadConfig(config->as<std::string>());
         }
 
@@ -416,7 +526,7 @@ struct FetchCommand
     }
 };
 
-std::string pathToSchema;
+std::string pathToSchema = "";
 int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand, std::function<void(CLI::App&)> additionalCommandLineSetupFun)
 {
     CLI::App app{"A client/server application for map data retrieval."};
@@ -434,8 +544,7 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand, st
     app.add_option(
         "--config-schema",
         pathToSchema,
-        "Optional path to a file with configuration schema for mapget.")
-        ->default_val((getExecutablePath() / "default_config_schema.json").string()); // TODO: Add a test
+        "Optional path to a file with configuration schema amendments for mapget.");
     app.config_formatter(std::make_shared<ConfigYAML>());
 
     if (requireSubcommand)
@@ -485,7 +594,7 @@ void setGetConfigEndpointEnabled(bool enabled)
     isGetConfigEndpointEnabled_ = enabled;
 }
 
-const std::string &getPathToSchema()
+const std::string &getPathToSchemaPatch()
 {
     return pathToSchema;
 }

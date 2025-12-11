@@ -60,14 +60,15 @@ nlohmann::json Cache::getStatistics() const {
     };
 }
 
-TileLayer::Ptr Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
+Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
 {
+    LookupResult result;
     auto tileBlob = getTileLayerBlob(tileKey);
     if (!tileBlob) {
         ++cacheMisses_;
-        return nullptr;
+        return result;
     }
-    TileLayer::Ptr result;
+    TileLayer::Ptr tile;
     TileLayerStream::Reader tileReader(
         [&dataSource, &tileKey](auto&& mapId, auto&& layerId) {
             if (dataSource.mapId_ != mapId) {
@@ -79,12 +80,25 @@ TileLayer::Ptr Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInfo con
             }
             return dataSource.getLayer(std::string(layerId));
         },
-        [&](auto&& parsedLayer){result = parsedLayer;},
+        [&](auto&& parsedLayer){tile = parsedLayer;},
         shared_from_this());
 
     tileReader.read(*tileBlob);
-    ++cacheHits_;
-    log().debug("Returned tile from cache: {}", tileKey.tileId_.value_);
+    if (tile) {
+        auto ttl = tile->ttl();
+        if (ttl && ttl->count() > 0) {
+            auto expiresAt = tile->timestamp() + *ttl;
+            if (std::chrono::system_clock::now() > expiresAt) {
+                log().debug("Cache entry expired for {}", tileKey.toString());
+                ++cacheMisses_;
+                result.expiredAt = expiresAt;
+                return result;
+            }
+        }
+        ++cacheHits_;
+        log().debug("Returned tile from cache: {}", tileKey.tileId_.value_);
+        result.tile = tile;
+    }
     return result;
 }
 

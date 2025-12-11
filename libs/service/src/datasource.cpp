@@ -80,6 +80,16 @@ StringId DataSource::cachedStringPoolOffset(const std::string& nodeId, Cache::Pt
     return cache->cachedStringPoolOffset(nodeId);
 }
 
+void DataSource::setTtl(std::optional<std::chrono::milliseconds> ttl)
+{
+    ttl_ = ttl;
+}
+
+std::optional<std::chrono::milliseconds> DataSource::ttl() const
+{
+    return ttl_;
+}
+
 std::vector<LocateResponse> DataSource::locate(const LocateRequest& req)
 {
     return {};

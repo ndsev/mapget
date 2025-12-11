@@ -23,6 +23,8 @@ target_link_libraries(mapget-http-service
     nlohmann_json_schema_validator
     mapget-service
     mapget-http-datasource
+    gridsource
+    geojsonsource
   PRIVATE
     picosha2
     zlibstatic)
@@ -47,5 +49,3 @@ endif()
 install(TARGETS mapget-http-service)
 install(DIRECTORY include/mapget/http-service
   DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
-
-configure_file(default_config_schema.json ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default_config_schema.json)

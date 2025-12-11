@@ -14,7 +14,6 @@
 #include "nlohmann/json-schema.hpp"
 #include "nlohmann/json.hpp"
 #include "yaml-cpp/yaml.h"
-#include "picosha2.h"
 #include <zlib.h>
 
 #ifdef __linux__
@@ -83,128 +82,10 @@ private:
 };
 
 /**
- * Hash a string using the SHA256 implementation.
- */
-std::string stringToHash(const std::string& input)
-{
-    std::string result;
-    picosha2::hash256_hex_string(input, result);
-    return result;
-}
-
-/**
  * Recursively convert a YAML node to a JSON object,
  * with special handling for sensitive fields.
  * The function returns a nlohmann::json object and updates maskedSecretMap.
  */
-nlohmann::json yamlToJson(
-    const YAML::Node& yamlNode,
-    std::unordered_map<std::string, std::string>* maskedSecretMap = nullptr,
-    const bool mask = false)
-{
-    if (yamlNode.IsScalar()) {
-        if (mask) {
-            auto stringToMask = yamlNode.as<std::string>();
-            auto stringMask = "MASKED:"+stringToHash(stringToMask);
-            if (maskedSecretMap) {
-                maskedSecretMap->insert({stringMask, stringToMask});
-            }
-            return stringMask;
-        }
-
-        try {
-            return yamlNode.as<int>();
-        }
-        catch (const YAML::BadConversion&) {
-            try {
-                return yamlNode.as<double>();
-            }
-            catch (const YAML::BadConversion&) {
-                try {
-                    return yamlNode.as<bool>();
-                }
-                catch (const YAML::BadConversion&) {
-                    return yamlNode.as<std::string>();
-                }
-            }
-        }
-    }
-
-    if (mask) {
-        log().critical("Cannot mask non-scalar value!");
-        return {};
-    }
-
-    if (yamlNode.IsSequence()) {
-        auto arrayJson = nlohmann::json::array();
-        for (const auto& elem : yamlNode) {
-            arrayJson.push_back(yamlToJson(elem, maskedSecretMap));
-        }
-        return arrayJson;
-    }
-
-    if (yamlNode.IsMap()) {
-        auto objectJson = nlohmann::json::object();
-        for (const auto& item : yamlNode) {
-            auto key = item.first.as<std::string>();
-            const YAML::Node& valueNode = item.second;
-            objectJson[key] = yamlToJson(
-                valueNode,
-                maskedSecretMap,
-                key == "api-key" || key == "password");
-        }
-        return objectJson;
-    }
-
-    log().warn("Could not convert {} to JSON!", YAML::Dump(yamlNode));
-    return {};
-}
-
-/**
- * Recursively convert a JSON object to a YAML node,
- * with special handling for sensitive fields.
- */
-YAML::Node jsonToYaml(const nlohmann::json& json, std::unordered_map<std::string, std::string> const& maskedSecretMap)
-{
-    YAML::Node node;
-    if (json.is_object()) {
-        for (auto it = json.begin(); it != json.end(); ++it) {
-            if ((it.key() == "api-key" || it.key() == "password") && it.value().is_string())
-            {
-                // Un-mask sensitive fields.
-                auto value = it.value().get<std::string>();
-                auto secretIt = maskedSecretMap.find(value);
-                if (secretIt != maskedSecretMap.end()) {
-                    node[it.key()] = secretIt->second;
-                    continue;
-                }
-            }
-            node[it.key()] = jsonToYaml(it.value(), maskedSecretMap);
-        }
-    }
-    else if (json.is_array()) {
-        for (const auto& item : json) {
-            node.push_back(jsonToYaml(item, maskedSecretMap));
-        }
-    }
-    else if (json.is_string()) {
-        node = json.get<std::string>();
-    }
-    else if (json.is_number_integer()) {
-        node = json.get<int>();
-    }
-    else if (json.is_number_float()) {
-        node = json.get<double>();
-    }
-    else if (json.is_boolean()) {
-        node = json.get<bool>();
-    }
-    else if (json.is_null()) {
-        node = YAML::Node(YAML::NodeType::Null);
-    }
-
-    return node;
-}
 }  // namespace
 
 struct HttpService::Impl
@@ -582,7 +463,7 @@ struct HttpService::Impl
             "application/json");
     }
 
-    static bool openConfigAndSchemaFile(std::ifstream& configFile, std::ifstream& schemaFile, httplib::Response& res)
+    static bool openConfigFile(std::ifstream& configFile, httplib::Response& res)
     {
         auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
         if (!configFilePath.has_value()) {
@@ -607,36 +488,7 @@ struct HttpService::Impl
             return false;
         }
 
-        const auto& schemaFilePath = mapget::getPathToSchema();
-        if (schemaFilePath.empty()) {
-            res.status = 404;  // Not found.
-            res.set_content(
-                "The schema file path is not set. Check the server configuration.",
-                "text/plain");
-            return false;
-        }
-
-        std::filesystem::path schemaPath = schemaFilePath;
-        if (!std::filesystem::exists(schemaPath)) {
-            res.status = 404;  // Not found.
-            res.set_content("The server does not have a schema file.", "text/plain");
-            return false;
-        }
-
-
-        schemaFile.open(schemaPath);
-        if (!schemaFile) {
-            res.status = 500;  // Internal Server Error.
-            res.set_content("Failed to open schema file.", "text/plain");
-            return false;
-        }
-
         return true;
-    }
-
-    static auto sharedTopLevelConfigKeys()
-    {
-        return std::array{"sources", "http-settings"};
     }
 
     static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
@@ -649,22 +501,20 @@ struct HttpService::Impl
             return;
         }
 
-        std::ifstream configFile, schemaFile;
-        if (!openConfigAndSchemaFile(configFile, schemaFile, res)) {
+        std::ifstream configFile;
+        if (!openConfigFile(configFile, res)) {
             return;
         }
-
-        nlohmann::json jsonSchema;
-        schemaFile >> jsonSchema;
-        schemaFile.close();
+        nlohmann::json jsonSchema = DataSourceConfigService::get().getDataSourceConfigSchema();
 
         try {
-            // Load config YAML
+            // Load config YAML, expose the parts which clients may edit.
             YAML::Node configYaml = YAML::Load(configFile);
             nlohmann::json jsonConfig;
-            for (const auto& key : sharedTopLevelConfigKeys()) {
+            std::unordered_map<std::string, std::string> maskedSecretMap;
+            for (const auto& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
                 if (auto configYamlEntry = configYaml[key])
-                    jsonConfig[key] = yamlToJson(configYaml[key]);
+                    jsonConfig[key] = yamlToJson(configYaml[key], true, &maskedSecretMap);
             }
 
             nlohmann::json combinedJson;
@@ -696,8 +546,8 @@ struct HttpService::Impl
         std::condition_variable cv;
         bool update_done = false;
 
-        std::ifstream configFile, schemaFile;
-        if (!openConfigAndSchemaFile(configFile, schemaFile, res)) {
+        std::ifstream configFile;
+        if (!openConfigFile(configFile, res)) {
             return;
         }
 
@@ -733,14 +583,7 @@ struct HttpService::Impl
 
         // Validate JSON against schema.
         try {
-            nlohmann::json jsonSchema;
-            schemaFile >> jsonSchema;
-            schemaFile.close();
-
-            // Validate with json-schema-validator
-            nlohmann::json_schema::json_validator validator;
-            validator.set_root_schema(jsonSchema);
-            auto _ = validator.validate(jsonConfig);
+            DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
         }
         catch (const std::exception& e) {
             res.status = 500;  // Internal Server Error.
@@ -751,10 +594,10 @@ struct HttpService::Impl
         // Load the YAML, parse the secrets.
         auto yamlConfig = YAML::Load(configFile);
         std::unordered_map<std::string, std::string> maskedSecrets;
-        yamlToJson(yamlConfig, &maskedSecrets);
+        yamlToJson(yamlConfig, true, &maskedSecrets);
 
-        // Create YAML nodes for from JSON nodes.
-        for (auto const& key : sharedTopLevelConfigKeys()) {
+        // Create YAML nodes from JSON nodes.
+        for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
             if (jsonConfig.contains(key))
                 yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
         }
@@ -777,7 +620,8 @@ struct HttpService::Impl
 };
 
 HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
-    : Service(std::move(cache), config.watchConfig), impl_(std::make_unique<Impl>(*this, config))
+    : Service(std::move(cache), config.watchConfig, config.defaultTtl),
+      impl_(std::make_unique<Impl>(*this, config))
 {
 }
 

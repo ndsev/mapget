@@ -8,6 +8,7 @@
 #endif
 #include "httplib.h"
 #include "mapget/log.h"
+#include "nlohmann/json.hpp"
 
 #include "utility.h"
 #include "mapget/http-datasource/datasource-client.h"
@@ -335,7 +336,6 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_http_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
-    auto tempSchemaPath = tempDir / "temp_schema.json";
 
     // Setting up the server and client.
     HttpService service;
@@ -343,23 +343,26 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     REQUIRE(service.isRunning() == true);
     httplib::Client cli("localhost", service.port());
 
-    // Set up the schema file.
-    std::ofstream schemaFile(tempSchemaPath);
-    schemaFile << R"(
+    // Set up the config file.
+    DataSourceConfigService::get().reset();
+    struct SchemaPatchGuard {
+        ~SchemaPatchGuard() {
+            DataSourceConfigService::get().setDataSourceConfigSchemaPatch(nlohmann::json::object());
+        }
+    } schemaPatchGuard;
+
+    // Emulate the CLI-provided config-schema patch so http-settings participates in the auto schema.
+    auto schemaPatch = nlohmann::json::parse(R"(
     {
-        "type": "object",
         "properties": {
-            "sources": { "type": "array" },
-            "http-settings": { "type": "array" }
+            "http-settings": {
+                "type": "array"
+            }
         },
         "required": ["sources", "http-settings"]
     }
-    )";
-    schemaFile.close();
-    mapget::setPathToSchema(tempSchemaPath.string());
-
-    // Set up the config file.
-    DataSourceConfigService::get().reset();
+    )");
+    DataSourceConfigService::get().setDataSourceConfigSchemaPatch(schemaPatch);
 
     SECTION("Get Configuration - Config File Not Found") {
         DataSourceConfigService::get().loadConfig(tempConfigPath.string());
@@ -418,7 +421,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
         // Ensure that the password is masked as SHA256.
         REQUIRE(res->body.find("hunter2") == std::string::npos);
-        REQUIRE(res->body.find("MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
+        REQUIRE(res->body.find("MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
     }
 
     SECTION("Post Configuration - Not Enabled") {
@@ -456,7 +459,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Post Configuration - Valid JSON Config") {
         std::string newConfig = R"({
             "sources": [{"type": "TestDataSource"}],
-            "http-settings": [{"scope": "https://example.com", "password": "MASKED:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
+            "http-settings": [{"scope": "https://example.com", "password": "MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
         })";
         log().set_level(spdlog::level::trace);
         auto res = cli.Post("/config", newConfig, "application/json");
@@ -477,5 +480,4 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     // Clean up the test configuration files.
     fs::remove(tempConfigPath);
-    fs::remove(tempSchemaPath);
 }

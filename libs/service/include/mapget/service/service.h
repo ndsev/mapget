@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <utility>
+#include <chrono>
 
 namespace mapget
 {
@@ -117,10 +118,13 @@ public:
      * @param cache Cache instance to use.
      * @param useDataSourceConfig Instruct this service instance to makeDataSource its datasource
      *  backends based on a subscription to the YAML datasource config file.
+     * @param defaultTtl Default time-to-live for tiles returned by the service. May be
+     *  overridden by datasource or tile-specific TTL.
      */
     explicit Service(
         Cache::Ptr cache = std::make_shared<MemCache>(),
-        bool useDataSourceConfig = false);
+        bool useDataSourceConfig = false,
+        std::optional<std::chrono::milliseconds> defaultTtl = std::chrono::milliseconds{0});
 
     /** Destructor. Stops all workers of the present data sources. */
     ~Service();

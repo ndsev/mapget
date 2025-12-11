@@ -7,6 +7,8 @@
 #include "mapget/model/sourcedatalayer.h"
 
 #include <regex>
+#include <optional>
+#include <chrono>
 
 namespace mapget
 {
@@ -67,11 +69,29 @@ public:
      */
     [[nodiscard]] bool isDataSourceAuthorized(AuthHeaders const& clientHeaders) const;
 
+    /**
+     * Set a TTL fallback for all tiles produced by this datasource.
+     * A value of 0ms means infinite TTL.
+     */
+    void setTtl(std::optional<std::chrono::milliseconds> ttl);
+
+    /** Get the currently configured TTL fallback (if any). */
+    [[nodiscard]] std::optional<std::chrono::milliseconds> ttl() const;
+
+    /** Called when a cached tile was present but expired. Default no-op. */
+    virtual void onCacheExpired(const MapTileKey& /*tileKey*/, std::chrono::system_clock::time_point /*expiredAt*/)
+    {
+        // Nothing to do.
+    }
+
 protected:
     static StringId cachedStringPoolOffset(std::string const& nodeId, Cache::Ptr const& cache);
 
     /** Map of authorization header-regex pairs which can be entered into the datasource YAML config. */
     std::unordered_map<std::string, std::regex> authHeaderAlternatives_;
+
+    /** TTL fallback applied to generated tiles (0 = infinite, unset = use service default). */
+    std::optional<std::chrono::milliseconds> ttl_;
 };
 
 }

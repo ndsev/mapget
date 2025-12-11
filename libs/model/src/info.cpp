@@ -13,17 +13,6 @@ namespace mapget
 
 namespace {
 
-/** Generates a random 16-Byte UUID. Used to generate random DataSourceInfo node IDs. */
-std::string generateUuid() {
-    std::random_device rd;
-    std::mt19937 rng(rd());
-    std::stringstream ss;
-    ss << std::hex;
-    for (int i = 0; i < 4; ++i)
-        ss << std::setw(4) << std::setfill('0') << (rng() & 0xFFFF);
-    return ss.str();
-}
-
 auto missing_field(std::string const& error, std::string const& context) {
     return std::runtime_error(
         fmt::format("{}::fromJson(): `{}`", context, error));
@@ -40,6 +29,46 @@ std::optional<T> from_chars(std::string_view s, Args... args)
     return number;
 }
 
+}
+
+std::string mapNameFromUri(const std::string& uri)
+{
+    std::string result = uri;
+
+    // Convert to lowercase
+    std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+
+    // Replace special characters with dashes
+    for (char& ch : result) {
+        if (ch == ':' || ch == '\\' || ch == '/' || ch == '.') {
+            ch = '-';
+        }
+    }
+
+    // Merge successive dashes
+    std::string::size_type pos;
+    while ((pos = result.find("--")) != std::string::npos) {
+        result.erase(pos, 1);
+    }
+
+    // Strip trailing "-openapi-json"
+    const std::string suffix = "-openapi-json";
+    if (result.size() >= suffix.size() && result.substr(result.size() - suffix.size()) == suffix) {
+        result.resize(result.size() - suffix.size());
+    }
+
+    return result;
+}
+
+std::string generateNodeHexUuid()
+{
+    thread_local std::random_device rd;
+    thread_local std::mt19937 rng(rd());
+    std::stringstream ss;
+    ss << std::hex;
+    for (int i = 0; i < 4; ++i)
+        ss << std::setw(4) << std::setfill('0') << (rng() & 0xFFFF);
+    return ss.str();
 }
 
 bool Version::isCompatible(const Version& other) const
@@ -436,7 +465,7 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
         if (j.contains("nodeId"))
             nodeId = j.at("nodeId").get<std::string>();
         else
-            nodeId = generateUuid();
+            nodeId = generateNodeHexUuid();
 
         return {
             nodeId,

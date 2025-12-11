@@ -14,6 +14,6 @@ namespace mapget
     void setPostConfigEndpointEnabled(bool enabled);
     void setGetConfigEndpointEnabled(bool enabled);
 
-    const std::string &getPathToSchema();
+    const std::string &getPathToSchemaPatch();
     void setPathToSchema(const std::string &path);
 }
