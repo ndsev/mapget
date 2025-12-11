@@ -128,18 +128,7 @@ void DataSourceConfigService::loadConfig()
         YAML::Node config = YAML::LoadFile(configFilePath_);
         {
             std::lock_guard memberAccessLock(memberAccessMutex_);
-
-            if (validator_) {
-                try {
-                    validateDataSourceConfig(config);
-                }
-                catch (const std::exception& e) {
-                    error = fmt::format("Config validation failed: {}", e.what());
-                    log().error(*error);
-                    return;
-                }
-            }
-
+            validateDataSourceConfig(config);
             currentConfig_.clear();
             if (auto sourcesNode = config["sources"]) {
                 for (auto const& node : sourcesNode)
@@ -156,12 +145,17 @@ void DataSourceConfigService::loadConfig()
             }
         }
     }
-    catch (const YAML::Exception& e) {
-        error = fmt::format("Failed to load YAML config {}: {}", configFilePath_, e.what());
-        log().error(*error);
+    catch (const std::invalid_argument& validationError)
+    {
+        error = fmt::format("Failed to validate YAML config {}: {}", configFilePath_, validationError.what());
+    }
+    catch (const YAML::Exception& yamlError)
+    {
+        error = fmt::format("Failed to parse YAML config {}: {}", configFilePath_, yamlError.what());
     }
 
     if (error) {
+        log().error(*error);
         for (const auto& [subId, subCb] : subscriptions_) {
             if (subCb.error_)
                 subCb.error_(*error);

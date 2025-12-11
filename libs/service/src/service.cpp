@@ -146,7 +146,7 @@ struct Service::Controller
         do {
             cachedTilesServed = false;
             for (auto reqIt = requests_.begin(); reqIt != requests_.end(); ++reqIt) {
-                auto& request = *reqIt;
+                auto const& request = *reqIt;
                 auto layerIt = i.layers_.find(request->layerId_);
 
                 // Are there tiles left to be processed in the request?
@@ -269,14 +269,15 @@ struct Service::Worker
                 controller_.loadAddOnTiles(std::static_pointer_cast<TileFeatureLayer>(layer), *dataSource_);
             }
 
-            // Apply TTL override (datasource-specific or service default).
-            auto ttlFallback = dataSource_->ttl();
-            auto ttlExplicit = ttlFallback.has_value();
-            if (!ttlFallback) {
-                ttlFallback = controller_.defaultTtl_;
-            }
-            if (ttlFallback && (ttlExplicit || !layer->ttl())) {
-                layer->setTtl(ttlFallback);
+            // Apply TTL fallback (datasource-specific or service default).
+            if (!layer->ttl())
+            {
+                auto ttlFallback = dataSource_->ttl();
+                if (!ttlFallback)
+                    ttlFallback = controller_.defaultTtl_;
+
+                if (ttlFallback)
+                    layer->setTtl(ttlFallback);
             }
 
             controller_.cache_->putTileLayer(layer);
