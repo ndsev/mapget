@@ -9,6 +9,7 @@ add_executable(test.mapget
   test-cache.cpp
   test-service-ttl.cpp
   test-config.cpp
+  test-geojsonsource.cpp
   utility.cpp
   utility.h)
 
@@ -21,6 +22,7 @@ target_link_libraries(test.mapget
     mapget-model
     mapget-http-datasource
     mapget-http-service
+    geojsonsource
     Catch2::Catch2WithMain)
 
 target_link_libraries(test.mapget.filelog
