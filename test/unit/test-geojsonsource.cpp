@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -32,7 +33,15 @@ auto sampleGeoJson = R"json({"type": "FeatureCollection", "features": [{
 
 std::filesystem::path createTempGeoJsonDir()
 {
-    auto tempDir = std::filesystem::temp_directory_path() / "mapget_geojson_test";
+    // Use timestamp for unique directory name (same pattern as test-cache.cpp)
+    auto now = std::chrono::system_clock::now();
+    auto epochTime = std::chrono::system_clock::to_time_t(now);
+    auto tempDir = std::filesystem::temp_directory_path() /
+        ("mapget_geojson_test_" + std::to_string(epochTime));
+
+    if (std::filesystem::exists(tempDir)) {
+        std::filesystem::remove_all(tempDir);
+    }
     std::filesystem::create_directories(tempDir);
 
     auto geojsonPath = tempDir / (std::to_string(largeTileId) + ".geojson");
