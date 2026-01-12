@@ -56,9 +56,9 @@ auto geoJsonLayerInfo = R"json(
       "uniqueIdCompositions": [
         [
           {
-            "partId": "packedTileId",
-            "description": "NDS Packed Tile ID.",
-            "datatype": "U32"
+            "partId": "tileId",
+            "description": "Mapget Tile ID.",
+            "datatype": "U64"
           },
           {
             "partId": "featureIndex",
@@ -119,13 +119,13 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
         mapget::log().error("Tile not available: {}", tile->tileId().value_);
         return;
     }
-    auto packedTileId = *tileIdIt;
+    auto tileId = *tileIdIt;
 
-    // All features share the same packed tile id.
-    tile->setIdPrefix({{"packedTileId", static_cast<int64_t>(packedTileId)}});
+    // All features share the same tile id.
+    tile->setIdPrefix({{"tileId", static_cast<int64_t>(tileId)}});
 
     // Parse the GeoJSON file
-    auto path = fmt::format("{}/{}.geojson", inputDir_, std::to_string(packedTileId));
+    auto path = fmt::format("{}/{}.geojson", inputDir_, std::to_string(tileId));
 
     mapget::log().debug("Opening: {}", path);
 
