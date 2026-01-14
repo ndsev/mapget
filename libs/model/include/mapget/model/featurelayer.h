@@ -20,6 +20,7 @@
 #include "geometry.h"
 #include "sourcedatareference.h"
 #include "pointnode.h"
+#include "nlohmann/json.hpp"
 
 namespace mapget
 {
@@ -208,6 +209,9 @@ public:
 
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
+
+    /** Report serialized size stats for feature-layer data and model-pool columns. */
+    [[nodiscard]] nlohmann::json serializationSizeStats() const;
 
     /** Access number of stored features */
     size_t size() const;

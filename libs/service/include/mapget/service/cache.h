@@ -4,6 +4,7 @@
 #include <mutex>
 #include <chrono>
 #include <optional>
+#include <functional>
 
 #include "mapget/model/info.h"
 #include "mapget/model/featurelayer.h"
@@ -29,6 +30,7 @@ public:
     };
 
     using Ptr = std::shared_ptr<Cache>;
+    using TileBlobVisitor = std::function<void(const MapTileKey&, const std::string&)>;
     // The following methods are already implemented,
     // they forward to the virtual methods on-demand.
 
@@ -51,6 +53,9 @@ public:
 
     /** Abstract: Upsert (update or insert) a TileLayer blob. */
     virtual void putTileLayerBlob(MapTileKey const& k, std::string const& v) = 0;
+
+    /** Abstract: Iterate through all cached tile layer blobs. */
+    virtual void forEachTileLayerBlob(const TileBlobVisitor& cb) const = 0;
 
     /** Abstract: Retrieve a string-pool blob for a sourceNodeId. */
     virtual std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) = 0;
