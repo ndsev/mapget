@@ -6,6 +6,7 @@
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <streambuf>
 #include <string_view>
 #include <tuple>
 #include <vector>
@@ -74,6 +75,39 @@ namespace
         if (size > SourceAddressArenaIndexMax)
             throw std::out_of_range("Size out of range");
         return (index << SourceAddressArenaSizeBits) | size;
+    }
+
+    class CountingStreambuf : public std::streambuf
+    {
+    public:
+        size_t size() const { return size_; }
+
+    protected:
+        std::streamsize xsputn(const char* /*s*/, std::streamsize count) override
+        {
+            size_ += static_cast<size_t>(count);
+            return count;
+        }
+
+        int overflow(int ch) override
+        {
+            if (ch != EOF)
+                ++size_;
+            return ch;
+        }
+
+    private:
+        size_t size_ = 0;
+    };
+
+    template <class Fn>
+    size_t measureBytes(Fn&& fn)
+    {
+        CountingStreambuf buf;
+        std::ostream os(&buf);
+        bitsery::Serializer<bitsery::OutputStreamAdapter> s(os);
+        fn(s);
+        return buf.size();
     }
 }
 
@@ -794,6 +828,64 @@ nlohmann::json TileFeatureLayer::toJson() const
         {"type", "FeatureCollection"},
         {"features", features}
     });
+}
+
+nlohmann::json TileFeatureLayer::serializationSizeStats() const
+{
+    constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
+    auto featureLayer = nlohmann::json::object();
+
+    featureLayer["features"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->features_, maxColumnSize); }));
+    featureLayer["attributes"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->attributes_, maxColumnSize); }));
+    featureLayer["validities"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->validities_, maxColumnSize); }));
+    featureLayer["feature-ids"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->featureIds_, maxColumnSize); }));
+    featureLayer["attribute-layers"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->attrLayers_, maxColumnSize); }));
+    featureLayer["attribute-layer-lists"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->attrLayerLists_, maxColumnSize); }));
+    featureLayer["feature-id-prefix"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.object(impl_->featureIdPrefix_); }));
+    featureLayer["relations"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->relations_, maxColumnSize); }));
+    featureLayer["feature-hash-index"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->featureHashIndex_, maxColumnSize); }));
+    featureLayer["geometries"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->geom_, maxColumnSize); }));
+    featureLayer["point-buffers"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.ext(impl_->pointBuffers_, bitsery::ext::ArrayArenaExt{}); }));
+    featureLayer["source-data-references"] = static_cast<int64_t>(measureBytes(
+        [&](auto& s) { s.container(impl_->sourceDataReferences_, maxColumnSize); }));
+
+    int64_t featureLayerTotal = 0;
+    for (const auto& [_, value] : featureLayer.items()) {
+        if (value.is_number_integer())
+            featureLayerTotal += value.get<int64_t>();
+    }
+
+    auto modelStats = ModelPool::serializationSizeStats();
+    auto modelPool = nlohmann::json::object({
+        {"roots", static_cast<int64_t>(modelStats.rootsBytes)},
+        {"int64", static_cast<int64_t>(modelStats.int64Bytes)},
+        {"double", static_cast<int64_t>(modelStats.doubleBytes)},
+        {"string-data", static_cast<int64_t>(modelStats.stringDataBytes)},
+        {"string-ranges", static_cast<int64_t>(modelStats.stringRangeBytes)},
+        {"object-members", static_cast<int64_t>(modelStats.objectMemberBytes)},
+        {"array-members", static_cast<int64_t>(modelStats.arrayMemberBytes)},
+    });
+
+    int64_t modelPoolTotal = static_cast<int64_t>(modelStats.totalBytes());
+
+    return {
+        {"feature-layer", featureLayer},
+        {"model-pool", modelPool},
+        {"feature-layer-total-bytes", featureLayerTotal},
+        {"model-pool-total-bytes", modelPoolTotal},
+        {"total-bytes", featureLayerTotal + modelPoolTotal}
+    };
 }
 
 size_t TileFeatureLayer::size() const

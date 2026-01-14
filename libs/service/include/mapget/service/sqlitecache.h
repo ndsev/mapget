@@ -25,6 +25,7 @@ public:
 
     std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override;
     void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
+    void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;
     std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override;
     void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override;
 

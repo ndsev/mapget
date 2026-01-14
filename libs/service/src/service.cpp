@@ -17,6 +17,8 @@
 #include <thread>
 #include <list>
 #include <chrono>
+#include <sstream>
+#include <unordered_map>
 
 #include "simfil/types.h"
 
@@ -673,10 +675,84 @@ nlohmann::json Service::getStatistics() const
         });
     }
 
-    return {
+    auto result = nlohmann::json{
         {"datasources", datasources},
         {"active-requests", impl_->requests_.size()}
     };
+
+    auto layerInfoByMap = std::unordered_map<std::string, std::unordered_map<std::string, std::shared_ptr<LayerInfo>>>{};
+    for (auto const& [_, info] : impl_->dataSourceInfo_) {
+        auto& layers = layerInfoByMap[info.mapId_];
+        for (auto const& [layerId, layerInfo] : info.layers_) {
+            layers[layerId] = layerInfo;
+        }
+    }
+
+    auto resolveLayerInfo = [&](std::string_view mapId, std::string_view layerId) -> std::shared_ptr<LayerInfo> {
+        auto mapIt = layerInfoByMap.find(std::string(mapId));
+        if (mapIt == layerInfoByMap.end())
+            return std::make_shared<LayerInfo>();
+        auto layerIt = mapIt->second.find(std::string(layerId));
+        if (layerIt == mapIt->second.end()) {
+            auto fallback = std::make_shared<LayerInfo>();
+            fallback->layerId_ = std::string(layerId);
+            return fallback;
+        }
+        return layerIt->second;
+    };
+
+    int64_t parsedTiles = 0;
+    int64_t totalTileBytes = 0;
+    int64_t parseErrors = 0;
+    auto featureLayerTotals = nlohmann::json::object();
+    auto modelPoolTotals = nlohmann::json::object();
+
+    auto addTotals = [](nlohmann::json& totals, const nlohmann::json& stats) {
+        for (const auto& [key, value] : stats.items()) {
+            if (!value.is_number_integer())
+                continue;
+            totals[key] = totals.value<int64_t>(key, 0) + value.get<int64_t>();
+        }
+    };
+
+    impl_->cache_->forEachTileLayerBlob(
+        [&](const MapTileKey& key, const std::string& blob)
+        {
+            if (key.layer_ != LayerType::Features)
+                return;
+            ++parsedTiles;
+            totalTileBytes += static_cast<int64_t>(blob.size());
+
+            try {
+                std::istringstream inputStream(blob, std::ios::binary);
+                auto tile = std::make_shared<TileFeatureLayer>(
+                    inputStream,
+                    [&](auto&& mapId, auto&& layerId) {
+                        return resolveLayerInfo(mapId, layerId);
+                    },
+                    [&](auto&& nodeId) {
+                        return impl_->cache_->getStringPool(nodeId);
+                    });
+                auto sizeStats = tile->serializationSizeStats();
+                addTotals(featureLayerTotals, sizeStats["feature-layer"]);
+                addTotals(modelPoolTotals, sizeStats["model-pool"]);
+            }
+            catch (const std::exception&) {
+                ++parseErrors;
+            }
+        });
+
+    if (parsedTiles > 0) {
+        result["cached-feature-tree-bytes"] = nlohmann::json{
+            {"tile-count", parsedTiles},
+            {"total-tile-bytes", totalTileBytes},
+            {"parse-errors", parseErrors},
+            {"feature-layer", featureLayerTotals},
+            {"model-pool", modelPoolTotals}
+        };
+    }
+
+    return result;
 }
 
 }  // namespace mapget
