@@ -31,6 +31,14 @@ void MemCache::putTileLayerBlob(const MapTileKey& k, const std::string& v)
     }
 }
 
+void MemCache::forEachTileLayerBlob(const TileBlobVisitor& cb) const
+{
+    std::shared_lock cacheLock(cacheMutex_);
+    for (const auto& [key, value] : cachedTiles_) {
+        cb(MapTileKey(key), value);
+    }
+}
+
 nlohmann::json MemCache::getStatistics() const {
     auto result = Cache::getStatistics();
     result["memcache-map-size"] = (int64_t)cachedTiles_.size();

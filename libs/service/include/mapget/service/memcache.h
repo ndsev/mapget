@@ -29,6 +29,9 @@ public:
     /** Upsert a TileLayer blob. */
     void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
 
+    /** Iterate over cached tile layer blobs. */
+    void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;
+
     /** Retrieve a string-pool blob for a sourceNodeId -> No-Op */
     std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override {return {};}
 
@@ -40,7 +43,7 @@ public:
 
 private:
     // Cached tile blobs.
-    std::shared_mutex cacheMutex_;
+    mutable std::shared_mutex cacheMutex_;
     std::unordered_map<std::string, std::string> cachedTiles_;
     std::deque<std::string> fifo_;
     uint32_t maxCachedTiles_ = 0;
