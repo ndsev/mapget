@@ -709,11 +709,27 @@ nlohmann::json Service::getStatistics() const
 
     auto addTotals = [](nlohmann::json& totals, const nlohmann::json& stats) {
         for (const auto& [key, value] : stats.items()) {
-            if (!value.is_number_integer())
-                continue;
-            totals[key] = totals.value<int64_t>(key, 0) + value.get<int64_t>();
+            if (value.is_number_integer())
+            {
+                totals[key] = totals.value<int64_t>(key, 0) + value.get<int64_t>();
+            }
+            else if (value.is_number_float())
+            {
+                totals[key] = totals.value<double>(key, .0) + value.get<double>();
+            }
         }
     };
+
+    TileLayerStream::Reader tileReader(
+        resolveLayerInfo,
+        [&](auto&& parsedLayer)
+        {
+            auto tile = std::static_pointer_cast<mapget::TileFeatureLayer>(parsedLayer);
+            auto sizeStats = tile->serializationSizeStats();
+            addTotals(featureLayerTotals, sizeStats["feature-layer"]);
+            addTotals(modelPoolTotals, sizeStats["model-pool"]);
+        },
+        impl_->cache_);
 
     impl_->cache_->forEachTileLayerBlob(
         [&](const MapTileKey& key, const std::string& blob)
@@ -722,20 +738,8 @@ nlohmann::json Service::getStatistics() const
                 return;
             ++parsedTiles;
             totalTileBytes += static_cast<int64_t>(blob.size());
-
             try {
-                std::istringstream inputStream(blob, std::ios::binary);
-                auto tile = std::make_shared<TileFeatureLayer>(
-                    inputStream,
-                    [&](auto&& mapId, auto&& layerId) {
-                        return resolveLayerInfo(mapId, layerId);
-                    },
-                    [&](auto&& nodeId) {
-                        return impl_->cache_->getStringPool(nodeId);
-                    });
-                auto sizeStats = tile->serializationSizeStats();
-                addTotals(featureLayerTotals, sizeStats["feature-layer"]);
-                addTotals(modelPoolTotals, sizeStats["model-pool"]);
+                tileReader.read(blob);
             }
             catch (const std::exception&) {
                 ++parseErrors;
