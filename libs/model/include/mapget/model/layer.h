@@ -146,6 +146,14 @@ public:
     void setError(const std::optional<std::string>& err);
 
     /**
+     * Getter and setter for 'errorCode' member variable.
+     * It's used to provide a numeric error code (e.g., HTTP status code,
+     * SQLite error code) when an error occurred while filling the tile.
+     */
+    [[nodiscard]] std::optional<int> errorCode() const;
+    void setErrorCode(const std::optional<int>& code);
+
+    /**
      * Getter and setter for 'timestamp' member variable.
      * It represents when this layer was created.
      */
@@ -191,6 +199,7 @@ protected:
     std::string mapId_;
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;
+    std::optional<int> errorCode_;
     std::chrono::time_point<std::chrono::system_clock> timestamp_;
     std::optional<std::chrono::milliseconds> ttl_;
     nlohmann::json info_;

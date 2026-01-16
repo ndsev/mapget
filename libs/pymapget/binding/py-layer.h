@@ -52,6 +52,21 @@ void bindTileLayer(py::module_& m)
             Set the error occurred while the tile was filled.
             )pbdoc")
         .def(
+            "error_code",
+            [](TileFeatureLayer const& self) { return self.errorCode(); },
+            R"pbdoc(
+            Get the error code (e.g., HTTP status code, SQLite error code)
+            if an error occurred while the tile was filled.
+            )pbdoc")
+        .def(
+            "set_error_code",
+            [](TileFeatureLayer& self, int code) { self.setErrorCode(code); },
+            py::arg("code"),
+            R"pbdoc(
+            Set the error code (e.g., HTTP status code, SQLite error code)
+            for an error that occurred while the tile was filled.
+            )pbdoc")
+        .def(
             "timestamp",
             [](TileFeatureLayer const& self) {return self.timestamp(); },
             R"pbdoc(

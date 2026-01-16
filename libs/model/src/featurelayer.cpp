@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <ctime>
 #include <initializer_list>
 #include <iterator>
 #include <sstream>
@@ -787,13 +788,57 @@ tl::expected<void, simfil::Error> TileFeatureLayer::write(std::ostream& outputSt
 
 nlohmann::json TileFeatureLayer::toJson() const
 {
+    auto result = nlohmann::json::object();
+
+    result["type"] = "FeatureCollection";
+    result["mapgetTileId"] = tileId_.value_;
+    result["mapId"] = mapId_;
+    result["mapgetLayerId"] = layerInfo_->layerId_;
+
+    // Add ID prefix if set
+    if (impl_->featureIdPrefix_) {
+        auto prefix = const_cast<TileFeatureLayer*>(this)->getIdPrefix();
+        if (prefix)
+            result["idPrefix"] = prefix->toJson();
+    }
+
+    // Add timestamp as ISO 8601 string
+    {
+        auto time_t_val = std::chrono::system_clock::to_time_t(timestamp_);
+        auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+            timestamp_.time_since_epoch()).count() % 1000000;
+        std::tm tm_val{};
+#ifdef _WIN32
+        gmtime_s(&tm_val, &time_t_val);
+#else
+        gmtime_r(&time_t_val, &tm_val);
+#endif
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm_val);
+        result["timestamp"] = fmt::format("{}.{:06d}Z", buf, microseconds);
+    }
+
+    // Add TTL if set (in milliseconds)
+    if (ttl_)
+        result["ttl"] = ttl_->count();
+
+    // Add error information if present
+    if (error_ || errorCode_) {
+        auto errorObj = nlohmann::json::object();
+        if (errorCode_)
+            errorObj["code"] = *errorCode_;
+        if (error_)
+            errorObj["message"] = *error_;
+        result["error"] = errorObj;
+    }
+
+    // Add features
     auto features = nlohmann::json::array();
     for (auto f : *this)
         features.push_back(f->toJson());
-    return nlohmann::json::object({
-        {"type", "FeatureCollection"},
-        {"features", features}
-    });
+    result["features"] = features;
+
+    return result;
 }
 
 size_t TileFeatureLayer::size() const
