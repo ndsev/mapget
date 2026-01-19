@@ -263,8 +263,9 @@ GeoJsonSource::GeoJsonSource(const std::string& inputDir, bool withAttrLayers, c
         if (!hasManifest_) {
             mapget::log().warn(
                 "No manifest.json found in '{}'. "
-                "Falling back to filename-based tile ID detection. "
-                "Consider adding a manifest.json for better control over file mapping and layers.",
+                "Using deprecated legacy mode with filename-based tile ID detection. "
+                "Legacy mode will be removed in a future release. "
+                "Please add a manifest.json for file mapping and multi-layer support.",
                 inputDir);
         } else {
             mapget::log().info(
