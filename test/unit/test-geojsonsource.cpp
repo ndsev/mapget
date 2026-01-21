@@ -248,7 +248,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         std::filesystem::remove_all(tempDir);
     }
 
-    SECTION("Manifest with metadata only falls back to directory scan")
+    SECTION("Manifest with metadata only does not fall back to directory scan")
     {
         auto tempDir = createTempDir();
 
@@ -267,15 +267,13 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         geojsonsource::GeoJsonSource source(tempDir.string(), false);
 
-        // Manifest was found but has no index, so falls back to directory scan
+        // Manifest was found but has no index - should NOT fall back to directory scan
         REQUIRE(source.hasManifest());
         REQUIRE(source.manifest().files.empty());
 
-        // But tiles should still be discovered from filenames
+        // No tiles should be available (no fallback to legacy filename parsing)
         auto info = source.info();
-        auto layer = info.getLayer("GeoJsonAny");
-        REQUIRE(layer != nullptr);
-        REQUIRE(!layer->coverage_.empty());
+        REQUIRE(info.layers_.empty());
 
         std::filesystem::remove_all(tempDir);
     }
@@ -325,6 +323,37 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         auto layer = info.getLayer("GeoJsonAny");
         REQUIRE(layer != nullptr);
         // Only the valid tile ID file should be registered
+        REQUIRE(layer->coverage_.size() == 1);
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Manifest prevents legacy filename parsing for non-numeric names")
+    {
+        auto tempDir = createTempDir();
+
+        // Create GeoJSON file with non-numeric name (would fail stoull in legacy mode)
+        writeFile(tempDir / "mytestdata.geojson", sampleGeoJson);
+
+        // Create manifest that maps the file correctly
+        auto manifest = R"json({
+            "version": 1,
+            "index": {
+                "files": {
+                    "mytestdata.geojson": { "tileId": 62530591326221, "layer": "Road" }
+                }
+            }
+        })json";
+        writeFile(tempDir / "manifest.json", manifest);
+
+        // Should not throw - manifest mode should be used, not legacy filename parsing
+        geojsonsource::GeoJsonSource source(tempDir.string(), false);
+
+        REQUIRE(source.hasManifest());
+
+        auto info = source.info();
+        auto layer = info.getLayer("Road");
+        REQUIRE(layer != nullptr);
         REQUIRE(layer->coverage_.size() == 1);
 
         std::filesystem::remove_all(tempDir);

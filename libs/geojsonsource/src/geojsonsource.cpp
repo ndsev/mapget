@@ -255,22 +255,20 @@ GeoJsonSource::GeoJsonSource(const std::string& inputDir, bool withAttrLayers, c
     // Try to load manifest.json first
     hasManifest_ = parseManifest();
 
-    if (hasManifest_ && !manifest_.files.empty()) {
-        // Use manifest-based initialization
-        initFromManifest();
-    } else {
-        // Fallback to directory scanning
-        if (!hasManifest_) {
-            mapget::log().warn(
-                "No manifest.json found in '{}'. "
-                "Using deprecated legacy mode with filename-based tile ID detection. "
-                "Legacy mode will be removed in a future release. "
-                "Please add a manifest.json for file mapping and multi-layer support.",
-                inputDir);
+    if (hasManifest_) {
+        if (!manifest_.files.empty()) {
+            initFromManifest();
         } else {
             mapget::log().info(
-                "manifest.json found but has no index/files section, scanning directory");
+                "manifest.json found but has no index/files section - no tiles available");
         }
+    } else {
+        mapget::log().warn(
+            "No manifest.json found in '{}'. "
+            "Using deprecated legacy mode with filename-based tile ID detection. "
+            "Legacy mode will be removed in a future release. "
+            "Please add a manifest.json for file mapping and multi-layer support.",
+            inputDir);
         initFromDirectory();
     }
 
