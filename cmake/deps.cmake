@@ -64,6 +64,38 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
     CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
     CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
+
+    CPMAddPackage(
+            NAME uSockets
+            GIT_REPOSITORY https://github.com/uNetworking/uSockets
+            GIT_TAG v0.8.5
+            GIT_SHALLOW ON
+            GIT_SUBMODULES "")
+    if (NOT TARGET uSockets)
+        file(GLOB_RECURSE U_SOCKETS_SOURCES "${uSockets_SOURCE_DIR}/src/*.c")
+        add_library(uSockets STATIC ${U_SOCKETS_SOURCES})
+        target_include_directories(uSockets PUBLIC "${uSockets_SOURCE_DIR}/src")
+        target_compile_definitions(uSockets PRIVATE LIBUS_USE_OPENSSL)
+        target_link_libraries(uSockets PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        if (WIN32)
+            target_link_libraries(uSockets PRIVATE ws2_32)
+        endif()
+    endif()
+
+    CPMAddPackage(
+            NAME uWebSockets
+            GIT_REPOSITORY https://github.com/uNetworking/uWebSockets
+            GIT_TAG v20.37.0
+            GIT_SHALLOW ON
+            GIT_SUBMODULES "")
+    if (NOT TARGET uWebSockets)
+        add_library(uWebSockets INTERFACE)
+        target_include_directories(uWebSockets INTERFACE "${uWebSockets_SOURCE_DIR}/src")
+        target_link_libraries(uWebSockets INTERFACE uSockets ZLIB::ZLIB)
+        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(uWebSockets INTERFACE -Wno-deprecated-declarations)
+        endif()
+    endif()
 endif ()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
