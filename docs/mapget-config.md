@@ -194,7 +194,7 @@ The generator will produce deterministic but varied features for any requested t
 
 <!-- --8<-- [start:geojson] -->
 
-`GeoJsonFolder` serves tiles from a directory containing GeoJSON files. Each file represents one tile and must be named with the tile’s numeric ID in the mapget tiling scheme, for example `123456.geojson`.
+`GeoJsonFolder` serves tiles from a directory containing GeoJSON files.
 
 Required fields:
 
@@ -214,7 +214,63 @@ sources:
     withAttrLayers: true
 ```
 
-The datasource scans the directory, infers coverage from the file names and converts each GeoJSON feature into mapget’s internal feature model when the corresponding tile is requested.
+#### Manifest Mode (Recommended)
+
+If a `manifest.json` file exists in the input directory, it is used to map filenames to tile IDs and layers. This allows arbitrary filenames and multi‑layer support.
+
+**Manifest Structure:**
+
+```json
+{
+  "version": 1,
+  "metadata": {
+    "name": "My Dataset",
+    "description": "Optional description of the dataset",
+    "source": "OpenStreetMap",
+    "created": "2024-01-15",
+    "author": "Your Name",
+    "license": "CC-BY-4.0"
+  },
+  "index": {
+    "defaultLayer": "GeoJsonAny",
+    "files": {
+      "roads.geojson": { "tileId": 121212121212, "layer": "Road" },
+      "lanes.geojson": { "tileId": 121212121212, "layer": "Lane" },
+      "other.geojson": { "tileId": 343434343434 },
+      "simple.geojson": 565656565656
+    }
+  }
+}
+```
+
+**Manifest Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `version` | No | Manifest format version (default: `1`). |
+| `metadata` | No | Optional metadata about the dataset. All sub‑fields (`name`, `description`, `source`, `created`, `author`, `license`) are optional strings. |
+| `index` | No | File‑to‑tile mapping configuration. |
+| `index.defaultLayer` | No | Default layer name for files without explicit layer (default: `"GeoJsonAny"`). |
+| `index.files` | No | Object mapping filenames to tile information. |
+
+**File Entry Formats:**
+
+Each entry in `index.files` maps a filename to tile information. Two formats are supported:
+
+1. **Full format** (object): `{ "tileId": <number>, "layer": "<string>" }`
+   - `tileId` (required): The mapget tile ID as a 64‑bit unsigned integer.
+   - `layer` (optional): Layer name. If omitted, uses `defaultLayer`.
+
+2. **Short format** (number): Just the tile ID as a number. Uses `defaultLayer` for the layer name.
+
+This allows multiple GeoJSON files to contribute features to the same tile in different layers, enabling separation of feature types (e.g., roads, lanes, buildings) while sharing the same tile coordinate.
+
+#### Legacy Mode (Deprecated)
+
+!!! warning "Deprecation Notice"
+    Legacy mode is deprecated and will be removed in a future release. Please migrate to manifest mode by adding a `manifest.json` file to your data directory. When legacy mode is used, a warning is logged to help identify directories that need migration.
+
+If no `manifest.json` exists, the datasource falls back to scanning for files named `<packed-tile-id>.geojson` (e.g., `123456.geojson`). All files are served from a single `GeoJsonAny` layer.
 
 <!-- --8<-- [end:geojson] -->
 

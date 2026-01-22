@@ -138,6 +138,13 @@ TileLayer::TileLayer(
         s.text1b(*error_, std::numeric_limits<uint32_t>::max());
     }
 
+    bool hasErrorCode = false;
+    s.value1b(hasErrorCode);
+    if (hasErrorCode) {
+        errorCode_ = 0;  // Tell the optional that it has a value.
+        s.value4b(*errorCode_);
+    }
+
     bool hasLegalInfo = false;
     s.value1b(hasLegalInfo);
     if (hasLegalInfo) {
@@ -207,6 +214,14 @@ void TileLayer::setError(const std::optional<std::string>& err) {
     error_ = err;
 }
 
+std::optional<int> TileLayer::errorCode() const {
+    return errorCode_;
+}
+
+void TileLayer::setErrorCode(const std::optional<int>& code) {
+    errorCode_ = code;
+}
+
 void TileLayer::setTimestamp(const std::chrono::time_point<std::chrono::system_clock>& ts) {
     timestamp_ = ts;
 }
@@ -247,6 +262,9 @@ tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
     s.value1b(error_.has_value());
     if (error_)
         s.text1b(*error_, std::numeric_limits<uint32_t>::max());
+    s.value1b(errorCode_.has_value());
+    if (errorCode_)
+        s.value4b(*errorCode_);
     s.value1b(legalInfo_.has_value());
     if (legalInfo_.has_value()) {
         s.text1b(legalInfo_.value(), std::numeric_limits<uint32_t>::max());

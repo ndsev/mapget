@@ -47,6 +47,46 @@ If `Accept-Encoding: gzip` is set, the server compresses responses where possibl
 
 JSON Lines is better suited to streaming large responses than a single JSON array. Clients can start processing the first tiles immediately, do not need to buffer the complete response in memory, and can naturally consume the stream with incremental parsers.
 
+### JSONL response format
+
+Each line in the JSONL response is a GeoJSON-like FeatureCollection with additional metadata:
+
+```json
+{
+  "type": "FeatureCollection",
+  "mapgetTileId": 281479271743500,
+  "mapId": "EuropeHD",
+  "mapgetLayerId": "Roads",
+  "idPrefix": {
+    "areaId": 123,
+    "tileId": 456
+  },
+  "timestamp": "2025-01-14T10:30:00.000000Z",
+  "ttl": 3600000,
+  "error": {
+    "code": 404,
+    "message": "Error while contacting remote data source: not found"
+  },
+  "features": [...]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"FeatureCollection"` |
+| `mapgetTileId` | integer | The mapget tile ID (64-bit decimal) |
+| `mapId` | string | Map identifier |
+| `mapgetLayerId` | string | Layer identifier within the map |
+| `idPrefix` | object | Common ID parts shared by all features in this tile (optional) |
+| `timestamp` | string | ISO 8601 timestamp when the tile was created |
+| `ttl` | integer | Time-to-live in milliseconds (optional) |
+| `error` | object | Error information if tile creation failed (optional) |
+| `error.code` | integer | Numeric error code, e.g., HTTP status or database error (optional) |
+| `error.message` | string | Human-readable error message (optional) |
+| `features` | array | Array of GeoJSON Feature objects |
+
+The `error` object is only present if an error occurred while filling the tile. When present, the `features` array may be empty or contain partial data.
+
 ## `/abort` – cancel tile streaming
 
 `POST /abort` cancels a running `/tiles` request that was started with a matching `clientId`. It is useful when the viewport changes and the previous stream should be abandoned.

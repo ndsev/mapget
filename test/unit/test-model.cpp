@@ -236,6 +236,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->mapId() == tile->mapId());
         REQUIRE(deserializedTile->layerInfo() == tile->layerInfo());
         REQUIRE(deserializedTile->error() == tile->error());
+        REQUIRE(deserializedTile->errorCode() == tile->errorCode());
         REQUIRE(deserializedTile->timestamp().time_since_epoch() == tile->timestamp().time_since_epoch());
         REQUIRE(deserializedTile->ttl() == tile->ttl());
         REQUIRE(deserializedTile->mapVersion() == tile->mapVersion());
@@ -328,6 +329,83 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         auto foundFeature10 = tile->find("Way", KeyValueViewPairs{{"wayId", 42}});
         REQUIRE(!foundFeature10);
+    }
+
+    SECTION("toJson with enhanced metadata")
+    {
+        // Set TTL
+        tile->setTtl(std::chrono::milliseconds(3600000));
+
+        auto json = tile->toJson();
+
+        // Verify required fields
+        REQUIRE(json["type"] == "FeatureCollection");
+        REQUIRE(json["mapgetTileId"].is_number_unsigned());
+        REQUIRE(json["mapgetTileId"].get<uint64_t>() == tile->tileId().value_);
+        REQUIRE(json["mapId"] == "Tropico");
+        REQUIRE(json["mapgetLayerId"] == "WayLayer");
+
+        // Verify idPrefix
+        REQUIRE(json.contains("idPrefix"));
+        REQUIRE(json["idPrefix"]["areaId"] == "TheBestArea");
+
+        // Verify timestamp is ISO 8601 format
+        REQUIRE(json["timestamp"].is_string());
+        std::string timestamp = json["timestamp"];
+        REQUIRE(timestamp.find("T") != std::string::npos);
+        REQUIRE(timestamp.back() == 'Z');
+
+        // Verify TTL
+        REQUIRE(json["ttl"] == 3600000);
+
+        // Verify features array exists
+        REQUIRE(json["features"].is_array());
+        REQUIRE(json["features"].size() == 2);  // feature0 and feature1
+
+        // Verify no error object when no error is set
+        REQUIRE(!json.contains("error"));
+    }
+
+    SECTION("toJson with error information")
+    {
+        // Set error message and code
+        tile->setError("Test error message");
+        tile->setErrorCode(404);
+
+        auto json = tile->toJson();
+
+        // Verify error object
+        REQUIRE(json.contains("error"));
+        REQUIRE(json["error"]["message"] == "Test error message");
+        REQUIRE(json["error"]["code"] == 404);
+    }
+
+    SECTION("Serialization with errorCode")
+    {
+        // Set error information
+        tile->setError("Connection timeout");
+        tile->setErrorCode(504);
+        tile->setTtl(std::chrono::milliseconds(60000));
+
+        std::stringstream tileBytes;
+        tile->write(tileBytes);
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBytes,
+            [&](auto&& mapName, auto&& layerName){
+                return layerInfo;
+            },
+            [&](auto&& nodeId){
+                return strings;
+            }
+        );
+
+        REQUIRE(deserializedTile->error() == tile->error());
+        REQUIRE(deserializedTile->error().value() == "Connection timeout");
+        REQUIRE(deserializedTile->errorCode() == tile->errorCode());
+        REQUIRE(deserializedTile->errorCode().value() == 504);
+        REQUIRE(deserializedTile->ttl() == tile->ttl());
+        REQUIRE(deserializedTile->ttl().value().count() == 60000);
     }
 }
 
