@@ -65,6 +65,19 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
     CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 
+    if (WIN32)
+        CPMAddPackage(
+                NAME libuv
+                GIT_REPOSITORY https://github.com/libuv/libuv
+                GIT_TAG v1.48.0
+                GIT_SHALLOW ON
+                OPTIONS
+                    "LIBUV_BUILD_TESTS OFF"
+                    "LIBUV_BUILD_BENCH OFF"
+                    "LIBUV_BUILD_SHARED OFF"
+                    "LIBUV_BUILD_EXAMPLES OFF")
+    endif()
+
     CPMAddPackage(
             NAME uSockets
             GIT_REPOSITORY https://github.com/uNetworking/uSockets
@@ -72,13 +85,22 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
             GIT_SHALLOW ON
             GIT_SUBMODULES "")
     if (NOT TARGET uSockets)
-        file(GLOB_RECURSE U_SOCKETS_SOURCES "${uSockets_SOURCE_DIR}/src/*.c")
+        file(GLOB_RECURSE U_SOCKETS_SOURCES CONFIGURE_DEPENDS
+                "${uSockets_SOURCE_DIR}/src/*.c"
+                "${uSockets_SOURCE_DIR}/src/*.cpp")
         add_library(uSockets STATIC ${U_SOCKETS_SOURCES})
         target_include_directories(uSockets PUBLIC "${uSockets_SOURCE_DIR}/src")
         target_compile_definitions(uSockets PRIVATE LIBUS_USE_OPENSSL)
-        target_link_libraries(uSockets PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        target_link_libraries(uSockets PUBLIC OpenSSL::SSL OpenSSL::Crypto)
         if (WIN32)
-            target_link_libraries(uSockets PRIVATE ws2_32)
+            target_link_libraries(uSockets PUBLIC ws2_32)
+            if (TARGET uv_a)
+                target_link_libraries(uSockets PUBLIC uv_a)
+            elseif (TARGET uv)
+                target_link_libraries(uSockets PUBLIC uv)
+            else()
+                message(FATAL_ERROR "libuv was requested for uSockets on Windows, but no CMake target (uv_a/uv) was found.")
+            endif()
         endif()
     endif()
 

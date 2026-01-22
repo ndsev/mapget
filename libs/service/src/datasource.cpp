@@ -1,4 +1,6 @@
 #include "datasource.h"
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <stdexcept>
 #include <chrono>
@@ -54,6 +56,7 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
 
 void DataSource::requireAuthHeaderRegexMatchOption(std::string header, std::regex re)
 {
+    std::ranges::transform(header, header.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     authHeaderAlternatives_.insert({std::move(header), std::move(re)});
 }
 
@@ -64,7 +67,9 @@ bool DataSource::isDataSourceAuthorized(
         return true;
 
     for (auto const& [k, v] : clientHeaders) {
-        auto authHeaderPatternIt = authHeaderAlternatives_.find(k);
+        auto key = k;
+        std::ranges::transform(key, key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        auto authHeaderPatternIt = authHeaderAlternatives_.find(key);
         if (authHeaderPatternIt != authHeaderAlternatives_.end()) {
             if (std::regex_match(v, authHeaderPatternIt->second)) {
                 return true;

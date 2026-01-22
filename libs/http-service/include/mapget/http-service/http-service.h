@@ -1,6 +1,5 @@
 #pragma once
 
-#include "httplib.h"
 #include "mapget/detail/http-server.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
@@ -56,7 +55,7 @@ public:
     ~HttpService() override;
 
 protected:
-    void setup(httplib::Server& server) override;
+    void setup(uWS::App& app) override;
 
 private:
     struct Impl;

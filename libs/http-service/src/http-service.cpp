@@ -1,19 +1,29 @@
 #include "http-service.h"
+
+#include "cli.h"
 #include "mapget/log.h"
 #include "mapget/service/config.h"
 
+#include <App.h>
+
+#include <algorithm>
 #include <atomic>
-#include <condition_variable>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <sstream>
+#include <string>
+#include <thread>
+#include <type_traits>
+#include <unordered_map>
 #include <vector>
-#include "cli.h"
-#include "httplib.h"
+
 #include "nlohmann/json-schema.hpp"
 #include "nlohmann/json.hpp"
 #include "yaml-cpp/yaml.h"
+
 #include <zlib.h>
 
 #ifdef __linux__
@@ -27,27 +37,28 @@ namespace
 {
 
 /**
- * Simple gzip compressor for streaming compression
+ * Simple gzip compressor for streaming compression.
  */
-class GzipCompressor {
+class GzipCompressor
+{
 public:
-    GzipCompressor() {
+    GzipCompressor()
+    {
         strm_.zalloc = Z_NULL;
         strm_.zfree = Z_NULL;
         strm_.opaque = Z_NULL;
         // 16+MAX_WBITS enables gzip format (not just deflate)
-        int ret = deflateInit2(&strm_, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                              16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
+        int ret = deflateInit2(
+            &strm_, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
         if (ret != Z_OK) {
             throw std::runtime_error("Failed to initialize gzip compressor");
         }
     }
 
-    ~GzipCompressor() {
-        deflateEnd(&strm_);
-    }
+    ~GzipCompressor() { deflateEnd(&strm_); }
 
-    std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH) {
+    std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH)
+    {
         std::string result;
         if (size == 0 && flush_mode == Z_NO_FLUSH) {
             return result;
@@ -60,12 +71,12 @@ public:
         do {
             strm_.avail_out = sizeof(outbuf);
             strm_.next_out = reinterpret_cast<Bytef*>(outbuf);
-            
+
             int ret = deflate(&strm_, flush_mode);
             if (ret == Z_STREAM_ERROR) {
                 throw std::runtime_error("Gzip compression failed");
             }
-            
+
             size_t have = sizeof(outbuf) - strm_.avail_out;
             result.append(outbuf, have);
         } while (strm_.avail_out == 0);
@@ -73,19 +84,26 @@ public:
         return result;
     }
 
-    std::string finish() {
-        return compress(nullptr, 0, Z_FINISH);
-    }
+    std::string finish() { return compress(nullptr, 0, Z_FINISH); }
 
 private:
     z_stream strm_{};
 };
 
-/**
- * Recursively convert a YAML node to a JSON object,
- * with special handling for sensitive fields.
- * The function returns a nlohmann::json object and updates maskedSecretMap.
- */
+[[nodiscard]] AuthHeaders authHeadersFromRequest(uWS::HttpRequest* req)
+{
+    AuthHeaders headers;
+    for (auto const& [k, v] : *req) {
+        headers.emplace(std::string(k), std::string(v));
+    }
+    return headers;
+}
+
+[[nodiscard]] bool containsGzip(std::string_view acceptEncoding)
+{
+    return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;
+}
+
 }  // namespace
 
 struct HttpService::Impl
@@ -95,64 +113,47 @@ struct HttpService::Impl
     mutable std::atomic<uint64_t> binaryRequestCounter_{0};
     mutable std::atomic<uint64_t> jsonRequestCounter_{0};
 
-    explicit Impl(HttpService& self, const HttpServiceConfig& config) 
-        : self_(self), config_(config) {}
+    explicit Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config) {}
 
-    enum class ResponseType {
-        Binary,
-        Json
-    };
+    enum class ResponseType { Binary, Json };
 
-    void tryMemoryTrim(ResponseType responseType) const {
-        uint64_t interval = (responseType == ResponseType::Binary) 
-            ? config_.memoryTrimIntervalBinary 
-            : config_.memoryTrimIntervalJson;
-        
-        if (interval > 0) {
-            auto& counter = (responseType == ResponseType::Binary) 
-                ? binaryRequestCounter_ 
-                : jsonRequestCounter_;
-            
-            auto count = counter.fetch_add(1, std::memory_order_relaxed);
-            if ((count % interval) == 0) {
-#ifdef __linux__
-                // Only log in debug builds to reduce overhead
-                #ifndef NDEBUG
-                const char* typeStr = (responseType == ResponseType::Binary) ? "binary" : "JSON";
-                log().debug("Trimming memory after {} {} requests (interval: {})", count, typeStr, interval);
-                #endif
-                malloc_trim(0);
-#endif
-                // On non-Linux platforms, this is a no-op but we still track the counter
-            }
+    void tryMemoryTrim(ResponseType responseType) const
+    {
+        uint64_t interval =
+            (responseType == ResponseType::Binary) ? config_.memoryTrimIntervalBinary : config_.memoryTrimIntervalJson;
+
+        if (interval == 0) {
+            return;
         }
+
+        auto& counter = (responseType == ResponseType::Binary) ? binaryRequestCounter_ : jsonRequestCounter_;
+        auto count = counter.fetch_add(1, std::memory_order_relaxed);
+        if ((count % interval) != 0) {
+            return;
+        }
+
+#ifdef __linux__
+#ifndef NDEBUG
+        const char* typeStr = (responseType == ResponseType::Binary) ? "binary" : "JSON";
+        log().debug("Trimming memory after {} {} requests (interval: {})", count, typeStr, interval);
+#endif
+        malloc_trim(0);
+#endif
     }
 
-    // Use a shared buffer for the responses and a mutex for thread safety.
-    struct HttpTilesRequestState
+    struct TilesStreamState : std::enable_shared_from_this<TilesStreamState>
     {
         static constexpr auto binaryMimeType = "application/binary";
         static constexpr auto jsonlMimeType = "application/jsonl";
         static constexpr auto anyMimeType = "*/*";
 
-        std::mutex mutex_;
-        std::condition_variable resultEvent_;
-
-        uint64_t requestId_;
-        std::stringstream buffer_;
-        std::string responseType_;
-        std::unique_ptr<TileLayerStream::Writer> writer_;
-        std::vector<LayerTilesRequest::Ptr> requests_;
-        TileLayerStream::StringPoolOffsetMap stringOffsets_;
-        std::unique_ptr<GzipCompressor> compressor_;  // Store compressor per request
-
-        HttpTilesRequestState()
+        explicit TilesStreamState(Impl const& impl, uWS::HttpResponse<false>* res, uWS::Loop* loop)
+            : impl_(impl), res_(res), loop_(loop)
         {
             static std::atomic_uint64_t nextRequestId;
-            writer_ = std::make_unique<TileLayerStream::Writer>(
-                [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
-                stringOffsets_);
             requestId_ = nextRequestId++;
+            writer_ = std::make_unique<TileLayerStream::Writer>(
+                [this](auto&& msg, auto&& /*msgType*/) { appendOutgoingUnlocked(msg); }, stringOffsets_);
         }
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
@@ -161,57 +162,194 @@ struct HttpService::Impl
             std::string layerId = requestJson["layerId"];
             std::vector<TileId> tileIds;
             tileIds.reserve(requestJson["tileIds"].size());
-            for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>())
+            for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>()) {
                 tileIds.emplace_back(tid);
-            requests_
-                .push_back(std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
+            }
+            requests_.push_back(std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
         }
 
-        void setResponseType(std::string const& s)
+        [[nodiscard]] bool setResponseTypeFromAccept(std::string_view acceptHeader, std::string& error)
         {
-            responseType_ = s;
-            if (responseType_ == HttpTilesRequestState::binaryMimeType)
-                return;
-            if (responseType_ == HttpTilesRequestState::jsonlMimeType)
-                return;
-            if (responseType_ == HttpTilesRequestState::anyMimeType) {
+            responseType_ = std::string(acceptHeader);
+            if (responseType_.empty())
+                responseType_ = anyMimeType;
+            if (responseType_ == anyMimeType)
                 responseType_ = binaryMimeType;
-                return;
+
+            if (responseType_ == binaryMimeType) {
+                trimResponseType_ = ResponseType::Binary;
+                return true;
             }
-            raise(fmt::format("Unknown Accept-Header value {}", responseType_));
+            if (responseType_ == jsonlMimeType) {
+                trimResponseType_ = ResponseType::Json;
+                return true;
+            }
+
+            error = "Unknown Accept header value: " + responseType_;
+            return false;
+        }
+
+        void enableGzip() { compressor_ = std::make_unique<GzipCompressor>(); }
+
+        void onAborted()
+        {
+            if (aborted_.exchange(true))
+                return;
+            for (auto const& req : requests_) {
+                if (!req->isDone()) {
+                    impl_.self_.abort(req);
+                }
+            }
         }
 
         void addResult(TileLayer::Ptr const& result)
         {
-            std::unique_lock lock(mutex_);
-            log().debug("Response ready: {}", MapTileKey(*result).toString());
-            if (responseType_ == binaryMimeType) {
-                // Binary response
-                writer_->write(result);
+            {
+                std::lock_guard lock(mutex_);
+                if (aborted_)
+                    return;
+
+                log().debug("Response ready: {}", MapTileKey(*result).toString());
+                if (responseType_ == binaryMimeType) {
+                    writer_->write(result);
+                } else {
+                    auto dumped = result->toJson().dump(
+                        -1, ' ', false, nlohmann::json::error_handler_t::ignore);
+                    appendOutgoingUnlocked(dumped);
+                    appendOutgoingUnlocked("\n");
+                }
             }
-            else {
-                // JSON response - optimize with compact dump settings
-                // TODO: Implement direct streaming with result->writeGeoJsonTo(buffer_)
-                // to avoid intermediate JSON object creation entirely
-                auto json = result->toJson();
-                // Use compact dump: no indentation, no spaces, ignore errors
-                // This reduces string allocation overhead
-                buffer_ << json.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore) << "\n";
-            }
-            resultEvent_.notify_one();
+            scheduleDrain();
         }
+
+        void onRequestDone()
+        {
+            {
+                std::lock_guard lock(mutex_);
+                if (aborted_)
+                    return;
+
+                bool allDoneNow = std::all_of(
+                    requests_.begin(), requests_.end(), [](auto const& r) { return r->isDone(); });
+
+                if (allDoneNow && !allDone_) {
+                    allDone_ = true;
+                    if (responseType_ == binaryMimeType && !endOfStreamSent_) {
+                        writer_->sendEndOfStream();
+                        endOfStreamSent_ = true;
+                    }
+                }
+            }
+            scheduleDrain();
+        }
+
+        void scheduleDrain()
+        {
+            if (aborted_ || responseEnded_)
+                return;
+            if (drainScheduled_.exchange(true))
+                return;
+
+            auto weak = weak_from_this();
+            loop_->defer([weak = std::move(weak)]() mutable {
+                if (auto self = weak.lock()) {
+                    self->drainOnLoop();
+                }
+            });
+        }
+
+        void drainOnLoop()
+        {
+            drainScheduled_ = false;
+            if (aborted_ || responseEnded_)
+                return;
+
+            constexpr size_t maxChunk = 64 * 1024;
+
+            for (;;) {
+                std::string chunk;
+                bool done = false;
+                {
+                    std::lock_guard lock(mutex_);
+                    if (!pending_.empty()) {
+                        size_t n = std::min(pending_.size(), maxChunk);
+                        chunk.assign(pending_.data(), n);
+                        pending_.erase(0, n);
+                    } else {
+                        if (allDone_ && compressor_ && !compressionFinished_) {
+                            pending_.append(compressor_->finish());
+                            compressionFinished_ = true;
+                            continue;
+                        }
+                        done = allDone_;
+                    }
+                }
+
+                if (!chunk.empty()) {
+                    bool ok = res_->write(chunk);
+                    if (!ok) {
+                        // Backpressure: resume in onWritable.
+                        return;
+                    }
+                    continue;
+                }
+
+                if (done) {
+                    responseEnded_ = true;
+                    res_->end();
+                    impl_.tryMemoryTrim(trimResponseType_);
+                }
+                return;
+            }
+        }
+
+        void appendOutgoingUnlocked(std::string_view bytes)
+        {
+            if (bytes.empty())
+                return;
+
+            if (compressor_) {
+                pending_.append(compressor_->compress(bytes.data(), bytes.size()));
+            } else {
+                pending_.append(bytes);
+            }
+        }
+
+        Impl const& impl_;
+        uWS::HttpResponse<false>* res_;
+        uWS::Loop* loop_;
+
+        std::mutex mutex_;
+        uint64_t requestId_ = 0;
+
+        std::string responseType_;
+        ResponseType trimResponseType_ = ResponseType::Binary;
+
+        std::string pending_;
+        std::unique_ptr<TileLayerStream::Writer> writer_;
+        std::vector<LayerTilesRequest::Ptr> requests_;
+        TileLayerStream::StringPoolOffsetMap stringOffsets_;
+
+        std::unique_ptr<GzipCompressor> compressor_;
+        bool compressionFinished_ = false;
+        bool endOfStreamSent_ = false;
+        bool allDone_ = false;
+
+        std::atomic_bool aborted_{false};
+        std::atomic_bool drainScheduled_{false};
+        std::atomic_bool responseEnded_{false};
     };
 
     mutable std::mutex clientRequestMapMutex_;
-    mutable std::unordered_map<std::string, std::shared_ptr<HttpTilesRequestState>> requestStatePerClientId_;
+    mutable std::unordered_map<std::string, std::shared_ptr<TilesStreamState>> requestStatePerClientId_;
 
-    void abortRequestsForClientId(std::string clientId, std::shared_ptr<HttpTilesRequestState> newState = nullptr) const
+    void abortRequestsForClientId(
+        std::string const& clientId,
+        std::shared_ptr<TilesStreamState> newState = nullptr) const
     {
         std::unique_lock clientRequestMapAccess(clientRequestMapMutex_);
         auto clientRequestIt = requestStatePerClientId_.find(clientId);
         if (clientRequestIt != requestStatePerClientId_.end()) {
-            // Ensure that any previous requests from the same clientId
-            // are finished post-haste!
             bool anySoftAbort = false;
             for (auto const& req : clientRequestIt->second->requests_) {
                 if (!req->isDone()) {
@@ -224,205 +362,173 @@ struct HttpService::Impl
             requestStatePerClientId_.erase(clientRequestIt);
         }
         if (newState) {
-            requestStatePerClientId_.emplace(clientId, newState);
+            requestStatePerClientId_.emplace(clientId, std::move(newState));
         }
     }
 
-    /**
-     * Wraps around the generic mapget service's request() function
-     * to include httplib request decoding and response encoding.
-     */
-    void handleTilesRequest(const httplib::Request& req, httplib::Response& res) const
+    void handleTilesRequest(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) const
     {
-        // Parse the JSON request.
-        nlohmann::json j = nlohmann::json::parse(req.body);
-        auto requestsJson = j["requests"];
+        auto* loop = uWS::Loop::get();
+        auto state = std::make_shared<TilesStreamState>(*this, res, loop);
 
-        // TODO: Limit number of requests to avoid DoS to other users.
-        // Within one HTTP request, all requested tiles from the same map+layer
-        // combination should be in a single LayerTilesRequest.
-        auto state = std::make_shared<HttpTilesRequestState>();
-        log().info("Processing tiles request {}", state->requestId_);
-        for (auto& requestJson : requestsJson) {
-            state->parseRequestFromJson(requestJson);
-        }
+        std::string accept = std::string(req->getHeader("accept"));
+        std::string acceptEncoding = std::string(req->getHeader("accept-encoding"));
+        auto clientHeaders = authHeadersFromRequest(req);
 
-        // Parse stringPoolOffsets.
-        if (j.contains("stringPoolOffsets")) {
-            for (auto& item : j["stringPoolOffsets"].items()) {
-                state->stringOffsets_[item.key()] = item.value().get<simfil::StringId>();
+        res->onAborted([state]() { state->onAborted(); });
+
+        res->onData([this,
+                        res,
+                        state,
+                        clientHeaders = std::move(clientHeaders),
+                        accept = std::move(accept),
+                        acceptEncoding = std::move(acceptEncoding),
+                        body = std::string()](std::string_view chunk, bool last) mutable {
+            if (state->aborted_ || state->responseEnded_)
+                return;
+
+            body.append(chunk.data(), chunk.size());
+            if (!last)
+                return;
+
+            nlohmann::json j;
+            try {
+                j = nlohmann::json::parse(body);
             }
-        }
+            catch (const std::exception& e) {
+                state->responseEnded_ = true;
+                res->writeStatus("400 Bad Request");
+                res->writeHeader("Content-Type", "text/plain");
+                res->end(std::string("Invalid JSON: ") + e.what());
+                return;
+            }
 
-        // Determine response type.
-        state->setResponseType(req.get_header_value("Accept"));
+            auto requestsIt = j.find("requests");
+            if (requestsIt == j.end() || !requestsIt->is_array()) {
+                state->responseEnded_ = true;
+                res->writeStatus("400 Bad Request");
+                res->writeHeader("Content-Type", "text/plain");
+                res->end("Missing or invalid 'requests' array");
+                return;
+            }
 
-        // Process requests.
-        for (auto& request : state->requests_) {
-            request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
-            request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
-            request->onDone_ = [state](RequestStatus r)
-            {
-                state->resultEvent_.notify_one();
-            };
-        }
-        auto canProcess = self_.request(
-            state->requests_,
-            AuthHeaders{req.headers.begin(), req.headers.end()});
+            log().info("Processing tiles request {}", state->requestId_);
+            for (auto& requestJson : *requestsIt) {
+                state->parseRequestFromJson(requestJson);
+            }
 
-        if (!canProcess) {
-            // Send a status report detailing for each request
-            // whether its data source is unavailable or it was aborted.
-            res.status = 400;
-            std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
-            for (const auto& r : state->requests_) {
-                requestStatuses.push_back(static_cast<std::underlying_type_t<RequestStatus>>(r->getStatus()));
-                if (r->getStatus() == RequestStatus::Unauthorized) {
-                    res.status = 403;  // Forbidden.
+            if (j.contains("stringPoolOffsets")) {
+                for (auto& item : j["stringPoolOffsets"].items()) {
+                    state->stringOffsets_[item.key()] = item.value().get<simfil::StringId>();
                 }
             }
-            res.set_content(
-                nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
-                "application/json");
-            return;
-        }
 
-        // Parse/Process clientId.
-        if (j.contains("clientId")) {
-            auto clientId = j["clientId"].get<std::string>();
-            abortRequestsForClientId(clientId, state);
-        }
+            std::string acceptError;
+            if (!state->setResponseTypeFromAccept(accept, acceptError)) {
+                state->responseEnded_ = true;
+                res->writeStatus("400 Bad Request");
+                res->writeHeader("Content-Type", "text/plain");
+                res->end(acceptError);
+                return;
+            }
 
-        // Check if client accepts gzip compression
-        bool enableGzip = false;
-        if (req.has_header("Accept-Encoding")) {
-            std::string acceptEncoding = req.get_header_value("Accept-Encoding");
-            enableGzip = acceptEncoding.find("gzip") != std::string::npos;
-            log().debug("Accept-Encoding header: '{}', enableGzip: {}", acceptEncoding, enableGzip);
-        } else {
-            log().debug("No Accept-Encoding header present");
-        }
+            const bool gzip = containsGzip(acceptEncoding);
+            if (gzip) {
+                state->enableGzip();
+            }
 
-        // Set Content-Encoding header if compression is enabled
-        if (enableGzip) {
-            res.set_header("Content-Encoding", "gzip");
-            state->compressor_ = std::make_unique<GzipCompressor>();
-            log().debug("Set Content-Encoding: gzip header");
-        }
+            for (auto& request : state->requests_) {
+                request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
+                request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
+                request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
+            }
 
-        // For efficiency, set up httplib to stream tile layer responses to client:
-        // (1) Lambda continuously supplies response data to httplib's DataSink,
-        //     picking up data from state->buffer_ until all tile requests are done.
-        //     Then, signal sink->done() to close the stream with a 200 status.
-        //     Using chunked transfer encoding with optional manual compression.
-        // (2) Lambda acts as a cleanup routine, triggered by httplib upon request wrap-up.
-        //     The success flag indicates if wrap-up was due to sink->done() or external factors
-        //     like network errors or request aborts in lengthy tile requests (e.g., map-viewer).
-        res.set_chunked_content_provider(
-            state->responseType_,
-            [state](size_t offset, httplib::DataSink& sink)
-            {
-                std::unique_lock lock(state->mutex_);
-
-                // Wait until there is data to be read.
-                std::string strBuf;
-                bool allDone = false;
-                state->resultEvent_.wait(
-                    lock,
-                    [&]
-                    {
-                        allDone = std::all_of(
-                            state->requests_.begin(),
-                            state->requests_.end(),
-                            [](const auto& r) { return r->isDone(); });
-                        if (allDone && state->responseType_ == HttpTilesRequestState::binaryMimeType)
-                            state->writer_->sendEndOfStream();
-                        strBuf = state->buffer_.str();
-                        return !strBuf.empty() || allDone;
-                    });
-
-                if (!strBuf.empty()) {
-                    // Compress data if gzip is enabled
-                    if (state->compressor_) {
-                        std::string compressed = state->compressor_->compress(strBuf.data(), strBuf.size());
-                        if (!compressed.empty()) {
-                            log().debug("Compressing: {} bytes -> {} bytes (request {})", 
-                                      strBuf.size(), compressed.size(), state->requestId_);
-                            sink.write(compressed.data(), compressed.size());
-                        }
-                    } else {
-                        log().debug("Streaming {} bytes (no compression)...", strBuf.size());
-                        sink.write(strBuf.data(), strBuf.size());
-                    }
-                    sink.os.flush();
-                    state->buffer_.str("");  // Clear buffer content
-                    state->buffer_.clear();  // Clear error flags
-                    // Force release of internal buffer memory
-                    std::stringstream().swap(state->buffer_);
+            auto canProcess = self_.request(state->requests_, clientHeaders);
+            if (!canProcess) {
+                state->responseEnded_ = true;
+                std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
+                bool anyUnauthorized = false;
+                for (auto const& r : state->requests_) {
+                    auto status = r->getStatus();
+                    requestStatuses.emplace_back(static_cast<std::underlying_type_t<RequestStatus>>(status));
+                    anyUnauthorized |= (status == RequestStatus::Unauthorized);
                 }
+                res->writeStatus(anyUnauthorized ? "403 Forbidden" : "400 Bad Request");
+                res->writeHeader("Content-Type", "application/json");
+                res->end(nlohmann::json::object({{"status", requestStatuses}}).dump());
+                return;
+            }
 
-                // Call sink.done() when all requests are done.
-                if (allDone) {
-                    // Finish compression if enabled
-                    if (state->compressor_) {
-                        std::string finalChunk = state->compressor_->finish();
-                        log().debug(
-                            "Final compression chunk is {} bytes.",
-                            strBuf.size(), finalChunk.size(), state->requestId_);
-                        if (!finalChunk.empty()) {
-                            sink.write(finalChunk.data(), finalChunk.size());
-                        }
-                    }
-                    sink.done();
-                }
+            if (j.contains("clientId")) {
+                abortRequestsForClientId(j["clientId"].get<std::string>(), state);
+            }
 
-                return true;
-            },
-            // Network error/timeout of request to datasource:
-            // cleanup callback to abort the requests.
-            [state, this](bool success)
-            {
-                if (!success) {
-                    log().warn("Aborting tiles request {}", state->requestId_);
-                    for (auto& request : state->requests_) {
-                        self_.abort(request);
-                    }
-                }
-                else {
-                    log().info("Tiles request {} was successful.", state->requestId_);
-                    // Determine response type and trim accordingly
-                    ResponseType respType = (state->responseType_ == HttpTilesRequestState::binaryMimeType) 
-                        ? ResponseType::Binary 
-                        : ResponseType::Json;
-                    tryMemoryTrim(respType);
-                }
+            if (gzip) {
+                res->writeHeader("Content-Encoding", "gzip");
+            }
+
+            res->writeHeader("Content-Type", state->responseType_);
+            res->onWritable([state](uintmax_t) {
+                state->drainOnLoop();
+                return !state->responseEnded_.load();
             });
+
+            state->scheduleDrain();
+        });
     }
 
-    void handleAbortRequest(const httplib::Request& req, httplib::Response& res) const
+    void handleAbortRequest(uWS::HttpResponse<false>* res) const
     {
-        // Parse the JSON request.
-        nlohmann::json j = nlohmann::json::parse(req.body);
-        if (j.contains("clientId")) {
-            auto const clientId = j["clientId"].get<std::string>();
-            abortRequestsForClientId(clientId);
-        }
-        else {
-            res.status = 400;
-            res.set_content("Missing clientId", "text/plain");
-        }
+        auto aborted = std::make_shared<std::atomic_bool>(false);
+        res->onAborted([aborted]() { *aborted = true; });
+
+        res->onData([this, res, aborted, body = std::string()](std::string_view chunk, bool last) mutable {
+            if (*aborted)
+                return;
+            body.append(chunk.data(), chunk.size());
+            if (!last)
+                return;
+
+            try {
+                auto j = nlohmann::json::parse(body);
+                if (j.contains("clientId")) {
+                    abortRequestsForClientId(j["clientId"].get<std::string>());
+                    if (*aborted)
+                        return;
+                    res->writeStatus("200 OK");
+                    res->writeHeader("Content-Type", "text/plain");
+                    res->end("OK");
+                    return;
+                }
+
+                if (*aborted)
+                    return;
+                res->writeStatus("400 Bad Request");
+                res->writeHeader("Content-Type", "text/plain");
+                res->end("Missing clientId");
+            }
+            catch (const std::exception& e) {
+                if (*aborted)
+                    return;
+                res->writeStatus("400 Bad Request");
+                res->writeHeader("Content-Type", "text/plain");
+                res->end(std::string("Invalid JSON: ") + e.what());
+            }
+        });
     }
 
-    void handleSourcesRequest(const httplib::Request& req, httplib::Response& res) const
+    void handleSourcesRequest(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) const
     {
         auto sourcesInfo = nlohmann::json::array();
-        for (auto& source : self_.info(AuthHeaders{req.headers.begin(), req.headers.end()})) {
+        for (auto& source : self_.info(authHeadersFromRequest(req))) {
             sourcesInfo.push_back(source.toJson());
         }
-        res.set_content(sourcesInfo.dump(), "application/json");
+        res->writeStatus("200 OK");
+        res->writeHeader("Content-Type", "application/json");
+        res->end(sourcesInfo.dump());
     }
 
-    void handleStatusRequest(const httplib::Request&, httplib::Response& res) const
+    void handleStatusRequest(uWS::HttpResponse<false>* res) const
     {
         auto serviceStats = self_.getStatistics();
         auto cacheStats = self_.cache()->getStatistics();
@@ -430,74 +536,93 @@ struct HttpService::Impl
         std::ostringstream oss;
         oss << "<html><body>";
         oss << "<h1>Status Information</h1>";
-
-        // Output serviceStats
         oss << "<h2>Service Statistics</h2>";
-        oss << "<pre>" << serviceStats.dump(4) << "</pre>";  // Indentation of 4 for pretty printing
-
-        // Output cacheStats
+        oss << "<pre>" << serviceStats.dump(4) << "</pre>";
         oss << "<h2>Cache Statistics</h2>";
-        oss << "<pre>" << cacheStats.dump(4) << "</pre>";  // Indentation of 4 for pretty printing
-
+        oss << "<pre>" << cacheStats.dump(4) << "</pre>";
         oss << "</body></html>";
-        res.set_content(oss.str(), "text/html");
+
+        res->writeStatus("200 OK");
+        res->writeHeader("Content-Type", "text/html");
+        res->end(oss.str());
     }
 
-    void handleLocateRequest(const httplib::Request& req, httplib::Response& res) const
+    void handleLocateRequest(uWS::HttpResponse<false>* res) const
     {
-        // Parse the JSON request.
-        nlohmann::json j = nlohmann::json::parse(req.body);
-        auto requestsJson = j["requests"];
-        auto allResponsesJson = nlohmann::json::array();
+        auto aborted = std::make_shared<std::atomic_bool>(false);
+        res->onAborted([aborted]() { *aborted = true; });
 
-        for (auto const& locateReqJson : requestsJson) {
-            LocateRequest locateReq{locateReqJson};
-            auto responsesJson = nlohmann::json::array();
-            for (auto const& resp : self_.locate(locateReq))
-                responsesJson.emplace_back(resp.serialize());
-            allResponsesJson.emplace_back(responsesJson);
-        }
+        res->onData([this, res, aborted, body = std::string()](std::string_view chunk, bool last) mutable {
+            if (*aborted)
+                return;
+            body.append(chunk.data(), chunk.size());
+            if (!last)
+                return;
 
-        res.set_content(
-            nlohmann::json::object({{"responses", allResponsesJson}}).dump(),
-            "application/json");
+            try {
+                nlohmann::json j = nlohmann::json::parse(body);
+                auto requestsJson = j["requests"];
+                auto allResponsesJson = nlohmann::json::array();
+
+                for (auto const& locateReqJson : requestsJson) {
+                    LocateRequest locateReq{locateReqJson};
+                    auto responsesJson = nlohmann::json::array();
+                    for (auto const& resp : self_.locate(locateReq))
+                        responsesJson.emplace_back(resp.serialize());
+                    allResponsesJson.emplace_back(responsesJson);
+                }
+
+                if (*aborted)
+                    return;
+                res->writeStatus("200 OK");
+                res->writeHeader("Content-Type", "application/json");
+                res->end(nlohmann::json::object({{"responses", allResponsesJson}}).dump());
+            }
+            catch (const std::exception& e) {
+                if (*aborted)
+                    return;
+                res->writeStatus("400 Bad Request");
+                res->writeHeader("Content-Type", "text/plain");
+                res->end(std::string("Invalid JSON: ") + e.what());
+            }
+        });
     }
 
-    static bool openConfigFile(std::ifstream& configFile, httplib::Response& res)
+    static bool openConfigFile(std::ifstream& configFile, uWS::HttpResponse<false>* res)
     {
         auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
         if (!configFilePath.has_value()) {
-            res.status = 404;  // Not found.
-            res.set_content(
-                "The config file path is not set. Check the server configuration.",
-                "text/plain");
+            res->writeStatus("404 Not Found");
+            res->writeHeader("Content-Type", "text/plain");
+            res->end("The config file path is not set. Check the server configuration.");
             return false;
         }
 
         std::filesystem::path path = *configFilePath;
-        if (!configFilePath || !std::filesystem::exists(path)) {
-            res.status = 404;  // Not found.
-            res.set_content("The server does not have a config file.", "text/plain");
+        if (!std::filesystem::exists(path)) {
+            res->writeStatus("404 Not Found");
+            res->writeHeader("Content-Type", "text/plain");
+            res->end("The server does not have a config file.");
             return false;
         }
 
         configFile.open(*configFilePath);
         if (!configFile) {
-            res.status = 500;  // Internal Server Error.
-            res.set_content("Failed to open config file.", "text/plain");
+            res->writeStatus("500 Internal Server Error");
+            res->writeHeader("Content-Type", "text/plain");
+            res->end("Failed to open config file.");
             return false;
         }
 
         return true;
     }
 
-    static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
+    static void handleGetConfigRequest(uWS::HttpResponse<false>* res)
     {
         if (!isGetConfigEndpointEnabled()) {
-            res.status = 403;  // Forbidden.
-            res.set_content(
-                "The GET /config endpoint is disabled by the server administrator.",
-                "text/plain");
+            res->writeStatus("403 Forbidden");
+            res->writeHeader("Content-Type", "text/plain");
+            res->end("The GET /config endpoint is disabled by the server administrator.");
             return;
         }
 
@@ -505,10 +630,10 @@ struct HttpService::Impl
         if (!openConfigFile(configFile, res)) {
             return;
         }
+
         nlohmann::json jsonSchema = DataSourceConfigService::get().getDataSourceConfigSchema();
 
         try {
-            // Load config YAML, expose the parts which clients may edit.
             YAML::Node configYaml = YAML::Load(configFile);
             nlohmann::json jsonConfig;
             std::unordered_map<std::string, std::string> maskedSecretMap;
@@ -522,147 +647,168 @@ struct HttpService::Impl
             combinedJson["model"] = jsonConfig;
             combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
 
-            // Set the response
-            res.status = 200;  // OK
-            res.set_content(combinedJson.dump(2), "application/json");
+            res->writeStatus("200 OK");
+            res->writeHeader("Content-Type", "application/json");
+            res->end(combinedJson.dump(2));
         }
         catch (const std::exception& e) {
-            res.status = 500;  // Internal Server Error
-            res.set_content("Error processing config file: " + std::string(e.what()), "text/plain");
+            res->writeStatus("500 Internal Server Error");
+            res->writeHeader("Content-Type", "text/plain");
+            res->end(std::string("Error processing config file: ") + e.what());
         }
     }
 
-    static void handlePostConfigRequest(const httplib::Request& req, httplib::Response& res)
+    void handlePostConfigRequest(uWS::HttpResponse<false>* res) const
     {
         if (!isPostConfigEndpointEnabled()) {
-            res.status = 403;  // Forbidden.
-            res.set_content(
-                "The POST /config endpoint is not enabled by the server administrator.",
-                "text/plain");
+            res->writeStatus("403 Forbidden");
+            res->writeHeader("Content-Type", "text/plain");
+            res->end("The POST /config endpoint is not enabled by the server administrator.");
             return;
         }
 
-        std::mutex mtx;
-        std::condition_variable cv;
-        bool update_done = false;
+        struct ConfigUpdateState : std::enable_shared_from_this<ConfigUpdateState>
+        {
+            uWS::HttpResponse<false>* res = nullptr;
+            uWS::Loop* loop = nullptr;
+            std::atomic_bool aborted{false};
+            std::atomic_bool done{false};
+            std::atomic_bool wroteConfig{false};
+            std::unique_ptr<DataSourceConfigService::Subscription> subscription;
+            std::string body;
+        };
 
-        std::ifstream configFile;
-        if (!openConfigFile(configFile, res)) {
-            return;
-        }
+        auto state = std::make_shared<ConfigUpdateState>();
+        state->res = res;
+        state->loop = uWS::Loop::get();
 
-        // Subscribe to configuration changes.
-        auto subscription = DataSourceConfigService::get().subscribe(
-            [&](const std::vector<YAML::Node>& serviceConfigNodes)
-            {
-                std::lock_guard lock(mtx);
-                res.status = 200;
-                res.set_content("Configuration updated and applied successfully.", "text/plain");
-                update_done = true;
-                cv.notify_one();
-            },
-            [&](const std::string& error)
-            {
-                std::lock_guard lock(mtx);
-                res.status = 500;
-                res.set_content("Error applying the configuration: " + error, "text/plain");
-                update_done = true;
-                cv.notify_one();
-            });
+        res->onAborted([state]() {
+            state->aborted = true;
+            state->done = true;
+            state->subscription.reset();
+        });
 
-        // Parse the JSON from the request body.
-        nlohmann::json jsonConfig;
-        try {
-            jsonConfig = nlohmann::json::parse(req.body);
-        }
-        catch (const nlohmann::json::parse_error& e) {
-            res.status = 400;  // Bad Request
-            res.set_content("Invalid JSON format: " + std::string(e.what()), "text/plain");
-            return;
-        }
+        res->onData([state](std::string_view chunk, bool last) mutable {
+            if (state->aborted)
+                return;
+            state->body.append(chunk.data(), chunk.size());
+            if (!last)
+                return;
 
-        // Validate JSON against schema.
-        try {
-            DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
-        }
-        catch (const std::exception& e) {
-            res.status = 500;  // Internal Server Error.
-            res.set_content("Validation failed: " + std::string(e.what()), "text/plain");
-            return;
-        }
+            std::ifstream configFile;
+            if (!Impl::openConfigFile(configFile, state->res)) {
+                state->done = true;
+                return;
+            }
 
-        // Load the YAML, parse the secrets.
-        auto yamlConfig = YAML::Load(configFile);
-        std::unordered_map<std::string, std::string> maskedSecrets;
-        yamlToJson(yamlConfig, true, &maskedSecrets);
+            nlohmann::json jsonConfig;
+            try {
+                jsonConfig = nlohmann::json::parse(state->body);
+            }
+            catch (const nlohmann::json::parse_error& e) {
+                state->res->writeStatus("400 Bad Request");
+                state->res->writeHeader("Content-Type", "text/plain");
+                state->res->end(std::string("Invalid JSON format: ") + e.what());
+                state->done = true;
+                return;
+            }
 
-        // Create YAML nodes from JSON nodes.
-        for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
-            if (jsonConfig.contains(key))
-                yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
-        }
+            try {
+                DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
+            }
+            catch (const std::exception& e) {
+                state->res->writeStatus("500 Internal Server Error");
+                state->res->writeHeader("Content-Type", "text/plain");
+                state->res->end(std::string("Validation failed: ") + e.what());
+                state->done = true;
+                return;
+            }
 
-        // Write the YAML to configFilePath.
-        update_done = false;
-        configFile.close();
-        log().trace("Writing new config.");
-        std::ofstream newConfigFile(*DataSourceConfigService::get().getConfigFilePath());
-        newConfigFile << yamlConfig;
-        newConfigFile.close();
+            auto yamlConfig = YAML::Load(configFile);
+            std::unordered_map<std::string, std::string> maskedSecrets;
+            yamlToJson(yamlConfig, true, &maskedSecrets);
 
-        // Wait for the subscription callback.
-        std::unique_lock<std::mutex> lk(mtx);
-        if (!cv.wait_for(lk, std::chrono::seconds(60), [&] { return update_done; })) {
-            res.status = 500;  // Internal Server Error.
-            res.set_content("Timeout while waiting for config to update.", "text/plain");
-        }
+            for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
+                if (jsonConfig.contains(key))
+                    yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
+            }
+
+            // Subscribe before writing; ignore any callbacks that happen before we write.
+            state->subscription = DataSourceConfigService::get().subscribe(
+                [state](std::vector<YAML::Node> const&) mutable {
+                    if (!state->wroteConfig) {
+                        return;
+                    }
+                    if (state->done.exchange(true) || state->aborted)
+                        return;
+                    state->loop->defer([state]() mutable {
+                        if (state->aborted)
+                            return;
+                        state->res->writeStatus("200 OK");
+                        state->res->writeHeader("Content-Type", "text/plain");
+                        state->res->end("Configuration updated and applied successfully.");
+                        state->subscription.reset();
+                    });
+                },
+                [state](std::string const& error) mutable {
+                    if (!state->wroteConfig) {
+                        return;
+                    }
+                    if (state->done.exchange(true) || state->aborted)
+                        return;
+                    state->loop->defer([state, error]() mutable {
+                        if (state->aborted)
+                            return;
+                        state->res->writeStatus("500 Internal Server Error");
+                        state->res->writeHeader("Content-Type", "text/plain");
+                        state->res->end(std::string("Error applying the configuration: ") + error);
+                        state->subscription.reset();
+                    });
+                });
+
+            configFile.close();
+            log().trace("Writing new config.");
+            state->wroteConfig = true;
+            std::ofstream newConfigFile(*DataSourceConfigService::get().getConfigFilePath());
+            newConfigFile << yamlConfig;
+            newConfigFile.close();
+
+            // Timeout fail-safe (rare endpoint; ok to spawn a thread).
+            std::thread([weak = state->weak_from_this()]() {
+                std::this_thread::sleep_for(std::chrono::seconds(60));
+                if (auto state = weak.lock()) {
+                    if (state->done.exchange(true) || state->aborted)
+                        return;
+                    state->loop->defer([state]() mutable {
+                        if (state->aborted)
+                            return;
+                        state->res->writeStatus("500 Internal Server Error");
+                        state->res->writeHeader("Content-Type", "text/plain");
+                        state->res->end("Timeout while waiting for config to update.");
+                        state->subscription.reset();
+                    });
+                }
+            }).detach();
+        });
     }
 };
 
 HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
-    : Service(std::move(cache), config.watchConfig, config.defaultTtl),
-      impl_(std::make_unique<Impl>(*this, config))
+    : Service(std::move(cache), config.watchConfig, config.defaultTtl), impl_(std::make_unique<Impl>(*this, config))
 {
 }
 
 HttpService::~HttpService() = default;
 
-void HttpService::setup(httplib::Server& server)
+void HttpService::setup(uWS::App& app)
 {
-    server.Post(
-        "/tiles",
-        [&](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleTilesRequest(req, res); });
-
-    server.Post(
-        "/abort",
-        [&](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleAbortRequest(req, res); });
-
-    server.Get(
-        "/sources",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleSourcesRequest(req, res); });
-
-    server.Get(
-        "/status",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleStatusRequest(req, res); });
-
-    server.Post(
-        "/locate",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleLocateRequest(req, res); });
-
-    server.Get(
-        "/config",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleGetConfigRequest(req, res); });
-
-    server.Post(
-        "/config",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handlePostConfigRequest(req, res); });
+    app.post("/tiles", [this](auto* res, auto* req) { impl_->handleTilesRequest(res, req); });
+    app.post("/abort", [this](auto* res, auto* /*req*/) { impl_->handleAbortRequest(res); });
+    app.get("/sources", [this](auto* res, auto* req) { impl_->handleSourcesRequest(res, req); });
+    app.get("/status", [this](auto* res, auto* /*req*/) { impl_->handleStatusRequest(res); });
+    app.post("/locate", [this](auto* res, auto* /*req*/) { impl_->handleLocateRequest(res); });
+    app.get("/config", [](auto* res, auto* /*req*/) { Impl::handleGetConfigRequest(res); });
+    app.post("/config", [this](auto* res, auto* /*req*/) { impl_->handlePostConfigRequest(res); });
 }
 
 }  // namespace mapget

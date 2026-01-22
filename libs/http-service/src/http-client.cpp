@@ -11,10 +11,13 @@ struct HttpClient::Impl {
     std::shared_ptr<TileLayerStream::StringPoolCache> stringPoolProvider_;
     httplib::Headers headers_;
 
-    Impl(std::string const& host, uint16_t port, httplib::Headers headers, bool enableCompression) :
+    Impl(std::string const& host, uint16_t port, AuthHeaders headers, bool enableCompression) :
         client_(host, port),
-        headers_(std::move(headers))
+        headers_()
     {
+        for (auto const& [k, v] : headers) {
+            headers_.emplace(k, v);
+        }
         // Add Accept-Encoding header if compression is enabled and not already present
         if (enableCompression) {
             bool hasAcceptEncoding = false;
@@ -51,7 +54,7 @@ struct HttpClient::Impl {
     }
 };
 
-HttpClient::HttpClient(const std::string& host, uint16_t port, httplib::Headers headers, bool enableCompression) : impl_(
+HttpClient::HttpClient(const std::string& host, uint16_t port, AuthHeaders headers, bool enableCompression) : impl_(
     std::make_unique<Impl>(host, port, std::move(headers), enableCompression)) {}
 
 HttpClient::~HttpClient() = default;

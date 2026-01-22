@@ -18,7 +18,7 @@ public:
      * endpoint, and caches the result for the lifetime of this object.
      * @param enableCompression Enable gzip compression for responses (default: true)
      */
-    explicit HttpClient(std::string const& host, uint16_t port, httplib::Headers headers = {}, bool enableCompression = true);
+    explicit HttpClient(std::string const& host, uint16_t port, AuthHeaders headers = {}, bool enableCompression = true);
     ~HttpClient();
 
     /**

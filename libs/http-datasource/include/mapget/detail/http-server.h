@@ -3,9 +3,10 @@
 #include <memory>
 #include <string>
 
-// Pre-declare httplib::Server to avoid including httplib.h in header
-namespace httplib {
-class Server;
+// Forward declare uWebSockets app type to avoid including uWS headers in public headers.
+namespace uWS {
+template <bool SSL> struct TemplatedApp;
+using App = TemplatedApp<false>;
 }
 
 namespace mapget {
@@ -76,7 +77,7 @@ protected:
      * This function is called upon the first call to go(),
      * and allows any derived server class to add endpoints.
      */
-    virtual void setup(httplib::Server&) = 0;
+    virtual void setup(uWS::App&) = 0;
 
     /**
      * Derived servers can use this to control whether

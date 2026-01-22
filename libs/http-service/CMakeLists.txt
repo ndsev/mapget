@@ -18,6 +18,7 @@ target_include_directories(mapget-http-service
 target_link_libraries(mapget-http-service
   PUBLIC
     httplib::httplib
+    uWebSockets
     yaml-cpp
     CLI11::CLI11
     nlohmann_json_schema_validator

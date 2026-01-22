@@ -18,6 +18,7 @@ target_include_directories(mapget-http-datasource
 target_link_libraries(mapget-http-datasource
   PUBLIC
     httplib::httplib
+    uWebSockets
     mapget-model
     mapget-service
     tiny-process-library)

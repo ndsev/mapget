@@ -50,7 +50,7 @@ public:
     DataSourceInfo const& info();
 
 private:
-    void setup(httplib::Server&) override;
+    void setup(uWS::App&) override;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
