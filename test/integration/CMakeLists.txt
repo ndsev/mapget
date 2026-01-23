@@ -1,9 +1,7 @@
 project(test.mapget.integration CXX)
 
-# TODO: Figure out a way to do this without assuming free ports.
-set (MAPGET_SERVER_PORT 61852)
-set (DATASOURCE_CPP_PORT 61853)
-set (DATASOURCE_PY_PORT 61854)
+set(MAPGET_PICK_PORTS_PY "${CMAKE_CURRENT_LIST_DIR}/detect-ports-and-prepare-config-yaml.py")
+set(MAPGET_RUN_WITH_PORTS "${CMAKE_CURRENT_LIST_DIR}/run-with-ports.bash")
 
 add_wheel_test(test-local-example
   WORKING_DIRECTORY
@@ -20,20 +18,23 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
+      # Pick ports at test runtime (reduces CI flakiness vs. hard-coded ports)
+      -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-cli-cpp"
+
       # Run Python datasource
-      -b "python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py ${DATASOURCE_PY_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py $DATASOURCE_PY_PORT"
 
       # Run C++ datasource
-      -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./cpp-sample-http-datasource $DATASOURCE_CPP_PORT"
 
       # Run service
-      -b "./mapget --log-level trace serve -p ${MAPGET_SERVER_PORT} -d 127.0.0.1:${DATASOURCE_CPP_PORT} -d 127.0.0.1:${DATASOURCE_PY_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace serve -p $MAPGET_SERVER_PORT -d 127.0.0.1:$DATASOURCE_CPP_PORT -d 127.0.0.1:$DATASOURCE_PY_PORT"
 
       # Request from cpp datasource
-      -f "./mapget --log-level trace fetch -s 127.0.0.1:${MAPGET_SERVER_PORT} -m Tropico -l WayLayer -t 12345"
+      -f "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace fetch -s 127.0.0.1:$MAPGET_SERVER_PORT -m Tropico -l WayLayer -t 12345"
 
       # Request from py datasource
-      -f "./mapget --log-level trace fetch -s 127.0.0.1:${MAPGET_SERVER_PORT} -m TestMap -l WayLayer -t 12345"
+      -f "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace fetch -s 127.0.0.1:$MAPGET_SERVER_PORT -m TestMap -l WayLayer -t 12345"
     )
 endif ()
 
@@ -42,11 +43,14 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
+      # Pick ports at test runtime (reduces CI flakiness vs. hard-coded ports)
+      -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-cli-datasource-exe"
+
       # Run service with auto-launched python datasource
-      -b "${CMAKE_CURRENT_LIST_DIR}/mapget-exec-datasource.bash ${MAPGET_SERVER_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-datasource-exe/ports.env ${CMAKE_CURRENT_LIST_DIR}/mapget-exec-datasource.bash $MAPGET_SERVER_PORT"
 
       # Request from py datasource
-      -f "./mapget --log-level trace fetch -s 127.0.0.1:${MAPGET_SERVER_PORT} -m TestMap -l WayLayer -t 12345"
+      -f "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-datasource-exe/ports.env ./mapget --log-level trace fetch -s 127.0.0.1:$MAPGET_SERVER_PORT -m TestMap -l WayLayer -t 12345"
     )
 endif ()
 
@@ -56,17 +60,20 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
+      # Pick ports at test runtime (reduces CI flakiness vs. hard-coded ports)
+      -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-cli-python"
+
       # Run Python datasource
-      -b "python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py ${DATASOURCE_PY_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-python/ports.env python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py $DATASOURCE_PY_PORT"
 
       # Run C++ datasource
-      -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-python/ports.env ./cpp-sample-http-datasource $DATASOURCE_CPP_PORT"
 
       # Run service
-      -b "python -m mapget --log-level trace serve -p ${MAPGET_SERVER_PORT} -d 127.0.0.1:${DATASOURCE_CPP_PORT} -d 127.0.0.1:${DATASOURCE_PY_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-python/ports.env python -m mapget --log-level trace serve -p $MAPGET_SERVER_PORT -d 127.0.0.1:$DATASOURCE_CPP_PORT -d 127.0.0.1:$DATASOURCE_PY_PORT"
 
       # Request from py datasource
-      -f "python -m mapget --log-level trace fetch -s 127.0.0.1:${MAPGET_SERVER_PORT} -m TestMap -l WayLayer -t 12345"
+      -f "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-python/ports.env python -m mapget --log-level trace fetch -s 127.0.0.1:$MAPGET_SERVER_PORT -m TestMap -l WayLayer -t 12345"
     )
 endif()
 
@@ -76,20 +83,23 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
+      # Pick ports + write config YAMLs at test runtime.
+      -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-config-cpp"
+
       # Run Python datasource
-      -b "python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py ${DATASOURCE_PY_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-config-cpp/ports.env python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py $DATASOURCE_PY_PORT"
 
       # Run C++ datasource
-      -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-config-cpp/ports.env ./cpp-sample-http-datasource $DATASOURCE_CPP_PORT"
 
       # Run service
-      -b "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.yaml serve"
+      -b "./mapget --config .integration/test-config-cpp/sample-service.yaml serve"
 
       # Request from py datasource
-      -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.yaml fetch"
+      -f "./mapget --config .integration/test-config-cpp/sample-second-datasource.yaml fetch"
 
       # Request from cpp datasource
-      -f "./mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.yaml fetch"
+      -f "./mapget --config .integration/test-config-cpp/sample-first-datasource.yaml fetch"
     )
 endif ()
 
@@ -99,19 +109,22 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
+      # Pick ports + write config YAMLs at test runtime.
+      -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-config-py"
+
       # Run Python datasource
-      -b "python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py ${DATASOURCE_PY_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-config-py/ports.env python ${CMAKE_CURRENT_LIST_DIR}/../../examples/python/datasource.py $DATASOURCE_PY_PORT"
 
       # Run C++ datasource
-      -b "./cpp-sample-http-datasource ${DATASOURCE_CPP_PORT}"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-config-py/ports.env ./cpp-sample-http-datasource $DATASOURCE_CPP_PORT"
 
       # Run service
-      -b "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-service.yaml serve"
+      -b "python -m mapget --config .integration/test-config-py/sample-service.yaml serve"
 
       # Request from py datasource
-      -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-second-datasource.yaml fetch"
+      -f "python -m mapget --config .integration/test-config-py/sample-second-datasource.yaml fetch"
 
       # Request from cpp datasource
-      -f "python -m mapget --config ${CMAKE_CURRENT_LIST_DIR}/../../examples/config/sample-first-datasource.yaml fetch"
+      -f "python -m mapget --config .integration/test-config-py/sample-first-datasource.yaml fetch"
   )
 endif ()
