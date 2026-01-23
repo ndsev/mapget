@@ -13,6 +13,10 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if (WIN32)
+  add_compile_definitions(NOMINMAX)
+endif()
+
 include(FetchContent)
 include(GNUInstallDirs)
 
@@ -22,11 +26,20 @@ if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set(MAPGET_WITH_HTTPLIB ON CACHE BOOL "Enable mapget-http-datasource and mapget-http-service libraries.")
   set(MAPGET_ENABLE_TESTING ON CACHE BOOL "Enable testing.")
   set(MAPGET_BUILD_EXAMPLES ON CACHE BOOL "Build examples.")
+  # Prevent CPM dependencies (e.g. Drogon/Trantor) from registering their own
+  # tests into this project's ctest run.
+  set(BUILD_TESTING OFF CACHE BOOL "Disable dependency tests" FORCE)
 endif()
 
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
 option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
+
+if (MAPGET_ENABLE_TESTING)
+  # Enable testing before adding CPM dependencies so stale/third-party CTest
+  # files don't linger in the build tree.
+  enable_testing()
+endif()
 
 set(Python3_FIND_STRATEGY LOCATION)
 
@@ -112,7 +125,6 @@ endif()
 # tests
 
 if (MAPGET_ENABLE_TESTING)
-  enable_testing()
   add_subdirectory(test/unit)
 
   if (MAPGET_WITH_WHEEL)

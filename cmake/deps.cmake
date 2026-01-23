@@ -25,6 +25,21 @@ CPMAddPackage(
         "BUILD_TESTING OFF")
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+    # OpenSSL's Configure script needs a "full" Perl distribution. Git for
+    # Windows ships a minimal perl that is missing required modules (e.g.
+    # Locale::Maketext::Simple), causing OpenSSL builds to fail.
+    if (WIN32)
+        if (NOT DEFINED PERL_EXECUTABLE OR PERL_EXECUTABLE MATCHES "[\\\\/]Git[\\\\/]usr[\\\\/]bin[\\\\/]perl\\.exe$")
+            find_program(_MAPGET_STRAWBERRY_PERL
+                NAMES perl.exe
+                PATHS "C:/Strawberry/perl/bin"
+                NO_DEFAULT_PATH)
+            if (_MAPGET_STRAWBERRY_PERL)
+                set(PERL_EXECUTABLE "${_MAPGET_STRAWBERRY_PERL}" CACHE FILEPATH "" FORCE)
+            endif()
+        endif()
+    endif()
+
     set (OPENSSL_VERSION openssl-3.5.2)
     CPMAddPackage("gh:klebert-engineering/openssl-cmake@1.0.0")
     CPMAddPackage(
@@ -40,19 +55,67 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     endif()
 
     CPMAddPackage(
-        URI "gh:yhirose/cpp-httplib@0.15.3"
+        NAME jsoncpp
+        GIT_REPOSITORY https://github.com/open-source-parsers/jsoncpp
+        GIT_TAG 1.9.5
+        GIT_SHALLOW ON
         OPTIONS
-            "CPPHTTPLIB_USE_POLL ON"
-            "HTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN OFF"
-            "HTTPLIB_INSTALL OFF"
-            "HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF"
-            "HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF")
-    # Manually enable openssl/zlib in httplib to avoid FindPackage calls.
-    target_compile_definitions(httplib INTERFACE
-        CPPHTTPLIB_OPENSSL_SUPPORT
-        CPPHTTPLIB_ZLIB_SUPPORT)
-    target_link_libraries(httplib INTERFACE
-        OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
+            "JSONCPP_WITH_TESTS OFF"
+            "JSONCPP_WITH_POST_BUILD_UNITTEST OFF"
+            "JSONCPP_WITH_PKGCONFIG_SUPPORT OFF"
+            "JSONCPP_WITH_CMAKE_PACKAGE OFF"
+            "BUILD_SHARED_LIBS OFF"
+            "BUILD_STATIC_LIBS ON"
+            "BUILD_OBJECT_LIBS OFF")
+    # Help Drogon's FindJsoncpp.cmake locate jsoncpp when built via CPM.
+    set(JSONCPP_INCLUDE_DIRS "${jsoncpp_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+    set(JSONCPP_LIBRARIES jsoncpp_static CACHE STRING "" FORCE)
+    # CPM generates a dummy package redirect config at
+    # `${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/jsoncpp-config.cmake`. Drogon uses
+    # `find_package(Jsoncpp)` (config-first), so make that redirect actually
+    # define the expected `Jsoncpp_lib` target.
+    if (DEFINED CMAKE_FIND_PACKAGE_REDIRECTS_DIR)
+        file(MAKE_DIRECTORY "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}")
+        file(WRITE "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/jsoncpp-extra.cmake" [=[
+if(NOT TARGET Jsoncpp_lib)
+  add_library(Jsoncpp_lib INTERFACE)
+  target_include_directories(Jsoncpp_lib INTERFACE "${JSONCPP_INCLUDE_DIRS}")
+  target_link_libraries(Jsoncpp_lib INTERFACE ${JSONCPP_LIBRARIES})
+endif()
+]=])
+    endif()
+
+    # Drogon defines install(EXPORT ...) rules unconditionally, which fail when
+    # used as a subproject with CPM-provided dependencies (zlib/jsoncpp/etc).
+    # Since mapget only needs Drogon for building, temporarily suppress install
+    # rule generation while configuring Drogon.
+    set(_MAPGET_PREV_SKIP_INSTALL_RULES "${CMAKE_SKIP_INSTALL_RULES}")
+    if (DEFINED BUILD_TESTING)
+        set(_MAPGET_PREV_BUILD_TESTING "${BUILD_TESTING}")
+    endif()
+    set(CMAKE_SKIP_INSTALL_RULES ON)
+    set(BUILD_TESTING OFF)
+
+    CPMAddPackage(
+        URI "gh:drogonframework/drogon@1.9.7"
+        OPTIONS
+            "BUILD_CTL OFF"
+            "BUILD_EXAMPLES OFF"
+            "BUILD_ORM OFF"
+            "BUILD_BROTLI OFF"
+            "BUILD_YAML_CONFIG OFF"
+            "BUILD_SHARED_LIBS OFF"
+            "USE_SUBMODULE ON"
+            "USE_STATIC_LIBS_ONLY OFF"
+            "USE_POSTGRESQL OFF"
+            "USE_MYSQL OFF"
+            "USE_SQLITE3 OFF"
+        GIT_SUBMODULES "trantor")
+
+    set(CMAKE_SKIP_INSTALL_RULES "${_MAPGET_PREV_SKIP_INSTALL_RULES}")
+    if (DEFINED _MAPGET_PREV_BUILD_TESTING)
+        set(BUILD_TESTING "${_MAPGET_PREV_BUILD_TESTING}")
+    endif()
 
     CPMAddPackage(
         URI "gh:jbeder/yaml-cpp#aa8d4e@0.8.0" # Use > 0.8.0 once available.
@@ -65,59 +128,6 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
     CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 
-    if (WIN32)
-        CPMAddPackage(
-                NAME libuv
-                GIT_REPOSITORY https://github.com/libuv/libuv
-                GIT_TAG v1.48.0
-                GIT_SHALLOW ON
-                OPTIONS
-                    "LIBUV_BUILD_TESTS OFF"
-                    "LIBUV_BUILD_BENCH OFF"
-                    "LIBUV_BUILD_SHARED OFF"
-                    "LIBUV_BUILD_EXAMPLES OFF")
-    endif()
-
-    CPMAddPackage(
-            NAME uSockets
-            GIT_REPOSITORY https://github.com/uNetworking/uSockets
-            GIT_TAG v0.8.5
-            GIT_SHALLOW ON
-            GIT_SUBMODULES "")
-    if (NOT TARGET uSockets)
-        file(GLOB_RECURSE U_SOCKETS_SOURCES CONFIGURE_DEPENDS
-                "${uSockets_SOURCE_DIR}/src/*.c"
-                "${uSockets_SOURCE_DIR}/src/*.cpp")
-        add_library(uSockets STATIC ${U_SOCKETS_SOURCES})
-        target_include_directories(uSockets PUBLIC "${uSockets_SOURCE_DIR}/src")
-        target_compile_definitions(uSockets PRIVATE LIBUS_USE_OPENSSL)
-        target_link_libraries(uSockets PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-        if (WIN32)
-            target_link_libraries(uSockets PUBLIC ws2_32)
-            if (TARGET uv_a)
-                target_link_libraries(uSockets PUBLIC uv_a)
-            elseif (TARGET uv)
-                target_link_libraries(uSockets PUBLIC uv)
-            else()
-                message(FATAL_ERROR "libuv was requested for uSockets on Windows, but no CMake target (uv_a/uv) was found.")
-            endif()
-        endif()
-    endif()
-
-    CPMAddPackage(
-            NAME uWebSockets
-            GIT_REPOSITORY https://github.com/uNetworking/uWebSockets
-            GIT_TAG v20.37.0
-            GIT_SHALLOW ON
-            GIT_SUBMODULES "")
-    if (NOT TARGET uWebSockets)
-        add_library(uWebSockets INTERFACE)
-        target_include_directories(uWebSockets INTERFACE "${uWebSockets_SOURCE_DIR}/src")
-        target_link_libraries(uWebSockets INTERFACE uSockets ZLIB::ZLIB)
-        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-            target_compile_options(uWebSockets INTERFACE -Wno-deprecated-declarations)
-        endif()
-    endif()
 endif ()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
@@ -130,7 +140,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel@1.1.0")
+    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel@1.2.0")
 endif()
 
 if (MAPGET_ENABLE_TESTING)

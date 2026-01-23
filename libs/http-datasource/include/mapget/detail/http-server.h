@@ -1,12 +1,12 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
-// Forward declare uWebSockets app type to avoid including uWS headers in public headers.
-namespace uWS {
-template <bool SSL> struct TemplatedApp;
-using App = TemplatedApp<false>;
+// Forward declare Drogon app type to avoid including drogon headers in public headers.
+namespace drogon {
+class HttpAppFramework;
 }
 
 namespace mapget {
@@ -77,7 +77,7 @@ protected:
      * This function is called upon the first call to go(),
      * and allows any derived server class to add endpoints.
      */
-    virtual void setup(uWS::App&) = 0;
+    virtual void setup(drogon::HttpAppFramework&) = 0;
 
     /**
      * Derived servers can use this to control whether

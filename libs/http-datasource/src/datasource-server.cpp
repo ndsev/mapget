@@ -4,7 +4,8 @@
 #include "mapget/model/info.h"
 #include "mapget/model/stream.h"
 
-#include <App.h>
+#include <drogon/HttpAppFramework.h>
+#include <drogon/HttpResponse.h>
 
 #include <memory>
 #include <stdexcept>
@@ -60,98 +61,107 @@ DataSourceServer& DataSourceServer::onLocateRequest(
 
 DataSourceInfo const& DataSourceServer::info() { return impl_->info_; }
 
-void DataSourceServer::setup(uWS::App& app)
+void DataSourceServer::setup(drogon::HttpAppFramework& app)
 {
-    app.get("/tile", [this](auto* res, auto* req) {
-        try {
-            auto layerIdParam = req->getQuery("layer");
-            auto tileIdParam = req->getQuery("tileId");
-
-            if (layerIdParam.empty() || tileIdParam.empty()) {
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end("Missing query parameter: layer and/or tileId");
-                return;
-            }
-
-            auto layer = impl_->info_.getLayer(std::string(layerIdParam));
-
-            TileId tileId{std::stoull(std::string(tileIdParam))};
-
-            auto stringPoolOffsetParam = (simfil::StringId)0;
-            auto stringPoolOffsetStr = req->getQuery("stringPoolOffset");
-            if (!stringPoolOffsetStr.empty()) {
-                stringPoolOffsetParam = (simfil::StringId)std::stoul(std::string(stringPoolOffsetStr));
-            }
-
-            std::string responseType = "binary";
-            auto responseTypeStr = req->getQuery("responseType");
-            if (!responseTypeStr.empty()) {
-                responseType = std::string(responseTypeStr);
-            }
-
-            auto tileLayer = [&]() -> std::shared_ptr<TileLayer> {
-                switch (layer->type_) {
-                case mapget::LayerType::Features: {
-                    auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
-                        tileId, impl_->info_.nodeId_, impl_->info_.mapId_, layer, impl_->strings_);
-                    impl_->tileFeatureCallback_(tileFeatureLayer);
-                    return tileFeatureLayer;
-                }
-                case mapget::LayerType::SourceData: {
-                    auto tileSourceLayer = std::make_shared<TileSourceDataLayer>(
-                        tileId, impl_->info_.nodeId_, impl_->info_.mapId_, layer, impl_->strings_);
-                    impl_->tileSourceDataCallback_(tileSourceLayer);
-                    return tileSourceLayer;
-                }
-                default:
-                    throw std::runtime_error(fmt::format("Unsupported layer type {}", (int)layer->type_));
-                }
-            }();
-
-            if (responseType == "binary") {
-                std::string content;
-                TileLayerStream::StringPoolOffsetMap stringPoolOffsets{
-                    {impl_->info_.nodeId_, stringPoolOffsetParam}};
-                TileLayerStream::Writer layerWriter{
-                    [&](std::string bytes, TileLayerStream::MessageType) { content.append(bytes); },
-                    stringPoolOffsets};
-                layerWriter.write(tileLayer);
-
-                res->writeStatus("200 OK");
-                res->writeHeader("Content-Type", "application/binary");
-                res->end(content);
-            } else {
-                res->writeStatus("200 OK");
-                res->writeHeader("Content-Type", "application/json");
-                res->end(tileLayer->toJson().dump());
-            }
-        }
-        catch (std::exception const& e) {
-            res->writeStatus("500 Internal Server Error");
-            res->writeHeader("Content-Type", "text/plain");
-            res->end(std::string("Error: ") + e.what());
-        }
-    });
-
-    app.get("/info", [this](auto* res, auto* /*req*/) {
-        res->writeStatus("200 OK");
-        res->writeHeader("Content-Type", "application/json");
-        res->end(impl_->info_.toJson().dump());
-    });
-
-    app.post("/locate", [this](auto* res, auto* /*req*/) {
-        auto aborted = std::make_shared<std::atomic_bool>(false);
-        res->onAborted([aborted]() { *aborted = true; });
-
-        res->onData([this, res, aborted, body = std::string()](std::string_view chunk, bool last) mutable {
-            if (*aborted)
-                return;
-            body.append(chunk.data(), chunk.size());
-            if (!last)
-                return;
+    app.registerHandler(
+        "/tile",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        {
             try {
-                LocateRequest parsedReq(nlohmann::json::parse(body));
+                auto const& layerIdParam = req->getParameter("layer");
+                auto const& tileIdParam = req->getParameter("tileId");
+
+                if (layerIdParam.empty() || tileIdParam.empty()) {
+                    auto resp = drogon::HttpResponse::newHttpResponse();
+                    resp->setStatusCode(drogon::k400BadRequest);
+                    resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                    resp->setBody("Missing query parameter: layer and/or tileId");
+                    callback(resp);
+                    return;
+                }
+
+                auto layer = impl_->info_.getLayer(layerIdParam);
+                TileId tileId{std::stoull(tileIdParam)};
+
+                auto stringPoolOffsetParam = (simfil::StringId)0;
+                auto const& stringPoolOffsetStr = req->getParameter("stringPoolOffset");
+                if (!stringPoolOffsetStr.empty()) {
+                    stringPoolOffsetParam = (simfil::StringId)std::stoul(stringPoolOffsetStr);
+                }
+
+                std::string responseType = "binary";
+                auto const& responseTypeStr = req->getParameter("responseType");
+                if (!responseTypeStr.empty())
+                    responseType = responseTypeStr;
+
+                auto tileLayer = [&]() -> std::shared_ptr<TileLayer>
+                {
+                    switch (layer->type_) {
+                    case mapget::LayerType::Features: {
+                        auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
+                            tileId, impl_->info_.nodeId_, impl_->info_.mapId_, layer, impl_->strings_);
+                        impl_->tileFeatureCallback_(tileFeatureLayer);
+                        return tileFeatureLayer;
+                    }
+                    case mapget::LayerType::SourceData: {
+                        auto tileSourceLayer = std::make_shared<TileSourceDataLayer>(
+                            tileId, impl_->info_.nodeId_, impl_->info_.mapId_, layer, impl_->strings_);
+                        impl_->tileSourceDataCallback_(tileSourceLayer);
+                        return tileSourceLayer;
+                    }
+                    default:
+                        throw std::runtime_error(fmt::format("Unsupported layer type {}", (int)layer->type_));
+                    }
+                }();
+
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k200OK);
+
+                if (responseType == "binary") {
+                    std::string content;
+                    TileLayerStream::StringPoolOffsetMap stringPoolOffsets{{impl_->info_.nodeId_, stringPoolOffsetParam}};
+                    TileLayerStream::Writer layerWriter{
+                        [&](std::string bytes, TileLayerStream::MessageType) { content.append(bytes); },
+                        stringPoolOffsets};
+                    layerWriter.write(tileLayer);
+
+                    resp->setContentTypeString("application/binary");
+                    resp->setBody(std::move(content));
+                } else {
+                    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                    resp->setBody(tileLayer->toJson().dump());
+                }
+
+                callback(resp);
+            }
+            catch (std::exception const& e) {
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k500InternalServerError);
+                resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                resp->setBody(std::string("Error: ") + e.what());
+                callback(resp);
+            }
+        },
+        {drogon::Get});
+
+    app.registerHandler(
+        "/info",
+        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k200OK);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            resp->setBody(impl_->info_.toJson().dump());
+            callback(resp);
+        },
+        {drogon::Get});
+
+    app.registerHandler(
+        "/locate",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        {
+            try {
+                LocateRequest parsedReq(nlohmann::json::parse(std::string(req->body())));
                 auto responseJson = nlohmann::json::array();
 
                 if (impl_->locateCallback_) {
@@ -160,21 +170,21 @@ void DataSourceServer::setup(uWS::App& app)
                     }
                 }
 
-                if (*aborted)
-                    return;
-                res->writeStatus("200 OK");
-                res->writeHeader("Content-Type", "application/json");
-                res->end(responseJson.dump());
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k200OK);
+                resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                resp->setBody(responseJson.dump());
+                callback(resp);
             }
             catch (std::exception const& e) {
-                if (*aborted)
-                    return;
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end(std::string("Invalid request: ") + e.what());
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k400BadRequest);
+                resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                resp->setBody(std::string("Invalid request: ") + e.what());
+                callback(resp);
             }
-        });
-    });
+        },
+        {drogon::Post});
 }
 
 }  // namespace mapget

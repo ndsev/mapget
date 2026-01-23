@@ -50,7 +50,7 @@ public:
     DataSourceInfo const& info();
 
 private:
-    void setup(uWS::App&) override;
+    void setup(drogon::HttpAppFramework&) override;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

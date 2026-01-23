@@ -55,7 +55,7 @@ public:
     ~HttpService() override;
 
 protected:
-    void setup(uWS::App& app) override;
+    void setup(drogon::HttpAppFramework& app) override;
 
 private:
     struct Impl;

@@ -4,7 +4,9 @@
 #include "mapget/log.h"
 #include "mapget/service/config.h"
 
-#include <App.h>
+#include <drogon/HttpAppFramework.h>
+#include <drogon/HttpRequest.h>
+#include <drogon/HttpResponse.h>
 
 #include <algorithm>
 #include <atomic>
@@ -90,11 +92,11 @@ private:
     z_stream strm_{};
 };
 
-[[nodiscard]] AuthHeaders authHeadersFromRequest(uWS::HttpRequest* req)
+[[nodiscard]] AuthHeaders authHeadersFromRequest(const drogon::HttpRequestPtr& req)
 {
     AuthHeaders headers;
-    for (auto const& [k, v] : *req) {
-        headers.emplace(std::string(k), std::string(v));
+    for (auto const& [k, v] : req->headers()) {
+        headers.emplace(k, v);
     }
     return headers;
 }
@@ -147,13 +149,26 @@ struct HttpService::Impl
         static constexpr auto jsonlMimeType = "application/jsonl";
         static constexpr auto anyMimeType = "*/*";
 
-        explicit TilesStreamState(Impl const& impl, uWS::HttpResponse<false>* res, uWS::Loop* loop)
-            : impl_(impl), res_(res), loop_(loop)
+        explicit TilesStreamState(Impl const& impl, trantor::EventLoop* loop) : impl_(impl), loop_(loop)
         {
             static std::atomic_uint64_t nextRequestId;
             requestId_ = nextRequestId++;
             writer_ = std::make_unique<TileLayerStream::Writer>(
                 [this](auto&& msg, auto&& /*msgType*/) { appendOutgoingUnlocked(msg); }, stringOffsets_);
+        }
+
+        void attachStream(drogon::ResponseStreamPtr stream)
+        {
+            {
+                std::lock_guard lock(mutex_);
+                if (aborted_ || responseEnded_) {
+                    if (stream)
+                        stream->close();
+                    return;
+                }
+                stream_ = std::move(stream);
+            }
+            scheduleDrain();
         }
 
         void parseRequestFromJson(nlohmann::json const& requestJson)
@@ -200,6 +215,15 @@ struct HttpService::Impl
                     impl_.self_.abort(req);
                 }
             }
+            drogon::ResponseStreamPtr stream;
+            {
+                std::lock_guard lock(mutex_);
+                if (responseEnded_.exchange(true))
+                    return;
+                stream = std::move(stream_);
+            }
+            if (stream)
+                stream->close();
         }
 
         void addResult(TileLayer::Ptr const& result)
@@ -251,26 +275,32 @@ struct HttpService::Impl
                 return;
 
             auto weak = weak_from_this();
-            loop_->defer([weak = std::move(weak)]() mutable {
+            loop_->queueInLoop([weak = std::move(weak)]() mutable {
                 if (auto self = weak.lock()) {
                     self->drainOnLoop();
                 }
             });
         }
 
-        void drainOnLoop()
-        {
-            drainScheduled_ = false;
-            if (aborted_ || responseEnded_)
-                return;
+	        void drainOnLoop()
+	        {
+	            drainScheduled_ = false;
+	            if (aborted_ || responseEnded_)
+	                return;
 
-            constexpr size_t maxChunk = 64 * 1024;
+	            constexpr size_t maxChunk = 64 * 1024;
 
-            for (;;) {
-                std::string chunk;
-                bool done = false;
-                {
-                    std::lock_guard lock(mutex_);
+	            for (;;) {
+	                std::string chunk;
+	                bool done = false;
+	                bool needAbort = false;
+	                bool scheduleAgain = false;
+	                drogon::ResponseStreamPtr streamToClose;
+	                {
+	                    std::lock_guard lock(mutex_);
+	                    if (!stream_)
+	                        return;
+
                     if (!pending_.empty()) {
                         size_t n = std::min(pending_.size(), maxChunk);
                         chunk.assign(pending_.data(), n);
@@ -283,25 +313,36 @@ struct HttpService::Impl
                         }
                         done = allDone_;
                     }
+
+	                    if (!chunk.empty()) {
+	                        if (!stream_->send(chunk)) {
+	                            needAbort = true;
+	                        } else if (!pending_.empty() || allDone_) {
+	                            // Keep draining until we sent everything and closed the stream.
+	                            scheduleAgain = true;
+	                        }
+	                    } else if (done) {
+	                        responseEnded_ = true;
+	                        streamToClose = std::move(stream_);
+	                    }
+	                }
+
+                if (needAbort) {
+                    onAborted();
+                    return;
                 }
 
-                if (!chunk.empty()) {
-                    bool ok = res_->write(chunk);
-                    if (!ok) {
-                        // Backpressure: resume in onWritable.
-                        return;
-                    }
-                    continue;
-                }
-
-                if (done) {
-                    responseEnded_ = true;
-                    res_->end();
-                    impl_.tryMemoryTrim(trimResponseType_);
-                }
-                return;
-            }
-        }
+	                if (done) {
+	                    if (streamToClose)
+	                        streamToClose->close();
+	                    impl_.tryMemoryTrim(trimResponseType_);
+	                    return;
+	                }
+	                if (scheduleAgain)
+	                    scheduleDrain();
+	                return;
+	            }
+	        }
 
         void appendOutgoingUnlocked(std::string_view bytes)
         {
@@ -316,8 +357,7 @@ struct HttpService::Impl
         }
 
         Impl const& impl_;
-        uWS::HttpResponse<false>* res_;
-        uWS::Loop* loop_;
+        trantor::EventLoop* loop_;
 
         std::mutex mutex_;
         uint64_t requestId_ = 0;
@@ -326,6 +366,7 @@ struct HttpService::Impl
         ResponseType trimResponseType_ = ResponseType::Binary;
 
         std::string pending_;
+        drogon::ResponseStreamPtr stream_;
         std::unique_ptr<TileLayerStream::Writer> writer_;
         std::vector<LayerTilesRequest::Ptr> requests_;
         TileLayerStream::StringPoolOffsetMap stringOffsets_;
@@ -366,169 +407,154 @@ struct HttpService::Impl
         }
     }
 
-    void handleTilesRequest(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) const
+    void handleTilesRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
     {
-        auto* loop = uWS::Loop::get();
-        auto state = std::make_shared<TilesStreamState>(*this, res, loop);
+        auto state = std::make_shared<TilesStreamState>(*this, drogon::app().getLoop());
 
-        std::string accept = std::string(req->getHeader("accept"));
-        std::string acceptEncoding = std::string(req->getHeader("accept-encoding"));
+        const std::string accept = req->getHeader("accept");
+        const std::string acceptEncoding = req->getHeader("accept-encoding");
         auto clientHeaders = authHeadersFromRequest(req);
 
-        res->onAborted([state]() { state->onAborted(); });
+        nlohmann::json j;
+        try {
+            j = nlohmann::json::parse(std::string(req->body()));
+        }
+        catch (const std::exception& e) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Invalid JSON: ") + e.what());
+            callback(resp);
+            return;
+        }
 
-        res->onData([this,
-                        res,
-                        state,
-                        clientHeaders = std::move(clientHeaders),
-                        accept = std::move(accept),
-                        acceptEncoding = std::move(acceptEncoding),
-                        body = std::string()](std::string_view chunk, bool last) mutable {
-            if (state->aborted_ || state->responseEnded_)
-                return;
+        auto requestsIt = j.find("requests");
+        if (requestsIt == j.end() || !requestsIt->is_array()) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("Missing or invalid 'requests' array");
+            callback(resp);
+            return;
+        }
 
-            body.append(chunk.data(), chunk.size());
-            if (!last)
-                return;
+        log().info("Processing tiles request {}", state->requestId_);
+        for (auto& requestJson : *requestsIt) {
+            state->parseRequestFromJson(requestJson);
+        }
 
-            nlohmann::json j;
-            try {
-                j = nlohmann::json::parse(body);
+        if (j.contains("stringPoolOffsets")) {
+            for (auto& item : j["stringPoolOffsets"].items()) {
+                state->stringOffsets_[item.key()] = item.value().get<simfil::StringId>();
             }
-            catch (const std::exception& e) {
-                state->responseEnded_ = true;
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end(std::string("Invalid JSON: ") + e.what());
-                return;
-            }
+        }
 
-            auto requestsIt = j.find("requests");
-            if (requestsIt == j.end() || !requestsIt->is_array()) {
-                state->responseEnded_ = true;
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end("Missing or invalid 'requests' array");
-                return;
-            }
+        std::string acceptError;
+        if (!state->setResponseTypeFromAccept(accept, acceptError)) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::move(acceptError));
+            callback(resp);
+            return;
+        }
 
-            log().info("Processing tiles request {}", state->requestId_);
-            for (auto& requestJson : *requestsIt) {
-                state->parseRequestFromJson(requestJson);
-            }
+        const bool gzip = containsGzip(acceptEncoding);
+        if (gzip) {
+            state->enableGzip();
+        }
 
-            if (j.contains("stringPoolOffsets")) {
-                for (auto& item : j["stringPoolOffsets"].items()) {
-                    state->stringOffsets_[item.key()] = item.value().get<simfil::StringId>();
-                }
-            }
+        for (auto& request : state->requests_) {
+            request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
+            request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
+            request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
+        }
 
-            std::string acceptError;
-            if (!state->setResponseTypeFromAccept(accept, acceptError)) {
-                state->responseEnded_ = true;
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end(acceptError);
-                return;
-            }
-
-            const bool gzip = containsGzip(acceptEncoding);
-            if (gzip) {
-                state->enableGzip();
-            }
-
-            for (auto& request : state->requests_) {
-                request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
-                request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
-                request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
+        const auto canProcess = self_.request(state->requests_, clientHeaders);
+        if (!canProcess) {
+            std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
+            bool anyUnauthorized = false;
+            for (auto const& r : state->requests_) {
+                auto status = r->getStatus();
+                requestStatuses.emplace_back(static_cast<std::underlying_type_t<RequestStatus>>(status));
+                anyUnauthorized |= (status == RequestStatus::Unauthorized);
             }
 
-            auto canProcess = self_.request(state->requests_, clientHeaders);
-            if (!canProcess) {
-                state->responseEnded_ = true;
-                std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
-                bool anyUnauthorized = false;
-                for (auto const& r : state->requests_) {
-                    auto status = r->getStatus();
-                    requestStatuses.emplace_back(static_cast<std::underlying_type_t<RequestStatus>>(status));
-                    anyUnauthorized |= (status == RequestStatus::Unauthorized);
-                }
-                res->writeStatus(anyUnauthorized ? "403 Forbidden" : "400 Bad Request");
-                res->writeHeader("Content-Type", "application/json");
-                res->end(nlohmann::json::object({{"status", requestStatuses}}).dump());
-                return;
-            }
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(anyUnauthorized ? drogon::k403Forbidden : drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            resp->setBody(nlohmann::json::object({{"status", requestStatuses}}).dump());
+            callback(resp);
+            return;
+        }
 
-            if (j.contains("clientId")) {
-                abortRequestsForClientId(j["clientId"].get<std::string>(), state);
-            }
+        if (j.contains("clientId")) {
+            abortRequestsForClientId(j["clientId"].get<std::string>(), state);
+        }
 
-            if (gzip) {
-                res->writeHeader("Content-Encoding", "gzip");
-            }
-
-            res->writeHeader("Content-Type", state->responseType_);
-            res->onWritable([state](uintmax_t) {
-                state->drainOnLoop();
-                return !state->responseEnded_.load();
-            });
-
-            state->scheduleDrain();
-        });
+        auto resp = drogon::HttpResponse::newAsyncStreamResponse(
+            [state](drogon::ResponseStreamPtr stream) { state->attachStream(std::move(stream)); },
+            true);
+        resp->setStatusCode(drogon::k200OK);
+        resp->setContentTypeString(state->responseType_);
+        if (gzip) {
+            resp->addHeader("Content-Encoding", "gzip");
+        }
+        callback(resp);
     }
 
-    void handleAbortRequest(uWS::HttpResponse<false>* res) const
+    void handleAbortRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
     {
-        auto aborted = std::make_shared<std::atomic_bool>(false);
-        res->onAborted([aborted]() { *aborted = true; });
-
-        res->onData([this, res, aborted, body = std::string()](std::string_view chunk, bool last) mutable {
-            if (*aborted)
+        try {
+            auto j = nlohmann::json::parse(std::string(req->body()));
+            if (j.contains("clientId")) {
+                abortRequestsForClientId(j["clientId"].get<std::string>());
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k200OK);
+                resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                resp->setBody("OK");
+                callback(resp);
                 return;
-            body.append(chunk.data(), chunk.size());
-            if (!last)
-                return;
-
-            try {
-                auto j = nlohmann::json::parse(body);
-                if (j.contains("clientId")) {
-                    abortRequestsForClientId(j["clientId"].get<std::string>());
-                    if (*aborted)
-                        return;
-                    res->writeStatus("200 OK");
-                    res->writeHeader("Content-Type", "text/plain");
-                    res->end("OK");
-                    return;
-                }
-
-                if (*aborted)
-                    return;
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end("Missing clientId");
             }
-            catch (const std::exception& e) {
-                if (*aborted)
-                    return;
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end(std::string("Invalid JSON: ") + e.what());
-            }
-        });
+
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("Missing clientId");
+            callback(resp);
+        }
+        catch (const std::exception& e) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Invalid JSON: ") + e.what());
+            callback(resp);
+        }
     }
 
-    void handleSourcesRequest(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) const
+    void handleSourcesRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
     {
         auto sourcesInfo = nlohmann::json::array();
         for (auto& source : self_.info(authHeadersFromRequest(req))) {
             sourcesInfo.push_back(source.toJson());
         }
-        res->writeStatus("200 OK");
-        res->writeHeader("Content-Type", "application/json");
-        res->end(sourcesInfo.dump());
+
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k200OK);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        resp->setBody(sourcesInfo.dump());
+        callback(resp);
     }
 
-    void handleStatusRequest(uWS::HttpResponse<false>* res) const
+    void handleStatusRequest(
+        const drogon::HttpRequestPtr&,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
     {
         auto serviceStats = self_.getStatistics();
         auto cacheStats = self_.cache()->getStatistics();
@@ -542,92 +568,93 @@ struct HttpService::Impl
         oss << "<pre>" << cacheStats.dump(4) << "</pre>";
         oss << "</body></html>";
 
-        res->writeStatus("200 OK");
-        res->writeHeader("Content-Type", "text/html");
-        res->end(oss.str());
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k200OK);
+        resp->setContentTypeCode(drogon::CT_TEXT_HTML);
+        resp->setBody(oss.str());
+        callback(resp);
     }
 
-    void handleLocateRequest(uWS::HttpResponse<false>* res) const
+    void handleLocateRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
     {
-        auto aborted = std::make_shared<std::atomic_bool>(false);
-        res->onAborted([aborted]() { *aborted = true; });
+        try {
+            nlohmann::json j = nlohmann::json::parse(std::string(req->body()));
+            auto requestsJson = j["requests"];
+            auto allResponsesJson = nlohmann::json::array();
 
-        res->onData([this, res, aborted, body = std::string()](std::string_view chunk, bool last) mutable {
-            if (*aborted)
-                return;
-            body.append(chunk.data(), chunk.size());
-            if (!last)
-                return;
-
-            try {
-                nlohmann::json j = nlohmann::json::parse(body);
-                auto requestsJson = j["requests"];
-                auto allResponsesJson = nlohmann::json::array();
-
-                for (auto const& locateReqJson : requestsJson) {
-                    LocateRequest locateReq{locateReqJson};
-                    auto responsesJson = nlohmann::json::array();
-                    for (auto const& resp : self_.locate(locateReq))
-                        responsesJson.emplace_back(resp.serialize());
-                    allResponsesJson.emplace_back(responsesJson);
-                }
-
-                if (*aborted)
-                    return;
-                res->writeStatus("200 OK");
-                res->writeHeader("Content-Type", "application/json");
-                res->end(nlohmann::json::object({{"responses", allResponsesJson}}).dump());
+            for (auto const& locateReqJson : requestsJson) {
+                LocateRequest locateReq{locateReqJson};
+                auto responsesJson = nlohmann::json::array();
+                for (auto const& resp : self_.locate(locateReq))
+                    responsesJson.emplace_back(resp.serialize());
+                allResponsesJson.emplace_back(responsesJson);
             }
-            catch (const std::exception& e) {
-                if (*aborted)
-                    return;
-                res->writeStatus("400 Bad Request");
-                res->writeHeader("Content-Type", "text/plain");
-                res->end(std::string("Invalid JSON: ") + e.what());
-            }
-        });
+
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k200OK);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            resp->setBody(nlohmann::json::object({{"responses", allResponsesJson}}).dump());
+            callback(resp);
+        }
+        catch (const std::exception& e) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Invalid JSON: ") + e.what());
+            callback(resp);
+        }
     }
 
-    static bool openConfigFile(std::ifstream& configFile, uWS::HttpResponse<false>* res)
+    static drogon::HttpResponsePtr openConfigFile(std::ifstream& configFile)
     {
         auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
         if (!configFilePath.has_value()) {
-            res->writeStatus("404 Not Found");
-            res->writeHeader("Content-Type", "text/plain");
-            res->end("The config file path is not set. Check the server configuration.");
-            return false;
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k404NotFound);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("The config file path is not set. Check the server configuration.");
+            return resp;
         }
 
         std::filesystem::path path = *configFilePath;
         if (!std::filesystem::exists(path)) {
-            res->writeStatus("404 Not Found");
-            res->writeHeader("Content-Type", "text/plain");
-            res->end("The server does not have a config file.");
-            return false;
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k404NotFound);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("The server does not have a config file.");
+            return resp;
         }
 
         configFile.open(*configFilePath);
         if (!configFile) {
-            res->writeStatus("500 Internal Server Error");
-            res->writeHeader("Content-Type", "text/plain");
-            res->end("Failed to open config file.");
-            return false;
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k500InternalServerError);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("Failed to open config file.");
+            return resp;
         }
 
-        return true;
+        return nullptr;
     }
 
-    static void handleGetConfigRequest(uWS::HttpResponse<false>* res)
+    static void handleGetConfigRequest(
+        const drogon::HttpRequestPtr&,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback)
     {
         if (!isGetConfigEndpointEnabled()) {
-            res->writeStatus("403 Forbidden");
-            res->writeHeader("Content-Type", "text/plain");
-            res->end("The GET /config endpoint is disabled by the server administrator.");
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k403Forbidden);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("The GET /config endpoint is disabled by the server administrator.");
+            callback(resp);
             return;
         }
 
         std::ifstream configFile;
-        if (!openConfigFile(configFile, res)) {
+        if (auto errorResp = openConfigFile(configFile)) {
+            callback(errorResp);
             return;
         }
 
@@ -647,149 +674,145 @@ struct HttpService::Impl
             combinedJson["model"] = jsonConfig;
             combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
 
-            res->writeStatus("200 OK");
-            res->writeHeader("Content-Type", "application/json");
-            res->end(combinedJson.dump(2));
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k200OK);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            resp->setBody(combinedJson.dump(2));
+            callback(resp);
         }
         catch (const std::exception& e) {
-            res->writeStatus("500 Internal Server Error");
-            res->writeHeader("Content-Type", "text/plain");
-            res->end(std::string("Error processing config file: ") + e.what());
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k500InternalServerError);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Error processing config file: ") + e.what());
+            callback(resp);
         }
     }
 
-    void handlePostConfigRequest(uWS::HttpResponse<false>* res) const
+    void handlePostConfigRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
     {
         if (!isPostConfigEndpointEnabled()) {
-            res->writeStatus("403 Forbidden");
-            res->writeHeader("Content-Type", "text/plain");
-            res->end("The POST /config endpoint is not enabled by the server administrator.");
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k403Forbidden);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("The POST /config endpoint is not enabled by the server administrator.");
+            callback(resp);
             return;
         }
 
         struct ConfigUpdateState : std::enable_shared_from_this<ConfigUpdateState>
         {
-            uWS::HttpResponse<false>* res = nullptr;
-            uWS::Loop* loop = nullptr;
-            std::atomic_bool aborted{false};
+            trantor::EventLoop* loop = nullptr;
             std::atomic_bool done{false};
             std::atomic_bool wroteConfig{false};
             std::unique_ptr<DataSourceConfigService::Subscription> subscription;
-            std::string body;
+            std::function<void(const drogon::HttpResponsePtr&)> callback;
         };
 
+        std::ifstream configFile;
+        if (auto errorResp = openConfigFile(configFile)) {
+            callback(errorResp);
+            return;
+        }
+
+        nlohmann::json jsonConfig;
+        try {
+            jsonConfig = nlohmann::json::parse(std::string(req->body()));
+        }
+        catch (const nlohmann::json::parse_error& e) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Invalid JSON format: ") + e.what());
+            callback(resp);
+            return;
+        }
+
+        try {
+            DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
+        }
+        catch (const std::exception& e) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k500InternalServerError);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Validation failed: ") + e.what());
+            callback(resp);
+            return;
+        }
+
+        auto yamlConfig = YAML::Load(configFile);
+        std::unordered_map<std::string, std::string> maskedSecrets;
+        yamlToJson(yamlConfig, true, &maskedSecrets);
+
+        for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
+            if (jsonConfig.contains(key))
+                yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
+        }
+
         auto state = std::make_shared<ConfigUpdateState>();
-        state->res = res;
-        state->loop = uWS::Loop::get();
+        state->loop = drogon::app().getLoop();
+        state->callback = std::move(callback);
 
-        res->onAborted([state]() {
-            state->aborted = true;
-            state->done = true;
-            state->subscription.reset();
-        });
-
-        res->onData([state](std::string_view chunk, bool last) mutable {
-            if (state->aborted)
-                return;
-            state->body.append(chunk.data(), chunk.size());
-            if (!last)
-                return;
-
-            std::ifstream configFile;
-            if (!Impl::openConfigFile(configFile, state->res)) {
-                state->done = true;
-                return;
-            }
-
-            nlohmann::json jsonConfig;
-            try {
-                jsonConfig = nlohmann::json::parse(state->body);
-            }
-            catch (const nlohmann::json::parse_error& e) {
-                state->res->writeStatus("400 Bad Request");
-                state->res->writeHeader("Content-Type", "text/plain");
-                state->res->end(std::string("Invalid JSON format: ") + e.what());
-                state->done = true;
-                return;
-            }
-
-            try {
-                DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
-            }
-            catch (const std::exception& e) {
-                state->res->writeStatus("500 Internal Server Error");
-                state->res->writeHeader("Content-Type", "text/plain");
-                state->res->end(std::string("Validation failed: ") + e.what());
-                state->done = true;
-                return;
-            }
-
-            auto yamlConfig = YAML::Load(configFile);
-            std::unordered_map<std::string, std::string> maskedSecrets;
-            yamlToJson(yamlConfig, true, &maskedSecrets);
-
-            for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
-                if (jsonConfig.contains(key))
-                    yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
-            }
-
-            // Subscribe before writing; ignore any callbacks that happen before we write.
-            state->subscription = DataSourceConfigService::get().subscribe(
-                [state](std::vector<YAML::Node> const&) mutable {
-                    if (!state->wroteConfig) {
-                        return;
-                    }
-                    if (state->done.exchange(true) || state->aborted)
-                        return;
-                    state->loop->defer([state]() mutable {
-                        if (state->aborted)
-                            return;
-                        state->res->writeStatus("200 OK");
-                        state->res->writeHeader("Content-Type", "text/plain");
-                        state->res->end("Configuration updated and applied successfully.");
-                        state->subscription.reset();
-                    });
-                },
-                [state](std::string const& error) mutable {
-                    if (!state->wroteConfig) {
-                        return;
-                    }
-                    if (state->done.exchange(true) || state->aborted)
-                        return;
-                    state->loop->defer([state, error]() mutable {
-                        if (state->aborted)
-                            return;
-                        state->res->writeStatus("500 Internal Server Error");
-                        state->res->writeHeader("Content-Type", "text/plain");
-                        state->res->end(std::string("Error applying the configuration: ") + error);
-                        state->subscription.reset();
-                    });
+        // Subscribe before writing; ignore any callbacks that happen before we write.
+        state->subscription = DataSourceConfigService::get().subscribe(
+            [state](std::vector<YAML::Node> const&) mutable {
+                if (!state->wroteConfig) {
+                    return;
+                }
+                if (state->done.exchange(true))
+                    return;
+                state->loop->queueInLoop([state]() mutable {
+                    auto resp = drogon::HttpResponse::newHttpResponse();
+                    resp->setStatusCode(drogon::k200OK);
+                    resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                    resp->setBody("Configuration updated and applied successfully.");
+                    state->callback(resp);
+                    state->subscription.reset();
                 });
+            },
+            [state](std::string const& error) mutable {
+                if (!state->wroteConfig) {
+                    return;
+                }
+                if (state->done.exchange(true))
+                    return;
+                state->loop->queueInLoop([state, error]() mutable {
+                    auto resp = drogon::HttpResponse::newHttpResponse();
+                    resp->setStatusCode(drogon::k500InternalServerError);
+                    resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                    resp->setBody(std::string("Error applying the configuration: ") + error);
+                    state->callback(resp);
+                    state->subscription.reset();
+                });
+            });
 
-            configFile.close();
-            log().trace("Writing new config.");
-            state->wroteConfig = true;
-            std::ofstream newConfigFile(*DataSourceConfigService::get().getConfigFilePath());
+        configFile.close();
+        log().trace("Writing new config.");
+        state->wroteConfig = true;
+        if (auto configFilePath = DataSourceConfigService::get().getConfigFilePath()) {
+            std::ofstream newConfigFile(*configFilePath);
             newConfigFile << yamlConfig;
             newConfigFile.close();
+        }
 
-            // Timeout fail-safe (rare endpoint; ok to spawn a thread).
-            std::thread([weak = state->weak_from_this()]() {
-                std::this_thread::sleep_for(std::chrono::seconds(60));
-                if (auto state = weak.lock()) {
-                    if (state->done.exchange(true) || state->aborted)
-                        return;
-                    state->loop->defer([state]() mutable {
-                        if (state->aborted)
-                            return;
-                        state->res->writeStatus("500 Internal Server Error");
-                        state->res->writeHeader("Content-Type", "text/plain");
-                        state->res->end("Timeout while waiting for config to update.");
-                        state->subscription.reset();
-                    });
-                }
-            }).detach();
-        });
+        // Timeout fail-safe (rare endpoint; ok to spawn a thread).
+        std::thread([weak = state->weak_from_this()]() {
+            std::this_thread::sleep_for(std::chrono::seconds(60));
+            if (auto state = weak.lock()) {
+                if (state->done.exchange(true))
+                    return;
+                state->loop->queueInLoop([state]() mutable {
+                    auto resp = drogon::HttpResponse::newHttpResponse();
+                    resp->setStatusCode(drogon::k500InternalServerError);
+                    resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                    resp->setBody("Timeout while waiting for config to update.");
+                    state->callback(resp);
+                    state->subscription.reset();
+                });
+            }
+        }).detach();
     }
 };
 
@@ -800,15 +823,62 @@ HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
 
 HttpService::~HttpService() = default;
 
-void HttpService::setup(uWS::App& app)
+void HttpService::setup(drogon::HttpAppFramework& app)
 {
-    app.post("/tiles", [this](auto* res, auto* req) { impl_->handleTilesRequest(res, req); });
-    app.post("/abort", [this](auto* res, auto* /*req*/) { impl_->handleAbortRequest(res); });
-    app.get("/sources", [this](auto* res, auto* req) { impl_->handleSourcesRequest(res, req); });
-    app.get("/status", [this](auto* res, auto* /*req*/) { impl_->handleStatusRequest(res); });
-    app.post("/locate", [this](auto* res, auto* /*req*/) { impl_->handleLocateRequest(res); });
-    app.get("/config", [](auto* res, auto* /*req*/) { Impl::handleGetConfigRequest(res); });
-    app.post("/config", [this](auto* res, auto* /*req*/) { impl_->handlePostConfigRequest(res); });
+    app.registerHandler(
+        "/tiles",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleTilesRequest(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    app.registerHandler(
+        "/abort",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleAbortRequest(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    app.registerHandler(
+        "/sources",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleSourcesRequest(req, std::move(callback));
+        },
+        {drogon::Get});
+
+    app.registerHandler(
+        "/status",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleStatusRequest(req, std::move(callback));
+        },
+        {drogon::Get});
+
+    app.registerHandler(
+        "/locate",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleLocateRequest(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    app.registerHandler(
+        "/config",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (req->method() == drogon::Get) {
+                Impl::handleGetConfigRequest(req, std::move(callback));
+                return;
+            }
+            if (req->method() == drogon::Post) {
+                impl_->handlePostConfigRequest(req, std::move(callback));
+                return;
+            }
+
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k405MethodNotAllowed);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("Method not allowed");
+            callback(resp);
+        },
+        {drogon::Get, drogon::Post});
 }
 
 }  // namespace mapget

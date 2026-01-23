@@ -3,6 +3,10 @@
 #include "process.hpp"
 #include "mapget/log.h"
 
+#include <drogon/HttpClient.h>
+#include <drogon/HttpRequest.h>
+#include <trantor/net/EventLoopThread.h>
+
 #include <chrono>
 #include <regex>
 
@@ -11,24 +15,42 @@ namespace mapget
 
 RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
 {
+    httpClientLoop_ = std::make_unique<trantor::EventLoopThread>("MapgetRemoteDataSource");
+    httpClientLoop_->run();
+
+    const auto hostString = fmt::format("http://{}:{}/", host, port);
+
     // Fetch data source info.
-    httplib::Client client(host, port);
-    auto fetchedInfoJson = client.Get("/info");
-    if (!fetchedInfoJson || fetchedInfoJson->status >= 300)
-        raise("Failed to fetch datasource info.");
-    info_ = DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
+    auto infoClient = drogon::HttpClient::newHttpClient(hostString, httpClientLoop_->getLoop());
+    auto infoReq = drogon::HttpRequest::newHttpRequest();
+    infoReq->setMethod(drogon::Get);
+    infoReq->setPath("/info");
+
+    auto [result, fetchedInfoResp] = infoClient->sendRequest(infoReq);
+    if (result != drogon::ReqResult::Ok || !fetchedInfoResp) {
+        raise(fmt::format("Failed to fetch datasource info: [{}]", drogon::to_string_view(result)));
+    }
+    if ((int)fetchedInfoResp->statusCode() >= 300) {
+        raise(fmt::format("Failed to fetch datasource info: [{}]", (int)fetchedInfoResp->statusCode()));
+    }
+    info_ = DataSourceInfo::fromJson(nlohmann::json::parse(std::string(fetchedInfoResp->body())));
 
     if (info_.nodeId_.empty()) {
         // Unique node IDs are required for the string pool offsets.
         raise(
             fmt::format("Remote data source is missing node ID! Source info: {}",
-                fetchedInfoJson->body));
+                std::string(fetchedInfoResp->body())));
     }
 
     // Create as many clients as parallel requests are allowed.
-    for (auto i = 0; i < std::max(info_.maxParallelJobs_, 1); ++i)
-        httpClients_.emplace_back(host, port);
+    const auto clientCount = (std::max)(info_.maxParallelJobs_, 1);
+    httpClients_.reserve(clientCount);
+    for (auto i = 0; i < clientCount; ++i) {
+        httpClients_.emplace_back(drogon::HttpClient::newHttpClient(hostString, httpClientLoop_->getLoop()));
+    }
 }
+
+RemoteDataSource::~RemoteDataSource() = default;
 
 DataSourceInfo RemoteDataSource::info()
 {
@@ -54,30 +76,26 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
 
     // Send a GET tile request.
-    auto tileResponse = client.Get(fmt::format(
+    auto tileReq = drogon::HttpRequest::newHttpRequest();
+    tileReq->setMethod(drogon::Get);
+    tileReq->setPath(fmt::format(
         "/tile?layer={}&tileId={}&stringPoolOffset={}",
         k.layerId_,
         k.tileId_.value_,
         cachedStringPoolOffset(info.nodeId_, cache)));
+    auto [resultCode, tileResponse] = client->sendRequest(tileReq);
 
     // Check that the response is OK.
-    if (!tileResponse || tileResponse->status >= 300) {
+    if (resultCode != drogon::ReqResult::Ok || !tileResponse || (int)tileResponse->statusCode() >= 300) {
         // Forward to base class get(). This will instantiate a
         // default TileLayer and call fill(). In our implementation
         // of fill, we set an error.
 
-        if (tileResponse) {
-            if (tileResponse->has_header("HTTPLIB_ERROR")) {
-                error_ = tileResponse->get_header_value("HTTPLIB_ERROR");
-            }
-            else if (tileResponse->has_header("EXCEPTION_WHAT")) {
-                error_ = tileResponse->get_header_value("EXCEPTION_WHAT");
-            }
-            else {
-                error_ = fmt::format("Code {}", tileResponse->status);
-            }
-        }
-        else {
+        if (resultCode != drogon::ReqResult::Ok) {
+            error_ = drogon::to_string(resultCode);
+        } else if (tileResponse) {
+            error_ = fmt::format("Code {}", (int)tileResponse->statusCode());
+        } else {
             error_ = "No remote response.";
         }
 
@@ -92,7 +110,7 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
         [&](auto&& mapId, auto&& layerId) { return info.getLayer(std::string(layerId)); },
         [&](auto&& tile) { result = tile; },
         cache);
-    reader.read(tileResponse->body);
+    reader.read(std::string(tileResponse->body()));
 
     return result;
 }
@@ -102,12 +120,15 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
 
-    // Send a GET tile request.
-    auto locateResponse = client.Post(
-        fmt::format("/locate"), req.serialize().dump(), "application/json");
+    auto locateReq = drogon::HttpRequest::newHttpRequest();
+    locateReq->setMethod(drogon::Post);
+    locateReq->setPath("/locate");
+    locateReq->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    locateReq->setBody(req.serialize().dump());
+    auto [resultCode, locateResponse] = client->sendRequest(locateReq);
 
     // Check that the response is OK.
-    if (!locateResponse || locateResponse->status >= 300) {
+    if (resultCode != drogon::ReqResult::Ok || !locateResponse || (int)locateResponse->statusCode() >= 300) {
         // Forward to base class get(). This will instantiate a
         // default TileFeatureLayer and call fill(). In our implementation
         // of fill, we set an error.
@@ -116,7 +137,7 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
     }
 
     // Check the response body for expected content.
-    auto responseJson = nlohmann::json::parse(locateResponse->body);
+    auto responseJson = nlohmann::json::parse(std::string(locateResponse->body()));
     if (responseJson.is_null()) {
         return {};
     }

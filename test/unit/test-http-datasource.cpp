@@ -1,34 +1,167 @@
 #include <catch2/catch_test_macros.hpp>
-#include <filesystem>
-#include <thread>
-#include <chrono>
-#ifndef _WIN32
-#include <unistd.h>
-#include <fcntl.h>
-#endif
-#include "httplib.h"
-#include "mapget/log.h"
-#include "nlohmann/json.hpp"
 
-#include "utility.h"
+#include <chrono>
+#include <condition_variable>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <mutex>
+#include <optional>
+#include <regex>
+#include <sstream>
+#include <thread>
+#include <tuple>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+#include <drogon/HttpClient.h>
+#include <drogon/HttpRequest.h>
+#include <trantor/net/EventLoopThread.h>
+
+#include "process.hpp"
+
 #include "mapget/http-datasource/datasource-client.h"
-#include "mapget/http-datasource/datasource-server.h"
+#include "mapget/http-service/cli.h"
 #include "mapget/http-service/http-client.h"
 #include "mapget/http-service/http-service.h"
+#include "mapget/log.h"
+#include "mapget/model/info.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/config.h"
-#include "mapget/http-service/cli.h"
+
+#include "nlohmann/json.hpp"
+
+#include "test-http-service-fixture.h"
+#include "utility.h"
 
 using namespace mapget;
 namespace fs = std::filesystem;
 
-TEST_CASE("HttpDataSource", "[HttpDataSource]")
+namespace
 {
-    setLogLevel("trace", log());
 
-    // Create DataSourceInfo.
-    auto info = DataSourceInfo::fromJson(R"(
+class SyncHttpClient
+{
+public:
+    SyncHttpClient(std::string host, uint16_t port)
     {
+        loopThread_ = std::make_unique<trantor::EventLoopThread>("MapgetTestHttpClient");
+        loopThread_->run();
+
+        client_ = drogon::HttpClient::newHttpClient(
+            fmt::format("http://{}:{}/", host, port),
+            loopThread_->getLoop());
+    }
+
+    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> get(std::string path)
+    {
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setMethod(drogon::Get);
+        req->setPath(std::move(path));
+        return client_->sendRequest(req);
+    }
+
+    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> postJson(std::string path, std::string body)
+    {
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setMethod(drogon::Post);
+        req->setPath(std::move(path));
+        req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        req->setBody(std::move(body));
+        return client_->sendRequest(req);
+    }
+
+private:
+    std::unique_ptr<trantor::EventLoopThread> loopThread_;
+    drogon::HttpClientPtr client_;
+};
+
+class ChildProcessWithPort
+{
+public:
+    explicit ChildProcessWithPort(std::string exePath)
+    {
+        auto stderrCallback = [](const char* bytes, size_t n) {
+            auto output = std::string(bytes, n);
+            output.erase(output.find_last_not_of(" \n\r\t") + 1);
+            if (!output.empty())
+                std::cerr << output << std::endl;
+        };
+
+        auto stdoutCallback = [this](const char* bytes, size_t n) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stdoutBuffer_.append(bytes, n);
+
+            for (;;) {
+                auto nl = stdoutBuffer_.find_first_of("\r\n");
+                if (nl == std::string::npos)
+                    break;
+
+                auto line = stdoutBuffer_.substr(0, nl);
+                stdoutBuffer_.erase(0, nl + 1);
+                line.erase(line.find_last_not_of(" \n\r\t") + 1);
+
+                if (!portReady_) {
+                    std::regex portRegex(R"(Running on port (\d+))");
+                    std::smatch matches;
+                    if (std::regex_search(line, matches, portRegex) && matches.size() > 1) {
+                        port_ = static_cast<uint16_t>(std::stoi(matches.str(1)));
+                        portReady_ = true;
+                        cv_.notify_all();
+                    }
+                }
+            }
+        };
+
+        process_ = std::make_unique<TinyProcessLib::Process>(
+            fmt::format("\"{}\"", exePath),
+            "",
+            stdoutCallback,
+            stderrCallback,
+            true);
+
+        std::unique_lock<std::mutex> lock(mutex_);
+#if defined(NDEBUG)
+        if (!cv_.wait_for(lock, std::chrono::seconds(10), [this] { return portReady_; })) {
+            raise("Timeout waiting for the child process to start listening.");
+        }
+#else
+        log().warn("Using Debug build: will wait forever!");
+        cv_.wait(lock, [this] { return portReady_; });
+#endif
+    }
+
+    ~ChildProcessWithPort()
+    {
+        if (process_) {
+            process_->kill(true);
+            process_->get_exit_status();
+        }
+    }
+
+    [[nodiscard]] uint16_t port() const
+    {
+        return port_;
+    }
+
+private:
+    std::unique_ptr<TinyProcessLib::Process> process_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::string stdoutBuffer_;
+    uint16_t port_ = 0;
+    bool portReady_ = false;
+};
+
+nlohmann::json testDataSourceInfoJson()
+{
+    using nlohmann::json;
+    return json::parse(R"(
+    {
+        "nodeId": "test-datasource",
         "mapId": "Tropico",
         "layers": {
             "WayLayer": {
@@ -59,69 +192,41 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             }
         }
     }
-    )"_json);
+    )");
+}
 
-    // Initialize a DataSource.
-    DataSourceServer ds(info);
-    std::atomic_uint32_t dataSourceFeatureRequestCount = 0;
-    std::atomic_uint32_t dataSourceSourceDataRequestCount = 0;
-    ds.onTileFeatureRequest(
-        [&](const auto& tile)
-        {
-            auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
-            auto g = f->geom()->newGeometry(GeomType::Line);
-            g->append({42., 11});
-            g->append({42., 12});
-            ++dataSourceFeatureRequestCount;
-        });
-    ds.onTileSourceDataRequest(
-        [&](const auto& tile) {
-            ++dataSourceSourceDataRequestCount;
-        });
-    ds.onLocateRequest(
-        [&](LocateRequest const& request) -> std::vector<LocateResponse>
-        {
-            REQUIRE(request.mapId_ == "Tropico");
-            REQUIRE(request.typeId_ == "Way");
-            REQUIRE(request.featureId_ == KeyValuePairs{{"wayId", 0}});
+}  // namespace
 
-            LocateResponse response(request);
-            response.tileKey_.layerId_ = "WayLayer";
-            response.tileKey_.tileId_.value_ = 1;
-            return {response};
-        });
+TEST_CASE("HttpDataSource", "[HttpDataSource]")
+{
+    setLogLevel("trace", log());
 
-    // Launch the DataSource on a separate thread.
-    ds.go();
+    // Start datasource server in a separate process (Drogon is singleton).
+    ChildProcessWithPort dsProc(MAPGET_TEST_DATASOURCE_SERVER_EXE);
 
-    // Ensure the DataSource is running.
-    REQUIRE(ds.isRunning() == true);
+    // Expected datasource info.
+    auto info = DataSourceInfo::fromJson(testDataSourceInfoJson());
 
-    SECTION("Fetch /info")
+    SyncHttpClient dsClient("127.0.0.1", dsProc.port());
+
+    // Fetch /info
     {
-        // Initialize an httplib client.
-        httplib::Client cli("localhost", ds.port());
+        auto [result, resp] = dsClient.get("/info");
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(resp != nullptr);
+        REQUIRE(resp->statusCode() == drogon::k200OK);
 
-        // Send a GET info request.
-        auto fetchedInfoJson = cli.Get("/info");
-        auto fetchedInfo =
-            DataSourceInfo::fromJson(nlohmann::json::parse(fetchedInfoJson->body));
+        auto fetchedInfo = DataSourceInfo::fromJson(nlohmann::json::parse(std::string(resp->body())));
         REQUIRE(fetchedInfo.toJson() == info.toJson());
     }
 
-    SECTION("Fetch /tile")
+    // Fetch /tile
     {
-        // Initialize an httplib client.
-        httplib::Client cli("localhost", ds.port());
+        auto [result, resp] = dsClient.get("/tile?layer=WayLayer&tileId=1");
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(resp != nullptr);
+        REQUIRE(resp->statusCode() == drogon::k200OK);
 
-        // Send a GET tile request.
-        auto tileResponse = cli.Get("/tile?layer=WayLayer&tileId=1");
-
-        // Check that the response is OK.
-        REQUIRE(tileResponse != nullptr);
-        REQUIRE(tileResponse->status == 200);
-
-        // Check the response body for expected content.
         auto receivedTileCount = 0;
         TileLayerStream::Reader reader(
             [&](auto&& mapId, auto&& layerId)
@@ -133,24 +238,18 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(tile->id().layer_ == LayerType::Features);
                 receivedTileCount++;
             });
-        reader.read(tileResponse->body);
+        reader.read(std::string(resp->body()));
 
         REQUIRE(receivedTileCount == 1);
     }
 
-    SECTION("Fetch /tile SourceData")
+    // Fetch /tile SourceData
     {
-        // Initialize an httplib client.
-        httplib::Client cli("localhost", ds.port());
+        auto [result, resp] = dsClient.get("/tile?layer=SourceData-WayLayer&tileId=1");
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(resp != nullptr);
+        REQUIRE(resp->statusCode() == drogon::k200OK);
 
-        // Send a GET tile request
-        auto tileResponse = cli.Get("/tile?layer=SourceData-WayLayer&tileId=1");
-
-        // Check that the response is OK.
-        REQUIRE(tileResponse != nullptr);
-        REQUIRE(tileResponse->status == 200);
-
-        // Check the response body for expected content.
         auto receivedTileCount = 0;
         TileLayerStream::Reader reader(
             [&](auto&& mapId, auto&& layerId)
@@ -162,57 +261,49 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(tile->id().layer_ == LayerType::SourceData);
                 receivedTileCount++;
             });
-        reader.read(tileResponse->body);
+        reader.read(std::string(resp->body()));
 
         REQUIRE(receivedTileCount == 1);
     }
 
-    SECTION("Fetch /locate")
+    // Fetch /locate
     {
-        // Initialize an httplib client.
-        httplib::Client cli("localhost", ds.port());
+        auto [result, resp] = dsClient.postJson(
+            "/locate",
+            R"({
+                "mapId": "Tropico",
+                "typeId": "Way",
+                "featureId": ["wayId", 0]
+            })");
 
-        // Send a POST locate request.
-        auto response = cli.Post("/locate", R"({
-            "mapId": "Tropico",
-            "typeId": "Way",
-            "featureId": ["wayId", 0]
-        })", "application/json");
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(resp != nullptr);
+        REQUIRE(resp->statusCode() == drogon::k200OK);
 
-        // Check that the response is OK.
-        REQUIRE(response != nullptr);
-        REQUIRE(response->status == 200);
-
-        // Check the response body for expected content.
-        LocateResponse responseParsed(nlohmann::json::parse(response->body)[0]);
+        LocateResponse responseParsed(nlohmann::json::parse(std::string(resp->body()))[0]);
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
         REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
         REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
     }
 
-    SECTION("Query mapget HTTP service")
+    // Query mapget HTTP service (in-process, started once for entire test binary)
     {
+        auto& service = test::httpService();
+        auto remoteDataSource = std::make_shared<RemoteDataSource>("127.0.0.1", dsProc.port());
+        service.add(remoteDataSource);
+
         auto countReceivedTiles = [](auto& client, auto mapId, auto layerId, auto tiles) {
             auto tileCount = 0;
-
             auto request = std::make_shared<LayerTilesRequest>(mapId, layerId, tiles);
-            request->onFeatureLayer([&](auto&& tile) { tileCount++; });
-            //request->onSourceDataLayer([&](auto&& tile) { tileCount++; });
-
+            request->onFeatureLayer([&](auto&&) { tileCount++; });
             client.request(request)->wait();
             return std::make_tuple(request, tileCount);
         };
 
-        HttpService service;
-        auto remoteDataSource = std::make_shared<RemoteDataSource>("localhost", ds.port());
-        service.add(remoteDataSource);
-
-        service.go();
-
-        SECTION("Query through mapget HTTP service")
+        // Query through mapget HTTP service
         {
-            HttpClient client("localhost", service.port());
+            HttpClient client("127.0.0.1", service.port());
 
             auto [request, receivedTileCount] = countReceivedTiles(
                 client,
@@ -221,54 +312,47 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 std::vector<TileId>{{1234, 5678, 9112, 1234}});
 
             REQUIRE(receivedTileCount == 4);
-            // One tile requested twice, so the cache was used.
-            REQUIRE(dataSourceFeatureRequestCount == 3);
+            REQUIRE(request->getStatus() == RequestStatus::Success);
         }
 
-        SECTION("Trigger 400 responses")
+        // Trigger 400 responses
         {
-            HttpClient client("localhost", service.port());
+            HttpClient client("127.0.0.1", service.port());
 
             {
-                auto [request, receivedTileCount] = countReceivedTiles(
-                    client,
-                    "UnknownMap",
-                    "WayLayer",
-                    std::vector<TileId>{{1234}});
+                auto [request, receivedTileCount] =
+                    countReceivedTiles(client, "UnknownMap", "WayLayer", std::vector<TileId>{{1234}});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
 
             {
-                auto [request, receivedTileCount] = countReceivedTiles(
-                    client,
-                    "Tropico",
-                    "UnknownLayer",
-                    std::vector<TileId>{{1234}});
+                auto [request, receivedTileCount] =
+                    countReceivedTiles(client, "Tropico", "UnknownLayer", std::vector<TileId>{{1234}});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
         }
 
-        SECTION("Run /locate through service")
+        // Run /locate through service
         {
-            httplib::Client client("localhost", service.port());
+            SyncHttpClient serviceClient("127.0.0.1", service.port());
 
-            // Send a POST locate request.
-            auto response = client.Post("/locate", R"({
-                "requests": [{
-                    "mapId": "Tropico",
-                    "typeId": "Way",
-                    "featureId": ["wayId", 0]
-                }]
-            })", "application/json");
+            auto [result, resp] = serviceClient.postJson(
+                "/locate",
+                R"({
+                    "requests": [{
+                        "mapId": "Tropico",
+                        "typeId": "Way",
+                        "featureId": ["wayId", 0]
+                    }]
+                })");
 
-            // Check that the response is OK.
-            REQUIRE(response != nullptr);
-            REQUIRE(response->status == 200);
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(resp != nullptr);
+            REQUIRE(resp->statusCode() == drogon::k200OK);
 
-            // Check the response body for expected content.
-            auto responseJsonLists = nlohmann::json::parse(response->body)["responses"];
+            auto responseJsonLists = nlohmann::json::parse(std::string(resp->body()))["responses"];
             REQUIRE(responseJsonLists.size() == 1);
             auto responseJsonList = responseJsonLists[0];
             REQUIRE(responseJsonList.size() == 1);
@@ -279,79 +363,52 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
         }
 
-        SECTION("Test auth header requirement")
+        // Test auth header requirement
         {
-            remoteDataSource->requireAuthHeaderRegexMatchOption(
-                "X-USER-ROLE",
-                std::regex("\\bTropico-Viewer\\b"));
+            remoteDataSource->requireAuthHeaderRegexMatchOption("X-USER-ROLE", std::regex("\\bTropico-Viewer\\b"));
 
-            HttpClient badClient("localhost", service.port());
-            HttpClient goodClient("localhost", service.port(), {{"X-USER-ROLE", "Tropico-Viewer"}});
+            HttpClient badClient("127.0.0.1", service.port());
+            HttpClient goodClient("127.0.0.1", service.port(), {{"X-USER-ROLE", "Tropico-Viewer"}});
 
-            // Check sources
             REQUIRE(badClient.sources().empty());
             REQUIRE(goodClient.sources().size() == 1);
 
-            // Try to load tiles with bad client
             {
-                auto [request, receivedTileCount] = countReceivedTiles(
-                    badClient,
-                    "Tropico",
-                    "WayLayer",
-                    std::vector<TileId>{{1234}});
+                auto [request, receivedTileCount] =
+                    countReceivedTiles(badClient, "Tropico", "WayLayer", std::vector<TileId>{{1234}});
                 REQUIRE(request->getStatus() == RequestStatus::Unauthorized);
                 REQUIRE(receivedTileCount == 0);
             }
 
-            // Try to load tiles with good client
             {
-                auto [request, receivedTileCount] = countReceivedTiles(
-                    goodClient,
-                    "Tropico",
-                    "WayLayer",
-                    std::vector<TileId>{{1234}});
+                auto [request, receivedTileCount] =
+                    countReceivedTiles(goodClient, "Tropico", "WayLayer", std::vector<TileId>{{1234}});
                 REQUIRE(request->getStatus() == RequestStatus::Success);
                 REQUIRE(receivedTileCount == 1);
             }
         }
 
-        service.stop();
-        REQUIRE(service.isRunning() == false);
+        service.remove(remoteDataSource);
     }
-
-    SECTION("Wait for data source")
-    {
-        auto waitThread = std::thread([&] { ds.waitForSignal(); });
-        ds.stop();
-        waitThread.join();
-        REQUIRE(ds.isRunning() == false);
-    }
-
-    ds.stop();
-    REQUIRE(ds.isRunning() == false);
 }
 
 TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 {
+    auto& service = test::httpService();
+    REQUIRE(service.isRunning() == true);
+
+    SyncHttpClient cli("127.0.0.1", service.port());
+
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_http_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
-    // Setting up the server and client.
-    HttpService service;
-    service.go();
-    REQUIRE(service.isRunning() == true);
-    httplib::Client cli("localhost", service.port());
-
     // Set up the config file.
     DataSourceConfigService::get().reset();
     struct SchemaPatchGuard {
-        ~SchemaPatchGuard() {
-            DataSourceConfigService::get().setDataSourceConfigSchemaPatch(nlohmann::json::object());
-        }
+        ~SchemaPatchGuard() { DataSourceConfigService::get().setDataSourceConfigSchemaPatch(nlohmann::json::object()); }
     } schemaPatchGuard;
 
-    // Emulate the CLI-provided config-schema patch so http-settings participates in the auto schema.
     auto schemaPatch = nlohmann::json::parse(R"(
     {
         "properties": {
@@ -364,110 +421,127 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     )");
     DataSourceConfigService::get().setDataSourceConfigSchemaPatch(schemaPatch);
 
-    SECTION("Get Configuration - Config File Not Found") {
+    SECTION("Get Configuration - Config File Not Found")
+    {
         DataSourceConfigService::get().loadConfig(tempConfigPath.string());
-        auto res = cli.Get("/config");
+        auto [result, res] = cli.get("/config");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 404);
-        REQUIRE(res->body == "The server does not have a config file.");
+        REQUIRE(res->statusCode() == drogon::k404NotFound);
+        REQUIRE(std::string(res->body()) == "The server does not have a config file.");
     }
 
     // Create config file for tests that need it
     {
         std::ofstream configFile(tempConfigPath);
-        configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";  // Update http-settings to an array.
+        configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";
         configFile.flush();
         configFile.close();
-        
-        // Ensure file is synced to disk
-        #ifndef _WIN32
+
+#ifndef _WIN32
         int fd = open(tempConfigPath.c_str(), O_RDONLY);
         if (fd != -1) {
             fsync(fd);
             close(fd);
         }
-        #endif
+#endif
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    
-    // Load the config after file is created
+
     DataSourceConfigService::get().loadConfig(tempConfigPath.string());
-    
-    // Give the config watcher time to detect the file
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    SECTION("Get Configuration - Not allowed") {
+    SECTION("Get Configuration - Not allowed")
+    {
         setGetConfigEndpointEnabled(false);
-        auto res = cli.Get("/config");
+        auto [result, res] = cli.get("/config");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 403);
+        REQUIRE(res->statusCode() == drogon::k403Forbidden);
     }
 
-    SECTION("Get Configuration - No Config File Path Set") {
+    SECTION("Get Configuration - No Config File Path Set")
+    {
         setGetConfigEndpointEnabled(true);
-        DataSourceConfigService::get().loadConfig("");  // Simulate no config path set.
-        auto res = cli.Get("/config");
+        DataSourceConfigService::get().loadConfig("");
+        auto [result, res] = cli.get("/config");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 404);
-        REQUIRE(res->body == "The config file path is not set. Check the server configuration.");
+        REQUIRE(res->statusCode() == drogon::k404NotFound);
+        REQUIRE(std::string(res->body()) ==
+                "The config file path is not set. Check the server configuration.");
     }
 
-    SECTION("Get Configuration - Success") {
-        auto res = cli.Get("/config");
+    SECTION("Get Configuration - Success")
+    {
+        setGetConfigEndpointEnabled(true);
+        auto [result, res] = cli.get("/config");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 200);
-        REQUIRE(res->body.find("sources") != std::string::npos);
-        REQUIRE(res->body.find("http-settings") != std::string::npos);
+        REQUIRE(res->statusCode() == drogon::k200OK);
 
-        // Ensure that the password is masked as SHA256.
-        REQUIRE(res->body.find("hunter2") == std::string::npos);
-        REQUIRE(res->body.find("MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") != std::string::npos);
+        auto body = std::string(res->body());
+        REQUIRE(body.find("sources") != std::string::npos);
+        REQUIRE(body.find("http-settings") != std::string::npos);
+        REQUIRE(body.find("hunter2") == std::string::npos);
+        REQUIRE(
+            body.find("MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") !=
+            std::string::npos);
     }
 
-    SECTION("Post Configuration - Not Enabled") {
+    SECTION("Post Configuration - Not Enabled")
+    {
         setPostConfigEndpointEnabled(false);
-        auto res = cli.Post("/config", "", "application/json");
+        auto [result, res] = cli.postJson("/config", "");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 403);
+        REQUIRE(res->statusCode() == drogon::k403Forbidden);
     }
 
-    SECTION("Post Configuration - Invalid JSON Format") {
+    SECTION("Post Configuration - Invalid JSON Format")
+    {
         setPostConfigEndpointEnabled(true);
-        std::string invalidJson = "this is not valid json";
-        auto res = cli.Post("/config", invalidJson, "application/json");
+        auto [result, res] = cli.postJson("/config", "this is not valid json");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 400);
-        REQUIRE(res->body.find("Invalid JSON format") != std::string::npos);
+        REQUIRE(res->statusCode() == drogon::k400BadRequest);
+        REQUIRE(std::string(res->body()).find("Invalid JSON format") != std::string::npos);
     }
 
-    SECTION("Post Configuration - Missing Sources") {
-        std::string newConfig = R"({"http-settings": []})";
-        auto res = cli.Post("/config", newConfig, "application/json");
+    SECTION("Post Configuration - Missing Sources")
+    {
+        setPostConfigEndpointEnabled(true);
+        auto [result, res] = cli.postJson("/config", R"({"http-settings": []})");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 500);
-        REQUIRE(res->body.starts_with("Validation failed"));
+        REQUIRE(res->statusCode() == drogon::k500InternalServerError);
+        REQUIRE(std::string(res->body()).starts_with("Validation failed"));
     }
 
-    SECTION("Post Configuration - Missing Http Settings") {
-        std::string newConfig = R"({"sources": []})";
-        auto res = cli.Post("/config", newConfig, "application/json");
+    SECTION("Post Configuration - Missing Http Settings")
+    {
+        setPostConfigEndpointEnabled(true);
+        auto [result, res] = cli.postJson("/config", R"({"sources": []})");
+        REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
-        REQUIRE(res->status == 500);
-        REQUIRE(res->body.starts_with("Validation failed"));
+        REQUIRE(res->statusCode() == drogon::k500InternalServerError);
+        REQUIRE(std::string(res->body()).starts_with("Validation failed"));
     }
 
-    SECTION("Post Configuration - Valid JSON Config") {
+    SECTION("Post Configuration - Valid JSON Config")
+    {
+        setPostConfigEndpointEnabled(true);
         std::string newConfig = R"({
             "sources": [{"type": "TestDataSource"}],
             "http-settings": [{"scope": "https://example.com", "password": "MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
         })";
-        log().set_level(spdlog::level::trace);
-        auto res = cli.Post("/config", newConfig, "application/json");
-        REQUIRE(res != nullptr);
-        REQUIRE(res->status == 200);
-        REQUIRE(res->body == "Configuration updated and applied successfully.");
 
-        // Check that the password SHA was re-substituted.
+        auto [result, res] = cli.postJson("/config", newConfig);
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(res != nullptr);
+        REQUIRE(res->statusCode() == drogon::k200OK);
+        REQUIRE(std::string(res->body()) == "Configuration updated and applied successfully.");
+
         std::ifstream config(*mapget::DataSourceConfigService::get().getConfigFilePath());
         std::stringstream configContentStream;
         configContentStream << config.rdbuf();
@@ -475,9 +549,5 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(configContent.find("hunter2") != std::string::npos);
     }
 
-    service.stop();
-    REQUIRE(service.isRunning() == false);
-
-    // Clean up the test configuration files.
     fs::remove(tempConfigPath);
 }
