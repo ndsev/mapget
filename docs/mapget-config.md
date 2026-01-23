@@ -203,7 +203,7 @@ Required fields:
 
 Optional fields:
 
-- `withAttrLayers`: boolean flag. If `true`, nested objects in the GeoJSON `properties` are interpreted as attribute layers; if `false`, only scalar top‑level properties are emitted.
+- `withAttrLayers` (default: `true`): boolean flag. If `true`, nested objects in the GeoJSON `properties` are converted to mapget attribute layers; if `false`, only scalar top‑level properties are emitted and nested objects are silently dropped.
 
 Example:
 

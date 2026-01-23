@@ -94,7 +94,9 @@ nlohmann::json geoJsonFolderSchema()
             }},
             {"withAttrLayers", {
                 {"type", "boolean"},
-                {"title", "With Attribute Layers"}
+                {"title", "With Attribute Layers"},
+                {"description", "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
+                {"default", true}
             }}
         }},
         {"required", nlohmann::json::array({"folder"})},
@@ -233,7 +235,7 @@ void registerDefaultDatasourceTypes() {
         "GeoJsonFolder",
         [](YAML::Node const& config) -> DataSource::Ptr {
             if (auto folder = config["folder"]) {
-                bool withAttributeLayers = false;
+                bool withAttributeLayers = true;
                 if (auto withAttributeLayersNode = config["withAttrLayers"])
                     withAttributeLayers = withAttributeLayersNode.as<bool>();
                 return std::make_shared<geojsonsource::GeoJsonSource>(folder.as<std::string>(), withAttributeLayers);
