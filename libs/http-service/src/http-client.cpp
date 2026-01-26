@@ -120,6 +120,10 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     auto [result, resp] = impl_->client_->sendRequest(httpReq);
     if (result == drogon::ReqResult::Ok && resp) {
         if (resp->statusCode() == drogon::k200OK) {
+            // TODO: Support streamed/chunked tile responses.
+            //  Drogon's `HttpClient` API only provides the full buffered body.
+            //  True streaming would require a custom client built on
+            //  `trantor::TcpClient` (still within the Drogon dependency).
             reader->read(std::string(resp->body()));
         } else if (resp->statusCode() == drogon::k400BadRequest) {
             request->setStatus(RequestStatus::NoDataSource);
@@ -136,4 +140,3 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
 }
 
 }  // namespace mapget
-
