@@ -59,6 +59,9 @@ public:
 
     ~GzipCompressor() { deflateEnd(&strm_); }
 
+    GzipCompressor(GzipCompressor const&) = delete;
+    GzipCompressor(GzipCompressor&&) = delete;
+
     std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH)
     {
         std::string result;

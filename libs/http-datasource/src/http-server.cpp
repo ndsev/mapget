@@ -261,11 +261,15 @@ bool HttpServer::mountFileSystem(std::string const& pathFromTo)
     if (ec)
         return false;
 
-    if (!std::filesystem::exists(fsRoot, ec) || ec || !std::filesystem::is_directory(fsRoot, ec) || ec)
+    auto exists = std::filesystem::exists(fsRoot, ec);
+    if (!exists || ec)
+        return false;
+    auto isDirectory = std::filesystem::is_directory(fsRoot, ec);
+    if (isDirectory || ec)
         return false;
 
-    std::lock_guard lock(impl_->mountsMutex_);
-    impl_->mounts_.push_back(MountPoint{std::move(urlPrefix), std::move(fsRoot)});
+    std::scoped_lock lock(impl_->mountsMutex_);
+    impl_->mounts_.emplace_back(MountPoint{std::move(urlPrefix), std::move(fsRoot)});
     return true;
 }
 

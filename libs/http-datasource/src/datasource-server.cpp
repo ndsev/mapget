@@ -121,7 +121,7 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                     std::string content;
                     TileLayerStream::StringPoolOffsetMap stringPoolOffsets{{impl_->info_.nodeId_, stringPoolOffsetParam}};
                     TileLayerStream::Writer layerWriter{
-                        [&](std::string bytes, TileLayerStream::MessageType) { content.append(bytes); },
+                        [&](std::string const& bytes, TileLayerStream::MessageType) { content.append(bytes); },
                         stringPoolOffsets};
                     layerWriter.write(tileLayer);
 
