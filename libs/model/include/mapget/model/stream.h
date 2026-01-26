@@ -29,6 +29,12 @@ public:
         StringPool = 1,
         TileFeatureLayer = 2,
         TileSourceDataLayer = 3,
+        /**
+         * JSON-encoded status updates, e.g. for WebSocket /tiles.
+         *
+         * Payload: UTF-8 JSON bytes (not null-terminated).
+         */
+        Status = 4,
         EndOfStream = 128
     };
 

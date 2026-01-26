@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -19,6 +21,7 @@
 
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
+#include <drogon/WebSocketClient.h>
 #include <trantor/net/EventLoopThread.h>
 
 #include "process.hpp"
@@ -385,6 +388,296 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     countReceivedTiles(goodClient, "Tropico", "WayLayer", std::vector<TileId>{{1234}});
                 REQUIRE(request->getStatus() == RequestStatus::Success);
                 REQUIRE(receivedTileCount == 1);
+            }
+
+            auto runWsTilesRequest = [&](bool sendAuthHeader, std::string requestJson) {
+                auto wsLoopThread = std::make_unique<trantor::EventLoopThread>("MapgetTestWsClient");
+                wsLoopThread->run();
+
+                auto wsClient = drogon::WebSocketClient::newWebSocketClient(
+                    fmt::format("ws://127.0.0.1:{}", service.port()),
+                    wsLoopThread->getLoop());
+
+                std::mutex mutex;
+                std::condition_variable cv;
+                std::optional<nlohmann::json> lastStatus;
+                std::atomic_int receivedTileCount{0};
+                std::string error;
+
+                const auto dsInfo = remoteDataSource->info();
+                const auto layerInfo = dsInfo.getLayer("WayLayer");
+                REQUIRE(layerInfo != nullptr);
+
+                TileLayerStream::Reader reader(
+                    [&](auto&&, auto&&) { return layerInfo; },
+                    [&](auto&& tile) {
+                        if (tile->id().layer_ != LayerType::Features) {
+                            std::lock_guard lock(mutex);
+                            error = "Unexpected tile layer type";
+                        }
+                        receivedTileCount.fetch_add(1, std::memory_order_relaxed);
+                    });
+
+                wsClient->setMessageHandler(
+                    [&](std::string&& msg,
+                        const drogon::WebSocketClientPtr&,
+                        const drogon::WebSocketMessageType& msgType) {
+                        if (msgType != drogon::WebSocketMessageType::Binary) {
+                            return;
+                        }
+
+                        TileLayerStream::MessageType type = TileLayerStream::MessageType::None;
+                        uint32_t payloadSize = 0;
+                        std::stringstream ss;
+                        ss.write(msg.data(), static_cast<std::streamsize>(msg.size()));
+                        if (!TileLayerStream::Reader::readMessageHeader(ss, type, payloadSize)) {
+                            std::lock_guard lock(mutex);
+                            error = "Failed to read stream message header";
+                            cv.notify_all();
+                            return;
+                        }
+
+                        if (type == TileLayerStream::MessageType::Status) {
+                            std::string payload(payloadSize, '\0');
+                            ss.read(payload.data(), static_cast<std::streamsize>(payloadSize));
+                            nlohmann::json parsed;
+                            try {
+                                parsed = nlohmann::json::parse(payload);
+                            }
+                            catch (const std::exception& e) {
+                                std::lock_guard lock(mutex);
+                                error = std::string("Failed to parse status JSON: ") + e.what();
+                                cv.notify_all();
+                                return;
+                            }
+                            {
+                                std::lock_guard lock(mutex);
+                                lastStatus = std::move(parsed);
+                            }
+                            cv.notify_all();
+                            return;
+                        }
+
+                        try {
+                            reader.read(msg);
+                        }
+                        catch (const std::exception& e) {
+                            std::lock_guard lock(mutex);
+                            error = std::string("Failed to parse tile stream: ") + e.what();
+                            cv.notify_all();
+                        }
+                    });
+
+                auto connectReq = drogon::HttpRequest::newHttpRequest();
+                connectReq->setMethod(drogon::Get);
+                connectReq->setPath("/tiles");
+                if (sendAuthHeader) {
+                    connectReq->addHeader("X-USER-ROLE", "Tropico-Viewer");
+                }
+
+                std::promise<drogon::ReqResult> connectPromise;
+                auto connectFuture = connectPromise.get_future();
+                wsClient->connectToServer(
+                    connectReq,
+                    [&connectPromise](
+                        drogon::ReqResult result,
+                        const drogon::HttpResponsePtr&,
+                        const drogon::WebSocketClientPtr&) { connectPromise.set_value(result); });
+
+                REQUIRE(connectFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+                REQUIRE(connectFuture.get() == drogon::ReqResult::Ok);
+
+                auto conn = wsClient->getConnection();
+                if (!conn || !conn->connected()) {
+                    wsClient->stop();
+                    FAIL("WebSocket connection not established");
+                }
+
+                conn->send(requestJson, drogon::WebSocketMessageType::Text);
+
+                {
+                    std::unique_lock lock(mutex);
+                    REQUIRE(cv.wait_for(lock, std::chrono::seconds(10), [&] {
+                        return !error.empty() ||
+                               (lastStatus.has_value() && lastStatus->value("allDone", false));
+                    }));
+                    if (!error.empty()) {
+                        wsClient->stop();
+                        FAIL(error);
+                    }
+                }
+
+                wsClient->stop();
+
+                REQUIRE(lastStatus.has_value());
+                return std::make_tuple(*lastStatus, receivedTileCount.load(std::memory_order_relaxed));
+            };
+
+            // WebSocket tiles: unauthorized without auth header.
+            {
+                auto req = nlohmann::json::object({
+                    {"requests", nlohmann::json::array({nlohmann::json::object({
+                        {"mapId", "Tropico"},
+                        {"layerId", "WayLayer"},
+                        {"tileIds", nlohmann::json::array({1234})},
+                    })})},
+                }).dump();
+
+                auto [status, wsTileCount] = runWsTilesRequest(false, req);
+                REQUIRE(wsTileCount == 0);
+                REQUIRE(status["requests"].size() == 1);
+                REQUIRE(status["requests"][0]["status"].get<int>() ==
+                        static_cast<int>(RequestStatus::Unauthorized));
+            }
+
+            // WebSocket tiles: invalid request stays on the same connection, then succeeds.
+            {
+                auto wsLoopThread = std::make_unique<trantor::EventLoopThread>("MapgetTestWsClientReuse");
+                wsLoopThread->run();
+
+                auto wsClient = drogon::WebSocketClient::newWebSocketClient(
+                    fmt::format("ws://127.0.0.1:{}", service.port()),
+                    wsLoopThread->getLoop());
+
+                std::mutex mutex;
+                std::condition_variable cv;
+                std::optional<nlohmann::json> lastStatus;
+                std::atomic_int receivedTileCount{0};
+                std::string error;
+
+                const auto dsInfo = remoteDataSource->info();
+                const auto layerInfo = dsInfo.getLayer("WayLayer");
+                REQUIRE(layerInfo != nullptr);
+
+                TileLayerStream::Reader reader(
+                    [&](auto&&, auto&&) { return layerInfo; },
+                    [&](auto&&) { receivedTileCount.fetch_add(1, std::memory_order_relaxed); });
+
+                wsClient->setMessageHandler(
+                    [&](std::string&& msg,
+                        const drogon::WebSocketClientPtr&,
+                        const drogon::WebSocketMessageType& msgType) {
+                        if (msgType != drogon::WebSocketMessageType::Binary) {
+                            return;
+                        }
+
+                        TileLayerStream::MessageType type = TileLayerStream::MessageType::None;
+                        uint32_t payloadSize = 0;
+                        std::stringstream ss;
+                        ss.write(msg.data(), static_cast<std::streamsize>(msg.size()));
+                        if (!TileLayerStream::Reader::readMessageHeader(ss, type, payloadSize)) {
+                            std::lock_guard lock(mutex);
+                            error = "Failed to read stream message header";
+                            cv.notify_all();
+                            return;
+                        }
+
+                        if (type == TileLayerStream::MessageType::Status) {
+                            std::string payload(payloadSize, '\0');
+                            ss.read(payload.data(), static_cast<std::streamsize>(payloadSize));
+                            nlohmann::json parsed;
+                            try {
+                                parsed = nlohmann::json::parse(payload);
+                            }
+                            catch (const std::exception& e) {
+                                std::lock_guard lock(mutex);
+                                error = std::string("Failed to parse status JSON: ") + e.what();
+                                cv.notify_all();
+                                return;
+                            }
+                            {
+                                std::lock_guard lock(mutex);
+                                lastStatus = std::move(parsed);
+                            }
+                            cv.notify_all();
+                            return;
+                        }
+
+                        try {
+                            reader.read(msg);
+                        }
+                        catch (const std::exception& e) {
+                            std::lock_guard lock(mutex);
+                            error = std::string("Failed to parse tile stream: ") + e.what();
+                            cv.notify_all();
+                        }
+                    });
+
+                auto connectReq = drogon::HttpRequest::newHttpRequest();
+                connectReq->setMethod(drogon::Get);
+                connectReq->setPath("/tiles");
+                connectReq->addHeader("X-USER-ROLE", "Tropico-Viewer");
+
+                std::promise<drogon::ReqResult> connectPromise;
+                auto connectFuture = connectPromise.get_future();
+                wsClient->connectToServer(
+                    connectReq,
+                    [&connectPromise](
+                        drogon::ReqResult result,
+                        const drogon::HttpResponsePtr&,
+                        const drogon::WebSocketClientPtr&) { connectPromise.set_value(result); });
+
+                REQUIRE(connectFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+                REQUIRE(connectFuture.get() == drogon::ReqResult::Ok);
+
+                auto conn = wsClient->getConnection();
+                if (!conn || !conn->connected()) {
+                    wsClient->stop();
+                    FAIL("WebSocket connection not established");
+                }
+
+                // Invalid JSON: should yield a Status message but keep the socket open.
+                {
+                    conn->send("{not json", drogon::WebSocketMessageType::Text);
+                    std::unique_lock lock(mutex);
+                    REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&] {
+                        return !error.empty() ||
+                               (lastStatus.has_value() && lastStatus->value("allDone", false));
+                    }));
+                    if (!error.empty()) {
+                        wsClient->stop();
+                        FAIL(error);
+                    }
+                    REQUIRE(lastStatus->value("message", "").find("Invalid JSON") != std::string::npos);
+                    REQUIRE(conn->connected());
+                }
+
+                // Valid request should succeed afterwards.
+                {
+                    {
+                        std::lock_guard lock(mutex);
+                        lastStatus.reset();
+                    }
+                    receivedTileCount.store(0, std::memory_order_relaxed);
+
+                    auto req = nlohmann::json::object({
+                        {"requests", nlohmann::json::array({nlohmann::json::object({
+                            {"mapId", "Tropico"},
+                            {"layerId", "WayLayer"},
+                            {"tileIds", nlohmann::json::array({1234})},
+                        })})},
+                    }).dump();
+
+                    conn->send(req, drogon::WebSocketMessageType::Text);
+
+                    std::unique_lock lock(mutex);
+                    REQUIRE(cv.wait_for(lock, std::chrono::seconds(10), [&] {
+                        return !error.empty() ||
+                               (lastStatus.has_value() && lastStatus->value("allDone", false));
+                    }));
+                    if (!error.empty()) {
+                        wsClient->stop();
+                        FAIL(error);
+                    }
+
+                    REQUIRE(receivedTileCount.load(std::memory_order_relaxed) == 1);
+                    REQUIRE(lastStatus->contains("requests"));
+                    REQUIRE((*lastStatus)["requests"].size() == 1);
+                    REQUIRE((*lastStatus)["requests"][0]["status"].get<int>() ==
+                            static_cast<int>(RequestStatus::Success));
+                }
+
+                wsClient->stop();
             }
         }
 

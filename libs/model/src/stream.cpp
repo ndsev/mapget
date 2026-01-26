@@ -50,7 +50,6 @@ bool TileLayerStream::Reader::continueReading()
         }
     }
 
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(buffer_);
     auto numUnreadBytes = buffer_.tellp() - buffer_.tellg();
     if (numUnreadBytes < nextValueSize_)
         return false;
@@ -79,6 +78,12 @@ bool TileLayerStream::Reader::continueReading()
         // Read the node id which identifies the string pool.
         std::string stringPoolNodeId = StringPool::readDataSourceNodeId(buffer_);
         stringPoolProvider_->getStringPool(stringPoolNodeId)->read(buffer_);
+    }
+    else
+    {
+        // Skip unknown message types for forward compatibility (e.g. status
+        // messages on WebSocket streams).
+        buffer_.seekg(nextValueSize_, std::ios_base::cur);
     }
 
     currentPhase_ = Phase::ReadHeader;

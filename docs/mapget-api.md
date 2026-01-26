@@ -1,12 +1,12 @@
-# REST/GeoJSON API Guide
+# HTTP / WebSocket API Guide
 
-Mapget exposes a small HTTP API that lets clients discover datasources, stream tiles, abort long‑running requests, locate features by ID and inspect or update the running configuration. This guide describes the endpoints and their request and response formats.
+Mapget exposes a small HTTP + WebSocket API that lets clients discover datasources, stream tiles, locate features by ID and inspect or update the running configuration. This guide describes the endpoints and their request and response formats.
 
 ## Base URL and formats
 
 The server started by `mapget serve` listens on the configured host and port (by default on all interfaces and an automatically chosen port). All endpoints are rooted at that host and port.
 
-Requests that send JSON use `Content-Type: application/json`. Tile streaming supports two response encodings, selected via the `Accept` header:
+Requests that send JSON use `Content-Type: application/json`. HTTP tile streaming supports two response encodings, selected via the `Accept` header:
 
 - `Accept: application/jsonl` returns a JSON‑Lines stream where each line is one JSON object.
 - `Accept: application/binary` returns a compact binary stream optimized for high-volume traffic.
@@ -23,9 +23,9 @@ The binary format and the logical feature model are described in more detail in 
 
 Each item contains map ID, available layers and basic metadata. This endpoint is typically used by frontends to discover which maps and layers can be requested via `/tiles`.
 
-## `/tiles` – stream tiles
+## `/tiles` – stream tiles (HTTP)
 
-`POST /tiles` streams tiles for one or more map–layer combinations. It is the main data retrieval endpoint used by clients such as erdblick.
+`POST /tiles` streams tiles for one or more map–layer combinations.
 
 - **Method:** `POST`
 - **Request body (JSON):**
@@ -34,7 +34,6 @@ Each item contains map ID, available layers and basic metadata. This endpoint is
     - `layerId`: string, ID of the layer within that map.
     - `tileIds`: array of numeric tile IDs in mapget’s tiling scheme.
   - `stringPoolOffsets` (optional): dictionary from datasource node ID to last known string ID. Used by advanced clients to avoid receiving the same field names repeatedly in the binary stream.
-  - `clientId` (optional): arbitrary string identifying this client connection for abort handling.
 - **Response:**
   - `application/jsonl` if `Accept: application/jsonl` is sent.
   - `application/binary` if `Accept: application/binary` is sent, using the tile stream protocol.
@@ -42,6 +41,21 @@ Each item contains map ID, available layers and basic metadata. This endpoint is
 Tiles are streamed as they become available. In JSONL mode, each line is the JSON representation of one tile layer. In binary mode, the response is a sequence of versioned messages that can be decoded using the tile stream protocol from `mapget-model.md`.
 
 If `Accept-Encoding: gzip` is set, the server compresses responses where possible, which is especially useful for JSONL streams.
+
+To cancel an in-flight HTTP stream, close the HTTP connection.
+
+## `/tiles` – stream tiles (WebSocket)
+
+`GET /tiles` supports WebSocket upgrades. This is the preferred tile streaming mode for interactive clients because it supports long-lived connections and request replacement without introducing an extra abort endpoint.
+
+- **Connect:** `ws://<host>:<port>/tiles`
+- **Client → Server:** send one *text* message containing the same JSON body as for `POST /tiles` (`requests`, optional `stringPoolOffsets`).
+  - `stringPoolOffsets` is optional; the server remembers the latest offsets per WebSocket connection. Clients may re-send it to reset/resync offsets.
+- **Server → Client:** sends only *binary* WebSocket messages. Each WebSocket message contains exactly one `TileLayerStream` VTLV frame.
+  - `StringPool`, `TileFeatureLayer`, `TileSourceDataLayer` are unchanged.
+  - `Status` frames contain UTF-8 JSON payload describing per-request `RequestStatus` transitions and a human-readable message. The final status frame has `"allDone": true`.
+
+To cancel, either send a new request message on the same connection (which replaces the current one) or close the WebSocket connection.
 
 ### Why JSONL instead of JSON?
 
@@ -86,16 +100,6 @@ Each line in the JSONL response is a GeoJSON-like FeatureCollection with additio
 | `features` | array | Array of GeoJSON Feature objects |
 
 The `error` object is only present if an error occurred while filling the tile. When present, the `features` array may be empty or contain partial data.
-
-## `/abort` – cancel tile streaming
-
-`POST /abort` cancels a running `/tiles` request that was started with a matching `clientId`. It is useful when the viewport changes and the previous stream should be abandoned.
-
-- **Method:** `POST`
-- **Request body (JSON):** `{ "clientId": "<same-id-used-for-tiles>" }`
-- **Response:** `text/plain` confirmation; a 400 status code if `clientId` is missing.
-
-Internally the service marks the matching tile requests as aborted and stops scheduling further work for them.
 
 ### Curl Call Example
 
