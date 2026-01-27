@@ -62,6 +62,13 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r) {
     }
 }
 
+void LayerTilesRequest::notifyLoadState(MapTileKey const& key, TileLayer::LoadState state)
+{
+    if (onLoadStateChanged_) {
+        onLoadStateChanged_(key, state);
+    }
+}
+
 void LayerTilesRequest::setStatus(RequestStatus s)
 {
     {
@@ -188,6 +195,7 @@ struct Service::Controller
 
                     // Enter into the jobs-in-progress set.
                     jobsInProgress_.insert(result->tileKey);
+                    request->notifyLoadState(result->tileKey, TileLayer::LoadState::LoadingQueued);
 
                     // Move this request to the end of the list, so others gain priority.
                     requests_.splice(requests_.end(), requests_, reqIt);
@@ -262,7 +270,14 @@ struct Service::Worker
                 dataSource_->onCacheExpired(job.tileKey, *job.cacheExpiredAt);
             }
 
-            auto layer = dataSource_->get(job.tileKey, controller_.cache_, info_);
+            job.request->notifyLoadState(job.tileKey, TileLayer::LoadState::BackendFetching);
+            auto layer = dataSource_->get(
+                job.tileKey,
+                controller_.cache_,
+                info_,
+                [request = job.request, tileKey = job.tileKey](TileLayer::LoadState state) {
+                    request->notifyLoadState(tileKey, state);
+                });
             if (!layer)
                 raise("DataSource::get() returned null.");
 

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <optional>
 #include <memory>
+#include <functional>
 #include <tl/expected.hpp>
 
 namespace simfil { struct StringPool; }
@@ -85,6 +86,12 @@ class TileLayer
 {
 public:
     using Ptr = std::shared_ptr<TileLayer>;
+    enum class LoadState : uint8_t {
+        LoadingQueued = 0,
+        BackendFetching = 1,
+        BackendConverting = 2
+    };
+    using LoadStateCallback = std::function<void(LoadState)>;
 
     /**
      * Constructor that takes tileId_, nodeId_, mapId_, layerInfo_,
@@ -192,6 +199,15 @@ public:
     virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);
     virtual nlohmann::json toJson() const;
 
+    /**
+     * Set a load-state callback. Used by the service to forward state changes.
+     * Not serialized with the tile.
+     */
+    void setLoadStateCallback(LoadStateCallback cb);
+
+    /** Emit a load-state change (if a callback is registered). */
+    void setLoadState(LoadState state);
+
 protected:
     Version mapVersion_{0, 0, 0};
     TileId tileId_;
@@ -204,6 +220,7 @@ protected:
     std::optional<std::chrono::milliseconds> ttl_;
     nlohmann::json info_;
     std::optional<std::string> legalInfo_; // Copyright-related information
+    LoadStateCallback onLoadStateChanged_;
 };
 
 }

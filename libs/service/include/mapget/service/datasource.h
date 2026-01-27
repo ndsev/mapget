@@ -58,7 +58,11 @@ public:
     virtual std::vector<LocateResponse> locate(LocateRequest const& req);
 
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
-    virtual TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info);
+    virtual TileLayer::Ptr get(
+        MapTileKey const& k,
+        Cache::Ptr& cache,
+        DataSourceInfo const& info,
+        TileLayer::LoadStateCallback loadStateCallback = {});
 
     /** Add an authorization header-regex pair for this datasource. */
     void requireAuthHeaderRegexMatchOption(std::string header, std::regex re);

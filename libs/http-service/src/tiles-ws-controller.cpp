@@ -58,6 +58,19 @@ namespace
     return "Unknown";
 }
 
+[[nodiscard]] std::string_view loadStateToString(TileLayer::LoadState s)
+{
+    switch (s) {
+    case TileLayer::LoadState::LoadingQueued:
+        return "LoadingQueued";
+    case TileLayer::LoadState::BackendFetching:
+        return "BackendFetching";
+    case TileLayer::LoadState::BackendConverting:
+        return "BackendConverting";
+    }
+    return "Unknown";
+}
+
 [[nodiscard]] std::string encodeStreamMessage(TileLayerStream::MessageType type, std::string_view payload)
 {
     std::ostringstream headerStream;
@@ -161,6 +174,11 @@ public:
             req->onSourceDataLayer([weak](auto&& layer) {
                 if (auto self = weak.lock()) {
                     self->onTileLayer(std::move(layer));
+                }
+            });
+            req->onLayerLoadStateChanged([weak](MapTileKey const& key, TileLayer::LoadState state) {
+                if (auto self = weak.lock()) {
+                    self->onLoadStateChanged(key, state);
                 }
             });
             req->onDone_ = [weak, i](RequestStatus status) {
@@ -332,6 +350,22 @@ private:
         }
     }
 
+    void onLoadStateChanged(MapTileKey const& key, TileLayer::LoadState state)
+    {
+        if (cancelled_)
+            return;
+
+        OutgoingFrame frame;
+        frame.bytes = encodeStreamMessage(
+            TileLayerStream::MessageType::LoadStateChange,
+            buildLoadStatePayload(key, state));
+        {
+            std::lock_guard lock(mutex_);
+            outgoing_.push_back(std::move(frame));
+        }
+        scheduleDrain();
+    }
+
     [[nodiscard]] std::string buildStatusPayload(std::string message)
     {
         nlohmann::json requestsJson = nlohmann::json::array();
@@ -363,6 +397,18 @@ private:
             {"allDone", allDone},
             {"requests", std::move(requestsJson)},
             {"message", std::move(message)},
+        }).dump();
+    }
+
+    [[nodiscard]] std::string buildLoadStatePayload(MapTileKey const& key, TileLayer::LoadState state)
+    {
+        return nlohmann::json::object({
+            {"type", "mapget.tiles.load-state"},
+            {"mapId", key.mapId_},
+            {"layerId", key.layerId_},
+            {"tileId", key.tileId_.value_},
+            {"state", static_cast<uint8_t>(state)},
+            {"stateText", std::string(loadStateToString(state))},
         }).dump();
     }
 

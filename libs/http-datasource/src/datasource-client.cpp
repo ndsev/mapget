@@ -70,7 +70,11 @@ void RemoteDataSource::fill(const TileSourceDataLayer::Ptr& blobTile)
 }
 
 TileLayer::Ptr
-RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceInfo& info)
+RemoteDataSource::get(
+    const MapTileKey& k,
+    Cache::Ptr& cache,
+    const DataSourceInfo& info,
+    TileLayer::LoadStateCallback loadStateCallback)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
@@ -101,7 +105,7 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
 
         // Use tile instantiation logic of the base class,
         // the error is then set in fill().
-        return DataSource::get(k, cache, info);
+        return DataSource::get(k, cache, info, std::move(loadStateCallback));
     }
 
     // Check the response body for expected content.
@@ -112,6 +116,9 @@ RemoteDataSource::get(const MapTileKey& k, Cache::Ptr& cache, const DataSourceIn
         cache);
     reader.read(std::string(tileResponse->body()));
 
+    if (result && loadStateCallback) {
+        result->setLoadStateCallback(std::move(loadStateCallback));
+    }
     return result;
 }
 
@@ -243,11 +250,15 @@ void RemoteDataSourceProcess::fill(TileSourceDataLayer::Ptr const& sourceDataLay
 }
 
 TileLayer::Ptr
-RemoteDataSourceProcess::get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info)
+RemoteDataSourceProcess::get(
+    MapTileKey const& k,
+    Cache::Ptr& cache,
+    DataSourceInfo const& info,
+    TileLayer::LoadStateCallback loadStateCallback)
 {
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
-    return remoteSource_->get(k, cache, info);
+    return remoteSource_->get(k, cache, info, std::move(loadStateCallback));
 }
 
 std::vector<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)

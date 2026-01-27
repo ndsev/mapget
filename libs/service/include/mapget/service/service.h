@@ -76,8 +76,15 @@ public:
     template <class Fun>
     LayerTilesRequest& onSourceDataLayer(Fun&& callback) { onSourceDataLayer_ = std::forward<Fun>(callback); return *this; }
 
+    /**
+     * Callback for per-tile load-state changes.
+     */
+    template <class Fun>
+    LayerTilesRequest& onLayerLoadStateChanged(Fun&& callback) { onLoadStateChanged_ = std::forward<Fun>(callback); return *this; }
+
 protected:
     virtual void notifyResult(TileLayer::Ptr);
+    void notifyLoadState(MapTileKey const& key, TileLayer::LoadState state);
     void setStatus(RequestStatus s);
     void notifyStatus();
     nlohmann::json toJson();
@@ -88,6 +95,7 @@ private:
      */
     std::function<void(TileFeatureLayer::Ptr)> onFeatureLayer_;
     std::function<void(TileSourceDataLayer::Ptr)> onSourceDataLayer_;
+    std::function<void(MapTileKey const&, TileLayer::LoadState)> onLoadStateChanged_;
 
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.

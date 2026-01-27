@@ -35,13 +35,19 @@ public:
          * Payload: UTF-8 JSON bytes (not null-terminated).
          */
         Status = 4,
+        /**
+         * JSON-encoded load-state updates for individual tiles.
+         *
+         * Payload: UTF-8 JSON bytes (not null-terminated).
+         */
+        LoadStateChange = 5,
         EndOfStream = 128
     };
 
     struct StringPoolCache;
 
     /** Protocol Version which parsed blobs must be compatible with. */
-    static constexpr Version CurrentProtocolVersion{0, 1, 1};
+    static constexpr Version CurrentProtocolVersion{1, 0, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

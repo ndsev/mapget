@@ -47,7 +47,11 @@ public:
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     void fill(TileSourceDataLayer::Ptr const& blobTile) override;
-    TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    TileLayer::Ptr get(
+        MapTileKey const& k,
+        Cache::Ptr& cache,
+        DataSourceInfo const& info,
+        TileLayer::LoadStateCallback loadStateCallback = {}) override;
     std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:
@@ -87,7 +91,11 @@ public:
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     void fill(TileSourceDataLayer::Ptr const& sourceDataLayer) override;
-    TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    TileLayer::Ptr get(
+        MapTileKey const& k,
+        Cache::Ptr& cache,
+        DataSourceInfo const& info,
+        TileLayer::LoadStateCallback loadStateCallback = {}) override;
     std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:

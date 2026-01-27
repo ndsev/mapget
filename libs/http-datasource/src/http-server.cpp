@@ -265,7 +265,7 @@ bool HttpServer::mountFileSystem(std::string const& pathFromTo)
     if (!exists || ec)
         return false;
     auto isDirectory = std::filesystem::is_directory(fsRoot, ec);
-    if (isDirectory || ec)
+    if (!isDirectory || ec)
         return false;
 
     std::scoped_lock lock(impl_->mountsMutex_);

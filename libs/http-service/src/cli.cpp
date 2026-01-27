@@ -446,7 +446,7 @@ struct ServeCommand
             log().info("Webapp: {}", webapp_);
             if (!srv.mountFileSystem(webapp_)) {
                 log().error("  ...failed to mount!");
-                exit(1);
+                raise("Failed to mount webapp filesystem path.");
             }
         }
 

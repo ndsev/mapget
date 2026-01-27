@@ -243,6 +243,18 @@ void TileLayer::setLegalInfo(const std::string& legalInfoString)
     legalInfo_ = legalInfoString;
 }
 
+void TileLayer::setLoadStateCallback(LoadStateCallback cb)
+{
+    onLoadStateChanged_ = std::move(cb);
+}
+
+void TileLayer::setLoadState(LoadState state)
+{
+    if (onLoadStateChanged_) {
+        onLoadStateChanged_(state);
+    }
+}
+
 tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
 {
     using namespace std::chrono;

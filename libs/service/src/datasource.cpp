@@ -10,7 +10,11 @@
 namespace mapget
 {
 
-TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourceInfo const& info)
+TileLayer::Ptr DataSource::get(
+    const MapTileKey& k,
+    Cache::Ptr& cache,
+    DataSourceInfo const& info,
+    TileLayer::LoadStateCallback loadStateCallback)
 {
     auto layerInfo = info.getLayer(k.layerId_);
     if (!layerInfo)
@@ -27,6 +31,9 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
             info.mapId_,
             info.getLayer(k.layerId_),
             cache->getStringPool(info.nodeId_));
+        if (loadStateCallback) {
+            tileFeatureLayer->setLoadStateCallback(loadStateCallback);
+        }
         fill(tileFeatureLayer);
         result = tileFeatureLayer;
         break;
@@ -38,6 +45,9 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
             info.mapId_,
             info.getLayer(k.layerId_),
             cache->getStringPool(info.nodeId_));
+        if (loadStateCallback) {
+            tileSourceDataLayer->setLoadStateCallback(loadStateCallback);
+        }
         fill(tileSourceDataLayer);
         result = tileSourceDataLayer;
         break;
