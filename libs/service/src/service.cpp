@@ -11,13 +11,11 @@
 
 #include <memory>
 #include <optional>
-#include <set>
 #include <atomic>
 #include <condition_variable>
 #include <thread>
 #include <list>
 #include <chrono>
-#include <sstream>
 #include <unordered_map>
 
 #include "simfil/types.h"
@@ -33,6 +31,7 @@ LayerTilesRequest::LayerTilesRequest(
       layerId_(std::move(layerId)),
       tiles_(std::move(tiles))
 {
+    tileIdsNotDone_.insert(tiles_.begin(), tiles_.end());
     if (tiles_.empty()) {
         // An empty request is always set to success, but the client/service
         // is responsible for triggering notifyStatus() in that case.
@@ -43,16 +42,16 @@ LayerTilesRequest::LayerTilesRequest(
 void LayerTilesRequest::notifyResult(TileLayer::Ptr r) {
     const auto type = r->layerInfo()->type_;
     switch (type) {
-    case mapget::LayerType::Features:
+    case LayerType::Features:
         if (onFeatureLayer_)
-            onFeatureLayer_(std::move(std::static_pointer_cast<mapget::TileFeatureLayer>(r)));
+            onFeatureLayer_(std::move(std::static_pointer_cast<TileFeatureLayer>(r)));
         break;
-    case mapget::LayerType::SourceData:
+    case LayerType::SourceData:
         if (onSourceDataLayer_)
-            onSourceDataLayer_(std::move(std::static_pointer_cast<mapget::TileSourceDataLayer>(r)));
+            onSourceDataLayer_(std::move(std::static_pointer_cast<TileSourceDataLayer>(r)));
         break;
     default:
-        mapget::log().error(fmt::format("Unhandled layer type {}, no matching callback!", static_cast<int>(type)));
+        log().error(fmt::format("Unhandled layer type {}, no matching callback!", static_cast<int>(type)));
         break;
     }
 
@@ -121,13 +120,15 @@ bool LayerTilesRequest::isDone()
 
 struct Service::Controller
 {
+    virtual ~Controller() = default;
+
     struct Job {
         MapTileKey tileKey;
-        LayerTilesRequest::Ptr request;
+        std::vector<LayerTilesRequest::Ptr> waitingRequests;
         std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
     };
 
-    std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
+    std::map<MapTileKey, std::shared_ptr<Job>> jobsInProgress_;    // Jobs currently in progress + interested requests
     Cache::Ptr cache_;                       // The cache for the service
     std::optional<std::chrono::milliseconds> defaultTtl_; // Default TTL applied when datasource does not override
     std::list<LayerTilesRequest::Ptr> requests_;       // List of requests currently being processed
@@ -136,79 +137,101 @@ struct Service::Controller
 
     explicit Controller(Cache::Ptr cache, std::optional<std::chrono::milliseconds> defaultTtl)
         : cache_(std::move(cache)),
-          defaultTtl_(std::move(defaultTtl))
+          defaultTtl_(defaultTtl)
     {
         if (!cache_)
             raise("Cache must not be null!");
     }
 
-    std::optional<Job> nextJob(DataSourceInfo const& i)
+    std::shared_ptr<Job> nextJob(DataSourceInfo const& i)
     {
         // Workers call the nextJob function when they are free.
         // Note: For thread safety, jobsMutex_ must be held
         //  when calling this function.
 
-        std::optional<Job> result;
+        std::shared_ptr<Job> result;
 
         // Return next job, if available.
-        bool cachedTilesServed = false;
+        bool cachedTilesServedOrInProgressSkipped = false;
+        bool anyTasksRemaining = false;
         do {
-            cachedTilesServed = false;
+            cachedTilesServedOrInProgressSkipped = false;
+            anyTasksRemaining = false;
             for (auto reqIt = requests_.begin(); reqIt != requests_.end(); ++reqIt) {
                 auto const& request = *reqIt;
                 auto layerIt = i.layers_.find(request->layerId_);
 
-                // Are there tiles left to be processed in the request?
-                if (request->mapId_ == i.mapId_ && layerIt != i.layers_.end()) {
-                    if (request->nextTileIndex_ >= request->tiles_.size()) {
-                        continue;
+                // Does the Datasource Info (i) of the worker fit the request?
+                if (request->mapId_ != i.mapId_ || layerIt == i.layers_.end())
+                    continue;
+
+                // Find the next pending tile in the request's ordered list.
+                TileId tileId{};
+                bool foundTile = false;
+                while (request->nextTileIndex_ < request->tiles_.size()) {
+                    tileId = request->tiles_[request->nextTileIndex_++];
+                    if (request->tileIdsNotDone_.find(tileId) != request->tileIdsNotDone_.end()) {
+                        foundTile = true;
+                        break;
                     }
-
-                    // Create result wrapper object.
-                    auto tileId = request->tiles_[request->nextTileIndex_++];
-                    result = Job{MapTileKey(), request, std::nullopt};
-                    result->tileKey.layer_ = layerIt->second->type_;
-                    result->tileKey.mapId_ = request->mapId_;
-                    result->tileKey.layerId_ = request->layerId_;
-                    result->tileKey.tileId_ = tileId;
-
-                    // Cache lookup.
-                    auto cachedResult = cache_->getTileLayer(result->tileKey, i);
-                    if (cachedResult.tile) {
-                        log().debug("Serving cached tile: {}", result->tileKey.toString());
-                        request->notifyResult(cachedResult.tile);
-                        result.reset();
-                        cachedTilesServed = true;
-                        continue;
-                    }
-                    result->cacheExpiredAt = cachedResult.expiredAt;
-
-                    if (jobsInProgress_.find(result->tileKey) != jobsInProgress_.end()) {
-                        // Don't work on something that is already being worked on.
-                        // Wait for the work to finish, then send the (hopefully cached) result.
-                        log().debug("Delaying tile with job in progress: {}",
-                                    result->tileKey.toString());
-                        --request->nextTileIndex_;
-                        result.reset();
-                        continue;
-                    }
-
-                    // Enter into the jobs-in-progress set.
-                    jobsInProgress_.insert(result->tileKey);
-                    request->notifyLoadState(result->tileKey, TileLayer::LoadState::LoadingQueued);
-
-                    // Move this request to the end of the list, so others gain priority.
-                    requests_.splice(requests_.end(), requests_, reqIt);
-
-                    log().debug("Working on tile: {}", result->tileKey.toString());
-                    break;
                 }
+                if (!foundTile)
+                    continue;
+                anyTasksRemaining = true;
+                auto resultTileKey = MapTileKey(layerIt->second->type_, request->mapId_, request->layerId_, tileId);
+
+                // Cache lookup.
+                auto cachedResult = cache_->getTileLayer(resultTileKey, i);
+                if (cachedResult.tile) {
+                    request->tileIdsNotDone_.erase(tileId);
+                    log().debug("Serving cached tile: {}", resultTileKey.toString());
+                    request->notifyResult(cachedResult.tile);
+                    cachedTilesServedOrInProgressSkipped = true;
+                    continue;
+                }
+
+                // If another worker is working on this tile, ensure that this request gets it as well.
+                if (auto inProgress = jobsInProgress_.find(resultTileKey);
+                    inProgress != jobsInProgress_.end()) {
+                    // This tile is already being processed. Register interest so the result
+                    // can satisfy multiple requests, and allow this request to advance.
+                    log().debug("Joining tile with job in progress: {}",
+                                resultTileKey.toString());
+                    request->tileIdsNotDone_.erase(tileId);
+                    inProgress->second->waitingRequests.push_back(request);
+                    cachedTilesServedOrInProgressSkipped = true;
+                    continue;
+                }
+
+                // We found something to work on that is not cached and not in progress -
+                //  enter it into the jobs-in-progress map with the requesting client.
+                request->tileIdsNotDone_.erase(tileId);
+                result = std::make_shared<Job>(Job{resultTileKey, {request}, cachedResult.expiredAt});
+                // Proactively attach other requests that need this tile.
+                for (auto const& otherRequest : requests_) {
+                    if (!otherRequest || otherRequest == request)
+                        continue;
+                    if (otherRequest->mapId_ != request->mapId_ || otherRequest->layerId_ != request->layerId_)
+                        continue;
+                    if (otherRequest->tileIdsNotDone_.erase(tileId) == 0)
+                        continue;
+                    result->waitingRequests.push_back(otherRequest);
+                    otherRequest->notifyLoadState(result->tileKey, TileLayer::LoadState::LoadingQueued);
+                }
+                jobsInProgress_.emplace(result->tileKey, result);
+                request->notifyLoadState(result->tileKey, TileLayer::LoadState::LoadingQueued);
+
+                // Move this request to the end of the list, so others gain priority.
+                requests_.splice(requests_.end(), requests_, reqIt);
+
+                log().debug("Working on tile: {}", result->tileKey.toString());
+                break;
             }
         }
-        while (cachedTilesServed && !result);
+        while (cachedTilesServedOrInProgressSkipped && !result && anyTasksRemaining);
 
         // Clean up done requests.
-        requests_.remove_if([](auto&& r) {return r->nextTileIndex_ == r->tiles_.size(); });
+        requests_.remove_if([](auto&& r) {return r->tileIdsNotDone_.empty(); });
 
         return result;
     }
@@ -239,7 +262,7 @@ struct Service::Worker
 
     bool work()
     {
-        std::optional<Controller::Job> nextJob;
+        std::shared_ptr<Controller::Job> nextJob;
 
         {
             std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
@@ -255,7 +278,7 @@ struct Service::Worker
                         return true;
                     }
                     nextJob = controller_.nextJob(info_);
-                    return nextJob.has_value();
+                    return !!nextJob;
                 });
         }
 
@@ -270,13 +293,26 @@ struct Service::Worker
                 dataSource_->onCacheExpired(job.tileKey, *job.cacheExpiredAt);
             }
 
-            job.request->notifyLoadState(job.tileKey, TileLayer::LoadState::BackendFetching);
+            auto notifyWaitingRequests = [&](TileLayer::LoadState state) {
+                std::vector<LayerTilesRequest::Ptr> waiting;
+                {
+                    std::unique_lock lock(controller_.jobsMutex_);
+                    waiting = job.waitingRequests;
+                }
+                for (auto const& req : waiting) {
+                    if (req) {
+                        req->notifyLoadState(job.tileKey, state);
+                    }
+                }
+            };
+
+            notifyWaitingRequests(TileLayer::LoadState::BackendFetching);
             auto layer = dataSource_->get(
                 job.tileKey,
                 controller_.cache_,
                 info_,
-                [request = job.request, tileKey = job.tileKey](TileLayer::LoadState state) {
-                    request->notifyLoadState(tileKey, state);
+                [&notifyWaitingRequests](TileLayer::LoadState state) {
+                    notifyWaitingRequests(state);
                 });
             if (!layer)
                 raise("DataSource::get() returned null.");
@@ -299,14 +335,20 @@ struct Service::Worker
 
             controller_.cache_->putTileLayer(layer);
 
+            std::vector<LayerTilesRequest::Ptr> notifyRequests;
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
                 controller_.jobsInProgress_.erase(job.tileKey);
-                job.request->notifyResult(layer);
-                // As we entered a tile into the cache, notify other workers
-                // that this tile can be served.
-                controller_.jobsAvailable_.notify_all();
+                notifyRequests = job.waitingRequests;
             }
+            for (auto const& req : notifyRequests) {
+                if (req) {
+                    req->notifyResult(layer);
+                }
+            }
+            // As we entered a tile into the cache, notify other workers
+            // that this tile can be served.
+            controller_.jobsAvailable_.notify_all();
         }
         catch (std::exception& e) {
             log().error("Could not load tile {}: {}",
@@ -331,7 +373,7 @@ struct Service::Impl : public Service::Controller
         Cache::Ptr cache,
         bool useDataSourceConfig,
         std::optional<std::chrono::milliseconds> defaultTtl)
-        : Controller(std::move(cache), std::move(defaultTtl))
+        : Controller(std::move(cache), defaultTtl)
     {
         if (!useDataSourceConfig)
             return;
@@ -361,7 +403,7 @@ struct Service::Impl : public Service::Controller
             });
     }
 
-    ~Impl()
+    ~Impl() override
     {
         // Ensure that no new datasources are added while we are cleaning up.
         configSubscription_.reset();
@@ -490,21 +532,21 @@ struct Service::Impl : public Service::Controller
             if (auxDataSource->info().mapId_ == baseTile->mapId()) {
                 auto auxTile = [&]() -> TileFeatureLayer::Ptr
                 {
-                    auto auxTile = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
-                    if (!auxTile) {
+                    auto result = auxDataSource->get(baseTile->id(), cache_, auxDataSource->info());
+                    if (!result) {
                         log().warn("auxDataSource returned null for {}", baseTile->id().toString());
                         return {};
                     }
-                    if (auxTile->error()) {
-                        log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *auxTile->error());
+                    if (result->error()) {
+                        log().warn("Error while fetching addon tile {}: {}", baseTile->id().toString(), *result->error());
                         return {};
                     }
-                    if (auxTile->layerInfo()->type_ != LayerType::Features) {
+                    if (result->layerInfo()->type_ != LayerType::Features) {
                         log().warn("Addon tile is not a feature layer");
                         return {};
                     }
 
-                    return std::static_pointer_cast<TileFeatureLayer>(auxTile);
+                    return std::static_pointer_cast<TileFeatureLayer>(result);
                 }();
 
                 if (!auxTile) {
@@ -578,7 +620,7 @@ struct Service::Impl : public Service::Controller
 };
 
 Service::Service(Cache::Ptr cache, bool useDataSourceConfig, std::optional<std::chrono::milliseconds> defaultTtl)
-    : impl_(std::make_unique<Impl>(std::move(cache), useDataSourceConfig, std::move(defaultTtl)))
+    : impl_(std::make_unique<Impl>(std::move(cache), useDataSourceConfig, defaultTtl))
 {
 }
 

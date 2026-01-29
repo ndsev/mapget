@@ -46,8 +46,20 @@ public:
 
     struct StringPoolCache;
 
-    /** Protocol Version which parsed blobs must be compatible with. */
-    static constexpr Version CurrentProtocolVersion{1, 0, 0};
+    /**
+     * Protocol Version which parsed blobs must be compatible with.
+     * Version History:
+     * - Version 1.0:
+     *   + Added TileFeatureLayer Message
+     *   + Added StringPool Message
+     *   + Added TileSourceDataLayer Message
+     *   + Added EndOfStream Message
+     * - Version 1.1:
+     *   + Added errorCode field to TileLayer
+     *   + Added Status Message
+     *   + Added LoadStateChange Message
+     */
+    static constexpr Version CurrentProtocolVersion{1, 1, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

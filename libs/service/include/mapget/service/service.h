@@ -10,6 +10,7 @@
 #include <mutex>
 #include <utility>
 #include <chrono>
+#include <set>
 
 namespace mapget
 {
@@ -100,6 +101,9 @@ private:
     // So the service can track which tileId index from tiles_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
+
+    // Track which tiles still need to be scheduled/served for this request.
+    std::set<TileId> tileIdsNotDone_;
 
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;
