@@ -40,6 +40,10 @@ LayerTilesRequest::LayerTilesRequest(
 }
 
 void LayerTilesRequest::notifyResult(TileLayer::Ptr r) {
+    if (isDone()) {
+        return;
+    }
+
     const auto type = r->layerInfo()->type_;
     switch (type) {
     case LayerType::Features:
@@ -70,10 +74,7 @@ void LayerTilesRequest::notifyLoadState(MapTileKey const& key, TileLayer::LoadSt
 
 void LayerTilesRequest::setStatus(RequestStatus s)
 {
-    {
-        std::unique_lock statusLock(statusMutex_);
-        this->status_ = s;
-    }
+    this->status_ = s;
     notifyStatus();
 }
 
@@ -162,13 +163,15 @@ struct Service::Controller
                 auto layerIt = i.layers_.find(request->layerId_);
 
                 // Does the Datasource Info (i) of the worker fit the request?
-                if (request->mapId_ != i.mapId_ || layerIt == i.layers_.end())
+                // Or is it done (/aborted) but not yet removed from requests?
+                if (request->mapId_ != i.mapId_ || layerIt == i.layers_.end() || request->isDone())
                     continue;
 
                 // Find the next pending tile in the request's ordered list.
                 TileId tileId{};
                 bool foundTile = false;
                 while (request->nextTileIndex_ < request->tiles_.size()) {
+                    // Skip over tiles which were meanwhile done by other workers.
                     tileId = request->tiles_[request->nextTileIndex_++];
                     if (request->tileIdsNotDone_.find(tileId) != request->tileIdsNotDone_.end()) {
                         foundTile = true;
@@ -222,11 +225,17 @@ struct Service::Controller
                 request->notifyLoadState(result->tileKey, TileLayer::LoadState::LoadingQueued);
 
                 // Move this request to the end of the list, so others gain priority.
+                // It is ok to manipulate the list here, because we call `break` after the next line.
                 requests_.splice(requests_.end(), requests_, reqIt);
 
                 log().debug("Working on tile: {}", result->tileKey.toString());
                 break;
             }
+
+            // Once unlock and re-lock before we make another sweep over the request list,
+            // so that it can be updated externally; clients might want to add/remove requests.
+            jobsMutex_.unlock();
+            jobsMutex_.lock();
         }
         while (cachedTilesServedOrInProgressSkipped && !result && anyTasksRemaining);
 
@@ -506,12 +515,13 @@ struct Service::Impl : public Service::Controller
 
     void abortRequest(LayerTilesRequest::Ptr const& r)
     {
-        std::unique_lock lock(jobsMutex_);
-        // Remove the request from the list of requests.
-        auto numRemoved = requests_.remove_if([r](auto&& request) { return r == request; });
-        // Clear its jobs to mark it as done.
-        if (numRemoved) {
-            r->setStatus(RequestStatus::Aborted);
+        // Mark the request as aborted.
+        r->setStatus(RequestStatus::Aborted);
+
+        // Remove the request from the list of requests (needs lock).
+        {
+            std::unique_lock lock(jobsMutex_);
+            requests_.remove_if([r](auto&& request) { return r == request; });
         }
     }
 

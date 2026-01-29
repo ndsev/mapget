@@ -111,7 +111,7 @@ private:
     // Mutex/condition variable for reading/setting request status.
     std::mutex statusMutex_;
     std::condition_variable statusConditionVariable_;
-    RequestStatus status_ = RequestStatus::Open;
+    std::atomic<RequestStatus> status_ = RequestStatus::Open;
 };
 
 /**
