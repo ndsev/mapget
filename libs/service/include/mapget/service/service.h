@@ -85,7 +85,7 @@ public:
 
 protected:
     virtual void notifyResult(TileLayer::Ptr);
-    void notifyLoadState(MapTileKey const& key, TileLayer::LoadState state);
+    void notifyLoadState(MapTileKey const& key, TileLayer::LoadState state) const;
     void setStatus(RequestStatus s);
     void notifyStatus();
     nlohmann::json toJson();
@@ -103,7 +103,7 @@ private:
     size_t nextTileIndex_ = 0;
 
     // Track which tiles still need to be scheduled/served for this request.
-    std::set<TileId> tileIdsNotDone_;
+    std::set<TileId> tileIdsNotStarted_;
 
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;

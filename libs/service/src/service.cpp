@@ -31,7 +31,7 @@ LayerTilesRequest::LayerTilesRequest(
       layerId_(std::move(layerId)),
       tiles_(std::move(tiles))
 {
-    tileIdsNotDone_.insert(tiles_.begin(), tiles_.end());
+    tileIdsNotStarted_.insert(tiles_.begin(), tiles_.end());
     if (tiles_.empty()) {
         // An empty request is always set to success, but the client/service
         // is responsible for triggering notifyStatus() in that case.
@@ -65,8 +65,7 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r) {
     }
 }
 
-void LayerTilesRequest::notifyLoadState(MapTileKey const& key, TileLayer::LoadState state)
-{
+void LayerTilesRequest::notifyLoadState(MapTileKey const& key, TileLayer::LoadState state) const {
     if (onLoadStateChanged_) {
         onLoadStateChanged_(key, state);
     }
@@ -127,6 +126,7 @@ struct Service::Controller
         MapTileKey tileKey;
         std::vector<LayerTilesRequest::Ptr> waitingRequests;
         std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
+        TileLayer::LoadState loadStatus = TileLayer::LoadState::LoadingQueued;
     };
 
     std::map<MapTileKey, std::shared_ptr<Job>> jobsInProgress_;    // Jobs currently in progress + interested requests
@@ -144,11 +144,12 @@ struct Service::Controller
             raise("Cache must not be null!");
     }
 
-    std::shared_ptr<Job> nextJob(DataSourceInfo const& i)
+    std::shared_ptr<Job> nextJob(DataSourceInfo const& i, std::unique_lock<std::mutex>& lock)
     {
         // Workers call the nextJob function when they are free.
         // Note: For thread safety, jobsMutex_ must be held
-        //  when calling this function.
+        //  when calling this function. The lock may be released/re-acquired
+        //  between sweeps to allow external updates.
 
         std::shared_ptr<Job> result;
 
@@ -173,7 +174,7 @@ struct Service::Controller
                 while (request->nextTileIndex_ < request->tiles_.size()) {
                     // Skip over tiles which were meanwhile done by other workers.
                     tileId = request->tiles_[request->nextTileIndex_++];
-                    if (request->tileIdsNotDone_.find(tileId) != request->tileIdsNotDone_.end()) {
+                    if (request->tileIdsNotStarted_.find(tileId) != request->tileIdsNotStarted_.end()) {
                         foundTile = true;
                         break;
                     }
@@ -186,7 +187,7 @@ struct Service::Controller
                 // Cache lookup.
                 auto cachedResult = cache_->getTileLayer(resultTileKey, i);
                 if (cachedResult.tile) {
-                    request->tileIdsNotDone_.erase(tileId);
+                    request->tileIdsNotStarted_.erase(tileId);
                     log().debug("Serving cached tile: {}", resultTileKey.toString());
                     request->notifyResult(cachedResult.tile);
                     cachedTilesServedOrInProgressSkipped = true;
@@ -200,7 +201,8 @@ struct Service::Controller
                     // can satisfy multiple requests, and allow this request to advance.
                     log().debug("Joining tile with job in progress: {}",
                                 resultTileKey.toString());
-                    request->tileIdsNotDone_.erase(tileId);
+                    request->tileIdsNotStarted_.erase(tileId);
+                    request->notifyLoadState(resultTileKey, inProgress->second->loadStatus);
                     inProgress->second->waitingRequests.push_back(request);
                     cachedTilesServedOrInProgressSkipped = true;
                     continue;
@@ -208,7 +210,7 @@ struct Service::Controller
 
                 // We found something to work on that is not cached and not in progress -
                 //  enter it into the jobs-in-progress map with the requesting client.
-                request->tileIdsNotDone_.erase(tileId);
+                request->tileIdsNotStarted_.erase(tileId);
                 result = std::make_shared<Job>(Job{resultTileKey, {request}, cachedResult.expiredAt});
                 // Proactively attach other requests that need this tile.
                 for (auto const& otherRequest : requests_) {
@@ -216,13 +218,11 @@ struct Service::Controller
                         continue;
                     if (otherRequest->mapId_ != request->mapId_ || otherRequest->layerId_ != request->layerId_)
                         continue;
-                    if (otherRequest->tileIdsNotDone_.erase(tileId) == 0)
+                    if (otherRequest->tileIdsNotStarted_.erase(tileId) == 0)
                         continue;
                     result->waitingRequests.push_back(otherRequest);
-                    otherRequest->notifyLoadState(result->tileKey, TileLayer::LoadState::LoadingQueued);
                 }
                 jobsInProgress_.emplace(result->tileKey, result);
-                request->notifyLoadState(result->tileKey, TileLayer::LoadState::LoadingQueued);
 
                 // Move this request to the end of the list, so others gain priority.
                 // It is ok to manipulate the list here, because we call `break` after the next line.
@@ -232,15 +232,17 @@ struct Service::Controller
                 break;
             }
 
-            // Once unlock and re-lock before we make another sweep over the request list,
-            // so that it can be updated externally; clients might want to add/remove requests.
-            jobsMutex_.unlock();
-            jobsMutex_.lock();
+            if (cachedTilesServedOrInProgressSkipped && !result && anyTasksRemaining) {
+                // Unlock and re-lock before we make another sweep over the request list,
+                // so that it can be updated externally; clients might want to add/remove requests.
+                lock.unlock();
+                lock.lock();
+            }
         }
         while (cachedTilesServedOrInProgressSkipped && !result && anyTasksRemaining);
 
         // Clean up done requests.
-        requests_.remove_if([](auto&& r) {return r->tileIdsNotDone_.empty(); });
+        requests_.remove_if([](auto&& r) {return r->tileIdsNotStarted_.empty(); });
 
         return result;
     }
@@ -286,7 +288,7 @@ struct Service::Worker
                         // is removed. All worker instances are expected to terminate.
                         return true;
                     }
-                    nextJob = controller_.nextJob(info_);
+                    nextJob = controller_.nextJob(info_, lock);
                     return !!nextJob;
                 });
         }
@@ -306,6 +308,7 @@ struct Service::Worker
                 std::vector<LayerTilesRequest::Ptr> waiting;
                 {
                     std::unique_lock lock(controller_.jobsMutex_);
+                    job.loadStatus = state;
                     waiting = job.waitingRequests;
                 }
                 for (auto const& req : waiting) {
