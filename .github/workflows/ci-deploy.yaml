@@ -50,6 +50,9 @@ jobs:
           submodules: recursive
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Install libuuid
+        run: |
+          yum -y install libuuid-devel
       - name: Configure
         run: |
           python3 -m venv venv && . ./venv/bin/activate
