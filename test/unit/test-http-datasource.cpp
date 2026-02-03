@@ -312,9 +312,9 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 client,
                 "Tropico",
                 "WayLayer",
-                std::vector<TileId>{{1234, 5678, 9112, 1234}});
+                std::vector<TileId>{{1234, 5678, 9112}});
 
-            REQUIRE(receivedTileCount == 4);
+            REQUIRE(receivedTileCount == 3);
             REQUIRE(request->getStatus() == RequestStatus::Success);
         }
 

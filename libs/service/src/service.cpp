@@ -31,8 +31,16 @@ LayerTilesRequest::LayerTilesRequest(
       layerId_(std::move(layerId)),
       tiles_(std::move(tiles))
 {
-    tileIdsNotStarted_.insert(tiles_.begin(), tiles_.end());
-    if (tiles_.empty()) {
+    if (!tiles_.empty()) {
+        std::vector<TileId> uniqueTiles;
+        uniqueTiles.reserve(tiles_.size());
+        for (const auto& tileId : tiles_) {
+            if (tileIdsNotStarted_.insert(tileId).second) {
+                uniqueTiles.push_back(tileId);
+            }
+        }
+        tiles_.swap(uniqueTiles);
+    } else {
         // An empty request is always set to success, but the client/service
         // is responsible for triggering notifyStatus() in that case.
         status_ = RequestStatus::Success;
