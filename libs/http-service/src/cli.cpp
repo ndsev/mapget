@@ -92,9 +92,16 @@ nlohmann::json geoJsonFolderSchema()
                 {"title", "Folder"},
                 {"description", "Path to a folder containing GeoJSON tiles."}
             }},
+            {"mapId", {
+                {"type", "string"},
+                {"title", "Map ID"},
+                {"description", "Custom map identifier. If not provided, derived from folder path."}
+            }},
             {"withAttrLayers", {
                 {"type", "boolean"},
-                {"title", "With Attribute Layers"}
+                {"title", "With Attribute Layers"},
+                {"description", "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
+                {"default", true}
             }}
         }},
         {"required", nlohmann::json::array({"folder"})},
@@ -233,10 +240,13 @@ void registerDefaultDatasourceTypes() {
         "GeoJsonFolder",
         [](YAML::Node const& config) -> DataSource::Ptr {
             if (auto folder = config["folder"]) {
-                bool withAttributeLayers = false;
+                bool withAttributeLayers = true;
                 if (auto withAttributeLayersNode = config["withAttrLayers"])
                     withAttributeLayers = withAttributeLayersNode.as<bool>();
-                return std::make_shared<geojsonsource::GeoJsonSource>(folder.as<std::string>(), withAttributeLayers);
+                std::string mapId;
+                if (auto mapIdNode = config["mapId"])
+                    mapId = mapIdNode.as<std::string>();
+                return std::make_shared<geojsonsource::GeoJsonSource>(folder.as<std::string>(), withAttributeLayers, mapId);
             }
             throw std::runtime_error("Missing `folder` field.");
         },
