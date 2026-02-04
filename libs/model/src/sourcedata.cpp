@@ -94,14 +94,23 @@ bool SourceDataCompoundNode::iterate(IterCallback const& cb) const
     return true;
 }
 
-SourceDataCompoundNode::SourceDataCompoundNode(Data* data, TileSourceDataLayer::ConstPtr model, simfil::ModelNodeAddress addr)
-    : simfil::MandatoryDerivedModelNodeBase<TileSourceDataLayer>(std::move(model), addr), data_(data)
+SourceDataCompoundNode::SourceDataCompoundNode(Data* data,
+    TileSourceDataLayer::ConstPtr model,
+    simfil::ModelNodeAddress addr,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileSourceDataLayer>(std::move(model), addr, key),
+      data_(data)
 {
     assert(data_);
 }
 
-SourceDataCompoundNode::SourceDataCompoundNode(Data* data, TileSourceDataLayer::Ptr model, simfil::ModelNodeAddress addr, size_t initialSize)
-    : simfil::MandatoryDerivedModelNodeBase<TileSourceDataLayer>(model, addr), data_(data)
+SourceDataCompoundNode::SourceDataCompoundNode(Data* data,
+    TileSourceDataLayer::Ptr model,
+    simfil::ModelNodeAddress addr,
+    size_t initialSize,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileSourceDataLayer>(model, addr, key),
+      data_(data)
 {
     assert(data_);
     assert(!data_->object_);

@@ -11,8 +11,12 @@
 namespace mapget
 {
 
-Feature::Feature(Feature::Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(&d)
+Feature::Feature(Feature::Data& d,
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a, key),
+      data_(&d)
 {
     updateFields();
 }
@@ -184,7 +188,9 @@ void Feature::updateFields() {
     fields_.clear();
 
     // Add type field
-    fields_.emplace_back(StringPool::TypeStr, simfil::ValueNode(std::string_view("Feature"), model_));
+    fields_.emplace_back(
+        StringPool::TypeStr,
+        simfil::model_ptr<simfil::ValueNode>::make(std::string_view("Feature"), model_));
 
     // Add id field
     fields_.emplace_back(StringPool::IdStr, Ptr::make(model_, data_->id_));
@@ -357,9 +363,11 @@ void Feature::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
 Feature::FeaturePropertyView::FeaturePropertyView(
     Feature::Data& d,
     simfil::ModelConstPtr l,
-    simfil::ModelNodeAddress a
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key
 )
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a), data_(&d)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a, key),
+      data_(&d)
 {
     if (data_->attrs_)
         attrs_ = model().resolveObject(Ptr::make(model_, data_->attrs_));

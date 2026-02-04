@@ -45,8 +45,14 @@ void SourceDataReferenceCollection::forEachReference(std::function<void(const So
     }
 }
 
-SourceDataReferenceCollection::SourceDataReferenceCollection(uint32_t offset, uint32_t size, ModelConstPtr pool, ModelNodeAddress a)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a), offset_(offset), size_(size)
+SourceDataReferenceCollection::SourceDataReferenceCollection(uint32_t offset,
+    uint32_t size,
+    ModelConstPtr pool,
+    ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a, key),
+      offset_(offset),
+      size_(size)
 {}
 
 ValueType SourceDataReferenceItem::type() const
@@ -120,8 +126,12 @@ SourceDataAddress SourceDataReferenceItem::address() const
     return data_->reference_.address_;
 }
 
-SourceDataReferenceItem::SourceDataReferenceItem(const QualifiedSourceDataReference* const data, const ModelConstPtr pool, const ModelNodeAddress a)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a), data_(data)
+SourceDataReferenceItem::SourceDataReferenceItem(const QualifiedSourceDataReference* const data,
+    const ModelConstPtr pool,
+    const ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a, key),
+      data_(data)
 {}
 
 }

@@ -8,9 +8,10 @@ namespace mapget
 AttributeLayer::AttributeLayer(
     simfil::ArrayIndex i,
     simfil::ModelConstPtr l,
-    simfil::ModelNodeAddress a
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key
 )
-    : simfil::Object(i, std::move(l), a)
+    : simfil::Object(i, std::move(l), a, key)
 {
 }
 
@@ -46,9 +47,10 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
 AttributeLayerList::AttributeLayerList(
     simfil::ArrayIndex i,
     simfil::ModelConstPtr l,
-    simfil::ModelNodeAddress a
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key
 )
-    : simfil::Object(i, std::move(l), a)
+    : simfil::Object(i, std::move(l), a, key)
 {
 }
 

@@ -6,8 +6,12 @@
 namespace mapget
 {
 
-Relation::Relation(Relation::Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<6, Relation, TileFeatureLayer>(std::move(l), a), data_(data)
+Relation::Relation(Relation::Data* data,
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<6, Relation, TileFeatureLayer>(std::move(l), a, key),
+      data_(data)
 {
     fields_.emplace_back(
         StringPool::NameStr,

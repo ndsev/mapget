@@ -323,7 +323,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     auto result = Feature(
         impl_->features_.back(),
         shared_from_this(),
-        simfil::ModelNodeAddress{ColumnId::Features, (uint32_t)featureIndex});
+        simfil::ModelNodeAddress{ColumnId::Features, (uint32_t)featureIndex},
+        mpKey_);
 
     // Add feature hash index entry.
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
@@ -368,7 +369,11 @@ TileFeatureLayer::newFeatureId(
             featureIdObject->addField(kk, x);
         }, v);
     }
-    return FeatureId(impl_->featureIds_.back(), shared_from_this(), {ColumnId::FeatureIds, (uint32_t)featureIdIndex});
+    return FeatureId(
+        impl_->featureIds_.back(),
+        shared_from_this(),
+        {ColumnId::FeatureIds, (uint32_t)featureIdIndex},
+        mpKey_);
 }
 
 model_ptr<Relation>
@@ -382,7 +387,11 @@ TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<Feat
         *nameStringId,
         target->addr()
     });
-    return Relation(&impl_->relations_.back(), shared_from_this(), {ColumnId::Relations, (uint32_t)relationIndex});
+    return Relation(
+        &impl_->relations_.back(),
+        shared_from_this(),
+        {ColumnId::Relations, (uint32_t)relationIndex},
+        mpKey_);
 }
 
 model_ptr<Object> TileFeatureLayer::getIdPrefix()
@@ -407,7 +416,8 @@ TileFeatureLayer::newAttribute(const std::string_view& name, size_t initialCapac
     return Attribute(
         &impl_->attributes_.back(),
         shared_from_this(),
-        {ColumnId::Attributes, (uint32_t)attrIndex});
+        {ColumnId::Attributes, (uint32_t)attrIndex},
+        mpKey_);
 }
 
 model_ptr<AttributeLayer> TileFeatureLayer::newAttributeLayer(size_t initialCapacity)
@@ -417,7 +427,8 @@ model_ptr<AttributeLayer> TileFeatureLayer::newAttributeLayer(size_t initialCapa
     return AttributeLayer(
         impl_->attrLayers_.back(),
         shared_from_this(),
-        {ColumnId::AttributeLayers, (uint32_t)layerIndex});
+        {ColumnId::AttributeLayers, (uint32_t)layerIndex},
+        mpKey_);
 }
 
 model_ptr<AttributeLayerList> TileFeatureLayer::newAttributeLayers(size_t initialCapacity)
@@ -427,7 +438,8 @@ model_ptr<AttributeLayerList> TileFeatureLayer::newAttributeLayers(size_t initia
     return AttributeLayerList(
         impl_->attrLayerLists_.back(),
         shared_from_this(),
-        {ColumnId::AttributeLayerLists, (uint32_t)listIndex});
+        {ColumnId::AttributeLayerLists, (uint32_t)listIndex},
+        mpKey_);
 }
 
 model_ptr<GeometryCollection> TileFeatureLayer::newGeometryCollection(size_t initialCapacity)
@@ -435,7 +447,8 @@ model_ptr<GeometryCollection> TileFeatureLayer::newGeometryCollection(size_t ini
     auto listIndex = arrayMemberStorage().new_array(initialCapacity);
     return GeometryCollection(
         shared_from_this(),
-        {ColumnId::GeometryCollections, (uint32_t)listIndex});
+        {ColumnId::GeometryCollections, (uint32_t)listIndex},
+        mpKey_);
 }
 
 model_ptr<Geometry> TileFeatureLayer::newGeometry(GeomType geomType, size_t initialCapacity)
@@ -445,7 +458,8 @@ model_ptr<Geometry> TileFeatureLayer::newGeometry(GeomType geomType, size_t init
     return Geometry(
         &impl_->geom_.back(),
         shared_from_this(),
-        {ColumnId::Geometries, (uint32_t)impl_->geom_.size() - 1});
+        {ColumnId::Geometries, (uint32_t)impl_->geom_.size() - 1},
+        mpKey_);
 }
 
 model_ptr<Geometry> TileFeatureLayer::newGeometryView(
@@ -458,7 +472,8 @@ model_ptr<Geometry> TileFeatureLayer::newGeometryView(
     return Geometry(
         &impl_->geom_.back(),
         shared_from_this(),
-        {ColumnId::Geometries, (uint32_t)impl_->geom_.size() - 1});
+        {ColumnId::Geometries, (uint32_t)impl_->geom_.size() - 1},
+        mpKey_);
 }
 
 model_ptr<SourceDataReferenceCollection> TileFeatureLayer::newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list)
@@ -471,7 +486,8 @@ model_ptr<SourceDataReferenceCollection> TileFeatureLayer::newSourceDataReferenc
 
     return {
     SourceDataReferenceCollection(index, size, shared_from_this(),
-        ModelNodeAddress(ColumnId::SourceDataReferenceCollections, sourceDataAddressListToModelAddress(index, size)))};
+        ModelNodeAddress(ColumnId::SourceDataReferenceCollections, sourceDataAddressListToModelAddress(index, size)),
+        mpKey_)};
 }
 
 model_ptr<Validity> TileFeatureLayer::newValidity()
@@ -480,7 +496,8 @@ model_ptr<Validity> TileFeatureLayer::newValidity()
     return Validity(
         &impl_->validities_.back(),
         shared_from_this(),
-        {ColumnId::Validities, (uint32_t)impl_->validities_.size() - 1});
+        {ColumnId::Validities, (uint32_t)impl_->validities_.size() - 1},
+        mpKey_);
 }
 
 model_ptr<MultiValidity> TileFeatureLayer::newValidityCollection(size_t initialCapacity)
@@ -488,7 +505,8 @@ model_ptr<MultiValidity> TileFeatureLayer::newValidityCollection(size_t initialC
     auto validityArrId = arrayMemberStorage().new_array(initialCapacity);
     return MultiValidity(
         shared_from_this(),
-        {ColumnId::ValidityCollections, (uint32_t)validityArrId});
+        {ColumnId::ValidityCollections, (uint32_t)validityArrId},
+        mpKey_);
 }
 
 model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelNode const& n) const
@@ -498,7 +516,8 @@ model_ptr<AttributeLayer> TileFeatureLayer::resolveAttributeLayer(simfil::ModelN
     return AttributeLayer(
         impl_->attrLayers_[n.addr().index()],
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil::ModelNode const& n) const
@@ -508,7 +527,8 @@ model_ptr<AttributeLayerList> TileFeatureLayer::resolveAttributeLayerList(simfil
     return AttributeLayerList(
         impl_->attrLayerLists_[n.addr().index()],
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const& n) const
@@ -518,7 +538,8 @@ model_ptr<Attribute> TileFeatureLayer::resolveAttribute(simfil::ModelNode const&
     return Attribute(
         &impl_->attributes_[n.addr().index()],
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) const
@@ -528,7 +549,8 @@ model_ptr<Feature> TileFeatureLayer::resolveFeature(simfil::ModelNode const& n) 
     return Feature(
         impl_->features_[n.addr().index()],
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const& n) const
@@ -538,7 +560,8 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureId(simfil::ModelNode const&
     return FeatureId(
         impl_->featureIds_[n.addr().index()],
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n) const
@@ -548,7 +571,8 @@ model_ptr<Relation> TileFeatureLayer::resolveRelation(const simfil::ModelNode& n
     return Relation(
         &impl_->relations_[n.addr().index()],
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<PointNode> TileFeatureLayer::resolvePoint(const simfil::ModelNode& n) const
@@ -556,7 +580,7 @@ model_ptr<PointNode> TileFeatureLayer::resolvePoint(const simfil::ModelNode& n) 
     if (n.addr().column() != ColumnId::Points)
         raise("Cannot cast this node to a Point.");
     return PointNode(
-        n, &impl_->geom_.at(n.addr().index()));
+        n, &impl_->geom_.at(n.addr().index()), mpKey_);
 }
 
 model_ptr<PointNode> TileFeatureLayer::resolveValidityPoint(const simfil::ModelNode& n) const
@@ -564,7 +588,7 @@ model_ptr<PointNode> TileFeatureLayer::resolveValidityPoint(const simfil::ModelN
     if (n.addr().column() != ColumnId::ValidityPoints)
         raise("Cannot cast this node to a ValidityPoint.");
     return PointNode(
-        n, &impl_->validities_.at(n.addr().index()));
+        n, &impl_->validities_.at(n.addr().index()), mpKey_);
 }
 
 model_ptr<Validity> TileFeatureLayer::resolveValidity(simfil::ModelNode const& n) const
@@ -574,7 +598,8 @@ model_ptr<Validity> TileFeatureLayer::resolveValidity(simfil::ModelNode const& n
     return Validity(
         &impl_->validities_[n.addr().index()],
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<MultiValidity> TileFeatureLayer::resolveValidityCollection(const simfil::ModelNode& n) const
@@ -583,7 +608,8 @@ model_ptr<MultiValidity> TileFeatureLayer::resolveValidityCollection(const simfi
         raise("Cannot cast this node to a ValidityCollection.");
     return MultiValidity(
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<PointBufferNode> TileFeatureLayer::resolvePointBuffer(const simfil::ModelNode& n) const
@@ -591,14 +617,16 @@ model_ptr<PointBufferNode> TileFeatureLayer::resolvePointBuffer(const simfil::Mo
     return PointBufferNode(
         &impl_->geom_.at(n.addr().index()),
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<PolygonNode> TileFeatureLayer::resolvePolygon(const simfil::ModelNode& n) const
 {
     return PolygonNode(
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<MeshNode> TileFeatureLayer::resolveMesh(const simfil::ModelNode& n) const
@@ -606,12 +634,13 @@ model_ptr<MeshNode> TileFeatureLayer::resolveMesh(const simfil::ModelNode& n) co
     return MeshNode(
         &impl_->geom_.at(n.addr().index()),
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<LinearRingNode> TileFeatureLayer::resolveLinearRing(const simfil::ModelNode& n) const
 {
-    return LinearRingNode(n);
+    return LinearRingNode(n, mpKey_);
 }
 
 model_ptr<Geometry> TileFeatureLayer::resolveGeometry(const simfil::ModelNode& n) const
@@ -619,24 +648,25 @@ model_ptr<Geometry> TileFeatureLayer::resolveGeometry(const simfil::ModelNode& n
     return Geometry(
         &const_cast<Geometry::Data&>(impl_->geom_.at(n.addr().index())), // FIXME: const_cast?!
         shared_from_this(),
-        n.addr());
+        n.addr(),
+        mpKey_);
 }
 
 model_ptr<LinearRingNode> TileFeatureLayer::resolveMeshTriangleLinearRing(const simfil::ModelNode& n) const
 {
-    return LinearRingNode(n, 3);
+    return LinearRingNode(n, 3, mpKey_);
 }
 
 model_ptr<MeshTriangleCollectionNode> TileFeatureLayer::resolveMeshTriangleCollection(const simfil::ModelNode& n) const
 {
-    return MeshTriangleCollectionNode(n);
+    return MeshTriangleCollectionNode(n, mpKey_);
 }
 
 model_ptr<GeometryCollection>
 TileFeatureLayer::resolveGeometryCollection(const simfil::ModelNode& n) const
 {
     return GeometryCollection(
-        shared_from_this(), n.addr());
+        shared_from_this(), n.addr(), mpKey_);
 }
 
 model_ptr<SourceDataReferenceCollection>
@@ -647,7 +677,7 @@ TileFeatureLayer::resolveSourceDataReferenceCollection(const simfil::ModelNode& 
 
     auto [index, size] = modelAddressToSourceDataAddressList(n.addr().index());
     const auto& data = impl_->sourceDataReferences_;
-    return SourceDataReferenceCollection(index, size, shared_from_this(), n.addr());
+    return SourceDataReferenceCollection(index, size, shared_from_this(), n.addr(), mpKey_);
 }
 
 model_ptr<SourceDataReferenceItem>
@@ -657,7 +687,7 @@ TileFeatureLayer::resolveSourceDataReferenceItem(const simfil::ModelNode& n) con
         raise("Cannot cast this node to an SourceDataReferenceItem.");
 
     const auto* data = &impl_->sourceDataReferences_.at(n.addr().index());
-    return SourceDataReferenceItem(data, shared_from_this(), n.addr());
+    return SourceDataReferenceItem(data, shared_from_this(), n.addr(), mpKey_);
 }
 
 tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const simfil::ModelNode& n, const simfil::Model::ResolveFn& cb) const
@@ -671,7 +701,8 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const simfil::ModelN
         cb(Feature::FeaturePropertyView(
             impl_->features_[n.addr().index()],
             shared_from_this(),
-            n.addr()
+            n.addr(),
+            mpKey_
         ));
         return {};
     case ColumnId::FeatureIds:

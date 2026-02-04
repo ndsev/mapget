@@ -18,7 +18,6 @@ class AttributeLayer : public simfil::Object
 {
     friend class TileFeatureLayer;
     friend class bitsery::Access;
-    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**
@@ -40,9 +39,13 @@ public:
      */
     bool forEachAttribute(std::function<bool(model_ptr<Attribute> const& attr)> const& cb) const;
 
-protected:
-    AttributeLayer(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
-    AttributeLayer() = default;
+public:
+    explicit AttributeLayer(simfil::detail::mp_key key) : simfil::Object(key) {}
+    AttributeLayer(simfil::ArrayIndex i,
+                   simfil::ModelConstPtr l,
+                   simfil::ModelNodeAddress a,
+                   simfil::detail::mp_key key);
+    AttributeLayer() = delete;
 };
 
 /**
@@ -55,7 +58,6 @@ class AttributeLayerList : public simfil::Object
     friend class TileFeatureLayer;
     friend class bitsery::Access;
     friend class Feature;
-    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**
@@ -78,9 +80,13 @@ public:
         std::function<bool(std::string_view, model_ptr<AttributeLayer> const& layer)> const& cb
     ) const;
 
-protected:
-    AttributeLayerList(simfil::ArrayIndex i, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
-    AttributeLayerList() = default;
+public:
+    explicit AttributeLayerList(simfil::detail::mp_key key) : simfil::Object(key) {}
+    AttributeLayerList(simfil::ArrayIndex i,
+                       simfil::ModelConstPtr l,
+                       simfil::ModelNodeAddress a,
+                       simfil::detail::mp_key key);
+    AttributeLayerList() = delete;
 };
 
 }

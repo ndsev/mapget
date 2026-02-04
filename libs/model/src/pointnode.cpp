@@ -9,8 +9,10 @@ namespace mapget
 
 /** Model node impls for VertexNode. */
 
-PointNode::PointNode(ModelNode const& baseNode, Geometry::Data const* geomData)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode)
+PointNode::PointNode(ModelNode const& baseNode,
+    Geometry::Data const* geomData,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode, key)
 {
     if (geomData->isView_)
         throw std::runtime_error("Point must be constructed through VertexBuffer which resolves view to geometry.");
@@ -25,8 +27,10 @@ PointNode::PointNode(ModelNode const& baseNode, Geometry::Data const* geomData)
     }
 }
 
-PointNode::PointNode(ModelNode const& baseNode, Validity::Data const* geomData)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode)
+PointNode::PointNode(ModelNode const& baseNode,
+    Validity::Data const* geomData,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode, key)
 {
     auto i = std::get<int64_t>(data_);
     // The extracted point index may point to a validity's single point
@@ -71,9 +75,9 @@ StringId PointNode::keyAt(int64_t i) const {
 
 bool PointNode::iterate(const IterCallback& cb) const
 {
-    if (!cb(ValueNode(point_.x, model_))) return false;
-    if (!cb(ValueNode(point_.y, model_))) return false;
-    if (!cb(ValueNode(point_.z, model_))) return false;
+    if (!cb(*model_ptr<ValueNode>::make(point_.x, model_))) return false;
+    if (!cb(*model_ptr<ValueNode>::make(point_.y, model_))) return false;
+    if (!cb(*model_ptr<ValueNode>::make(point_.z, model_))) return false;
     return true;
 }
 

@@ -13,7 +13,6 @@ namespace mapget
 class PointNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
     friend class PointBufferNode;
@@ -27,19 +26,21 @@ public:
 
     PointNode() = delete;
 
-private:
-    PointNode(ModelNode const& baseNode, Geometry::Data const* geomData);
-    PointNode(ModelNode const& baseNode, Validity::Data const* geomData);
+public:
+    PointNode(ModelNode const& baseNode, Geometry::Data const* geomData, simfil::detail::mp_key key);
+    PointNode(ModelNode const& baseNode, Validity::Data const* geomData, simfil::detail::mp_key key);
 
+private:
     Point point_;
 };
 
 template <typename LambdaType, class ModelType>
 bool Geometry::forEachPoint(LambdaType const& callback) const {
-    PointBufferNode vertexBufferNode{geomData_, model_, {ModelType::ColumnId::PointBuffers, addr_.index()}};
-    for (auto i = 0; i < vertexBufferNode.size(); ++i) {
-        PointNode vertex{*vertexBufferNode.at(i), vertexBufferNode.baseGeomData_};
-        if (!callback(vertex.point_))
+    auto vertexBufferNode = model_ptr<PointBufferNode>::make(
+        geomData_, model_, ModelNodeAddress{ModelType::ColumnId::PointBuffers, addr_.index()});
+    for (auto i = 0; i < vertexBufferNode->size(); ++i) {
+        auto vertex = model_ptr<PointNode>::make(*vertexBufferNode->at(i), vertexBufferNode->baseGeomData_);
+        if (!callback(vertex->point_))
             return false;
     }
     return true;

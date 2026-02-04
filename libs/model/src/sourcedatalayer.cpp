@@ -96,7 +96,8 @@ model_ptr<SourceDataCompoundNode> TileSourceDataLayer::newCompound(size_t initia
         &data,
         std::static_pointer_cast<TileSourceDataLayer>(shared_from_this()),
         ModelNodeAddress(Compound, static_cast<uint32_t>(index)),
-        initialSize);
+        initialSize,
+        mpKey_);
 }
 
 model_ptr<SourceDataCompoundNode> TileSourceDataLayer::resolveCompound(simfil::ModelNode const& n) const
@@ -104,7 +105,11 @@ model_ptr<SourceDataCompoundNode> TileSourceDataLayer::resolveCompound(simfil::M
     assert(n.addr().column() == Compound && "Unexpected column type!");
 
     auto& data = impl_->compounds_.at(n.addr().index());
-    return SourceDataCompoundNode(&data, std::static_pointer_cast<const TileSourceDataLayer>(shared_from_this()), n.addr());
+    return SourceDataCompoundNode(
+        &data,
+        std::static_pointer_cast<const TileSourceDataLayer>(shared_from_this()),
+        n.addr(),
+        mpKey_);
 }
 
 tl::expected<void, simfil::Error> TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const

@@ -20,7 +20,6 @@ class Relation : public simfil::ProceduralObject<6, Relation, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class Feature;
-    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**
@@ -72,9 +71,16 @@ protected:
         }
     };
 
-    Relation(Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
-    Relation() = default;
+public:
+    explicit Relation(simfil::detail::mp_key key)
+        : simfil::ProceduralObject<6, Relation, TileFeatureLayer>(key) {}
+    Relation(Data* data,
+             simfil::ModelConstPtr l,
+             simfil::ModelNodeAddress a,
+             simfil::detail::mp_key key);
+    Relation() = delete;
 
+protected:
     /** Reference to the actual data stored for the relation. */
     Data* data_{};
 };

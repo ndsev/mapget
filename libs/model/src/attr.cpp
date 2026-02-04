@@ -5,8 +5,12 @@
 namespace mapget
 {
 
-Attribute::Attribute(Attribute::Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(data->fields_, std::move(l), a), data_(data)
+Attribute::Attribute(Attribute::Data* data,
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(data->fields_, std::move(l), a, key),
+      data_(data)
 {
     if (data_->validities_)
         fields_.emplace_back(

@@ -37,7 +37,6 @@ struct QualifiedSourceDataReference {
 class SourceDataReferenceCollection final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
 
     ValueType type() const override;
@@ -51,10 +50,17 @@ public:
      */
     void forEachReference(std::function<void(const SourceDataReferenceItem&)> fn) const;
 
-private:
-    SourceDataReferenceCollection() = default;
-    SourceDataReferenceCollection(uint32_t offset, uint32_t size, ModelConstPtr pool, ModelNodeAddress a);
+public:
+    explicit SourceDataReferenceCollection(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+    SourceDataReferenceCollection(uint32_t offset,
+                                  uint32_t size,
+                                  ModelConstPtr pool,
+                                  ModelNodeAddress a,
+                                  simfil::detail::mp_key key);
+    SourceDataReferenceCollection() = delete;
 
+private:
     uint32_t offset_ = {};
     uint32_t size_ = {};
 };
@@ -65,7 +71,6 @@ private:
 class SourceDataReferenceItem final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class SourceDataReferenceCollection;
     friend class TileFeatureLayer;
 
@@ -83,10 +88,16 @@ public:
     std::string_view layerId() const;
     SourceDataAddress address() const;
 
-private:
-    SourceDataReferenceItem() = default;
-    SourceDataReferenceItem(const QualifiedSourceDataReference* data, ModelConstPtr pool, ModelNodeAddress a);
+public:
+    explicit SourceDataReferenceItem(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+    SourceDataReferenceItem(const QualifiedSourceDataReference* data,
+                            ModelConstPtr pool,
+                            ModelNodeAddress a,
+                            simfil::detail::mp_key key);
+    SourceDataReferenceItem() = delete;
 
+private:
     const QualifiedSourceDataReference* const data_ = {};
 };
 

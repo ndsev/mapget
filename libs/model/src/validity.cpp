@@ -41,8 +41,10 @@ void Validity::setFeatureId(model_ptr<FeatureId> featureId)
 
 Validity::Validity(Validity::Data* data,
     simfil::ModelConstPtr layer,
-    simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(std::move(layer), a), data_(data)
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(std::move(layer), a, key),
+      data_(data)
 {
     if (data_->direction_)
         fields_.emplace_back(

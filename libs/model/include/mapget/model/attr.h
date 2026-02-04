@@ -17,7 +17,6 @@ class Geometry;
 class Attribute : public simfil::ProceduralObject<2, Attribute, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
-    template<typename> friend struct simfil::model_ptr;
 
 public:
     /**
@@ -63,12 +62,19 @@ protected:
         }
     };
 
-    Attribute(Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
-    Attribute() = default;
+public:
+    explicit Attribute(simfil::detail::mp_key key)
+        : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(key) {}
+    Attribute(Data* data,
+              simfil::ModelConstPtr l,
+              simfil::ModelNodeAddress a,
+              simfil::detail::mp_key key);
+    Attribute() = delete;
 
     /**
      * Pointer to the actual data stored for the attribute.
      */
+protected:
     Data* data_ = nullptr;
 };
 

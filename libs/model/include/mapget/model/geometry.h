@@ -45,7 +45,6 @@ struct SelfContainedGeometry
 class Geometry final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class PointNode;
     friend class LinearRingNode;
@@ -220,8 +219,14 @@ protected:
     Data* geomData_ = nullptr;
     Storage* storage_ = nullptr;
 
-    Geometry() = default;
-    Geometry(Data* data, ModelConstPtr pool, ModelNodeAddress a);
+public:
+    explicit Geometry(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+    Geometry(Data* data,
+             ModelConstPtr pool,
+             ModelNodeAddress a,
+             simfil::detail::mp_key key);
+    Geometry() = delete;
 };
 
 /** GeometryCollection node has `type` and `geometries` fields. */
@@ -229,7 +234,6 @@ protected:
 class GeometryCollection : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Feature;
 
@@ -264,10 +268,13 @@ public:
         });
     }
 
-private:
-    GeometryCollection() = default;
-    GeometryCollection(ModelConstPtr pool, ModelNodeAddress);
+public:
+    explicit GeometryCollection(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+    GeometryCollection(ModelConstPtr pool, ModelNodeAddress, simfil::detail::mp_key key);
+    GeometryCollection() = delete;
 
+private:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
@@ -283,7 +290,6 @@ private:
 class PointBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
     friend class MeshNode;
@@ -299,9 +305,13 @@ public:
 
     PointBufferNode() = delete;
 
-private:
-    PointBufferNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
+public:
+    PointBufferNode(Geometry::Data const* geomData,
+                    ModelConstPtr pool,
+                    ModelNodeAddress const& a,
+                    simfil::detail::mp_key key);
 
+private:
     Geometry::Data const* baseGeomData_ = nullptr;
     ModelNodeAddress baseGeomAddress_;
     Geometry::Storage* storage_ = nullptr;
@@ -314,7 +324,6 @@ private:
 class PolygonNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -327,8 +336,8 @@ public:
 
     PolygonNode() = delete;
 
-private:
-    PolygonNode(ModelConstPtr pool, ModelNodeAddress const& a);
+public:
+    PolygonNode(ModelConstPtr pool, ModelNodeAddress const& a, simfil::detail::mp_key key);
 };
 
 /** Mesh Node */
@@ -336,7 +345,6 @@ private:
 class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -349,9 +357,13 @@ public:
 
     MeshNode() = delete;
 
-private:
-    MeshNode(Geometry::Data const* geomData, ModelConstPtr pool, ModelNodeAddress const& a);
+public:
+    MeshNode(Geometry::Data const* geomData,
+             ModelConstPtr pool,
+             ModelNodeAddress const& a,
+             simfil::detail::mp_key key);
 
+private:
     Geometry::Data const* geomData_;
     uint32_t size_ = 0;
 };
@@ -359,7 +371,6 @@ private:
 class MeshTriangleCollectionNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -370,9 +381,10 @@ public:
 
     MeshTriangleCollectionNode() = delete;
 
-private:
-    explicit MeshTriangleCollectionNode(const ModelNode& base);
+public:
+    explicit MeshTriangleCollectionNode(const ModelNode& base, simfil::detail::mp_key key);
 
+private:
     uint32_t index_ = 0;
 };
 
@@ -384,7 +396,6 @@ private:
 class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
 public:
-    template<typename> friend struct simfil::model_ptr;
     friend class TileFeatureLayer;
     friend class Geometry;
 
@@ -397,9 +408,11 @@ public:
 
     LinearRingNode() = delete;
 
-private:
-    explicit LinearRingNode(const ModelNode& base, std::optional<size_t> length = {});
+public:
+    explicit LinearRingNode(const ModelNode& base, simfil::detail::mp_key key);
+    LinearRingNode(const ModelNode& base, std::optional<size_t> length, simfil::detail::mp_key key);
 
+private:
     model_ptr<PointBufferNode> vertexBuffer() const;
 
     enum class Orientation : uint8_t { CW, CCW };
