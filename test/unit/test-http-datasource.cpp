@@ -651,7 +651,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                             static_cast<int>(RequestStatus::Success));
                 }
 
-                wsClient->stop();
+                wsClient.stop();
             }
         }
 
