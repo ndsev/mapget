@@ -67,6 +67,8 @@ protected:
     Data* data_ = nullptr;
 
     model_ptr<Object> fields_;
+
+    mutable std::vector<std::string> byteArrayCache_;
 };
 
 }

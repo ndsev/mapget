@@ -27,8 +27,11 @@ std::string FeatureId::toString() const
 
     auto addIdPart = [&result](auto&& v)
     {
-        if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>)
+        if constexpr (std::is_same_v<std::decay_t<decltype(v)>, simfil::ByteArray>) {
+            result << "." << v.toDisplayString();
+        } else if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>) {
             result << "." << v;
+        }
     };
 
     // Add common id-part fields
@@ -84,14 +87,24 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
 KeyValueViewPairs FeatureId::keyValuePairs() const
 {
     KeyValueViewPairs result;
+    byteArrayCache_.clear();
 
     auto objectFieldsToKeyValuePairs = [&result, this](simfil::ModelNode::FieldRange fields){
         for (auto const& [key, value] : fields) {
             auto keyStr = model().strings()->resolve(key);
             std::visit(
-                [&result, &keyStr](auto&& v)
+                [&result, &keyStr, this](auto&& v)
                 {
-                    if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate> && !std::is_same_v<std::decay_t<decltype(v)>, double>) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, std::monostate> || std::is_same_v<T, double>) {
+                        return;
+                    } else if constexpr (std::is_same_v<T, simfil::ByteArray>) {
+                        byteArrayCache_.emplace_back(v.toDisplayString());
+                        result.emplace_back(*keyStr, std::string_view(byteArrayCache_.back()));
+                    } else if constexpr (std::is_same_v<T, std::string>) {
+                        byteArrayCache_.push_back(v);
+                        result.emplace_back(*keyStr, std::string_view(byteArrayCache_.back()));
+                    } else {
                         result.emplace_back(*keyStr, v);
                     }
                 },
