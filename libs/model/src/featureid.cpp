@@ -3,6 +3,8 @@
 
 #include <sstream>
 
+#include "mapget/log.h"
+
 namespace mapget
 {
 
@@ -87,24 +89,18 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
 KeyValueViewPairs FeatureId::keyValuePairs() const
 {
     KeyValueViewPairs result;
-    byteArrayCache_.clear();
 
     auto objectFieldsToKeyValuePairs = [&result, this](simfil::ModelNode::FieldRange fields){
         for (auto const& [key, value] : fields) {
             auto keyStr = model().strings()->resolve(key);
             std::visit(
-                [&result, &keyStr, this](auto&& v)
+                [&result, &keyStr](auto&& v)
                 {
                     using T = std::decay_t<decltype(v)>;
-                    if constexpr (std::is_same_v<T, std::monostate> || std::is_same_v<T, double>) {
-                        return;
-                    } else if constexpr (std::is_same_v<T, simfil::ByteArray>) {
-                        byteArrayCache_.emplace_back(v.toDisplayString());
-                        result.emplace_back(*keyStr, std::string_view(byteArrayCache_.back()));
-                    } else if constexpr (std::is_same_v<T, std::string>) {
-                        byteArrayCache_.push_back(v);
-                        result.emplace_back(*keyStr, std::string_view(byteArrayCache_.back()));
-                    } else {
+                    if constexpr (std::is_same_v<T, simfil::ByteArray>) {
+                        raiseFmt("FeatureId part '{}' cannot be a ByteArray.", keyStr ? *keyStr : "<unknown>");
+                    }
+                    else if constexpr (!std::is_same_v<T, std::monostate> && !std::is_same_v<T, double>) {
                         result.emplace_back(*keyStr, v);
                     }
                 },
