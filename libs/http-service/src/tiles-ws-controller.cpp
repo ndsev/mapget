@@ -168,12 +168,12 @@ public:
             auto& req = requests_[i];
             req->onFeatureLayer([weak](auto&& layer) {
                 if (auto self = weak.lock()) {
-                    self->onTileLayer(std::move(layer));
+                    self->onTileLayer(std::forward<decltype(layer)>(layer));
                 }
             });
             req->onSourceDataLayer([weak](auto&& layer) {
                 if (auto self = weak.lock()) {
-                    self->onTileLayer(std::move(layer));
+                    self->onTileLayer(std::forward<decltype(layer)>(layer));
                 }
             });
             req->onLayerLoadStateChanged([weak](MapTileKey const& key, TileLayer::LoadState state) {
@@ -264,20 +264,19 @@ private:
     void onWriterMessage(std::string msg, TileLayerStream::MessageType type)
     {
         // Writer messages are only generated from within onTileLayer under mutex_.
-        if (!currentWriteBatch_) {
+        if (!currentWriteBatch_.has_value()) {
             raise("TilesWsSession writer callback used out-of-band");
         }
         currentWriteBatch_->push_back(WriterMessage{std::move(msg), type});
     }
 
-    void onTileLayer(TileLayer::Ptr layer)
+    void onTileLayer(TileLayer::Ptr const& layer)
     {
         if (cancelled_)
             return;
         if (!layer)
             return;
 
-        std::vector<WriterMessage> batch;
         std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
 
         {
@@ -285,9 +284,13 @@ private:
             if (cancelled_)
                 return;
 
-            currentWriteBatch_ = &batch;
+            if (currentWriteBatch_.has_value()) {
+                raise("TilesWsSession writer callback re-entered");
+            }
+            currentWriteBatch_.emplace();
             writer_->write(layer);
-            currentWriteBatch_ = nullptr;
+            auto batch = std::move(*currentWriteBatch_);
+            currentWriteBatch_.reset();
 
             // If a StringPool message was generated, the writer updates offsets_
             // to the new highest string ID for this node after emitting it.
@@ -400,7 +403,7 @@ private:
         }).dump();
     }
 
-    [[nodiscard]] std::string buildLoadStatePayload(MapTileKey const& key, TileLayer::LoadState state)
+    static std::string buildLoadStatePayload(MapTileKey const& key, TileLayer::LoadState state)
     {
         return nlohmann::json::object({
             {"type", "mapget.tiles.load-state"},
@@ -479,7 +482,7 @@ private:
 
     TileLayerStream::StringPoolOffsetMap offsets_;
     std::unique_ptr<TileLayerStream::Writer> writer_;
-    std::vector<WriterMessage>* currentWriteBatch_ = nullptr;
+    std::optional<std::vector<WriterMessage>> currentWriteBatch_;
 
     std::atomic_bool drainScheduled_{false};
     std::atomic_bool cancelled_{false};
