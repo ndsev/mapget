@@ -52,7 +52,8 @@ bool Attribute::forEachField(
 model_ptr<SourceDataReferenceCollection> Attribute::sourceDataReferences() const
 {
     if (data_->sourceDataRefs_) {
-        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
+        return model().resolve<SourceDataReferenceCollection>(
+            *model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
     }
     return {};
 }
@@ -77,7 +78,7 @@ model_ptr<MultiValidity> Attribute::validityOrNull() const
     if (!data_->validities_) {
         return {};
     }
-    return model().resolveValidityCollection(*ModelNode::Ptr::make(model_, data_->validities_));
+    return model().resolve<MultiValidity>(data_->validities_);
 }
 
 void Attribute::setValidity(const model_ptr<MultiValidity>& validities) const

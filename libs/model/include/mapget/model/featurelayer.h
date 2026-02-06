@@ -49,8 +49,16 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
     friend class SourceDataReferenceCollection;
     friend class SourceDataReferenceItem;
     friend class Validity;
+    template<typename Target>
+    friend model_ptr<Target> resolveInternal(
+        simfil::res::tag<Target>,
+        TileFeatureLayer const&,
+        simfil::ModelNode const&);
 
 public:
+    // Keep ModelPool::resolve<T> overloads visible alongside the override below.
+    using ModelPool::resolve;
+
     /**
      * This constructor initializes a new TileFeatureLayer instance.
      * Each instance is associated with a specific TileId, nodeId, and mapId.
@@ -298,30 +306,6 @@ public:
         simfil::ModelNode::Ptr const& otherNode);
 
     /**
-     * Node resolution functions.
-     */
-    model_ptr<AttributeLayer> resolveAttributeLayer(simfil::ModelNode const& n) const;
-    model_ptr<AttributeLayerList> resolveAttributeLayerList(simfil::ModelNode const& n) const;
-    model_ptr<Attribute> resolveAttribute(simfil::ModelNode const& n) const;
-    model_ptr<Feature> resolveFeature(simfil::ModelNode const& n) const;
-    model_ptr<FeatureId> resolveFeatureId(simfil::ModelNode const& n) const;
-    model_ptr<Relation> resolveRelation(simfil::ModelNode const& n) const;
-    model_ptr<PointNode> resolvePoint(const simfil::ModelNode& n) const;
-    model_ptr<PointBufferNode> resolvePointBuffer(const simfil::ModelNode& n) const;
-    model_ptr<Geometry> resolveGeometry(simfil::ModelNode const& n) const;
-    model_ptr<GeometryCollection> resolveGeometryCollection(simfil::ModelNode const& n) const;
-    model_ptr<MeshNode> resolveMesh(simfil::ModelNode const& n) const;
-    model_ptr<MeshTriangleCollectionNode> resolveMeshTriangleCollection(simfil::ModelNode const& n) const;
-    model_ptr<LinearRingNode> resolveMeshTriangleLinearRing(simfil::ModelNode const& n) const;
-    model_ptr<PolygonNode> resolvePolygon(simfil::ModelNode const& n) const;
-    model_ptr<LinearRingNode> resolveLinearRing(simfil::ModelNode const& n) const;
-    model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollection(simfil::ModelNode const& n) const;
-    model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItem(simfil::ModelNode const& n) const;
-    model_ptr<PointNode> resolveValidityPoint(const simfil::ModelNode& n) const;
-    model_ptr<Validity> resolveValidity(simfil::ModelNode const& n) const;
-    model_ptr<MultiValidity> resolveValidityCollection(simfil::ModelNode const& n) const;
-
-    /**
      * The ColumnId enum provides identifiers for different
      * types of columns that can be associated with feature data.
      */
@@ -369,4 +353,12 @@ protected:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).
+template<typename Target>
+simfil::model_ptr<Target> resolveInternal(
+    simfil::res::tag<Target>,
+    TileFeatureLayer const& model,
+    simfil::ModelNode const& node);
+
 }

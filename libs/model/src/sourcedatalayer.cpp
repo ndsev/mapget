@@ -100,22 +100,27 @@ model_ptr<SourceDataCompoundNode> TileSourceDataLayer::newCompound(size_t initia
         mpKey_);
 }
 
-model_ptr<SourceDataCompoundNode> TileSourceDataLayer::resolveCompound(simfil::ModelNode const& n) const
-{
-    assert(n.addr().column() == Compound && "Unexpected column type!");
+// Short aliases to keep resolve hook signatures compact.
+using simfil::ModelNode;
+using simfil::res::tag;
 
-    auto& data = impl_->compounds_.at(n.addr().index());
+template<>
+model_ptr<SourceDataCompoundNode> resolveInternal(tag<SourceDataCompoundNode>, TileSourceDataLayer const& model, ModelNode const& node)
+{
+    assert(node.addr().column() == TileSourceDataLayer::Compound && "Unexpected column type!");
+
+    auto& data = model.impl_->compounds_.at(node.addr().index());
     return SourceDataCompoundNode(
         &data,
-        std::static_pointer_cast<const TileSourceDataLayer>(shared_from_this()),
-        n.addr(),
-        mpKey_);
+        std::static_pointer_cast<const TileSourceDataLayer>(model.shared_from_this()),
+        node.addr(),
+        model.mpKey_);
 }
 
 tl::expected<void, simfil::Error> TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
 {
     if (n.addr().column() == Compound) {
-        cb(*resolveCompound(n));
+        cb(*resolve<SourceDataCompoundNode>(n));
         return {};
     }
     return ModelPool::resolve(n, cb);

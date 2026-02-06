@@ -264,7 +264,7 @@ public:
     bool forEachGeometry(LambdaType const& callback) const {
         auto geomArray = modelPtr<ModelType>()->arrayMemberStorage().range((simfil::ArrayIndex)addr().index());
         return std::all_of(geomArray.begin(), geomArray.end(), [this, &callback](auto&& geomNodeAddress){
-            return callback(modelPtr<ModelType>()->resolveGeometry(*ModelNode::Ptr::make(model_, geomNodeAddress)));
+            return callback(modelPtr<ModelType>()->template resolve<Geometry>(geomNodeAddress));
         });
     }
 
@@ -293,6 +293,9 @@ public:
     friend class TileFeatureLayer;
     friend class Geometry;
     friend class MeshNode;
+
+    explicit PointBufferNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -327,6 +330,9 @@ public:
     friend class TileFeatureLayer;
     friend class Geometry;
 
+    explicit PolygonNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
@@ -347,6 +353,9 @@ class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureL
 public:
     friend class TileFeatureLayer;
     friend class Geometry;
+
+    explicit MeshNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -374,6 +383,9 @@ public:
     friend class TileFeatureLayer;
     friend class Geometry;
 
+    explicit MeshTriangleCollectionNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
@@ -398,6 +410,9 @@ class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureL
 public:
     friend class TileFeatureLayer;
     friend class Geometry;
+
+    explicit LinearRingNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;

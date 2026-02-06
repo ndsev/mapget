@@ -17,6 +17,9 @@ public:
     friend class Geometry;
     friend class PointBufferNode;
 
+    explicit PointNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;

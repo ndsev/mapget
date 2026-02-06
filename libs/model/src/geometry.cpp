@@ -74,7 +74,7 @@ ModelNode::Ptr GeometryCollection::at(int64_t i) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->at(i);
     if (i == 0) return model_ptr<ValueNode>::make(GeometryCollectionStr, model_);
-    if (i == 1) return ModelNode::Ptr::make(model_, ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    if (i == 1) return model().resolve(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     throw std::out_of_range("geom collection: Out of range.");
 }
 
@@ -103,8 +103,8 @@ StringId GeometryCollection::keyAt(int64_t i) const {
 
 model_ptr<Geometry> GeometryCollection::newGeometry(GeomType type, size_t initialCapacity) {
     auto result = model().newGeometry(type, initialCapacity);
-    auto arrayPtr = ModelNode::Ptr::make(model_, ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
-    model().resolveArray(arrayPtr)->append(result);
+    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    array->append(result);
     return result;
 }
 
@@ -120,16 +120,16 @@ bool GeometryCollection::iterate(const IterCallback& cb) const
 ModelNode::Ptr GeometryCollection::singleGeom() const
 {
     if (model().arrayMemberStorage().size((ArrayIndex)addr_.index()) == 1) {
-        auto arrayPtr = ModelNode::Ptr::make(model_, ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
-        return model().resolveArray(arrayPtr)->at(0);
+        auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+        return array->at(0);
     }
     return {};
 }
 
 void GeometryCollection::addGeometry(const model_ptr<Geometry>& geom)
 {
-    auto arrayPtr = ModelNode::Ptr::make(model_, ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
-    model().resolveArray(arrayPtr)->append(ModelNode::Ptr(geom));
+    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    array->append(ModelNode::Ptr(geom));
 }
 
 size_t GeometryCollection::numGeometries() const
@@ -194,7 +194,7 @@ uint32_t Geometry::size() const {
 
 ModelNode::Ptr Geometry::get(const StringId& f) const {
     if (f == StringPool::SourceDataStr && geomData_->sourceDataReferences_) {
-        return ModelNode::Ptr::make(model_, geomData_->sourceDataReferences_);
+        return model().resolve(geomData_->sourceDataReferences_);
     }
     if (f == StringPool::TypeStr) {
         return model_ptr<ValueNode>::make(
@@ -207,14 +207,14 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
     if (f == StringPool::CoordinatesStr) {
         switch (geomData_->type_) {
         case GeomType::Polygon:
-            return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Polygon, addr_.index()});
+            return model().resolve(
+                ModelNodeAddress{TileFeatureLayer::ColumnId::Polygon, addr_.index()});
         case GeomType::Mesh:
-            return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Mesh, addr_.index()});
+            return model().resolve(
+                ModelNodeAddress{TileFeatureLayer::ColumnId::Mesh, addr_.index()});
         default:
-            return ModelNode::Ptr::make(
-                model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
+            return model().resolve(
+                ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
         }
     }
     if (f == StringPool::NameStr) {
@@ -243,7 +243,7 @@ StringId Geometry::keyAt(int64_t i) const {
 model_ptr<SourceDataReferenceCollection> Geometry::sourceDataReferences() const
 {
     if (geomData_->sourceDataReferences_)
-        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, geomData_->sourceDataReferences_));
+        return model().resolve<SourceDataReferenceCollection>(geomData_->sourceDataReferences_);
     return {};
 }
 
@@ -489,8 +489,8 @@ ModelNode::Ptr PolygonNode::at(int64_t index) const
 {
     // Index 0 is the outer ring, all following rings are holes
     if (index == 0)
-        return ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::LinearRing, addr_.index()});
+        return model().resolve(
+            ModelNodeAddress{TileFeatureLayer::ColumnId::LinearRing, addr_.index()});
 
     throw std::out_of_range("PolygonNode: index out of bounds.");
 }
@@ -539,8 +539,9 @@ ValueType MeshNode::type() const
 ModelNode::Ptr MeshNode::at(int64_t index) const
 {
     if (0 <= index && index < size_)
-        return ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleCollection, addr_.index()}, index);
+        return model().resolve(
+            ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleCollection, addr_.index()},
+            index);
 
     throw std::out_of_range("MeshNode: index out of bounds.");
 }
@@ -571,7 +572,9 @@ ValueType MeshTriangleCollectionNode::type() const
 ModelNode::Ptr MeshTriangleCollectionNode::at(int64_t index) const
 {
     if (index == 0)
-        return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleLinearRing, addr_.index()}, index_);
+        return model().resolve(
+            ModelNodeAddress{TileFeatureLayer::ColumnId::MeshTriangleLinearRing, addr_.index()},
+            index_);
 
     throw std::out_of_range("MeshTriangleCollectionNode: index out of bounds.");
 }
@@ -698,9 +701,8 @@ uint32_t LinearRingNode::size() const
 
 model_ptr<PointBufferNode> LinearRingNode::vertexBuffer() const
 {
-    auto ptr = ModelNode::Ptr::make(
-        model_, ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()}, 0);
-    return model().resolvePointBuffer(*ptr);
+    return model().resolve<PointBufferNode>(
+        ModelNodeAddress{TileFeatureLayer::ColumnId::PointBuffers, addr_.index()});
 }
 
 /** ModelNode impls. for VertexBufferNode */
@@ -723,8 +725,8 @@ PointBufferNode::PointBufferNode(Geometry::Data const* geomData,
         while (baseGeomData_->isView_) {
             offset_ += baseGeomData_->detail_.view_.offset_;
             baseGeomAddress_ = baseGeomData_->detail_.view_.baseGeometry_;
-            baseGeomData_ = model().resolveGeometry(
-                *ModelNode::Ptr::make(model_, baseGeomData_->detail_.view_.baseGeometry_))->geomData_;
+            baseGeomData_ = model().resolve<Geometry>(
+                baseGeomData_->detail_.view_.baseGeometry_)->geomData_;
         }
 
         auto maxSize = 1 + storage_->size(baseGeomData_->detail_.geom_.vertexArray_);
@@ -746,7 +748,9 @@ ModelNode::Ptr PointBufferNode::at(int64_t i) const {
     if (i < 0 || i >= size())
         throw std::out_of_range("vertex-buffer: Out of range.");
     i += offset_;
-    return ModelNode::Ptr::make(model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, i);
+    return model().resolve(
+        ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()},
+        i);
 }
 
 uint32_t PointBufferNode::size() const {
@@ -768,8 +772,9 @@ bool PointBufferNode::iterate(const IterCallback& cb) const
         cont = cb(node);
     });
     for (auto i = 0u; i < size_; ++i) {
-        resolveAndCb(*ModelNode::Ptr::make(
-            model_, ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()}, (int64_t)i+offset_));
+        resolveAndCb(*model().resolve(
+            ModelNodeAddress{TileFeatureLayer::ColumnId::Points, baseGeomAddress_.index()},
+            (int64_t)i + offset_));
         if (!cont)
             break;
     }

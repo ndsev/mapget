@@ -14,12 +14,15 @@ class AttributeLayerList;
  * as speed limits, might belong to the same attribute layer.
  * TODO: Convert to use BaseObject
  */
-class AttributeLayer : public simfil::Object
+class AttributeLayer : public simfil::BaseObject<TileFeatureLayer, Attribute>
 {
     friend class TileFeatureLayer;
     friend class bitsery::Access;
 
 public:
+    using BaseObject::addField;
+    using BaseObject::get;
+
     /**
      * Create a new attribute and immediately insert it into the layer.
      */
@@ -40,7 +43,7 @@ public:
     bool forEachAttribute(std::function<bool(model_ptr<Attribute> const& attr)> const& cb) const;
 
 public:
-    explicit AttributeLayer(simfil::detail::mp_key key) : simfil::Object(key) {}
+    explicit AttributeLayer(simfil::detail::mp_key key) : BaseObject(key) {}
     AttributeLayer(simfil::ArrayIndex i,
                    simfil::ModelConstPtr l,
                    simfil::ModelNodeAddress a,
@@ -53,13 +56,16 @@ public:
  * stores (layer-name, layer) pairs.
  * TODO: Convert to use BaseObject
  */
-class AttributeLayerList : public simfil::Object
+class AttributeLayerList : public simfil::BaseObject<TileFeatureLayer, AttributeLayer>
 {
     friend class TileFeatureLayer;
     friend class bitsery::Access;
     friend class Feature;
 
 public:
+    using BaseObject::addField;
+    using BaseObject::get;
+
     /**
      * Create a new named layer and immediately insert it into the collection.
      */
@@ -81,7 +87,7 @@ public:
     ) const;
 
 public:
-    explicit AttributeLayerList(simfil::detail::mp_key key) : simfil::Object(key) {}
+    explicit AttributeLayerList(simfil::detail::mp_key key) : BaseObject(key) {}
     AttributeLayerList(simfil::ArrayIndex i,
                        simfil::ModelConstPtr l,
                        simfil::ModelNodeAddress a,

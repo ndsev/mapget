@@ -50,7 +50,7 @@ simfil::model_ptr<const simfil::Object> SourceDataCompoundNode::object() const
 {
     if (!data_->object_)
         return {};
-    return model().resolveObject(ModelNode::Ptr::make(model_, data_->object_));
+    return model().resolve<simfil::Object>(data_->object_);
 }
 
 ValueType SourceDataCompoundNode::type() const

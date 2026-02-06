@@ -12,7 +12,7 @@ FeatureId::FeatureId(FeatureId::Data& data,
     simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(l, a, key),
       data_(&data),
-      fields_(model().resolveObject(Ptr::make(l, data_->idParts_)))
+      fields_(model().resolve<simfil::Object>(data_->idParts_))
 {
 }
 

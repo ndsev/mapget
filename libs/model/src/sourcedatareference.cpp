@@ -20,8 +20,8 @@ ModelNode::Ptr SourceDataReferenceCollection::at(int64_t index) const
     if (index < 0 || index >= size_ || (offset_ + index) > 0xffffff)
         throw std::out_of_range("Index out of range");
 
-    return ModelNode::Ptr::make(
-        model_, ModelNodeAddress{TileFeatureLayer::ColumnId::SourceDataReferences, static_cast<uint32_t>(offset_ + index)});
+    return model().resolve(
+        ModelNodeAddress{TileFeatureLayer::ColumnId::SourceDataReferences, static_cast<uint32_t>(offset_ + index)});
 }
 
 uint32_t SourceDataReferenceCollection::size() const
@@ -41,7 +41,7 @@ void SourceDataReferenceCollection::forEachReference(std::function<void(const So
 {
     const auto& m = model();
     for (auto i = 0u; i < size(); ++i) {
-        fn(*m.resolveSourceDataReferenceItem(*at(i)));
+        fn(*m.resolve<SourceDataReferenceItem>(*at(i)));
     }
 }
 

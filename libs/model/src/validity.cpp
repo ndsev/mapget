@@ -27,7 +27,7 @@ model_ptr<FeatureId> Validity::featureId() const
     if (!data_->featureAddress_) {
         return {};
     }
-    return model().resolveFeatureId(*Ptr::make(model_, data_->featureAddress_));
+    return model().resolve<FeatureId>(data_->featureAddress_);
 }
 
 void Validity::setFeatureId(model_ptr<FeatureId> featureId)
@@ -61,8 +61,7 @@ Validity::Validity(Validity::Data* data,
             StringPool::GeometryStr,
             [](Validity const& self)
             {
-                return ModelNode::Ptr::make(
-                    self.model_,
+                return self.model().resolve(
                     std::get<ModelNodeAddress>(self.data_->geomDescr_));
             });
         return;
@@ -109,8 +108,7 @@ Validity::Validity(Validity::Data* data,
                 switch (self.data_->geomOffsetType_) {
                 case InvalidOffsetType: return ModelNode::Ptr{};
                 case GeoPosOffset:
-                    return ModelNode::Ptr::make(
-                        self.model_,
+                    return self.model().resolve(
                         ModelNodeAddress{
                             TileFeatureLayer::ColumnId::ValidityPoints,
                             self.addr().index()},
@@ -241,7 +239,7 @@ model_ptr<Geometry> Validity::simpleGeometry() const
     if (data_->geomDescrType_ != SimpleGeometry) {
         return {};
     }
-    return model().resolveGeometry(*ModelNode::Ptr::make(model_, std::get<ModelNodeAddress>(data_->geomDescr_)));
+    return model().resolve<Geometry>(std::get<ModelNodeAddress>(data_->geomDescr_));
 }
 
 SelfContainedGeometry Validity::computeGeometry(

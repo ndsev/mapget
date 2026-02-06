@@ -23,12 +23,12 @@ Feature::Feature(Feature::Data& d,
 
 model_ptr<FeatureId> Feature::id() const
 {
-    return model().resolveFeatureId(*Ptr::make(model_, data_->id_));
+    return model().resolve<FeatureId>(data_->id_);
 }
 
 std::string_view mapget::Feature::typeId() const
 {
-    return model().resolveFeatureId(*Ptr::make(model_, data_->id_))->typeId();
+    return model().resolve<FeatureId>(data_->id_)->typeId();
 }
 
 model_ptr<GeometryCollection> Feature::geom()
@@ -46,7 +46,7 @@ model_ptr<GeometryCollection> Feature::geomOrNull() const
 {
     if (!data_->geom_)
         return {};
-    return model().resolveGeometryCollection(*Ptr::make(model_, data_->geom_));
+    return model().resolve<GeometryCollection>(data_->geom_);
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
@@ -64,7 +64,7 @@ model_ptr<AttributeLayerList> Feature::attributeLayersOrNull() const
 {
     if (!data_->attrLayers_)
         return {};
-    return model().resolveAttributeLayerList(*Ptr::make(model_, data_->attrLayers_));
+    return model().resolve<AttributeLayerList>(data_->attrLayers_);
 }
 
 model_ptr<Object> Feature::attributes()
@@ -82,7 +82,7 @@ model_ptr<Object> Feature::attributesOrNull() const
 {
     if (!data_->attrs_)
         return {};
-    return model().resolveObject(Ptr::make(model_, data_->attrs_));
+    return model().resolve<simfil::Object>(data_->attrs_);
 }
 
 model_ptr<Array> Feature::relations()
@@ -100,7 +100,7 @@ model_ptr<Array> Feature::relationsOrNull() const
 {
     if (!data_->relations_)
         return {};
-    return model().resolveArray(Ptr::make(model_, data_->relations_));
+    return model().resolve<simfil::Array>(data_->relations_);
 }
 
 tl::expected<std::vector<simfil::Value>, simfil::Error>
@@ -154,7 +154,7 @@ uint32_t Feature::size() const
 simfil::ModelNode::Ptr Feature::get(const simfil::StringId& f) const
 {
     if (f == StringPool::SourceDataStr)
-        return ModelNode::Ptr::make(model().shared_from_this(), data_->sourceData_);
+        return model().resolve(data_->sourceData_);
 
     for (auto const& [fieldName, fieldValue] : fields_)
         if (fieldName == f)
@@ -194,7 +194,7 @@ void Feature::updateFields() {
 
     // Add id field
     fields_.emplace_back(StringPool::IdStr, Ptr::make(model_, data_->id_));
-    auto idNode = model().resolveFeatureId(*fields_.back().second);
+    auto idNode = model().resolve<FeatureId>(*fields_.back().second);
 
     // Add type id field
     fields_.emplace_back(
@@ -297,7 +297,7 @@ uint32_t Feature::numRelations() const
 model_ptr<Relation> Feature::getRelation(uint32_t index) const
 {
     if (data_->relations_)
-        return model().resolveRelation(*relationsOrNull()->at(index));
+        return model().resolve<Relation>(*relationsOrNull()->at(index));
     return {};
 }
 
@@ -307,7 +307,7 @@ bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> co
     if (!relationsPtr || !callback)
         return true;
     for (auto const& relation : *relationsPtr) {
-        if (!callback(model().resolveRelation(*relation)))
+        if (!callback(model().resolve<Relation>(*relation)))
             return false;
     }
     return true;
@@ -349,7 +349,8 @@ Feature::filterRelations(const std::string_view& name) const
 model_ptr<SourceDataReferenceCollection> Feature::sourceDataReferences() const
 {
     if (data_->sourceData_)
-        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+        return model().resolve<SourceDataReferenceCollection>(
+            *model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
     return {};
 }
 
@@ -370,7 +371,7 @@ Feature::FeaturePropertyView::FeaturePropertyView(
       data_(&d)
 {
     if (data_->attrs_)
-        attrs_ = model().resolveObject(Ptr::make(model_, data_->attrs_));
+        attrs_ = model().resolve<simfil::Object>(data_->attrs_);
 }
 
 simfil::ValueType Feature::FeaturePropertyView::type() const
@@ -419,7 +420,8 @@ simfil::StringId Feature::FeaturePropertyView::keyAt(int64_t i) const
 bool Feature::FeaturePropertyView::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
     if (data_->attrLayers_) {
-        if (!cb(*model().resolveAttributeLayerList(*Ptr::make(model_, data_->attrLayers_))))
+        if (!cb(*model().resolve<AttributeLayerList>(
+                *Ptr::make(model_, data_->attrLayers_))))
             return false;
     }
     if (attrs_)
