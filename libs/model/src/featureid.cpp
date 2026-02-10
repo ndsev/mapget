@@ -30,7 +30,7 @@ std::string FeatureId::toString() const
     auto addIdPart = [&result](auto&& v)
     {
         if constexpr (std::is_same_v<std::decay_t<decltype(v)>, simfil::ByteArray>) {
-            raiseFmt("FeatureId part value '{}' cannot be a ByteArray.", v.toDisplayString());
+            raiseFmt("FeatureId part value 'b\"{}\"' cannot be a ByteArray.", v.toHex());
         } else if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>) {
             result << "." << v;
         }
