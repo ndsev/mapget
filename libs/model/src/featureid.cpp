@@ -8,10 +8,13 @@
 namespace mapget
 {
 
-FeatureId::FeatureId(FeatureId::Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(l, a),
+FeatureId::FeatureId(FeatureId::Data& data,
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(l, a, key),
       data_(&data),
-      fields_(model().resolveObject(Ptr::make(l, data_->idParts_)))
+      fields_(model().resolve<simfil::Object>(data_->idParts_))
 {
 }
 

@@ -55,7 +55,6 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class bitsery::Access;
     friend class TileFeatureLayer;
     friend class BoundFeature;
-    template<typename> friend struct simfil::model_ptr;
 
 public:
     /** Get the name of this feature's type. */
@@ -201,9 +200,16 @@ protected:
         }
     };
 
-    Feature(Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
-    Feature() = default;
+public:
+    explicit Feature(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+    Feature(Data& d,
+            simfil::ModelConstPtr l,
+            simfil::ModelNodeAddress a,
+            simfil::detail::mp_key key);
+    Feature() = delete;
 
+protected:
     Data* data_ = nullptr;
 
     // We keep the fields in a tiny vector on the stack,
@@ -221,8 +227,13 @@ protected:
         [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
         [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
-        FeaturePropertyView(Data& d, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
-        FeaturePropertyView() = default;
+        explicit FeaturePropertyView(simfil::detail::mp_key key)
+            : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        FeaturePropertyView(Data& d,
+                            simfil::ModelConstPtr l,
+                            simfil::ModelNodeAddress a,
+                            simfil::detail::mp_key key);
+        FeaturePropertyView() = delete;
 
         Data* data_ = nullptr;
         model_ptr<Object> attrs_;

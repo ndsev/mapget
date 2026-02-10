@@ -24,7 +24,6 @@ class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class Feature;
     friend class Relation;
     friend class bitsery::Access;
-    template<typename> friend struct simfil::model_ptr;
 
 public:
     /** Convert the FeatureId to a string like `<type-id>.<part-value-0>...<part-value-n>` */
@@ -61,9 +60,16 @@ protected:
         }
     };
 
-    FeatureId(Data& data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a);
-    FeatureId() = default;
+public:
+    explicit FeatureId(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+    FeatureId(Data& data,
+              simfil::ModelConstPtr l,
+              simfil::ModelNodeAddress a,
+              simfil::detail::mp_key key);
+    FeatureId() = delete;
 
+protected:
     Data* data_ = nullptr;
 
     model_ptr<Object> fields_;

@@ -14,8 +14,6 @@ class Geometry;
 class Validity : public simfil::ProceduralObject<6, Validity, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
-    template <typename>
-    friend struct simfil::model_ptr;
     friend class PointNode;
 
 public:
@@ -178,10 +176,16 @@ protected:
         }
     };
 
-protected:
-    Validity(Data* data, simfil::ModelConstPtr layer, simfil::ModelNodeAddress a);
-    Validity() = default;
+public:
+    explicit Validity(simfil::detail::mp_key key)
+        : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(key) {}
+    Validity(Data* data,
+             simfil::ModelConstPtr layer,
+             simfil::ModelNodeAddress a,
+             simfil::detail::mp_key key);
+    Validity() = delete;
 
+protected:
     /**
      * Pointer to the actual data stored for the attribute.
      */
@@ -194,8 +198,6 @@ protected:
 struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
 {
     friend class TileFeatureLayer;
-    template <typename>
-    friend struct simfil::model_ptr;
 
     /**
      * Append a new line position validity based on an absolute geographic position.

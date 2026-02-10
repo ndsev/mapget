@@ -20,8 +20,8 @@ ModelNode::Ptr SourceDataReferenceCollection::at(int64_t index) const
     if (index < 0 || index >= size_ || (offset_ + index) > 0xffffff)
         throw std::out_of_range("Index out of range");
 
-    return ModelNode::Ptr::make(
-        model_, ModelNodeAddress{TileFeatureLayer::ColumnId::SourceDataReferences, static_cast<uint32_t>(offset_ + index)});
+    return model().resolve(
+        ModelNodeAddress{TileFeatureLayer::ColumnId::SourceDataReferences, static_cast<uint32_t>(offset_ + index)});
 }
 
 uint32_t SourceDataReferenceCollection::size() const
@@ -41,12 +41,18 @@ void SourceDataReferenceCollection::forEachReference(std::function<void(const So
 {
     const auto& m = model();
     for (auto i = 0u; i < size(); ++i) {
-        fn(*m.resolveSourceDataReferenceItem(*at(i)));
+        fn(*m.resolve<SourceDataReferenceItem>(*at(i)));
     }
 }
 
-SourceDataReferenceCollection::SourceDataReferenceCollection(uint32_t offset, uint32_t size, ModelConstPtr pool, ModelNodeAddress a)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a), offset_(offset), size_(size)
+SourceDataReferenceCollection::SourceDataReferenceCollection(uint32_t offset,
+    uint32_t size,
+    ModelConstPtr pool,
+    ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a, key),
+      offset_(offset),
+      size_(size)
 {}
 
 ValueType SourceDataReferenceItem::type() const
@@ -120,8 +126,12 @@ SourceDataAddress SourceDataReferenceItem::address() const
     return data_->reference_.address_;
 }
 
-SourceDataReferenceItem::SourceDataReferenceItem(const QualifiedSourceDataReference* const data, const ModelConstPtr pool, const ModelNodeAddress a)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a), data_(data)
+SourceDataReferenceItem::SourceDataReferenceItem(const QualifiedSourceDataReference* const data,
+    const ModelConstPtr pool,
+    const ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a, key),
+      data_(data)
 {}
 
 }

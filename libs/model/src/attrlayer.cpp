@@ -8,9 +8,10 @@ namespace mapget
 AttributeLayer::AttributeLayer(
     simfil::ArrayIndex i,
     simfil::ModelConstPtr l,
-    simfil::ModelNodeAddress a
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key
 )
-    : simfil::Object(i, std::move(l), a)
+    : simfil::BaseObject<TileFeatureLayer, Attribute>(i, std::move(l), a, key)
 {
 }
 
@@ -24,7 +25,7 @@ AttributeLayer::newAttribute(const std::string_view& name, size_t initialCapacit
 
 void AttributeLayer::addAttribute(model_ptr<Attribute> a)
 {
-    addField(a->name(), simfil::ModelNode::Ptr(a));
+    addField(a->name(), a);
 }
 
 bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<Attribute>&)>& cb) const
@@ -36,7 +37,7 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
             log().warn("Don't add anything other than Attributes into AttributeLayers!");
             continue;
         }
-        auto attr = static_cast<TileFeatureLayer&>(model()).resolveAttribute(*value);
+        auto attr = static_cast<TileFeatureLayer&>(model()).resolve<Attribute>(*value);
         if (!cb(attr))
             return false;
     }
@@ -46,9 +47,10 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
 AttributeLayerList::AttributeLayerList(
     simfil::ArrayIndex i,
     simfil::ModelConstPtr l,
-    simfil::ModelNodeAddress a
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key
 )
-    : simfil::Object(i, std::move(l), a)
+    : simfil::BaseObject<TileFeatureLayer, AttributeLayer>(i, std::move(l), a, key)
 {
 }
 
@@ -62,7 +64,7 @@ AttributeLayerList::newLayer(const std::string_view& name, size_t initialCapacit
 
 void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<AttributeLayer> l)
 {
-    addField(name, simfil::ModelNode::Ptr(std::move(l)));
+    addField(name, l);
 }
 
 bool AttributeLayerList::forEachLayer(
@@ -76,7 +78,7 @@ bool AttributeLayerList::forEachLayer(
                 log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
                 continue;
             }
-            auto attrLayer = static_cast<TileFeatureLayer&>(model()).resolveAttributeLayer(*value);
+            auto attrLayer = static_cast<TileFeatureLayer&>(model()).resolve<AttributeLayer>(*value);
             if (!cb(*layerName, attrLayer))
                 return false;
         }

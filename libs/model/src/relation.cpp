@@ -6,8 +6,12 @@
 namespace mapget
 {
 
-Relation::Relation(Relation::Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<6, Relation, TileFeatureLayer>(std::move(l), a), data_(data)
+Relation::Relation(Relation::Data* data,
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<6, Relation, TileFeatureLayer>(std::move(l), a, key),
+      data_(data)
 {
     fields_.emplace_back(
         StringPool::NameStr,
@@ -18,25 +22,25 @@ Relation::Relation(Relation::Data* data, simfil::ModelConstPtr l, simfil::ModelN
         fields_.emplace_back(
             StringPool::TargetStr,
             [](Relation const& self) {
-                return ModelNode::Ptr::make(self.model().shared_from_this(), self.data_->targetFeatureId_);
+                return self.model().resolve(self.data_->targetFeatureId_);
             });
     if (data_->sourceValidity_)
         fields_.emplace_back(
             StringPool::SourceValidityStr,
             [](Relation const& self) {
-                return ModelNode::Ptr::make(self.model().shared_from_this(), self.data_->sourceValidity_);
+                return self.model().resolve(self.data_->sourceValidity_);
             });
     if (data_->targetValidity_)
         fields_.emplace_back(
             StringPool::TargetValidityStr,
             [](Relation const& self) {
-                return ModelNode::Ptr::make(self.model().shared_from_this(), self.data_->targetValidity_);
+                return self.model().resolve(self.data_->targetValidity_);
             });
     if (data_->sourceData_)
         fields_.emplace_back(
             StringPool::SourceDataStr,
             [](Relation const& self) {
-                return ModelNode::Ptr::make(self.model().shared_from_this(), self.data_->sourceData_);
+                return self.model().resolve(self.data_->sourceData_);
             });
 }
 
@@ -54,7 +58,8 @@ model_ptr<MultiValidity> Relation::sourceValidityOrNull() const
 {
     if (!data_->sourceValidity_)
         return {};
-    return model().resolveValidityCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceValidity_));
+    return model().resolve<MultiValidity>(
+        *model_ptr<simfil::ModelNode>::make(model_, data_->sourceValidity_));
 }
 
 void Relation::setSourceValidity(const model_ptr<MultiValidity>& validityGeom)
@@ -77,7 +82,8 @@ model_ptr<MultiValidity> Relation::targetValidityOrNull() const
 {
     if (!data_->targetValidity_)
         return {};
-    return model().resolveValidityCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->targetValidity_));
+    return model().resolve<MultiValidity>(
+        *model_ptr<simfil::ModelNode>::make(model_, data_->targetValidity_));
 }
 
 void Relation::setTargetValidity(const model_ptr<MultiValidity>& validityGeom)
@@ -94,13 +100,15 @@ std::string_view Relation::name() const
 
 model_ptr<FeatureId> Relation::target() const
 {
-    return model().resolveFeatureId(*model_ptr<simfil::ModelNode>::make(model_, data_->targetFeatureId_));
+    return model().resolve<FeatureId>(
+        *model_ptr<simfil::ModelNode>::make(model_, data_->targetFeatureId_));
 }
 
 model_ptr<SourceDataReferenceCollection> Relation::sourceDataReferences() const
 {
     if (data_->sourceData_)
-        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
+        return model().resolve<SourceDataReferenceCollection>(
+            *model_ptr<simfil::ModelNode>::make(model_, data_->sourceData_));
     return {};
 }
 

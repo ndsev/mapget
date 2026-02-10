@@ -45,6 +45,30 @@ def _patch_sample_service_yaml(text: str, mapget_port: int, datasource_cpp_port:
     return text
 
 
+def _patch_cache_dir(text: str, cache_path: str) -> str:
+    # Prefer updating an existing cache-dir value, otherwise insert after cache-type.
+    escaped_path = cache_path.replace("'", "''")
+    cache_value = f"'{escaped_path}'"
+    if re.search(r"(?m)^\s*cache-dir:\s*.*$", text):
+        return re.sub(
+            r"(?m)^(\s*cache-dir:\s*).*$",
+            rf"\g<1>{cache_value}",
+            text,
+            count=1,
+        )
+    match = re.search(r"(?m)^(\s*)cache-type:\s*.*$", text)
+    if not match:
+        return text
+    indent = match.group(1)
+    insert_line = f"{indent}cache-dir: {cache_value}"
+    return re.sub(
+        r"(?m)^(\s*cache-type:\s*.*)$",
+        rf"\g<1>\n{insert_line}",
+        text,
+        count=1,
+    )
+
+
 def _patch_sample_fetch_yaml(text: str, mapget_port: int) -> str:
     return re.sub(
         r"(?m)^(\s*server:\s*127\.0\.0\.1:)\d+(\s*)$",
@@ -83,8 +107,12 @@ def main() -> int:
     examples_config = repo_root / "examples" / "config"
 
     sample_service = (examples_config / "sample-service.yaml").read_text(encoding="utf-8")
+    cache_path = str((out_dir / "mapget-cache.db").resolve())
     (out_dir / "sample-service.yaml").write_text(
-        _patch_sample_service_yaml(sample_service, mapget_port, datasource_cpp_port, datasource_py_port),
+        _patch_cache_dir(
+            _patch_sample_service_yaml(sample_service, mapget_port, datasource_cpp_port, datasource_py_port),
+            cache_path,
+        ),
         encoding="utf-8",
         newline="\n",
     )
@@ -108,4 +136,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
