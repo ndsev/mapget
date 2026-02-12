@@ -6,6 +6,7 @@
 #include <mapget/model/point.h>
 #include <mapget/model/featureid.h>
 #include <yaml-cpp/yaml.h>
+#include <nlohmann/json.hpp>
 #include <random>
 #include <memory>
 #include <unordered_map>
@@ -48,6 +49,54 @@ struct AttributeConfig;
 struct AttributeLayerConfig;
 struct RelationConfig;
 struct GeometryConfig;
+
+/**
+ * Attribute tree profile for procedural attribute generation
+ */
+enum class AttributeTreeProfile {
+    None,       // No profile attributes (default, backward compatible)
+    Minimal,    // ~5 leaf nodes, 1 layer, flat scalars
+    Moderate,   // ~40 leaf nodes, 3 layers, shallow nesting
+    Realistic,  // ~150 leaf nodes, 6 layers, nested objects with validity
+    Stress      // ~1000+ leaf nodes, 12 layers, deep nesting
+};
+
+/**
+ * Parameters for attribute tree generation (overridable per-profile)
+ */
+struct AttributeTreeParams {
+    std::optional<int> numLayers;
+    std::optional<int> attrsPerLayer;
+    std::optional<int> fieldsPerAttr;
+    std::optional<int> maxNestingDepth;
+    std::optional<int> maxArraySize;
+    std::optional<double> nestingProbability;
+    std::optional<double> directionalValidityProb;
+    std::optional<double> rangeValidityProb;
+    std::optional<int> topLevelExtraFields;
+
+    static AttributeTreeParams fromYAML(const YAML::Node& node);
+};
+
+/**
+ * Resolved (fully concrete) tree params after merging profile + overrides
+ */
+struct ResolvedTreeParams {
+    int numLayers;
+    int attrsPerLayer;
+    int fieldsPerAttr;
+    int maxNestingDepth;
+    int maxArraySize;
+    double nestingProbability;
+    double directionalValidityProb;
+    double rangeValidityProb;
+    int topLevelExtraFields;
+
+    static ResolvedTreeParams resolve(
+        AttributeTreeProfile profile,
+        const AttributeTreeParams& globalOverrides,
+        const AttributeTreeParams& layerOverrides);
+};
 
 /**
  * Geometry type for generated features
@@ -202,6 +251,10 @@ struct LayerConfig {
     std::vector<AttributeLayerConfig> layeredAttributes;
     std::vector<RelationConfig> relations;
 
+    // Per-layer attribute tree profile override (nullopt = use global)
+    std::optional<AttributeTreeProfile> attributeTreeProfile;
+    AttributeTreeParams attributeTreeParams;
+
     static LayerConfig fromYAML(const YAML::Node& node);
 };
 
@@ -215,9 +268,16 @@ struct Config {
     uint32_t sourceDownloadDelayMs = 0;  // Sleep-wait (simulates IO: downloading from server)
     uint32_t sourceUnpackDelayMs = 0;    // Busy-wait (simulates CPU: decompression/parsing)
     uint32_t sourceTransformDelayMs = 0; // Busy-wait (simulates CPU: conversion to features)
+
+    // Attribute tree profile (global default)
+    AttributeTreeProfile attributeTreeProfile = AttributeTreeProfile::None;
+    AttributeTreeParams attributeTreeParams;
+
     std::vector<LayerConfig> layers;
 
     static Config fromYAML(const YAML::Node& node);
+    nlohmann::json toJson() const;
+    static Config fromJson(const nlohmann::json& j);
 };
 
 /**
@@ -315,14 +375,30 @@ public:
     }
     std::vector<mapget::LocateResponse> locate(mapget::LocateRequest const& req) override;
 
+    // Live config mutation (for dev UI)
+    void setConfig(gridsource::Config newConfig);
+    gridsource::Config getConfig() const;
+    void clearContextCache();
+
+    // Static instance registry (for dev UI REST API)
+    static void registerInstance(std::shared_ptr<GridDataSource> instance);
+    static std::vector<std::shared_ptr<GridDataSource>> getInstances();
+
 private:
-    gridsource::Config config_;
+    std::shared_ptr<const gridsource::Config> config_;
+    mutable std::mutex configMutex_;
     mutable std::mutex contextMutex_;
     mutable std::unordered_map<mapget::TileId, std::shared_ptr<gridsource::TileSpatialContext>> contextCache_;
     static constexpr size_t MAX_CACHED_CONTEXTS = 1000;
 
+    // Static registry
+    static std::mutex registryMutex_;
+    static std::vector<std::weak_ptr<GridDataSource>> registry_;
+
     // Get or create spatial context for a tile
-    std::shared_ptr<gridsource::TileSpatialContext> getOrCreateContext(mapget::TileId tileId) const;
+    std::shared_ptr<gridsource::TileSpatialContext> getOrCreateContext(
+        mapget::TileId tileId,
+        std::shared_ptr<const gridsource::Config> const& cfg) const;
 
     // Layer generation methods
     void generateRoadGrid(gridsource::TileSpatialContext& ctx,
@@ -330,15 +406,18 @@ private:
                          mapget::TileFeatureLayer::Ptr const& tile);
 
     void generateBuildings(gridsource::TileSpatialContext& ctx,
-                          const gridsource::LayerConfig& config,
+                          const gridsource::LayerConfig& layerCfg,
+                          const gridsource::Config& cfg,
                           mapget::TileFeatureLayer::Ptr const& tile);
 
     void generateRoads(gridsource::TileSpatialContext& ctx,
-                      const gridsource::LayerConfig& config,
+                      const gridsource::LayerConfig& layerCfg,
+                      const gridsource::Config& cfg,
                       mapget::TileFeatureLayer::Ptr const& tile);
 
     void generateIntersections(gridsource::TileSpatialContext& ctx,
-                              const gridsource::LayerConfig& config,
+                              const gridsource::LayerConfig& layerCfg,
+                              const gridsource::Config& cfg,
                               mapget::TileFeatureLayer::Ptr const& tile);
 
     // Attribute generation
@@ -349,6 +428,13 @@ private:
 
     void generateLayeredAttributes(mapget::model_ptr<mapget::Feature> feature,
                                    const std::vector<gridsource::AttributeLayerConfig>& layers,
+                                   std::mt19937& gen,
+                                   uint32_t featureId);
+
+    // Profile-based attribute tree generation
+    void generateProfileAttributes(mapget::model_ptr<mapget::Feature> feature,
+                                   mapget::TileFeatureLayer::Ptr const& tile,
+                                   const gridsource::ResolvedTreeParams& params,
                                    std::mt19937& gen,
                                    uint32_t featureId);
 

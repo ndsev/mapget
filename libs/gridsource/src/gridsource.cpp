@@ -35,6 +35,84 @@ std::string replaceAll(std::string str, const std::string& from, const std::stri
     return str;
 }
 
+// ============================================================================
+// Attribute Tree Profile: Name & Value Pools
+// ============================================================================
+
+static constexpr const char* kProfileLayerNames[] = {
+    "SpeedRestrictions", "AccessControl", "RoadCharacteristics",
+    "TrafficSigns", "LaneModel", "RoadGeometry",
+    "RoutingAttributes", "EnvironmentalZones", "TollStructures",
+    "ParkingFacilities", "ElectricVehicle", "NavigationAttributes"
+};
+static constexpr size_t kNumProfileLayerNames = 12;
+
+static constexpr const char* kProfileAttrNames[] = {
+    "speedLimit", "overtakingRestriction", "accessPermission",
+    "vehicleClassRestriction", "surfaceType", "pavementCondition",
+    "numberOfLanes", "laneWidth", "roadWidth",
+    "functionalRoadClass", "formOfWay", "gradientPercent",
+    "curvatureRadius", "trafficFlowDirection", "dividerType",
+    "environmentalZone", "tollCategory", "heightRestriction",
+    "weightRestriction", "hazmatRestriction"
+};
+static constexpr size_t kNumProfileAttrNames = 20;
+
+static constexpr const char* kProfileFieldNames[] = {
+    "value", "unit", "condition", "timeOfDay",
+    "vehicleType", "source", "confidence", "validFrom",
+    "validTo", "applicableDays", "weatherCondition", "seasonality",
+    "priority", "overrideLevel", "verificationDate", "dataQuality",
+    "measurementMethod", "referenceStandard", "toleranceRange", "exceptionalCase",
+    "alternateValue", "displayUnit", "rawValue", "encodingVersion"
+};
+static constexpr size_t kNumProfileFieldNames = 24;
+
+static constexpr const char* kProfileStringValues[] = {
+    "concrete", "asphalt", "gravel", "cobblestone",
+    "motorway", "primary", "secondary", "residential",
+    "permitted", "forbidden", "restricted", "conditional"
+};
+static constexpr size_t kNumProfileStringValues = 12;
+
+static constexpr int kProfileIntValues[] = {
+    0, 10, 20, 30, 50, 60, 80, 100, 120, 130, 150, 200
+};
+static constexpr size_t kNumProfileIntValues = 12;
+
+static constexpr double kProfileFloatValues[] = {
+    0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 7.5, 10.0
+};
+static constexpr size_t kNumProfileFloatValues = 12;
+
+// Deterministic hash for pool selection
+inline uint32_t profileHash(uint32_t seed, uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t h = seed;
+    h ^= a * 2654435761u;
+    h ^= b * 2246822519u;
+    h ^= c * 3266489917u;
+    h ^= h >> 16;
+    h *= 0x45d9f3b;
+    h ^= h >> 16;
+    return h;
+}
+
+// Profile string-to-enum mapping
+static const std::map<std::string, AttributeTreeProfile> kProfileMap = {
+    {"none", AttributeTreeProfile::None},
+    {"minimal", AttributeTreeProfile::Minimal},
+    {"moderate", AttributeTreeProfile::Moderate},
+    {"realistic", AttributeTreeProfile::Realistic},
+    {"stress", AttributeTreeProfile::Stress}
+};
+
+std::string profileToString(AttributeTreeProfile p) {
+    for (auto& [k, v] : kProfileMap) {
+        if (v == p) return k;
+    }
+    return "none";
+}
+
 }  // anonymous namespace
 
 // ============================================================================
@@ -226,7 +304,70 @@ LayerConfig LayerConfig::fromYAML(const YAML::Node& node) {
         }
     }
 
+    // Per-layer attribute tree profile override
+    if (node["attributeTreeProfile"]) {
+        auto profileStr = node["attributeTreeProfile"].as<std::string>("none");
+        cfg.attributeTreeProfile = parseEnum(profileStr, kProfileMap, AttributeTreeProfile::None);
+    }
+    if (node["attributeTreeParams"]) {
+        cfg.attributeTreeParams = AttributeTreeParams::fromYAML(node["attributeTreeParams"]);
+    }
+
     return cfg;
+}
+
+AttributeTreeParams AttributeTreeParams::fromYAML(const YAML::Node& node) {
+    AttributeTreeParams p;
+    if (!node) return p;
+    if (node["numLayers"]) p.numLayers = node["numLayers"].as<int>();
+    if (node["attrsPerLayer"]) p.attrsPerLayer = node["attrsPerLayer"].as<int>();
+    if (node["fieldsPerAttr"]) p.fieldsPerAttr = node["fieldsPerAttr"].as<int>();
+    if (node["maxNestingDepth"]) p.maxNestingDepth = node["maxNestingDepth"].as<int>();
+    if (node["maxArraySize"]) p.maxArraySize = node["maxArraySize"].as<int>();
+    if (node["nestingProbability"]) p.nestingProbability = node["nestingProbability"].as<double>();
+    if (node["directionalValidityProb"]) p.directionalValidityProb = node["directionalValidityProb"].as<double>();
+    if (node["rangeValidityProb"]) p.rangeValidityProb = node["rangeValidityProb"].as<double>();
+    if (node["topLevelExtraFields"]) p.topLevelExtraFields = node["topLevelExtraFields"].as<int>();
+    return p;
+}
+
+ResolvedTreeParams ResolvedTreeParams::resolve(
+    AttributeTreeProfile profile,
+    const AttributeTreeParams& global,
+    const AttributeTreeParams& layer)
+{
+    // Profile base values
+    //                        minimal  moderate  realistic  stress
+    struct Preset { int nL; int aPL; int fPA; int mND; int mAS; double nP; double dVP; double rVP; int tLEF; };
+    static const std::map<AttributeTreeProfile, Preset> presets = {
+        {AttributeTreeProfile::Minimal,   { 1, 2, 2, 0, 0, 0.0,  0.0,  0.0, 1}},
+        {AttributeTreeProfile::Moderate,  { 3, 4, 3, 1, 0, 0.15, 0.2,  0.0, 3}},
+        {AttributeTreeProfile::Realistic, { 6, 5, 4, 2, 3, 0.25, 0.5,  0.3, 5}},
+        {AttributeTreeProfile::Stress,    {12, 10, 8, 4, 6, 0.4,  0.8,  0.5, 10}},
+    };
+
+    auto it = presets.find(profile);
+    Preset base = (it != presets.end()) ? it->second : Preset{1, 2, 2, 0, 0, 0.0, 0.0, 0.0, 1};
+
+    // Apply overrides: layer > global > preset
+    auto pick = [](std::optional<int> layerV, std::optional<int> globalV, int preset) {
+        return layerV.value_or(globalV.value_or(preset));
+    };
+    auto pickD = [](std::optional<double> layerV, std::optional<double> globalV, double preset) {
+        return layerV.value_or(globalV.value_or(preset));
+    };
+
+    ResolvedTreeParams r;
+    r.numLayers = pick(layer.numLayers, global.numLayers, base.nL);
+    r.attrsPerLayer = pick(layer.attrsPerLayer, global.attrsPerLayer, base.aPL);
+    r.fieldsPerAttr = pick(layer.fieldsPerAttr, global.fieldsPerAttr, base.fPA);
+    r.maxNestingDepth = pick(layer.maxNestingDepth, global.maxNestingDepth, base.mND);
+    r.maxArraySize = pick(layer.maxArraySize, global.maxArraySize, base.mAS);
+    r.nestingProbability = pickD(layer.nestingProbability, global.nestingProbability, base.nP);
+    r.directionalValidityProb = pickD(layer.directionalValidityProb, global.directionalValidityProb, base.dVP);
+    r.rangeValidityProb = pickD(layer.rangeValidityProb, global.rangeValidityProb, base.rVP);
+    r.topLevelExtraFields = pick(layer.topLevelExtraFields, global.topLevelExtraFields, base.tLEF);
+    return r;
 }
 
 Config Config::fromYAML(const YAML::Node& node) {
@@ -254,6 +395,16 @@ Config Config::fromYAML(const YAML::Node& node) {
             cfg.sourceDownloadDelayMs = legacyDelay;
     }
 
+    // Attribute tree profile
+    if (node["attributeTreeProfile"]) {
+        cfg.attributeTreeProfile = parseEnum(
+            node["attributeTreeProfile"].as<std::string>("none"),
+            kProfileMap, AttributeTreeProfile::None);
+    }
+    if (node["attributeTreeParams"]) {
+        cfg.attributeTreeParams = AttributeTreeParams::fromYAML(node["attributeTreeParams"]);
+    }
+
     if (node["layers"]) {
         for (const auto& layer : node["layers"]) {
             auto layerCfg = LayerConfig::fromYAML(layer);
@@ -263,6 +414,110 @@ Config Config::fromYAML(const YAML::Node& node) {
         }
     }
 
+    return cfg;
+}
+
+nlohmann::json Config::toJson() const {
+    nlohmann::json j;
+    j["mapId"] = mapId;
+    j["spatialCoherence"] = spatialCoherence;
+    j["collisionGridSize"] = collisionGridSize;
+    j["sourceDownloadDelayMs"] = sourceDownloadDelayMs;
+    j["sourceUnpackDelayMs"] = sourceUnpackDelayMs;
+    j["sourceTransformDelayMs"] = sourceTransformDelayMs;
+    j["attributeTreeProfile"] = profileToString(attributeTreeProfile);
+
+    nlohmann::json atp;
+    if (attributeTreeParams.numLayers) atp["numLayers"] = *attributeTreeParams.numLayers;
+    if (attributeTreeParams.attrsPerLayer) atp["attrsPerLayer"] = *attributeTreeParams.attrsPerLayer;
+    if (attributeTreeParams.fieldsPerAttr) atp["fieldsPerAttr"] = *attributeTreeParams.fieldsPerAttr;
+    if (attributeTreeParams.maxNestingDepth) atp["maxNestingDepth"] = *attributeTreeParams.maxNestingDepth;
+    if (attributeTreeParams.maxArraySize) atp["maxArraySize"] = *attributeTreeParams.maxArraySize;
+    if (attributeTreeParams.nestingProbability) atp["nestingProbability"] = *attributeTreeParams.nestingProbability;
+    if (attributeTreeParams.directionalValidityProb) atp["directionalValidityProb"] = *attributeTreeParams.directionalValidityProb;
+    if (attributeTreeParams.rangeValidityProb) atp["rangeValidityProb"] = *attributeTreeParams.rangeValidityProb;
+    if (attributeTreeParams.topLevelExtraFields) atp["topLevelExtraFields"] = *attributeTreeParams.topLevelExtraFields;
+    j["attributeTreeParams"] = atp;
+
+    j["layers"] = nlohmann::json::array();
+    for (const auto& layer : layers) {
+        nlohmann::json lj;
+        lj["name"] = layer.name;
+        lj["enabled"] = layer.enabled;
+        lj["featureType"] = layer.featureType;
+        lj["geometry"] = nlohmann::json{
+            {"type", layer.geometry.type == GeometryType::Point ? "point" :
+                     layer.geometry.type == GeometryType::Line ? "line" :
+                     layer.geometry.type == GeometryType::Polygon ? "polygon" : "mesh"},
+            {"density", layer.geometry.density},
+            {"complexity", layer.geometry.complexity},
+            {"curvature", layer.geometry.curvature},
+            {"sizeRange", {layer.geometry.sizeRange[0], layer.geometry.sizeRange[1]}},
+            {"aspectRatio", {layer.geometry.aspectRatio[0], layer.geometry.aspectRatio[1]}},
+            {"avoidBuildings", layer.geometry.avoidBuildings},
+            {"minBuildingDistance", layer.geometry.minBuildingDistance}
+        };
+        if (layer.attributeTreeProfile) {
+            lj["attributeTreeProfile"] = profileToString(*layer.attributeTreeProfile);
+        }
+        j["layers"].push_back(lj);
+    }
+    return j;
+}
+
+Config Config::fromJson(const nlohmann::json& j) {
+    Config cfg;
+    if (j.contains("mapId")) cfg.mapId = j["mapId"].get<std::string>();
+    if (j.contains("spatialCoherence")) cfg.spatialCoherence = j["spatialCoherence"].get<bool>();
+    if (j.contains("collisionGridSize")) cfg.collisionGridSize = j["collisionGridSize"].get<double>();
+    if (j.contains("sourceDownloadDelayMs")) cfg.sourceDownloadDelayMs = j["sourceDownloadDelayMs"].get<uint32_t>();
+    if (j.contains("sourceUnpackDelayMs")) cfg.sourceUnpackDelayMs = j["sourceUnpackDelayMs"].get<uint32_t>();
+    if (j.contains("sourceTransformDelayMs")) cfg.sourceTransformDelayMs = j["sourceTransformDelayMs"].get<uint32_t>();
+    if (j.contains("attributeTreeProfile")) {
+        auto profileStr = j["attributeTreeProfile"].get<std::string>();
+        auto it = kProfileMap.find(profileStr);
+        cfg.attributeTreeProfile = (it != kProfileMap.end()) ? it->second : AttributeTreeProfile::None;
+    }
+    if (j.contains("attributeTreeParams")) {
+        auto& atp = j["attributeTreeParams"];
+        if (atp.contains("numLayers")) cfg.attributeTreeParams.numLayers = atp["numLayers"].get<int>();
+        if (atp.contains("attrsPerLayer")) cfg.attributeTreeParams.attrsPerLayer = atp["attrsPerLayer"].get<int>();
+        if (atp.contains("fieldsPerAttr")) cfg.attributeTreeParams.fieldsPerAttr = atp["fieldsPerAttr"].get<int>();
+        if (atp.contains("maxNestingDepth")) cfg.attributeTreeParams.maxNestingDepth = atp["maxNestingDepth"].get<int>();
+        if (atp.contains("maxArraySize")) cfg.attributeTreeParams.maxArraySize = atp["maxArraySize"].get<int>();
+        if (atp.contains("nestingProbability")) cfg.attributeTreeParams.nestingProbability = atp["nestingProbability"].get<double>();
+        if (atp.contains("directionalValidityProb")) cfg.attributeTreeParams.directionalValidityProb = atp["directionalValidityProb"].get<double>();
+        if (atp.contains("rangeValidityProb")) cfg.attributeTreeParams.rangeValidityProb = atp["rangeValidityProb"].get<double>();
+        if (atp.contains("topLevelExtraFields")) cfg.attributeTreeParams.topLevelExtraFields = atp["topLevelExtraFields"].get<int>();
+    }
+    if (j.contains("layers")) {
+        for (const auto& lj : j["layers"]) {
+            LayerConfig layer;
+            if (lj.contains("name")) layer.name = lj["name"].get<std::string>();
+            if (lj.contains("enabled")) layer.enabled = lj["enabled"].get<bool>();
+            if (lj.contains("featureType")) layer.featureType = lj["featureType"].get<std::string>();
+            if (lj.contains("geometry")) {
+                auto& gj = lj["geometry"];
+                if (gj.contains("type")) {
+                    static const std::map<std::string, GeometryType> gmap = {
+                        {"point", GeometryType::Point}, {"line", GeometryType::Line},
+                        {"polygon", GeometryType::Polygon}, {"mesh", GeometryType::Mesh}
+                    };
+                    auto it = gmap.find(gj["type"].get<std::string>());
+                    if (it != gmap.end()) layer.geometry.type = it->second;
+                }
+                if (gj.contains("density")) layer.geometry.density = gj["density"].get<double>();
+                if (gj.contains("complexity")) layer.geometry.complexity = gj["complexity"].get<int>();
+                if (gj.contains("curvature")) layer.geometry.curvature = gj["curvature"].get<double>();
+            }
+            if (lj.contains("attributeTreeProfile")) {
+                auto profileStr = lj["attributeTreeProfile"].get<std::string>();
+                auto it = kProfileMap.find(profileStr);
+                layer.attributeTreeProfile = (it != kProfileMap.end()) ? it->second : AttributeTreeProfile::None;
+            }
+            cfg.layers.push_back(layer);
+        }
+    }
     return cfg;
 }
 
@@ -432,14 +687,62 @@ uint32_t TileSpatialContext::findRoadAtPoint(Point p, double tolerance) const {
 // GridDataSource Implementation
 // ============================================================================
 
+// Static registry members
+std::mutex GridDataSource::registryMutex_;
+std::vector<std::weak_ptr<GridDataSource>> GridDataSource::registry_;
+
+void GridDataSource::registerInstance(std::shared_ptr<GridDataSource> instance) {
+    std::lock_guard<std::mutex> lock(registryMutex_);
+    // Prune expired entries
+    registry_.erase(
+        std::remove_if(registry_.begin(), registry_.end(),
+            [](const auto& wp) { return wp.expired(); }),
+        registry_.end());
+    registry_.push_back(instance);
+}
+
+std::vector<std::shared_ptr<GridDataSource>> GridDataSource::getInstances() {
+    std::lock_guard<std::mutex> lock(registryMutex_);
+    std::vector<std::shared_ptr<GridDataSource>> result;
+    auto it = registry_.begin();
+    while (it != registry_.end()) {
+        if (auto sp = it->lock()) {
+            result.push_back(sp);
+            ++it;
+        } else {
+            it = registry_.erase(it);
+        }
+    }
+    return result;
+}
+
+void GridDataSource::setConfig(gridsource::Config newConfig) {
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        config_ = std::make_shared<const gridsource::Config>(std::move(newConfig));
+    }
+    clearContextCache();
+}
+
+gridsource::Config GridDataSource::getConfig() const {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    return *config_;
+}
+
+void GridDataSource::clearContextCache() {
+    std::lock_guard<std::mutex> lock(contextMutex_);
+    contextCache_.clear();
+}
+
 GridDataSource::GridDataSource(const YAML::Node& config) {
+    auto cfg = std::make_shared<gridsource::Config>();
     if (config && config.IsMap()) {
-        config_ = Config::fromYAML(config);
+        *cfg = Config::fromYAML(config);
     } else {
         // Default configuration with roads and buildings
-        config_.mapId = "GridDataSource";
-        config_.spatialCoherence = true;
-        config_.collisionGridSize = 10.0;
+        cfg->mapId = "GridDataSource";
+        cfg->spatialCoherence = true;
+        cfg->collisionGridSize = 10.0;
 
         // Default building layer
         LayerConfig buildingLayer;
@@ -451,7 +754,7 @@ GridDataSource::GridDataSource(const YAML::Node& config) {
         buildingLayer.geometry.complexity = 4;
         buildingLayer.geometry.sizeRange = {15.0, 50.0};
         buildingLayer.geometry.aspectRatio = {1.2, 3.0};
-        config_.layers.push_back(buildingLayer);
+        cfg->layers.push_back(buildingLayer);
 
         // Default road layer
         LayerConfig roadLayer;
@@ -464,7 +767,7 @@ GridDataSource::GridDataSource(const YAML::Node& config) {
         roadLayer.geometry.curvature = 0.08;
         roadLayer.geometry.avoidBuildings = true;
         roadLayer.geometry.minBuildingDistance = 2.0;
-        config_.layers.push_back(roadLayer);
+        cfg->layers.push_back(roadLayer);
 
         // Default intersection layer
         LayerConfig intersectionLayer;
@@ -472,25 +775,31 @@ GridDataSource::GridDataSource(const YAML::Node& config) {
         intersectionLayer.enabled = true;
         intersectionLayer.featureType = "DevSrc-Intersection";
         intersectionLayer.geometry.type = GeometryType::Point;
-        config_.layers.push_back(intersectionLayer);
+        cfg->layers.push_back(intersectionLayer);
     }
+    config_ = std::move(cfg);
 }
 
 DataSourceInfo GridDataSource::info() {
+    auto cfg = [&] {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        return config_;
+    }();
+
     nlohmann::json info;
-    info["mapId"] = config_.mapId;
+    info["mapId"] = cfg->mapId;
     info["layers"] = nlohmann::json::object();
 
-    mapget::log().info("GridDataSource registering {} layers", config_.layers.size());
+    mapget::log().info("GridDataSource registering {} layers", cfg->layers.size());
 
     // Collect all unique feature types across all layers
     std::set<std::string> allFeatureTypes;
-    for (const auto& layer : config_.layers) {
+    for (const auto& layer : cfg->layers) {
         allFeatureTypes.insert(layer.featureType);
     }
 
     // Register each layer with ALL feature types (for cross-layer relations)
-    for (const auto& layer : config_.layers) {
+    for (const auto& layer : cfg->layers) {
         nlohmann::json layerInfo;
         layerInfo["featureTypes"] = nlohmann::json::array();
 
@@ -524,7 +833,10 @@ DataSourceInfo GridDataSource::info() {
     return DataSourceInfo::fromJson(info);
 }
 
-std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(TileId tileId) const {
+std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(
+    TileId tileId,
+    std::shared_ptr<const gridsource::Config> const& cfg) const
+{
     try {
         std::lock_guard<std::mutex> lock(contextMutex_);
 
@@ -534,40 +846,44 @@ std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(TileId ti
         }
 
         // Create new context
-        auto ctx = std::make_shared<TileSpatialContext>(tileId, config_.collisionGridSize);
+        auto ctx = std::make_shared<TileSpatialContext>(tileId, cfg->collisionGridSize);
 
         // LRU eviction if cache is full
         if (contextCache_.size() >= MAX_CACHED_CONTEXTS) {
-            // Simple FIFO for now (could be improved with proper LRU)
             contextCache_.erase(contextCache_.begin());
         }
 
         contextCache_[tileId] = ctx;
         return ctx;
     } catch (const std::system_error&) {
-        // Handle mutex errors during shutdown - return empty context
-        return std::make_shared<TileSpatialContext>(tileId, config_.collisionGridSize);
+        return std::make_shared<TileSpatialContext>(tileId, cfg->collisionGridSize);
     }
 }
 
 void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
+    // Snapshot config at entry for consistent use throughout fill()
+    auto cfg = [&] {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        return config_;
+    }();
+
     std::string layerName = tile->layerInfo()->layerId_;
 
     mapget::log().info("GridDataSource::fill() called for layer '{}' tile {}", layerName, tile->tileId().value_);
 
     // Phase 1: Simulated source download (sleep-wait, IO)
-    if (config_.sourceDownloadDelayMs > 0) {
+    if (cfg->sourceDownloadDelayMs > 0) {
         auto t0 = std::chrono::steady_clock::now();
-        std::this_thread::sleep_for(std::chrono::milliseconds(config_.sourceDownloadDelayMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(cfg->sourceDownloadDelayMs));
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
         tile->setInfo("source-download-ms", elapsed);
     }
 
     // Phase 2: Simulated source unpack (busy-wait, CPU)
-    if (config_.sourceUnpackDelayMs > 0) {
+    if (cfg->sourceUnpackDelayMs > 0) {
         auto t0 = std::chrono::steady_clock::now();
-        auto deadline = t0 + std::chrono::milliseconds(config_.sourceUnpackDelayMs);
+        auto deadline = t0 + std::chrono::milliseconds(cfg->sourceUnpackDelayMs);
         while (std::chrono::steady_clock::now() < deadline) {}
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
@@ -575,27 +891,27 @@ void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
     }
 
     // Get or create spatial context for this tile
-    auto ctx = getOrCreateContext(tile->tileId());
+    auto ctx = getOrCreateContext(tile->tileId(), cfg);
 
     // Set ID prefix
     tile->setIdPrefix({{"tileId", static_cast<int64_t>(tile->tileId().value_)}});
 
     // Phase 3: Feature generation (actual work)
     auto genStart = std::chrono::steady_clock::now();
-    for (const auto& layerCfg : config_.layers) {
+    for (const auto& layerCfg : cfg->layers) {
         if (layerCfg.name == layerName) {
             mapget::log().info("  Found matching layer config, geometry type: {}", static_cast<int>(layerCfg.geometry.type));
             if (layerCfg.geometry.type == GeometryType::Polygon || layerCfg.geometry.type == GeometryType::Mesh) {
                 mapget::log().info("  Generating buildings...");
-                generateBuildings(*ctx, layerCfg, tile);
+                generateBuildings(*ctx, layerCfg, *cfg, tile);
                 mapget::log().info("  Generated {} buildings", ctx->buildings.size());
             } else if (layerCfg.geometry.type == GeometryType::Line) {
                 mapget::log().info("  Generating roads...");
-                generateRoads(*ctx, layerCfg, tile);
+                generateRoads(*ctx, layerCfg, *cfg, tile);
                 mapget::log().info("  Generated {} roads", ctx->roads.size());
             } else if (layerCfg.geometry.type == GeometryType::Point) {
                 mapget::log().info("  Generating intersections...");
-                generateIntersections(*ctx, layerCfg, tile);
+                generateIntersections(*ctx, layerCfg, *cfg, tile);
                 mapget::log().info("  Generated {} intersections", ctx->intersections.size());
             }
 
@@ -604,9 +920,9 @@ void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
             tile->setInfo("feature-gen-ms", genElapsed);
 
             // Phase 4: Simulated source transform (busy-wait, CPU)
-            if (config_.sourceTransformDelayMs > 0) {
+            if (cfg->sourceTransformDelayMs > 0) {
                 auto t0 = std::chrono::steady_clock::now();
-                auto deadline = t0 + std::chrono::milliseconds(config_.sourceTransformDelayMs);
+                auto deadline = t0 + std::chrono::milliseconds(cfg->sourceTransformDelayMs);
                 while (std::chrono::steady_clock::now() < deadline) {}
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - t0).count();
@@ -620,6 +936,11 @@ void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
 }
 
 std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
+    auto cfg = [&] {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        return config_;
+    }();
+
     // Extract tileId from the feature ID parts
     std::optional<int64_t> tileId = req.getIntIdPart("tileId");
     if (!tileId) {
@@ -629,7 +950,7 @@ std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
 
     // Find the layer that contains this feature type
     std::string layerId;
-    for (const auto& layer : config_.layers) {
+    for (const auto& layer : cfg->layers) {
         if (layer.featureType == req.typeId_) {
             layerId = layer.name;
             break;
@@ -659,17 +980,18 @@ std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
 }
 
 void GridDataSource::generateBuildings(TileSpatialContext& ctx,
-                                       const LayerConfig& config,
+                                       const LayerConfig& layerCfg,
+                                       const gridsource::Config& cfg,
                                        TileFeatureLayer::Ptr const& tile) {
     // Lazily generate road grid first (ensures roads are always generated before buildings)
-    generateRoadGrid(ctx, config, tile);
+    generateRoadGrid(ctx, layerCfg, tile);
 
     // Only generate buildings once for this tile
     if (!ctx.buildings.empty()) {
         // Buildings already generated, just recreate features
         for (const auto& building : ctx.buildings) {
-            auto feature = tile->newFeature(config.featureType,
-                {{config.featureType + "Id", building.id}});
+            auto feature = tile->newFeature(layerCfg.featureType,
+                {{layerCfg.featureType + "Id", building.id}});
 
             // Create axis-aligned rectangle as mesh (two triangles)
             feature->addMesh({
@@ -685,8 +1007,15 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
 
             // Generate attributes
             std::mt19937 gen(ctx.seed + building.id);
-            generateAttributes(feature, config.topAttributes, gen, building.id);
-            generateLayeredAttributes(feature, config.layeredAttributes, gen, building.id);
+            generateAttributes(feature, layerCfg.topAttributes, gen, building.id);
+            generateLayeredAttributes(feature, layerCfg.layeredAttributes, gen, building.id);
+
+            // Profile-based attribute tree generation
+            auto profile = layerCfg.attributeTreeProfile.value_or(cfg.attributeTreeProfile);
+            if (profile != AttributeTreeProfile::None) {
+                auto params = ResolvedTreeParams::resolve(profile, cfg.attributeTreeParams, layerCfg.attributeTreeParams);
+                generateProfileAttributes(feature, tile, params, gen, building.id);
+            }
         }
         return;
     }
@@ -710,8 +1039,8 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
     const double gap = gapMeters / metersPerDegree;
 
     std::mt19937 gen(ctx.seed + 1000);
-    std::uniform_real_distribution<> sizeDist(config.geometry.sizeRange[0], config.geometry.sizeRange[1]);
-    std::uniform_real_distribution<> aspectDist(config.geometry.aspectRatio[0], config.geometry.aspectRatio[1]);
+    std::uniform_real_distribution<> sizeDist(layerCfg.geometry.sizeRange[0], layerCfg.geometry.sizeRange[1]);
+    std::uniform_real_distribution<> aspectDist(layerCfg.geometry.aspectRatio[0], layerCfg.geometry.aspectRatio[1]);
 
     uint32_t buildingId = 100;
     int totalBuildings = 0;
@@ -762,8 +1091,8 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
                 totalBuildings++;
 
                 // Create feature
-                auto feature = tile->newFeature(config.featureType,
-                    {{config.featureType + "Id", building.id}});
+                auto feature = tile->newFeature(layerCfg.featureType,
+                    {{layerCfg.featureType + "Id", building.id}});
 
                 feature->addMesh({
                     Point(building.minX, building.minY, 0.0),
@@ -778,13 +1107,20 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
 
                 // Generate attributes
                 std::mt19937 attrGen(ctx.seed + building.id);
-                generateAttributes(feature, config.topAttributes, attrGen, building.id);
-                generateLayeredAttributes(feature, config.layeredAttributes, attrGen, building.id);
+                generateAttributes(feature, layerCfg.topAttributes, attrGen, building.id);
+                generateLayeredAttributes(feature, layerCfg.layeredAttributes, attrGen, building.id);
+
+                // Profile-based attribute tree generation
+                auto profile = layerCfg.attributeTreeProfile.value_or(cfg.attributeTreeProfile);
+                if (profile != AttributeTreeProfile::None) {
+                    auto params = ResolvedTreeParams::resolve(profile, cfg.attributeTreeParams, layerCfg.attributeTreeParams);
+                    generateProfileAttributes(feature, tile, params, attrGen, building.id);
+                }
 
                 // Generate relations
                 Point buildingCenter((building.minX + building.maxX) / 2.0,
                                     (building.minY + building.maxY) / 2.0, 0.0);
-                generateRelations(feature, ctx, config.relations, buildingCenter);
+                generateRelations(feature, ctx, layerCfg.relations, buildingCenter);
 
                 // Move to next column
                 col_x += buildingWidth + gap;
@@ -928,10 +1264,11 @@ void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
 }
 
 void GridDataSource::generateRoads(TileSpatialContext& ctx,
-                                   const LayerConfig& config,
+                                   const LayerConfig& layerCfg,
+                                   const gridsource::Config& cfg,
                                    TileFeatureLayer::Ptr const& tile) {
     // Lazily generate road grid structure first
-    generateRoadGrid(ctx, config, tile);
+    generateRoadGrid(ctx, layerCfg, tile);
 
     // Create road features (only if not already done)
     if (ctx.roads.empty()) {
@@ -939,12 +1276,12 @@ void GridDataSource::generateRoads(TileSpatialContext& ctx,
         return;
     }
 
-    mapget::log().info("  Creating {} road features with type '{}'", ctx.roads.size(), config.featureType);
+    mapget::log().info("  Creating {} road features with type '{}'", ctx.roads.size(), layerCfg.featureType);
 
     // Recreate features for all roads
     for (const auto& road : ctx.roads) {
-        auto feature = tile->newFeature(config.featureType,
-            {{config.featureType + "Id", road.id}});
+        auto feature = tile->newFeature(layerCfg.featureType,
+            {{layerCfg.featureType + "Id", road.id}});
 
         // Create straight line (no jitter for grid roads)
         auto line = feature->geom()->newGeometry(GeomType::Line, 2);
@@ -972,21 +1309,29 @@ void GridDataSource::generateRoads(TileSpatialContext& ctx,
 
         // Generate attributes
         std::mt19937 gen(ctx.seed + road.id);
-        generateAttributes(feature, config.topAttributes, gen, road.id);
-        generateLayeredAttributes(feature, config.layeredAttributes, gen, road.id);
+        generateAttributes(feature, layerCfg.topAttributes, gen, road.id);
+        generateLayeredAttributes(feature, layerCfg.layeredAttributes, gen, road.id);
+
+        // Profile-based attribute tree generation
+        auto profile = layerCfg.attributeTreeProfile.value_or(cfg.attributeTreeProfile);
+        if (profile != AttributeTreeProfile::None) {
+            auto params = ResolvedTreeParams::resolve(profile, cfg.attributeTreeParams, layerCfg.attributeTreeParams);
+            generateProfileAttributes(feature, tile, params, gen, road.id);
+        }
 
         // Generate relations
         Point roadMidpoint((road.start.x + road.end.x) / 2.0,
                           (road.start.y + road.end.y) / 2.0, 0.0);
-        generateRelations(feature, ctx, config.relations, roadMidpoint);
+        generateRelations(feature, ctx, layerCfg.relations, roadMidpoint);
     }
 }
 
 void GridDataSource::generateIntersections(TileSpatialContext& ctx,
-                                          const LayerConfig& config,
+                                          const LayerConfig& layerCfg,
+                                          const gridsource::Config& cfg,
                                           TileFeatureLayer::Ptr const& tile) {
     // Lazily generate road grid first (which creates intersections)
-    generateRoadGrid(ctx, config, tile);
+    generateRoadGrid(ctx, layerCfg, tile);
 
     if (ctx.intersections.empty()) {
         mapget::log().warn("  No intersections to generate");
@@ -995,8 +1340,8 @@ void GridDataSource::generateIntersections(TileSpatialContext& ctx,
 
     // Create intersection features
     for (const auto& intersection : ctx.intersections) {
-        auto feature = tile->newFeature(config.featureType,
-            {{config.featureType + "Id", intersection.id}});
+        auto feature = tile->newFeature(layerCfg.featureType,
+            {{layerCfg.featureType + "Id", intersection.id}});
 
         // Create point geometry (Points type with single point)
         auto points = feature->geom()->newGeometry(GeomType::Points, 1);
@@ -1012,7 +1357,14 @@ void GridDataSource::generateIntersections(TileSpatialContext& ctx,
 
         // Generate attributes
         std::mt19937 gen(ctx.seed + intersection.id);
-        generateAttributes(feature, config.topAttributes, gen, intersection.id);
+        generateAttributes(feature, layerCfg.topAttributes, gen, intersection.id);
+
+        // Profile-based attribute tree generation
+        auto profile = layerCfg.attributeTreeProfile.value_or(cfg.attributeTreeProfile);
+        if (profile != AttributeTreeProfile::None) {
+            auto params = ResolvedTreeParams::resolve(profile, cfg.attributeTreeParams, layerCfg.attributeTreeParams);
+            generateProfileAttributes(feature, tile, params, gen, intersection.id);
+        }
     }
 
     mapget::log().info("  Created {} intersection features", ctx.intersections.size());
@@ -1189,5 +1541,132 @@ std::string GridDataSource::generateAttributeValue(const AttributeConfig& attr,
 
         default:
             return "0";
+    }
+}
+
+// ============================================================================
+// Profile-based Attribute Tree Generation
+// ============================================================================
+
+namespace {
+
+// Recursive helper to generate a nested value for attribute tree profiles
+simfil::ModelNode::Ptr generateNestedValue(
+    TileFeatureLayer::Ptr const& tile,
+    const ResolvedTreeParams& params,
+    uint32_t seed,
+    int depth,
+    int fieldIdx)
+{
+    uint32_t h = profileHash(seed, static_cast<uint32_t>(depth), static_cast<uint32_t>(fieldIdx), 0);
+
+    // Check if we should nest deeper
+    bool shouldNest = (depth < params.maxNestingDepth) &&
+                      ((h % 1000) < static_cast<uint32_t>(params.nestingProbability * 1000));
+
+    if (shouldNest) {
+        // Check if we should create an array instead of object
+        bool shouldArray = (params.maxArraySize > 0) && ((h % 3) == 0);
+        if (shouldArray) {
+            int arraySize = 1 + static_cast<int>(h % static_cast<uint32_t>(params.maxArraySize));
+            auto arr = tile->newArray(static_cast<size_t>(arraySize));
+            for (int i = 0; i < arraySize; ++i) {
+                // Array elements are scalars
+                uint32_t elemH = profileHash(seed, static_cast<uint32_t>(depth), static_cast<uint32_t>(fieldIdx), static_cast<uint32_t>(i));
+                int typeRotation = static_cast<int>(elemH % 4);
+                switch (typeRotation) {
+                    case 0: arr->append(tile->newValue(std::string(kProfileStringValues[elemH % kNumProfileStringValues]))); break;
+                    case 1: arr->append(tile->newValue(static_cast<int64_t>(kProfileIntValues[elemH % kNumProfileIntValues]))); break;
+                    case 2: arr->append(tile->newValue(kProfileFloatValues[elemH % kNumProfileFloatValues])); break;
+                    case 3: arr->append(tile->newSmallValue((elemH & 1) != 0)); break;
+                }
+            }
+            return arr;
+        } else {
+            // Nested object
+            int numSubFields = std::min(params.fieldsPerAttr, 4);
+            auto obj = tile->newObject(static_cast<size_t>(numSubFields));
+            for (int sf = 0; sf < numSubFields; ++sf) {
+                uint32_t subH = profileHash(seed, static_cast<uint32_t>(depth + 1), static_cast<uint32_t>(sf), 0);
+                auto fieldName = kProfileFieldNames[subH % kNumProfileFieldNames];
+                auto val = generateNestedValue(tile, params, seed ^ static_cast<uint32_t>(sf * 7919), depth + 1, sf);
+                if (val)
+                    obj->addField(fieldName, val);
+            }
+            return obj;
+        }
+    }
+
+    // Scalar value: rotate type based on hash
+    int typeRotation = static_cast<int>(h % 4);
+    switch (typeRotation) {
+        case 0: return tile->newValue(std::string(kProfileStringValues[h % kNumProfileStringValues]));
+        case 1: return tile->newValue(static_cast<int64_t>(kProfileIntValues[h % kNumProfileIntValues]));
+        case 2: return tile->newValue(kProfileFloatValues[h % kNumProfileFloatValues]);
+        case 3: return tile->newSmallValue((h & 1) != 0);
+    }
+    return tile->newValue(static_cast<int64_t>(0));
+}
+
+}  // anonymous namespace
+
+void GridDataSource::generateProfileAttributes(
+    model_ptr<Feature> feature,
+    TileFeatureLayer::Ptr const& tile,
+    const ResolvedTreeParams& params,
+    std::mt19937& gen,
+    uint32_t featureId)
+{
+    uint32_t baseSeed = static_cast<uint32_t>(gen());
+
+    // Step 1: Add top-level extra scalar fields to feature->attributes()
+    for (int i = 0; i < params.topLevelExtraFields; ++i) {
+        uint32_t h = profileHash(baseSeed, 0, static_cast<uint32_t>(i), 0);
+        auto fieldName = kProfileFieldNames[h % kNumProfileFieldNames];
+        int typeRotation = static_cast<int>(h % 4);
+        switch (typeRotation) {
+            case 0: feature->attributes()->addField(fieldName, std::string(kProfileStringValues[h % kNumProfileStringValues])); break;
+            case 1: feature->attributes()->addField(fieldName, static_cast<int64_t>(kProfileIntValues[h % kNumProfileIntValues])); break;
+            case 2: feature->attributes()->addField(fieldName, kProfileFloatValues[h % kNumProfileFloatValues]); break;
+            case 3: feature->attributes()->addField(fieldName, static_cast<uint16_t>((h & 1) ? 1 : 0)); break;
+        }
+    }
+
+    // Step 2: Create attribute layers with semantic names
+    for (int layerIdx = 0; layerIdx < params.numLayers; ++layerIdx) {
+        auto layerName = kProfileLayerNames[layerIdx % kNumProfileLayerNames];
+        auto attrLayer = feature->attributeLayers()->newLayer(layerName);
+
+        // Step 3: Create attributes per layer
+        for (int attrIdx = 0; attrIdx < params.attrsPerLayer; ++attrIdx) {
+            uint32_t attrSeed = profileHash(baseSeed, static_cast<uint32_t>(layerIdx), static_cast<uint32_t>(attrIdx), featureId);
+            auto attrName = kProfileAttrNames[attrSeed % kNumProfileAttrNames];
+            auto attr = attrLayer->newAttribute(attrName);
+
+            // Step 4: Roll validity
+            uint32_t validH = profileHash(attrSeed, 999, 0, 0);
+            double validRoll = (validH % 1000) / 1000.0;
+            if (validRoll < params.directionalValidityProb) {
+                auto direction = ((validH >> 10) & 1) ? Validity::Positive : Validity::Negative;
+                attr->validity()->newDirection(direction);
+            } else if (validRoll < params.directionalValidityProb + params.rangeValidityProb) {
+                double startFrac = (validH % 100) / 100.0;
+                double endFrac = startFrac + ((validH >> 8) % 50) / 100.0;
+                if (endFrac > 1.0) endFrac = 1.0;
+                attr->validity()->newRange(
+                    Validity::RelativeLengthOffset,
+                    startFrac, endFrac, {},
+                    Validity::Both);
+            }
+
+            // Step 5: Generate fields per attribute
+            for (int fieldIdx = 0; fieldIdx < params.fieldsPerAttr; ++fieldIdx) {
+                uint32_t fieldSeed = profileHash(attrSeed, static_cast<uint32_t>(fieldIdx), featureId, 0);
+                auto fieldName = kProfileFieldNames[fieldSeed % kNumProfileFieldNames];
+                auto val = generateNestedValue(tile, params, fieldSeed, 0, fieldIdx);
+                if (val)
+                    attr->addField(fieldName, val);
+            }
+        }
     }
 }
