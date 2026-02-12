@@ -14,9 +14,11 @@
 #include <bitsery/adapter/stream.h>
 #include <bitsery/bitsery.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -31,6 +33,40 @@ namespace mapget::detail
 {
 namespace
 {
+
+struct TilesWsMetrics
+{
+    std::atomic<int64_t> activeConnections{0};
+    std::atomic<int64_t> activeSessions{0};
+    std::atomic<int64_t> totalQueuedFrames{0};
+    std::atomic<int64_t> totalQueuedBytes{0};
+    std::atomic<int64_t> totalForwardedFrames{0};
+    std::atomic<int64_t> totalForwardedBytes{0};
+    std::atomic<int64_t> totalDroppedFrames{0};
+    std::atomic<int64_t> totalDroppedBytes{0};
+    std::atomic<int64_t> totalDrainCalls{0};
+    std::atomic<int64_t> replacedRequests{0};
+    std::atomic<int64_t> totalFlowGrantMessages{0};
+    std::atomic<int64_t> totalFlowGrantFrames{0};
+    std::atomic<int64_t> totalFlowGrantBytes{0};
+    std::atomic<int64_t> totalFlowBlockedDrains{0};
+};
+
+TilesWsMetrics gTilesWsMetrics;
+std::mutex gTrackedSessionsMutex;
+std::vector<std::weak_ptr<class TilesWsSession>> gTrackedSessions;
+std::mutex gTrackedConnectionsMutex;
+std::vector<std::weak_ptr<class WsConnectionState>> gTrackedConnections;
+
+constexpr std::string_view kFlowGrantType = "mapget.tiles.flow-grant";
+constexpr int64_t kFlowCreditMaxFrames = 16;
+constexpr int64_t kFlowCreditMaxBytes = 64 * 1024 * 1024;
+
+[[nodiscard]] int64_t nonNegative(std::atomic<int64_t> const& value)
+{
+    const auto v = value.load(std::memory_order_relaxed);
+    return v < 0 ? 0 : v;
+}
 
 [[nodiscard]] AuthHeaders authHeadersFromRequest(const drogon::HttpRequestPtr& req)
 {
@@ -84,11 +120,105 @@ namespace
     return message;
 }
 
+[[nodiscard]] int64_t parseNonNegativeInt64(const nlohmann::json& j, std::string_view key)
+{
+    const auto keyString = std::string(key);
+    const auto it = j.find(keyString);
+    if (it == j.end()) {
+        return 0;
+    }
+    if (it->is_number_unsigned()) {
+        const auto raw = it->get<uint64_t>();
+        const auto max = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+        return static_cast<int64_t>(std::min(raw, max));
+    }
+    if (it->is_number_integer()) {
+        const auto raw = it->get<int64_t>();
+        return std::max<int64_t>(0, raw);
+    }
+    return 0;
+}
+
+[[nodiscard]] bool isFlowControlledDataFrameType(TileLayerStream::MessageType type)
+{
+    return type == TileLayerStream::MessageType::StringPool
+        || type == TileLayerStream::MessageType::TileFeatureLayer
+        || type == TileLayerStream::MessageType::TileSourceDataLayer;
+}
+
+struct FlowControlStateSnapshot
+{
+    bool enabled = false;
+    int64_t creditFrames = 0;
+    int64_t creditBytes = 0;
+};
+
 struct WsConnectionState
 {
     AuthHeaders authHeaders;
     TileLayerStream::StringPoolOffsetMap stringPoolOffsets;
     std::shared_ptr<class TilesWsSession> session;
+    uint64_t nextRequestId = 1;
+
+    mutable std::mutex flowControlMutex;
+    bool flowControlEnabled = false;
+    int64_t flowCreditFrames = 0;
+    int64_t flowCreditBytes = 0;
+
+    void setFlowControlEnabled(bool enabled)
+    {
+        std::lock_guard lock(flowControlMutex);
+        if (enabled) {
+            if (!flowControlEnabled) {
+                flowControlEnabled = true;
+                flowCreditFrames = kFlowCreditMaxFrames;
+                flowCreditBytes = kFlowCreditMaxBytes;
+            }
+            return;
+        }
+        flowControlEnabled = false;
+        flowCreditFrames = 0;
+        flowCreditBytes = 0;
+    }
+
+    [[nodiscard]] std::pair<int64_t, int64_t> grantFlowCredits(int64_t frames, int64_t bytes)
+    {
+        std::lock_guard lock(flowControlMutex);
+        if (!flowControlEnabled) {
+            return {0, 0};
+        }
+        const auto safeFrames = std::max<int64_t>(0, frames);
+        const auto safeBytes = std::max<int64_t>(0, bytes);
+        const auto oldFrames = flowCreditFrames;
+        const auto oldBytes = flowCreditBytes;
+        flowCreditFrames = std::min<int64_t>(kFlowCreditMaxFrames, flowCreditFrames + safeFrames);
+        flowCreditBytes = std::min<int64_t>(kFlowCreditMaxBytes, flowCreditBytes + safeBytes);
+        return {flowCreditFrames - oldFrames, flowCreditBytes - oldBytes};
+    }
+
+    [[nodiscard]] bool consumeFlowCreditForFrame(int64_t frameSizeBytes)
+    {
+        std::lock_guard lock(flowControlMutex);
+        if (!flowControlEnabled) {
+            return true;
+        }
+        if (flowCreditFrames <= 0 || flowCreditBytes <= 0) {
+            return false;
+        }
+        flowCreditFrames -= 1;
+        flowCreditBytes = std::max<int64_t>(0, flowCreditBytes - std::max<int64_t>(0, frameSizeBytes));
+        return true;
+    }
+
+    [[nodiscard]] FlowControlStateSnapshot flowControlSnapshot() const
+    {
+        std::lock_guard lock(flowControlMutex);
+        return FlowControlStateSnapshot{
+            .enabled = flowControlEnabled,
+            .creditFrames = flowCreditFrames,
+            .creditBytes = flowCreditBytes,
+        };
+    }
 };
 
 class TilesWsSession : public std::enable_shared_from_this<TilesWsSession>
@@ -98,12 +228,13 @@ public:
         HttpService& service,
         std::weak_ptr<drogon::WebSocketConnection> conn,
         std::weak_ptr<WsConnectionState> connState,
+        uint64_t requestId,
         AuthHeaders authHeaders,
         TileLayerStream::StringPoolOffsetMap initialOffsets)
         : service_(service),
-          loop_(drogon::app().getLoop()),
           conn_(std::move(conn)),
           connState_(std::move(connState)),
+          requestId_(requestId),
           authHeaders_(std::move(authHeaders)),
           offsets_(std::move(initialOffsets)),
           writer_(
@@ -111,16 +242,40 @@ public:
                   [this](std::string msg, TileLayerStream::MessageType type) { onWriterMessage(std::move(msg), type); },
                   offsets_))
     {
+        gTilesWsMetrics.activeSessions.fetch_add(1, std::memory_order_relaxed);
     }
 
     ~TilesWsSession()
     {
+        gTilesWsMetrics.activeSessions.fetch_sub(1, std::memory_order_relaxed);
         // Best-effort cleanup: abort any in-flight requests if the session is destroyed.
         cancelNoStatus();
     }
 
     TilesWsSession(TilesWsSession const&) = delete;
     TilesWsSession& operator=(TilesWsSession const&) = delete;
+
+    void registerForMetrics()
+    {
+        std::lock_guard lock(gTrackedSessionsMutex);
+        gTrackedSessions.push_back(weak_from_this());
+    }
+
+    [[nodiscard]] std::pair<int64_t, int64_t> pendingSnapshot()
+    {
+        std::lock_guard lock(mutex_);
+        int64_t pendingFrames = static_cast<int64_t>(outgoing_.size());
+        int64_t pendingBytes = 0;
+        for (auto const& frame : outgoing_) {
+            pendingBytes += static_cast<int64_t>(frame.bytes.size());
+        }
+        return {pendingFrames, pendingBytes};
+    }
+
+    void onFlowGrant()
+    {
+        scheduleDrain();
+    }
 
     void start(const nlohmann::json& j)
     {
@@ -189,6 +344,7 @@ public:
         }
 
         // Start processing (may synchronously set request statuses).
+        queueRequestContextMessage();
         (void)service_.request(requests_, authHeaders_);
 
         {
@@ -206,7 +362,7 @@ public:
         // Stop sending any queued tile frames from this session.
         {
             std::lock_guard lock(mutex_);
-            outgoing_.clear();
+            clearOutgoingLocked();
         }
 
         // Abort in-flight requests (best-effort).
@@ -234,6 +390,7 @@ private:
     struct OutgoingFrame
     {
         std::string bytes;
+        TileLayerStream::MessageType type{TileLayerStream::MessageType::None};
         std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
     };
 
@@ -243,6 +400,32 @@ private:
         TileLayerStream::MessageType type{TileLayerStream::MessageType::None};
     };
 
+    void enqueueOutgoingLocked(OutgoingFrame&& frame)
+    {
+        const auto bytes = static_cast<int64_t>(frame.bytes.size());
+        outgoing_.push_back(std::move(frame));
+        gTilesWsMetrics.totalQueuedFrames.fetch_add(1, std::memory_order_relaxed);
+        gTilesWsMetrics.totalQueuedBytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+
+    void clearOutgoingLocked()
+    {
+        if (outgoing_.empty()) {
+            return;
+        }
+
+        int64_t droppedFrames = 0;
+        int64_t droppedBytes = 0;
+        for (auto const& frame : outgoing_) {
+            ++droppedFrames;
+            droppedBytes += static_cast<int64_t>(frame.bytes.size());
+        }
+        outgoing_.clear();
+
+        gTilesWsMetrics.totalDroppedFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
+        gTilesWsMetrics.totalDroppedBytes.fetch_add(droppedBytes, std::memory_order_relaxed);
+    }
+
     void cancelNoStatus()
     {
         if (cancelled_.exchange(true))
@@ -251,7 +434,7 @@ private:
         // Ensure we stop emitting any further frames.
         {
             std::lock_guard lock(mutex_);
-            outgoing_.clear();
+            clearOutgoingLocked();
         }
 
         for (auto const& r : requests_) {
@@ -309,10 +492,11 @@ private:
             for (auto& m : batch) {
                 OutgoingFrame frame;
                 frame.bytes = std::move(m.bytes);
+                frame.type = m.type;
                 if (m.type == TileLayerStream::MessageType::StringPool) {
                     frame.stringPoolCommit = stringPoolCommit;
                 }
-                outgoing_.push_back(std::move(frame));
+                enqueueOutgoingLocked(std::move(frame));
             }
         }
 
@@ -347,9 +531,22 @@ private:
     {
         OutgoingFrame frame;
         frame.bytes = encodeStreamMessage(TileLayerStream::MessageType::Status, buildStatusPayload(std::move(message)));
+        frame.type = TileLayerStream::MessageType::Status;
         {
             std::lock_guard lock(mutex_);
-            outgoing_.push_back(std::move(frame));
+            enqueueOutgoingLocked(std::move(frame));
+        }
+    }
+
+    void queueRequestContextMessage()
+    {
+        OutgoingFrame frame;
+        frame.bytes =
+            encodeStreamMessage(TileLayerStream::MessageType::RequestContext, buildRequestContextPayload());
+        frame.type = TileLayerStream::MessageType::RequestContext;
+        {
+            std::lock_guard lock(mutex_);
+            enqueueOutgoingLocked(std::move(frame));
         }
     }
 
@@ -362,9 +559,10 @@ private:
         frame.bytes = encodeStreamMessage(
             TileLayerStream::MessageType::LoadStateChange,
             buildLoadStatePayload(key, state));
+        frame.type = TileLayerStream::MessageType::LoadStateChange;
         {
             std::lock_guard lock(mutex_);
-            outgoing_.push_back(std::move(frame));
+            enqueueOutgoingLocked(std::move(frame));
         }
         scheduleDrain();
     }
@@ -397,16 +595,18 @@ private:
 
         return nlohmann::json::object({
             {"type", "mapget.tiles.status"},
+            {"requestId", requestId_},
             {"allDone", allDone},
             {"requests", std::move(requestsJson)},
             {"message", std::move(message)},
         }).dump();
     }
 
-    static std::string buildLoadStatePayload(MapTileKey const& key, TileLayer::LoadState state)
+    [[nodiscard]] std::string buildLoadStatePayload(MapTileKey const& key, TileLayer::LoadState state) const
     {
         return nlohmann::json::object({
             {"type", "mapget.tiles.load-state"},
+            {"requestId", requestId_},
             {"mapId", key.mapId_},
             {"layerId", key.layerId_},
             {"tileId", key.tileId_.value_},
@@ -415,61 +615,103 @@ private:
         }).dump();
     }
 
+    [[nodiscard]] std::string buildRequestContextPayload() const
+    {
+        return nlohmann::json::object({
+            {"type", "mapget.tiles.request-context"},
+            {"requestId", requestId_},
+        }).dump();
+    }
+
     void scheduleDrain()
     {
         if (drainScheduled_.exchange(true))
             return;
-
-        auto weak = weak_from_this();
-        loop_->queueInLoop([weak = std::move(weak)]() mutable {
-            if (auto self = weak.lock()) {
-                self->drainOnLoop();
-            }
-        });
+        drainNow();
     }
 
-    void drainOnLoop()
+    void drainNow()
     {
-        drainScheduled_ = false;
+        gTilesWsMetrics.totalDrainCalls.fetch_add(1, std::memory_order_relaxed);
 
-        auto conn = conn_.lock();
-        if (!conn || conn->disconnected()) {
-            cancelNoStatus();
-            return;
-        }
+        // Keep one active drainer at a time and bound each batch to avoid
+        // pushing very large bursts into Drogon's internal connection buffers.
+        for (;;) {
+            auto conn = conn_.lock();
+            if (!conn || conn->disconnected()) {
+                drainScheduled_.store(false, std::memory_order_relaxed);
+                cancelNoStatus();
+                return;
+            }
 
-        constexpr size_t maxFramesPerDrain = 256;
-        for (size_t i = 0; i < maxFramesPerDrain; ++i) {
-            OutgoingFrame frame;
+            constexpr size_t maxFramesPerDrain = 64;
+            constexpr size_t maxBytesPerDrain = 2 * 1024 * 1024;
+            size_t drainedBytes = 0;
+            bool blockedByFlowControl = false;
+
+            for (size_t i = 0; i < maxFramesPerDrain && drainedBytes < maxBytesPerDrain; ++i) {
+                OutgoingFrame frame;
+                {
+                    std::lock_guard lock(mutex_);
+                    if (outgoing_.empty()) {
+                        break;
+                    }
+                    frame = std::move(outgoing_.front());
+                    outgoing_.pop_front();
+                }
+
+                const auto frameBytes = static_cast<int64_t>(frame.bytes.size());
+
+                if (cancelled_) {
+                    gTilesWsMetrics.totalDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+                    gTilesWsMetrics.totalDroppedBytes.fetch_add(frameBytes, std::memory_order_relaxed);
+                    continue;
+                }
+
+                if (isFlowControlledDataFrameType(frame.type)) {
+                    auto state = connState_.lock();
+                    if (!state || !state->consumeFlowCreditForFrame(frameBytes)) {
+                        std::lock_guard lock(mutex_);
+                        outgoing_.push_front(std::move(frame));
+                        blockedByFlowControl = true;
+                        break;
+                    }
+                }
+
+                drainedBytes += static_cast<size_t>(frameBytes);
+                gTilesWsMetrics.totalForwardedFrames.fetch_add(1, std::memory_order_relaxed);
+                gTilesWsMetrics.totalForwardedBytes.fetch_add(frameBytes, std::memory_order_relaxed);
+                conn->send(frame.bytes, drogon::WebSocketMessageType::Binary);
+                if (frame.stringPoolCommit) {
+                    if (auto state = connState_.lock()) {
+                        state->stringPoolOffsets[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
+                    }
+                }
+            }
+
+            bool done = false;
             {
                 std::lock_guard lock(mutex_);
-                if (outgoing_.empty()) {
-                    break;
-                }
-                frame = std::move(outgoing_.front());
-                outgoing_.pop_front();
-            }
-
-            conn->send(frame.bytes, drogon::WebSocketMessageType::Binary);
-            if (frame.stringPoolCommit) {
-                if (auto state = connState_.lock()) {
-                    state->stringPoolOffsets[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
+                if (blockedByFlowControl || outgoing_.empty()) {
+                    // Release ownership only while holding mutex_ so enqueuers can
+                    // reliably schedule a new drain for subsequently queued frames.
+                    drainScheduled_.store(false, std::memory_order_relaxed);
+                    done = true;
                 }
             }
-        }
-
-        {
-            std::lock_guard lock(mutex_);
-            if (outgoing_.empty())
+            if (blockedByFlowControl) {
+                gTilesWsMetrics.totalFlowBlockedDrains.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (done) {
                 return;
+            }
         }
-        scheduleDrain();
     }
 
     HttpService& service_;
-    trantor::EventLoop* loop_;
     std::weak_ptr<drogon::WebSocketConnection> conn_;
     std::weak_ptr<WsConnectionState> connState_;
+    uint64_t requestId_;
 
     AuthHeaders authHeaders_;
 
@@ -495,8 +737,13 @@ public:
 
     void handleNewConnection(const drogon::HttpRequestPtr& req, const drogon::WebSocketConnectionPtr& conn) override
     {
+        gTilesWsMetrics.activeConnections.fetch_add(1, std::memory_order_relaxed);
         auto state = std::make_shared<WsConnectionState>();
         state->authHeaders = authHeadersFromRequest(req);
+        {
+            std::lock_guard lock(gTrackedConnectionsMutex);
+            gTrackedConnections.push_back(state);
+        }
         conn->setContext(std::move(state));
     }
 
@@ -537,6 +784,30 @@ public:
             return;
         }
 
+        std::string messageType;
+        if (auto typeIt = j.find("type"); typeIt != j.end() && typeIt->is_string()) {
+            messageType = typeIt->get<std::string>();
+        }
+
+        if (messageType == kFlowGrantType) {
+            auto [grantedFrames, grantedBytes] = state->grantFlowCredits(
+                parseNonNegativeInt64(j, "frames"),
+                parseNonNegativeInt64(j, "bytes"));
+            gTilesWsMetrics.totalFlowGrantMessages.fetch_add(1, std::memory_order_relaxed);
+            gTilesWsMetrics.totalFlowGrantFrames.fetch_add(grantedFrames, std::memory_order_relaxed);
+            gTilesWsMetrics.totalFlowGrantBytes.fetch_add(grantedBytes, std::memory_order_relaxed);
+            if (state->session) {
+                state->session->onFlowGrant();
+            }
+            return;
+        }
+
+        bool flowControl = false;
+        if (auto flowControlIt = j.find("flowControl"); flowControlIt != j.end() && flowControlIt->is_boolean()) {
+            flowControl = flowControlIt->get<bool>();
+        }
+        state->setFlowControlEnabled(flowControl);
+
         // Patch per-connection string pool offsets if supplied.
         if (j.contains("stringPoolOffsets")) {
             if (!j["stringPoolOffsets"].is_object()) {
@@ -567,21 +838,35 @@ public:
         }
 
         if (state->session) {
+            gTilesWsMetrics.replacedRequests.fetch_add(1, std::memory_order_relaxed);
             state->session->cancel("Replaced by a new /tiles WebSocket request.");
             state->session.reset();
+        }
+
+        uint64_t requestId = state->nextRequestId++;
+        if (auto requestIdIt = j.find("requestId");
+            requestIdIt != j.end() && (requestIdIt->is_number_integer() || requestIdIt->is_number_unsigned())) {
+            const auto parsedRequestId = parseNonNegativeInt64(j, "requestId");
+            if (parsedRequestId > 0) {
+                requestId = static_cast<uint64_t>(parsedRequestId);
+                state->nextRequestId = std::max<uint64_t>(state->nextRequestId, requestId + 1);
+            }
         }
 
         state->session = std::make_shared<TilesWsSession>(
             service_,
             conn,
             state,
+            requestId,
             state->authHeaders,
             state->stringPoolOffsets);
+        state->session->registerForMetrics();
         state->session->start(j);
     }
 
     void handleConnectionClosed(const drogon::WebSocketConnectionPtr& conn) override
     {
+        gTilesWsMetrics.activeConnections.fetch_sub(1, std::memory_order_relaxed);
         if (auto state = conn->getContext<WsConnectionState>()) {
             if (state->session) {
                 state->session->cancel("WebSocket connection closed.");
@@ -602,6 +887,71 @@ private:
 void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService& service)
 {
     app.registerController(std::make_shared<TilesWebSocketController>(service));
+}
+
+nlohmann::json tilesWebSocketMetricsSnapshot()
+{
+    int64_t pendingControllerFrames = 0;
+    int64_t pendingControllerBytes = 0;
+    int64_t flowControlEnabledConnections = 0;
+    int64_t flowControlBlockedConnections = 0;
+    int64_t flowControlCreditFrames = 0;
+    int64_t flowControlCreditBytes = 0;
+    {
+        std::lock_guard lock(gTrackedSessionsMutex);
+        auto out = gTrackedSessions.begin();
+        for (auto it = gTrackedSessions.begin(); it != gTrackedSessions.end(); ++it) {
+            if (auto session = it->lock()) {
+                auto [frames, bytes] = session->pendingSnapshot();
+                pendingControllerFrames += frames;
+                pendingControllerBytes += bytes;
+                *out++ = *it;
+            }
+        }
+        gTrackedSessions.erase(out, gTrackedSessions.end());
+    }
+    {
+        std::lock_guard lock(gTrackedConnectionsMutex);
+        auto out = gTrackedConnections.begin();
+        for (auto it = gTrackedConnections.begin(); it != gTrackedConnections.end(); ++it) {
+            if (auto state = it->lock()) {
+                const auto snapshot = state->flowControlSnapshot();
+                if (snapshot.enabled) {
+                    ++flowControlEnabledConnections;
+                    flowControlCreditFrames += snapshot.creditFrames;
+                    flowControlCreditBytes += snapshot.creditBytes;
+                    if (snapshot.creditFrames <= 0 || snapshot.creditBytes <= 0) {
+                        ++flowControlBlockedConnections;
+                    }
+                }
+                *out++ = *it;
+            }
+        }
+        gTrackedConnections.erase(out, gTrackedConnections.end());
+    }
+
+    return nlohmann::json::object({
+        {"active-connections", nonNegative(gTilesWsMetrics.activeConnections)},
+        {"active-sessions", nonNegative(gTilesWsMetrics.activeSessions)},
+        {"pending-controller-frames", pendingControllerFrames},
+        {"pending-controller-bytes", pendingControllerBytes},
+        {"flow-control-enabled-connections", flowControlEnabledConnections},
+        {"flow-control-blocked-connections", flowControlBlockedConnections},
+        {"flow-control-credit-frames", flowControlCreditFrames},
+        {"flow-control-credit-bytes", flowControlCreditBytes},
+        {"total-queued-frames", nonNegative(gTilesWsMetrics.totalQueuedFrames)},
+        {"total-queued-bytes", nonNegative(gTilesWsMetrics.totalQueuedBytes)},
+        {"total-forwarded-frames", nonNegative(gTilesWsMetrics.totalForwardedFrames)},
+        {"total-forwarded-bytes", nonNegative(gTilesWsMetrics.totalForwardedBytes)},
+        {"total-dropped-frames", nonNegative(gTilesWsMetrics.totalDroppedFrames)},
+        {"total-dropped-bytes", nonNegative(gTilesWsMetrics.totalDroppedBytes)},
+        {"total-drain-calls", nonNegative(gTilesWsMetrics.totalDrainCalls)},
+        {"total-flow-grant-messages", nonNegative(gTilesWsMetrics.totalFlowGrantMessages)},
+        {"total-flow-grant-frames", nonNegative(gTilesWsMetrics.totalFlowGrantFrames)},
+        {"total-flow-grant-bytes", nonNegative(gTilesWsMetrics.totalFlowGrantBytes)},
+        {"total-flow-blocked-drains", nonNegative(gTilesWsMetrics.totalFlowBlockedDrains)},
+        {"replaced-requests", nonNegative(gTilesWsMetrics.replacedRequests)},
+    });
 }
 
 }  // namespace mapget::detail

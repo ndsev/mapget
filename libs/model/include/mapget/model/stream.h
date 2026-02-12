@@ -41,6 +41,12 @@ public:
          * Payload: UTF-8 JSON bytes (not null-terminated).
          */
         LoadStateChange = 5,
+        /**
+         * JSON-encoded request-context marker for WebSocket /tiles streams.
+         *
+         * Payload: UTF-8 JSON bytes (not null-terminated).
+         */
+        RequestContext = 6,
         EndOfStream = 128
     };
 
