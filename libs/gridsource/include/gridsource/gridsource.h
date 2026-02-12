@@ -212,6 +212,9 @@ struct Config {
     std::string mapId = "GridDataSource";
     bool spatialCoherence = true;
     double collisionGridSize = 10.0;
+    uint32_t sourceDownloadDelayMs = 0;  // Sleep-wait (simulates IO: downloading from server)
+    uint32_t sourceUnpackDelayMs = 0;    // Busy-wait (simulates CPU: decompression/parsing)
+    uint32_t sourceTransformDelayMs = 0; // Busy-wait (simulates CPU: conversion to features)
     std::vector<LayerConfig> layers;
 
     static Config fromYAML(const YAML::Node& node);

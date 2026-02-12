@@ -4,8 +4,10 @@
 
 #include <cmath>
 #include <algorithm>
+#include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <thread>
 
 #include "mapget/log.h"
 #include "fmt/format.h"
@@ -234,6 +236,23 @@ Config Config::fromYAML(const YAML::Node& node) {
     cfg.mapId = node["mapId"].as<std::string>("GridDataSource");
     cfg.spatialCoherence = node["spatialCoherence"].as<bool>(true);
     cfg.collisionGridSize = node["collisionGridSize"].as<double>(10.0);
+
+    // New delay fields
+    cfg.sourceDownloadDelayMs = node["sourceDownloadDelayMs"].as<uint32_t>(0);
+    cfg.sourceUnpackDelayMs = node["sourceUnpackDelayMs"].as<uint32_t>(0);
+    cfg.sourceTransformDelayMs = node["sourceTransformDelayMs"].as<uint32_t>(0);
+
+    // Legacy fallback: map old delayMs/delayMode to new fields
+    if (node["delayMs"] && !node["sourceDownloadDelayMs"]
+        && !node["sourceUnpackDelayMs"] && !node["sourceTransformDelayMs"])
+    {
+        auto legacyDelay = node["delayMs"].as<uint32_t>(0);
+        std::string delayMode = node["delayMode"].as<std::string>("sleep");
+        if (delayMode == "busyWait")
+            cfg.sourceTransformDelayMs = legacyDelay;
+        else
+            cfg.sourceDownloadDelayMs = legacyDelay;
+    }
 
     if (node["layers"]) {
         for (const auto& layer : node["layers"]) {
@@ -536,17 +555,36 @@ void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
 
     mapget::log().info("GridDataSource::fill() called for layer '{}' tile {}", layerName, tile->tileId().value_);
 
+    // Phase 1: Simulated source download (sleep-wait, IO)
+    if (config_.sourceDownloadDelayMs > 0) {
+        auto t0 = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::milliseconds(config_.sourceDownloadDelayMs));
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        tile->setInfo("source-download-ms", elapsed);
+    }
+
+    // Phase 2: Simulated source unpack (busy-wait, CPU)
+    if (config_.sourceUnpackDelayMs > 0) {
+        auto t0 = std::chrono::steady_clock::now();
+        auto deadline = t0 + std::chrono::milliseconds(config_.sourceUnpackDelayMs);
+        while (std::chrono::steady_clock::now() < deadline) {}
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        tile->setInfo("source-unpack-ms", elapsed);
+    }
+
     // Get or create spatial context for this tile
     auto ctx = getOrCreateContext(tile->tileId());
 
     // Set ID prefix
     tile->setIdPrefix({{"tileId", static_cast<int64_t>(tile->tileId().value_)}});
 
-    // Find matching layer configuration
+    // Phase 3: Feature generation (actual work)
+    auto genStart = std::chrono::steady_clock::now();
     for (const auto& layerCfg : config_.layers) {
         if (layerCfg.name == layerName) {
             mapget::log().info("  Found matching layer config, geometry type: {}", static_cast<int>(layerCfg.geometry.type));
-            // Generate features based on geometry type
             if (layerCfg.geometry.type == GeometryType::Polygon || layerCfg.geometry.type == GeometryType::Mesh) {
                 mapget::log().info("  Generating buildings...");
                 generateBuildings(*ctx, layerCfg, tile);
@@ -560,6 +598,21 @@ void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
                 generateIntersections(*ctx, layerCfg, tile);
                 mapget::log().info("  Generated {} intersections", ctx->intersections.size());
             }
+
+            auto genElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - genStart).count();
+            tile->setInfo("feature-gen-ms", genElapsed);
+
+            // Phase 4: Simulated source transform (busy-wait, CPU)
+            if (config_.sourceTransformDelayMs > 0) {
+                auto t0 = std::chrono::steady_clock::now();
+                auto deadline = t0 + std::chrono::milliseconds(config_.sourceTransformDelayMs);
+                while (std::chrono::steady_clock::now() < deadline) {}
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - t0).count();
+                tile->setInfo("source-transform-ms", elapsed);
+            }
+
             return;
         }
     }

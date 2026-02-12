@@ -76,6 +76,11 @@ nlohmann::json gridDataSourceSchema()
             {"mapId", {{"type", "string"}, {"title", "Map ID"}}},
             {"spatialCoherence", {{"type", "boolean"}}},
             {"collisionGridSize", {{"type", "number"}}},
+            {"sourceDownloadDelayMs", {{"type", "integer"}, {"title", "Source Download Delay (ms)"}, {"description", "Sleep-wait delay simulating IO-bound source download (0 = disabled)."}}},
+            {"sourceUnpackDelayMs", {{"type", "integer"}, {"title", "Source Unpack Delay (ms)"}, {"description", "Busy-wait delay simulating CPU-bound decompression/parsing (0 = disabled)."}}},
+            {"sourceTransformDelayMs", {{"type", "integer"}, {"title", "Source Transform Delay (ms)"}, {"description", "Busy-wait delay simulating CPU-bound feature conversion (0 = disabled)."}}},
+            {"delayMs", {{"type", "integer"}, {"title", "Simulated Delay (ms)"}, {"description", "DEPRECATED: Use sourceDownloadDelayMs/sourceTransformDelayMs instead."}}},
+            {"delayMode", {{"type", "string"}, {"title", "Delay Mode"}, {"enum", {"sleep", "busyWait"}}, {"description", "DEPRECATED: Use sourceDownloadDelayMs/sourceTransformDelayMs instead."}}},
             {"layers", {{"type", "array"}}}
         }},
         {"additionalProperties", true}
