@@ -271,6 +271,19 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
     newGeometry(model_ptr<Geometry>, Validity::Direction direction = Validity::Empty);
 
     /**
+     * Append a validity that references a feature ID without restricting the geometry.
+     * The referenced feature's geometry is resolved when the validity is evaluated.
+     */
+    model_ptr<Validity>
+    newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a validity that references a named geometry in the current feature context.
+     */
+    model_ptr<Validity>
+    newGeomName(std::string_view geomName, Validity::Direction direction = Validity::Empty);
+
+    /**
      * Append a direction validity without further restricting the range.
      * The direction value controls, in which direction along the referenced
      * geometry the attribute applies. Positive means "in digitization direction",

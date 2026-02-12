@@ -279,6 +279,18 @@ SelfContainedGeometry Validity::computeGeometry(
         return true;
     });
 
+    // If no geometry name is specified and no unnamed geometry was found,
+    // fall back to the first line geometry in the collection.
+    if (!geometry && !requiredGeomName) {
+        geometryCollection->forEachGeometry([&geometry](auto&& geom){
+            if (geom->geomType() == GeomType::Line) {
+                geometry = geom;
+                return false;
+            }
+            return true;
+        });
+    }
+
     if (!geometry) {
         if (error) {
             *error = fmt::format("Failed to find geometry for {}", requiredGeomName ? *requiredGeomName : "");
@@ -454,6 +466,26 @@ MultiValidity::newGeometry(model_ptr<Geometry> geom, Validity::Direction directi
 {
     auto result = model().newValidity();
     result->setSimpleGeometry(geom);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity>
+MultiValidity::newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setFeatureId(featureId);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity>
+MultiValidity::newGeomName(std::string_view geomName, Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setGeometryName(geomName);
     result->setDirection(direction);
     append(result);
     return result;
