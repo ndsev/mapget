@@ -241,7 +241,7 @@ public:
      * @param query         Simfil query
      * @param node          Model root node to query
      * @param anyMode       Auto-wrap expression in `any(...)`
-     * @param autoWildcard  Auto expand constant expressions to `** = <expr>`
+     * @param autoWildcard  Auto expand constant expressions to `** == <expr>`
      */
     struct QueryResult {
         // The list of values resulting from the query evaluation.

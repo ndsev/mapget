@@ -3,6 +3,8 @@
 
 #include <sstream>
 
+#include "mapget/log.h"
+
 namespace mapget
 {
 
@@ -30,8 +32,11 @@ std::string FeatureId::toString() const
 
     auto addIdPart = [&result](auto&& v)
     {
-        if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>)
+        if constexpr (std::is_same_v<std::decay_t<decltype(v)>, simfil::ByteArray>) {
+            raiseFmt("FeatureId part value 'b\"{}\"' cannot be a ByteArray.", v.toHex());
+        } else if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>) {
             result << "." << v;
+        }
     };
 
     // Add common id-part fields
@@ -94,7 +99,11 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
             std::visit(
                 [&result, &keyStr](auto&& v)
                 {
-                    if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate> && !std::is_same_v<std::decay_t<decltype(v)>, double>) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, simfil::ByteArray>) {
+                        raiseFmt("FeatureId part '{}' cannot be a ByteArray.", keyStr ? *keyStr : "<unknown>");
+                    }
+                    else if constexpr (!std::is_same_v<T, std::monostate> && !std::is_same_v<T, double>) {
                         result.emplace_back(*keyStr, v);
                     }
                 },
