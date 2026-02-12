@@ -116,6 +116,8 @@ struct Service::Controller
         MapTileKey tileKey;
         LayerTilesRequest::Ptr request;
         std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
+        std::chrono::steady_clock::time_point createdAt;
+        bool cacheHit = false;
     };
 
     std::set<MapTileKey> jobsInProgress_;    // Set of jobs currently in progress
@@ -157,7 +159,8 @@ struct Service::Controller
 
                     // Create result wrapper object.
                     auto tileId = request->tiles_[request->nextTileIndex_++];
-                    result = Job{MapTileKey(), request, std::nullopt};
+                    result = Job{MapTileKey(), request, std::nullopt,
+                               std::chrono::steady_clock::now(), false};
                     result->tileKey.layer_ = layerIt->second->type_;
                     result->tileKey.mapId_ = request->mapId_;
                     result->tileKey.layerId_ = request->layerId_;
@@ -260,9 +263,16 @@ struct Service::Worker
                 dataSource_->onCacheExpired(job.tileKey, *job.cacheExpiredAt);
             }
 
+            auto workStart = std::chrono::steady_clock::now();
             auto layer = dataSource_->get(job.tileKey, controller_.cache_, info_);
             if (!layer)
                 raise("DataSource::get() returned null.");
+
+            // Record server-side timing metadata
+            auto queueWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                workStart - job.createdAt).count();
+            layer->setInfo("queue-wait-ms", queueWaitMs);
+            layer->setInfo("cache-hit", job.cacheHit ? 1 : 0);
 
             // Special FeatureLayer handling
             if (layer->layerInfo()->type_ == LayerType::Features) {
