@@ -44,6 +44,13 @@ void HttpService::setup(drogon::HttpAppFramework& app)
         {drogon::Get});
 
     app.registerHandler(
+        "/status-data",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleStatusDataRequest(req, std::move(callback));
+        },
+        {drogon::Get});
+
+    app.registerHandler(
         "/locate",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             impl_->handleLocateRequest(req, std::move(callback));

@@ -16,6 +16,8 @@
 #include <thread>
 #include <list>
 #include <chrono>
+#include <algorithm>
+#include <numeric>
 #include <unordered_map>
 
 #include "simfil/types.h"
@@ -743,7 +745,83 @@ RequestStatus Service::hasLayerAndCanAccess(
     return RequestStatus::NoDataSource;
 }
 
+namespace
+{
+
+[[nodiscard]] nlohmann::json buildTileSizeDistribution(std::vector<int64_t> tileSizes)
+{
+    if (tileSizes.empty())
+        return nlohmann::json::object();
+
+    std::sort(tileSizes.begin(), tileSizes.end());
+
+    const int64_t totalBytes = std::accumulate(tileSizes.begin(), tileSizes.end(), int64_t{0});
+    const int64_t tileCount = static_cast<int64_t>(tileSizes.size());
+    const int64_t meanBytes = totalBytes / tileCount;
+
+    struct HistogramBin {
+        int64_t upperBound;
+        const char* label;
+        int64_t count = 0;
+    };
+    std::vector<HistogramBin> bins = {
+        {16 * 1024, "<=16 KiB"},
+        {32 * 1024, "16-32 KiB"},
+        {64 * 1024, "32-64 KiB"},
+        {128 * 1024, "64-128 KiB"},
+        {256 * 1024, "128-256 KiB"},
+        {512 * 1024, "256-512 KiB"},
+        {1024 * 1024, "512 KiB-1 MiB"},
+        {2 * 1024 * 1024, "1-2 MiB"},
+        {4 * 1024 * 1024, "2-4 MiB"},
+    };
+    int64_t overflowCount = 0;
+
+    for (const auto bytes : tileSizes) {
+        bool assigned = false;
+        for (auto& bin : bins) {
+            if (bytes <= bin.upperBound) {
+                ++bin.count;
+                assigned = true;
+                break;
+            }
+        }
+        if (!assigned) {
+            ++overflowCount;
+        }
+    }
+
+    auto histogram = nlohmann::json::array();
+    for (const auto& bin : bins) {
+        histogram.push_back(nlohmann::json::object({
+            {"label", bin.label},
+            {"count", bin.count},
+        }));
+    }
+    histogram.push_back(nlohmann::json::object({
+        {"label", ">4 MiB"},
+        {"count", overflowCount},
+    }));
+
+    return nlohmann::json::object({
+        {"tile-count", tileCount},
+        {"total-tile-bytes", totalBytes},
+        {"min-bytes", tileSizes.front()},
+        {"max-bytes", tileSizes.back()},
+        {"mean-bytes", meanBytes},
+        {"histogram", std::move(histogram)},
+    });
+}
+
+}  // namespace
+
 nlohmann::json Service::getStatistics() const
+{
+    // Preserve old behavior for existing callers.
+    return getStatistics(true, false);
+}
+
+nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool includeTileSizeDistribution) const
 {
     auto datasources = nlohmann::json::array();
     for (auto const& [dataSource, info] : impl_->dataSourceInfo_) {
@@ -758,73 +836,91 @@ nlohmann::json Service::getStatistics() const
         {"active-requests", impl_->requests_.size()}
     };
 
-    auto layerInfoByMap = std::unordered_map<std::string, std::unordered_map<std::string, std::shared_ptr<LayerInfo>>>{};
-    for (auto const& [_, info] : impl_->dataSourceInfo_) {
-        auto& layers = layerInfoByMap[info.mapId_];
-        for (auto const& [layerId, layerInfo] : info.layers_) {
-            layers[layerId] = layerInfo;
-        }
+    if (!includeCachedFeatureTreeBytes && !includeTileSizeDistribution) {
+        return result;
     }
 
-    auto resolveLayerInfo = [&](std::string_view mapId, std::string_view layerId) -> std::shared_ptr<LayerInfo> {
-        auto mapIt = layerInfoByMap.find(std::string(mapId));
-        if (mapIt == layerInfoByMap.end())
-            return std::make_shared<LayerInfo>();
-        auto layerIt = mapIt->second.find(std::string(layerId));
-        if (layerIt == mapIt->second.end()) {
-            auto fallback = std::make_shared<LayerInfo>();
-            fallback->layerId_ = std::string(layerId);
-            return fallback;
-        }
-        return layerIt->second;
-    };
-
+    auto featureLayerTotals = nlohmann::json::object();
+    auto modelPoolTotals = nlohmann::json::object();
     int64_t parsedTiles = 0;
     int64_t totalTileBytes = 0;
     int64_t parseErrors = 0;
-    auto featureLayerTotals = nlohmann::json::object();
-    auto modelPoolTotals = nlohmann::json::object();
+    std::vector<int64_t> tileSizes;
 
     auto addTotals = [](nlohmann::json& totals, const nlohmann::json& stats) {
         for (const auto& [key, value] : stats.items()) {
-            if (value.is_number_integer())
-            {
+            if (value.is_number_integer()) {
                 totals[key] = totals.value<int64_t>(key, 0) + value.get<int64_t>();
-            }
-            else if (value.is_number_float())
-            {
+            } else if (value.is_number_float()) {
                 totals[key] = totals.value<double>(key, .0) + value.get<double>();
             }
         }
     };
 
-    TileLayerStream::Reader tileReader(
-        resolveLayerInfo,
-        [&](auto&& parsedLayer)
-        {
-            auto tile = std::static_pointer_cast<mapget::TileFeatureLayer>(parsedLayer);
-            auto sizeStats = tile->serializationSizeStats();
-            addTotals(featureLayerTotals, sizeStats["feature-layer"]);
-            addTotals(modelPoolTotals, sizeStats["model-pool"]);
-        },
-        impl_->cache_);
-
-    impl_->cache_->forEachTileLayerBlob(
-        [&](const MapTileKey& key, const std::string& blob)
-        {
-            if (key.layer_ != LayerType::Features)
-                return;
-            ++parsedTiles;
-            totalTileBytes += static_cast<int64_t>(blob.size());
-            try {
-                tileReader.read(blob);
+    std::unique_ptr<TileLayerStream::Reader> tileReader;
+    if (includeCachedFeatureTreeBytes) {
+        auto layerInfoByMap =
+            std::unordered_map<std::string, std::unordered_map<std::string, std::shared_ptr<LayerInfo>>>{};
+        for (auto const& [_, info] : impl_->dataSourceInfo_) {
+            auto& layers = layerInfoByMap[info.mapId_];
+            for (auto const& [layerId, layerInfo] : info.layers_) {
+                layers[layerId] = layerInfo;
             }
-            catch (const std::exception&) {
-                ++parseErrors;
-            }
-        });
+        }
 
-    if (parsedTiles > 0) {
+        auto resolveLayerInfo = [layerInfoByMap](std::string_view mapId, std::string_view layerId)
+            -> std::shared_ptr<LayerInfo> {
+            auto mapIt = layerInfoByMap.find(std::string(mapId));
+            if (mapIt == layerInfoByMap.end())
+                return std::make_shared<LayerInfo>();
+            auto layerIt = mapIt->second.find(std::string(layerId));
+            if (layerIt == mapIt->second.end()) {
+                auto fallback = std::make_shared<LayerInfo>();
+                fallback->layerId_ = std::string(layerId);
+                return fallback;
+            }
+            return layerIt->second;
+        };
+
+        tileReader = std::make_unique<TileLayerStream::Reader>(
+            resolveLayerInfo,
+            [&](auto&& parsedLayer) {
+                auto tile = std::dynamic_pointer_cast<mapget::TileFeatureLayer>(parsedLayer);
+                if (!tile) {
+                    ++parseErrors;
+                    return;
+                }
+                auto sizeStats = tile->serializationSizeStats();
+                addTotals(featureLayerTotals, sizeStats["feature-layer"]);
+                addTotals(modelPoolTotals, sizeStats["model-pool"]);
+            },
+            impl_->cache_);
+    }
+
+    impl_->cache_->forEachTileLayerBlob([&](const MapTileKey& key, const std::string& blob) {
+        if (key.layer_ != LayerType::Features)
+            return;
+
+        const int64_t tileBytes = static_cast<int64_t>(blob.size());
+        ++parsedTiles;
+        totalTileBytes += tileBytes;
+
+        if (includeTileSizeDistribution) {
+            tileSizes.push_back(tileBytes);
+        }
+
+        if (!includeCachedFeatureTreeBytes) {
+            return;
+        }
+
+        try {
+            tileReader->read(blob);
+        } catch (const std::exception&) {
+            ++parseErrors;
+        }
+    });
+
+    if (includeCachedFeatureTreeBytes && parsedTiles > 0) {
         result["cached-feature-tree-bytes"] = nlohmann::json{
             {"tile-count", parsedTiles},
             {"total-tile-bytes", totalTileBytes},
@@ -832,6 +928,10 @@ nlohmann::json Service::getStatistics() const
             {"feature-layer", featureLayerTotals},
             {"model-pool", modelPoolTotals}
         };
+    }
+
+    if (includeTileSizeDistribution && !tileSizes.empty()) {
+        result["cached-feature-tile-size-distribution"] = buildTileSizeDistribution(std::move(tileSizes));
     }
 
     return result;
