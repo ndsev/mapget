@@ -206,6 +206,17 @@ public:
      */
     [[nodiscard]] nlohmann::json getStatistics() const;
 
+    /**
+     * Variant of getStatistics() with optional expensive analyses:
+     * - includeCachedFeatureTreeBytes: Parse cached feature tiles and aggregate
+     *   detailed subtree sizes.
+     * - includeTileSizeDistribution: Build cached feature-tile size histogram
+     *   and percentiles.
+     */
+    [[nodiscard]] nlohmann::json getStatistics(
+        bool includeCachedFeatureTreeBytes,
+        bool includeTileSizeDistribution) const;
+
     /** Get the Cache which this service was constructed with. */
     [[nodiscard]] Cache::Ptr cache();
 
