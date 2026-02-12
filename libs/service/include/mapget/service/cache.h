@@ -58,6 +58,12 @@ public:
     /** Abstract: Upsert (update or insert) a string-pool blob. */
     virtual void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) = 0;
 
+    /**
+     * Clear all cached data. Default is a no-op (e.g. for NullCache).
+     * Override in cache implementations that hold data.
+     */
+    virtual void clear() {}
+
     // Override this method if your cache implementation has special stats.
 
     /**

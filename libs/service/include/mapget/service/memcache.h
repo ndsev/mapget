@@ -35,6 +35,9 @@ public:
     /** Upsert a string-pool blob. -> No-Op */
     void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override {}
 
+    /** Clear all cached tiles. */
+    void clear() override;
+
     /** Enriches the statistics with info about the number of cached tiles. */
     nlohmann::json getStatistics() const override;
 
