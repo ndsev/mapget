@@ -79,6 +79,8 @@ nlohmann::json gridDataSourceSchema()
             {"sourceDownloadDelayMs", {{"type", "integer"}, {"title", "Source Download Delay (ms)"}, {"description", "Sleep-wait delay simulating IO-bound source download (0 = disabled)."}}},
             {"sourceUnpackDelayMs", {{"type", "integer"}, {"title", "Source Unpack Delay (ms)"}, {"description", "Busy-wait delay simulating CPU-bound decompression/parsing (0 = disabled)."}}},
             {"sourceTransformDelayMs", {{"type", "integer"}, {"title", "Source Transform Delay (ms)"}, {"description", "Busy-wait delay simulating CPU-bound feature conversion (0 = disabled)."}}},
+            {"attributeTreeProfile", {{"type", "string"}, {"title", "Attribute Tree Profile"}, {"enum", {"none", "minimal", "moderate", "realistic", "stress"}}, {"description", "Procedural attribute tree complexity profile."}}},
+            {"attributeTreeParams", {{"type", "object"}, {"title", "Attribute Tree Params"}, {"description", "Optional overrides for attribute tree generation parameters."}}},
             {"delayMs", {{"type", "integer"}, {"title", "Simulated Delay (ms)"}, {"description", "DEPRECATED: Use sourceDownloadDelayMs/sourceTransformDelayMs instead."}}},
             {"delayMode", {{"type", "string"}, {"title", "Delay Mode"}, {"enum", {"sleep", "busyWait"}}, {"description", "DEPRECATED: Use sourceDownloadDelayMs/sourceTransformDelayMs instead."}}},
             {"layers", {{"type", "array"}}}
@@ -231,7 +233,9 @@ void registerDefaultDatasourceTypes() {
             if (config["enabled"].IsDefined() && !config["enabled"].as<bool>()) {
                 return nullptr;  // Skip this datasource
             }
-            return std::make_shared<gridsource::GridDataSource>(config);
+            auto ds = std::make_shared<gridsource::GridDataSource>(config);
+            gridsource::GridDataSource::registerInstance(ds);
+            return ds;
         },
         gridDataSourceSchema());
     service.registerDataSourceType(
@@ -266,6 +270,7 @@ void loadConfigSchemaPatch(const std::string& schemaPath)
 
 bool isPostConfigEndpointEnabled_ = false;
 bool isGetConfigEndpointEnabled_ = true;
+bool isDevModeEnabled_ = false;
 }
 
 struct ServeCommand
@@ -349,6 +354,10 @@ struct ServeCommand
             "(0=disabled, 1=after every request, N=after every N JSON requests). "
             "Only effective on platforms supporting allocator trimming (e.g., Linux).")
             ->default_val(memoryTrimIntervalJson_);
+        serveCmd->add_flag(
+            "--dev-mode",
+            isDevModeEnabled_,
+            "Enable Developer UI at /dev/ for live GridDataSource configuration.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -607,6 +616,16 @@ const std::string &getPathToSchemaPatch()
 void setPathToSchema(const std::string& path)
 {
     pathToSchema = path;
+}
+
+bool isDevModeEnabled()
+{
+    return isDevModeEnabled_;
+}
+
+void setDevModeEnabled(bool enabled)
+{
+    isDevModeEnabled_ = enabled;
 }
 
 }  // namespace mapget
