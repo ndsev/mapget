@@ -59,7 +59,7 @@ std::mutex gTrackedConnectionsMutex;
 std::vector<std::weak_ptr<class WsConnectionState>> gTrackedConnections;
 
 constexpr std::string_view kFlowGrantType = "mapget.tiles.flow-grant";
-constexpr int64_t kFlowCreditMaxFrames = 16;
+constexpr int64_t kFlowCreditMaxFrames = 2;
 constexpr int64_t kFlowCreditMaxBytes = 64 * 1024 * 1024;
 
 [[nodiscard]] int64_t nonNegative(std::atomic<int64_t> const& value)
