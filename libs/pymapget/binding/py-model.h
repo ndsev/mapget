@@ -51,7 +51,15 @@ struct BoundModelNodeBase : public BoundModelNode
                 [](const model_ptr<ModelNode>& node) { return node->value(); },
                 R"pbdoc(
             Get the node's scalar value if it has one.
-        )pbdoc");
+        )pbdoc")
+            .def(
+                "to_json",
+                [](BoundModelNode& self) {
+                    if (auto n = self.node())
+                        return n->toJson().dump();
+                    return std::string("null");
+                },
+                "Convert this node to a JSON string.");
         py::class_<BoundModelNodeBase, BoundModelNode>(m, "ModelNodeBase");
     }
 
@@ -164,6 +172,19 @@ struct BoundObject : public BoundModelNode
     {
         auto boundClass = py::class_<BoundObject, BoundModelNode>(m, "Object");
         bindObjectMethods(boundClass);
+        boundClass
+            .def("__len__", [](BoundObject& self) { return self.modelNodePtr_->size(); })
+            .def(
+                "__getitem__",
+                [](BoundObject& self, std::string_view const& key) {
+                    auto result = self.modelNodePtr_->get(key);
+                    if (!result) throw py::key_error(std::string(key));
+                    BoundModelNodeBase node;
+                    node.modelNodePtr_ = *result;
+                    return node;
+                },
+                py::arg("key"),
+                "Get a field by name.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -185,7 +206,20 @@ struct BoundArray : public BoundModelNode
                     std::visit([&self](auto&& value) { self.modelNodePtr_->append(value); }, vv);
                 },
                 py::arg("value"),
-                "Append a value to the array.");
+                "Append a value to the array.")
+            .def("__len__", [](BoundArray& self) { return self.modelNodePtr_->size(); })
+            .def(
+                "__getitem__",
+                [](BoundArray& self, int64_t i) {
+                    auto sz = (int64_t)self.modelNodePtr_->size();
+                    if (i < 0) i += sz;
+                    if (i < 0 || i >= sz) throw py::index_error();
+                    BoundModelNodeBase node;
+                    node.modelNodePtr_ = self.modelNodePtr_->at(i);
+                    return node;
+                },
+                py::arg("index"),
+                "Get an element by index.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -225,7 +259,24 @@ struct BoundGeometry : public BoundModelNode
                 py::arg("point"),
                 R"pbdoc(
                 Append a point to the geometry.
-            )pbdoc");
+            )pbdoc")
+            .def("geom_type", [](BoundGeometry& self) { return self.modelNodePtr_->geomType(); },
+                "Get the type of the geometry.")
+            .def("num_points", [](BoundGeometry& self) { return self.modelNodePtr_->numPoints(); },
+                "Get the number of points.")
+            .def("point_at", [](BoundGeometry& self, size_t i) { return self.modelNodePtr_->pointAt(i); },
+                py::arg("index"), "Get a point at an index.")
+            .def("__len__", [](BoundGeometry& self) { return self.modelNodePtr_->numPoints(); })
+            .def("__getitem__", [](BoundGeometry& self, int64_t i) {
+                auto n = (int64_t)self.modelNodePtr_->numPoints();
+                if (i < 0) i += n;
+                if (i < 0 || i >= n) throw py::index_error();
+                return self.modelNodePtr_->pointAt(i);
+            })
+            .def("name", [](BoundGeometry& self) { return self.modelNodePtr_->name(); },
+                "Get the geometry name, if set.")
+            .def("length", [](BoundGeometry& self) { return self.modelNodePtr_->length(); },
+                "Get total length in metres (for polylines).");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -245,7 +296,19 @@ struct BoundGeometryCollection : public BoundModelNode
                 [](BoundGeometryCollection& self, GeomType const& geomType)
                 { return BoundGeometry(self.modelNodePtr_->newGeometry(geomType)); },
                 py::arg("geom_type"),
-                "Create and insert a new geometry into the collection.");
+                "Create and insert a new geometry into the collection.")
+            .def("__len__", [](BoundGeometryCollection& self) {
+                return self.modelNodePtr_->numGeometries();
+            })
+            .def("__iter__", [](BoundGeometryCollection& self) {
+                py::list result;
+                self.modelNodePtr_->forEachGeometry(
+                    [&result](model_ptr<Geometry> const& geom) {
+                        result.append(BoundGeometry(geom));
+                        return true;
+                    });
+                return py::iter(result);
+            });
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -301,7 +364,16 @@ struct BoundAttributeLayer : public BoundModelNode
                 [](BoundAttributeLayer& self, BoundAttribute const& a)
                 { self.modelNodePtr_->addAttribute(a.modelNodePtr_); },
                 py::arg("a"),
-                "Add an existing attribute to the layer.");
+                "Add an existing attribute to the layer.")
+            .def("__iter__", [](BoundAttributeLayer& self) {
+                py::list result;
+                self.modelNodePtr_->forEachAttribute(
+                    [&result](model_ptr<Attribute> const& attr) {
+                        result.append(BoundAttribute(attr));
+                        return true;
+                    });
+                return py::iter(result);
+            });
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -330,7 +402,16 @@ struct BoundAttributeLayerList : public BoundModelNode
                 { self.modelNodePtr_->addLayer(name, l.modelNodePtr_); },
                 py::arg("name"),
                 py::arg("layer"),
-                "Add an existing layer to the collection.");
+                "Add an existing layer to the collection.")
+            .def("__iter__", [](BoundAttributeLayerList& self) {
+                py::list result;
+                self.modelNodePtr_->forEachLayer(
+                    [&result](std::string_view name, model_ptr<AttributeLayer> const& layer) {
+                        result.append(py::make_tuple(std::string(name), BoundAttributeLayer(layer)));
+                        return true;
+                    });
+                return py::iter(result);
+            });
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -342,6 +423,28 @@ struct BoundAttributeLayerList : public BoundModelNode
     model_ptr<AttributeLayerList> modelNodePtr_;
 };
 
+struct BoundFeatureId : public BoundModelNode
+{
+    static void bind(py::module_& m)
+    {
+        py::class_<BoundFeatureId, BoundModelNode>(m, "FeatureId")
+            .def(
+                "to_string",
+                [](BoundFeatureId& self) { return self.modelNodePtr_->toString(); },
+                "Convert the FeatureId to a string.")
+            .def(
+                "type_id",
+                [](BoundFeatureId& self) { return self.modelNodePtr_->typeId(); },
+                "Get the feature ID's type ID.");
+    }
+
+    ModelNode::Ptr node() override { return modelNodePtr_; }
+
+    explicit BoundFeatureId(model_ptr<FeatureId> const& ptr) : modelNodePtr_(ptr) {}
+
+    model_ptr<FeatureId> modelNodePtr_;
+};
+
 struct BoundFeature : public BoundModelNode
 {
     static void bind(py::module_& m)
@@ -351,6 +454,10 @@ struct BoundFeature : public BoundModelNode
                 "type_id",
                 [](BoundFeature& self) { return self.modelNodePtr_->typeId(); },
                 "Get the type ID of the feature.")
+            .def(
+                "id",
+                [](BoundFeature& self) { return BoundFeatureId(self.modelNodePtr_->id()); },
+                "Get the feature's unique ID.")
             .def(
                 "evaluate",
                 [](BoundFeature& self, std::string_view const& expression)
@@ -364,8 +471,8 @@ struct BoundFeature : public BoundModelNode
                 "Evaluate a filter expression on this feature.")
             .def(
                 "to_json",
-                [](BoundFeature& self) { return self.modelNodePtr_->toJson(); },
-                "Convert the Feature to JSON.")
+                [](BoundFeature& self) { return self.modelNodePtr_->toJson().dump(); },
+                "Convert the Feature to a JSON string.")
             .def(
                 "geom",
                 [](BoundFeature& self)
@@ -428,28 +535,6 @@ struct BoundFeature : public BoundModelNode
     model_ptr<Feature> modelNodePtr_;
 };
 
-struct BoundFeatureId : public BoundModelNode
-{
-    static void bind(py::module_& m)
-    {
-        py::class_<BoundFeatureId, BoundModelNode>(m, "FeatureId")
-            .def(
-                "to_string",
-                [](BoundFeatureId& self) { return self.modelNodePtr_->toString(); },
-                "Convert the FeatureId to a string.")
-            .def(
-                "type_id",
-                [](BoundFeatureId& self) { return self.modelNodePtr_->typeId(); },
-                "Get the feature ID's type ID.");
-    }
-
-    ModelNode::Ptr node() override { return modelNodePtr_; }
-
-    explicit BoundFeatureId(model_ptr<FeatureId> const& ptr) : modelNodePtr_(ptr) {}
-
-    model_ptr<FeatureId> modelNodePtr_;
-};
-
 }  // namespace mapget
 
 void bindModel(py::module& m)
@@ -462,6 +547,6 @@ void bindModel(py::module& m)
     mapget::BoundAttribute::bind(m);
     mapget::BoundAttributeLayer::bind(m);
     mapget::BoundAttributeLayerList::bind(m);
-    mapget::BoundFeature::bind(m);
     mapget::BoundFeatureId::bind(m);
+    mapget::BoundFeature::bind(m);
 }
