@@ -114,6 +114,7 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     httpReq->setMethod(drogon::Post);
     httpReq->setPath("/tiles");
     httpReq->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    httpReq->addHeader("Accept", "application/binary");
     httpReq->setBody(std::move(body));
     applyHeaders(httpReq, impl_->headers_);
 
