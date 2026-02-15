@@ -16,6 +16,8 @@ using namespace simfil;
 namespace mapget
 {
 
+py::object nodeToPython(model_ptr<ModelNode> const& n, TileFeatureLayer& fl, bool checkMultimap = false);
+
 struct BoundModelNode
 {
     virtual ~BoundModelNode() = default;
@@ -48,7 +50,11 @@ struct BoundModelNodeBase : public BoundModelNode
         py::class_<BoundModelNode>(m, "ModelNode")
             .def(
                 "value",
-                [](const model_ptr<ModelNode>& node) { return node->value(); },
+                [](BoundModelNode& self) {
+                    if (auto n = self.node())
+                        return n->value();
+                    return ScalarValueType{};
+                },
                 R"pbdoc(
             Get the node's scalar value if it has one.
         )pbdoc")
@@ -59,8 +65,83 @@ struct BoundModelNodeBase : public BoundModelNode
                         return n->toJson().dump();
                     return std::string("null");
                 },
-                "Convert this node to a JSON string.");
-        py::class_<BoundModelNodeBase, BoundModelNode>(m, "ModelNodeBase");
+                "Convert this node to a JSON string.")
+            .def(
+                "to_dict",
+                [](BoundModelNode& self) -> py::object {
+                    if (auto n = self.node()) {
+                        auto& fl = self.featureLayer();
+                        return nodeToPython(n, fl);
+                    }
+                    return py::none();
+                },
+                "Convert this node to a Python dict/list/scalar.");
+        py::enum_<ValueType>(m, "ValueType")
+            .value("UNDEF", ValueType::Undef)
+            .value("NULL_", ValueType::Null)
+            .value("BOOL", ValueType::Bool)
+            .value("INT", ValueType::Int)
+            .value("FLOAT", ValueType::Float)
+            .value("STRING", ValueType::String)
+            .value("BYTES", ValueType::Bytes)
+            .value("OBJECT", ValueType::Object)
+            .value("ARRAY", ValueType::Array);
+
+        py::class_<BoundModelNodeBase, BoundModelNode>(m, "ModelNodeBase")
+            .def("__len__", [](BoundModelNodeBase& self) {
+                return self.modelNodePtr_->size();
+            })
+            .def("__getitem__", [](BoundModelNodeBase& self, std::string_view const& key) {
+                auto& fl = self.featureLayer();
+                for (auto const& [fieldId, child] : self.modelNodePtr_->fields()) {
+                    if (auto resolved = fl.lookupStringId(fieldId)) {
+                        if (*resolved == key) {
+                            BoundModelNodeBase node;
+                            node.modelNodePtr_ = child;
+                            return node;
+                        }
+                    }
+                }
+                throw py::key_error(std::string(key));
+            }, py::arg("key"))
+            .def("__getitem__", [](BoundModelNodeBase& self, int64_t i) {
+                auto sz = (int64_t)self.modelNodePtr_->size();
+                if (i < 0) i += sz;
+                if (i < 0 || i >= sz) throw py::index_error();
+                BoundModelNodeBase node;
+                node.modelNodePtr_ = self.modelNodePtr_->at(i);
+                return node;
+            }, py::arg("index"))
+            .def("__iter__", [](BoundModelNodeBase& self) {
+                auto n = self.modelNodePtr_;
+                auto type = n->type();
+                if (type == ValueType::Object) {
+                    py::list result;
+                    auto& fl = self.featureLayer();
+                    for (auto const& [fieldId, child] : n->fields()) {
+                        if (auto key = fl.lookupStringId(fieldId)) {
+                            BoundModelNodeBase node;
+                            node.modelNodePtr_ = child;
+                            result.append(py::make_tuple(std::string(*key), node));
+                        }
+                    }
+                    return py::iter(result);
+                }
+                else if (type == ValueType::Array) {
+                    py::list result;
+                    for (uint32_t i = 0; i < n->size(); ++i) {
+                        BoundModelNodeBase node;
+                        node.modelNodePtr_ = n->at(i);
+                        result.append(node);
+                    }
+                    return py::iter(result);
+                }
+                py::list empty;
+                return py::iter(empty);
+            })
+            .def("type", [](BoundModelNodeBase& self) {
+                return self.modelNodePtr_->type();
+            });
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -184,7 +265,19 @@ struct BoundObject : public BoundModelNode
                     return node;
                 },
                 py::arg("key"),
-                "Get a field by name.");
+                "Get a field by name.")
+            .def("__iter__", [](BoundObject& self) {
+                py::list result;
+                auto& fl = self.featureLayer();
+                for (auto const& [fieldId, childNode] : self.modelNodePtr_->fields()) {
+                    if (auto resolved = fl.lookupStringId(fieldId)) {
+                        BoundModelNodeBase node;
+                        node.modelNodePtr_ = childNode;
+                        result.append(py::make_tuple(std::string(*resolved), node));
+                    }
+                }
+                return py::iter(result);
+            });
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -219,7 +312,17 @@ struct BoundArray : public BoundModelNode
                     return node;
                 },
                 py::arg("index"),
-                "Get an element by index.");
+                "Get an element by index.")
+            .def("__iter__", [](BoundArray& self) {
+                py::list result;
+                auto sz = self.modelNodePtr_->size();
+                for (uint32_t i = 0; i < sz; ++i) {
+                    BoundModelNodeBase node;
+                    node.modelNodePtr_ = self.modelNodePtr_->at(i);
+                    result.append(node);
+                }
+                return py::iter(result);
+            });
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -343,6 +446,18 @@ struct BoundAttribute : public BoundObject<Attribute>
                     "Get the name of the attribute.");
 
         bindObjectMethods(boundClass);
+        boundClass.def("__iter__", [](BoundAttribute& self) {
+            py::list result;
+            auto& fl = self.featureLayer();
+            for (auto const& [fieldId, childNode] : self.modelNodePtr_->fields()) {
+                if (auto resolved = fl.lookupStringId(fieldId)) {
+                    BoundModelNodeBase node;
+                    node.modelNodePtr_ = childNode;
+                    result.append(py::make_tuple(std::string(*resolved), node));
+                }
+            }
+            return py::iter(result);
+        });
     }
 
     explicit BoundAttribute(model_ptr<Attribute> const& ptr) : BoundObject<Attribute>(ptr) {}
@@ -373,7 +488,14 @@ struct BoundAttributeLayer : public BoundModelNode
                         return true;
                     });
                 return py::iter(result);
-            });
+            })
+            .def("to_dict", [](BoundAttributeLayer& self) -> py::object {
+                if (auto n = self.node()) {
+                    auto& fl = self.featureLayer();
+                    return nodeToPython(n, fl, true);
+                }
+                return py::none();
+            }, "Convert this layer to a Python dict (handles duplicate attribute names).");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -411,7 +533,17 @@ struct BoundAttributeLayerList : public BoundModelNode
                         return true;
                     });
                 return py::iter(result);
-            });
+            })
+            .def("to_dict", [](BoundAttributeLayerList& self) -> py::object {
+                py::dict d;
+                auto& fl = self.featureLayer();
+                self.modelNodePtr_->forEachLayer(
+                    [&](std::string_view name, model_ptr<AttributeLayer> const& layer) {
+                        d[py::str(std::string(name))] = nodeToPython(layer, fl, true);
+                        return true;
+                    });
+                return d;
+            }, "Convert all layers to a Python dict (handles duplicate attribute names).");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -458,17 +590,6 @@ struct BoundFeature : public BoundModelNode
                 "id",
                 [](BoundFeature& self) { return BoundFeatureId(self.modelNodePtr_->id()); },
                 "Get the feature's unique ID.")
-            .def(
-                "evaluate",
-                [](BoundFeature& self, std::string_view const& expression)
-                {
-                    auto res = self.modelNodePtr_->evaluate(expression);
-                    if (!res)
-                        throw std::runtime_error(res.error().message);
-                    return res->getScalar();
-                },
-                py::arg("expression"),
-                "Evaluate a filter expression on this feature.")
             .def(
                 "to_json",
                 [](BoundFeature& self) { return self.modelNodePtr_->toJson().dump(); },
@@ -534,6 +655,95 @@ struct BoundFeature : public BoundModelNode
 
     model_ptr<Feature> modelNodePtr_;
 };
+
+/// Recursively convert a ModelNode tree to native Python objects.
+/// Mirrors simfil's ModelNode::toJson() (nodes.cpp) but builds
+/// py::dict/py::list/scalars directly, avoiding JSON serialization.
+///
+/// Handles two special cases that toJson() also handles:
+///  - Multimap objects: when checkMultimap is true and an Object has
+///    duplicate keys, values are grouped into lists with a "_multimap"
+///    marker. Only AttributeLayer-level objects can have duplicates,
+///    so callers should only pass true at that level to avoid overhead.
+///  - ByteArray scalars: converted to {"_bytes": True, "hex": ..., "number": ...}.
+py::object nodeToPython(model_ptr<ModelNode> const& n, TileFeatureLayer& fl, bool checkMultimap)
+{
+    auto type = n->type();
+    if (type == ValueType::Object) {
+        py::dict d;
+        if (checkMultimap) {
+            // Pre-scan for duplicate field IDs using stack-allocated
+            // array with cheap uint16_t comparison. Only called for
+            // AttributeLayer-level objects, not recursively.
+            bool isMultiMap = false;
+            {
+                uint16_t seen[32];
+                size_t count = 0;
+                for (auto const& [fieldId, _] : n->fields()) {
+                    for (size_t j = 0; j < count; ++j) {
+                        if (seen[j] == fieldId) {
+                            isMultiMap = true;
+                            break;
+                        }
+                    }
+                    if (isMultiMap) break;
+                    if (count < 32)
+                        seen[count++] = fieldId;
+                }
+            }
+            if (isMultiMap) {
+                for (auto const& [fieldId, child] : n->fields()) {
+                    if (auto key = fl.lookupStringId(fieldId)) {
+                        auto pyKey = py::str(std::string(*key));
+                        if (d.contains(pyKey))
+                            d[pyKey].cast<py::list>().append(nodeToPython(child, fl));
+                        else
+                            d[pyKey] = py::list(py::make_tuple(nodeToPython(child, fl)));
+                    }
+                }
+                d[py::str("_multimap")] = py::bool_(true);
+                return d;
+            }
+        }
+        for (auto const& [fieldId, child] : n->fields()) {
+            if (auto key = fl.lookupStringId(fieldId))
+                d[py::str(std::string(*key))] = nodeToPython(child, fl);
+        }
+        return d;
+    }
+    if (type == ValueType::Array) {
+        py::list l;
+        for (uint32_t i = 0; i < n->size(); ++i)
+            l.append(nodeToPython(n->at(i), fl));
+        return l;
+    }
+    auto v = n->value();
+    return std::visit([](auto&& val) -> py::object {
+        using T = std::decay_t<decltype(val)>;
+        if constexpr (std::is_same_v<T, bool>)
+            return py::bool_(val);
+        else if constexpr (std::is_same_v<T, int64_t>)
+            return py::int_(val);
+        else if constexpr (std::is_same_v<T, double>)
+            return py::float_(val);
+        else if constexpr (std::is_same_v<T, std::string>)
+            return py::str(val);
+        else if constexpr (std::is_same_v<T, std::string_view>)
+            return py::str(std::string(val));
+        else if constexpr (std::is_same_v<T, ByteArray>) {
+            py::dict d;
+            d["_bytes"] = py::bool_(true);
+            d["hex"] = py::str(val.toHex(false));
+            if (auto decoded = val.decodeBigEndianI64())
+                d["number"] = py::int_(*decoded);
+            else
+                d["number"] = py::none();
+            return d;
+        }
+        else
+            return py::none();
+    }, v);
+}
 
 }  // namespace mapget
 
