@@ -108,8 +108,8 @@ th { background: #f1f5f9; }
         <div class="muted" style="margin-top:8px">
             `pending-controller-*` covers frames still queued in mapget's tiles websocket controller.
             `total-forwarded-*` counts frames already handed to Drogon via `conn->send(...)`.
-            `flow-control-credit-*` shows currently available connection-level send credits.
-            `flow-control-blocked-connections` counts flow-controlled connections currently blocked by zero frame or byte credits.
+            `flow-control-credit-frames` shows currently available connection-level frame credits.
+            `flow-control-blocked-connections` counts flow-controlled connections currently blocked by zero frame credits.
         </div>
     </div>
 
@@ -179,6 +179,7 @@ const formatBytes = (bytes) => {
 const state = {
     timer: null,
     refreshInFlight: false,
+    pendingForcedRefresh: false,
     lastServiceText: "",
     lastCacheText: "",
     lastBreakdownJson: "",
@@ -193,7 +194,6 @@ const wsMetricDefinitions = [
     ["flow-control-enabled-connections", "flow-control-enabled-connections", (v) => formatInt(v)],
     ["flow-control-blocked-connections", "flow-control-blocked-connections", (v) => formatInt(v)],
     ["flow-control-credit-frames", "flow-control-credit-frames", (v) => formatInt(v)],
-    ["flow-control-credit-bytes", "flow-control-credit-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["total-queued-frames", "total-queued-frames", (v) => formatInt(v)],
     ["total-queued-bytes", "total-queued-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["total-forwarded-frames", "total-forwarded-frames", (v) => formatInt(v)],
@@ -203,7 +203,6 @@ const wsMetricDefinitions = [
     ["total-drain-calls", "total-drain-calls", (v) => formatInt(v)],
     ["total-flow-grant-messages", "total-flow-grant-messages", (v) => formatInt(v)],
     ["total-flow-grant-frames", "total-flow-grant-frames", (v) => formatInt(v)],
-    ["total-flow-grant-bytes", "total-flow-grant-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["total-flow-blocked-drains", "total-flow-blocked-drains", (v) => formatInt(v)],
     ["replaced-requests", "replaced-requests", (v) => formatInt(v)],
 ];
@@ -371,8 +370,11 @@ function renderTileDistribution(service) {
     }
 }
 
-async function refreshStatus() {
+async function refreshStatus(force = false) {
     if (state.refreshInFlight) {
+        if (force) {
+            state.pendingForcedRefresh = true;
+        }
         return;
     }
     state.refreshInFlight = true;
@@ -382,10 +384,12 @@ async function refreshStatus() {
     }
     try {
         const includeTileSizeDistribution = !!byId("includeTileSizeDistribution")?.checked;
+        const includeCachedFeatureTreeBytes = includeTileSizeDistribution;
         const params = new URLSearchParams();
         if (includeTileSizeDistribution) {
             params.set("includeTileSizeDistribution", "1");
         }
+        params.set("includeCachedFeatureTreeBytes", includeCachedFeatureTreeBytes ? "1" : "0");
         params.set("_", String(Date.now()));
 
         const response = await fetch(`/status-data?${params.toString()}`, {cache: "no-store"});
@@ -409,6 +413,10 @@ async function refreshStatus() {
         }
     } finally {
         state.refreshInFlight = false;
+        if (state.pendingForcedRefresh) {
+            state.pendingForcedRefresh = false;
+            queueMicrotask(() => refreshStatus(false));
+        }
     }
 }
 
@@ -418,14 +426,14 @@ function resetTimer() {
     }
     const refreshMsInput = byId("refreshMs");
     const interval = Math.max(200, Number(refreshMsInput?.value || 1000));
-    state.timer = setInterval(refreshStatus, interval);
+    state.timer = setInterval(() => refreshStatus(false), interval);
 }
 
 byId("refreshMs")?.addEventListener("change", resetTimer);
-byId("refreshNow")?.addEventListener("click", refreshStatus);
-byId("includeTileSizeDistribution")?.addEventListener("change", refreshStatus);
+byId("refreshNow")?.addEventListener("click", () => refreshStatus(true));
+byId("includeTileSizeDistribution")?.addEventListener("change", () => refreshStatus(true));
 resetTimer();
-refreshStatus();
+refreshStatus(true);
 </script>
 </body>
 </html>
