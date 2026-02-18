@@ -22,13 +22,6 @@ class SourceDataReferenceItem;
 struct QualifiedSourceDataReference {
     StringId qualifier_;
     SourceDataReference reference_;
-
-    template <class S>
-    void serialize(S& s)
-    {
-        s.value2b(qualifier_);
-        s.object(reference_);
-    }
 };
 
 /**

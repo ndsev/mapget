@@ -51,13 +51,6 @@ protected:
         bool useCommonTilePrefix_ = false;
         simfil::StringId typeId_ = 0;
         simfil::ModelNodeAddress idParts_;
-
-        template<typename S>
-        void serialize(S& s) {
-            s.value1b(useCommonTilePrefix_);
-            s.value2b(typeId_);
-            s.object(idParts_);
-        }
     };
 
 public:

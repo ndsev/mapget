@@ -42,13 +42,6 @@ void serialize(S& s, glm::fvec3& v) {
     s.value4b(v.z);
 }
 
-template <typename S>
-void serialize(S& s, mapget::Point& v) {
-    s.value8b(v.x);
-    s.value8b(v.y);
-    s.value8b(v.z);
-}
-
 }
 
 namespace
@@ -126,12 +119,6 @@ struct FeatureAddrWithIdHash
         : featureAddr_(featureAddr),
           idHash_(idHash)
     {}
-
-    template<class S>
-    void serialize(S& s) {
-        s.object(featureAddr_);
-        s.value8b(idHash_);
-    }
 
     bool operator< (FeatureAddrWithIdHash const& other) const {
         return std::tie(idHash_, featureAddr_) < std::tie(other.idHash_, other.featureAddr_);

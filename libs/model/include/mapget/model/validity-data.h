@@ -4,9 +4,7 @@
 
 #include "simfil/model/nodes.h"
 
-#include <cassert>
 #include <cstdint>
-#include <utility>
 
 namespace mapget
 {
@@ -63,51 +61,6 @@ struct ValidityData
     GeometryDescription geomDescr_{};
     simfil::StringId referencedGeomName_ = 0;
     simfil::ModelNodeAddress featureAddress_;
-
-    template <typename S>
-    void serialize(S& s)
-    {
-        s.value1b(direction_);
-        s.value1b(geomDescrType_);
-        s.value1b(geomOffsetType_);
-
-        if (geomDescrType_ == SimpleGeometry) {
-            assert(geomOffsetType_ == InvalidOffsetType);
-            s.object(geomDescr_.simpleGeometry_);
-            return;
-        }
-
-        // The referenced geometry name is only used if the validity
-        // does not directly reference a geometry by a ModelNodeAddress.
-        s.value2b(referencedGeomName_);
-
-        auto serializeOffsetPoint = [this, &s](Point& p) {
-            switch (geomOffsetType_) {
-            case InvalidOffsetType:
-                break;
-            case GeoPosOffset:
-                s.object(p);
-                break;
-            case BufferOffset:
-            case RelativeLengthOffset:
-            case MetricLengthOffset:
-                s.value8b(p.x);
-                break;
-            }
-        };
-
-        if (geomDescrType_ == OffsetRangeValidity) {
-            auto& start = geomDescr_.range_.first;
-            auto& end = geomDescr_.range_.second;
-            serializeOffsetPoint(start);
-            serializeOffsetPoint(end);
-        }
-        else if (geomDescrType_ == OffsetPointValidity) {
-            serializeOffsetPoint(geomDescr_.point_);
-        }
-
-        s.object(featureAddress_);
-    }
 };
 
 }  // namespace mapget

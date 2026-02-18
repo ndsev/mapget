@@ -60,15 +60,6 @@ protected:
         simfil::ModelNodeAddress sourceValidity_;
         simfil::ModelNodeAddress targetValidity_;
         simfil::ModelNodeAddress sourceData_;
-
-        template<typename S>
-        void serialize(S& s) {
-            s.value2b(name_);
-            s.object(targetFeatureId_);
-            s.object(sourceValidity_);
-            s.object(targetValidity_);
-            s.object(sourceData_);
-        }
     };
 
 public:

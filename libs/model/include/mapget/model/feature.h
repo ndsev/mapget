@@ -187,17 +187,6 @@ protected:
         simfil::ModelNodeAddress attrs_;
         simfil::ModelNodeAddress relations_;
         simfil::ModelNodeAddress sourceData_;
-
-        template <typename S>
-        void serialize(S& s)
-        {
-            s.object(id_);
-            s.object(geom_);
-            s.object(attrLayers_);
-            s.object(attrs_);
-            s.object(relations_);
-            s.object(sourceData_);
-        }
     };
 
 public:

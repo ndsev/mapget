@@ -52,14 +52,6 @@ protected:
         simfil::ArrayIndex fields_ = -1;
         simfil::StringId name_ = 0;
         simfil::ModelNodeAddress sourceDataRefs_;
-
-        template<typename S>
-        void serialize(S& s) {
-            s.object(validities_);
-            s.value4b(fields_);
-            s.value2b(name_);
-            s.object(sourceDataRefs_);
-        }
     };
 
 public:

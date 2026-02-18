@@ -71,24 +71,6 @@ struct GeometryData
     } detail_;
 
     simfil::ModelNodeAddress sourceDataReferences_;
-
-    template<typename S>
-    void serialize(S& s) {
-        s.value1b(isView_);
-        s.value1b(type_);
-        s.value2b(geomName_);
-        if (!isView_) {
-            s.value4b(detail_.geom_.vertexArray_);
-            s.object(detail_.geom_.offset_);
-        }
-        else {
-            s.value4b(detail_.view_.offset_);
-            s.value4b(detail_.view_.size_);
-            s.object(detail_.view_.baseGeometry_);
-        }
-        s.object(sourceDataReferences_);
-    }
 };
 
 }  // namespace mapget
-

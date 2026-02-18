@@ -71,14 +71,6 @@ private:
         simfil::ModelNodeAddress object_;
         simfil::StringId schemaName_ = {};
         SourceDataAddress sourceAddress_;
-
-        template <typename S>
-        void serialize(S& s)
-        {
-            s.object(object_);
-            s.value2b(schemaName_);
-            s.object(sourceAddress_);
-        }
     };
 
     Data* const data_;
