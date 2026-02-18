@@ -2,6 +2,7 @@
 
 #include "simfil/model/nodes.h"
 
+#include "geometry-data.h"
 #include "point.h"
 #include "featureid.h"
 #include "sourcedatareference.h"
@@ -20,13 +21,6 @@ namespace mapget
 {
 
 class TileFeatureLayer;
-
-enum class GeomType: uint8_t {
-    Points,   // Point-cloud
-    Line,     // Line-string
-    Polygon,  // Auto-closed polygon
-    Mesh      // Collection of triangles
-};
 
 /**
  * Small interface container type which may be used
@@ -142,77 +136,7 @@ protected:
     [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
-    struct Data
-    {
-        Data() = default;
-        Data(GeomType t, size_t capacity) : isView_(false), type_(t) {
-            detail_.geom_.vertexArray_ = -(simfil::ArrayIndex)capacity;
-        }
-        Data(GeomType t, uint32_t offset, uint32_t size, ModelNodeAddress base) : isView_(true), type_(t) {
-            detail_.view_.offset_ = offset;
-            detail_.view_.size_ = size;
-            detail_.view_.baseGeometry_ = base;
-        }
-
-        // Flag to indicate whether this geometry is just
-        // a view into another geometry object.
-        bool isView_ = false;
-
-        // Geometry type. A view can have a different geometry type
-        // than the base geometry.
-        GeomType type_ = GeomType::Points;
-
-        // Geometry reference name if applicable.
-        StringId geomName_ = 0;
-
-        union GeomDetails
-        {
-            GeomDetails() {new(&geom_) GeomBaseDetails();}
-
-            struct GeomBaseDetails {
-                // Vertex array index, or negative requested initial
-                // capacity, if no point is added yet.
-                simfil::ArrayIndex vertexArray_ = -1;
-
-                // Offset is set when vertexArray is allocated,
-                // which happens when the first point is added.
-                Point offset_;
-            } geom_;
-
-            struct GeomViewDetails {
-                // If this geometry is a view, then it references
-                // a range of vertices in another geometry.
-
-                // Offset within the other geometry.
-                uint32_t offset_ = 0;
-
-                // Number of referenced vertices.
-                uint32_t size_ = 0;
-
-                // Address of the referenced geometry - may be a view itself.
-                ModelNodeAddress baseGeometry_;
-            } view_;
-        } detail_;
-
-        ModelNodeAddress sourceDataReferences_;
-
-        template<typename S>
-        void serialize(S& s) {
-            s.value1b(isView_);
-            s.value1b(type_);
-            s.value2b(geomName_);
-            if (!isView_) {
-                s.value4b(detail_.geom_.vertexArray_);
-                s.object(detail_.geom_.offset_);
-            }
-            else {
-                s.value4b(detail_.view_.offset_);
-                s.value4b(detail_.view_.size_);
-                s.object(detail_.view_.baseGeometry_);
-            }
-            s.object(sourceDataReferences_);
-        }
-    };
+    using Data = GeometryData;
 
     using Storage = simfil::ArrayArena<glm::fvec3, simfil::detail::ColumnPageSize*2>;
 

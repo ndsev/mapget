@@ -17,7 +17,7 @@
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
 #include <bitsery/traits/vector.h>
-#include "sfl/segmented_vector.hpp"
+#include <noserde.hpp>
 
 #include "simfil/environment.h"
 #include "simfil/model/arena.h"
@@ -116,18 +116,40 @@ namespace
 namespace mapget
 {
 
+struct FeatureAddrWithIdHash
+{
+    ModelNodeAddress featureAddr_{};
+    uint64_t idHash_ = 0;
+
+    FeatureAddrWithIdHash() = default;
+    FeatureAddrWithIdHash(ModelNodeAddress featureAddr, uint64_t idHash)
+        : featureAddr_(featureAddr),
+          idHash_(idHash)
+    {}
+
+    template<class S>
+    void serialize(S& s) {
+        s.object(featureAddr_);
+        s.value8b(idHash_);
+    }
+
+    bool operator< (FeatureAddrWithIdHash const& other) const {
+        return std::tie(idHash_, featureAddr_) < std::tie(other.idHash_, other.featureAddr_);
+    }
+};
+
 struct TileFeatureLayer::Impl {
     ModelNodeAddress featureIdPrefix_;
 
-    sfl::segmented_vector<Feature::Data, simfil::detail::ColumnPageSize/4> features_;
-    sfl::segmented_vector<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
-    sfl::segmented_vector<Validity::Data, simfil::detail::ColumnPageSize> validities_;
-    sfl::segmented_vector<FeatureId::Data, simfil::detail::ColumnPageSize/2> featureIds_;
-    sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayers_;
-    sfl::segmented_vector<simfil::ArrayIndex, simfil::detail::ColumnPageSize/2> attrLayerLists_;
-    sfl::segmented_vector<Relation::Data, simfil::detail::ColumnPageSize/2> relations_;
-    sfl::segmented_vector<Geometry::Data, simfil::detail::ColumnPageSize/2> geom_;
-    sfl::segmented_vector<QualifiedSourceDataReference, simfil::detail::ColumnPageSize/2> sourceDataReferences_;
+    noserde::Buffer<Feature::Data, simfil::detail::ColumnPageSize / 4> features_;
+    noserde::Buffer<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
+    noserde::Buffer<Validity::Data, simfil::detail::ColumnPageSize> validities_;
+    noserde::Buffer<FeatureId::Data, simfil::detail::ColumnPageSize / 2> featureIds_;
+    noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
+    noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
+    noserde::Buffer<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
+    noserde::Buffer<Geometry::Data, simfil::detail::ColumnPageSize / 2> geom_;
+    noserde::Buffer<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
     Geometry::Storage pointBuffers_;
 
     /**
@@ -135,22 +157,7 @@ struct TileFeatureLayer::Impl {
      * in a vector, which is kept in a sorted state. This allows finding a
      * feature by its id in O(log(n)) time.
      */
-    struct FeatureAddrWithIdHash
-    {
-        ModelNodeAddress featureAddr_;
-        uint64_t idHash_ = 0;
-
-        template<class S>
-        void serialize(S& s) {
-            s.object(featureAddr_);
-            s.value8b(idHash_);
-        }
-
-        bool operator< (FeatureAddrWithIdHash const& other) const {
-            return std::tie(idHash_, featureAddr_) < std::tie(other.idHash_, other.featureAddr_);
-        }
-    };
-    sfl::segmented_vector<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize/4> featureHashIndex_;
+    noserde::Buffer<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4> featureHashIndex_;
     bool featureHashIndexNeedsSorting_ = false;
 
     void sortFeatureHashIndex() {
@@ -166,20 +173,19 @@ struct TileFeatureLayer::Impl {
     // (De-)Serialization
     template<typename S>
     void readWrite(S& s) {
-        constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
-        s.container(features_, maxColumnSize);
-        s.container(attributes_, maxColumnSize);
-        s.container(validities_, maxColumnSize);
-        s.container(featureIds_, maxColumnSize);
-        s.container(attrLayers_, maxColumnSize);
-        s.container(attrLayerLists_, maxColumnSize);
+        s.object(features_);
+        s.object(attributes_);
+        s.object(validities_);
+        s.object(featureIds_);
+        s.object(attrLayers_);
+        s.object(attrLayerLists_);
         s.object(featureIdPrefix_);
-        s.container(relations_, maxColumnSize);
+        s.object(relations_);
         sortFeatureHashIndex();
-        s.container(featureHashIndex_, maxColumnSize);
-        s.container(geom_, maxColumnSize);
+        s.object(featureHashIndex_);
+        s.object(geom_);
         s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
-        s.container(sourceDataReferences_, maxColumnSize);
+        s.object(sourceDataReferences_);
     }
 
     explicit Impl(std::shared_ptr<simfil::StringPool> stringPool)
@@ -331,7 +337,7 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
     auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
     auto hash = Hash().mix(typeId).mix(fullStrippedFeatureId).value();
-    impl_->featureHashIndex_.emplace_back(TileFeatureLayer::Impl::FeatureAddrWithIdHash{result.addr(), hash});
+    impl_->featureHashIndex_.emplace_back(FeatureAddrWithIdHash{result.addr(), hash});
     impl_->featureHashIndexNeedsSorting_ = true;
 
     // Note: Here we rely on the assertion that the root_ collection
@@ -928,33 +934,32 @@ nlohmann::json TileFeatureLayer::toJson() const
 
 nlohmann::json TileFeatureLayer::serializationSizeStats() const
 {
-    constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
     auto featureLayer = nlohmann::json::object();
 
     featureLayer["features"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->features_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<Feature::Data, simfil::detail::ColumnPageSize / 4>&>(impl_->features_)); }));
     featureLayer["attributes"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->attributes_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<Attribute::Data, simfil::detail::ColumnPageSize>&>(impl_->attributes_)); }));
     featureLayer["validities"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->validities_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<Validity::Data, simfil::detail::ColumnPageSize>&>(impl_->validities_)); }));
     featureLayer["feature-ids"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->featureIds_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<FeatureId::Data, simfil::detail::ColumnPageSize / 2>&>(impl_->featureIds_)); }));
     featureLayer["attribute-layers"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->attrLayers_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2>&>(impl_->attrLayers_)); }));
     featureLayer["attribute-layer-lists"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->attrLayerLists_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2>&>(impl_->attrLayerLists_)); }));
     featureLayer["feature-id-prefix"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(impl_->featureIdPrefix_); }));
+        [&](auto& s) { s.object(const_cast<ModelNodeAddress&>(impl_->featureIdPrefix_)); }));
     featureLayer["relations"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->relations_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<Relation::Data, simfil::detail::ColumnPageSize / 2>&>(impl_->relations_)); }));
     featureLayer["feature-hash-index"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->featureHashIndex_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4>&>(impl_->featureHashIndex_)); }));
     featureLayer["geometries"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->geom_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<Geometry::Data, simfil::detail::ColumnPageSize / 2>&>(impl_->geom_)); }));
     featureLayer["point-buffers"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.ext(impl_->pointBuffers_, bitsery::ext::ArrayArenaExt{}); }));
+        [&](auto& s) { s.ext(const_cast<Geometry::Storage&>(impl_->pointBuffers_), bitsery::ext::ArrayArenaExt{}); }));
     featureLayer["source-data-references"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.container(impl_->sourceDataReferences_, maxColumnSize); }));
+        [&](auto& s) { s.object(const_cast<noserde::Buffer<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2>&>(impl_->sourceDataReferences_)); }));
 
     int64_t featureLayerTotal = 0;
     for (const auto& [_, value] : featureLayer.items()) {
@@ -1008,7 +1013,7 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& qu
     auto it = std::lower_bound(
         impl_->featureHashIndex_.begin(),
         impl_->featureHashIndex_.end(),
-        Impl::FeatureAddrWithIdHash{0, hash},
+        FeatureAddrWithIdHash{ModelNodeAddress{0, 0}, hash},
         [](auto&& l, auto&& r) { return l.idHash_ < r.idHash_; });
 
     // Iterate through potential matches to handle hash collisions.

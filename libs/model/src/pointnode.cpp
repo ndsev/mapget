@@ -36,9 +36,9 @@ PointNode::PointNode(ModelNode const& baseNode,
     // The extracted point index may point to a validity's single point
     // or to one of its range points. These magic indices are used in validity.cpp.
     switch (i) {
-    case 0: point_ = std::get<Point>(geomData->geomDescr_); break;
-    case 1: point_ = std::get<Validity::Data::Range>(geomData->geomDescr_).first; break;
-    case 2: point_ = std::get<Validity::Data::Range>(geomData->geomDescr_).second; break;
+    case 0: point_ = geomData->geomDescr_.point_; break;
+    case 1: point_ = geomData->geomDescr_.range_.first; break;
+    case 2: point_ = geomData->geomDescr_.range_.second; break;
     default:
         mapget::raiseFmt<std::runtime_error>("Invalid validity point index {}", i);
     }

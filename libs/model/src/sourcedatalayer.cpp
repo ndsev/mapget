@@ -10,7 +10,8 @@
 #include "bitsery/serializer.h"
 #include "bitsery/traits/string.h"
 #include "bitsery/traits/vector.h"
-#include "simfil/model/bitsery-traits.h" // segmented_vector traits
+#include "simfil/model/bitsery-traits.h"
+#include <noserde.hpp>
 
 #include "mapget/log.h"
 #include "sourcedata.h"
@@ -31,7 +32,7 @@ namespace mapget
 struct TileSourceDataLayer::Impl
 {
     SourceDataAddressFormat format_;
-    sfl::segmented_vector<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
+    noserde::Buffer<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
 
     // Simfil compiled expression and environment
     SimfilExpressionCache expressionCache_;
@@ -44,8 +45,7 @@ struct TileSourceDataLayer::Impl
     // Bitsery (de-)serialization interface
     template<typename S>
     void readWrite(S& s) {
-        constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
-        s.container(compounds_, maxColumnSize);
+        s.object(compounds_);
         s.value1b(format_);
     }
 };

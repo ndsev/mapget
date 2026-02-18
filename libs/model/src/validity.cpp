@@ -62,7 +62,7 @@ Validity::Validity(Validity::Data* data,
             [](Validity const& self)
             {
                 return self.model().resolve(
-                    std::get<ModelNodeAddress>(self.data_->geomDescr_));
+                    self.data_->geomDescr_.simpleGeometry_);
             });
         return;
     }
@@ -123,12 +123,13 @@ Validity::Validity(Validity::Data* data,
     };
 
     if (data_->geomDescrType_ == OffsetRangeValidity) {
-        auto& [start, end] = std::get<Data::Range>(data_->geomDescr_);
+        auto& start = data_->geomDescr_.range_.first;
+        auto& end = data_->geomDescr_.range_.second;
         exposeOffsetPoint(StringPool::StartStr, 1, start);
         exposeOffsetPoint(StringPool::EndStr, 2, end);
     }
     else if (data_->geomDescrType_ == OffsetPointValidity) {
-        exposeOffsetPoint(StringPool::PointStr, 0, std::get<Point>(data_->geomDescr_));
+        exposeOffsetPoint(StringPool::PointStr, 0, data_->geomDescr_.point_);
     }
 
     if (data_->featureAddress_) {
@@ -184,14 +185,14 @@ std::optional<std::string_view> Validity::geometryName() const
 void Validity::setOffsetPoint(Point pos) {
     data_->geomDescrType_ = OffsetPointValidity;
     data_->geomOffsetType_ = GeoPosOffset;
-    data_->geomDescr_ = pos;
+    data_->geomDescr_.point_ = pos;
 }
 
 void Validity::setOffsetPoint(Validity::GeometryOffsetType offsetType, double pos) {
     assert(offsetType != InvalidOffsetType && offsetType != GeoPosOffset);
     data_->geomDescrType_ = OffsetPointValidity;
     data_->geomOffsetType_ = offsetType;
-    data_->geomDescr_ = Point{pos, 0, 0};
+    data_->geomDescr_.point_ = Point{pos, 0, 0};
 }
 
 std::optional<Point> Validity::offsetPoint() const
@@ -199,20 +200,20 @@ std::optional<Point> Validity::offsetPoint() const
     if (data_->geomDescrType_ != OffsetPointValidity) {
         return {};
     }
-    return std::get<Point>(data_->geomDescr_);
+    return data_->geomDescr_.point_;
 }
 
 void Validity::setOffsetRange(Point start, Point end) {
     data_->geomDescrType_ = OffsetRangeValidity;
     data_->geomOffsetType_ = GeoPosOffset;
-    data_->geomDescr_ = std::make_pair(start, end);
+    data_->geomDescr_.range_ = {start, end};
 }
 
 void Validity::setOffsetRange(Validity::GeometryOffsetType offsetType, double start, double end) {
     assert(offsetType != InvalidOffsetType && offsetType != GeoPosOffset);
     data_->geomDescrType_ = OffsetRangeValidity;
     data_->geomOffsetType_ = offsetType;
-    data_->geomDescr_ = std::make_pair(Point{start, 0, 0}, Point{end, 0, 0});
+    data_->geomDescr_.range_ = {Point{start, 0, 0}, Point{end, 0, 0}};
 }
 
 std::optional<std::pair<Point, Point>> Validity::offsetRange() const
@@ -220,18 +221,19 @@ std::optional<std::pair<Point, Point>> Validity::offsetRange() const
     if (data_->geomDescrType_ != OffsetRangeValidity) {
         return {};
     }
-    return std::get<Data::Range>(data_->geomDescr_);
+    return std::pair<Point, Point>{data_->geomDescr_.range_.first, data_->geomDescr_.range_.second};
 }
 
 void Validity::setSimpleGeometry(model_ptr<Geometry> geom) {
     if (geom) {
         data_->geomDescrType_ = SimpleGeometry;
+        data_->geomDescr_.simpleGeometry_ = geom->addr();
     }
     else {
         data_->geomDescrType_ = NoGeometry;
+        data_->geomDescr_.simpleGeometry_ = {};
     }
     data_->geomOffsetType_ = InvalidOffsetType;
-    data_->geomDescr_ = geom->addr();
 }
 
 model_ptr<Geometry> Validity::simpleGeometry() const
@@ -239,7 +241,7 @@ model_ptr<Geometry> Validity::simpleGeometry() const
     if (data_->geomDescrType_ != SimpleGeometry) {
         return {};
     }
-    return model().resolve<Geometry>(std::get<ModelNodeAddress>(data_->geomDescr_));
+    return model().resolve<Geometry>(data_->geomDescr_.simpleGeometry_);
 }
 
 SelfContainedGeometry Validity::computeGeometry(
