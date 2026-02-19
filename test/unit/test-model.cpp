@@ -217,9 +217,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         std::stringstream tileBytes;
         tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
 
         auto deserializedTile = std::make_shared<TileFeatureLayer>(
-            tileBytes,
+            tileBuffer,
             [&](auto&& mapName, auto&& layerName){
                 REQUIRE(mapName == "Tropico");
                 REQUIRE(layerName == "WayLayer");
@@ -389,9 +391,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         std::stringstream tileBytes;
         tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
 
         auto deserializedTile = std::make_shared<TileFeatureLayer>(
-            tileBytes,
+            tileBuffer,
             [&](auto&& mapName, auto&& layerName){
                 return layerInfo;
             },

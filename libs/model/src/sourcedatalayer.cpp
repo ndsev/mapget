@@ -4,7 +4,7 @@
 #include <memory>
 
 #include "bitsery/bitsery.h"
-#include "bitsery/adapter/stream.h"
+#include "bitsery/adapter/buffer.h"
 #include "bitsery/adapter/stream.h"
 #include "bitsery/deserializer.h"
 #include "bitsery/serializer.h"
@@ -62,22 +62,31 @@ TileSourceDataLayer::TileSourceDataLayer(
 {}
 
 TileSourceDataLayer::TileSourceDataLayer(
-    std::istream& in,
+    const std::vector<uint8_t>& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
     StringPoolResolveFun const& stringPoolGetter
 ) :
-    TileLayer(in, layerInfoResolveFun),
+    TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
     ModelPool(stringPoolGetter(nodeId_)),
     impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
 {
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(in);
+    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+    if (deserializationOffsetBytes_ > input.size()) {
+        raise("Failed to read TileSourceDataLayer: invalid deserialization offset.");
+    }
+    bitsery::Deserializer<Adapter> s(Adapter(
+        input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
+        input.end()));
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raiseFmt(
             "Failed to read TileFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error()));
     }
-    ModelPool::read(in);
+    const auto modelOffset = deserializationOffsetBytes_ + s.adapter().currentReadPos();
+    if (auto result = ModelPool::read(input, modelOffset); !result) {
+        raise(result.error().message);
+    }
 }
 
 TileSourceDataLayer::~TileSourceDataLayer() = default;

@@ -11,6 +11,7 @@
 #include <optional>
 #include <memory>
 #include <functional>
+#include <vector>
 #include <tl/expected.hpp>
 
 namespace simfil { struct StringPool; }
@@ -104,13 +105,14 @@ public:
         const std::shared_ptr<LayerInfo>& info);
 
     /**
-     * Parse a tile layer from an input stream. Will throw if
+     * Parse a tile layer from a binary byte buffer. Will throw if
      * the resolved major-minor version of the TileLayer is not the same
-     * as the one read from the stream.
+     * as the one read from the input.
      */
     TileLayer(
-        std::istream& inputStream,
-        LayerInfoResolveFun const& layerInfoResolveFun);
+        const std::vector<uint8_t>& input,
+        LayerInfoResolveFun const& layerInfoResolveFun,
+        size_t* bytesRead = nullptr);
 
     virtual ~TileLayer() = default;
 
@@ -209,6 +211,7 @@ public:
     void setLoadState(LoadState state);
 
 protected:
+    size_t deserializationOffsetBytes_ = 0;
     Version mapVersion_{0, 0, 0};
     TileId tileId_;
     std::string nodeId_; // Identifier of the string-pool/datasource instance

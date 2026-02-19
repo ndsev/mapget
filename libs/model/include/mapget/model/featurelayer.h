@@ -2,6 +2,7 @@
 
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include "tl/expected.hpp"
 
@@ -82,15 +83,15 @@ public:
         std::shared_ptr<simfil::StringPool> const& strings);
 
     /**
-     * Constructor which parses a TileFeatureLayer from a binary stream.
-     * @param inputStream The binary stream to parse.
+     * Constructor which parses a TileFeatureLayer from a binary byte buffer.
+     * @param input The binary bytes to parse.
      * @param layerInfoResolveFun Function which will be called to retrieve
      *  a layerInfo object for the layer name stored for the tile.
      * @param stringPoolGetter Function which will be called to retrieve
      *  a string pool for the node name of the tile.
      */
     TileFeatureLayer(
-        std::istream& inputStream,
+        const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter
     );

@@ -2,8 +2,10 @@
 #include "mapget/log.h"
 
 #include <bitsery/bitsery.h>
+#include <bitsery/adapter/buffer.h>
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
+#include <bitsery/traits/vector.h>
 
 #include "simfil/model/bitsery-traits.h"
 
@@ -89,14 +91,16 @@ TileLayer::TileLayer(
 }
 
 TileLayer::TileLayer(
-    std::istream& inputStream,
-    const LayerInfoResolveFun& layerInfoResolveFun
+    const std::vector<uint8_t>& input,
+    const LayerInfoResolveFun& layerInfoResolveFun,
+    size_t* bytesRead
 ) : tileId_(0)
 {
     using namespace std::chrono;
     using namespace nlohmann;
 
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
+    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+    bitsery::Deserializer<Adapter> s(Adapter(input.begin(), input.end()));
     s.text1b(mapId_, std::numeric_limits<uint32_t>::max());
     std::string layerName;
     s.text1b(layerName, std::numeric_limits<uint32_t>::max());
@@ -150,6 +154,15 @@ TileLayer::TileLayer(
     if (hasLegalInfo) {
         legalInfo_ = "";  // Tell the optional that it has a value.
         s.text1b(*legalInfo_, std::numeric_limits<uint32_t>::max());
+    }
+
+    if (s.adapter().error() != bitsery::ReaderError::NoError) {
+        raise(fmt::format(
+            "Failed to read TileLayer: Error {}",
+            static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
+    }
+    if (bytesRead != nullptr) {
+        *bytesRead = s.adapter().currentReadPos();
     }
 }
 

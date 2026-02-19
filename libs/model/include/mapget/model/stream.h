@@ -4,8 +4,9 @@
 #include "stringpool.h"
 
 #include <map>
-#include <sstream>
+#include <span>
 #include <shared_mutex>
+#include <vector>
 
 namespace mapget
 {
@@ -101,7 +102,11 @@ public:
          * size, or false, if no sufficient bytes are available. Throws if the protocol version
          * in the header does not match the version currently used by mapget.
          */
-        static bool readMessageHeader(std::stringstream& stream, MessageType& outType, uint32_t& outSize);
+        static bool readMessageHeader(
+            std::span<const uint8_t> bytes,
+            MessageType& outType,
+            uint32_t& outSize,
+            size_t* bytesRead = nullptr);
 
     private:
         enum class Phase { ReadHeader, ReadValue };
@@ -116,7 +121,8 @@ public:
          */
         bool continueReading();
 
-        std::stringstream buffer_;
+        std::vector<uint8_t> buffer_;
+        size_t readOffset_ = 0;
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(TileLayer::Ptr)> onParsedLayer_;

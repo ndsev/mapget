@@ -29,22 +29,38 @@ std::shared_ptr<StringPool> Cache::getStringPool(const std::string_view& nodeId)
         std::shared_ptr<StringPool> stringPool = std::make_shared<StringPool>(nodeId);
         auto cachedStringsBlob = getStringPoolBlob(nodeId);
         if (cachedStringsBlob) {
-            // Read the string pool from the stream.
-            std::stringstream stream;
-            stream << *cachedStringsBlob;
+            std::vector<uint8_t> bytes(cachedStringsBlob->begin(), cachedStringsBlob->end());
 
             // First, read the header and the datasource node id.
             // These must match what we expect.
             TileLayerStream::MessageType streamMessageType;
             uint32_t streamMessageSize;
-            TileLayerStream::Reader::readMessageHeader(stream, streamMessageType, streamMessageSize);
-            auto streamDataSourceNodeId = StringPool::readDataSourceNodeId(stream);
+            size_t headerBytesRead = 0;
+            if (!TileLayerStream::Reader::readMessageHeader(
+                    std::span<const uint8_t>(bytes),
+                    streamMessageType,
+                    streamMessageSize,
+                    &headerBytesRead)) {
+                raise("Stream header error while parsing string pool.");
+            }
+            if (headerBytesRead + streamMessageSize > bytes.size()) {
+                raise("Invalid StringPool message size while parsing cache blob.");
+            }
+
+            std::vector<uint8_t> payload(
+                bytes.begin() + static_cast<std::ptrdiff_t>(headerBytesRead),
+                bytes.begin() + static_cast<std::ptrdiff_t>(headerBytesRead + streamMessageSize));
+            size_t nodeIdBytesRead = 0;
+            auto streamDataSourceNodeId = StringPool::readDataSourceNodeId(payload, 0, &nodeIdBytesRead);
             if (streamMessageType != TileLayerStream::MessageType::StringPool || streamDataSourceNodeId != nodeId) {
                 raise("Stream header error while parsing string pool.");
             }
 
             // Now, actually read the string pool message.
-            stringPool->read(stream);
+            auto readResult = stringPool->read(payload, nodeIdBytesRead);
+            if (!readResult) {
+                raise(readResult.error().message);
+            }
             stringPoolOffsets_.emplace(nodeId, stringPool->highest());
         }
         auto [itNew, _] = stringPoolPerNodeId_.emplace(nodeId, stringPool);
