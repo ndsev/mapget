@@ -73,39 +73,6 @@ namespace
             throw std::out_of_range("Size out of range");
         return (index << SourceAddressArenaSizeBits) | size;
     }
-
-    class CountingStreambuf : public std::streambuf
-    {
-    public:
-        size_t size() const { return size_; }
-
-    protected:
-        std::streamsize xsputn(const char* /*s*/, std::streamsize count) override
-        {
-            size_ += static_cast<size_t>(count);
-            return count;
-        }
-
-        int overflow(int ch) override
-        {
-            if (ch != EOF)
-                ++size_;
-            return ch;
-        }
-
-    private:
-        size_t size_ = 0;
-    };
-
-    template <class Fn>
-    size_t measureBytes(Fn&& fn)
-    {
-        CountingStreambuf buf;
-        std::ostream os(&buf);
-        bitsery::Serializer<bitsery::OutputStreamAdapter> s(os);
-        fn(s);
-        return buf.size();
-    }
 }
 
 namespace mapget
@@ -1045,30 +1012,180 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
 {
     auto featureLayer = nlohmann::json::object();
 
-    featureLayer["features"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<Feature::Data, simfil::detail::ColumnPageSize / 4>&>(impl_->features_)); }));
-    featureLayer["attributes"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<Attribute::Data, simfil::detail::ColumnPageSize>&>(impl_->attributes_)); }));
-    featureLayer["validities"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<Validity::Data, simfil::detail::ColumnPageSize>&>(impl_->validities_)); }));
-    featureLayer["feature-ids"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<FeatureId::Data, simfil::detail::ColumnPageSize / 2>&>(impl_->featureIds_)); }));
-    featureLayer["attribute-layers"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2>&>(impl_->attrLayers_)); }));
-    featureLayer["attribute-layer-lists"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2>&>(impl_->attrLayerLists_)); }));
-    featureLayer["feature-id-prefix"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<ModelNodeAddress&>(impl_->featureIdPrefix_)); }));
-    featureLayer["relations"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<Relation::Data, simfil::detail::ColumnPageSize / 2>&>(impl_->relations_)); }));
-    featureLayer["feature-hash-index"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4>&>(impl_->featureHashIndex_)); }));
-    featureLayer["geometries"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<Geometry::Data, simfil::detail::ColumnPageSize / 2>&>(impl_->geom_)); }));
-    featureLayer["point-buffers"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.ext(const_cast<Geometry::Storage&>(impl_->pointBuffers_), bitsery::ext::ArrayArenaExt{}); }));
-    featureLayer["source-data-references"] = static_cast<int64_t>(measureBytes(
-        [&](auto& s) { s.object(const_cast<noserde::Buffer<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2>&>(impl_->sourceDataReferences_)); }));
+    featureLayer["features"] = impl_->features_.byte_size();
+    featureLayer["attributes"] = impl_->attributes_.byte_size();
+    featureLayer["validities"] = impl_->validities_.byte_size();
+    featureLayer["feature-ids"] = impl_->featureIds_.byte_size();
+    featureLayer["attribute-layers"] = impl_->attrLayers_.byte_size();
+    featureLayer["attribute-layer-lists"] = impl_->attrLayerLists_.byte_size();
+    featureLayer["relations"] = impl_->relations_.byte_size();
+    featureLayer["feature-hash-index"] = impl_->featureHashIndex_.byte_size();
+    featureLayer["geometries"] = impl_->geom_.byte_size();
+    featureLayer["point-buffers"] = impl_->pointBuffers_.byte_size();
+    featureLayer["source-data-references"] = impl_->sourceDataReferences_.byte_size();
+
+    auto geometryUsage = nlohmann::json::object({
+        {"total", 0},
+        {"base", 0},
+        {"view", 0},
+        {"with-name", 0},
+        {"with-source-data-references", 0},
+        {"base-vertex-buffer-allocated", 0},
+        {"base-vertex-buffer-unallocated", 0},
+        {"by-type", nlohmann::json::object({
+            {"points", 0},
+            {"line", 0},
+            {"polygon", 0},
+            {"mesh", 0},
+        })},
+        {"base-by-type", nlohmann::json::object({
+            {"points", 0},
+            {"line", 0},
+            {"polygon", 0},
+            {"mesh", 0},
+        })},
+        {"view-by-type", nlohmann::json::object({
+            {"points", 0},
+            {"line", 0},
+            {"polygon", 0},
+            {"mesh", 0},
+        })},
+    });
+
+    auto validityUsage = nlohmann::json::object({
+        {"total", 0},
+        {"direction-only", 0},
+        {"with-direction", 0},
+        {"with-geometry-name", 0},
+        {"with-feature-id", 0},
+        {"simple-geometry-with-address", 0},
+        {"by-direction", nlohmann::json::object({
+            {"empty", 0},
+            {"positive", 0},
+            {"negative", 0},
+            {"both", 0},
+            {"none", 0},
+        })},
+        {"by-geometry-description", nlohmann::json::object({
+            {"none", 0},
+            {"simple-geometry", 0},
+            {"offset-point", 0},
+            {"offset-range", 0},
+        })},
+        {"by-offset-type", nlohmann::json::object({
+            {"invalid", 0},
+            {"geo-pos", 0},
+            {"buffer", 0},
+            {"relative-length", 0},
+            {"metric-length", 0},
+        })},
+    });
+
+    auto increment = [](nlohmann::json& obj, const char* key) {
+        obj[key] = obj[key].get<int64_t>() + 1;
+    };
+
+    auto geometryTypeKey = [](GeomType type) -> const char* {
+        switch (type) {
+        case GeomType::Points: return "points";
+        case GeomType::Line: return "line";
+        case GeomType::Polygon: return "polygon";
+        case GeomType::Mesh: return "mesh";
+        }
+        return "points";
+    };
+
+    for (auto const& geom : impl_->geom_) {
+        increment(geometryUsage, "total");
+        if (geom.geomName_ != 0) {
+            increment(geometryUsage, "with-name");
+        }
+        if (geom.sourceDataReferences_) {
+            increment(geometryUsage, "with-source-data-references");
+        }
+
+        auto typeKey = geometryTypeKey(geom.type_);
+        increment(geometryUsage["by-type"], typeKey);
+
+        if (geom.isView_) {
+            increment(geometryUsage, "view");
+            increment(geometryUsage["view-by-type"], typeKey);
+        } else {
+            increment(geometryUsage, "base");
+            increment(geometryUsage["base-by-type"], typeKey);
+            if (geom.detail_.geom_.vertexArray_ >= 0) {
+                increment(geometryUsage, "base-vertex-buffer-allocated");
+            } else {
+                increment(geometryUsage, "base-vertex-buffer-unallocated");
+            }
+        }
+    }
+
+    for (auto const& validity : impl_->validities_) {
+        increment(validityUsage, "total");
+
+        switch (validity.direction_) {
+        case Validity::Empty: increment(validityUsage["by-direction"], "empty"); break;
+        case Validity::Positive: increment(validityUsage["by-direction"], "positive"); break;
+        case Validity::Negative: increment(validityUsage["by-direction"], "negative"); break;
+        case Validity::Both: increment(validityUsage["by-direction"], "both"); break;
+        case Validity::None: increment(validityUsage["by-direction"], "none"); break;
+        }
+
+        if (validity.direction_ != Validity::Empty) {
+            increment(validityUsage, "with-direction");
+        }
+        if (validity.referencedGeomName_ != 0) {
+            increment(validityUsage, "with-geometry-name");
+        }
+        if (validity.featureAddress_) {
+            increment(validityUsage, "with-feature-id");
+        }
+
+        switch (validity.geomDescrType_) {
+        case Validity::NoGeometry:
+            increment(validityUsage["by-geometry-description"], "none");
+            break;
+        case Validity::SimpleGeometry:
+            increment(validityUsage["by-geometry-description"], "simple-geometry");
+            if (validity.geomDescr_.simpleGeometry_) {
+                increment(validityUsage, "simple-geometry-with-address");
+            }
+            break;
+        case Validity::OffsetPointValidity:
+            increment(validityUsage["by-geometry-description"], "offset-point");
+            break;
+        case Validity::OffsetRangeValidity:
+            increment(validityUsage["by-geometry-description"], "offset-range");
+            break;
+        }
+
+        switch (validity.geomOffsetType_) {
+        case Validity::InvalidOffsetType:
+            increment(validityUsage["by-offset-type"], "invalid");
+            break;
+        case Validity::GeoPosOffset:
+            increment(validityUsage["by-offset-type"], "geo-pos");
+            break;
+        case Validity::BufferOffset:
+            increment(validityUsage["by-offset-type"], "buffer");
+            break;
+        case Validity::RelativeLengthOffset:
+            increment(validityUsage["by-offset-type"], "relative-length");
+            break;
+        case Validity::MetricLengthOffset:
+            increment(validityUsage["by-offset-type"], "metric-length");
+            break;
+        }
+
+        if (validity.direction_ != Validity::Empty &&
+            validity.geomDescrType_ == Validity::NoGeometry &&
+            validity.geomOffsetType_ == Validity::InvalidOffsetType &&
+            validity.referencedGeomName_ == 0 &&
+            !validity.featureAddress_) {
+            increment(validityUsage, "direction-only");
+        }
+    }
 
     int64_t featureLayerTotal = 0;
     for (const auto& [_, value] : featureLayer.items()) {
@@ -1091,6 +1208,8 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
 
     return {
         {"feature-layer", featureLayer},
+        {"geometry-usage", geometryUsage},
+        {"validity-usage", validityUsage},
         {"model-pool", modelPool},
         {"feature-layer-total-bytes", featureLayerTotal},
         {"model-pool-total-bytes", modelPoolTotal},
