@@ -445,3 +445,27 @@ TEST_CASE("Attribute Validity", "[validity]") {
         return true;
     });
 }
+
+TEST_CASE("Simple Validity Self Upgrade", "[validity]") {
+    auto modelPool = makeTile();
+    auto validities = modelPool->newValidityCollection();
+
+    auto simple = validities->newDirection(Validity::Direction::Positive);
+    REQUIRE(simple->addr().column() == TileFeatureLayer::ColumnId::SimpleValidity);
+    REQUIRE(simple->geometryDescriptionType() == Validity::NoGeometry);
+
+    // Any geometry/feature setter must materialize the simple validity.
+    simple->setGeometryName("BestGeometry");
+    simple->setOffsetPoint(Validity::BufferOffset, 1.0);
+
+    auto firstNode = validities->at(0);
+    REQUIRE(firstNode);
+    auto upgraded = modelPool->resolve<Validity>(*firstNode);
+    REQUIRE(upgraded->addr().column() == TileFeatureLayer::ColumnId::Validities);
+    REQUIRE(upgraded->direction() == Validity::Direction::Positive);
+    REQUIRE(upgraded->geometryDescriptionType() == Validity::OffsetPointValidity);
+    REQUIRE(upgraded->geometryOffsetType() == Validity::BufferOffset);
+    REQUIRE(upgraded->geometryName() == std::optional<std::string_view>{"BestGeometry"});
+    REQUIRE(upgraded->offsetPoint().has_value());
+    REQUIRE(upgraded->offsetPoint()->x == 1.0);
+}

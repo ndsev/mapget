@@ -12,6 +12,7 @@
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <bitsery/bitsery.h>
@@ -116,6 +117,7 @@ struct TileFeatureLayer::Impl {
      */
     noserde::Buffer<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4> featureHashIndex_;
     bool featureHashIndexNeedsSorting_ = false;
+    std::unordered_map<uint32_t, ModelNodeAddress> upgradedSimpleValidityAddresses_;
 
     void sortFeatureHashIndex() {
         if (!featureHashIndexNeedsSorting_)
@@ -554,6 +556,58 @@ model_ptr<MultiValidity> TileFeatureLayer::newValidityCollection(size_t initialC
         mpKey_);
 }
 
+std::optional<ModelNodeAddress> TileFeatureLayer::upgradedSimpleValidityAddress(
+    ModelNodeAddress simpleAddress) const
+{
+    if (simpleAddress.column() != ColumnId::SimpleValidity) {
+        return std::nullopt;
+    }
+    if (auto existing = impl_->upgradedSimpleValidityAddresses_.find(simpleAddress.value_);
+        existing != impl_->upgradedSimpleValidityAddresses_.end()) {
+        return existing->second;
+    }
+    return std::nullopt;
+}
+
+ModelNodeAddress TileFeatureLayer::materializeSimpleValidity(
+    ModelNodeAddress simpleAddress,
+    Validity::Direction direction)
+{
+    if (simpleAddress.column() != ColumnId::SimpleValidity) {
+        raise("Cannot materialize non-simple validity node.");
+    }
+    ModelNodeAddress upgradedAddress{};
+    if (auto existing = upgradedSimpleValidityAddress(simpleAddress)) {
+        upgradedAddress = *existing;
+    }
+    else {
+        impl_->validities_.emplace_back();
+        upgradedAddress = ModelNodeAddress{
+            ColumnId::Validities,
+            static_cast<uint32_t>(impl_->validities_.size() - 1)};
+        auto& upgraded = impl_->validities_.back();
+        upgraded.direction_ = direction;
+        impl_->upgradedSimpleValidityAddresses_.emplace(simpleAddress.value_, upgradedAddress);
+    }
+
+    // Rebind every simple validity address reference to the upgraded full node.
+    auto& members = arrayMemberStorage();
+    for (simfil::ArrayIndex arrayIndex = 0;
+         arrayIndex < static_cast<simfil::ArrayIndex>(members.size());
+         ++arrayIndex) {
+        members.iterate(
+            arrayIndex,
+            [&](ModelNodeAddress& memberAddress)
+            {
+                if (memberAddress.value_ == simpleAddress.value_) {
+                    memberAddress = upgradedAddress;
+                }
+            });
+    }
+
+    return upgradedAddress;
+}
+
 // Short aliases to keep resolve hook signatures compact.
 using simfil::ModelNode;
 using simfil::res::tag;
@@ -770,13 +824,32 @@ model_ptr<SourceDataReferenceItem> resolveInternal(tag<SourceDataReferenceItem>,
 template<>
 model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::Validities)
+    switch (node.addr().column()) {
+    case TileFeatureLayer::ColumnId::Validities:
+        return Validity(
+            &model.impl_->validities_[node.addr().index()],
+            model.shared_from_this(),
+            node.addr(),
+            model.mpKey_);
+    case TileFeatureLayer::ColumnId::SimpleValidity: {
+        if (auto upgraded = model.upgradedSimpleValidityAddress(node.addr())) {
+            return Validity(
+                &model.impl_->validities_[upgraded->index()],
+                model.shared_from_this(),
+                *upgraded,
+                model.mpKey_);
+        }
+        auto const direction = static_cast<Validity::Direction>(node.addr().index());
+        if (direction < Validity::Empty || direction > Validity::None) {
+            raiseFmt(
+                "Cannot cast this node to a Validity: invalid simple validity direction value {}.",
+                node.addr().index());
+        }
+        return Validity(direction, model.shared_from_this(), node.addr(), model.mpKey_);
+    }
+    default:
         raise("Cannot cast this node to a Validity.");
-    return Validity(
-        &model.impl_->validities_[node.addr().index()],
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
+    }
 }
 
 template<>
@@ -855,6 +928,7 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
         cb(*resolve<SourceDataReferenceItem>(n));
         return {};
     case ColumnId::Validities:
+    case ColumnId::SimpleValidity:
         cb(*resolve<Validity>(n));
         return {};
     case ColumnId::ValidityPoints:
@@ -1054,6 +1128,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
 
     auto validityUsage = nlohmann::json::object({
         {"total", 0},
+        {"simple-column", 0},
         {"direction-only", 0},
         {"with-direction", 0},
         {"with-geometry-name", 0},
@@ -1185,6 +1260,60 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
             !validity.featureAddress_) {
             increment(validityUsage, "direction-only");
         }
+    }
+
+    auto countSimpleValidity = [&](Validity::Direction direction) {
+        increment(validityUsage, "total");
+        increment(validityUsage, "simple-column");
+
+        switch (direction) {
+        case Validity::Empty: increment(validityUsage["by-direction"], "empty"); break;
+        case Validity::Positive: increment(validityUsage["by-direction"], "positive"); break;
+        case Validity::Negative: increment(validityUsage["by-direction"], "negative"); break;
+        case Validity::Both: increment(validityUsage["by-direction"], "both"); break;
+        case Validity::None: increment(validityUsage["by-direction"], "none"); break;
+        }
+        if (direction != Validity::Empty) {
+            increment(validityUsage, "with-direction");
+        }
+
+        increment(validityUsage["by-geometry-description"], "none");
+        increment(validityUsage["by-offset-type"], "invalid");
+        increment(validityUsage, "direction-only");
+    };
+
+    std::unordered_set<uint32_t> seenValidityCollections;
+    auto collectSimpleValidities = [&](simfil::ModelNodeAddress const& validityCollectionAddress) {
+        if (!validityCollectionAddress) {
+            return;
+        }
+        if (!seenValidityCollections.insert(validityCollectionAddress.value_).second) {
+            return;
+        }
+
+        auto collection = resolve<MultiValidity>(validityCollectionAddress);
+        if (!collection) {
+            return;
+        }
+
+        for (auto const& validity : *collection) {
+            auto const validityAddress = validity->addr();
+            if (validityAddress.column() != ColumnId::SimpleValidity) {
+                continue;
+            }
+            if (validityAddress.index() > static_cast<uint32_t>(Validity::None)) {
+                continue;
+            }
+            countSimpleValidity(static_cast<Validity::Direction>(validityAddress.index()));
+        }
+    };
+
+    for (auto const& attribute : impl_->attributes_) {
+        collectSimpleValidities(attribute.validities_);
+    }
+    for (auto const& relation : impl_->relations_) {
+        collectSimpleValidities(relation.sourceValidity_);
+        collectSimpleValidities(relation.targetValidity_);
     }
 
     int64_t featureLayerTotal = 0;
@@ -1500,6 +1629,15 @@ ModelNode::Ptr TileFeatureLayer::clone(
             }
             break;
         }
+        break;
+    }
+    case ColumnId::SimpleValidity: {
+        auto resolved = otherLayer->resolve<Validity>(*otherNode);
+        newCacheNode = model_ptr<ModelNode>::make(
+            shared_from_this(),
+            ModelNodeAddress{
+                ColumnId::SimpleValidity,
+                static_cast<uint32_t>(resolved->direction())});
         break;
     }
     case ColumnId::ValidityCollections: {

@@ -106,6 +106,10 @@ protected:
 public:
     explicit Validity(simfil::detail::mp_key key)
         : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(key) {}
+    Validity(Direction direction,
+             simfil::ModelConstPtr layer,
+             simfil::ModelNodeAddress a,
+             simfil::detail::mp_key key);
     Validity(Data* data,
              simfil::ModelConstPtr layer,
              simfil::ModelNodeAddress a,
@@ -116,7 +120,10 @@ protected:
     /**
      * Pointer to the actual data stored for the attribute.
      */
+    void ensureMaterialized();
+
     Data* data_ = nullptr;
+    Direction simpleDirection_ = Empty;
 };
 
 /**

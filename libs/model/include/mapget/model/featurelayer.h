@@ -2,6 +2,7 @@
 
 #include <span>
 #include <string_view>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -181,6 +182,15 @@ public:
     model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 1);
 
     /**
+     * Internal validity upgrade helpers used by Validity.
+     */
+    simfil::ModelNodeAddress materializeSimpleValidity(
+        simfil::ModelNodeAddress simpleAddress,
+        Validity::Direction direction);
+    std::optional<simfil::ModelNodeAddress> upgradedSimpleValidityAddress(
+        simfil::ModelNodeAddress simpleAddress) const;
+
+    /**
      * Return type for begin() and end() methods to support range-based
      * for-loops to iterate over all features in a TileFeatureLayer.
      */
@@ -354,6 +364,9 @@ public:
         ValidityCollections,
         FeatureRelationsView,
         GeometryArrayView,
+        // Compact validity form without backing struct storage.
+        // Direction is encoded in ModelNodeAddress::index().
+        SimpleValidity,
     }; };
     
 protected:

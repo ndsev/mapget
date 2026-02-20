@@ -1020,17 +1020,24 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
 
     auto featureLayerTotals = nlohmann::json::object();
     auto modelPoolTotals = nlohmann::json::object();
+    auto geometryUsageTotals = nlohmann::json::object();
+    auto validityUsageTotals = nlohmann::json::object();
     int64_t parsedTiles = 0;
     int64_t totalTileBytes = 0;
     int64_t parseErrors = 0;
     std::vector<int64_t> tileSizes;
 
-    auto addTotals = [](nlohmann::json& totals, const nlohmann::json& stats) {
+    auto addTotals = [](nlohmann::json& totals, const nlohmann::json& stats, const auto& self) -> void {
         for (const auto& [key, value] : stats.items()) {
             if (value.is_number_integer()) {
                 totals[key] = totals.value<int64_t>(key, 0) + value.get<int64_t>();
             } else if (value.is_number_float()) {
                 totals[key] = totals.value<double>(key, .0) + value.get<double>();
+            } else if (value.is_object()) {
+                if (!totals.contains(key) || !totals[key].is_object()) {
+                    totals[key] = nlohmann::json::object();
+                }
+                self(totals[key], value, self);
             }
         }
     };
@@ -1069,8 +1076,10 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
                     return;
                 }
                 auto sizeStats = tile->serializationSizeStats();
-                addTotals(featureLayerTotals, sizeStats["feature-layer"]);
-                addTotals(modelPoolTotals, sizeStats["model-pool"]);
+                addTotals(featureLayerTotals, sizeStats["feature-layer"], addTotals);
+                addTotals(modelPoolTotals, sizeStats["model-pool"], addTotals);
+                addTotals(geometryUsageTotals, sizeStats["geometry-usage"], addTotals);
+                addTotals(validityUsageTotals, sizeStats["validity-usage"], addTotals);
             },
             impl_->cache_);
     }
@@ -1104,7 +1113,9 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
             {"total-tile-bytes", totalTileBytes},
             {"parse-errors", parseErrors},
             {"feature-layer", featureLayerTotals},
-            {"model-pool", modelPoolTotals}
+            {"model-pool", modelPoolTotals},
+            {"geometry-usage", geometryUsageTotals},
+            {"validity-usage", validityUsageTotals}
         };
     }
 

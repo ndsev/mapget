@@ -189,16 +189,23 @@ private:
     {
         TileLayerStream::MessageType type = TileLayerStream::MessageType::None;
         uint32_t payloadSize = 0;
-        std::stringstream ss;
-        ss.write(msg.data(), static_cast<std::streamsize>(msg.size()));
-        if (!TileLayerStream::Reader::readMessageHeader(ss, type, payloadSize)) {
+        size_t headerBytes = 0;
+        auto bytes = std::span<const uint8_t>{
+            reinterpret_cast<const uint8_t*>(msg.data()),
+            msg.size()};
+        if (!TileLayerStream::Reader::readMessageHeader(bytes, type, payloadSize, &headerBytes)) {
             setError("Failed to read stream message header");
+            return;
+        }
+        if (bytes.size() < headerBytes + payloadSize) {
+            setError("Invalid stream message size");
             return;
         }
 
         if (type == TileLayerStream::MessageType::Status) {
-            std::string payload(payloadSize, '\0');
-            ss.read(payload.data(), static_cast<std::streamsize>(payloadSize));
+            auto payload = std::string_view{
+                msg.data() + static_cast<std::ptrdiff_t>(headerBytes),
+                payloadSize};
             try {
                 auto parsed = nlohmann::json::parse(payload);
                 {

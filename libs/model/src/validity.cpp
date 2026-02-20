@@ -22,8 +22,30 @@ std::string_view directionToString(Validity::Direction const& d)
 
 }
 
+void Validity::ensureMaterialized()
+{
+    if (data_) {
+        return;
+    }
+
+    auto const simpleAddress = addr();
+    if (simpleAddress.column() != TileFeatureLayer::ColumnId::SimpleValidity) {
+        raise("Cannot materialize validity from non-simple address.");
+    }
+
+    auto upgradedAddress = model().materializeSimpleValidity(simpleAddress, simpleDirection_);
+    auto upgraded = model().resolve<Validity>(upgradedAddress);
+    if (!upgraded || !upgraded->data_) {
+        raise("Failed to materialize simple validity.");
+    }
+    data_ = upgraded->data_;
+}
+
 model_ptr<FeatureId> Validity::featureId() const
 {
+    if (!data_) {
+        return {};
+    }
     if (!data_->featureAddress_) {
         return {};
     }
@@ -32,11 +54,32 @@ model_ptr<FeatureId> Validity::featureId() const
 
 void Validity::setFeatureId(model_ptr<FeatureId> featureId)
 {
+    ensureMaterialized();
     if (!featureId) {
         data_->featureAddress_ = {};
         return;
     }
     data_->featureAddress_ = featureId->addr();
+}
+
+Validity::Validity(
+    Validity::Direction direction,
+    simfil::ModelConstPtr layer,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(std::move(layer), a, key),
+      simpleDirection_(direction)
+{
+    if (direction != Empty) {
+        fields_.emplace_back(
+            StringPool::DirectionStr,
+            [](Validity const& self)
+            {
+                return model_ptr<simfil::ValueNode>::make(
+                    directionToString(self.direction()),
+                    self.model_);
+            });
+    }
 }
 
 Validity::Validity(Validity::Data* data,
@@ -52,7 +95,7 @@ Validity::Validity(Validity::Data* data,
             [](Validity const& self)
             {
                 return model_ptr<simfil::ValueNode>::make(
-                    directionToString(self.data_->direction_),
+                    directionToString(self.direction()),
                     self.model_);
             });
 
@@ -105,7 +148,7 @@ Validity::Validity(Validity::Data* data,
             fieldName,
             [pointIndex, p](Validity const& self) -> ModelNode::Ptr
             {
-                switch (self.data_->geomOffsetType_) {
+                switch (self.geometryOffsetType()) {
                 case InvalidOffsetType: return ModelNode::Ptr{};
                 case GeoPosOffset:
                     return self.model().resolve(
@@ -146,26 +189,37 @@ Validity::Validity(Validity::Data* data,
 
 void Validity::setDirection(const Validity::Direction& v)
 {
+    ensureMaterialized();
     data_->direction_ = v;
 }
 
 Validity::Direction Validity::direction() const
 {
+    if (!data_) {
+        return simpleDirection_;
+    }
     return data_->direction_;
 }
 
 Validity::GeometryOffsetType Validity::geometryOffsetType() const
 {
+    if (!data_) {
+        return InvalidOffsetType;
+    }
     return data_->geomOffsetType_;
 }
 
 Validity::GeometryDescriptionType Validity::geometryDescriptionType() const
 {
+    if (!data_) {
+        return NoGeometry;
+    }
     return data_->geomDescrType_;
 }
 
 void Validity::setGeometryName(const std::optional<std::string_view>& geometryName)
 {
+    ensureMaterialized();
     simfil::StringId nameId = simfil::StringPool::Empty;
     if (geometryName)
         if (auto res = model().strings()->emplace(*geometryName); res)
@@ -176,6 +230,9 @@ void Validity::setGeometryName(const std::optional<std::string_view>& geometryNa
 
 std::optional<std::string_view> Validity::geometryName() const
 {
+    if (!data_) {
+        return {};
+    }
     if (!data_->referencedGeomName_) {
         return {};
     }
@@ -183,12 +240,14 @@ std::optional<std::string_view> Validity::geometryName() const
 }
 
 void Validity::setOffsetPoint(Point pos) {
+    ensureMaterialized();
     data_->geomDescrType_ = OffsetPointValidity;
     data_->geomOffsetType_ = GeoPosOffset;
     data_->geomDescr_.point_ = pos;
 }
 
 void Validity::setOffsetPoint(Validity::GeometryOffsetType offsetType, double pos) {
+    ensureMaterialized();
     assert(offsetType != InvalidOffsetType && offsetType != GeoPosOffset);
     data_->geomDescrType_ = OffsetPointValidity;
     data_->geomOffsetType_ = offsetType;
@@ -197,6 +256,9 @@ void Validity::setOffsetPoint(Validity::GeometryOffsetType offsetType, double po
 
 std::optional<Point> Validity::offsetPoint() const
 {
+    if (!data_) {
+        return {};
+    }
     if (data_->geomDescrType_ != OffsetPointValidity) {
         return {};
     }
@@ -204,12 +266,14 @@ std::optional<Point> Validity::offsetPoint() const
 }
 
 void Validity::setOffsetRange(Point start, Point end) {
+    ensureMaterialized();
     data_->geomDescrType_ = OffsetRangeValidity;
     data_->geomOffsetType_ = GeoPosOffset;
     data_->geomDescr_.range_ = {start, end};
 }
 
 void Validity::setOffsetRange(Validity::GeometryOffsetType offsetType, double start, double end) {
+    ensureMaterialized();
     assert(offsetType != InvalidOffsetType && offsetType != GeoPosOffset);
     data_->geomDescrType_ = OffsetRangeValidity;
     data_->geomOffsetType_ = offsetType;
@@ -218,6 +282,9 @@ void Validity::setOffsetRange(Validity::GeometryOffsetType offsetType, double st
 
 std::optional<std::pair<Point, Point>> Validity::offsetRange() const
 {
+    if (!data_) {
+        return {};
+    }
     if (data_->geomDescrType_ != OffsetRangeValidity) {
         return {};
     }
@@ -225,6 +292,7 @@ std::optional<std::pair<Point, Point>> Validity::offsetRange() const
 }
 
 void Validity::setSimpleGeometry(model_ptr<Geometry> geom) {
+    ensureMaterialized();
     if (geom) {
         data_->geomDescrType_ = SimpleGeometry;
         data_->geomDescr_.simpleGeometry_ = geom->addr();
@@ -238,6 +306,9 @@ void Validity::setSimpleGeometry(model_ptr<Geometry> geom) {
 
 model_ptr<Geometry> Validity::simpleGeometry() const
 {
+    if (!data_) {
+        return {};
+    }
     if (data_->geomDescrType_ != SimpleGeometry) {
         return {};
     }
@@ -248,7 +319,7 @@ SelfContainedGeometry Validity::computeGeometry(
     model_ptr<GeometryCollection> geometryCollection,
     std::string* error) const
 {
-    if (data_->geomDescrType_ == SimpleGeometry) {
+    if (geometryDescriptionType() == SimpleGeometry) {
         // Return the self-contained geometry points.
         auto simpleGeom = simpleGeometry();
         assert(simpleGeom);
@@ -257,12 +328,12 @@ SelfContainedGeometry Validity::computeGeometry(
 
     // If this validity references some feature directly,
     // use the geometry collection of that feature.
-    if (data_->featureAddress_) {
-        auto feature = model().find(featureId()->typeId(), featureId()->keyValuePairs());
+    if (auto featureIdNode = featureId()) {
+        auto feature = model().find(featureIdNode->typeId(), featureIdNode->keyValuePairs());
         if (feature) {
             geometryCollection = feature->geomOrNull();
         } else {
-            log().warn("Could not find feature by its ID {}", featureId()->toString());
+            log().warn("Could not find feature by its ID {}", featureIdNode->toString());
         }
     }
 
@@ -302,7 +373,7 @@ SelfContainedGeometry Validity::computeGeometry(
 
     // No geometry description from the attribute - just return the whole
     // geometry from the collection.
-    if (data_->geomDescrType_ == NoGeometry) {
+    if (geometryDescriptionType() == NoGeometry) {
         return geometry->toSelfContained();
     }
 
@@ -317,7 +388,7 @@ SelfContainedGeometry Validity::computeGeometry(
 
     Point startPoint;
     std::optional<Point> endPoint;
-    if (data_->geomDescrType_ == OffsetPointValidity) {
+    if (geometryDescriptionType() == OffsetPointValidity) {
         startPoint = *offsetPoint();
     }
     else {
@@ -495,10 +566,15 @@ MultiValidity::newGeomName(std::string_view geomName, Validity::Direction direct
 
 model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
 {
-    auto result = model().newValidity();
-    result->setDirection(direction);
-    append(result);
-    return result;
+    const auto simpleAddr = simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::SimpleValidity,
+        static_cast<uint32_t>(direction)};
+    if (auto upgradedAddress = model().upgradedSimpleValidityAddress(simpleAddr)) {
+        appendInternal(model_ptr<simfil::ModelNode>::make(model_, *upgradedAddress));
+        return model().resolve<Validity>(*upgradedAddress);
+    }
+    appendInternal(model_ptr<simfil::ModelNode>::make(model_, simpleAddr));
+    return model().resolve<Validity>(simpleAddr);
 }
 
 }
