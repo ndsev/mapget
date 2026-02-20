@@ -34,6 +34,11 @@ TileLayer::Ptr DataSource::get(
         if (loadStateCallback) {
             tileFeatureLayer->setLoadStateCallback(loadStateCallback);
         }
+        if (layerInfo->stages_ > 1) {
+            tileFeatureLayer->setStage(k.stage_);
+        } else {
+            tileFeatureLayer->setStage(std::nullopt);
+        }
         fill(tileFeatureLayer);
         result = tileFeatureLayer;
         break;

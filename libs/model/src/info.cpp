@@ -364,6 +364,7 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
             featureTypes,
             j.value("zoomLevels", std::vector<int>()),
             coverages,
+            std::max<uint32_t>(1U, j.value("stages", 1U)),
             j.value("canRead", true),
             j.value("canWrite", false),
             Version::fromJson(j.value("version", Version().toJson()))});
@@ -393,6 +394,7 @@ nlohmann::json LayerInfo::toJson() const
         {"featureTypes", featureTypes},
         {"zoomLevels", zoomLevels_},
         {"coverage", coverages},
+        {"stages", stages_},
         {"canRead", canRead_},
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};

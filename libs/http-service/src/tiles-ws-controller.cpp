@@ -1,6 +1,7 @@
 #include "tiles-ws-controller.h"
 
 #include "mapget/http-service/http-service.h"
+#include "tiles-request-json.h"
 
 #include "mapget/log.h"
 #include "mapget/model/stream.h"
@@ -159,13 +160,15 @@ constexpr bool EMIT_LOAD_STATE_FRAMES = false;
 [[nodiscard]] MapTileKey makeCanonicalRequestedTileKey(
     std::string_view mapId,
     std::string_view layerId,
-    TileId tileId)
+    TileId tileId,
+    uint32_t stage = 0)
 {
     return MapTileKey(
         REQUEST_TILE_LAYER_TYPE,
         std::string(mapId),
         std::string(layerId),
-        tileId);
+        tileId,
+        stage);
 }
 
 /// Normalize an existing map tile key so request matching ignores source layer type.
@@ -338,9 +341,8 @@ public:
 
         struct ParsedRequest
         {
-            std::string mapId;
-            std::string layerId;
-            std::vector<TileId> tileIds;
+            detail::ParsedLayerTilesRequest request;
+            LayerRequestContext context;
         };
         std::vector<ParsedRequest> parsedRequests;
         std::set<MapTileKey> desiredTileKeys;
@@ -350,29 +352,27 @@ public:
         try {
             parsedRequests.reserve(requestsIt->size());
             for (auto const& requestJson : *requestsIt) {
-                const std::string mapId = requestJson.at("mapId").get<std::string>();
-                const std::string layerId = requestJson.at("layerId").get<std::string>();
-                const auto& tileIdsJson = requestJson.at("tileIds");
-                if (!tileIdsJson.is_array()) {
-                    throw std::runtime_error("tileIds must be an array");
-                }
+                auto parsedRequest = detail::parseLayerTilesRequestJson(requestJson);
+                auto layerContext = service_.resolveLayerRequest(
+                    parsedRequest.mapId,
+                    parsedRequest.layerId,
+                    authHeaders_);
+                auto expandedTileKeys = detail::expandLayerTilesRequestKeys(
+                    parsedRequest,
+                    REQUEST_TILE_LAYER_TYPE,
+                    layerContext.stages_);
 
-                std::vector<TileId> tileIds;
-                tileIds.reserve(tileIdsJson.size());
-                for (auto const& tid : tileIdsJson) {
-                    const auto tileId = TileId{tid.get<uint64_t>()};
-                    tileIds.emplace_back(tileId);
-                    const auto tileKey = makeCanonicalRequestedTileKey(mapId, layerId, tileId);
-                    desiredTileKeys.insert(tileKey);
-                    if (nextTilePriorityRanks.find(tileKey) == nextTilePriorityRanks.end()) {
-                        nextTilePriorityRanks.emplace(tileKey, nextPriorityRank++);
+                for (auto const& tileKey : expandedTileKeys) {
+                    auto requestedTileKey = makeCanonicalRequestedTileKey(tileKey);
+                    desiredTileKeys.insert(requestedTileKey);
+                    if (nextTilePriorityRanks.find(requestedTileKey) == nextTilePriorityRanks.end()) {
+                        nextTilePriorityRanks.emplace(requestedTileKey, nextPriorityRank++);
                     }
                 }
 
                 parsedRequests.push_back(ParsedRequest{
-                    .mapId = mapId,
-                    .layerId = layerId,
-                    .tileIds = std::move(tileIds),
+                    .request = std::move(parsedRequest),
+                    .context = std::move(layerContext),
                 });
             }
         }
@@ -398,34 +398,59 @@ public:
         for (size_t index = 0; index < parsedRequests.size(); ++index) {
             auto& parsed = parsedRequests[index];
             nextRequestInfos.push_back(RequestInfo{
-                .mapId = parsed.mapId,
-                .layerId = parsed.layerId,
+                .mapId = parsed.request.mapId,
+                .layerId = parsed.request.layerId,
             });
 
-            std::vector<TileId> tileIdsToFetch;
-            tileIdsToFetch.reserve(parsed.tileIds.size());
+            std::vector<std::vector<TileId>> tileIdsByNextStageToFetch(
+                parsed.request.tileIdsByNextStage.size());
+            auto stageCount = std::max<uint32_t>(1U, parsed.context.stages_);
             {
                 std::lock_guard lock(mutex_);
-                for (const auto& tileId : parsed.tileIds) {
-                    const auto requestedTileKey = makeCanonicalRequestedTileKey(parsed.mapId, parsed.layerId, tileId);
-                    const bool alreadyQueued =
-                        queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
-                    const bool alreadySentNotGranted =
-                        sentTileFrameRefCount_.find(requestedTileKey) != sentTileFrameRefCount_.end();
-                    // Skip backend fetches for tiles already queued or already sent but not yet granted.
-                    if (!alreadyQueued && !alreadySentNotGranted) {
-                        tileIdsToFetch.push_back(tileId);
+                for (size_t bucketIndex = 0; bucketIndex < parsed.request.tileIdsByNextStage.size(); ++bucketIndex) {
+                    auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
+                    if (nextMissingStage >= stageCount) {
+                        continue;
+                    }
+                    for (auto const& tileId : parsed.request.tileIdsByNextStage[bucketIndex]) {
+                        bool needsBackendFetch = false;
+                        for (uint32_t stage = nextMissingStage; stage < stageCount; ++stage) {
+                            auto requestedTileKey = makeCanonicalRequestedTileKey(
+                                parsed.request.mapId,
+                                parsed.request.layerId,
+                                tileId,
+                                stage);
+                            const bool alreadyQueued =
+                                queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
+                            const bool alreadySentNotGranted =
+                                sentTileFrameRefCount_.find(requestedTileKey) != sentTileFrameRefCount_.end();
+                            if (!alreadyQueued && !alreadySentNotGranted) {
+                                needsBackendFetch = true;
+                                break;
+                            }
+                        }
+                        if (needsBackendFetch) {
+                            tileIdsByNextStageToFetch[bucketIndex].push_back(tileId);
+                        }
                     }
                 }
             }
-            if (tileIdsToFetch.empty()) {
+
+            bool hasTilesToFetch = false;
+            for (auto const& bucket : tileIdsByNextStageToFetch) {
+                if (!bucket.empty()) {
+                    hasTilesToFetch = true;
+                    break;
+                }
+            }
+            if (!hasTilesToFetch) {
                 continue;
             }
 
             auto request = std::make_shared<LayerTilesRequest>(
-                parsed.mapId,
-                parsed.layerId,
-                std::move(tileIdsToFetch));
+                parsed.request.mapId,
+                parsed.request.layerId,
+                std::move(tileIdsByNextStageToFetch));
             serviceRequests.push_back(request);
             {
                 std::lock_guard lock(mutex_);
@@ -972,6 +997,7 @@ private:
             {"mapId", key.mapId_},
             {"layerId", key.layerId_},
             {"tileId", key.tileId_.value_},
+            {"stage", key.stage_},
             {"state", static_cast<uint8_t>(state)},
             {"stateText", std::string(loadStateToString(state))},
         }).dump();

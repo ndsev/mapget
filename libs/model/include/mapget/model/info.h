@@ -279,6 +279,12 @@ struct LayerInfo
      */
     std::vector<Coverage> coverage_;
 
+    /**
+     * Number of staged-loading levels available for this layer.
+     * Stage indices are zero-based and the minimum valid value is 1.
+     */
+    uint32_t stages_ = 1;
+
     /** Can this layer be read from? */
     bool canRead_ = true;
 
@@ -351,6 +357,7 @@ struct DataSourceInfo
      *       "featureTypes": [<FeatureTypeInfo>...], // Mandatory: A list of feature type information.
      *       "zoomLevels": [<int>...],        // Optional: A list of zoom levels. Defaults to empty list.
      *       "coverage": [<Coverage>...],     // Optional: A list of coverage objects. Defaults to empty list.
+     *       "stages": <int>,                 // Optional: Number of staged-loading levels. Defaults to 1.
      *       "canRead": <bool>,               // Optional: Whether the layer can be read. Defaults to true.
      *       "canWrite": <bool>,              // Optional: Whether the layer can be written. Defaults to false.
      *       "version": {                     // Optional: The version of the layer.

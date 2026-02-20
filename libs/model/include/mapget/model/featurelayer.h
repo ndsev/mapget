@@ -236,6 +236,10 @@ public:
     /** Shared pointer type */
     using Ptr = std::shared_ptr<TileFeatureLayer>;
 
+    /** Optional staged-loading index (0-based) for this feature tile. */
+    [[nodiscard]] std::optional<uint32_t> stage() const override;
+    void setStage(std::optional<uint32_t> stage) override;
+
     /**
      * Evaluate a (potentially cached) simfil query on this pool
      *
@@ -353,6 +357,7 @@ protected:
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    std::optional<uint32_t> stage_;
 };
 
 // Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).

@@ -23,6 +23,12 @@ enum class RequestStatus {
     Aborted = 0x4 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
 };
 
+struct LayerRequestContext {
+    RequestStatus status_ = RequestStatus::NoDataSource;
+    LayerType layerType_ = LayerType::Features;
+    uint32_t stages_ = 1;
+};
+
 /**
  * Client request for map data, which consists of a map id,
  * a map layer id, an array of tile ids, and a callback function
@@ -42,6 +48,12 @@ public:
         std::string layerId,
         std::vector<TileId> tiles);
 
+    /** Construct a staged request with tile IDs grouped by next missing stage. */
+    LayerTilesRequest(
+        std::string mapId,
+        std::string layerId,
+        std::vector<std::vector<TileId>> tileIdsByNextStage);
+
     /** Get the current status of the request. */
     RequestStatus getStatus();
 
@@ -58,10 +70,10 @@ public:
     std::string layerId_;
 
     /**
-     * The map tile ids for which this request is dedicated.
-     * Must not be empty. Result tiles will be processed in the given order.
+     * The map tile IDs for this request, grouped by next missing stage.
+     * Bucket index N means: send stage N and all higher stages for these IDs.
      */
-    std::vector<TileId> tiles_;
+    std::vector<std::vector<TileId>> tileIdsByNextStage_;
 
     /**
      * The callback function which is called when all tiles have been processed.
@@ -91,6 +103,9 @@ protected:
     nlohmann::json toJson();
 
 private:
+    /** Resolve staged tile IDs into concrete stage-qualified tile keys. */
+    void prepareResolvedLayer(LayerType layerType, uint32_t stages);
+
     /**
      * The callback functions which are called when a result tile is available.
      */
@@ -98,12 +113,15 @@ private:
     std::function<void(TileSourceDataLayer::Ptr)> onSourceDataLayer_;
     std::function<void(MapTileKey const&, TileLayer::LoadState)> onLoadStateChanged_;
 
-    // So the service can track which tileId index from tiles_
+    // So the service can track which tile index from resolvedTileKeys_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
 
-    // Track which tiles still need to be scheduled/served for this request.
-    std::set<TileId> tileIdsNotStarted_;
+    // Resolved staged tile keys in scheduling order.
+    std::vector<MapTileKey> resolvedTileKeys_;
+
+    // Track which resolved tile keys still need to be scheduled/served.
+    std::set<MapTileKey> tileKeysNotStarted_;
 
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;
@@ -193,6 +211,14 @@ public:
      * auth requirements.
      */
     [[nodiscard]] RequestStatus hasLayerAndCanAccess(
+        std::string const& mapId,
+        std::string const& layerId,
+        std::optional<AuthHeaders> const& clientHeaders) const;
+
+    /**
+     * Resolve request context (status, layer type, stage count) for one map+layer.
+     */
+    [[nodiscard]] LayerRequestContext resolveLayerRequest(
         std::string const& mapId,
         std::string const& layerId,
         std::optional<AuthHeaders> const& clientHeaders) const;

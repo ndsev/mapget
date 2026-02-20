@@ -225,6 +225,16 @@ TileFeatureLayer::TileFeatureLayer(
 
 TileFeatureLayer::~TileFeatureLayer() = default;
 
+std::optional<uint32_t> TileFeatureLayer::stage() const
+{
+    return stage_;
+}
+
+void TileFeatureLayer::setStage(std::optional<uint32_t> stage)
+{
+    stage_ = stage;
+}
+
 namespace
 {
 

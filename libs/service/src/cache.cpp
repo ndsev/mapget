@@ -101,6 +101,13 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
 
     tileReader.read(*tileBlob);
     if (tile) {
+        if (auto layerInfo = dataSource.getLayer(tileKey.layerId_);
+            layerInfo && layerInfo->type_ == LayerType::Features && layerInfo->stages_ > 1)
+        {
+            tile->setStage(tileKey.stage_);
+        } else {
+            tile->setStage(std::nullopt);
+        }
         auto ttl = tile->ttl();
         if (ttl && ttl->count() > 0) {
             auto expiresAt = tile->timestamp() + *ttl;
