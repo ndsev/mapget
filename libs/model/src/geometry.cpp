@@ -63,7 +63,7 @@ using namespace simfil;
 /** Model node impls. for GeometryCollection */
 
 GeometryCollection::GeometryCollection(ModelConstPtr pool_, ModelNodeAddress a, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(pool_), a, key)
+    : MergedArrayView<GeometryCollection, Geometry>(std::move(pool_), a, key)
 {}
 
 ValueType GeometryCollection::type() const {
@@ -74,7 +74,7 @@ ModelNode::Ptr GeometryCollection::at(int64_t i) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->at(i);
     if (i == 0) return model_ptr<ValueNode>::make(GeometryCollectionStr, model_);
-    if (i == 1) return model().resolve(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    if (i == 1) return mergedGeometryArray();
     throw std::out_of_range("geom collection: Out of range.");
 }
 
@@ -88,7 +88,7 @@ ModelNode::Ptr GeometryCollection::get(const StringId& f) const {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->get(f);
     if (f == StringPool::TypeStr) return at(0);
-    if (f == StringPool::GeometriesStr) return at(1);
+    if (f == StringPool::GeometriesStr) return mergedGeometryArray();
     return {};
 }
 
@@ -97,7 +97,6 @@ StringId GeometryCollection::keyAt(int64_t i) const {
         return singleGeomEntry->keyAt(i);
     if (i == 0) return StringPool::TypeStr;
     if (i == 1) return StringPool::GeometriesStr;
-    if (i == 1) return StringPool::SourceDataStr;
     throw std::out_of_range("geom collection: Out of range.");
 }
 
@@ -119,6 +118,9 @@ bool GeometryCollection::iterate(const IterCallback& cb) const
 
 ModelNode::Ptr GeometryCollection::singleGeom() const
 {
+    if (extension()) {
+        return {};
+    }
     if (model().arrayMemberStorage().size((ArrayIndex)addr_.index()) == 1) {
         auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
         return array->at(0);
@@ -134,7 +136,36 @@ void GeometryCollection::addGeometry(const model_ptr<Geometry>& geom)
 
 size_t GeometryCollection::numGeometries() const
 {
-    return model().arrayMemberStorage().size((ArrayIndex)addr().index());
+    auto result = model().arrayMemberStorage().size((ArrayIndex)addr().index());
+    if (auto ext = extension()) {
+        result += ext->numGeometries();
+    }
+    return result;
+}
+
+ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
+{
+    if (i < 0) {
+        return {};
+    }
+    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    if (i >= static_cast<int64_t>(array->size())) {
+        return {};
+    }
+    return array->at(i);
+}
+
+model_ptr<GeometryArrayView> GeometryCollection::mergedGeometryArray() const
+{
+    auto result = model_ptr<GeometryArrayView>::make(
+        model_,
+        ModelNodeAddress{TileFeatureLayer::ColumnId::GeometryArrayView, addr_.index()});
+    if (auto ext = extension()) {
+        result->setExtension(ext->mergedGeometryArray());
+    } else {
+        result->setExtension({});
+    }
+    return result;
 }
 
 /** ModelNode impls. for Geometry */

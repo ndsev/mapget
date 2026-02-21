@@ -7,9 +7,11 @@
 #include "featureid.h"
 #include "sourcedatareference.h"
 #include "sourceinfo.h"
+#include "merged-array-view.h"
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 using simfil::ValueType;
 using simfil::ModelNode;
@@ -21,6 +23,7 @@ namespace mapget
 {
 
 class TileFeatureLayer;
+class GeometryArrayView;
 
 /**
  * Small interface container type which may be used
@@ -155,7 +158,7 @@ public:
 
 /** GeometryCollection node has `type` and `geometries` fields. */
 
-class GeometryCollection : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class GeometryCollection : public MergedArrayView<GeometryCollection, Geometry>
 {
 public:
     friend class TileFeatureLayer;
@@ -186,19 +189,31 @@ public:
      */
     template <typename LambdaType, class ModelType = TileFeatureLayer>
     bool forEachGeometry(LambdaType const& callback) const {
-        auto geomArray = modelPtr<ModelType>()->arrayMemberStorage().range((simfil::ArrayIndex)addr().index());
-        return std::all_of(geomArray.begin(), geomArray.end(), [this, &callback](auto&& geomNodeAddress){
-            return callback(modelPtr<ModelType>()->template resolve<Geometry>(geomNodeAddress));
-        });
+        const auto localCount = this->localMergedSize();
+        for (uint32_t i = 0; i < localCount; ++i) {
+            auto localGeom = localGeometryAt(i);
+            if (!localGeom) {
+                continue;
+            }
+            if (!callback(modelPtr<ModelType>()->template resolve<Geometry>(*localGeom))) {
+                return false;
+            }
+        }
+        if (auto ext = extension()) {
+            return ext->forEachGeometry(callback);
+        }
+        return true;
     }
 
 public:
     explicit GeometryCollection(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        : MergedArrayView<GeometryCollection, Geometry>(key) {}
     GeometryCollection(ModelConstPtr pool, ModelNodeAddress, simfil::detail::mp_key key);
     GeometryCollection() = delete;
 
 private:
+    [[nodiscard]] ModelNode::Ptr localGeometryAt(int64_t i) const;
+    [[nodiscard]] model_ptr<GeometryArrayView> mergedGeometryArray() const;
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
@@ -207,6 +222,25 @@ private:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     ModelNode::Ptr singleGeom() const;
+};
+
+class GeometryArrayView : public MergedArrayView<GeometryArrayView, Geometry>
+{
+public:
+    explicit GeometryArrayView(simfil::detail::mp_key key)
+        : MergedArrayView<GeometryArrayView, Geometry>(key)
+    {
+    }
+
+    GeometryArrayView(
+        ModelConstPtr pool,
+        ModelNodeAddress address,
+        simfil::detail::mp_key key)
+        : MergedArrayView<GeometryArrayView, Geometry>(std::move(pool), address, key)
+    {
+    }
+
+    GeometryArrayView() = delete;
 };
 
 /** VertexBuffer Node */

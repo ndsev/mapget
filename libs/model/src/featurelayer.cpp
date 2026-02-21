@@ -11,11 +11,13 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/buffer.h>
 #include <bitsery/adapter/stream.h>
+#include <bitsery/ext/std_optional.h>
 #include <bitsery/traits/string.h>
 #include <bitsery/traits/vector.h>
 #include <noserde.hpp>
@@ -55,7 +57,6 @@ namespace
     constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaIndexBits);
     constexpr uint32_t SourceAddressArenaSizeBits  = 4;
     constexpr uint32_t SourceAddressArenaSizeMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaSizeBits);
-
     std::tuple<size_t, size_t> modelAddressToSourceDataAddressList(uint32_t addr)
     {
         const auto index = addr >> SourceAddressArenaSizeBits;
@@ -139,6 +140,7 @@ struct TileFeatureLayer::Impl {
     noserde::Buffer<Geometry::Data, simfil::detail::ColumnPageSize / 2> geom_;
     noserde::Buffer<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
     Geometry::Storage pointBuffers_;
+    std::unordered_map<uint32_t, std::pair<TileFeatureLayer const*, ModelNodeAddress>> mergedArrayExtensions_;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -211,6 +213,7 @@ TileFeatureLayer::TileFeatureLayer(
     bitsery::Deserializer<Adapter> s(Adapter(
         input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
         input.end()));
+    s.ext4b(stage_, bitsery::ext::StdOptional{});
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raise(fmt::format(
@@ -233,6 +236,67 @@ std::optional<uint32_t> TileFeatureLayer::stage() const
 void TileFeatureLayer::setStage(std::optional<uint32_t> stage)
 {
     stage_ = stage;
+}
+
+void TileFeatureLayer::attachOverlay(TileFeatureLayer::Ptr const& overlay)
+{
+    if (!overlay) {
+        return;
+    }
+
+    if (overlay->size() < size()) {
+        raiseFmt(
+            "Overlay feature count {} is smaller than base feature count {}.",
+            overlay->size(),
+            size());
+    }
+
+    if (overlay_) {
+        overlay_->attachOverlay(overlay);
+        return;
+    }
+
+    overlay_ = overlay;
+}
+
+TileFeatureLayer::Ptr TileFeatureLayer::overlay() const
+{
+    return overlay_;
+}
+
+void TileFeatureLayer::setMergedArrayExtension(
+    ModelNodeAddress baseAddress,
+    TileFeatureLayer const* extensionModel,
+    ModelNodeAddress extensionAddress)
+{
+    if (!baseAddress || !extensionModel || !extensionAddress) {
+        clearMergedArrayExtension(baseAddress);
+        return;
+    }
+    impl_->mergedArrayExtensions_[baseAddress.value_] = {
+        extensionModel,
+        extensionAddress};
+}
+
+void TileFeatureLayer::clearMergedArrayExtension(ModelNodeAddress baseAddress)
+{
+    if (!baseAddress) {
+        return;
+    }
+    impl_->mergedArrayExtensions_.erase(baseAddress.value_);
+}
+
+std::optional<std::pair<TileFeatureLayer const*, ModelNodeAddress>>
+TileFeatureLayer::mergedArrayExtension(ModelNodeAddress baseAddress) const
+{
+    if (!baseAddress) {
+        return {};
+    }
+    auto it = impl_->mergedArrayExtensions_.find(baseAddress.value_);
+    if (it == impl_->mergedArrayExtensions_.end()) {
+        return {};
+    }
+    return it->second;
 }
 
 namespace
@@ -568,11 +632,36 @@ model_ptr<Feature> resolveInternal(tag<Feature>, TileFeatureLayer const& model, 
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::Features)
         raise("Cannot cast this node to a Feature.");
-    return Feature(
+    auto result = Feature(
         model.impl_->features_[node.addr().index()],
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
+
+    if (model.overlay_ && node.addr().index() < model.overlay_->size()) {
+        result.setExtension(model.overlay_->at(node.addr().index()));
+    }
+    return result;
+}
+
+template<>
+model_ptr<RelationArrayView> resolveInternal(tag<RelationArrayView>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::FeatureRelationsView)
+        raise("Cannot cast this node to a RelationArrayView.");
+
+    auto result = RelationArrayView(
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
+
+    if (model.overlay_ && node.addr().index() < model.overlay_->size()) {
+        result.setExtension(model.overlay_->resolve<RelationArrayView>(
+            ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, node.addr().index()}));
+    } else {
+        result.setExtension({});
+    }
+    return result;
 }
 
 template<>
@@ -640,6 +729,17 @@ model_ptr<GeometryCollection> resolveInternal(tag<GeometryCollection>, TileFeatu
 {
     return GeometryCollection(
         model.shared_from_this(), node.addr(), model.mpKey_);
+}
+
+template<>
+model_ptr<GeometryArrayView> resolveInternal(tag<GeometryArrayView>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryArrayView)
+        raise("Cannot cast this node to a GeometryArrayView.");
+    return GeometryArrayView(
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
 }
 
 template<>
@@ -731,12 +831,10 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
         cb(*resolve<Feature>(n));
         return {};
     case ColumnId::FeatureProperties:
-        cb(Feature::FeaturePropertyView(
-            impl_->features_[n.addr().index()],
-            shared_from_this(),
-            n.addr(),
-            mpKey_
-        ));
+        cb(Feature::FeaturePropertyView(resolve<Feature>(ModelNodeAddress{ColumnId::Features, n.addr().index()}), mpKey_));
+        return {};
+    case ColumnId::FeatureRelationsView:
+        cb(*resolve<RelationArrayView>(n));
         return {};
     case ColumnId::FeatureIds:
         cb(*resolve<FeatureId>(n));
@@ -764,6 +862,9 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
         return {};
     case ColumnId::GeometryCollections:
         cb(*resolve<GeometryCollection>(n));
+        return {};
+    case ColumnId::GeometryArrayView:
+        cb(*resolve<GeometryArrayView>(n));
         return {};
     case ColumnId::Polygon:
         cb(*resolve<PolygonNode>(n));
@@ -880,6 +981,7 @@ tl::expected<void, simfil::Error> TileFeatureLayer::write(std::ostream& outputSt
 {
     TileLayer::write(outputStream);
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
+    s.ext4b(stage_, bitsery::ext::StdOptional{});
     impl_->readWrite(s);
     return ModelPool::write(outputStream);
 }
@@ -1155,6 +1257,15 @@ ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
+    case ColumnId::GeometryArrayView: {
+        auto resolved = otherLayer->resolve<GeometryArrayView>(*otherNode);
+        auto newNode = newArray(resolved->size());
+        newCacheNode = newNode;
+        for (auto value : *resolved) {
+            newNode->append(clone(cache, otherLayer, value));
+        }
+        break;
+    }
     case ColumnId::Geometries: {
         // TODO: This implementation is not great, because it does not respect
         //  Geometry views - it just converts every Geometry to a self-contained one.
@@ -1209,6 +1320,15 @@ ModelNode::Ptr TileFeatureLayer::clone(
     case ColumnId::Features:
     case ColumnId::FeatureProperties: {
         raise("Cannot clone entire feature yet.");
+    }
+    case ColumnId::FeatureRelationsView: {
+        auto resolved = otherLayer->resolve<RelationArrayView>(*otherNode);
+        auto newNode = newArray(resolved->size());
+        newCacheNode = newNode;
+        for (auto value : *resolved) {
+            newNode->append(clone(cache, otherLayer, value));
+        }
+        break;
     }
     case ColumnId::FeatureIds: {
         auto resolved = otherLayer->resolve<FeatureId>(*otherNode);
@@ -1291,7 +1411,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         for (auto [key, value] : resolved->fields()) {
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
                 auto cloned = clone(cache, otherLayer, value);
-                newNode->addField(*keyStr, resolve<AttributeLayer>(*cloned));
+                newNode->addLayer(*keyStr, resolve<AttributeLayer>(*cloned));
             }
         }
         break;
@@ -1376,7 +1496,7 @@ void TileFeatureLayer::clone(
         auto baseAttrLayers = cloneTarget->attributeLayers();
         for (auto const& [key, value] : attrLayers->fields()) {
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
-                baseAttrLayers->addField(*keyStr, resolve<AttributeLayer>(*lookupOrClone(value)));
+                baseAttrLayers->addLayer(*keyStr, resolve<AttributeLayer>(*lookupOrClone(value)));
             }
         }
     }

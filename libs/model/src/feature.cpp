@@ -11,6 +11,40 @@
 namespace mapget
 {
 
+uint32_t RelationArrayView::localMergedSize() const
+{
+    auto feature = model().resolve<Feature>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+    if (auto rel = feature->relationsOrNull()) {
+        return rel->size();
+    }
+    return 0;
+}
+
+simfil::ModelNode::Ptr RelationArrayView::localMergedAt(int64_t i) const
+{
+    if (i < 0) {
+        return {};
+    }
+    auto feature = model().resolve<Feature>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+    auto rel = feature->relationsOrNull();
+    if (!rel || i >= static_cast<int64_t>(rel->size())) {
+        return {};
+    }
+    return rel->at(i);
+}
+
+bool RelationArrayView::localMergedIterate(simfil::ModelNode::IterCallback const& cb) const
+{
+    auto feature = model().resolve<Feature>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+    if (auto rel = feature->relationsOrNull()) {
+        return rel->iterate(cb);
+    }
+    return true;
+}
+
 Feature::Feature(Feature::Data& d,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
@@ -44,9 +78,18 @@ model_ptr<GeometryCollection> Feature::geom()
 
 model_ptr<GeometryCollection> Feature::geomOrNull() const
 {
-    if (!data_->geom_)
-        return {};
-    return model().resolve<GeometryCollection>(data_->geom_);
+    model_ptr<GeometryCollection> local;
+    if (data_->geom_) {
+        local = model().resolve<GeometryCollection>(data_->geom_);
+    }
+
+    auto extFeature = extension();
+    auto ext = extFeature ? extFeature->geomOrNull() : model_ptr<GeometryCollection>{};
+    if (!local) {
+        return ext;
+    }
+    local->setExtension(ext);
+    return local;
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
@@ -62,9 +105,18 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
 
 model_ptr<AttributeLayerList> Feature::attributeLayersOrNull() const
 {
-    if (!data_->attrLayers_)
-        return {};
-    return model().resolve<AttributeLayerList>(data_->attrLayers_);
+    model_ptr<AttributeLayerList> local;
+    if (data_->attrLayers_) {
+        local = model().resolve<AttributeLayerList>(data_->attrLayers_);
+    }
+
+    auto extFeature = extension();
+    auto ext = extFeature ? extFeature->attributeLayersOrNull() : model_ptr<AttributeLayerList>{};
+    if (!local) {
+        return ext;
+    }
+    local->setExtension(ext);
+    return local;
 }
 
 model_ptr<Object> Feature::attributes()
@@ -101,6 +153,20 @@ model_ptr<Array> Feature::relationsOrNull() const
     if (!data_->relations_)
         return {};
     return model().resolve<simfil::Array>(data_->relations_);
+}
+
+model_ptr<RelationArrayView> Feature::mergedRelationsOrNull() const
+{
+    auto extFeature = extension();
+    auto ext = extFeature ? extFeature->mergedRelationsOrNull() : model_ptr<RelationArrayView>{};
+    if (!data_->relations_ && !ext) {
+        return {};
+    }
+    auto result = model_ptr<RelationArrayView>::make(
+        model_,
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, addr().index()});
+    result->setExtension(ext);
+    return result;
 }
 
 tl::expected<std::vector<simfil::Value>, simfil::Error>
@@ -222,16 +288,22 @@ void Feature::updateFields() {
     }
 
     // Add other fields
-    if (data_->geom_)
-        fields_.emplace_back(StringPool::GeometryStr, Ptr::make(model_, data_->geom_));
-    if (data_->attrLayers_ || data_->attrs_)
+    if (auto geomNode = geomOrNull()) {
+        fields_.emplace_back(StringPool::GeometryStr, geomNode);
+    }
+    bool hasExtensionProperties = false;
+    if (auto extFeature = extension()) {
+        hasExtensionProperties = extFeature->data_->attrLayers_ || extFeature->data_->attrs_;
+    }
+    if (data_->attrLayers_ || data_->attrs_ || hasExtensionProperties)
         fields_.emplace_back(
             StringPool::PropertiesStr,
             Ptr::make(
                 model_,
                 simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureProperties, addr().index()}));
-    if (data_->relations_)
-        fields_.emplace_back(StringPool::RelationsStr, Ptr::make(model_, data_->relations_));
+    if (auto rel = mergedRelationsOrNull()) {
+        fields_.emplace_back(StringPool::RelationsStr, rel);
+    }
 }
 
 nlohmann::json Feature::toJson() const
@@ -289,26 +361,47 @@ model_ptr<Relation> Feature::addRelation(const model_ptr<Relation>& relation)
 
 uint32_t Feature::numRelations() const
 {
-    if (data_->relations_)
-        return relationsOrNull()->size();
-    return 0;
+    auto localCount = data_->relations_ ? relationsOrNull()->size() : 0U;
+    if (auto extFeature = extension()) {
+        localCount += extFeature->numRelations();
+    }
+    return localCount;
 }
 
 model_ptr<Relation> Feature::getRelation(uint32_t index) const
 {
-    if (data_->relations_)
-        return model().resolve<Relation>(*relationsOrNull()->at(index));
+    if (data_->relations_) {
+        auto localRelations = relationsOrNull();
+        auto localCount = localRelations->size();
+        if (index < localCount) {
+            return model().resolve<Relation>(*localRelations->at(index));
+        }
+        index -= localCount;
+    }
+
+    if (auto extFeature = extension()) {
+        return extFeature->getRelation(index);
+    }
     return {};
 }
 
 bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> const& callback) const
 {
-    auto relationsPtr = relationsOrNull();
-    if (!relationsPtr || !callback)
+    if (!callback)
         return true;
-    for (auto const& relation : *relationsPtr) {
-        if (!callback(model().resolve<Relation>(*relation)))
+
+    if (data_->relations_) {
+        auto relationsPtr = relationsOrNull();
+        for (auto const& relation : *relationsPtr) {
+            if (!callback(model().resolve<Relation>(*relation)))
+                return false;
+        }
+    }
+
+    if (auto extFeature = extension()) {
+        if (!extFeature->forEachRelation(callback)) {
             return false;
+        }
     }
     return true;
 }
@@ -359,19 +452,41 @@ void Feature::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
     data_->sourceData_ = addresses->addr();
 }
 
+model_ptr<Feature> Feature::extension() const
+{
+    if (!extensionModel_ || !extensionAddress_) {
+        return {};
+    }
+    return extensionModel_->resolve<Feature>(extensionAddress_);
+}
+
+void Feature::setExtension(model_ptr<Feature> extension)
+{
+    if (!extension) {
+        extensionModel_ = nullptr;
+        extensionAddress_ = {};
+        updateFields();
+        return;
+    }
+    extensionModel_ = &extension->model();
+    extensionAddress_ = extension->addr();
+    updateFields();
+}
+
 //////////////////////////////////////////
 
 Feature::FeaturePropertyView::FeaturePropertyView(
-    Feature::Data& d,
-    simfil::ModelConstPtr l,
-    simfil::ModelNodeAddress a,
+    model_ptr<Feature> feature,
     simfil::detail::mp_key key
 )
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a, key),
-      data_(&d)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
+        feature->model().shared_from_this(),
+        feature->addr(),
+        key),
+      data_(feature->data_)
 {
     if (data_->attrs_)
-        attrs_ = model().resolve<simfil::Object>(data_->attrs_);
+        attrs_ = feature->attributesOrNull();
 }
 
 simfil::ValueType Feature::FeaturePropertyView::type() const
@@ -381,9 +496,12 @@ simfil::ValueType Feature::FeaturePropertyView::type() const
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const
 {
-    if (data_->attrLayers_) {
+    auto feature = model().resolve<Feature>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+    auto mergedLayers = feature->attributeLayersOrNull();
+    if (mergedLayers) {
         if (i == 0)
-            return Ptr::make(model_, data_->attrLayers_);
+            return mergedLayers;
         i -= 1;
     }
     if (attrs_)
@@ -393,13 +511,21 @@ simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const
 
 uint32_t Feature::FeaturePropertyView::size() const
 {
-    return (data_->attrLayers_ ? 1 : 0) + (attrs_ ? attrs_->size() : 0);
+    auto feature = model().resolve<Feature>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+    return (feature->attributeLayersOrNull() ? 1 : 0) + (attrs_ ? attrs_->size() : 0);
 }
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::StringId& f) const
 {
-    if (f == StringPool::LayerStr && data_->attrLayers_)
-        return Ptr::make(model_, data_->attrLayers_);
+    if (f == StringPool::LayerStr) {
+        auto feature = model().resolve<Feature>(
+            simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+        auto mergedLayers = feature->attributeLayersOrNull();
+        if (mergedLayers) {
+            return mergedLayers;
+        }
+    }
     if (attrs_)
         return attrs_->get(f);
     return {};
@@ -407,7 +533,9 @@ simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::StringId&
 
 simfil::StringId Feature::FeaturePropertyView::keyAt(int64_t i) const
 {
-    if (data_->attrLayers_) {
+    auto feature = model().resolve<Feature>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+    if (feature->attributeLayersOrNull()) {
         if (i == 0)
             return StringPool::LayerStr;
         i -= 1;
@@ -419,9 +547,10 @@ simfil::StringId Feature::FeaturePropertyView::keyAt(int64_t i) const
 
 bool Feature::FeaturePropertyView::iterate(const simfil::ModelNode::IterCallback& cb) const
 {
-    if (data_->attrLayers_) {
-        if (!cb(*model().resolve<AttributeLayerList>(
-                *Ptr::make(model_, data_->attrLayers_))))
+    auto feature = model().resolve<Feature>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::Features, addr().index()});
+    if (auto mergedLayers = feature->attributeLayersOrNull()) {
+        if (!cb(*mergedLayers))
             return false;
     }
     if (attrs_)

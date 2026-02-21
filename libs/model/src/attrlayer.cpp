@@ -50,7 +50,8 @@ AttributeLayerList::AttributeLayerList(
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key
 )
-    : simfil::BaseObject<TileFeatureLayer, AttributeLayer>(i, std::move(l), a, key)
+    : MergedArrayView<AttributeLayerList, AttributeLayer>(std::move(l), a, key),
+      members_(i)
 {
 }
 
@@ -64,7 +65,17 @@ AttributeLayerList::newLayer(const std::string_view& name, size_t initialCapacit
 
 void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<AttributeLayer> l)
 {
-    addField(name, l);
+    (void) localObject()->addField(name, l);
+}
+
+tl::expected<std::reference_wrapper<AttributeLayerList>, simfil::Error>
+AttributeLayerList::addField(std::string_view const& name, model_ptr<AttributeLayer> l)
+{
+    auto result = localObject()->addField(name, l);
+    if (!result) {
+        return tl::unexpected(result.error());
+    }
+    return std::ref(*this);
 }
 
 bool AttributeLayerList::forEachLayer(
@@ -82,6 +93,97 @@ bool AttributeLayerList::forEachLayer(
             if (!cb(*layerName, attrLayer))
                 return false;
         }
+    }
+    return true;
+}
+
+simfil::model_ptr<simfil::Object> AttributeLayerList::localObject() const
+{
+    return simfil::model_ptr<simfil::Object>::make(members_, model_, addr_);
+}
+
+uint32_t AttributeLayerList::localMergedSize() const
+{
+    return localObject()->size();
+}
+
+simfil::ModelNode::Ptr AttributeLayerList::localMergedAt(int64_t i) const
+{
+    return localObject()->at(i);
+}
+
+bool AttributeLayerList::localMergedIterate(simfil::ModelNode::IterCallback const& cb) const
+{
+    return localObject()->iterate(cb);
+}
+
+simfil::ValueType AttributeLayerList::type() const
+{
+    return simfil::ValueType::Object;
+}
+
+simfil::ModelNode::Ptr AttributeLayerList::at(int64_t i) const
+{
+    if (i < 0) {
+        return {};
+    }
+
+    auto localSize = static_cast<int64_t>(localObject()->size());
+    if (i < localSize) {
+        return localObject()->at(i);
+    }
+
+    if (auto ext = extension()) {
+        return ext->at(i - localSize);
+    }
+    return {};
+}
+
+uint32_t AttributeLayerList::size() const
+{
+    auto result = localObject()->size();
+    if (auto ext = extension()) {
+        result += ext->size();
+    }
+    return result;
+}
+
+simfil::ModelNode::Ptr AttributeLayerList::get(const simfil::StringId& field) const
+{
+    auto local = localObject()->get(field);
+    if (local) {
+        return local;
+    }
+    if (auto ext = extension()) {
+        return ext->get(field);
+    }
+    return {};
+}
+
+simfil::StringId AttributeLayerList::keyAt(int64_t i) const
+{
+    if (i < 0) {
+        return {};
+    }
+
+    auto localSize = static_cast<int64_t>(localObject()->size());
+    if (i < localSize) {
+        return localObject()->keyAt(i);
+    }
+
+    if (auto ext = extension()) {
+        return ext->keyAt(i - localSize);
+    }
+    return {};
+}
+
+bool AttributeLayerList::iterate(simfil::ModelNode::IterCallback const& cb) const
+{
+    if (!localObject()->iterate(cb)) {
+        return false;
+    }
+    if (auto ext = extension()) {
+        return ext->iterate(cb);
     }
     return true;
 }

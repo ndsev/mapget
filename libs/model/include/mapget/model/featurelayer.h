@@ -2,6 +2,7 @@
 
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "tl/expected.hpp"
@@ -33,6 +34,8 @@ namespace mapget
  */
 class TileFeatureLayer : public TileLayer, public simfil::ModelPool
 {
+    template<class, class>
+    friend class MergedArrayView;
     friend class Feature;
     friend class FeatureId;
     friend class Relation;
@@ -241,6 +244,19 @@ public:
     void setStage(std::optional<uint32_t> stage) override;
 
     /**
+     * Attach an overlay tile. Overlay tiles must have the same features in the
+     * same positions. Additional attribute layers, geometries and relations from
+     * overlay features are attached to the base features efficiently and lazily
+     * when retrieving the feature from the base layer.
+     * If this tile already has an overlay, the new overlay gets attached at the
+     * tail of the overlay chain.
+     */
+    void attachOverlay(TileFeatureLayer::Ptr const& overlay);
+
+    /** Get the next overlay tile in the chain (if any). */
+    [[nodiscard]] TileFeatureLayer::Ptr overlay() const;
+
+    /**
      * Evaluate a (potentially cached) simfil query on this pool
      *
      * @param query         Simfil query
@@ -336,6 +352,8 @@ public:
         Validities,
         ValidityPoints,
         ValidityCollections,
+        FeatureRelationsView,
+        GeometryArrayView,
     }; };
     
 protected:
@@ -355,9 +373,18 @@ protected:
 
     Geometry::Storage& vertexBufferStorage();
 
+    void setMergedArrayExtension(
+        simfil::ModelNodeAddress baseAddress,
+        TileFeatureLayer const* extensionModel,
+        simfil::ModelNodeAddress extensionAddress);
+    void clearMergedArrayExtension(simfil::ModelNodeAddress baseAddress);
+    [[nodiscard]] std::optional<std::pair<TileFeatureLayer const*, simfil::ModelNodeAddress>>
+    mergedArrayExtension(simfil::ModelNodeAddress baseAddress) const;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::optional<uint32_t> stage_;
+    TileFeatureLayer::Ptr overlay_;
 };
 
 // Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).

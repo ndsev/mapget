@@ -411,6 +411,203 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->ttl() == tile->ttl());
         REQUIRE(deserializedTile->ttl().value().count() == 60000);
     }
+
+    SECTION("Serialization with stage")
+    {
+        tile->setStage(3U);
+
+        std::stringstream tileBytes;
+        tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBuffer,
+            [&](auto&&, auto&&) {
+                return layerInfo;
+            },
+            [&](auto&&) {
+                return strings;
+            }
+        );
+
+        REQUIRE(deserializedTile->stage().has_value());
+        REQUIRE(deserializedTile->stage().value() == 3U);
+    }
+
+    SECTION("Serialization without stage")
+    {
+        tile->setStage({});
+
+        std::stringstream tileBytes;
+        tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBuffer,
+            [&](auto&&, auto&&) {
+                return layerInfo;
+            },
+            [&](auto&&) {
+                return strings;
+            }
+        );
+
+        REQUIRE_FALSE(deserializedTile->stage().has_value());
+    }
+}
+
+TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("OverlayNode");
+
+    auto makeTile = [&](std::string const& nodeName) {
+        return std::make_shared<TileFeatureLayer>(
+            TileId::fromWgs84(42., 11., 13),
+            nodeName,
+            "OverlayMap",
+            layerInfo,
+            strings);
+    };
+
+    auto base = makeTile("OverlayNode");
+    auto overlayStage1 = makeTile("OverlayNode");
+    auto overlayStage2 = makeTile("OverlayNode");
+
+    auto baseFeature = base->newFeature("Way", {{"wayId", 1}});
+    auto baseGeom = baseFeature->geom()->newGeometry(GeomType::Points, 1);
+    baseGeom->append({10., 10., 0.});
+    auto baseLayer = baseFeature->attributeLayers()->newLayer("baseLayer");
+    auto baseAttr = baseLayer->newAttribute("baseAttr");
+    REQUIRE(baseAttr->addField("value", "base").has_value());
+    baseFeature->addRelation("baseRel", base->newFeatureId("Way", {{"wayId", 100}}));
+
+    auto overlayFeature1 = overlayStage1->newFeature("Way", {{"wayId", 1}});
+    auto overlayGeom1 = overlayFeature1->geom()->newGeometry(GeomType::Points, 1);
+    overlayGeom1->append({20., 20., 0.});
+    auto overlayLayer1 = overlayFeature1->attributeLayers()->newLayer("overlayLayer1");
+    auto overlayAttr1 = overlayLayer1->newAttribute("overlayAttr1");
+    REQUIRE(overlayAttr1->addField("value", "overlay1").has_value());
+    overlayFeature1->addRelation("overlayRel1", overlayStage1->newFeatureId("Way", {{"wayId", 101}}));
+
+    auto overlayFeature2 = overlayStage2->newFeature("Way", {{"wayId", 1}});
+    auto overlayGeom2 = overlayFeature2->geom()->newGeometry(GeomType::Points, 1);
+    overlayGeom2->append({30., 30., 0.});
+    auto overlayLayer2 = overlayFeature2->attributeLayers()->newLayer("overlayLayer2");
+    auto overlayAttr2 = overlayLayer2->newAttribute("overlayAttr2");
+    REQUIRE(overlayAttr2->addField("value", "overlay2").has_value());
+    overlayFeature2->addRelation("overlayRel2", overlayStage2->newFeatureId("Way", {{"wayId", 102}}));
+
+    base->attachOverlay(overlayStage1);
+    base->attachOverlay(overlayStage2);
+
+    auto mergedFeature = base->at(0);
+    REQUIRE(mergedFeature);
+
+    SECTION("Typed access sees merged data")
+    {
+        REQUIRE(mergedFeature->geomOrNull()->numGeometries() == 3);
+        REQUIRE(mergedFeature->attributeLayersOrNull()->size() == 3);
+        REQUIRE(mergedFeature->numRelations() == 3);
+    }
+
+    SECTION("ModelNode access sees merged geometry and relations")
+    {
+        auto const& mergedFeatureNode = static_cast<simfil::ModelNode const&>(*mergedFeature);
+
+        auto geometryNode = mergedFeatureNode.get(StringPool::GeometryStr);
+        REQUIRE(geometryNode);
+        auto geometryArrayNode = geometryNode->get(StringPool::GeometriesStr);
+        REQUIRE(geometryArrayNode);
+        REQUIRE(geometryArrayNode->size() == 3);
+
+        auto relationsNode = mergedFeatureNode.get(StringPool::RelationsStr);
+        REQUIRE(relationsNode);
+        REQUIRE(relationsNode->size() == 3);
+
+        auto relationsJson = relationsNode->toJson();
+        REQUIRE(relationsJson[0]["name"] == "baseRel");
+        REQUIRE(relationsJson[1]["name"] == "overlayRel1");
+        REQUIRE(relationsJson[2]["name"] == "overlayRel2");
+    }
+
+    SECTION("ModelNode access sees merged attribute layers")
+    {
+        auto const& mergedFeatureNode = static_cast<simfil::ModelNode const&>(*mergedFeature);
+
+        auto propertiesNode = mergedFeatureNode.get(StringPool::PropertiesStr);
+        REQUIRE(propertiesNode);
+        auto layersNode = propertiesNode->get(StringPool::LayerStr);
+        REQUIRE(layersNode);
+        REQUIRE(layersNode->size() == 3);
+
+        auto layersJson = layersNode->toJson();
+        REQUIRE(layersJson.contains("baseLayer"));
+        REQUIRE(layersJson.contains("overlayLayer1"));
+        REQUIRE(layersJson.contains("overlayLayer2"));
+    }
+}
+
+TEST_CASE("FeatureLayer Overlay Size Check", "[test.featurelayer.overlay]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("OverlayNode");
+    auto base = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "OverlayNode",
+        "OverlayMap",
+        layerInfo,
+        strings);
+    auto overlay = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "OverlayNode",
+        "OverlayMap",
+        layerInfo,
+        strings);
+
+    base->newFeature("Way", {{"wayId", 1}});
+    base->newFeature("Way", {{"wayId", 2}});
+    overlay->newFeature("Way", {{"wayId", 1}});
+
+    REQUIRE_THROWS(base->attachOverlay(overlay));
 }
 
 // Helper function to compare two points with some tolerance

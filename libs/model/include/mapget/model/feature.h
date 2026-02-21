@@ -8,13 +8,39 @@
 #include "tileid.h"
 #include "relation.h"
 #include "geometry.h"
+#include "merged-array-view.h"
 
 #include "tl/expected.hpp"
 #include "sfl/small_vector.hpp"
 #include "nlohmann/json.hpp"
+#include <utility>
 
 namespace mapget
 {
+
+class RelationArrayView : public MergedArrayView<RelationArrayView, simfil::ModelNode>
+{
+public:
+    explicit RelationArrayView(simfil::detail::mp_key key)
+        : MergedArrayView<RelationArrayView, simfil::ModelNode>(key)
+    {
+    }
+
+    RelationArrayView(
+        simfil::ModelConstPtr pool,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key)
+        : MergedArrayView<RelationArrayView, simfil::ModelNode>(std::move(pool), address, key)
+    {
+    }
+
+    RelationArrayView() = delete;
+
+private:
+    [[nodiscard]] uint32_t localMergedSize() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr localMergedAt(int64_t i) const override;
+    bool localMergedIterate(simfil::ModelNode::IterCallback const& cb) const override;
+};
 
 /**
  * View onto a feature which belongs to a TileFeatureLayer.
@@ -55,6 +81,7 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class bitsery::Access;
     friend class TileFeatureLayer;
     friend class BoundFeature;
+    friend class RelationArrayView;
 
 public:
     /** Get the name of this feature's type. */
@@ -155,6 +182,9 @@ public:
     [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
     void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
 
+    [[nodiscard]] model_ptr<Feature> extension() const;
+    void setExtension(model_ptr<Feature> extension);
+
 protected:
     /**
      * Simfil Model-Node Functions
@@ -175,6 +205,7 @@ protected:
      */
     [[nodiscard]] model_ptr<Array> relations();
     [[nodiscard]] model_ptr<Array> relationsOrNull() const;
+    [[nodiscard]] model_ptr<RelationArrayView> mergedRelationsOrNull() const;
 
     /**
      * Feature Data
@@ -200,6 +231,8 @@ public:
 
 protected:
     Data* data_ = nullptr;
+    TileFeatureLayer const* extensionModel_ = nullptr;
+    simfil::ModelNodeAddress extensionAddress_;
 
     // We keep the fields in a tiny vector on the stack,
     // because their number is dynamic, as a variable number
@@ -218,9 +251,7 @@ protected:
 
         explicit FeaturePropertyView(simfil::detail::mp_key key)
             : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
-        FeaturePropertyView(Data& d,
-                            simfil::ModelConstPtr l,
-                            simfil::ModelNodeAddress a,
+        FeaturePropertyView(model_ptr<Feature> feature,
                             simfil::detail::mp_key key);
         FeaturePropertyView() = delete;
 
