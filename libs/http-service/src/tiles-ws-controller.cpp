@@ -347,11 +347,11 @@ public:
         std::vector<ParsedRequest> parsedRequests;
         std::set<MapTileKey> desiredTileKeys;
         std::map<MapTileKey, int64_t> nextTilePriorityRanks;
-        int64_t nextPriorityRank = 0;
 
         try {
             parsedRequests.reserve(requestsIt->size());
             for (auto const& requestJson : *requestsIt) {
+                int64_t nextPriorityRank = 0;
                 auto parsedRequest = detail::parseLayerTilesRequestJson(requestJson);
                 auto layerContext = service_.resolveLayerRequest(
                     parsedRequest.mapId,
@@ -362,6 +362,8 @@ public:
                     REQUEST_TILE_LAYER_TYPE,
                     layerContext.stages_);
 
+                // Priority ranks are layer-local: rank 0 means "highest priority"
+                // within that layer request, then increases with request order/stage.
                 for (auto const& tileKey : expandedTileKeys) {
                     auto requestedTileKey = makeCanonicalRequestedTileKey(tileKey);
                     desiredTileKeys.insert(requestedTileKey);
