@@ -1030,9 +1030,9 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
     auto addTotals = [](nlohmann::json& totals, const nlohmann::json& stats, const auto& self) -> void {
         for (const auto& [key, value] : stats.items()) {
             if (value.is_number_integer()) {
-                totals[key] = totals.value<int64_t>(key, 0) + value.get<int64_t>();
+                totals[key] = totals.template value<int64_t>(key, 0) + value.template get<int64_t>();
             } else if (value.is_number_float()) {
-                totals[key] = totals.value<double>(key, .0) + value.get<double>();
+                totals[key] = totals.template value<double>(key, .0) + value.template get<double>();
             } else if (value.is_object()) {
                 if (!totals.contains(key) || !totals[key].is_object()) {
                     totals[key] = nlohmann::json::object();
