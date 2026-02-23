@@ -1351,6 +1351,16 @@ size_t TileFeatureLayer::size() const
     return numRoots();
 }
 
+uint64_t TileFeatureLayer::numVertices() const
+{
+    uint64_t total = 0;
+    const auto numPointBuffers = impl_->pointBuffers_.size();
+    for (size_t i = 0; i < numPointBuffers; ++i) {
+        total += impl_->pointBuffers_.size(static_cast<simfil::ArrayIndex>(i));
+    }
+    return total;
+}
+
 model_ptr<Feature> TileFeatureLayer::at(size_t i) const
 {
     auto rootResult = root(i);

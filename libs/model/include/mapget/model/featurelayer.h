@@ -238,6 +238,9 @@ public:
     /** Access number of stored features */
     size_t size() const;
 
+    /** Access total number of geometry vertices across this tile. */
+    [[nodiscard]] uint64_t numVertices() const;
+
     /** Access feature at index i */
     model_ptr<Feature> at(size_t i) const;
 
