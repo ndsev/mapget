@@ -8,6 +8,7 @@
 
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpRequest.h>
+#include <drogon/HttpResponse.h>
 #include <drogon/HttpTypes.h>
 #include <drogon/WebSocketConnection.h>
 #include <drogon/WebSocketController.h>
@@ -16,9 +17,12 @@
 #include <bitsery/bitsery.h>
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstdint>
+#include <cstddef>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -26,6 +30,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -47,20 +52,22 @@ struct TilesWsMetrics
     std::atomic<int64_t> totalForwardedBytes{0};
     std::atomic<int64_t> totalDroppedFrames{0};
     std::atomic<int64_t> totalDroppedBytes{0};
-    std::atomic<int64_t> totalDrainCalls{0};
     std::atomic<int64_t> replacedRequests{0};
-    std::atomic<int64_t> totalFlowGrantMessages{0};
-    std::atomic<int64_t> totalFlowGrantFrames{0};
-    std::atomic<int64_t> totalFlowBlockedDrains{0};
+    std::atomic<int64_t> totalPullRequests{0};
+    std::atomic<int64_t> totalPullTimeouts{0};
+    std::atomic<int64_t> totalPullSessionMisses{0};
 };
 
 TilesWsMetrics gTilesWsMetrics;
 std::mutex gTrackedSessionsMutex;
 std::vector<std::weak_ptr<class TilesWsSession>> gTrackedSessions;
+std::mutex gSessionRegistryMutex;
+std::unordered_map<int64_t, std::weak_ptr<class TilesWsSession>> gSessionRegistry;
+std::atomic<int64_t> gNextClientId{1};
 
-constexpr std::string_view FLOW_GRANT_TYPE = "mapget.tiles.flow-grant";
-constexpr int64_t FLOW_CREDIT_MAX_FRAMES = 2;
-constexpr size_t MAX_FRAMES_PER_DRAIN = 64;
+constexpr int64_t DEFAULT_PULL_WAIT_MS = 25000;
+constexpr int64_t MAX_PULL_WAIT_MS = 30000;
+constexpr int64_t MAX_PULL_BATCH_BYTES = 5 * 1024 * 1024;
 constexpr LayerType REQUEST_TILE_LAYER_TYPE = LayerType::Features;
 constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
@@ -148,14 +155,6 @@ constexpr bool EMIT_LOAD_STATE_FRAMES = false;
     return 0;
 }
 
-/// Return true for frame kinds governed by websocket flow-control credits.
-[[nodiscard]] bool isFlowControlledDataFrameType(TileLayerStream::MessageType type)
-{
-    return type == TileLayerStream::MessageType::StringPool
-        || type == TileLayerStream::MessageType::TileFeatureLayer
-        || type == TileLayerStream::MessageType::TileSourceDataLayer;
-}
-
 /// Build a canonical request key using map/layer/tile while normalizing layer type.
 [[nodiscard]] MapTileKey makeCanonicalRequestedTileKey(
     std::string_view mapId,
@@ -177,13 +176,6 @@ constexpr bool EMIT_LOAD_STATE_FRAMES = false;
     key.layer_ = REQUEST_TILE_LAYER_TYPE;
     return key;
 }
-
-/// Snapshot of flow-control state exposed to `/status-data`.
-struct FlowControlStateSnapshot
-{
-    bool enabled = false;
-    int64_t creditFrames = 0;
-};
 
 class TilesWsSession : public std::enable_shared_from_this<TilesWsSession>
 {
@@ -207,6 +199,10 @@ public:
     /// Destroy the session and abort any in-flight backend work.
     ~TilesWsSession()
     {
+        {
+            std::lock_guard lock(gSessionRegistryMutex);
+            gSessionRegistry.erase(clientId_);
+        }
         gTilesWsMetrics.activeSessions.fetch_sub(1, std::memory_order_relaxed);
         // Best-effort cleanup: abort any in-flight requests if the session is destroyed.
         cancelNoStatus();
@@ -234,42 +230,84 @@ public:
         return {pendingFrames, pendingBytes};
     }
 
-    /// Return flow-control state for `/status-data` metrics.
-    [[nodiscard]] FlowControlStateSnapshot flowControlSnapshot() const
+    /// Return numeric client id used by `/tiles/next` pull requests.
+    [[nodiscard]] int64_t clientId() const
     {
-        std::lock_guard lock(flowControlMutex_);
-        return FlowControlStateSnapshot{
-            .enabled = flowControlEnabled_,
-            .creditFrames = flowCreditFrames_,
-        };
+        return clientId_;
     }
 
-    /// Enable/disable frame-credit flow control for this connection.
-    void setFlowControlEnabled(bool enabled)
+    /// Return current number of blocked `/tiles/next` long-poll requests.
+    [[nodiscard]] int64_t pendingPullRequestCount() const
     {
-        std::lock_guard lock(flowControlMutex_);
-        if (enabled) {
-            if (!flowControlEnabled_) {
-                flowControlEnabled_ = true;
-                flowCreditFrames_ = FLOW_CREDIT_MAX_FRAMES;
+        std::lock_guard lock(mutex_);
+        return static_cast<int64_t>(pendingPullWaiters_.size());
+    }
+
+    struct PullFrameResult
+    {
+        enum class Status {
+            Frame,
+            Timeout,
+            Closed,
+        };
+
+        Status status = Status::Timeout;
+        std::string frameBytes;
+    };
+
+    using PullResultCallback = std::function<void(PullFrameResult)>;
+
+    /// Resolve one `/tiles/next` request immediately or register an async waiter.
+    void requestNextTileFrameAsync(
+        std::chrono::milliseconds waitTimeout,
+        size_t maxBatchBytes,
+        PullResultCallback callback)
+    {
+        PullResultCallback immediateCallback;
+        std::optional<PullFrameResult> immediateResult;
+        uint64_t timeoutWaiterId = 0;
+        double timeoutSeconds = 0.0;
+
+        {
+            std::lock_guard lock(mutex_);
+            if (cancelled_) {
+                immediateCallback = std::move(callback);
+                immediateResult = PullFrameResult{.status = PullFrameResult::Status::Closed};
             }
+            else if (!outgoing_.empty()) {
+                immediateCallback = std::move(callback);
+                immediateResult = popFrameBatchLocked(maxBatchBytes);
+            }
+            else if (waitTimeout.count() <= 0) {
+                immediateCallback = std::move(callback);
+                immediateResult = PullFrameResult{.status = PullFrameResult::Status::Timeout};
+            }
+            else {
+                timeoutWaiterId = nextPullWaiterId_++;
+                pendingPullWaiterOrder_.push_back(timeoutWaiterId);
+                pendingPullWaiters_.emplace(timeoutWaiterId, PullWaiter{
+                    .waiterId = timeoutWaiterId,
+                    .maxBatchBytes = maxBatchBytes,
+                    .callback = std::move(callback),
+                });
+                timeoutSeconds = std::chrono::duration<double>(waitTimeout).count();
+            }
+        }
+
+        if (immediateResult) {
+            dispatchPullResult(std::move(immediateCallback), std::move(*immediateResult));
             return;
         }
-        flowControlEnabled_ = false;
-        flowCreditFrames_ = 0;
-    }
 
-    /// Add frame credits granted by the client and return credits actually applied.
-    [[nodiscard]] int64_t grantFlowCredits(int64_t frames)
-    {
-        std::lock_guard lock(flowControlMutex_);
-        if (!flowControlEnabled_) {
-            return 0;
+        if (timeoutWaiterId == 0) {
+            return;
         }
-        const auto safeFrames = std::max<int64_t>(0, frames);
-        const auto oldFrames = flowCreditFrames_;
-        flowCreditFrames_ = std::min<int64_t>(FLOW_CREDIT_MAX_FRAMES, flowCreditFrames_ + safeFrames);
-        return flowCreditFrames_ - oldFrames;
+        const auto weak = weak_from_this();
+        drogon::app().getLoop()->runAfter(timeoutSeconds, [weak, timeoutWaiterId]() {
+            if (auto self = weak.lock()) {
+                self->onPullWaiterTimeout(timeoutWaiterId);
+            }
+        });
     }
 
     /// Patch per-connection string-pool offsets supplied by the client request.
@@ -311,15 +349,6 @@ public:
         return requestId;
     }
 
-    /// Consume granted sent-frame slots and restart draining.
-    void onFlowGrant(int64_t grantedFrames)
-    {
-        if (grantedFrames > 0) {
-            consumeSentFlowFrames(grantedFrames);
-        }
-        scheduleDrain();
-    }
-
     /// Parse and apply a full logical tile request update from the client.
     void updateFromClientRequest(const nlohmann::json& j, uint64_t requestId)
     {
@@ -335,7 +364,6 @@ public:
             }
             queueRequestContextMessage();
             queueStatusMessage("Missing or invalid 'requests' array");
-            scheduleDrain();
             return;
         }
 
@@ -388,11 +416,11 @@ public:
             }
             queueRequestContextMessage();
             queueStatusMessage(fmt::format("Invalid request JSON: {}", e.what()));
-            scheduleDrain();
             return;
         }
 
         std::vector<LayerTilesRequest::Ptr> serviceRequests;
+        std::vector<LayerTilesRequest::Ptr> nextActiveRequests;
         std::vector<RequestStatus> nextRequestStatuses(parsedRequests.size(), RequestStatus::Success);
         std::vector<RequestInfo> nextRequestInfos;
         nextRequestInfos.reserve(parsedRequests.size());
@@ -424,9 +452,7 @@ public:
                                 stage);
                             const bool alreadyQueued =
                                 queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
-                            const bool alreadySentNotGranted =
-                                sentTileFrameRefCount_.find(requestedTileKey) != sentTileFrameRefCount_.end();
-                            if (!alreadyQueued && !alreadySentNotGranted) {
+                            if (!alreadyQueued) {
                                 needsBackendFetch = true;
                                 break;
                             }
@@ -454,10 +480,7 @@ public:
                 parsed.request.layerId,
                 std::move(tileIdsByNextStageToFetch));
             serviceRequests.push_back(request);
-            {
-                std::lock_guard lock(mutex_);
-                activeRequests_.push_back(request);
-            }
+            nextActiveRequests.push_back(request);
             nextRequestStatuses[index] = RequestStatus::Open;
 
             const auto weak = weak_from_this();
@@ -486,8 +509,11 @@ public:
             };
         }
 
+        std::vector<LayerTilesRequest::Ptr> replacedRequests;
         {
             std::lock_guard lock(mutex_);
+            replacedRequests = std::move(activeRequests_);
+            activeRequests_ = std::move(nextActiveRequests);
             requestId_ = requestId;
             requestInfos_ = std::move(nextRequestInfos);
             requestStatuses_ = std::move(nextRequestStatuses);
@@ -500,32 +526,38 @@ public:
             statusEmissionEnabled_ = true;
         }
 
+        if (!replacedRequests.empty()) {
+            gTilesWsMetrics.replacedRequests.fetch_add(
+                static_cast<int64_t>(replacedRequests.size()),
+                std::memory_order_relaxed);
+            abortRequests(std::move(replacedRequests));
+        }
+
         queueRequestContextMessage();
         if (!serviceRequests.empty()) {
             (void)service_.request(serviceRequests, authHeaders_);
         }
         queueStatusMessage({});
-        scheduleDrain();
     }
 
     /// Cancel current requests, clear queued frames, and emit a terminal status.
     void cancel(std::string reason)
     {
         cancelled_ = true;
+        std::vector<LayerTilesRequest::Ptr> requestsToAbort;
+        std::vector<PullDispatch> pullDispatches;
 
         // Stop sending any queued tile frames from this session.
         {
             std::lock_guard lock(mutex_);
             clearOutgoingLocked();
+            requestsToAbort = std::move(activeRequests_);
+            activeRequests_.clear();
+            collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
         }
 
         // Abort in-flight requests (best-effort).
-        for (auto const& r : activeRequests_) {
-            if (!r || r->isDone())
-                continue;
-            service_.abort(r);
-        }
-        activeRequests_.clear();
+        abortRequests(std::move(requestsToAbort));
 
         // Refresh locally cached statuses after aborting.
         {
@@ -537,25 +569,11 @@ public:
             }
         }
 
+        dispatchPullResults(std::move(pullDispatches));
         queueStatusMessage(std::move(reason));
-        scheduleDrain();
     }
 
 private:
-    /// Consume exactly one frame credit before sending a flow-controlled frame.
-    [[nodiscard]] bool consumeFlowCreditForFrame()
-    {
-        std::lock_guard lock(flowControlMutex_);
-        if (!flowControlEnabled_) {
-            return true;
-        }
-        if (flowCreditFrames_ <= 0) {
-            return false;
-        }
-        flowCreditFrames_ -= 1;
-        return true;
-    }
-
     /// Lightweight metadata emitted in status payloads for each logical request.
     struct RequestInfo
     {
@@ -578,6 +596,21 @@ private:
     {
         std::string bytes;
         TileLayerStream::MessageType type{TileLayerStream::MessageType::None};
+    };
+
+    /// One pending `/tiles/next` callback waiting for a frame or timeout.
+    struct PullWaiter
+    {
+        uint64_t waiterId = 0;
+        size_t maxBatchBytes = 0;
+        PullResultCallback callback;
+    };
+
+    /// One completed pull waiter callback plus the result to emit.
+    struct PullDispatch
+    {
+        PullResultCallback callback;
+        PullFrameResult result;
     };
 
     /// Increment queued/sent reference counters for one canonical tile key.
@@ -615,26 +648,162 @@ private:
         }
     }
 
-    /// Track flow-controlled frames that were sent but not yet granted back by the client.
-    void trackSentFrameLocked(const OutgoingFrame& frame)
+    /// Pop the highest-priority queued tile frame and account forwarding metrics.
+    [[nodiscard]] PullFrameResult popNextFrameLocked()
     {
-        sentFlowFrames_.push_back(frame.requestedTileKey);
-        if (frame.requestedTileKey) {
-            incrementFrameRefCount(sentTileFrameRefCount_, *frame.requestedTileKey);
+        if (outgoing_.empty()) {
+            return PullFrameResult{.status = PullFrameResult::Status::Timeout};
+        }
+
+        auto frame = std::move(outgoing_.front());
+        outgoing_.pop_front();
+        untrackQueuedFrameLocked(frame);
+        if (frame.stringPoolCommit) {
+            committedStringPoolOffsets_[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
+        }
+
+        const auto frameBytes = static_cast<int64_t>(frame.bytes.size());
+        gTilesWsMetrics.totalForwardedFrames.fetch_add(1, std::memory_order_relaxed);
+        gTilesWsMetrics.totalForwardedBytes.fetch_add(frameBytes, std::memory_order_relaxed);
+
+        return PullFrameResult{
+            .status = PullFrameResult::Status::Frame,
+            .frameBytes = std::move(frame.bytes),
+        };
+    }
+
+    /// Pop and concatenate queued frames up to one batch byte budget.
+    [[nodiscard]] PullFrameResult popFrameBatchLocked(size_t maxBatchBytes)
+    {
+        if (outgoing_.empty()) {
+            return PullFrameResult{.status = PullFrameResult::Status::Timeout};
+        }
+        if (maxBatchBytes == 0) {
+            return popNextFrameLocked();
+        }
+
+        std::string batchBytes;
+        batchBytes.reserve(std::min<size_t>(maxBatchBytes, outgoing_.front().bytes.size()));
+
+        size_t appendedBytes = 0;
+        bool appendedAny = false;
+        while (!outgoing_.empty()) {
+            const auto& nextFrame = outgoing_.front();
+            const auto nextBytes = nextFrame.bytes.size();
+            if (appendedAny && appendedBytes + nextBytes > maxBatchBytes) {
+                break;
+            }
+            auto frameResult = popNextFrameLocked();
+            if (frameResult.status != PullFrameResult::Status::Frame) {
+                break;
+            }
+            appendedBytes += frameResult.frameBytes.size();
+            batchBytes.append(frameResult.frameBytes);
+            appendedAny = true;
+            if (appendedBytes >= maxBatchBytes) {
+                break;
+            }
+        }
+
+        if (!appendedAny) {
+            return PullFrameResult{.status = PullFrameResult::Status::Timeout};
+        }
+        return PullFrameResult{
+            .status = PullFrameResult::Status::Frame,
+            .frameBytes = std::move(batchBytes),
+        };
+    }
+
+    /// Pop the next valid waiter in arrival order, skipping stale order entries.
+    [[nodiscard]] bool popNextPullWaiterLocked(PullWaiter& out)
+    {
+        while (!pendingPullWaiterOrder_.empty()) {
+            const auto waiterId = pendingPullWaiterOrder_.front();
+            pendingPullWaiterOrder_.pop_front();
+            auto waiterIt = pendingPullWaiters_.find(waiterId);
+            if (waiterIt == pendingPullWaiters_.end()) {
+                continue;
+            }
+            out = std::move(waiterIt->second);
+            pendingPullWaiters_.erase(waiterIt);
+            return true;
+        }
+        return false;
+    }
+
+    /// Remove one waiter id from the FIFO order list.
+    void erasePullWaiterOrderEntryLocked(uint64_t waiterId)
+    {
+        pendingPullWaiterOrder_.erase(
+            std::remove(pendingPullWaiterOrder_.begin(), pendingPullWaiterOrder_.end(), waiterId),
+            pendingPullWaiterOrder_.end());
+    }
+
+    /// Complete queued pull waiters while both waiters and frames are available.
+    void drainReadyPullWaitersLocked(std::vector<PullDispatch>& dispatches)
+    {
+        PullWaiter waiter;
+        while (!outgoing_.empty() && popNextPullWaiterLocked(waiter)) {
+            dispatches.push_back(PullDispatch{
+                .callback = std::move(waiter.callback),
+                .result = popFrameBatchLocked(waiter.maxBatchBytes),
+            });
+            waiter = PullWaiter{};
         }
     }
 
-    /// Apply client grants to the sent-frame ledger to release in-flight dedupe entries.
-    void consumeSentFlowFrames(int64_t grantedFrames)
+    /// Complete all currently pending pull waiters with one terminal status.
+    void collectAllPullWaitersLocked(PullFrameResult::Status status, std::vector<PullDispatch>& dispatches)
     {
-        std::lock_guard lock(mutex_);
-        for (int64_t i = 0; i < grantedFrames && !sentFlowFrames_.empty(); ++i) {
-            auto key = std::move(sentFlowFrames_.front());
-            sentFlowFrames_.pop_front();
-            if (key) {
-                decrementFrameRefCount(sentTileFrameRefCount_, *key);
-            }
+        PullWaiter waiter;
+        while (popNextPullWaiterLocked(waiter)) {
+            dispatches.push_back(PullDispatch{
+                .callback = std::move(waiter.callback),
+                .result = PullFrameResult{.status = status},
+            });
+            waiter = PullWaiter{};
         }
+        pendingPullWaiters_.clear();
+    }
+
+    /// Dispatch one completed pull callback on Drogon's loop.
+    static void dispatchPullResult(PullResultCallback callback, PullFrameResult result)
+    {
+        if (!callback) {
+            return;
+        }
+        drogon::app().getLoop()->queueInLoop(
+            [callback = std::move(callback), result = std::move(result)]() mutable {
+                callback(std::move(result));
+            });
+    }
+
+    /// Dispatch a batch of completed pull callbacks on Drogon's loop.
+    static void dispatchPullResults(std::vector<PullDispatch> dispatches)
+    {
+        for (auto& dispatch : dispatches) {
+            dispatchPullResult(std::move(dispatch.callback), std::move(dispatch.result));
+        }
+    }
+
+    /// Resolve one waiter with timeout if it is still pending.
+    void onPullWaiterTimeout(uint64_t waiterId)
+    {
+        PullResultCallback timeoutCallback;
+        {
+            std::lock_guard lock(mutex_);
+            auto waiterIt = pendingPullWaiters_.find(waiterId);
+            if (waiterIt == pendingPullWaiters_.end()) {
+                return;
+            }
+            timeoutCallback = std::move(waiterIt->second.callback);
+            pendingPullWaiters_.erase(waiterIt);
+            erasePullWaiterOrderEntryLocked(waiterId);
+        }
+
+        dispatchPullResult(
+            std::move(timeoutCallback),
+            PullFrameResult{.status = PullFrameResult::Status::Timeout});
     }
 
     /// Look up the current priority rank for one tile key, defaulting to lowest priority.
@@ -781,19 +950,31 @@ private:
     {
         if (cancelled_.exchange(true))
             return;
+        std::vector<LayerTilesRequest::Ptr> requestsToAbort;
+        std::vector<PullDispatch> pullDispatches;
 
         // Ensure we stop emitting any further frames.
         {
             std::lock_guard lock(mutex_);
             clearOutgoingLocked();
+            requestsToAbort = std::move(activeRequests_);
+            activeRequests_.clear();
+            collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
         }
 
-        for (auto const& r : activeRequests_) {
-            if (!r || r->isDone())
+        abortRequests(std::move(requestsToAbort));
+        dispatchPullResults(std::move(pullDispatches));
+    }
+
+    /// Abort a batch of backend requests outside `mutex_` to avoid lock inversion.
+    void abortRequests(std::vector<LayerTilesRequest::Ptr> requests)
+    {
+        for (auto const& request : requests) {
+            if (!request || request->isDone()) {
                 continue;
-            service_.abort(r);
+            }
+            service_.abort(request);
         }
-        activeRequests_.clear();
     }
 
     /// Collect writer callbacks generated while serializing one tile layer.
@@ -816,6 +997,7 @@ private:
 
         const auto requestedTileKey = makeCanonicalRequestedTileKey(layer->id());
         std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
+        std::vector<PullDispatch> pullDispatches;
 
         {
             std::lock_guard lock(mutex_);
@@ -862,9 +1044,10 @@ private:
                 }
                 enqueueOutgoingLocked(std::move(frame));
             }
+            // Newly queued frames can immediately satisfy blocked pull waiters.
+            drainReadyPullWaitersLocked(pullDispatches);
         }
-
-        scheduleDrain();
+        dispatchPullResults(std::move(pullDispatches));
     }
 
     /// Update per-request completion state and emit status when it changes.
@@ -901,33 +1084,30 @@ private:
 
         if (shouldEmit) {
             queueStatusMessage({});
-            scheduleDrain();
         }
     }
 
-    /// Queue a status frame describing the current request statuses.
+    /// Send a websocket control frame immediately (status/request-context/load-state).
+    void sendControlMessage(TileLayerStream::MessageType type, std::string payload)
+    {
+        auto conn = conn_.lock();
+        if (!conn || conn->disconnected()) {
+            cancelNoStatus();
+            return;
+        }
+        conn->send(encodeStreamMessage(type, payload), drogon::WebSocketMessageType::Binary);
+    }
+
+    /// Send a status frame describing the current request statuses.
     void queueStatusMessage(std::string message)
     {
-        OutgoingFrame frame;
-        frame.bytes = encodeStreamMessage(TileLayerStream::MessageType::Status, buildStatusPayload(std::move(message)));
-        frame.type = TileLayerStream::MessageType::Status;
-        {
-            std::lock_guard lock(mutex_);
-            enqueueOutgoingLocked(std::move(frame));
-        }
+        sendControlMessage(TileLayerStream::MessageType::Status, buildStatusPayload(std::move(message)));
     }
 
-    /// Queue a request-context frame so the client can track the active request id.
+    /// Send a request-context frame so the client can track the active request id + client id.
     void queueRequestContextMessage()
     {
-        OutgoingFrame frame;
-        frame.bytes =
-            encodeStreamMessage(TileLayerStream::MessageType::RequestContext, buildRequestContextPayload());
-        frame.type = TileLayerStream::MessageType::RequestContext;
-        {
-            std::lock_guard lock(mutex_);
-            enqueueOutgoingLocked(std::move(frame));
-        }
+        sendControlMessage(TileLayerStream::MessageType::RequestContext, buildRequestContextPayload());
     }
 
     /// Forward backend tile load-state changes for tiles still requested by the client.
@@ -947,16 +1127,9 @@ private:
             }
         }
 
-        OutgoingFrame frame;
-        frame.bytes = encodeStreamMessage(
+        sendControlMessage(
             TileLayerStream::MessageType::LoadStateChange,
             buildLoadStatePayload(key, state));
-        frame.type = TileLayerStream::MessageType::LoadStateChange;
-        {
-            std::lock_guard lock(mutex_);
-            enqueueOutgoingLocked(std::move(frame));
-        }
-        scheduleDrain();
     }
 
     /// Build the JSON payload for `mapget.tiles.status`.
@@ -1011,107 +1184,22 @@ private:
         return nlohmann::json::object({
             {"type", "mapget.tiles.request-context"},
             {"requestId", requestId_},
+            {"clientId", clientId_},
         }).dump();
-    }
-
-    /// Schedule queue draining while guaranteeing at most one active drainer.
-    void scheduleDrain()
-    {
-        if (drainScheduled_.exchange(true))
-            return;
-        drainNow();
-    }
-
-    /// Drain queued frames to Drogon while respecting flow-control credits.
-    void drainNow()
-    {
-        gTilesWsMetrics.totalDrainCalls.fetch_add(1, std::memory_order_relaxed);
-
-        // Keep one active drainer at a time and bound each batch to avoid
-        // pushing very large bursts into Drogon's internal connection buffers.
-        for (;;) {
-            auto conn = conn_.lock();
-            if (!conn || conn->disconnected()) {
-                drainScheduled_.store(false, std::memory_order_relaxed);
-                cancelNoStatus();
-                return;
-            }
-
-            bool blockedByFlowControl = false;
-
-            for (size_t i = 0; i < MAX_FRAMES_PER_DRAIN; ++i) {
-                OutgoingFrame frame;
-                {
-                    std::lock_guard lock(mutex_);
-                    if (outgoing_.empty()) {
-                        break;
-                    }
-                    frame = std::move(outgoing_.front());
-                    outgoing_.pop_front();
-                    untrackQueuedFrameLocked(frame);
-                }
-
-                const auto frameBytes = static_cast<int64_t>(frame.bytes.size());
-
-                if (cancelled_) {
-                    gTilesWsMetrics.totalDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-                    gTilesWsMetrics.totalDroppedBytes.fetch_add(frameBytes, std::memory_order_relaxed);
-                    continue;
-                }
-
-                if (isFlowControlledDataFrameType(frame.type)) {
-                    // No credits available: put frame back at the front and stop this drain pass.
-                    if (!consumeFlowCreditForFrame()) {
-                        std::lock_guard lock(mutex_);
-                        outgoing_.push_front(std::move(frame));
-                        trackQueuedFrameLocked(outgoing_.front());
-                        blockedByFlowControl = true;
-                        break;
-                    }
-                    std::lock_guard lock(mutex_);
-                    trackSentFrameLocked(frame);
-                }
-
-                gTilesWsMetrics.totalForwardedFrames.fetch_add(1, std::memory_order_relaxed);
-                gTilesWsMetrics.totalForwardedBytes.fetch_add(frameBytes, std::memory_order_relaxed);
-                conn->send(frame.bytes, drogon::WebSocketMessageType::Binary);
-                if (frame.stringPoolCommit) {
-                    std::lock_guard lock(mutex_);
-                    committedStringPoolOffsets_[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
-                }
-            }
-
-            bool done = false;
-            {
-                std::lock_guard lock(mutex_);
-                if (blockedByFlowControl || outgoing_.empty()) {
-                    // Release ownership only while holding mutex_ so enqueuers can
-                    // reliably schedule a new drain for subsequently queued frames.
-                    drainScheduled_.store(false, std::memory_order_relaxed);
-                    done = true;
-                }
-            }
-            if (blockedByFlowControl) {
-                gTilesWsMetrics.totalFlowBlockedDrains.fetch_add(1, std::memory_order_relaxed);
-            }
-            if (done) {
-                return;
-            }
-        }
     }
 
     HttpService& service_;
     std::weak_ptr<drogon::WebSocketConnection> conn_;
+    int64_t clientId_ = gNextClientId.fetch_add(1, std::memory_order_relaxed);
     uint64_t requestId_ = 0;
     uint64_t nextRequestId_ = 1;
 
     AuthHeaders authHeaders_;
 
-    mutable std::mutex flowControlMutex_;
-    bool flowControlEnabled_ = false;
-    int64_t flowCreditFrames_ = 0;
-
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
+    uint64_t nextPullWaiterId_ = 1;
+    std::deque<uint64_t> pendingPullWaiterOrder_;
+    std::unordered_map<uint64_t, PullWaiter> pendingPullWaiters_;
     std::deque<OutgoingFrame> outgoing_;
     std::vector<RequestInfo> requestInfos_;
     std::vector<RequestStatus> requestStatuses_;
@@ -1119,8 +1207,6 @@ private:
     std::set<MapTileKey> desiredTileKeys_;
     std::map<MapTileKey, int64_t> tilePriorityRanks_;
     std::map<MapTileKey, int64_t> queuedTileFrameRefCount_;
-    std::map<MapTileKey, int64_t> sentTileFrameRefCount_;
-    std::deque<std::optional<MapTileKey>> sentFlowFrames_;
     bool statusEmissionEnabled_ = false;
 
     TileLayerStream::StringPoolOffsetMap committedStringPoolOffsets_;
@@ -1128,7 +1214,6 @@ private:
     std::unique_ptr<TileLayerStream::Writer> writer_;
     std::optional<std::vector<WriterMessage>> currentWriteBatch_;
 
-    std::atomic_bool drainScheduled_{false};
     std::atomic_bool cancelled_{false};
 };
 
@@ -1144,6 +1229,10 @@ public:
         gTilesWsMetrics.activeConnections.fetch_add(1, std::memory_order_relaxed);
         auto session = std::make_shared<TilesWsSession>(service_, conn, authHeadersFromRequest(req));
         session->registerForMetrics();
+        {
+            std::lock_guard lock(gSessionRegistryMutex);
+            gSessionRegistry[session->clientId()] = session;
+        }
         conn->setContext(std::move(session));
     }
 
@@ -1158,6 +1247,10 @@ public:
             // This is a defensive fallback for unexpected context loss.
             session = std::make_shared<TilesWsSession>(service_, conn, AuthHeaders{});
             session->registerForMetrics();
+            {
+                std::lock_guard lock(gSessionRegistryMutex);
+                gSessionRegistry[session->clientId()] = session;
+            }
             conn->setContext(session);
         }
 
@@ -1187,25 +1280,6 @@ public:
             return;
         }
 
-        std::string messageType;
-        if (auto typeIt = j.find("type"); typeIt != j.end() && typeIt->is_string()) {
-            messageType = typeIt->get<std::string>();
-        }
-
-        if (messageType == FLOW_GRANT_TYPE) {
-            const auto grantedFrames = session->grantFlowCredits(parseNonNegativeInt64(j, "frames"));
-            gTilesWsMetrics.totalFlowGrantMessages.fetch_add(1, std::memory_order_relaxed);
-            gTilesWsMetrics.totalFlowGrantFrames.fetch_add(grantedFrames, std::memory_order_relaxed);
-            session->onFlowGrant(grantedFrames);
-            return;
-        }
-
-        bool flowControl = false;
-        if (auto flowControlIt = j.find("flowControl"); flowControlIt != j.end() && flowControlIt->is_boolean()) {
-            flowControl = flowControlIt->get<bool>();
-        }
-        session->setFlowControlEnabled(flowControl);
-
         // Patch per-connection string pool offsets if supplied.
         if (j.contains("stringPoolOffsets")) {
             std::string errorMessage;
@@ -1230,6 +1304,10 @@ public:
     {
         gTilesWsMetrics.activeConnections.fetch_sub(1, std::memory_order_relaxed);
         if (auto session = conn->getContext<TilesWsSession>()) {
+            {
+                std::lock_guard lock(gSessionRegistryMutex);
+                gSessionRegistry.erase(session->clientId());
+            }
             session->cancel("WebSocket connection closed.");
         }
     }
@@ -1244,10 +1322,116 @@ private:
 
 }  // namespace
 
+namespace
+{
+
+[[nodiscard]] std::shared_ptr<TilesWsSession> findSessionByClientId(int64_t clientId)
+{
+    std::lock_guard lock(gSessionRegistryMutex);
+    auto it = gSessionRegistry.find(clientId);
+    if (it == gSessionRegistry.end()) {
+        return {};
+    }
+    auto session = it->second.lock();
+    if (!session) {
+        gSessionRegistry.erase(it);
+        return {};
+    }
+    return session;
+}
+
+[[nodiscard]] int64_t parseClampedInt64Parameter(
+    const drogon::HttpRequestPtr& req,
+    std::string_view key,
+    int64_t defaultValue,
+    int64_t minValue,
+    int64_t maxValue)
+{
+    const auto rawValue = req->getParameter(std::string(key));
+    if (rawValue.empty()) {
+        return defaultValue;
+    }
+    try {
+        const auto parsed = static_cast<int64_t>(std::stoll(rawValue));
+        return std::clamp(parsed, minValue, maxValue);
+    }
+    catch (const std::exception&) {
+        return defaultValue;
+    }
+}
+
+void handleTilesNextRequest(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+{
+    gTilesWsMetrics.totalPullRequests.fetch_add(1, std::memory_order_relaxed);
+
+    const auto clientId = parseClampedInt64Parameter(req, "clientId", 0, 0, std::numeric_limits<int64_t>::max());
+    if (clientId <= 0) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k400BadRequest);
+        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+        resp->setBody("Missing or invalid clientId parameter.");
+        callback(resp);
+        return;
+    }
+
+    auto session = findSessionByClientId(clientId);
+    if (!session) {
+        gTilesWsMetrics.totalPullSessionMisses.fetch_add(1, std::memory_order_relaxed);
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k410Gone);
+        callback(resp);
+        return;
+    }
+
+    const auto waitMs = parseClampedInt64Parameter(
+        req,
+        "waitMs",
+        DEFAULT_PULL_WAIT_MS,
+        0,
+        MAX_PULL_WAIT_MS);
+    const auto maxBytes = parseClampedInt64Parameter(
+        req,
+        "maxBytes",
+        0,
+        0,
+        MAX_PULL_BATCH_BYTES);
+    session->requestNextTileFrameAsync(
+        std::chrono::milliseconds(waitMs),
+        static_cast<size_t>(maxBytes),
+        [callback = std::move(callback)](TilesWsSession::PullFrameResult result) mutable {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            switch (result.status) {
+            case TilesWsSession::PullFrameResult::Status::Frame:
+                resp->setStatusCode(drogon::k200OK);
+                resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+                resp->setBody(std::move(result.frameBytes));
+                break;
+            case TilesWsSession::PullFrameResult::Status::Timeout:
+                gTilesWsMetrics.totalPullTimeouts.fetch_add(1, std::memory_order_relaxed);
+                resp->setStatusCode(drogon::k204NoContent);
+                break;
+            case TilesWsSession::PullFrameResult::Status::Closed:
+                resp->setStatusCode(drogon::k410Gone);
+                break;
+            }
+            callback(resp);
+        });
+}
+
+}  // namespace
+
 /// Register the `/tiles` websocket controller with Drogon.
 void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService& service)
 {
     app.registerController(std::make_shared<TilesWebSocketController>(service));
+    app.registerHandler(
+        "/tiles/next",
+        [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            handleTilesNextRequest(req, std::move(callback));
+        },
+        {drogon::Get});
 }
 
 /// Build the websocket metrics payload consumed by `/status-data`.
@@ -1255,25 +1439,16 @@ nlohmann::json tilesWebSocketMetricsSnapshot()
 {
     int64_t pendingControllerFrames = 0;
     int64_t pendingControllerBytes = 0;
-    int64_t flowControlEnabledConnections = 0;
-    int64_t flowControlBlockedConnections = 0;
-    int64_t flowControlCreditFrames = 0;
+    int64_t pendingPullRequests = 0;
     {
         std::lock_guard lock(gTrackedSessionsMutex);
         auto out = gTrackedSessions.begin();
         for (auto it = gTrackedSessions.begin(); it != gTrackedSessions.end(); ++it) {
             if (auto session = it->lock()) {
                 auto [frames, bytes] = session->pendingSnapshot();
-                const auto flowSnapshot = session->flowControlSnapshot();
                 pendingControllerFrames += frames;
                 pendingControllerBytes += bytes;
-                if (flowSnapshot.enabled) {
-                    ++flowControlEnabledConnections;
-                    flowControlCreditFrames += flowSnapshot.creditFrames;
-                    if (flowSnapshot.creditFrames <= 0) {
-                        ++flowControlBlockedConnections;
-                    }
-                }
+                pendingPullRequests += session->pendingPullRequestCount();
                 *out++ = *it;
             }
         }
@@ -1285,19 +1460,16 @@ nlohmann::json tilesWebSocketMetricsSnapshot()
         {"active-sessions", nonNegative(gTilesWsMetrics.activeSessions)},
         {"pending-controller-frames", pendingControllerFrames},
         {"pending-controller-bytes", pendingControllerBytes},
-        {"flow-control-enabled-connections", flowControlEnabledConnections},
-        {"flow-control-blocked-connections", flowControlBlockedConnections},
-        {"flow-control-credit-frames", flowControlCreditFrames},
+        {"pending-pull-requests", pendingPullRequests},
         {"total-queued-frames", nonNegative(gTilesWsMetrics.totalQueuedFrames)},
         {"total-queued-bytes", nonNegative(gTilesWsMetrics.totalQueuedBytes)},
         {"total-forwarded-frames", nonNegative(gTilesWsMetrics.totalForwardedFrames)},
         {"total-forwarded-bytes", nonNegative(gTilesWsMetrics.totalForwardedBytes)},
         {"total-dropped-frames", nonNegative(gTilesWsMetrics.totalDroppedFrames)},
         {"total-dropped-bytes", nonNegative(gTilesWsMetrics.totalDroppedBytes)},
-        {"total-drain-calls", nonNegative(gTilesWsMetrics.totalDrainCalls)},
-        {"total-flow-grant-messages", nonNegative(gTilesWsMetrics.totalFlowGrantMessages)},
-        {"total-flow-grant-frames", nonNegative(gTilesWsMetrics.totalFlowGrantFrames)},
-        {"total-flow-blocked-drains", nonNegative(gTilesWsMetrics.totalFlowBlockedDrains)},
+        {"total-pull-requests", nonNegative(gTilesWsMetrics.totalPullRequests)},
+        {"total-pull-timeouts", nonNegative(gTilesWsMetrics.totalPullTimeouts)},
+        {"total-pull-session-misses", nonNegative(gTilesWsMetrics.totalPullSessionMisses)},
         {"replaced-requests", nonNegative(gTilesWsMetrics.replacedRequests)},
     });
 }

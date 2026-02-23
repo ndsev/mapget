@@ -106,10 +106,9 @@ th { background: #f1f5f9; }
             <tbody></tbody>
         </table>
         <div class="muted" style="margin-top:8px">
-            `pending-controller-*` covers frames still queued in mapget's tiles websocket controller.
-            `total-forwarded-*` counts frames already handed to Drogon via `conn->send(...)`.
-            `flow-control-credit-frames` shows currently available connection-level frame credits.
-            `flow-control-blocked-connections` counts flow-controlled connections currently blocked by zero frame credits.
+            `pending-controller-*` covers tile frames currently queued for `/tiles/next` pulls.
+            `pending-pull-requests` counts currently blocked long-poll pull requests.
+            `total-forwarded-*` counts tile frames/bytes already served through `/tiles/next`.
         </div>
     </div>
 
@@ -191,19 +190,16 @@ const wsMetricDefinitions = [
     ["active-sessions", "active-sessions", (v) => formatInt(v)],
     ["pending-controller-frames", "pending-controller-frames", (v) => formatInt(v)],
     ["pending-controller-bytes", "pending-controller-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
-    ["flow-control-enabled-connections", "flow-control-enabled-connections", (v) => formatInt(v)],
-    ["flow-control-blocked-connections", "flow-control-blocked-connections", (v) => formatInt(v)],
-    ["flow-control-credit-frames", "flow-control-credit-frames", (v) => formatInt(v)],
+    ["pending-pull-requests", "pending-pull-requests", (v) => formatInt(v)],
     ["total-queued-frames", "total-queued-frames", (v) => formatInt(v)],
     ["total-queued-bytes", "total-queued-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["total-forwarded-frames", "total-forwarded-frames", (v) => formatInt(v)],
     ["total-forwarded-bytes", "total-forwarded-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["total-dropped-frames", "total-dropped-frames", (v) => formatInt(v)],
     ["total-dropped-bytes", "total-dropped-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
-    ["total-drain-calls", "total-drain-calls", (v) => formatInt(v)],
-    ["total-flow-grant-messages", "total-flow-grant-messages", (v) => formatInt(v)],
-    ["total-flow-grant-frames", "total-flow-grant-frames", (v) => formatInt(v)],
-    ["total-flow-blocked-drains", "total-flow-blocked-drains", (v) => formatInt(v)],
+    ["total-pull-requests", "total-pull-requests", (v) => formatInt(v)],
+    ["total-pull-timeouts", "total-pull-timeouts", (v) => formatInt(v)],
+    ["total-pull-session-misses", "total-pull-session-misses", (v) => formatInt(v)],
     ["replaced-requests", "replaced-requests", (v) => formatInt(v)],
 ];
 
