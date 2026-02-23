@@ -1353,12 +1353,7 @@ size_t TileFeatureLayer::size() const
 
 uint64_t TileFeatureLayer::numVertices() const
 {
-    uint64_t total = 0;
-    const auto numPointBuffers = impl_->pointBuffers_.size();
-    for (size_t i = 0; i < numPointBuffers; ++i) {
-        total += impl_->pointBuffers_.size(static_cast<simfil::ArrayIndex>(i));
-    }
-    return total;
+    return static_cast<uint64_t>(impl_->pointBuffers_.byte_size() / sizeof(glm::fvec3));
 }
 
 model_ptr<Feature> TileFeatureLayer::at(size_t i) const
