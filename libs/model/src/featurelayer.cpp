@@ -338,7 +338,7 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     // contains only references to feature nodes, in the order
     // of the feature node column.
     addRoot(ModelNode::Ptr(result));
-    setInfo("Size/Features", numRoots());
+    setInfo("Size/Features#features", numRoots());
     return result;
 }
 
