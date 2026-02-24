@@ -165,7 +165,7 @@ ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
     }
     auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     if (i >= static_cast<int64_t>(array->size())) {
-        return {};*
+        return {};
     }
     return array->at(i);
 }
