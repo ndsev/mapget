@@ -101,6 +101,9 @@ StringId GeometryCollection::keyAt(int64_t i) const {
 }
 
 model_ptr<Geometry> GeometryCollection::newGeometry(GeomType type, size_t initialCapacity) {
+    if (addr_.column() != TileFeatureLayer::ColumnId::GeometryCollections) {
+        raise("Cannot append to a single-geometry view.");
+    }
     auto result = model().newGeometry(type, initialCapacity);
     auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     array->append(result);
@@ -121,6 +124,9 @@ ModelNode::Ptr GeometryCollection::singleGeom() const
     if (extension()) {
         return {};
     }
+    if (addr_.column() == TileFeatureLayer::ColumnId::Geometries) {
+        return model().resolve(addr_);
+    }
     if (model().arrayMemberStorage().size((ArrayIndex)addr_.index()) == 1) {
         auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
         return array->at(0);
@@ -130,13 +136,16 @@ ModelNode::Ptr GeometryCollection::singleGeom() const
 
 void GeometryCollection::addGeometry(const model_ptr<Geometry>& geom)
 {
+    if (addr_.column() != TileFeatureLayer::ColumnId::GeometryCollections) {
+        raise("Cannot append to a single-geometry view.");
+    }
     auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     array->append(ModelNode::Ptr(geom));
 }
 
 size_t GeometryCollection::numGeometries() const
 {
-    auto result = model().arrayMemberStorage().size((ArrayIndex)addr().index());
+    auto result = localMergedSize();
     if (auto ext = extension()) {
         result += ext->numGeometries();
     }
@@ -148,24 +157,91 @@ ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
     if (i < 0) {
         return {};
     }
+    if (addr_.column() == TileFeatureLayer::ColumnId::Geometries) {
+        if (i == 0) {
+            return model().resolve(addr_);
+        }
+        return {};
+    }
     auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     if (i >= static_cast<int64_t>(array->size())) {
-        return {};
+        return {};*
     }
     return array->at(i);
 }
 
 model_ptr<GeometryArrayView> GeometryCollection::mergedGeometryArray() const
 {
-    auto result = model_ptr<GeometryArrayView>::make(
-        model_,
-        ModelNodeAddress{TileFeatureLayer::ColumnId::GeometryArrayView, addr_.index()});
+    auto result = addr_.column() == TileFeatureLayer::ColumnId::Geometries
+        ? model_ptr<GeometryArrayView>::make(
+            model_,
+            ModelNodeAddress{TileFeatureLayer::ColumnId::GeometryArrayView, addr_.index()},
+            addr_)
+        : model_ptr<GeometryArrayView>::make(
+            model_,
+            ModelNodeAddress{TileFeatureLayer::ColumnId::GeometryArrayView, addr_.index()});
     if (auto ext = extension()) {
         result->setExtension(ext->mergedGeometryArray());
     } else {
         result->setExtension({});
     }
     return result;
+}
+
+uint32_t GeometryCollection::localMergedSize() const
+{
+    if (addr_.column() == TileFeatureLayer::ColumnId::Geometries) {
+        return 1;
+    }
+    return model().arrayMemberStorage().size(static_cast<ArrayIndex>(addr_.index()));
+}
+
+ModelNode::Ptr GeometryCollection::localMergedAt(int64_t i) const
+{
+    return localGeometryAt(i);
+}
+
+bool GeometryCollection::localMergedIterate(const IterCallback& cb) const
+{
+    const auto localCount = localMergedSize();
+    for (uint32_t i = 0; i < localCount; ++i) {
+        if (auto node = localMergedAt(i)) {
+            if (!cb(*node)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+uint32_t GeometryArrayView::localMergedSize() const
+{
+    if (singleGeometryAddress_) {
+        return 1;
+    }
+    return MergedArrayView<GeometryArrayView, Geometry>::Base::size();
+}
+
+ModelNode::Ptr GeometryArrayView::localMergedAt(int64_t i) const
+{
+    if (singleGeometryAddress_) {
+        if (i == 0) {
+            return this->model().resolve(singleGeometryAddress_);
+        }
+        return {};
+    }
+    return MergedArrayView<GeometryArrayView, Geometry>::Base::at(i);
+}
+
+bool GeometryArrayView::localMergedIterate(const IterCallback& cb) const
+{
+    if (singleGeometryAddress_) {
+        if (auto node = this->model().resolve(singleGeometryAddress_)) {
+            return cb(*node);
+        }
+        return true;
+    }
+    return MergedArrayView<GeometryArrayView, Geometry>::Base::iterate(cb);
 }
 
 /** ModelNode impls. for Geometry */

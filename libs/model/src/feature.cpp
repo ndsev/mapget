@@ -8,6 +8,8 @@
 #include "stringpool.h"
 #include "tl/expected.hpp"
 
+#include <stdexcept>
+
 namespace mapget
 {
 
@@ -73,6 +75,7 @@ model_ptr<GeometryCollection> Feature::geom()
         updateFields();
         return result;
     }
+    materializeGeometryCollection();
     return const_cast<const Feature*>(this)->geomOrNull();
 }
 
@@ -312,32 +315,65 @@ nlohmann::json Feature::toJson() const
 }
 
 void Feature::addPoint(const Point& p) {
-    auto newGeom = geom()->newGeometry(GeomType::Points, 0);
+    auto newGeom = appendGeometry(GeomType::Points, 0);
     newGeom->append(p);
 }
 
 void Feature::addPoints(const std::vector<Point>& points) {
-    auto newGeom = geom()->newGeometry(GeomType::Points, points.size()-1);
+    auto newGeom = appendGeometry(GeomType::Points, points.size() - 1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
 void Feature::addLine(const std::vector<Point>& points) {
-    auto newGeom = geom()->newGeometry(GeomType::Line, points.size()-1);
+    auto newGeom = appendGeometry(GeomType::Line, points.size() - 1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
 void Feature::addMesh(const std::vector<Point>& points) {
-    auto newGeom = geom()->newGeometry(GeomType::Mesh, points.size()-1);
+    auto newGeom = appendGeometry(GeomType::Mesh, points.size() - 1);
     for (auto const& p : points)
         newGeom->append(p);
 }
 
 void Feature::addPoly(const std::vector<Point>& points) {
-    auto newGeom = geom()->newGeometry(GeomType::Polygon, points.size()-1);
+    auto newGeom = appendGeometry(GeomType::Polygon, points.size() - 1);
     for (auto const& p : points)
         newGeom->append(p);
+}
+
+void Feature::materializeGeometryCollection()
+{
+    if (!data_->geom_ || data_->geom_.column() != TileFeatureLayer::ColumnId::Geometries) {
+        return;
+    }
+    auto existingGeometry = model().resolve<Geometry>(data_->geom_);
+    auto collection = model().newGeometryCollection(2);
+    collection->addGeometry(existingGeometry);
+    data_->geom_ = collection->addr();
+    updateFields();
+}
+
+model_ptr<Geometry> Feature::appendGeometry(GeomType type, size_t initialCapacity)
+{
+    if (!data_->geom_) {
+        auto geom = model().newGeometry(type, initialCapacity);
+        data_->geom_ = geom->addr();
+        updateFields();
+        return geom;
+    }
+
+    materializeGeometryCollection();
+    if (data_->geom_.column() != TileFeatureLayer::ColumnId::GeometryCollections) {
+        simfil::raise<std::runtime_error>(
+            "Feature geometry reference is neither Geometry nor GeometryCollection.");
+    }
+
+    auto collection = model().resolve<GeometryCollection>(data_->geom_);
+    auto geom = model().newGeometry(type, initialCapacity);
+    collection->addGeometry(geom);
+    return geom;
 }
 
 model_ptr<Relation> Feature::addRelation(

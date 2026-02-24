@@ -76,6 +76,7 @@ namespace {
             layerInfo->featureTypes_,
             std::vector<int>{0, 1, 2},
             std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
+            1,
             true,
             false,
             Version{0, 0, 0}});

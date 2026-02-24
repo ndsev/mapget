@@ -65,8 +65,13 @@ public:
      *   + Added errorCode field to TileLayer
      *   + Added Status Message
      *   + Added LoadStateChange Message
+     * - Version 1.2:
+     *   - Removed LoadStateChange Message.
+     *   + Added tile load stage.
+     *   + Feature geometry reference may point directly to a Geometry
+     *     (single-geometry fast-path) or to a GeometryCollection.
      */
-    static constexpr Version CurrentProtocolVersion{1, 1, 0};
+    static constexpr Version CurrentProtocolVersion{1, 2, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

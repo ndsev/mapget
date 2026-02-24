@@ -748,6 +748,10 @@ model_ptr<Geometry> resolveInternal(tag<Geometry>, TileFeatureLayer const& model
 template<>
 model_ptr<GeometryCollection> resolveInternal(tag<GeometryCollection>, TileFeatureLayer const& model, ModelNode const& node)
 {
+    if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryCollections &&
+        node.addr().column() != TileFeatureLayer::ColumnId::Geometries) {
+        raise("Cannot cast this node to a GeometryCollection.");
+    }
     return GeometryCollection(
         model.shared_from_this(), node.addr(), model.mpKey_);
 }

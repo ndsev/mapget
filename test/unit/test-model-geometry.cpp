@@ -331,6 +331,45 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
     }
 }
 
+TEST_CASE("Feature Geometry Direct Storage Upgrade", "[geom.collection][feature]")
+{
+    auto modelPool = makeTile();
+    auto feature = modelPool->newFeature("Way", {{"wayId", 42}});
+
+    feature->addPoint({1.0, 2.0, 3.0});
+
+    auto single = feature->geomOrNull();
+    REQUIRE(single);
+    REQUIRE(single->addr().column() == TileFeatureLayer::ColumnId::Geometries);
+    REQUIRE(single->numGeometries() == 1);
+
+    auto singleAsGeometry = modelPool->resolve<Geometry>(single->addr());
+    REQUIRE(singleAsGeometry);
+    REQUIRE(singleAsGeometry->geomType() == GeomType::Points);
+    REQUIRE(singleAsGeometry->numPoints() == 1);
+    REQUIRE(singleAsGeometry->pointAt(0) == Point{1.0, 2.0, 3.0});
+
+    feature->addLine({{10.0, 20.0, 0.0}, {11.0, 21.0, 0.0}});
+
+    auto upgraded = feature->geomOrNull();
+    REQUIRE(upgraded);
+    REQUIRE(upgraded->addr().column() == TileFeatureLayer::ColumnId::GeometryCollections);
+    REQUIRE(upgraded->numGeometries() == 2);
+
+    auto upgradedGeoms = asModelNode(upgraded).get(StringPool::GeometriesStr);
+    REQUIRE(upgradedGeoms);
+    REQUIRE(upgradedGeoms->size() == 2);
+    auto upgradedFirst = modelPool->resolve<Geometry>(*upgradedGeoms->at(0));
+    auto upgradedSecond = modelPool->resolve<Geometry>(*upgradedGeoms->at(1));
+    REQUIRE(upgradedFirst->geomType() == GeomType::Points);
+    REQUIRE(upgradedFirst->numPoints() == 1);
+    REQUIRE(upgradedFirst->pointAt(0) == Point{1.0, 2.0, 3.0});
+    REQUIRE(upgradedSecond->geomType() == GeomType::Line);
+    REQUIRE(upgradedSecond->numPoints() == 2);
+    REQUIRE(upgradedSecond->pointAt(0) == Point{10.0, 20.0, 0.0});
+    REQUIRE(upgradedSecond->pointAt(1) == Point{11.0, 21.0, 0.0});
+}
+
 TEST_CASE("Attribute Validity", "[validity]") {
     auto modelPool = makeTile();
 

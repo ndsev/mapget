@@ -239,6 +239,8 @@ protected:
     // of id-part fields is adopted from the feature id.
     sfl::small_vector<std::pair<simfil::StringId, simfil::ModelNode::Ptr>, 32> fields_;
     void updateFields();
+    void materializeGeometryCollection();
+    model_ptr<Geometry> appendGeometry(GeomType type, size_t initialCapacity);
 
     struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {

@@ -212,6 +212,9 @@ public:
     GeometryCollection() = delete;
 
 private:
+    [[nodiscard]] uint32_t localMergedSize() const override;
+    [[nodiscard]] ModelNode::Ptr localMergedAt(int64_t i) const override;
+    bool localMergedIterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
     [[nodiscard]] ModelNode::Ptr localGeometryAt(int64_t i) const;
     [[nodiscard]] model_ptr<GeometryArrayView> mergedGeometryArray() const;
     [[nodiscard]] ValueType type() const override;
@@ -240,7 +243,24 @@ public:
     {
     }
 
+    GeometryArrayView(
+        ModelConstPtr pool,
+        ModelNodeAddress address,
+        ModelNodeAddress singleGeometryAddress,
+        simfil::detail::mp_key key)
+        : MergedArrayView<GeometryArrayView, Geometry>(std::move(pool), address, key),
+          singleGeometryAddress_(singleGeometryAddress)
+    {
+    }
+
     GeometryArrayView() = delete;
+
+private:
+    [[nodiscard]] uint32_t localMergedSize() const override;
+    [[nodiscard]] ModelNode::Ptr localMergedAt(int64_t i) const override;
+    bool localMergedIterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
+    ModelNodeAddress singleGeometryAddress_;
 };
 
 /** VertexBuffer Node */
