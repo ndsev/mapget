@@ -19,6 +19,8 @@ enum class GeomType : uint8_t {
 
 struct GeometryData
 {
+    MODEL_COLUMN_TYPE(0);
+
     GeometryData() = default;
     GeometryData(GeomType t, size_t capacity) : isView_(false), type_(t) {
         detail_.geom_.vertexArray_ = -(simfil::ArrayIndex)capacity;

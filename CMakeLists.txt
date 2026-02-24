@@ -34,6 +34,10 @@ endif()
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
 option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+  set(MAPGET_VALIDATE_MODEL_COLUMNS ON CACHE BOOL "Validate MODEL_COLUMN_TYPE structs in mapget.")
+endif()
+option(MAPGET_VALIDATE_MODEL_COLUMNS "Validate MODEL_COLUMN_TYPE structs in mapget.")
 
 if (MAPGET_ENABLE_TESTING)
   # Enable testing before adding CPM dependencies so stale/third-party CTest
@@ -91,6 +95,33 @@ if (NOT CPM_INITIALIZED)
   add_subdirectory(cmake/CPM.cmake)
 endif ()
 include(cmake/deps.cmake)
+
+if (MAPGET_VALIDATE_MODEL_COLUMNS)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  set(_MAPGET_COLUMN_VALIDATOR "${simfil_SOURCE_DIR}/tools/column_type_validator.py")
+  if (EXISTS "${_MAPGET_COLUMN_VALIDATOR}")
+    set(MAPGET_COLUMN_VALIDATION_FILES
+      "${simfil_SOURCE_DIR}/include/simfil/model/nodes.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/feature.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/attr.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/featureid.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/relation.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/geometry-data.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/validity-data.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/sourceinfo.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/sourcedatareference.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/sourcedata.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/src/featurelayer.cpp")
+    add_custom_target(mapget-column-type-validation
+      COMMAND "${Python3_EXECUTABLE}"
+              "${_MAPGET_COLUMN_VALIDATOR}"
+              ${MAPGET_COLUMN_VALIDATION_FILES}
+      VERBATIM)
+  else()
+    message(WARNING
+      "MAPGET_VALIDATE_MODEL_COLUMNS is ON, but validator script is missing: ${_MAPGET_COLUMN_VALIDATOR}")
+  endif()
+endif()
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)

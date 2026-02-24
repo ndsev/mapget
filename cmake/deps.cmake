@@ -8,11 +8,6 @@ CPMAddPackage(
     URI "gh:gabime/spdlog@1.15.3"
     OPTIONS "SPDLOG_FMT_EXTERNAL ON")
 CPMAddPackage("gh:fraillt/bitsery@5.2.4")
-CPMAddPackage(
-    URI "gh:josephbirkner/noserde#main"
-    OPTIONS
-        "BUILD_TESTING OFF"
-        "NOSERDE_BUILD_BENCHMARKS OFF")
 CPMAddPackage("gh:nlohmann/json@3.11.3")
 CPMAddPackage(
     URI "gh:TartanLlama/expected@1.1.0"
@@ -20,7 +15,7 @@ CPMAddPackage(
         "EXPECTED_BUILD_TESTS OFF"
         "EXPECTED_BUILD_PACKAGE_DEB OFF")
 CPMAddPackage(
-    URI "gh:Klebert-Engineering/simfil#noserde"
+    URI "gh:Klebert-Engineering/simfil#main"
     OPTIONS
         "SIMFIL_WITH_MODEL_JSON ON"
         "SIMFIL_SHARED OFF")

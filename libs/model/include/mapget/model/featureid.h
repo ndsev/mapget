@@ -48,6 +48,8 @@ protected:
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
     struct Data {
+        MODEL_COLUMN_TYPE(8);
+
         bool useCommonTilePrefix_ = false;
         simfil::StringId typeId_ = 0;
         simfil::ModelNodeAddress idParts_;

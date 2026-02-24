@@ -11,6 +11,8 @@ namespace mapget
 
 struct ValidityData
 {
+    MODEL_COLUMN_TYPE(0);
+
     /**
      * Validity direction values - may be used as flags.
      */

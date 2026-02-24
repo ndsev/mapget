@@ -55,6 +55,8 @@ public:
 protected:
     /** Actual per-attribute data that is stored in the model's attributes-column. */
     struct Data {
+        MODEL_COLUMN_TYPE(20);
+
         simfil::StringId name_ = 0;
         simfil::ModelNodeAddress targetFeatureId_;
         simfil::ModelNodeAddress sourceValidity_;

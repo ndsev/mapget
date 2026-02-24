@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include "simfil/model/column.h"
 #include "simfil/model/string-pool.h"
 
 namespace mapget
@@ -13,6 +14,8 @@ namespace mapget
  */
 struct SourceDataAddress
 {
+    MODEL_COLUMN_TYPE(8);
+
     static constexpr uint64_t BitMask = 0xffffffff;
 
     uint64_t value_ = 0u;
@@ -69,6 +72,8 @@ struct SourceDataAddress
  */
 struct SourceDataReference
 {
+    MODEL_COLUMN_TYPE(16);
+
     /** Layer Id */
     simfil::StringId layerId_;
 

@@ -68,6 +68,8 @@ public:
 private:
     struct Data
     {
+        MODEL_COLUMN_TYPE(16);
+
         simfil::ModelNodeAddress object_;
         simfil::StringId schemaName_ = {};
         SourceDataAddress sourceAddress_;

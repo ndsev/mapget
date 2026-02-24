@@ -21,7 +21,6 @@
 #include <bitsery/ext/std_optional.h>
 #include <bitsery/traits/string.h>
 #include <bitsery/traits/vector.h>
-#include <noserde.hpp>
 
 #include "simfil/environment.h"
 #include "simfil/model/arena.h"
@@ -81,6 +80,8 @@ namespace mapget
 
 struct FeatureAddrWithIdHash
 {
+    MODEL_COLUMN_TYPE(16);
+
     ModelNodeAddress featureAddr_{};
     uint64_t idHash_ = 0;
 
@@ -98,15 +99,15 @@ struct FeatureAddrWithIdHash
 struct TileFeatureLayer::Impl {
     ModelNodeAddress featureIdPrefix_;
 
-    noserde::Buffer<Feature::Data, simfil::detail::ColumnPageSize / 4> features_;
-    noserde::Buffer<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
-    noserde::Buffer<Validity::Data, simfil::detail::ColumnPageSize> validities_;
-    noserde::Buffer<FeatureId::Data, simfil::detail::ColumnPageSize / 2> featureIds_;
-    noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
-    noserde::Buffer<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
-    noserde::Buffer<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
-    noserde::Buffer<Geometry::Data, simfil::detail::ColumnPageSize / 2> geom_;
-    noserde::Buffer<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
+    simfil::ModelColumn<Feature::Data, simfil::detail::ColumnPageSize / 4> features_;
+    simfil::ModelColumn<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
+    simfil::ModelColumn<Validity::Data, simfil::detail::ColumnPageSize> validities_;
+    simfil::ModelColumn<FeatureId::Data, simfil::detail::ColumnPageSize / 2> featureIds_;
+    simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
+    simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
+    simfil::ModelColumn<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
+    simfil::ModelColumn<Geometry::Data, simfil::detail::ColumnPageSize / 2> geom_;
+    simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
     Geometry::Storage pointBuffers_;
     std::unordered_map<uint32_t, std::pair<TileFeatureLayer const*, ModelNodeAddress>> mergedArrayExtensions_;
 
@@ -115,7 +116,7 @@ struct TileFeatureLayer::Impl {
      * in a vector, which is kept in a sorted state. This allows finding a
      * feature by its id in O(log(n)) time.
      */
-    noserde::Buffer<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4> featureHashIndex_;
+    simfil::ModelColumn<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4> featureHashIndex_;
     bool featureHashIndexNeedsSorting_ = false;
     std::unordered_map<uint32_t, ModelNodeAddress> upgradedSimpleValidityAddresses_;
 

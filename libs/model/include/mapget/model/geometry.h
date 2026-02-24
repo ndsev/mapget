@@ -19,6 +19,13 @@ using simfil::ModelNodeAddress;
 using simfil::ModelConstPtr;
 using simfil::StringId;
 
+namespace simfil::detail
+{
+template <>
+struct is_model_column_external_type<glm::fvec3> : std::true_type
+{};
+}
+
 namespace mapget
 {
 

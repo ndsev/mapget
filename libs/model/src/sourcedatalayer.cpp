@@ -11,7 +11,6 @@
 #include "bitsery/traits/string.h"
 #include "bitsery/traits/vector.h"
 #include "simfil/model/bitsery-traits.h"
-#include <noserde.hpp>
 
 #include "mapget/log.h"
 #include "sourcedata.h"
@@ -32,7 +31,7 @@ namespace mapget
 struct TileSourceDataLayer::Impl
 {
     SourceDataAddressFormat format_;
-    noserde::Buffer<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
+    simfil::ModelColumn<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
 
     // Simfil compiled expression and environment
     SimfilExpressionCache expressionCache_;

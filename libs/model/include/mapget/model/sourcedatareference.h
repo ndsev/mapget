@@ -20,6 +20,8 @@ class TileFeatureLayer;
 class SourceDataReferenceItem;
 
 struct QualifiedSourceDataReference {
+    MODEL_COLUMN_TYPE(24);
+
     StringId qualifier_;
     SourceDataReference reference_;
 };

@@ -212,6 +212,8 @@ protected:
      */
     struct Data
     {
+        MODEL_COLUMN_TYPE(24);
+
         simfil::ModelNodeAddress id_;
         simfil::ModelNodeAddress geom_;
         simfil::ModelNodeAddress attrLayers_;
