@@ -7,9 +7,7 @@ add_library(mapget-http-service STATIC
 
   src/http-service.cpp
   src/http-client.cpp
-  src/cli.cpp
-  src/devui.h
-  src/devui.cpp)
+  src/cli.cpp)
 
 target_include_directories(mapget-http-service
   PUBLIC

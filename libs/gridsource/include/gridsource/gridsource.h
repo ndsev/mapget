@@ -15,6 +15,7 @@
 #include <string>
 #include <mutex>
 #include <optional>
+#include <functional>
 #include <map>
 
 // Hash function for TileId to use in unordered_map
@@ -268,6 +269,7 @@ struct Config {
     uint32_t sourceDownloadDelayMs = 0;  // Sleep-wait (simulates IO: downloading from server)
     uint32_t sourceUnpackDelayMs = 0;    // Busy-wait (simulates CPU: decompression/parsing)
     uint32_t sourceTransformDelayMs = 0; // Busy-wait (simulates CPU: conversion to features)
+    uint16_t devPort = 0;                // Port for embedded dev UI server (0 = disabled)
 
     // Attribute tree profile (global default)
     AttributeTreeProfile attributeTreeProfile = AttributeTreeProfile::None;
@@ -380,6 +382,10 @@ public:
     gridsource::Config getConfig() const;
     void clearContextCache();
 
+    // Tile cache invalidation callback (for dev UI to clear the service-level cache)
+    void setTileCacheInvalidationCallback(std::function<void()> callback);
+    void invokeTileCacheInvalidationCallback();
+
     // Static instance registry (for dev UI REST API)
     static void registerInstance(std::shared_ptr<GridDataSource> instance);
     static std::vector<std::shared_ptr<GridDataSource>> getInstances();
@@ -388,6 +394,7 @@ private:
     std::shared_ptr<const gridsource::Config> config_;
     mutable std::mutex configMutex_;
     mutable std::mutex contextMutex_;
+    std::function<void()> tileCacheInvalidationCallback_;
     mutable std::unordered_map<mapget::TileId, std::shared_ptr<gridsource::TileSpatialContext>> contextCache_;
     static constexpr size_t MAX_CACHED_CONTEXTS = 1000;
 

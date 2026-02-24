@@ -1,5 +1,4 @@
 #include "http-service.h"
-#include "devui.h"
 #include "mapget/log.h"
 #include "mapget/service/config.h"
 
@@ -664,11 +663,6 @@ void HttpService::setup(httplib::Server& server)
         "/config",
         [this](const httplib::Request& req, httplib::Response& res)
         { impl_->handlePostConfigRequest(req, res); });
-
-    // Conditionally enable Developer UI
-    if (isDevModeEnabled()) {
-        setupDevUI(server, cache());
-    }
 }
 
 }  // namespace mapget

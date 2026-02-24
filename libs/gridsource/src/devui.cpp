@@ -1,15 +1,19 @@
 // Copyright (c) Navigation Data Standard e.V. - See "LICENSE" file.
 
+#ifdef GRIDSOURCE_WITH_DEVUI
+
 #include "devui.h"
 #include "gridsource/gridsource.h"
 #include "mapget/log.h"
 #include "nlohmann/json.hpp"
+#include "httplib.h"
 
-namespace mapget
-{
+#include <mutex>
+#include <thread>
 
-namespace
-{
+namespace mapget::gridsource {
+
+namespace {
 
 // Embedded Developer UI HTML page
 static const char* kDevUIHtml = R"html(<!DOCTYPE html>
@@ -242,7 +246,7 @@ function buildUI(){
 async function refresh(){
   setStatus('Loading...','status-busy');
   try{
-    const r=await fetch('/dev/gridsource/config');
+    const r=await fetch('/config');
     if(!r.ok) throw new Error(r.statusText);
     config=await r.json();
     if(config.instances&&config.instances[0]){
@@ -259,7 +263,7 @@ async function applyChanges(){
   if(!config||!config.instances||!config.instances[0]) return;
   setStatus('Applying...','status-busy');
   try{
-    const r=await fetch('/dev/gridsource/config',{
+    const r=await fetch('/config',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(config.instances[0].config)
@@ -274,7 +278,7 @@ async function applyChanges(){
 async function clearTileCache(){
   setStatus('Clearing...','status-busy');
   try{
-    const r=await fetch('/dev/cache/clear',{method:'POST'});
+    const r=await fetch('/cache/clear',{method:'POST'});
     if(!r.ok) throw new Error(r.statusText);
     setStatus('Cache cleared','status-ok');
   }catch(e){
@@ -285,7 +289,7 @@ async function clearTileCache(){
 async function clearContextCache(){
   setStatus('Clearing...','status-busy');
   try{
-    const r=await fetch('/dev/gridsource/config',{
+    const r=await fetch('/config',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({_clearContextCache:true})
@@ -302,151 +306,169 @@ refresh();
 </body>
 </html>)html";
 
+static std::mutex serverMutex;
+static std::unique_ptr<httplib::Server> server;
+static std::unique_ptr<std::thread> serverThread;
+
 }  // anonymous namespace
 
-void setupDevUI(httplib::Server& server, Cache::Ptr cache)
+void startDevUIServer(uint16_t port)
 {
-    // GET /dev/ - Serve the Developer UI HTML page
-    server.Get("/dev/", [](const httplib::Request&, httplib::Response& res) {
+    std::lock_guard<std::mutex> lock(serverMutex);
+
+    // First caller wins — if already running, skip
+    if (server) {
+        mapget::log().info("GridDataSource dev UI server already running, skipping.");
+        return;
+    }
+
+    server = std::make_unique<httplib::Server>();
+
+    // GET / — serve HTML
+    server->Get("/", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(kDevUIHtml, "text/html");
     });
-    // Also handle /dev without trailing slash
-    server.Get("/dev", [](const httplib::Request&, httplib::Response& res) {
-        res.set_redirect("/dev/");
+
+    // GET /config — return all instances' configs as JSON
+    server->Get("/config", [](const httplib::Request&, httplib::Response& res) {
+        auto instances = GridDataSource::getInstances();
+        nlohmann::json result;
+        result["instances"] = nlohmann::json::array();
+        for (auto& inst : instances) {
+            auto cfg = inst->getConfig();
+            nlohmann::json entry;
+            entry["mapId"] = cfg.mapId;
+            entry["config"] = cfg.toJson();
+            entry["stats"] = nlohmann::json::object();
+            result["instances"].push_back(entry);
+        }
+        res.set_content(result.dump(), "application/json");
     });
 
-    // GET /dev/gridsource/config - Return current config as JSON
-    server.Get("/dev/gridsource/config",
-        [](const httplib::Request&, httplib::Response& res) {
-            auto instances = gridsource::GridDataSource::getInstances();
-            nlohmann::json result;
-            result["instances"] = nlohmann::json::array();
-            for (auto& inst : instances) {
-                auto cfg = inst->getConfig();
-                nlohmann::json entry;
-                entry["mapId"] = cfg.mapId;
-                entry["config"] = cfg.toJson();
-                // Stats
-                nlohmann::json stats;
-                // Context cache size is not directly accessible, but we can signal it
-                entry["stats"] = stats;
-                result["instances"].push_back(entry);
-            }
-            res.set_content(result.dump(), "application/json");
-        });
+    // POST /config — partial config merge
+    server->Post("/config", [](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto j = nlohmann::json::parse(req.body);
 
-    // POST /dev/gridsource/config - Partial config update
-    server.Post("/dev/gridsource/config",
-        [cache](const httplib::Request& req, httplib::Response& res) {
-            try {
-                auto j = nlohmann::json::parse(req.body);
-
-                // Special: context cache clear only
-                if (j.contains("_clearContextCache") && j["_clearContextCache"].get<bool>()) {
-                    for (auto& inst : gridsource::GridDataSource::getInstances()) {
-                        inst->clearContextCache();
-                    }
-                    res.set_content(R"({"status":"ok"})", "application/json");
-                    return;
+            // Special: context cache clear only
+            if (j.contains("_clearContextCache") && j["_clearContextCache"].get<bool>()) {
+                for (auto& inst : GridDataSource::getInstances()) {
+                    inst->clearContextCache();
                 }
-
-                auto instances = gridsource::GridDataSource::getInstances();
-                if (instances.empty()) {
-                    res.status = 404;
-                    res.set_content(R"({"error":"No GridDataSource instances found"})", "application/json");
-                    return;
-                }
-
-                // Apply to the first instance (most common case)
-                auto& inst = instances[0];
-                auto currentCfg = inst->getConfig();
-
-                // Merge provided fields into current config
-                if (j.contains("sourceDownloadDelayMs"))
-                    currentCfg.sourceDownloadDelayMs = j["sourceDownloadDelayMs"].get<uint32_t>();
-                if (j.contains("sourceUnpackDelayMs"))
-                    currentCfg.sourceUnpackDelayMs = j["sourceUnpackDelayMs"].get<uint32_t>();
-                if (j.contains("sourceTransformDelayMs"))
-                    currentCfg.sourceTransformDelayMs = j["sourceTransformDelayMs"].get<uint32_t>();
-                if (j.contains("attributeTreeProfile")) {
-                    static const std::map<std::string, gridsource::AttributeTreeProfile> pmap = {
-                        {"none", gridsource::AttributeTreeProfile::None},
-                        {"minimal", gridsource::AttributeTreeProfile::Minimal},
-                        {"moderate", gridsource::AttributeTreeProfile::Moderate},
-                        {"realistic", gridsource::AttributeTreeProfile::Realistic},
-                        {"stress", gridsource::AttributeTreeProfile::Stress}
-                    };
-                    auto profileStr = j["attributeTreeProfile"].get<std::string>();
-                    auto it = pmap.find(profileStr);
-                    currentCfg.attributeTreeProfile = (it != pmap.end()) ? it->second : gridsource::AttributeTreeProfile::None;
-                }
-                if (j.contains("attributeTreeParams")) {
-                    auto& atp = j["attributeTreeParams"];
-                    if (atp.contains("numLayers")) currentCfg.attributeTreeParams.numLayers = atp["numLayers"].get<int>();
-                    if (atp.contains("attrsPerLayer")) currentCfg.attributeTreeParams.attrsPerLayer = atp["attrsPerLayer"].get<int>();
-                    if (atp.contains("fieldsPerAttr")) currentCfg.attributeTreeParams.fieldsPerAttr = atp["fieldsPerAttr"].get<int>();
-                    if (atp.contains("maxNestingDepth")) currentCfg.attributeTreeParams.maxNestingDepth = atp["maxNestingDepth"].get<int>();
-                    if (atp.contains("maxArraySize")) currentCfg.attributeTreeParams.maxArraySize = atp["maxArraySize"].get<int>();
-                    if (atp.contains("nestingProbability")) currentCfg.attributeTreeParams.nestingProbability = atp["nestingProbability"].get<double>();
-                    if (atp.contains("directionalValidityProb")) currentCfg.attributeTreeParams.directionalValidityProb = atp["directionalValidityProb"].get<double>();
-                    if (atp.contains("rangeValidityProb")) currentCfg.attributeTreeParams.rangeValidityProb = atp["rangeValidityProb"].get<double>();
-                    if (atp.contains("topLevelExtraFields")) currentCfg.attributeTreeParams.topLevelExtraFields = atp["topLevelExtraFields"].get<int>();
-                }
-                if (j.contains("layers") && j["layers"].is_array()) {
-                    // Match by index for now
-                    for (size_t i = 0; i < j["layers"].size() && i < currentCfg.layers.size(); ++i) {
-                        auto& lj = j["layers"][i];
-                        auto& layer = currentCfg.layers[i];
-                        if (lj.contains("enabled")) layer.enabled = lj["enabled"].get<bool>();
-                        if (lj.contains("geometry") && lj["geometry"].contains("density")) {
-                            layer.geometry.density = lj["geometry"]["density"].get<double>();
-                        }
-                        if (lj.contains("attributeTreeProfile")) {
-                            static const std::map<std::string, gridsource::AttributeTreeProfile> pmap = {
-                                {"none", gridsource::AttributeTreeProfile::None},
-                                {"minimal", gridsource::AttributeTreeProfile::Minimal},
-                                {"moderate", gridsource::AttributeTreeProfile::Moderate},
-                                {"realistic", gridsource::AttributeTreeProfile::Realistic},
-                                {"stress", gridsource::AttributeTreeProfile::Stress}
-                            };
-                            auto profileStr = lj["attributeTreeProfile"].get<std::string>();
-                            auto it = pmap.find(profileStr);
-                            layer.attributeTreeProfile = (it != pmap.end()) ? it->second : gridsource::AttributeTreeProfile::None;
-                        }
-                    }
-                }
-
-                // Apply the updated config
-                inst->setConfig(std::move(currentCfg));
-
-                // Also clear the tile cache so next requests regenerate
-                if (cache) cache->clear();
-
-                log().info("Dev UI: GridDataSource config updated");
                 res.set_content(R"({"status":"ok"})", "application/json");
-            } catch (const std::exception& e) {
-                res.status = 400;
-                nlohmann::json err;
-                err["error"] = e.what();
-                res.set_content(err.dump(), "application/json");
+                return;
             }
-        });
 
-    // POST /dev/cache/clear - Clear tile cache
-    server.Post("/dev/cache/clear",
-        [cache](const httplib::Request&, httplib::Response& res) {
-            if (cache) {
-                cache->clear();
-                log().info("Dev UI: Tile cache cleared");
+            auto instances = GridDataSource::getInstances();
+            if (instances.empty()) {
+                res.status = 404;
+                res.set_content(R"({"error":"No GridDataSource instances found"})", "application/json");
+                return;
             }
-            // Also clear context caches on all GridDataSource instances
-            for (auto& inst : gridsource::GridDataSource::getInstances()) {
-                inst->clearContextCache();
+
+            // Apply to the first instance (most common case)
+            auto& inst = instances[0];
+            auto currentCfg = inst->getConfig();
+
+            // Merge provided fields into current config
+            if (j.contains("sourceDownloadDelayMs"))
+                currentCfg.sourceDownloadDelayMs = j["sourceDownloadDelayMs"].get<uint32_t>();
+            if (j.contains("sourceUnpackDelayMs"))
+                currentCfg.sourceUnpackDelayMs = j["sourceUnpackDelayMs"].get<uint32_t>();
+            if (j.contains("sourceTransformDelayMs"))
+                currentCfg.sourceTransformDelayMs = j["sourceTransformDelayMs"].get<uint32_t>();
+            if (j.contains("attributeTreeProfile")) {
+                static const std::map<std::string, AttributeTreeProfile> pmap = {
+                    {"none", AttributeTreeProfile::None},
+                    {"minimal", AttributeTreeProfile::Minimal},
+                    {"moderate", AttributeTreeProfile::Moderate},
+                    {"realistic", AttributeTreeProfile::Realistic},
+                    {"stress", AttributeTreeProfile::Stress}
+                };
+                auto profileStr = j["attributeTreeProfile"].get<std::string>();
+                auto it = pmap.find(profileStr);
+                currentCfg.attributeTreeProfile = (it != pmap.end()) ? it->second : AttributeTreeProfile::None;
             }
+            if (j.contains("attributeTreeParams")) {
+                auto& atp = j["attributeTreeParams"];
+                if (atp.contains("numLayers")) currentCfg.attributeTreeParams.numLayers = atp["numLayers"].get<int>();
+                if (atp.contains("attrsPerLayer")) currentCfg.attributeTreeParams.attrsPerLayer = atp["attrsPerLayer"].get<int>();
+                if (atp.contains("fieldsPerAttr")) currentCfg.attributeTreeParams.fieldsPerAttr = atp["fieldsPerAttr"].get<int>();
+                if (atp.contains("maxNestingDepth")) currentCfg.attributeTreeParams.maxNestingDepth = atp["maxNestingDepth"].get<int>();
+                if (atp.contains("maxArraySize")) currentCfg.attributeTreeParams.maxArraySize = atp["maxArraySize"].get<int>();
+                if (atp.contains("nestingProbability")) currentCfg.attributeTreeParams.nestingProbability = atp["nestingProbability"].get<double>();
+                if (atp.contains("directionalValidityProb")) currentCfg.attributeTreeParams.directionalValidityProb = atp["directionalValidityProb"].get<double>();
+                if (atp.contains("rangeValidityProb")) currentCfg.attributeTreeParams.rangeValidityProb = atp["rangeValidityProb"].get<double>();
+                if (atp.contains("topLevelExtraFields")) currentCfg.attributeTreeParams.topLevelExtraFields = atp["topLevelExtraFields"].get<int>();
+            }
+            if (j.contains("layers") && j["layers"].is_array()) {
+                for (size_t i = 0; i < j["layers"].size() && i < currentCfg.layers.size(); ++i) {
+                    auto& lj = j["layers"][i];
+                    auto& layer = currentCfg.layers[i];
+                    if (lj.contains("enabled")) layer.enabled = lj["enabled"].get<bool>();
+                    if (lj.contains("geometry") && lj["geometry"].contains("density")) {
+                        layer.geometry.density = lj["geometry"]["density"].get<double>();
+                    }
+                    if (lj.contains("attributeTreeProfile")) {
+                        static const std::map<std::string, AttributeTreeProfile> pmap = {
+                            {"none", AttributeTreeProfile::None},
+                            {"minimal", AttributeTreeProfile::Minimal},
+                            {"moderate", AttributeTreeProfile::Moderate},
+                            {"realistic", AttributeTreeProfile::Realistic},
+                            {"stress", AttributeTreeProfile::Stress}
+                        };
+                        auto profileStr = lj["attributeTreeProfile"].get<std::string>();
+                        auto it = pmap.find(profileStr);
+                        layer.attributeTreeProfile = (it != pmap.end()) ? it->second : AttributeTreeProfile::None;
+                    }
+                }
+            }
+
+            // Apply the updated config
+            inst->setConfig(std::move(currentCfg));
+
+            // Invoke tile cache invalidation callbacks on all instances
+            for (auto& i : instances) {
+                i->invokeTileCacheInvalidationCallback();
+            }
+
+            mapget::log().info("Dev UI: GridDataSource config updated");
             res.set_content(R"({"status":"ok"})", "application/json");
-        });
+        } catch (const std::exception& e) {
+            res.status = 400;
+            nlohmann::json err;
+            err["error"] = e.what();
+            res.set_content(err.dump(), "application/json");
+        }
+    });
 
-    log().info("Developer UI enabled at /dev/");
+    // POST /cache/clear — clear tile cache + context caches
+    server->Post("/cache/clear", [](const httplib::Request&, httplib::Response& res) {
+        for (auto& inst : GridDataSource::getInstances()) {
+            inst->invokeTileCacheInvalidationCallback();
+            inst->clearContextCache();
+        }
+        mapget::log().info("Dev UI: Tile cache cleared");
+        res.set_content(R"({"status":"ok"})", "application/json");
+    });
+
+    serverThread = std::make_unique<std::thread>([port]() {
+        mapget::log().info("GridDataSource dev UI listening on port {}", port);
+        server->listen("0.0.0.0", port);
+    });
+    serverThread->detach();
 }
 
-}  // namespace mapget
+void stopDevUIServer()
+{
+    std::lock_guard<std::mutex> lock(serverMutex);
+    if (server) {
+        server->stop();
+        server.reset();
+        serverThread.reset();
+    }
+}
+
+}  // namespace mapget::gridsource
+
+#endif

@@ -13,6 +13,10 @@
 #include "fmt/format.h"
 #include "glm/ext.hpp"
 
+#ifdef GRIDSOURCE_WITH_DEVUI
+#include "devui.h"
+#endif
+
 using namespace mapget;
 using namespace mapget::gridsource;
 
@@ -382,6 +386,7 @@ Config Config::fromYAML(const YAML::Node& node) {
     cfg.sourceDownloadDelayMs = node["sourceDownloadDelayMs"].as<uint32_t>(0);
     cfg.sourceUnpackDelayMs = node["sourceUnpackDelayMs"].as<uint32_t>(0);
     cfg.sourceTransformDelayMs = node["sourceTransformDelayMs"].as<uint32_t>(0);
+    cfg.devPort = node["devPort"].as<uint16_t>(0);
 
     // Legacy fallback: map old delayMs/delayMode to new fields
     if (node["delayMs"] && !node["sourceDownloadDelayMs"]
@@ -425,6 +430,7 @@ nlohmann::json Config::toJson() const {
     j["sourceDownloadDelayMs"] = sourceDownloadDelayMs;
     j["sourceUnpackDelayMs"] = sourceUnpackDelayMs;
     j["sourceTransformDelayMs"] = sourceTransformDelayMs;
+    j["devPort"] = devPort;
     j["attributeTreeProfile"] = profileToString(attributeTreeProfile);
 
     nlohmann::json atp;
@@ -473,6 +479,7 @@ Config Config::fromJson(const nlohmann::json& j) {
     if (j.contains("sourceDownloadDelayMs")) cfg.sourceDownloadDelayMs = j["sourceDownloadDelayMs"].get<uint32_t>();
     if (j.contains("sourceUnpackDelayMs")) cfg.sourceUnpackDelayMs = j["sourceUnpackDelayMs"].get<uint32_t>();
     if (j.contains("sourceTransformDelayMs")) cfg.sourceTransformDelayMs = j["sourceTransformDelayMs"].get<uint32_t>();
+    if (j.contains("devPort")) cfg.devPort = j["devPort"].get<uint16_t>();
     if (j.contains("attributeTreeProfile")) {
         auto profileStr = j["attributeTreeProfile"].get<std::string>();
         auto it = kProfileMap.find(profileStr);
@@ -734,6 +741,15 @@ void GridDataSource::clearContextCache() {
     contextCache_.clear();
 }
 
+void GridDataSource::setTileCacheInvalidationCallback(std::function<void()> callback) {
+    tileCacheInvalidationCallback_ = std::move(callback);
+}
+
+void GridDataSource::invokeTileCacheInvalidationCallback() {
+    if (tileCacheInvalidationCallback_)
+        tileCacheInvalidationCallback_();
+}
+
 GridDataSource::GridDataSource(const YAML::Node& config) {
     auto cfg = std::make_shared<gridsource::Config>();
     if (config && config.IsMap()) {
@@ -778,6 +794,11 @@ GridDataSource::GridDataSource(const YAML::Node& config) {
         cfg->layers.push_back(intersectionLayer);
     }
     config_ = std::move(cfg);
+
+#ifdef GRIDSOURCE_WITH_DEVUI
+    if (config_->devPort > 0)
+        gridsource::startDevUIServer(config_->devPort);
+#endif
 }
 
 DataSourceInfo GridDataSource::info() {

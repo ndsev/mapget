@@ -16,7 +16,4 @@ namespace mapget
 
     const std::string &getPathToSchemaPatch();
     void setPathToSchema(const std::string &path);
-
-    bool isDevModeEnabled();
-    void setDevModeEnabled(bool enabled);
 }

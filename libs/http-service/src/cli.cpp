@@ -83,6 +83,7 @@ nlohmann::json gridDataSourceSchema()
             {"attributeTreeParams", {{"type", "object"}, {"title", "Attribute Tree Params"}, {"description", "Optional overrides for attribute tree generation parameters."}}},
             {"delayMs", {{"type", "integer"}, {"title", "Simulated Delay (ms)"}, {"description", "DEPRECATED: Use sourceDownloadDelayMs/sourceTransformDelayMs instead."}}},
             {"delayMode", {{"type", "string"}, {"title", "Delay Mode"}, {"enum", {"sleep", "busyWait"}}, {"description", "DEPRECATED: Use sourceDownloadDelayMs/sourceTransformDelayMs instead."}}},
+            {"devPort", {{"type", "integer"}, {"title", "Dev UI Port"}, {"description", "Port for embedded dev UI server (0 = disabled)."}}},
             {"layers", {{"type", "array"}}}
         }},
         {"additionalProperties", true}
@@ -270,7 +271,6 @@ void loadConfigSchemaPatch(const std::string& schemaPath)
 
 bool isPostConfigEndpointEnabled_ = false;
 bool isGetConfigEndpointEnabled_ = true;
-bool isDevModeEnabled_ = false;
 }
 
 struct ServeCommand
@@ -354,10 +354,6 @@ struct ServeCommand
             "(0=disabled, 1=after every request, N=after every N JSON requests). "
             "Only effective on platforms supporting allocator trimming (e.g., Linux).")
             ->default_val(memoryTrimIntervalJson_);
-        serveCmd->add_flag(
-            "--dev-mode",
-            isDevModeEnabled_,
-            "Enable Developer UI at /dev/ for live GridDataSource configuration.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -431,6 +427,11 @@ struct ServeCommand
             registerDefaultDatasourceTypes();
             loadConfigSchemaPatch(getPathToSchemaPatch());
             DataSourceConfigService::get().loadConfig(config->as<std::string>());
+
+            // Wire tile cache invalidation callback for all GridDataSource instances
+            for (auto& inst : gridsource::GridDataSource::getInstances()) {
+                inst->setTileCacheInvalidationCallback([cache]{ if (cache) cache->clear(); });
+            }
         }
 
         if (!datasourceHosts_.empty()) {
@@ -616,16 +617,6 @@ const std::string &getPathToSchemaPatch()
 void setPathToSchema(const std::string& path)
 {
     pathToSchema = path;
-}
-
-bool isDevModeEnabled()
-{
-    return isDevModeEnabled_;
-}
-
-void setDevModeEnabled(bool enabled)
-{
-    isDevModeEnabled_ = enabled;
 }
 
 }  // namespace mapget
