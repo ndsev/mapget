@@ -19,7 +19,7 @@ enum class GeomType : uint8_t {
 
 struct GeometryData
 {
-    MODEL_COLUMN_TYPE(0);
+    MODEL_COLUMN_TYPE(48);
 
     GeometryData() = default;
     GeometryData(GeomType t, size_t capacity) : isView_(false), type_(t) {

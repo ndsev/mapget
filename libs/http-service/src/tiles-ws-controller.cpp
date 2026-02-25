@@ -37,6 +37,8 @@
 #include "fmt/format.h"
 #include "nlohmann/json.hpp"
 
+#include <zlib.h>
+
 namespace mapget::detail
 {
 namespace
@@ -133,6 +135,55 @@ constexpr bool EMIT_LOAD_STATE_FRAMES = false;
     auto message = headerStream.str();
     message.append(payload);
     return message;
+}
+
+/// Check whether the HTTP Accept-Encoding header allows gzip responses.
+[[nodiscard]] bool containsGzip(std::string_view acceptEncoding)
+{
+    return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;
+}
+
+/// Compress one payload as gzip (RFC 1952). Returns nullopt on zlib failure.
+[[nodiscard]] std::optional<std::string> gzipCompress(std::string_view input)
+{
+    z_stream stream{};
+    stream.zalloc = Z_NULL;
+    stream.zfree = Z_NULL;
+    stream.opaque = Z_NULL;
+
+    // 16 + MAX_WBITS enables gzip framing instead of raw deflate.
+    const int initResult = deflateInit2(
+        &stream,
+        Z_DEFAULT_COMPRESSION,
+        Z_DEFLATED,
+        16 + MAX_WBITS,
+        8,
+        Z_DEFAULT_STRATEGY);
+    if (initResult != Z_OK) {
+        return std::nullopt;
+    }
+
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
+    stream.avail_in = static_cast<uInt>(input.size());
+
+    std::string compressed;
+    compressed.reserve(input.size() / 2 + 128);
+
+    char outBuffer[8192];
+    int deflateResult = Z_OK;
+    do {
+        stream.next_out = reinterpret_cast<Bytef*>(outBuffer);
+        stream.avail_out = sizeof(outBuffer);
+        deflateResult = deflate(&stream, Z_FINISH);
+        if (deflateResult != Z_OK && deflateResult != Z_STREAM_END) {
+            deflateEnd(&stream);
+            return std::nullopt;
+        }
+        compressed.append(outBuffer, sizeof(outBuffer) - stream.avail_out);
+    } while (deflateResult != Z_STREAM_END);
+
+    deflateEnd(&stream);
+    return compressed;
 }
 
 /// Parse a JSON numeric field into non-negative int64 while handling missing keys.
@@ -1397,16 +1448,27 @@ void handleTilesNextRequest(
         0,
         0,
         MAX_PULL_BATCH_BYTES);
+    const bool enableGzip = containsGzip(req->getHeader("Accept-Encoding"));
     session->requestNextTileFrameAsync(
         std::chrono::milliseconds(waitMs),
         static_cast<size_t>(maxBytes),
-        [callback = std::move(callback)](TilesWsSession::PullFrameResult result) mutable {
+        [callback = std::move(callback), enableGzip](TilesWsSession::PullFrameResult result) mutable {
             auto resp = drogon::HttpResponse::newHttpResponse();
             switch (result.status) {
             case TilesWsSession::PullFrameResult::Status::Frame:
                 resp->setStatusCode(drogon::k200OK);
                 resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
-                resp->setBody(std::move(result.frameBytes));
+                if (enableGzip) {
+                    if (auto compressed = gzipCompress(result.frameBytes)) {
+                        resp->setBody(std::move(*compressed));
+                        resp->addHeader("Content-Encoding", "gzip");
+                        resp->addHeader("Vary", "Accept-Encoding");
+                    } else {
+                        resp->setBody(std::move(result.frameBytes));
+                    }
+                } else {
+                    resp->setBody(std::move(result.frameBytes));
+                }
                 break;
             case TilesWsSession::PullFrameResult::Status::Timeout:
                 gTilesWsMetrics.totalPullTimeouts.fetch_add(1, std::memory_order_relaxed);
@@ -1431,7 +1493,7 @@ void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService
         [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             handleTilesNextRequest(req, std::move(callback));
         },
-        {drogon::Get});
+        {drogon::Get, drogon::Post});
 }
 
 /// Build the websocket metrics payload consumed by `/status-data`.

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -87,7 +88,8 @@ class WsTilesClient
 {
 public:
     WsTilesClient(uint16_t port, std::shared_ptr<LayerInfo> layerInfo, bool requireFeatureLayer = true)
-        : layerInfo_(std::move(layerInfo)),
+        : pullClient_("127.0.0.1", port),
+          layerInfo_(std::move(layerInfo)),
           requireFeatureLayer_(requireFeatureLayer),
           reader_(
               [this](auto&&, auto&&) { return layerInfo_; },
@@ -153,10 +155,73 @@ public:
 
     [[nodiscard]] bool waitForDone(std::chrono::seconds timeout)
     {
-        std::unique_lock lock(mutex_);
-        return cv_.wait_for(lock, timeout, [this] {
-            return !error_.empty() || (lastStatus_.has_value() && lastStatus_->value("allDone", false));
-        });
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard lock(mutex_);
+                if (!error_.empty() || (lastStatus_.has_value() && lastStatus_->value("allDone", false))) {
+                    return true;
+                }
+            }
+
+            const auto remainingMs = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+            if (remainingMs <= 0) {
+                break;
+            }
+
+            const auto clientId = clientId_.load(std::memory_order_relaxed);
+            if (clientId > 0) {
+                const auto waitMs = std::clamp<int64_t>(remainingMs, 1, 1000);
+                const auto [result, resp] = pullClient_.get(fmt::format(
+                    "/tiles/next?clientId={}&waitMs={}&maxBytes={}",
+                    clientId,
+                    waitMs,
+                    5 * 1024 * 1024));
+
+                if (result != drogon::ReqResult::Ok || !resp) {
+                    setError("Failed to pull next tile frame");
+                    return true;
+                }
+
+                if (resp->statusCode() == drogon::k200OK) {
+                    try {
+                        std::lock_guard readerLock(readerMutex_);
+                        reader_.read(std::string(resp->body()));
+                    }
+                    catch (const std::exception& e) {
+                        setError(std::string("Failed to parse pulled tile stream: ") + e.what());
+                        return true;
+                    }
+                }
+                else if (resp->statusCode() == drogon::k204NoContent) {
+                    continue;
+                }
+                else if (resp->statusCode() == drogon::k410Gone) {
+                    setError("Tiles pull session closed");
+                    return true;
+                }
+                else {
+                    setError(fmt::format("Unexpected /tiles/next response status: {}", static_cast<int>(resp->statusCode())));
+                    return true;
+                }
+
+                continue;
+            }
+
+            std::unique_lock lock(mutex_);
+            cv_.wait_for(
+                lock,
+                std::chrono::milliseconds(std::min<int64_t>(remainingMs, 50)),
+                [this] {
+                    return !error_.empty()
+                        || clientId_.load(std::memory_order_relaxed) > 0
+                        || (lastStatus_.has_value() && lastStatus_->value("allDone", false));
+                });
+        }
+
+        std::lock_guard lock(mutex_);
+        return !error_.empty() || (lastStatus_.has_value() && lastStatus_->value("allDone", false));
     }
 
     void resetStatus()
@@ -220,7 +285,25 @@ private:
             return;
         }
 
+        if (type == TileLayerStream::MessageType::RequestContext) {
+            auto payload = std::string_view{
+                msg.data() + static_cast<std::ptrdiff_t>(headerBytes),
+                payloadSize};
+            try {
+                auto parsed = nlohmann::json::parse(payload);
+                if (parsed.contains("clientId") && parsed["clientId"].is_number_integer()) {
+                    clientId_.store(parsed["clientId"].get<int64_t>(), std::memory_order_relaxed);
+                    cv_.notify_all();
+                }
+            }
+            catch (const std::exception& e) {
+                setError(std::string("Failed to parse request-context JSON: ") + e.what());
+            }
+            return;
+        }
+
         try {
+            std::lock_guard readerLock(readerMutex_);
             reader_.read(msg);
         }
         catch (const std::exception& e) {
@@ -241,9 +324,12 @@ private:
     std::condition_variable cv_;
     std::optional<nlohmann::json> lastStatus_;
     std::string error_;
+    std::mutex readerMutex_;
     std::atomic_int receivedTileCount_{0};
+    std::atomic_int64_t clientId_{0};
     std::unique_ptr<trantor::EventLoopThread> loopThread_;
     drogon::WebSocketClientPtr client_;
+    SyncHttpClient pullClient_;
     std::shared_ptr<LayerInfo> layerInfo_;
     bool requireFeatureLayer_{true};
     TileLayerStream::Reader reader_;

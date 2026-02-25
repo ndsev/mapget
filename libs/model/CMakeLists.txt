@@ -47,10 +47,6 @@ add_library(mapget-model STATIC
   src/sourcedatareference.cpp
   src/validity.cpp)
 
-if (TARGET mapget-column-type-validation)
-  add_dependencies(mapget-model mapget-column-type-validation)
-endif()
-
 target_include_directories(mapget-model
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

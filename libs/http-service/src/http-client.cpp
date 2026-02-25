@@ -6,9 +6,17 @@
 #include <drogon/HttpRequest.h>
 #include <trantor/net/EventLoopThread.h>
 
+#include <algorithm>
+#include <cctype>
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 
 #include "fmt/format.h"
+
+#include <zlib.h>
 
 namespace mapget
 {
@@ -21,6 +29,94 @@ void applyHeaders(drogon::HttpRequestPtr const& req, AuthHeaders const& headers)
     for (auto const& [k, v] : headers) {
         req->addHeader(k, v);
     }
+}
+
+[[nodiscard]] bool hasGzipContentEncoding(std::string_view contentEncoding)
+{
+    if (contentEncoding.empty()) {
+        return false;
+    }
+
+    std::string normalized(contentEncoding);
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return normalized.find("gzip") != std::string::npos;
+}
+
+[[nodiscard]] bool looksLikeGzip(std::string_view bytes)
+{
+    return bytes.size() >= 2 &&
+           static_cast<unsigned char>(bytes[0]) == 0x1f &&
+           static_cast<unsigned char>(bytes[1]) == 0x8b;
+}
+
+[[nodiscard]] std::optional<std::string> gunzip(std::string_view input)
+{
+    if (input.empty()) {
+        return std::string{};
+    }
+    if (input.size() > static_cast<size_t>(std::numeric_limits<uInt>::max())) {
+        return std::nullopt;
+    }
+
+    z_stream stream{};
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
+    stream.avail_in = static_cast<uInt>(input.size());
+
+    // 16 + MAX_WBITS enables gzip container decoding.
+    if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK) {
+        return std::nullopt;
+    }
+
+    std::string output;
+    output.reserve(input.size() * 2);
+
+    char outBuffer[8192];
+    int inflateResult = Z_OK;
+    do {
+        stream.next_out = reinterpret_cast<Bytef*>(outBuffer);
+        stream.avail_out = sizeof(outBuffer);
+        inflateResult = inflate(&stream, Z_NO_FLUSH);
+        if (inflateResult != Z_OK && inflateResult != Z_STREAM_END) {
+            inflateEnd(&stream);
+            return std::nullopt;
+        }
+        output.append(outBuffer, sizeof(outBuffer) - stream.avail_out);
+    } while (inflateResult != Z_STREAM_END);
+
+    inflateEnd(&stream);
+    return output;
+}
+
+[[nodiscard]] std::optional<std::string> decodeResponseBody(const drogon::HttpResponsePtr& resp)
+{
+    if (!resp) {
+        return std::nullopt;
+    }
+
+    auto body = std::string_view(resp->body().data(), resp->body().size());
+    auto contentEncoding = resp->getHeader("Content-Encoding");
+    if (contentEncoding.empty()) {
+        contentEncoding = resp->getHeader("content-encoding");
+    }
+
+    const bool headerSaysGzip = hasGzipContentEncoding(contentEncoding);
+    const bool bodyLooksGzip = looksLikeGzip(body);
+
+    // Drogon may already have decompressed the payload before exposing body().
+    // If the header says gzip but bytes are not gzip-framed, treat body as decoded.
+    if (headerSaysGzip && !bodyLooksGzip) {
+        return std::string(body);
+    }
+
+    if (!headerSaysGzip && !bodyLooksGzip) {
+        return std::string(body);
+    }
+
+    return gunzip(body);
 }
 
 }  // namespace
@@ -60,7 +156,12 @@ struct HttpClient::Impl {
             raise(fmt::format("Failed to fetch sources: [{}]", (int)resp->statusCode()));
         }
 
-        for (auto const& info : nlohmann::json::parse(std::string(resp->body()))) {
+        auto decodedBody = decodeResponseBody(resp);
+        if (!decodedBody) {
+            raise("Failed to decode /sources response body");
+        }
+
+        for (auto const& info : nlohmann::json::parse(*decodedBody)) {
             auto parsedInfo = DataSourceInfo::fromJson(info);
             sources_.emplace(parsedInfo.mapId_, parsedInfo);
         }
@@ -120,11 +221,41 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     auto [result, resp] = impl_->client_->sendRequest(httpReq);
     if (result == drogon::ReqResult::Ok && resp) {
         if (resp->statusCode() == drogon::k200OK) {
+            try {
+                auto const layerInfo = impl_->resolve(request->mapId_, request->layerId_);
+                request->prepareResolvedLayer(layerInfo->type_, layerInfo->stages_);
+            }
+            catch (const std::exception& e) {
+                log().error("Failed to resolve request layer context: {}", e.what());
+                request->setStatus(RequestStatus::Aborted);
+                return request;
+            }
+
+            auto decodedBody = decodeResponseBody(resp);
+            if (!decodedBody) {
+                log().error("HttpClient /tiles decode failed");
+                request->setStatus(RequestStatus::Aborted);
+                return request;
+            }
+
             // TODO: Support streamed/chunked tile responses.
             //  Drogon's `HttpClient` API only provides the full buffered body.
             //  True streaming would require a custom client built on
             //  `trantor::TcpClient` (still within the Drogon dependency).
-            reader->read(std::string(resp->body()));
+            try {
+                reader->read(*decodedBody);
+            }
+            catch (const std::exception& e) {
+                log().error("Failed to parse /tiles response: {}", e.what());
+                request->setStatus(RequestStatus::Aborted);
+                return request;
+            }
+
+            if (!request->isDone()) {
+                // HttpClient performs one fully-buffered request. If parsing did
+                // not resolve request status by now, no more bytes will arrive.
+                request->setStatus(RequestStatus::Aborted);
+            }
         } else if (resp->statusCode() == drogon::k400BadRequest) {
             request->setStatus(RequestStatus::NoDataSource);
         } else if (resp->statusCode() == drogon::k403Forbidden) {

@@ -95,33 +95,7 @@ if (NOT CPM_INITIALIZED)
   add_subdirectory(cmake/CPM.cmake)
 endif ()
 include(cmake/deps.cmake)
-
-if (MAPGET_VALIDATE_MODEL_COLUMNS)
-  find_package(Python3 COMPONENTS Interpreter REQUIRED)
-  set(_MAPGET_COLUMN_VALIDATOR "${simfil_SOURCE_DIR}/tools/column_type_validator.py")
-  if (EXISTS "${_MAPGET_COLUMN_VALIDATOR}")
-    set(MAPGET_COLUMN_VALIDATION_FILES
-      "${simfil_SOURCE_DIR}/include/simfil/model/nodes.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/feature.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/attr.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/featureid.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/relation.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/geometry-data.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/validity-data.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/sourceinfo.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/sourcedatareference.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/include/mapget/model/sourcedata.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libs/model/src/featurelayer.cpp")
-    add_custom_target(mapget-column-type-validation
-      COMMAND "${Python3_EXECUTABLE}"
-              "${_MAPGET_COLUMN_VALIDATOR}"
-              ${MAPGET_COLUMN_VALIDATION_FILES}
-      VERBATIM)
-  else()
-    message(WARNING
-      "MAPGET_VALIDATE_MODEL_COLUMNS is ON, but validator script is missing: ${_MAPGET_COLUMN_VALIDATOR}")
-  endif()
-endif()
+include("${simfil_SOURCE_DIR}/cmake/column_type_validator.cmake")
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
@@ -176,4 +150,12 @@ endif()
 
 if (MAPGET_BUILD_EXAMPLES OR MAPGET_ENABLE_TESTING)
   add_subdirectory(examples)
+endif()
+
+if (MAPGET_VALIDATE_MODEL_COLUMNS)
+  simfil_enable_column_type_validation_for_linked_targets(
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "simfil::simfil"
+    "${simfil_SOURCE_DIR}/cmake/column_type_validator.py"
+    "mapget-column-type-validation")
 endif()
