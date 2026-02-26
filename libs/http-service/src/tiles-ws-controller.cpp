@@ -1448,7 +1448,8 @@ void handleTilesNextRequest(
         0,
         0,
         MAX_PULL_BATCH_BYTES);
-    const bool enableGzip = containsGzip(req->getHeader("Accept-Encoding"));
+    const bool compressRequested = parseClampedInt64Parameter(req, "compress", 0, 0, 1) != 0;
+    const bool enableGzip = compressRequested && containsGzip(req->getHeader("Accept-Encoding"));
     session->requestNextTileFrameAsync(
         std::chrono::milliseconds(waitMs),
         static_cast<size_t>(maxBytes),
