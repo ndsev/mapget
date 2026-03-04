@@ -89,7 +89,7 @@ ModelVariant pyValueToModel(py::object const& pyValue, TileFeatureLayer& model)
     else if (py::isinstance<py::list>(pyValue)) {
         // Recursively convert Python list to array.
         auto list = pyValue.cast<py::list>();
-        auto arr = model.newArray(list.size());
+        auto arr = model.newArray(list.size(), true);
 
         for (auto const& item : list) {
             auto value = pyValueToModel(py::reinterpret_borrow<py::object>(item), model);
@@ -103,7 +103,7 @@ ModelVariant pyValueToModel(py::object const& pyValue, TileFeatureLayer& model)
     else if (py::isinstance<py::dict>(pyValue)) {
         // Recursively convert Python dict to object.
         auto dict = pyValue.cast<py::dict>();
-        auto obj = model.newObject(dict.size());
+        auto obj = model.newObject(dict.size(), true);
 
         for (auto const& [anyKey, anyValue] : dict) {
             std::string key = py::str(anyKey);

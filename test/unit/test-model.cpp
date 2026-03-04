@@ -147,17 +147,18 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         constexpr auto expected =
             R"({"areaId":"TheBestArea","geometry":{"geometries":[)"
-            R"({"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"name":"","type":"LineString"},)"
-            R"({"coordinates":[[41.5,10.5,0.0]],"name":"","type":"MultiPoint"},)"
-            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"name":"","type":"MultiPoint"},)"
-            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"name":"","type":"LineString"},)"
-            R"({"coordinates":[[[[41.5,10.5,0.0],[41.5,10.299999997019768,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.5,0.0]]]],"name":"","type":"MultiPolygon"},)"
-            R"({"coordinates":[[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0],[41.5,10.5,0.0]]],"name":"","type":"Polygon"},)"
-            R"({"coordinates":[[[0,1,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]]],"name":"","type":"Polygon"},)"  // Unclosed, CW
-            R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"name":"","type":"Polygon"},)"  // Closed, CCW
-            R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"name":"","type":"Polygon"},)"  // Closed, CW, Z!=0
-            R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"name":"","type":"MultiPolygon"})"  // Mesh
+            R"({"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},)"
+            R"({"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.599999994039536,10.699999988079071,0.0]],"type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.599999994039536,10.699999988079071,0.0]],"type":"LineString"},)"
+            R"({"coordinates":[[[[41.5,10.5,0.0],[41.5,10.300000011920929,0.0],[41.599999994039536,10.699999988079071,0.0],[41.5,10.5,0.0]]]],"type":"MultiPolygon"},)"
+            R"({"coordinates":[[[41.5,10.5,0.0],[41.599999994039536,10.699999988079071,0.0],[41.5,10.300000011920929,0.0],[41.79999999701977,10.899999998509884,0.0],[41.5,10.5,0.0]]],"type":"Polygon"},)"
+            R"({"coordinates":[[[0,1,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]]],"type":"Polygon"},)"  // Unclosed, CW
+            R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"type":"Polygon"},)"  // Closed, CCW
+            R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"type":"Polygon"},)"  // Closed, CW, Z!=0
+            R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"type":"MultiPolygon"})"  // Mesh
             R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":[{"direction":"POSITIVE"}]}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
+            R"("lod":7,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
         auto res = feature1->toJson();
@@ -458,6 +459,40 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     }
 }
 
+TEST_CASE("Feature LOD Field", "[test.featurelayer][test.feature.lod]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "areaId", "datatype": "STR"},
+                    {"partId": "wayId", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("FeatureLodNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "FeatureLodNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    tile->setIdPrefix({{"areaId", "A"}});
+
+    auto feature = tile->newFeature("Way", {{"wayId", int64_t(42)}});
+    auto lodValueResult = feature->evaluate("lod");
+    REQUIRE(lodValueResult.has_value());
+    auto lodValue = lodValueResult.value().as<simfil::ValueType::Int>();
+    REQUIRE(lodValue >= 0);
+    REQUIRE(lodValue <= 7);
+    REQUIRE(static_cast<int64_t>(feature->lod()) == static_cast<int64_t>(lodValue));
+}
+
 TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
 {
     auto layerInfo = LayerInfo::fromJson(R"({
@@ -497,6 +532,8 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
     auto baseFeature = base->newFeature("Way", {{"wayId", 1}});
     auto baseGeom = baseFeature->geom()->newGeometry(GeomType::Points, 1);
     baseGeom->append({10., 10., 0.});
+    REQUIRE(baseFeature->attributes()->addField("plainA", "base").has_value());
+    REQUIRE(baseFeature->attributes()->addField("overrideA", "base").has_value());
     auto baseLayer = baseFeature->attributeLayers()->newLayer("baseLayer");
     auto baseAttr = baseLayer->newAttribute("baseAttr");
     REQUIRE(baseAttr->addField("value", "base").has_value());
@@ -505,6 +542,7 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
     auto overlayFeature1 = overlayStage1->newFeature("Way", {{"wayId", 1}});
     auto overlayGeom1 = overlayFeature1->geom()->newGeometry(GeomType::Points, 1);
     overlayGeom1->append({20., 20., 0.});
+    REQUIRE(overlayFeature1->attributes()->addField("overrideA", "overlay1").has_value());
     auto overlayLayer1 = overlayFeature1->attributeLayers()->newLayer("overlayLayer1");
     auto overlayAttr1 = overlayLayer1->newAttribute("overlayAttr1");
     REQUIRE(overlayAttr1->addField("value", "overlay1").has_value());
@@ -513,6 +551,8 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
     auto overlayFeature2 = overlayStage2->newFeature("Way", {{"wayId", 1}});
     auto overlayGeom2 = overlayFeature2->geom()->newGeometry(GeomType::Points, 1);
     overlayGeom2->append({30., 30., 0.});
+    REQUIRE(overlayFeature2->attributes()->addField("plainB", "overlay2").has_value());
+    REQUIRE(overlayFeature2->attributes()->addField("overrideA", "overlay2").has_value());
     auto overlayLayer2 = overlayFeature2->attributeLayers()->newLayer("overlayLayer2");
     auto overlayAttr2 = overlayLayer2->newAttribute("overlayAttr2");
     REQUIRE(overlayAttr2->addField("value", "overlay2").has_value());
@@ -527,6 +567,10 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
     SECTION("Typed access sees merged data")
     {
         REQUIRE(mergedFeature->geomOrNull()->numGeometries() == 3);
+        REQUIRE(mergedFeature->mergedAttributesOrNull()->size() == 3);
+        REQUIRE(mergedFeature->evaluate("properties.plainA").value().toString() == "base");
+        REQUIRE(mergedFeature->evaluate("properties.plainB").value().toString() == "overlay2");
+        REQUIRE(mergedFeature->evaluate("properties.overrideA").value().toString() == "overlay2");
         REQUIRE(mergedFeature->attributeLayersOrNull()->size() == 3);
         REQUIRE(mergedFeature->numRelations() == 3);
     }

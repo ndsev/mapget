@@ -27,7 +27,10 @@ public:
     /**
      * Create a new attribute and immediately insert it into the layer.
      */
-    model_ptr<Attribute> newAttribute(std::string_view const& name, size_t initialCapacity=8);
+    model_ptr<Attribute> newAttribute(
+        std::string_view const& name,
+        size_t initialCapacity=8,
+        bool fixedSize=false);
 
     /**
      * Add an attribute to the layer which was created before - note:
@@ -67,7 +70,10 @@ public:
     /**
      * Create a new named layer and immediately insert it into the collection.
      */
-    model_ptr<AttributeLayer> newLayer(std::string_view const& name, size_t initialCapacity=8);
+    model_ptr<AttributeLayer> newLayer(
+        std::string_view const& name,
+        size_t initialCapacity=8,
+        bool fixedSize=false);
 
     /**
      * Add an attribute layer to the collection which was previously created.

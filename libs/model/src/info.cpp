@@ -358,13 +358,23 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
                 coverages.push_back(Coverage::fromJson(item));
             }
 
+        const auto stages = std::max<uint32_t>(1U, j.value("stages", 1U));
+        auto stageLabels = j.value("stageLabels", std::vector<std::string>{});
+        if (stageLabels.size() < stages) {
+            stageLabels.reserve(stages);
+            for (uint32_t i = static_cast<uint32_t>(stageLabels.size()); i < stages; ++i) {
+                stageLabels.emplace_back(fmt::format("Stage {}", i));
+            }
+        }
+
         return std::make_shared<LayerInfo>(LayerInfo{
             j.value("layerId", layerId),
             type,
             featureTypes,
             j.value("zoomLevels", std::vector<int>()),
             coverages,
-            std::max<uint32_t>(1U, j.value("stages", 1U)),
+            stages,
+            stageLabels,
             j.value("canRead", true),
             j.value("canWrite", false),
             Version::fromJson(j.value("version", Version().toJson()))});
@@ -395,6 +405,7 @@ nlohmann::json LayerInfo::toJson() const
         {"zoomLevels", zoomLevels_},
         {"coverage", coverages},
         {"stages", stages_},
+        {"stageLabels", stageLabels_},
         {"canRead", canRead_},
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};

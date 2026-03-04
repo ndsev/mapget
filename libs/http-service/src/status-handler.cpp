@@ -134,6 +134,24 @@ th { background: #f1f5f9; }
                 <tbody></tbody>
             </table>
         </div>
+        <div class="panel">
+            <h3>Array Arena Singleton Usage</h3>
+            <table id="arrayArenaSingletonsTable">
+                <thead>
+                    <tr>
+                        <th>Arena</th>
+                        <th class="number">Handles</th>
+                        <th class="number">Occupied</th>
+                        <th class="number">Empty</th>
+                        <th class="number">Singleton Bytes</th>
+                        <th class="number">Regular-Equivalent Bytes</th>
+                        <th class="number">Saved Bytes</th>
+                        <th class="number">Saved Share</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
     </div>
 
     <h2>Service Statistics</h2>
@@ -182,6 +200,7 @@ const state = {
     lastServiceText: "",
     lastCacheText: "",
     lastBreakdownJson: "",
+    lastArrayArenaSingletonJson: "",
     lastDistributionJson: "",
 };
 
@@ -282,6 +301,7 @@ function renderTreeBreakdown(service) {
     if (!breakdown) {
         panel.style.display = "none";
         state.lastBreakdownJson = "";
+        state.lastArrayArenaSingletonJson = "";
         return;
     }
     panel.style.display = "block";
@@ -310,6 +330,45 @@ function renderTreeBreakdown(service) {
     const totalBytes = Number(breakdown["total-tile-bytes"] || 0);
     renderByteBreakdownRows("#featureLayerBreakdown tbody", breakdown["feature-layer"], totalBytes);
     renderByteBreakdownRows("#modelPoolBreakdown tbody", breakdown["model-pool"], totalBytes);
+    renderArrayArenaSingletons(breakdown);
+}
+
+function renderArrayArenaSingletons(breakdown) {
+    const tbody = qs("#arrayArenaSingletonsTable tbody");
+    if (!tbody) {
+        return;
+    }
+
+    const singletonBreakdown = breakdown["array-arena-singletons"] || {};
+    const singletonJson = JSON.stringify(singletonBreakdown);
+    if (state.lastArrayArenaSingletonJson === singletonJson) {
+        return;
+    }
+    state.lastArrayArenaSingletonJson = singletonJson;
+
+    tbody.innerHTML = "";
+    for (const [arenaName, statsRaw] of Object.entries(singletonBreakdown)) {
+        const stats = statsRaw || {};
+        const handles = Number(stats["handles"] || 0);
+        const occupied = Number(stats["occupied"] || 0);
+        const empty = Number(stats["empty"] || 0);
+        const singletonBytes = Number(stats["singleton-storage-bytes"] || 0);
+        const regularBytes = Number(stats["hypothetical-regular-bytes"] || 0);
+        const savedBytes = Number(stats["estimated-saved-bytes"] || 0);
+        const savedShare = regularBytes > 0 ? savedBytes / regularBytes : 0;
+
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+            `<td>${arenaName}</td>` +
+            `<td class="number">${formatInt(handles)}</td>` +
+            `<td class="number">${formatInt(occupied)}</td>` +
+            `<td class="number">${formatInt(empty)}</td>` +
+            `<td class="number">${formatInt(singletonBytes)} (${formatBytes(singletonBytes)})</td>` +
+            `<td class="number">${formatInt(regularBytes)} (${formatBytes(regularBytes)})</td>` +
+            `<td class="number">${formatInt(savedBytes)} (${formatBytes(savedBytes)})</td>` +
+            `<td class="number">${formatPct(savedShare)}</td>`;
+        tbody.appendChild(tr);
+    }
 }
 
 function renderTileDistribution(service) {

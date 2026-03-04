@@ -20,10 +20,11 @@ class TileFeatureLayer;
 class SourceDataReferenceItem;
 
 struct QualifiedSourceDataReference {
-    MODEL_COLUMN_TYPE(24);
+    MODEL_COLUMN_TYPE(12);
 
+    SourceDataAddress address_;
+    StringId layerId_;
     StringId qualifier_;
-    SourceDataReference reference_;
 };
 
 /**

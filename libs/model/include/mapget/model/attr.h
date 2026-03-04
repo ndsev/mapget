@@ -51,7 +51,7 @@ protected:
         MODEL_COLUMN_TYPE(16);
 
         simfil::ModelNodeAddress validities_;
-        simfil::ArrayIndex fields_ = -1;
+        simfil::ArrayIndex fields_ = simfil::InvalidArrayIndex;
         simfil::StringId name_ = 0;
         simfil::ModelNodeAddress sourceDataRefs_;
     };

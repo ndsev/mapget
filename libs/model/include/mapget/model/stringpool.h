@@ -24,6 +24,7 @@ struct StringPool : public simfil::StringPool
     enum StaticStringIds : simfil::StringId {
         IdStr = NextStaticId,
         TypeIdStr,
+        LodStr,
         MapIdStr,
         LayerIdStr,
         LayerStr,

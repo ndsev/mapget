@@ -18,12 +18,19 @@ struct SourceDataAddress
 
     static constexpr uint64_t BitMask = 0xffffffff;
 
-    uint64_t value_ = 0u;
+    uint32_t bitOffset_ = 0u;
+    uint32_t bitSize_ = 0u;
 
     SourceDataAddress() = default;
 
+    SourceDataAddress(uint32_t bitOffset, uint32_t bitSize)
+        : bitOffset_(bitOffset),
+          bitSize_(bitSize)
+    {}
+
     explicit SourceDataAddress(uint64_t value)
-        : value_(value)
+        : bitOffset_(static_cast<uint32_t>((value >> 32) & BitMask)),
+          bitSize_(static_cast<uint32_t>(value & BitMask))
     {}
 
     /**
@@ -36,22 +43,24 @@ struct SourceDataAddress
         assert((offset & BitMask) == offset);
         assert((size & BitMask) == size);
 
-        return SourceDataAddress{(static_cast<uint64_t>(offset) << 32) | (size & BitMask)};
+        return SourceDataAddress{
+            static_cast<uint32_t>(offset),
+            static_cast<uint32_t>(size)};
     }
 
     uint64_t u64() const
     {
-        return value_;
+        return (static_cast<uint64_t>(bitOffset_) << 32) | bitSize_;
     }
 
     uint32_t bitSize() const
     {
-        return value_ & BitMask;
+        return bitSize_;
     }
 
     uint32_t bitOffset() const
     {
-        return (value_ >> 32) & BitMask;
+        return bitOffset_;
     }
 
     /**
@@ -60,7 +69,8 @@ struct SourceDataAddress
     template <typename S>
     void serialize(S& s)
     {
-        s.value8b(value_);
+        s.value4b(bitOffset_);
+        s.value4b(bitSize_);
     }
 };
 
@@ -72,19 +82,19 @@ struct SourceDataAddress
  */
 struct SourceDataReference
 {
-    MODEL_COLUMN_TYPE(16);
-
-    /** Layer Id */
-    simfil::StringId layerId_;
+    MODEL_COLUMN_TYPE(12);
 
     /** Region in the source blob */
     SourceDataAddress address_;
 
+    /** Layer Id */
+    simfil::StringId layerId_;
+
     template <typename S>
     void serialize(S& s)
     {
-        s.value2b(layerId_);
         s.object(address_);
+        s.value2b(layerId_);
     }
 };
 

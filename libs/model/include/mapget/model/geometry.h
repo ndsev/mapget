@@ -22,7 +22,7 @@ using simfil::StringId;
 namespace simfil::detail
 {
 template <>
-struct is_model_column_external_type<glm::fvec3> : std::true_type
+struct is_model_column_external_type<glm::vec3> : std::true_type
 {};
 }
 
@@ -74,12 +74,6 @@ public:
 
     /** Get a hash of the geometry. **/
     [[nodiscard]] uint64_t getHash() const;
-
-    /**
-     * Get and set geometry name.
-     */
-    [[nodiscard]] std::optional<std::string_view> name() const;
-    void setName(const std::string_view &newName);
 
     /** Iterate over all Points in the geometry.
      * @param callback Function which is called for each contained point.
@@ -138,7 +132,7 @@ public:
      */
     [[nodiscard]] SelfContainedGeometry toSelfContained() const;
 
-protected:
+    protected:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
@@ -146,17 +140,20 @@ protected:
     [[nodiscard]] StringId keyAt(int64_t) const override;
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
-    using Data = GeometryData;
+    using ViewData = GeometryViewData;
 
-    using Storage = simfil::ArrayArena<glm::fvec3, simfil::detail::ColumnPageSize*2>;
+    using Storage = simfil::ArrayArena<glm::vec3, simfil::detail::ColumnPageSize*2>;
 
-    Data* geomData_ = nullptr;
+    ViewData* geomViewData_ = nullptr;
     Storage* storage_ = nullptr;
 
 public:
     explicit Geometry(simfil::detail::mp_key key)
         : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
-    Geometry(Data* data,
+    Geometry(ModelConstPtr pool,
+             ModelNodeAddress a,
+             simfil::detail::mp_key key);
+    Geometry(ViewData* data,
              ModelConstPtr pool,
              ModelNodeAddress a,
              simfil::detail::mp_key key);
@@ -174,7 +171,10 @@ public:
     using Storage = simfil::Array::Storage;
 
     /** Adds a new Geometry to the collection and returns a reference. */
-    model_ptr<Geometry> newGeometry(GeomType type, size_t initialCapacity=4);
+    model_ptr<Geometry> newGeometry(
+        GeomType type,
+        size_t initialCapacity=4,
+        bool fixedSize=false);
 
     /** Append an existing Geometry to the collection. */
     void addGeometry(model_ptr<Geometry> const& geom);
@@ -290,17 +290,18 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     Point pointAt(int64_t) const;
+    [[nodiscard]] ModelNodeAddress baseGeometryAddress() const { return baseGeomAddress_; }
 
     PointBufferNode() = delete;
 
 public:
-    PointBufferNode(Geometry::Data const* geomData,
-                    ModelConstPtr pool,
-                    ModelNodeAddress const& a,
-                    simfil::detail::mp_key key);
+    PointBufferNode(
+        ModelConstPtr pool,
+        ModelNodeAddress const& baseGeometryAddress,
+        simfil::detail::mp_key key);
 
 private:
-    Geometry::Data const* baseGeomData_ = nullptr;
+    simfil::ArrayIndex baseVertexArray_ = simfil::InvalidArrayIndex;
     ModelNodeAddress baseGeomAddress_;
     Geometry::Storage* storage_ = nullptr;
     uint32_t offset_ = 0;
@@ -352,13 +353,11 @@ public:
     MeshNode() = delete;
 
 public:
-    MeshNode(Geometry::Data const* geomData,
-             ModelConstPtr pool,
+    MeshNode(ModelConstPtr pool,
              ModelNodeAddress const& a,
              simfil::detail::mp_key key);
 
 private:
-    Geometry::Data const* geomData_;
     uint32_t size_ = 0;
 };
 

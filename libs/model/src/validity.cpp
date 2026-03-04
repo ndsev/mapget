@@ -341,32 +341,20 @@ SelfContainedGeometry Validity::computeGeometry(
         return {};
     }
 
-    // Find a geometry with a matching name.
-    auto requiredGeomName = geometryName();
+    // Geometry names were removed from Geometry payloads. Resolve validity geometry
+    // against the first line geometry in the collection.
     model_ptr<Geometry> geometry;
-    geometryCollection->forEachGeometry([&requiredGeomName, &geometry](auto&& geom){
-        if (geom->name() == requiredGeomName && geom->geomType() == GeomType::Line) {
+    geometryCollection->forEachGeometry([&geometry](auto&& geom){
+        if (geom->geomType() == GeomType::Line) {
             geometry = geom;
-            return false;  // abort iteration.
+            return false;
         }
         return true;
     });
 
-    // If no geometry name is specified and no unnamed geometry was found,
-    // fall back to the first line geometry in the collection.
-    if (!geometry && !requiredGeomName) {
-        geometryCollection->forEachGeometry([&geometry](auto&& geom){
-            if (geom->geomType() == GeomType::Line) {
-                geometry = geom;
-                return false;
-            }
-            return true;
-        });
-    }
-
     if (!geometry) {
         if (error) {
-            *error = fmt::format("Failed to find geometry for {}", requiredGeomName ? *requiredGeomName : "");
+            *error = "Failed to find line geometry for validity.";
         }
         return {};
     }

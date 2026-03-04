@@ -77,6 +77,7 @@ namespace {
             std::vector<int>{0, 1, 2},
             std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
             1,
+            std::vector<std::string>{"Complete"},
             true,
             false,
             Version{0, 0, 0}});

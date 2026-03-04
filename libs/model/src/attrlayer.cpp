@@ -16,9 +16,15 @@ AttributeLayer::AttributeLayer(
 }
 
 model_ptr<Attribute>
-AttributeLayer::newAttribute(const std::string_view& name, size_t initialCapacity)
+AttributeLayer::newAttribute(
+    const std::string_view& name,
+    size_t initialCapacity,
+    bool fixedSize)
 {
-    auto result = static_cast<TileFeatureLayer&>(model()).newAttribute(name, initialCapacity);
+    auto result = static_cast<TileFeatureLayer&>(model()).newAttribute(
+        name,
+        initialCapacity,
+        fixedSize);
     addAttribute(result);
     return result;
 }
@@ -56,9 +62,12 @@ AttributeLayerList::AttributeLayerList(
 }
 
 model_ptr<AttributeLayer>
-AttributeLayerList::newLayer(const std::string_view& name, size_t initialCapacity)
+AttributeLayerList::newLayer(
+    const std::string_view& name,
+    size_t initialCapacity,
+    bool fixedSize)
 {
-    auto result = modelPtr<TileFeatureLayer>()->newAttributeLayer(initialCapacity);
+    auto result = modelPtr<TileFeatureLayer>()->newAttributeLayer(initialCapacity, fixedSize);
     addLayer(name, result);
     return result;
 }

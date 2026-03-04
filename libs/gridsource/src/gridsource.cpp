@@ -946,7 +946,7 @@ void GridDataSource::generateIntersections(TileSpatialContext& ctx,
             {{config.featureType + "Id", intersection.id}});
 
         // Create point geometry (Points type with single point)
-        auto points = feature->geom()->newGeometry(GeomType::Points, 1);
+        auto points = feature->geom()->newGeometry(GeomType::Points, 1, true);
         points->append(intersection.position);
 
         // Add relations to connected roads

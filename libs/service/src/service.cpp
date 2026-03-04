@@ -1022,6 +1022,7 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
     auto modelPoolTotals = nlohmann::json::object();
     auto geometryUsageTotals = nlohmann::json::object();
     auto validityUsageTotals = nlohmann::json::object();
+    auto arrayArenaSingletonTotals = nlohmann::json::object();
     int64_t parsedTiles = 0;
     int64_t totalTileBytes = 0;
     int64_t parseErrors = 0;
@@ -1080,6 +1081,7 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
                 addTotals(modelPoolTotals, sizeStats["model-pool"], addTotals);
                 addTotals(geometryUsageTotals, sizeStats["geometry-usage"], addTotals);
                 addTotals(validityUsageTotals, sizeStats["validity-usage"], addTotals);
+                addTotals(arrayArenaSingletonTotals, sizeStats["array-arena-singletons"], addTotals);
             },
             impl_->cache_);
     }
@@ -1115,7 +1117,8 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
             {"feature-layer", featureLayerTotals},
             {"model-pool", modelPoolTotals},
             {"geometry-usage", geometryUsageTotals},
-            {"validity-usage", validityUsageTotals}
+            {"validity-usage", validityUsageTotals},
+            {"array-arena-singletons", arrayArenaSingletonTotals}
         };
     }
 

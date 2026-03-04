@@ -285,6 +285,11 @@ struct LayerInfo
      */
     uint32_t stages_ = 1;
 
+    /**
+     * Optional human-readable labels for stages (index-aligned with stage number).
+     */
+    std::vector<std::string> stageLabels_;
+
     /** Can this layer be read from? */
     bool canRead_ = true;
 

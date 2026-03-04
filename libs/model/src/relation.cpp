@@ -49,7 +49,7 @@ model_ptr<MultiValidity> Relation::sourceValidity()
     if (data_->sourceValidity_) {
         return sourceValidityOrNull();
     }
-    auto returnValue = model().newValidityCollection(1);
+    auto returnValue = model().newValidityCollection(2);
     data_->sourceValidity_ = returnValue->addr();
     return returnValue;
 }
@@ -72,7 +72,7 @@ model_ptr<MultiValidity> Relation::targetValidity()
     if (data_->targetValidity_) {
         return targetValidityOrNull();
     }
-    auto returnValue = model().newValidityCollection(1);
+    auto returnValue = model().newValidityCollection(2);
     data_->targetValidity_ = returnValue->addr();
     return returnValue;
 }

@@ -9,22 +9,21 @@ namespace mapget
 
 /** Model node impls for VertexNode. */
 
-PointNode::PointNode(ModelNode const& baseNode,
-    Geometry::Data const* geomData,
+PointNode::PointNode(
+    ModelNode const& baseNode,
+    simfil::ArrayIndex vertexArray,
     simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode, key)
 {
-    if (geomData->isView_)
-        throw std::runtime_error("Point must be constructed through VertexBuffer which resolves view to geometry.");
     auto i = std::get<int64_t>(data_);
-    point_ = geomData->detail_.geom_.offset_;
-    if (i > 0) {
-        auto vertexResult = model().vertexBufferStorage().at(geomData->detail_.geom_.vertexArray_, i - 1);
-        if (!vertexResult) {
-            raise("Failed to get vertex from buffer");
-        }
-        point_ += vertexResult->get();
+    point_ = model().geometryAnchor();
+    auto vertexResult = model().vertexBufferStorage().at(
+        vertexArray,
+        static_cast<size_t>(i));
+    if (!vertexResult) {
+        raise("Failed to get vertex from buffer");
     }
+    point_ += vertexResult->get();
 }
 
 PointNode::PointNode(ModelNode const& baseNode,

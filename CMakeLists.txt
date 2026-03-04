@@ -95,7 +95,18 @@ if (NOT CPM_INITIALIZED)
   add_subdirectory(cmake/CPM.cmake)
 endif ()
 include(cmake/deps.cmake)
-include("${simfil_SOURCE_DIR}/cmake/column_type_validator.cmake")
+set(MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE
+  "${simfil_SOURCE_DIR}/cmake/column_type_validator.cmake")
+if (MAPGET_VALIDATE_MODEL_COLUMNS)
+  if (EXISTS "${MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE}")
+    include("${MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE}")
+  else()
+    message(WARNING
+      "MAPGET_VALIDATE_MODEL_COLUMNS requested, but simfil does not provide "
+      "${MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE}. Disabling column validation.")
+    set(MAPGET_VALIDATE_MODEL_COLUMNS OFF)
+  endif()
+endif()
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)

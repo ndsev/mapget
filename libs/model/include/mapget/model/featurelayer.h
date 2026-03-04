@@ -106,6 +106,7 @@ public:
      */
     void setIdPrefix(KeyValueViewPairs const& prefix);
     model_ptr<Object> getIdPrefix();
+    model_ptr<Object> getIdPrefix() const;
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer() override;
@@ -144,22 +145,25 @@ public:
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */
-    model_ptr<Attribute> newAttribute(std::string_view const& name, size_t initialCapacity=8);
+    model_ptr<Attribute> newAttribute(
+        std::string_view const& name,
+        size_t initialCapacity=8,
+        bool fixedSize=false);
 
     /**
      * Create a new attribute layer, which may be inserted into a feature.
      */
-    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8);
+    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8, bool fixedSize=false);
 
     /**
      * Create a new geometry collection.
      */
-    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=1);
+    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=2, bool fixedSize=false);
 
     /**
      * Create a new geometry.
      */
-    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=1);
+    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=2, bool fixedSize=false);
 
     /**
      * Create a new geometry view.
@@ -179,7 +183,7 @@ public:
     /**
      * Create a new validity collection.
      */
-    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 1);
+    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 2, bool fixedSize=false);
 
     /**
      * Internal validity upgrade helpers used by Validity.
@@ -240,6 +244,10 @@ public:
 
     /** Access total number of geometry vertices across this tile. */
     [[nodiscard]] uint64_t numVertices() const;
+
+    /** Access layer-wide geometry anchor used for anchor-relative vertex encoding. */
+    [[nodiscard]] Point geometryAnchor() const;
+    void setGeometryAnchor(Point const& anchor);
 
     /** Access feature at index i */
     model_ptr<Feature> at(size_t i) const;
@@ -345,15 +353,22 @@ public:
      */
     struct ColumnId { enum : uint8_t {
         Features = FirstCustomColumnId,
+        FeatureComplexData,
         FeatureProperties,
         FeatureIds,
+        ExternalFeatureIds,
         Attributes,
         AttributeLayers,
         AttributeLayerLists,
         Relations,
         Points,
         PointBuffers,
-        Geometries,
+        PointBuffersView,
+        PointGeometries,
+        LineGeometries,
+        PolygonGeometries,
+        MeshGeometries,
+        GeometryViews,
         GeometryCollections,
         Mesh,
         MeshTriangleCollection,
@@ -380,7 +395,7 @@ protected:
     /**
      * Create a new attribute layer collection.
      */
-    model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8);
+    model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8, bool fixedSize=false);
 
     /**
      * Generic node resolution overload.
@@ -388,6 +403,12 @@ protected:
     tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 
     Geometry::Storage& vertexBufferStorage();
+    [[nodiscard]] Geometry::ViewData const* geometryViewData(simfil::ModelNodeAddress address) const;
+    [[nodiscard]] simfil::ModelNodeAddress geometrySourceDataReferences(simfil::ModelNodeAddress address) const;
+    void setGeometrySourceDataReferences(simfil::ModelNodeAddress address, simfil::ModelNodeAddress refsAddress);
+    [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;
+    [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
+    Feature::ComplexData& ensureFeatureComplexData(uint32_t featureIndex);
 
     void setMergedArrayExtension(
         simfil::ModelNodeAddress baseAddress,

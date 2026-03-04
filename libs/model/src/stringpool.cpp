@@ -13,6 +13,7 @@ namespace mapget
 StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(IdStr, "id");
     addStaticKey(TypeIdStr, "typeId");
+    addStaticKey(LodStr, "lod");
     addStaticKey(MapIdStr, "mapId");
     addStaticKey(LayerIdStr, "layerId");
     addStaticKey(LayerStr, "layer");
