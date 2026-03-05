@@ -503,14 +503,13 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
         raise(res.error().message);
 
     // Initial backend LOD strategy:
-    // - stage 0 ("Low-Fi"): deterministic pseudo-random LOD 0..MAX_LOD per feature ID
-    // - other stages: default to MAX_LOD and let stage/fidelity selection decide usage
-    // This keeps stage-0 payload generation simple while enabling frontend LOD throttling.
+    // - stage 0 ("Low-Fi"): default to LOD_0 (no random culling); converters can
+    //   override per-feature LOD semantically (e.g. road classes).
+    // - other stages: default to MAX_LOD. During stage merge, stage-0 feature data
+    //   remains authoritative for LOD.
     auto lodValue = static_cast<uint8_t>(Feature::MAX_LOD);
     if (stage_ && *stage_ == 0) {
-        auto lodHash = static_cast<uint32_t>(Hash().mix(typeId).mix(featureIdParts).value());
-        constexpr auto kLodDomainSize = static_cast<uint32_t>(Feature::MAX_LOD) + 1U;
-        lodValue = static_cast<uint8_t>(lodHash % kLodDomainSize);
+        lodValue = static_cast<uint8_t>(Feature::LOD::LOD_0);
     }
 
     auto featureIndex = impl_->features_.size();
