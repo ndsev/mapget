@@ -4,6 +4,7 @@
 #include <memory>
 #include <stdexcept>
 #include <chrono>
+#include <vector>
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/info.h"
 
@@ -36,10 +37,26 @@ TileLayer::Ptr DataSource::get(
         }
         if (layerInfo->stages_ > 1) {
             tileFeatureLayer->setStage(k.stage_);
+            if (k.stage_ > 0) {
+                auto stageZeroKey = k;
+                stageZeroKey.stage_ = 0;
+                auto stageZeroLookup = cache->getTileLayer(stageZeroKey, info);
+                auto stageZeroLayer =
+                    std::dynamic_pointer_cast<TileFeatureLayer>(stageZeroLookup.tile);
+                if (stageZeroLayer) {
+                    std::vector<std::string> expectedFeatureIds;
+                    expectedFeatureIds.reserve(stageZeroLayer->size());
+                    for (auto const& feature : *stageZeroLayer) {
+                        expectedFeatureIds.emplace_back(feature->id()->toString());
+                    }
+                    tileFeatureLayer->setExpectedFeatureSequence(std::move(expectedFeatureIds));
+                }
+            }
         } else {
             tileFeatureLayer->setStage(std::nullopt);
         }
         fill(tileFeatureLayer);
+        tileFeatureLayer->validateExpectedFeatureSequenceComplete();
         result = tileFeatureLayer;
         break;
     }

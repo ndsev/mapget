@@ -290,6 +290,12 @@ struct LayerInfo
      */
     std::vector<std::string> stageLabels_;
 
+    /**
+     * Stage index at which this layer should be considered high-fidelity.
+     * Stage indices below this threshold are low-fidelity.
+     */
+    uint32_t highFidelityStage_ = 0;
+
     /** Can this layer be read from? */
     bool canRead_ = true;
 
@@ -363,6 +369,8 @@ struct DataSourceInfo
      *       "zoomLevels": [<int>...],        // Optional: A list of zoom levels. Defaults to empty list.
      *       "coverage": [<Coverage>...],     // Optional: A list of coverage objects. Defaults to empty list.
      *       "stages": <int>,                 // Optional: Number of staged-loading levels. Defaults to 1.
+     *       "stageLabels": [<string>...],    // Optional: Human-readable labels for stages.
+     *       "highFidelityStage": <int>,      // Optional: First stage considered high-fidelity.
      *       "canRead": <bool>,               // Optional: Whether the layer can be read. Defaults to true.
      *       "canWrite": <bool>,              // Optional: Whether the layer can be written. Defaults to false.
      *       "version": {                     // Optional: The version of the layer.

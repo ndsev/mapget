@@ -366,6 +366,10 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
                 stageLabels.emplace_back(fmt::format("Stage {}", i));
             }
         }
+        const auto defaultHighFidelityStage = stages > 1U ? 1U : 0U;
+        const auto highFidelityStage = std::min<uint32_t>(
+            stages - 1U,
+            j.value("highFidelityStage", defaultHighFidelityStage));
 
         return std::make_shared<LayerInfo>(LayerInfo{
             j.value("layerId", layerId),
@@ -375,6 +379,7 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
             coverages,
             stages,
             stageLabels,
+            highFidelityStage,
             j.value("canRead", true),
             j.value("canWrite", false),
             Version::fromJson(j.value("version", Version().toJson()))});
@@ -406,6 +411,7 @@ nlohmann::json LayerInfo::toJson() const
         {"coverage", coverages},
         {"stages", stages_},
         {"stageLabels", stageLabels_},
+        {"highFidelityStage", highFidelityStage_},
         {"canRead", canRead_},
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};

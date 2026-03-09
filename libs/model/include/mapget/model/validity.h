@@ -59,10 +59,11 @@ public:
     [[nodiscard]] GeometryDescriptionType geometryDescriptionType() const;
 
     /**
-     * Referenced geometry name accessors.
+     * Referenced geometry stage accessors.
+     * If unset, validity resolution falls back to the first matching line geometry.
      */
-    [[nodiscard]] std::optional<std::string_view> geometryName() const;
-    void setGeometryName(std::optional<std::string_view> const& geometryName);
+    [[nodiscard]] std::optional<uint32_t> geometryStage() const;
+    void setGeometryStage(std::optional<uint32_t> geometryStage);
 
     /**
      * Single offset point accessors. Note for the getter:
@@ -92,7 +93,7 @@ public:
      * Compute the actual shape-points of the validity with respect to one
      * of the geometries in the given collection, or the geometry collection of
      * the directly referenced feature. The geometry is picked based
-     * on the validity's geometryName. The return value may be one of the following:
+     * on the validity's geometryStage when available. The return value may be one of the following:
      * - An empty vector, indicating that the validity could not be applied.
      *   If an error string was passed, then it would be set to an error message.
      * - A vector containing a single point, if the validity resolved to a point geometry.
@@ -138,7 +139,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
      */
     model_ptr<Validity> newPoint(
         Point pos,
-        std::string_view geomName = {},
+        std::optional<uint32_t> geometryStage = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -147,7 +148,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
     model_ptr<Validity> newRange(
         Point start,
         Point end,
-        std::string_view geomName = {},
+        std::optional<uint32_t> geometryStage = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -159,7 +160,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
     model_ptr<Validity> newPoint(
         Validity::GeometryOffsetType offsetType,
         double pos,
-        std::string_view geomName = {},
+        std::optional<uint32_t> geometryStage = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -170,7 +171,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
     model_ptr<Validity> newPoint(
         Validity::GeometryOffsetType offsetType,
         int32_t pos,
-        std::string_view geomName = {},
+        std::optional<uint32_t> geometryStage = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -183,7 +184,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
         Validity::GeometryOffsetType offsetType,
         double start,
         double end,
-        std::string_view geomName = {},
+        std::optional<uint32_t> geometryStage = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -195,7 +196,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
         Validity::GeometryOffsetType offsetType,
         int32_t start,
         int32_t end,
-        std::string_view geomName = {},
+        std::optional<uint32_t> geometryStage = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -212,10 +213,10 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
     newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Direction direction = Validity::Empty);
 
     /**
-     * Append a validity that references a named geometry in the current feature context.
+     * Append a validity that references a staged geometry in the current feature context.
      */
     model_ptr<Validity>
-    newGeomName(std::string_view geomName, Validity::Direction direction = Validity::Empty);
+    newGeomStage(uint32_t geometryStage, Validity::Direction direction = Validity::Empty);
 
     /**
      * Append a direction validity without further restricting the range.

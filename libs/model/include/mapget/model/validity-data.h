@@ -61,7 +61,8 @@ struct ValidityData
     GeometryDescriptionType geomDescrType_ = NoGeometry;
     GeometryOffsetType geomOffsetType_ = InvalidOffsetType;
     GeometryDescription geomDescr_{};
-    simfil::StringId referencedGeomName_ = 0;
+    static constexpr int8_t InvalidReferencedStage = -1;
+    int8_t referencedStage_ = InvalidReferencedStage;
     simfil::ModelNodeAddress featureAddress_;
 };
 

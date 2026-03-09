@@ -21,6 +21,7 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
         std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
         1,
         std::vector<std::string>{"Complete"},
+        0,
         true,
         false,
         Version{1, 0, 0}});

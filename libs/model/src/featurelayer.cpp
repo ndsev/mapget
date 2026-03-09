@@ -288,6 +288,47 @@ void TileFeatureLayer::setStage(std::optional<uint32_t> stage)
     stage_ = stage;
 }
 
+void TileFeatureLayer::setExpectedFeatureSequence(std::vector<std::string> expectedFeatureIds)
+{
+    expectedFeatureIds_ = std::move(expectedFeatureIds);
+}
+
+void TileFeatureLayer::clearExpectedFeatureSequence()
+{
+    expectedFeatureIds_.clear();
+}
+
+bool TileFeatureLayer::hasExpectedFeatureSequence() const
+{
+    return !expectedFeatureIds_.empty();
+}
+
+void TileFeatureLayer::validateExpectedFeatureSequenceComplete() const
+{
+    if (expectedFeatureIds_.empty()) {
+        return;
+    }
+
+    auto const createdFeatureCount = impl_->features_.size();
+    if (createdFeatureCount == expectedFeatureIds_.size()) {
+        return;
+    }
+
+    if (createdFeatureCount < expectedFeatureIds_.size()) {
+        auto const& nextExpectedId = expectedFeatureIds_[createdFeatureCount];
+        raiseFmt(
+            "Feature sequence incomplete: created {} of {} expected features. Next expected id: {}.",
+            createdFeatureCount,
+            expectedFeatureIds_.size(),
+            nextExpectedId);
+    }
+
+    raiseFmt(
+        "Feature sequence overflow: created {} features, expected {}.",
+        createdFeatureCount,
+        expectedFeatureIds_.size());
+}
+
 Feature::ComplexData const* TileFeatureLayer::featureComplexDataOrNull(uint32_t featureIndex) const
 {
     if (featureIndex >= impl_->complexFeatureDataRefs_.size()) {
@@ -527,6 +568,25 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
         shared_from_this(),
         ModelNodeAddress{ColumnId::Features, (uint32_t)featureIndex},
         mpKey_);
+
+    if (!expectedFeatureIds_.empty()) {
+        if (featureIndex >= expectedFeatureIds_.size()) {
+            raiseFmt(
+                "Feature sequence mismatch: unexpected extra feature at index {}: {}.",
+                featureIndex,
+                result.id()->toString());
+        }
+
+        auto const& expectedFeatureId = expectedFeatureIds_[featureIndex];
+        auto const actualFeatureId = result.id()->toString();
+        if (actualFeatureId != expectedFeatureId) {
+            raiseFmt(
+                "Feature sequence mismatch at index {}: expected {}, got {}.",
+                featureIndex,
+                expectedFeatureId,
+                actualFeatureId);
+        }
+    }
 
     // Add feature hash index entry.
     auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
@@ -1437,7 +1497,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         {"simple-column", 0},
         {"direction-only", 0},
         {"with-direction", 0},
-        {"with-geometry-name", 0},
+        {"with-geometry-stage", 0},
         {"with-feature-id", 0},
         {"simple-geometry-with-address", 0},
         {"by-direction", nlohmann::json::object({
@@ -1565,8 +1625,8 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         if (validity.direction_ != Validity::Empty) {
             increment(validityUsage, "with-direction");
         }
-        if (validity.referencedGeomName_ != 0) {
-            increment(validityUsage, "with-geometry-name");
+        if (validity.referencedStage_ != ValidityData::InvalidReferencedStage) {
+            increment(validityUsage, "with-geometry-stage");
         }
         if (validity.featureAddress_) {
             increment(validityUsage, "with-feature-id");
@@ -1611,7 +1671,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         if (validity.direction_ != Validity::Empty &&
             validity.geomDescrType_ == Validity::NoGeometry &&
             validity.geomOffsetType_ == Validity::InvalidOffsetType &&
-            validity.referencedGeomName_ == 0 &&
+            validity.referencedStage_ == ValidityData::InvalidReferencedStage &&
             !validity.featureAddress_) {
             increment(validityUsage, "direction-only");
         }
@@ -1803,14 +1863,6 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
         if (auto resolvedName = oldDict->resolve(attr.name_)) {
             if (auto res = newDict->emplace(*resolvedName))
                 attr.name_ = *res;
-            else
-                return tl::unexpected<simfil::Error>(res.error());
-        }
-    }
-    for (auto& validity : impl_->validities_) {
-        if (auto resolvedName = oldDict->resolve(validity.referencedGeomName_)) {
-            if (auto res = newDict->emplace(*resolvedName))
-                validity.referencedGeomName_ = *res;
             else
                 return tl::unexpected<simfil::Error>(res.error());
         }

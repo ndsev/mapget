@@ -265,6 +265,15 @@ public:
     void setStage(std::optional<uint32_t> stage) override;
 
     /**
+     * Configure expected feature-id sequence for strict staged overlay validation.
+     * When configured, every newFeature call must match the next expected id.
+     */
+    void setExpectedFeatureSequence(std::vector<std::string> expectedFeatureIds);
+    void clearExpectedFeatureSequence();
+    [[nodiscard]] bool hasExpectedFeatureSequence() const;
+    void validateExpectedFeatureSequenceComplete() const;
+
+    /**
      * Attach an overlay tile. Overlay tiles must have the same features in the
      * same positions. Additional attribute layers, geometries and relations from
      * overlay features are attached to the base features efficiently and lazily
@@ -422,6 +431,7 @@ protected:
     std::unique_ptr<Impl> impl_;
     std::optional<uint32_t> stage_;
     TileFeatureLayer::Ptr overlay_;
+    std::vector<std::string> expectedFeatureIds_;
 };
 
 // Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).
