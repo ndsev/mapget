@@ -481,37 +481,56 @@ stripOptionalIdParts(KeyValueViewPairs const& keysAndValues, std::vector<IdPart>
     return result;
 }
 
-uint8_t idCompositionOffset(
-    std::vector<IdPart> const& composition,
-    KeyValueViewPairs const& idParts)
-{
-    for (uint32_t start = 0; start < composition.size(); ++start) {
-        if (IdPart::idPartsMatchComposition(
-                composition,
-                start,
-                idParts,
-                idParts.size(),
-                false,
-                nullptr)) {
-            return static_cast<uint8_t>(std::min<uint32_t>(start, 255));
-        }
-    }
-    return 0;
-}
-
+/**
+ * Materialize per-feature ID values aligned to the composition suffix that starts
+ * after the tile-level common prefix. Omitted optional parts in that suffix are
+ * stored as null sentinels to keep the local feature ID shape stable.
+ */
 simfil::ArrayIndex idPartValuesToArrayIndex(
     TileFeatureLayer& layer,
-    KeyValueViewPairs const& idParts)
+    std::vector<IdPart> const& composition,
+    KeyValueViewPairs const& idParts,
+    uint32_t compositionStartIndex = 0)
 {
-    auto idValues = layer.newArray(idParts.size(), true);
-    for (auto const& [_, value] : idParts) {
-        auto valueNode = std::visit(
-            [&](auto&& v) -> simfil::ModelNode::Ptr {
-                return layer.newValue(v);
-            },
-            value);
-        idValues->append(valueNode);
+    auto idValues = layer.newArray(
+        composition.size() - std::min<uint32_t>(
+            compositionStartIndex,
+            static_cast<uint32_t>(composition.size())),
+        true);
+    auto idPartsIter = idParts.begin();
+
+    for (uint32_t compositionIndex = compositionStartIndex;
+         compositionIndex < composition.size();
+         ++compositionIndex) {
+        auto const& idPart = composition[compositionIndex];
+        if (idPartsIter != idParts.end() && idPart.idPartLabel_ == idPartsIter->first) {
+            idValues->append(std::visit(
+                [&](auto&& v) -> simfil::ModelNode::Ptr {
+                    return layer.newValue(v);
+                },
+                idPartsIter->second));
+            ++idPartsIter;
+            continue;
+        }
+
+        if (!idPart.isOptional_) {
+            raiseFmt(
+                "Missing non-optional ID part '{}' while materializing feature ID values.",
+                idPart.idPartLabel_);
+        }
+
+        idValues->append(
+            layer.resolve<simfil::ModelNode>(
+                simfil::ModelNodeAddress{simfil::Model::Null, 1},
+                simfil::ScalarValueType{}));
     }
+
+    if (idPartsIter != idParts.end()) {
+        raiseFmt(
+            "Unexpected trailing ID part '{}' while materializing feature ID values.",
+            idPartsIter->first);
+    }
+
     return static_cast<simfil::ArrayIndex>(idValues->addr().index());
 }
 
@@ -525,20 +544,59 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
         raise("Tried to create an empty feature ID.");
     }
 
-    uint32_t idPrefixLength = 0;
-    if (auto const idPrefix = getIdPrefix())
-        idPrefixLength = idPrefix->size();
+    KeyValueViewPairs fullFeatureIdParts;
+    KeyValueViewPairs prefixFeatureIdParts;
+    if (auto const idPrefix = getIdPrefix()) {
+        fullFeatureIdParts.reserve(idPrefix->size() + featureIdParts.size());
+        prefixFeatureIdParts.reserve(idPrefix->size());
+        for (auto const& [key, value] : idPrefix->fields()) {
+            auto const keyStr = strings()->resolve(key);
+            if (!keyStr || !value) {
+                continue;
+            }
 
-    if (!layerInfo_->validFeatureId(typeId, featureIdParts, true, idPrefixLength)) {
+            std::visit(
+                [&](auto&& v)
+                {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, std::monostate> ||
+                                  std::is_same_v<T, double> ||
+                                  std::is_same_v<T, simfil::ByteArray>) {
+                    }
+                    else if constexpr (std::is_same_v<T, std::string_view> ||
+                                       std::is_same_v<T, std::string>) {
+                        fullFeatureIdParts.emplace_back(*keyStr, std::string_view(v));
+                        prefixFeatureIdParts.emplace_back(*keyStr, std::string_view(v));
+                    }
+                    else {
+                        fullFeatureIdParts.emplace_back(*keyStr, static_cast<int64_t>(v));
+                        prefixFeatureIdParts.emplace_back(*keyStr, static_cast<int64_t>(v));
+                    }
+                },
+                value->value());
+        }
+    }
+    fullFeatureIdParts.insert(fullFeatureIdParts.end(), featureIdParts.begin(), featureIdParts.end());
+
+    if (!layerInfo_->validFeatureId(typeId, fullFeatureIdParts, true)) {
         raise(fmt::format(
             "Could not find a matching ID composition of type {} with parts {}.",
             typeId,
-            idPartsToString(featureIdParts)));
+            idPartsToString(fullFeatureIdParts)));
     }
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
-    auto const compositionOffset = idCompositionOffset(primaryIdComposition, featureIdParts);
-
-    auto idPartValues = idPartValuesToArrayIndex(*this, featureIdParts);
+    auto const localStartIndex = prefixFeatureIdParts.empty()
+        ? 0U
+        : *IdPart::compositionMatchEndIndex(
+            primaryIdComposition,
+            0,
+            prefixFeatureIdParts,
+            prefixFeatureIdParts.size());
+    auto idPartValues = idPartValuesToArrayIndex(
+        *this,
+        primaryIdComposition,
+        featureIdParts,
+        localStartIndex);
     auto res = strings()->emplace(typeId);
     if (!res)
         raise(res.error().message);
@@ -557,8 +615,7 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     impl_->features_.emplace_back(Feature::BasicData{
         Feature::TypeIdAndLOD{
             *res,
-            lodValue,
-            compositionOffset},
+            lodValue},
         idPartValues,
         ModelNodeAddress{Null, 0},
     });
@@ -614,18 +671,19 @@ TileFeatureLayer::newFeatureId(
             idPartsToString(featureIdParts)));
     }
 
-    auto idPartValues = idPartValuesToArrayIndex(*this, featureIdParts);
     auto featureIdIndex = impl_->featureIds_.size();
     auto typeIdStringId = strings()->emplace(typeId);
     if (!typeIdStringId)
         raise(typeIdStringId.error().message);
-    auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
-    auto const compositionOffset = idCompositionOffset(primaryIdComposition, featureIdParts);
+    auto const idCompositionIndex =
+        *layerInfo_->matchingFeatureIdCompositionIndex(typeId, featureIdParts, false);
+    auto const& composition =
+        layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[idCompositionIndex];
     impl_->featureIds_.emplace_back(FeatureId::Data{
         false,
-        compositionOffset,
+        idCompositionIndex,
         *typeIdStringId,
-        idPartValues
+        idPartValuesToArrayIndex(*this, composition, featureIdParts)
     });
     return FeatureId(
         impl_->featureIds_.back(),
@@ -965,7 +1023,7 @@ model_ptr<FeatureId> resolveInternal(tag<FeatureId>, TileFeatureLayer const& mod
         return FeatureId(
             FeatureId::Data{
                 true,
-                featureData.typeIdAndLod_.idCompositionOffset_,
+                0,
                 featureData.typeIdAndLod_.typeId_,
                 featureData.idPartValues_},
             model.shared_from_this(),

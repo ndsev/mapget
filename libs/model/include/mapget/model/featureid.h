@@ -40,7 +40,7 @@ public:
         MODEL_COLUMN_TYPE(8);
 
         bool useCommonTilePrefix_ = false;
-        uint8_t idCompositionOffset_ = 0;
+        uint8_t idCompositionIndex_ = 0;
         simfil::StringId typeId_ = 0;
         simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
     };
@@ -74,6 +74,7 @@ protected:
     Data data_{};
     model_ptr<Array> values_;
     std::vector<simfil::StringId> partNames_;
+    std::vector<uint32_t> visibleValueIndices_;
 };
 
 }

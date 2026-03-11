@@ -11,44 +11,110 @@ namespace mapget
 
 namespace
 {
-std::vector<simfil::StringId> resolvePartNames(
+std::vector<IdPart> const* resolveComposition(
     TileFeatureLayer const& model,
     simfil::StringId typeId,
-    uint8_t idCompositionOffset,
-    uint32_t numLocalParts)
+    uint8_t idCompositionIndex)
 {
-    std::vector<simfil::StringId> names;
-    names.reserve(numLocalParts);
-    if (numLocalParts == 0) {
-        return names;
-    }
-
     auto typeName = model.strings()->resolve(typeId);
     if (!typeName) {
-        return names;
+        return nullptr;
     }
 
     auto typeInfo = model.layerInfo()->getTypeInfo(*typeName, false);
     if (!typeInfo || typeInfo->uniqueIdCompositions_.empty()) {
-        return names;
+        return nullptr;
     }
 
-    auto const& primaryComposition = typeInfo->uniqueIdCompositions_.front();
-    uint32_t compositionIndex = std::min<uint32_t>(
-        idCompositionOffset,
-        static_cast<uint32_t>(primaryComposition.size()));
+    auto const compositionIndex = std::min<size_t>(
+        idCompositionIndex,
+        typeInfo->uniqueIdCompositions_.size() - 1U);
+    return &typeInfo->uniqueIdCompositions_[compositionIndex];
+}
 
-    while (compositionIndex < primaryComposition.size() &&
-           names.size() < static_cast<size_t>(numLocalParts)) {
-        auto sid = model.strings()->emplace(primaryComposition[compositionIndex].idPartLabel_);
+void resolveVisiblePartLayout(
+    TileFeatureLayer const& model,
+    FeatureId::Data const& data,
+    model_ptr<Array> const& values,
+    std::vector<simfil::StringId>& partNames,
+    std::vector<uint32_t>& visibleValueIndices)
+{
+    partNames.clear();
+    visibleValueIndices.clear();
+
+    if (!values) {
+        return;
+    }
+
+    auto const* composition = resolveComposition(model, data.typeId_, data.idCompositionIndex_);
+    if (!composition) {
+        return;
+    }
+
+    uint32_t localStartIndex = 0U;
+    if (data.useCommonTilePrefix_) {
+        KeyValueViewPairs prefixFeatureIdParts;
+        if (auto const idPrefix = model.getIdPrefix()) {
+            prefixFeatureIdParts.reserve(idPrefix->size());
+            for (auto const& [key, value] : idPrefix->fields()) {
+                auto const keyStr = model.strings()->resolve(key);
+                if (!keyStr || !value) {
+                    continue;
+                }
+
+                std::visit(
+                    [&](auto&& v)
+                    {
+                        using T = std::decay_t<decltype(v)>;
+                        if constexpr (std::is_same_v<T, std::monostate> ||
+                                      std::is_same_v<T, double> ||
+                                      std::is_same_v<T, simfil::ByteArray>) {
+                        }
+                        else if constexpr (std::is_same_v<T, std::string_view> ||
+                                           std::is_same_v<T, std::string>) {
+                            prefixFeatureIdParts.emplace_back(*keyStr, std::string_view(v));
+                        }
+                        else {
+                            prefixFeatureIdParts.emplace_back(*keyStr, static_cast<int64_t>(v));
+                        }
+                    },
+                    value->value());
+            }
+        }
+
+        if (!prefixFeatureIdParts.empty()) {
+            auto const matchEndIndex = IdPart::compositionMatchEndIndex(
+                *composition,
+                0,
+                prefixFeatureIdParts,
+                prefixFeatureIdParts.size());
+            if (!matchEndIndex) {
+                return;
+            }
+            localStartIndex = *matchEndIndex;
+        }
+    }
+
+    auto const maxSlots = std::min<uint32_t>(
+        values->size(),
+        static_cast<uint32_t>(composition->size()) - std::min<uint32_t>(
+            localStartIndex,
+            static_cast<uint32_t>(composition->size())));
+
+    for (uint32_t slot = 0; slot < maxSlots; ++slot) {
+        auto const valueNode = values->at(static_cast<int64_t>(slot));
+        if (!valueNode ||
+            std::holds_alternative<std::monostate>(valueNode->value())) {
+            continue;
+        }
+
+        auto sid = model.strings()->emplace((*composition)[localStartIndex + slot].idPartLabel_);
         if (!sid) {
             break;
         }
-        names.push_back(*sid);
-        ++compositionIndex;
+        partNames.push_back(*sid);
+        visibleValueIndices.push_back(slot);
     }
-
-    return names;
 }
 
 template<typename Fn>
@@ -112,11 +178,7 @@ FeatureId::FeatureId(FeatureId::Data& data,
                 static_cast<uint32_t>(data_.idPartValues_)});
     }
 
-    partNames_ = resolvePartNames(
-        model(),
-        data_.typeId_,
-        data_.idCompositionOffset_,
-        values_ ? values_->size() : 0U);
+    resolveVisiblePartLayout(model(), data_, values_, partNames_, visibleValueIndices_);
 }
 
 FeatureId::FeatureId(FeatureId::Data const& data,
@@ -133,11 +195,7 @@ FeatureId::FeatureId(FeatureId::Data const& data,
                 static_cast<uint32_t>(data_.idPartValues_)});
     }
 
-    partNames_ = resolvePartNames(
-        model(),
-        data_.typeId_,
-        data_.idCompositionOffset_,
-        values_ ? values_->size() : 0U);
+    resolveVisiblePartLayout(model(), data_, values_, partNames_, visibleValueIndices_);
 }
 
 std::string_view FeatureId::typeId() const
@@ -182,15 +240,15 @@ simfil::ScalarValueType FeatureId::value() const
 
 simfil::ModelNode::Ptr FeatureId::at(int64_t i) const
 {
-    if (i < 0 || !values_ || i >= static_cast<int64_t>(values_->size())) {
+    if (i < 0 || !values_ || i >= static_cast<int64_t>(visibleValueIndices_.size())) {
         return {};
     }
-    return values_->at(i);
+    return values_->at(static_cast<int64_t>(visibleValueIndices_[static_cast<size_t>(i)]));
 }
 
 uint32_t FeatureId::size() const
 {
-    return values_ ? values_->size() : 0U;
+    return static_cast<uint32_t>(visibleValueIndices_.size());
 }
 
 simfil::ModelNode::Ptr FeatureId::get(const simfil::StringId& f) const
@@ -200,8 +258,8 @@ simfil::ModelNode::Ptr FeatureId::get(const simfil::StringId& f) const
     }
 
     for (size_t i = 0; i < partNames_.size(); ++i) {
-        if (partNames_[i] == f && i < values_->size()) {
-            return values_->at(static_cast<int64_t>(i));
+        if (partNames_[i] == f && i < visibleValueIndices_.size()) {
+            return values_->at(static_cast<int64_t>(visibleValueIndices_[i]));
         }
     }
 
@@ -242,9 +300,9 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
     }
 
     if (values_) {
-        auto const limit = std::min<size_t>(partNames_.size(), values_->size());
+        auto const limit = std::min<size_t>(partNames_.size(), visibleValueIndices_.size());
         for (size_t i = 0; i < limit; ++i) {
-            auto valueNode = values_->at(static_cast<int64_t>(i));
+            auto valueNode = values_->at(static_cast<int64_t>(visibleValueIndices_[i]));
             appendTypedKeyValue(model(), partNames_[i], valueNode, [&](std::string_view keyName, auto&& v) {
                 result.emplace_back(keyName, v);
             });

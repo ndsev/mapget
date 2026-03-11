@@ -174,6 +174,19 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(feature1->id()->toString() == "Way.TheBestArea.42");
     }
 
+    SECTION("Secondary feature ID compositions keep all labeled parts")
+    {
+        auto const keyValuePairs = featureForId1->keyValuePairs();
+        REQUIRE(featureForId1->toString() == "Way.42.84.0123456789abcdef");
+        REQUIRE(keyValuePairs.size() == 3);
+        REQUIRE(keyValuePairs[0].first == "wayIdU32");
+        REQUIRE(std::get<int64_t>(keyValuePairs[0].second) == 42);
+        REQUIRE(keyValuePairs[1].first == "wayIdU64");
+        REQUIRE(std::get<int64_t>(keyValuePairs[1].second) == 84);
+        REQUIRE(keyValuePairs[2].first == "wayIdUUID128");
+        REQUIRE(std::get<std::string_view>(keyValuePairs[2].second) == "0123456789abcdef");
+    }
+
     SECTION("Evaluate simfil filter")
     {
         REQUIRE(feature1->evaluate("**.mozzarella.smell").value().toString() == "neutral");
@@ -249,6 +262,18 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         for (auto feature : *deserializedTile) {
             REQUIRE(feature->id()->toString().substr(0, 16) == "Way.TheBestArea.");
         }
+
+        auto deserializedFeatureId = deserializedTile->resolve<FeatureId>(
+            simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::ExternalFeatureIds, 0});
+        REQUIRE(deserializedFeatureId);
+        auto const deserializedKeyValuePairs = deserializedFeatureId->keyValuePairs();
+        REQUIRE(deserializedKeyValuePairs.size() == 3);
+        REQUIRE(deserializedKeyValuePairs[0].first == "wayIdU32");
+        REQUIRE(std::get<int64_t>(deserializedKeyValuePairs[0].second) == 42);
+        REQUIRE(deserializedKeyValuePairs[1].first == "wayIdU64");
+        REQUIRE(std::get<int64_t>(deserializedKeyValuePairs[1].second) == 84);
+        REQUIRE(deserializedKeyValuePairs[2].first == "wayIdUUID128");
+        REQUIRE(std::get<std::string_view>(deserializedKeyValuePairs[2].second) == "0123456789abcdef");
     }
 
     SECTION("Stream")
@@ -491,6 +516,54 @@ TEST_CASE("Feature LOD Field", "[test.featurelayer][test.feature.lod]")
     REQUIRE(lodValue >= 0);
     REQUIRE(lodValue <= 7);
     REQUIRE(static_cast<int64_t>(feature->lod()) == static_cast<int64_t>(lodValue));
+}
+
+TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test.feature.id.optionals]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "areaId", "datatype": "STR"},
+                    {"partId": "sideId", "datatype": "U32", "isOptional": true},
+                    {"partId": "wayId", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("FeatureOptionalIdNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "FeatureOptionalIdNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    tile->setIdPrefix({{"areaId", "A"}});
+
+    auto withoutOptional = tile->newFeature("Way", {{"wayId", int64_t(42)}});
+    auto withOptional = tile->newFeature("Way", {{"sideId", int64_t(7)}, {"wayId", int64_t(43)}});
+
+    auto const withoutOptionalPairs = withoutOptional->id()->keyValuePairs();
+    REQUIRE(withoutOptional->id()->toString() == "Way.A.42");
+    REQUIRE(withoutOptionalPairs.size() == 2);
+    REQUIRE(withoutOptionalPairs[0].first == "areaId");
+    REQUIRE(std::get<std::string_view>(withoutOptionalPairs[0].second) == "A");
+    REQUIRE(withoutOptionalPairs[1].first == "wayId");
+    REQUIRE(std::get<int64_t>(withoutOptionalPairs[1].second) == 42);
+
+    auto const withOptionalPairs = withOptional->id()->keyValuePairs();
+    REQUIRE(withOptional->id()->toString() == "Way.A.7.43");
+    REQUIRE(withOptionalPairs.size() == 3);
+    REQUIRE(withOptionalPairs[0].first == "areaId");
+    REQUIRE(std::get<std::string_view>(withOptionalPairs[0].second) == "A");
+    REQUIRE(withOptionalPairs[1].first == "sideId");
+    REQUIRE(std::get<int64_t>(withOptionalPairs[1].second) == 7);
+    REQUIRE(withOptionalPairs[2].first == "wayId");
+    REQUIRE(std::get<int64_t>(withOptionalPairs[2].second) == 43);
 }
 
 TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")

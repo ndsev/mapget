@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include "sfl/small_vector.hpp"
 #include <variant>
@@ -159,6 +160,17 @@ struct IdPart
         size_t matchLength,
         bool requireCompositionEnd,
         std::string* error = nullptr);
+
+    /**
+     * Return the composition index directly after the matched ID part sequence.
+     * Optional parts may be skipped while matching.
+     */
+    static std::optional<uint32_t> compositionMatchEndIndex(
+        std::vector<IdPart> const& candidateComposition,
+        uint32_t compositionMatchStartIdx,
+        KeyValueViewPairs const& featureIdParts,
+        size_t matchLength,
+        std::string* error = nullptr);
 };
 
 /** Structure to represent the feature type info */
@@ -270,6 +282,9 @@ struct LayerInfo
     /** Utility function to get some feature type info by name. */
     FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true);
 
+    /** Const overload of getTypeInfo(). */
+    FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true) const;
+
     /** List of zoom levels */
     std::vector<int> zoomLevels_;
 
@@ -306,18 +321,30 @@ struct LayerInfo
     Version version_;
 
     /**
-     * Validate that a unique id composition exists that matches this feature id.
+     * Return the index of the first unique ID composition that matches this feature ID.
      * The field values must match the limitations of the IdPartDataType, and
-     * The order of values in KeyValuePairs must be the same as in the composition!
-     * @param typeId Feature type id, throws error if the type was not registered.
+     * the order of values in KeyValuePairs must match the order in the composition.
+     * @param typeId Feature type id, throws if the type was not registered.
      * @param featureIdParts Uniquely identifying information for the feature.
-     * @param validateForNewFeature True if the id should be evaluated with this tile's prefix prepended.
+     * @param validateForNewFeature True if only the primary composition may match.
      */
+    [[nodiscard]] std::optional<uint8_t> matchingFeatureIdCompositionIndex(
+        const std::string_view& typeId,
+        KeyValueViewPairs const& featureIdParts,
+        bool validateForNewFeature) const;
+
+    /**
+     * Validate that a unique ID composition exists that matches this feature ID.
+     * This is a convenience wrapper around matchingFeatureIdCompositionIndex().
+     * @param typeId Feature type id, throws if the type was not registered.
+     * @param featureIdParts Uniquely identifying information for the feature.
+     * @param validateForNewFeature True if only the primary composition may match.
+     */
+    [[nodiscard]]
     bool validFeatureId(
         const std::string_view& typeId,
         KeyValueViewPairs const& featureIdParts,
-        bool validateForNewFeature,
-        uint32_t compositionMatchStartIndex = 0);
+        bool validateForNewFeature) const;
 
     /** Create LayerInfo from JSON. */
     static std::shared_ptr<LayerInfo> fromJson(const nlohmann::json& j, std::string const& layerId="");

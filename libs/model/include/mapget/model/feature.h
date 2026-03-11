@@ -238,7 +238,6 @@ protected:
 
         simfil::StringId typeId_ = 0;
         uint8_t lod_ = static_cast<uint8_t>(MAX_LOD);
-        uint8_t idCompositionOffset_ = 0;
     };
 
     /**
