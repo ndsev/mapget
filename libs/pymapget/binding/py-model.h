@@ -376,8 +376,6 @@ struct BoundGeometry : public BoundModelNode
                 if (i < 0 || i >= n) throw py::index_error();
                 return self.modelNodePtr_->pointAt(i);
             })
-            .def("name", [](BoundGeometry& self) { return self.modelNodePtr_->name(); },
-                "Get the geometry name, if set.")
             .def("length", [](BoundGeometry& self) { return self.modelNodePtr_->length(); },
                 "Get total length in metres (for polylines).");
     }

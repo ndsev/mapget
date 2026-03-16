@@ -94,11 +94,11 @@ struct SimfilExpressionCache
 
     auto diagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode) -> tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
     {
-        auto ast = compile(query, true);
+        auto ast = compile(query, anyMode);
         if (!ast)
             return tl::unexpected<simfil::Error>(std::move(ast.error()));
 
-        return simfil::diagnostics(environment(), *ast->get(), diag);
+        return simfil::diagnostics(diag);
     }
 
     auto completions(std::string_view query, size_t point, simfil::ModelNode const& node, simfil::CompletionOptions const& opts) -> tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
