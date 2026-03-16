@@ -14,6 +14,7 @@ CPMAddPackage(
     OPTIONS
         "EXPECTED_BUILD_TESTS OFF"
         "EXPECTED_BUILD_PACKAGE_DEB OFF")
+
 set(MAPGET_SIMFIL_SOURCE_DIR "" CACHE PATH
     "Local simfil source directory to use instead of fetching from Git.")
 
@@ -38,6 +39,7 @@ else()
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
 endif()
+
 CPMAddPackage(
     URI "gl:eidheim/tiny-process-library#8bbb5a"  # Switch to release > 2.0.4 once available
     OPTIONS

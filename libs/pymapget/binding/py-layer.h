@@ -224,5 +224,12 @@ void bindTileLayer(py::module_& m)
             { return self.toJson().dump(); },
             R"pbdoc(
             Convert this tile to a GeoJSON feature collection.
-        )pbdoc");
+        )pbdoc")
+        .def("__len__", [](TileFeatureLayer const& self) { return self.size(); })
+        .def("__getitem__", [](TileFeatureLayer const& self, int64_t i) {
+            auto sz = (int64_t)self.size();
+            if (i < 0) i += sz;
+            if (i < 0 || i >= sz) throw py::index_error();
+            return BoundFeature(self.at((size_t)i));
+        });
 }
