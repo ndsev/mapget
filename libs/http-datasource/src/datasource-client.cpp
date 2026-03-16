@@ -83,9 +83,10 @@ RemoteDataSource::get(
     auto tileReq = drogon::HttpRequest::newHttpRequest();
     tileReq->setMethod(drogon::Get);
     tileReq->setPath(fmt::format(
-        "/tile?layer={}&tileId={}&stringPoolOffset={}",
+        "/tile?layer={}&tileId={}&stage={}&stringPoolOffset={}",
         k.layerId_,
         k.tileId_.value_,
+        k.stage_,
         cachedStringPoolOffset(info.nodeId_, cache)));
     auto [resultCode, tileResponse] = client->sendRequest(tileReq);
 

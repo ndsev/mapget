@@ -83,6 +83,12 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                 auto layer = impl_->info_.getLayer(layerIdParam);
                 TileId tileId{std::stoull(tileIdParam)};
 
+                auto stageParam = 0u;
+                auto const& stageStr = req->getParameter("stage");
+                if (!stageStr.empty()) {
+                    stageParam = std::stoul(stageStr);
+                }
+
                 auto stringPoolOffsetParam = (simfil::StringId)0;
                 auto const& stringPoolOffsetStr = req->getParameter("stringPoolOffset");
                 if (!stringPoolOffsetStr.empty()) {
@@ -100,6 +106,9 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                     case mapget::LayerType::Features: {
                         auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
                             tileId, impl_->info_.nodeId_, impl_->info_.mapId_, layer, impl_->strings_);
+                        if (layer->stages_ > 1) {
+                            tileFeatureLayer->setStage(stageParam);
+                        }
                         impl_->tileFeatureCallback_(tileFeatureLayer);
                         return tileFeatureLayer;
                     }
