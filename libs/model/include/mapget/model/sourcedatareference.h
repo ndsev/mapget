@@ -20,15 +20,11 @@ class TileFeatureLayer;
 class SourceDataReferenceItem;
 
 struct QualifiedSourceDataReference {
-    StringId qualifier_;
-    SourceDataReference reference_;
+    MODEL_COLUMN_TYPE(12);
 
-    template <class S>
-    void serialize(S& s)
-    {
-        s.value2b(qualifier_);
-        s.object(reference_);
-    }
+    SourceDataAddress address_;
+    StringId layerId_;
+    StringId qualifier_;
 };
 
 /**

@@ -32,13 +32,13 @@ simfil::ModelNode::Ptr jsonToMapget(  // NOLINT (recursive)
     if (j.is_null())
         return {};
     if (j.is_object()) {
-        auto subObject = tfl->newObject(j.size());
+        auto subObject = tfl->newObject(j.size(), true);
         for (auto& el : j.items())
             subObject->addField(el.key(), jsonToMapget(tfl, el.value()));
         return subObject;
     }
     if (j.is_array()) {
-        auto subArray = tfl->newArray(j.size());
+        auto subArray = tfl->newArray(j.size(), true);
         for (auto& el : j.items())
             subArray->append(jsonToMapget(tfl, el.value()));
         return subArray;

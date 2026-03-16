@@ -168,7 +168,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
     SECTION("Construct GeometryCollection")
     {
         REQUIRE(asModelNode(geometry_collection).type() == ValueType::Object);
-        REQUIRE(asModelNode(geometry_collection).size() == 3); // 'type' and 'geometries' fields
+        REQUIRE(asModelNode(geometry_collection).size() == 2); // 'type' and 'geometries' fields
     }
 
     SECTION("Recover geometry")
@@ -187,7 +187,7 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
         // Since the collection only contains one geometry,
         // it hides itself and directly presents the nested geometry,
         // conforming to GeoJSON (a collection must have >1 geometries).
-        REQUIRE(asModelNode(geometry_collection).size() == 3); // 'type' and 'geometry' fields
+        REQUIRE(asModelNode(geometry_collection).size() == 2); // 'type' and 'geometry' fields
         REQUIRE(asModelNode(geometry_collection).at(1)->type() == ValueType::Array); // 'geometry' field
         REQUIRE(asModelNode(geometry_collection).at(1)->size() == 4); // four points
 
@@ -331,6 +331,45 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
     }
 }
 
+TEST_CASE("Feature Geometry Direct Storage Upgrade", "[geom.collection][feature]")
+{
+    auto modelPool = makeTile();
+    auto feature = modelPool->newFeature("Way", {{"wayId", 42}});
+
+    feature->addPoint({1.0, 2.0, 3.0});
+
+    auto single = feature->geomOrNull();
+    REQUIRE(single);
+    REQUIRE(single->addr().column() == TileFeatureLayer::ColumnId::PointGeometries);
+    REQUIRE(single->numGeometries() == 1);
+
+    auto singleAsGeometry = modelPool->resolve<Geometry>(single->addr());
+    REQUIRE(singleAsGeometry);
+    REQUIRE(singleAsGeometry->geomType() == GeomType::Points);
+    REQUIRE(singleAsGeometry->numPoints() == 1);
+    REQUIRE(singleAsGeometry->pointAt(0) == Point{1.0, 2.0, 3.0});
+
+    feature->addLine({{10.0, 20.0, 0.0}, {11.0, 21.0, 0.0}});
+
+    auto upgraded = feature->geomOrNull();
+    REQUIRE(upgraded);
+    REQUIRE(upgraded->addr().column() == TileFeatureLayer::ColumnId::GeometryCollections);
+    REQUIRE(upgraded->numGeometries() == 2);
+
+    auto upgradedGeoms = asModelNode(upgraded).get(StringPool::GeometriesStr);
+    REQUIRE(upgradedGeoms);
+    REQUIRE(upgradedGeoms->size() == 2);
+    auto upgradedFirst = modelPool->resolve<Geometry>(*upgradedGeoms->at(0));
+    auto upgradedSecond = modelPool->resolve<Geometry>(*upgradedGeoms->at(1));
+    REQUIRE(upgradedFirst->geomType() == GeomType::Points);
+    REQUIRE(upgradedFirst->numPoints() == 1);
+    REQUIRE(upgradedFirst->pointAt(0) == Point{1.0, 2.0, 3.0});
+    REQUIRE(upgradedSecond->geomType() == GeomType::Line);
+    REQUIRE(upgradedSecond->numPoints() == 2);
+    REQUIRE(upgradedSecond->pointAt(0) == Point{10.0, 20.0, 0.0});
+    REQUIRE(upgradedSecond->pointAt(1) == Point{11.0, 21.0, 0.0});
+}
+
 TEST_CASE("Attribute Validity", "[validity]") {
     auto modelPool = makeTile();
 
@@ -343,12 +382,11 @@ TEST_CASE("Attribute Validity", "[validity]") {
     linestringGeom->append({.5, .5});
     linestringGeom->append({1., 1.});
 
-    // Create and add LineString geometry with name.
+    // Create and add second LineString geometry.
     auto linestringGeomNamed = geometryCollection->newGeometry(GeomType::Line);
     linestringGeomNamed->append({-0., -0.});
     linestringGeomNamed->append({-.5, -.5});
     linestringGeomNamed->append({-1., -1.});
-    linestringGeomNamed->setName("BestGeometry");
 
     // Create a validity collection.
     auto metresAtFortyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-1., -1.})) * 0.4;
@@ -366,20 +404,8 @@ TEST_CASE("Attribute Validity", "[validity]") {
     validities
         ->newRange(Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent);
     validities->newGeometry(linestringGeomNamed);
-    validities->newPoint({-.2, -.25}, "BestGeometry");
-    validities->newRange({-.2, -.25}, {-.75, -.7}, "BestGeometry");
-    validities->newPoint(Validity::BufferOffset, 0, "BestGeometry");
-    validities->newPoint(Validity::RelativeLengthOffset, .4, "BestGeometry");
-    validities->newPoint(Validity::MetricLengthOffset, metresAtFortyPercent, "BestGeometry");
-    validities->newRange(Validity::BufferOffset, 0, 1, "BestGeometry");
-    validities->newRange(Validity::RelativeLengthOffset, .4, .8, "BestGeometry");
-    validities->newRange(
-        Validity::MetricLengthOffset,
-        metresAtFortyPercent,
-        metresAtEightyPercent,
-        "BestGeometry");
     auto json = validities->toJson();
-    REQUIRE(json.size() == 19);
+    REQUIRE(json.size() == 11);
 
     // Fill out the expectedGeometry vector.
     std::vector<std::vector<Point>> expectedGeometry = {
@@ -405,22 +431,6 @@ TEST_CASE("Attribute Validity", "[validity]") {
         {{0.39999238400870357,0.39999238400870357,0.0}, {0.5,0.5,0.0}, {0.7999961908806066,0.7999961908806066,0.0}},
         // linestringGeomNamed 💚
         {{-0.0,-0.0,0.0}, {-0.5,-0.5,0.0}, {-1.0,-1.0,0.0}},
-        // {-.2, -.25}, "BestGeometry" 💚
-        {{-0.225,-0.225,0.0}},
-        // {-.2, -.25}, {-.75, -.7}, "BestGeometry" 💚
-        {{-0.225,-0.225,0.0}, {-0.5,-0.5,0.0}, {-0.725,-0.725,0.0}},
-        // Validity::BufferOffset, 0, "BestGeometry" 💚
-        {{-0.0,-0.0,0.0}},
-        // Validity::RelativeLengthOffset, .4, "BestGeometry" 💚
-        {{-0.39999238466117465,-0.39999238466117465,0.0}},
-        // Validity::MetricLengthOffset, metresAtFortyPercent, "BestGeometry" 💚
-        {{-0.39999238400870357,-0.39999238400870357,0.0}},
-        // Validity::BufferOffset, 0, 1, "BestGeometry" 💚
-        {{-0.0,-0.0,0.0}, {-0.5,-0.5,0.0}},
-        // Validity::RelativeLengthOffset, .4, .8, "BestGeometry" 💚
-        {{-0.39999238466117465,-0.39999238466117465,0.0}, {-0.5,-0.5,0.0}, {-0.7999961921855985,-0.7999961921855985,0.0}},
-        // Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent, "BestGeometry" 💚
-        {{-0.39999238400870357,-0.39999238400870357,0.0}, {-0.5,-0.5,0.0}, {-0.7999961908806066,-0.7999961908806066,0.0}},
     };
 
     // Compare expected validity geometries against computed ones.
@@ -444,4 +454,26 @@ TEST_CASE("Attribute Validity", "[validity]") {
         ++validityIndex;
         return true;
     });
+}
+
+TEST_CASE("Simple Validity Self Upgrade", "[validity]") {
+    auto modelPool = makeTile();
+    auto validities = modelPool->newValidityCollection();
+
+    auto simple = validities->newDirection(Validity::Direction::Positive);
+    REQUIRE(simple->addr().column() == TileFeatureLayer::ColumnId::SimpleValidity);
+    REQUIRE(simple->geometryDescriptionType() == Validity::NoGeometry);
+
+    // Any geometry/feature setter must materialize the simple validity.
+    simple->setOffsetPoint(Validity::BufferOffset, 1.0);
+
+    auto firstNode = validities->at(0);
+    REQUIRE(firstNode);
+    auto upgraded = modelPool->resolve<Validity>(*firstNode);
+    REQUIRE(upgraded->addr().column() == TileFeatureLayer::ColumnId::Validities);
+    REQUIRE(upgraded->direction() == Validity::Direction::Positive);
+    REQUIRE(upgraded->geometryDescriptionType() == Validity::OffsetPointValidity);
+    REQUIRE(upgraded->geometryOffsetType() == Validity::BufferOffset);
+    REQUIRE(upgraded->offsetPoint().has_value());
+    REQUIRE(upgraded->offsetPoint()->x == 1.0);
 }

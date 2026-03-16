@@ -48,18 +48,12 @@ protected:
 
     /** Actual per-attribute data that is stored in the model's attributes-column. */
     struct Data {
+        MODEL_COLUMN_TYPE(16);
+
         simfil::ModelNodeAddress validities_;
-        simfil::ArrayIndex fields_ = -1;
+        simfil::ArrayIndex fields_ = simfil::InvalidArrayIndex;
         simfil::StringId name_ = 0;
         simfil::ModelNodeAddress sourceDataRefs_;
-
-        template<typename S>
-        void serialize(S& s) {
-            s.object(validities_);
-            s.value4b(fields_);
-            s.value2b(name_);
-            s.object(sourceDataRefs_);
-        }
     };
 
 public:

@@ -76,9 +76,11 @@ ModelNode::Ptr SourceDataReferenceItem::get(const StringId& key) const
 {
     switch (key) {
     case StringPool::AddressStr:
-        return model_ptr<simfil::ValueNode>::make(static_cast<int64_t>(data_->reference_.address_.u64()), model().shared_from_this());
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(data_->address_.u64()),
+            model().shared_from_this());
     case StringPool::LayerIdStr:
-        if (auto layerId = model().strings()->resolve(data_->reference_.layerId_))
+        if (auto layerId = model().strings()->resolve(data_->layerId_))
             return model_ptr<simfil::ValueNode>::make(*layerId, model().shared_from_this());
         return {};
     case StringPool::QualifierStr:
@@ -116,14 +118,14 @@ std::string_view SourceDataReferenceItem::qualifier() const
 
 std::string_view SourceDataReferenceItem::layerId() const
 {
-    if (auto str = model().strings()->resolve(data_->reference_.layerId_))
+    if (auto str = model().strings()->resolve(data_->layerId_))
         return *str;
     return {};
 }
 
 SourceDataAddress SourceDataReferenceItem::address() const
 {
-    return data_->reference_.address_;
+    return data_->address_;
 }
 
 SourceDataReferenceItem::SourceDataReferenceItem(const QualifiedSourceDataReference* const data,

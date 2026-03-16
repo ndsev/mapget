@@ -1,6 +1,7 @@
 #pragma once
 
 #include "simfil/model/string-pool.h"
+#include <vector>
 
 namespace mapget
 {
@@ -23,6 +24,7 @@ struct StringPool : public simfil::StringPool
     enum StaticStringIds : simfil::StringId {
         IdStr = NextStaticId,
         TypeIdStr,
+        LodStr,
         MapIdStr,
         LayerIdStr,
         LayerStr,
@@ -63,10 +65,12 @@ struct StringPool : public simfil::StringPool
     write(std::ostream& outputStream, simfil::StringId offset) const override;
 
     /**
-     * Call this before calling read() to figure out which strings-
-     * object to call read() with.
+     * Parse the datasource node id prefix from a serialized StringPool message.
      */
-    static std::string readDataSourceNodeId(std::istream& inputStream);
+    static std::string readDataSourceNodeId(
+        const std::vector<uint8_t>& input,
+        size_t offset = 0,
+        size_t* bytesRead = nullptr);
 
     std::string const nodeId_;
 };

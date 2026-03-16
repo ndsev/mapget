@@ -14,11 +14,32 @@ CPMAddPackage(
     OPTIONS
         "EXPECTED_BUILD_TESTS OFF"
         "EXPECTED_BUILD_PACKAGE_DEB OFF")
-CPMAddPackage(
-    URI "gh:Klebert-Engineering/simfil#v0.6.3"
-    OPTIONS
-        "SIMFIL_WITH_MODEL_JSON ON"
-        "SIMFIL_SHARED OFF")
+
+set(MAPGET_SIMFIL_SOURCE_DIR "" CACHE PATH
+    "Local simfil source directory to use instead of fetching from Git.")
+
+set(_mapget_simfil_source_dir "${MAPGET_SIMFIL_SOURCE_DIR}")
+if ("${_mapget_simfil_source_dir}" STREQUAL ""
+    AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/../../simfil/CMakeLists.txt")
+    set(_mapget_simfil_source_dir "${CMAKE_CURRENT_LIST_DIR}/../../simfil")
+endif()
+
+if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
+    message(STATUS "Using local simfil from ${_mapget_simfil_source_dir}")
+    CPMAddPackage(
+        NAME simfil
+        SOURCE_DIR "${_mapget_simfil_source_dir}"
+        OPTIONS
+            "SIMFIL_WITH_MODEL_JSON ON"
+            "SIMFIL_SHARED OFF")
+else()
+    CPMAddPackage(
+        URI "gh:Klebert-Engineering/simfil#noserde"
+        OPTIONS
+            "SIMFIL_WITH_MODEL_JSON ON"
+            "SIMFIL_SHARED OFF")
+endif()
+
 CPMAddPackage(
     URI "gl:eidheim/tiny-process-library#8bbb5a"  # Switch to release > 2.0.4 once available
     OPTIONS

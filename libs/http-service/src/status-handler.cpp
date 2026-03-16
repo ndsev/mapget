@@ -106,10 +106,9 @@ th { background: #f1f5f9; }
             <tbody></tbody>
         </table>
         <div class="muted" style="margin-top:8px">
-            `pending-controller-*` covers frames still queued in mapget's tiles websocket controller.
-            `total-forwarded-*` counts frames already handed to Drogon via `conn->send(...)`.
-            `flow-control-credit-*` shows currently available connection-level send credits.
-            `flow-control-blocked-connections` counts flow-controlled connections currently blocked by zero frame or byte credits.
+            `pending-controller-*` covers tile frames currently queued for `/tiles/next` pulls.
+            `pending-pull-requests` counts currently blocked long-poll pull requests.
+            `total-forwarded-*` counts tile frames/bytes already served through `/tiles/next`.
         </div>
     </div>
 
@@ -132,6 +131,24 @@ th { background: #f1f5f9; }
             <h3>Model Pool Bytes</h3>
             <table id="modelPoolBreakdown">
                 <thead><tr><th>Type</th><th class="number">Bytes</th><th class="number">Readable</th><th class="number">Share</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <div class="panel">
+            <h3>Array Arena Singleton Usage</h3>
+            <table id="arrayArenaSingletonsTable">
+                <thead>
+                    <tr>
+                        <th>Arena</th>
+                        <th class="number">Handles</th>
+                        <th class="number">Occupied</th>
+                        <th class="number">Empty</th>
+                        <th class="number">Singleton Bytes</th>
+                        <th class="number">Regular-Equivalent Bytes</th>
+                        <th class="number">Saved Bytes</th>
+                        <th class="number">Saved Share</th>
+                    </tr>
+                </thead>
                 <tbody></tbody>
             </table>
         </div>
@@ -179,9 +196,11 @@ const formatBytes = (bytes) => {
 const state = {
     timer: null,
     refreshInFlight: false,
+    pendingForcedRefresh: false,
     lastServiceText: "",
     lastCacheText: "",
     lastBreakdownJson: "",
+    lastArrayArenaSingletonJson: "",
     lastDistributionJson: "",
 };
 
@@ -190,21 +209,16 @@ const wsMetricDefinitions = [
     ["active-sessions", "active-sessions", (v) => formatInt(v)],
     ["pending-controller-frames", "pending-controller-frames", (v) => formatInt(v)],
     ["pending-controller-bytes", "pending-controller-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
-    ["flow-control-enabled-connections", "flow-control-enabled-connections", (v) => formatInt(v)],
-    ["flow-control-blocked-connections", "flow-control-blocked-connections", (v) => formatInt(v)],
-    ["flow-control-credit-frames", "flow-control-credit-frames", (v) => formatInt(v)],
-    ["flow-control-credit-bytes", "flow-control-credit-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
+    ["pending-pull-requests", "pending-pull-requests", (v) => formatInt(v)],
     ["total-queued-frames", "total-queued-frames", (v) => formatInt(v)],
     ["total-queued-bytes", "total-queued-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["total-forwarded-frames", "total-forwarded-frames", (v) => formatInt(v)],
     ["total-forwarded-bytes", "total-forwarded-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["total-dropped-frames", "total-dropped-frames", (v) => formatInt(v)],
     ["total-dropped-bytes", "total-dropped-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
-    ["total-drain-calls", "total-drain-calls", (v) => formatInt(v)],
-    ["total-flow-grant-messages", "total-flow-grant-messages", (v) => formatInt(v)],
-    ["total-flow-grant-frames", "total-flow-grant-frames", (v) => formatInt(v)],
-    ["total-flow-grant-bytes", "total-flow-grant-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
-    ["total-flow-blocked-drains", "total-flow-blocked-drains", (v) => formatInt(v)],
+    ["total-pull-requests", "total-pull-requests", (v) => formatInt(v)],
+    ["total-pull-timeouts", "total-pull-timeouts", (v) => formatInt(v)],
+    ["total-pull-session-misses", "total-pull-session-misses", (v) => formatInt(v)],
     ["replaced-requests", "replaced-requests", (v) => formatInt(v)],
 ];
 
@@ -287,6 +301,7 @@ function renderTreeBreakdown(service) {
     if (!breakdown) {
         panel.style.display = "none";
         state.lastBreakdownJson = "";
+        state.lastArrayArenaSingletonJson = "";
         return;
     }
     panel.style.display = "block";
@@ -315,6 +330,45 @@ function renderTreeBreakdown(service) {
     const totalBytes = Number(breakdown["total-tile-bytes"] || 0);
     renderByteBreakdownRows("#featureLayerBreakdown tbody", breakdown["feature-layer"], totalBytes);
     renderByteBreakdownRows("#modelPoolBreakdown tbody", breakdown["model-pool"], totalBytes);
+    renderArrayArenaSingletons(breakdown);
+}
+
+function renderArrayArenaSingletons(breakdown) {
+    const tbody = qs("#arrayArenaSingletonsTable tbody");
+    if (!tbody) {
+        return;
+    }
+
+    const singletonBreakdown = breakdown["array-arena-singletons"] || {};
+    const singletonJson = JSON.stringify(singletonBreakdown);
+    if (state.lastArrayArenaSingletonJson === singletonJson) {
+        return;
+    }
+    state.lastArrayArenaSingletonJson = singletonJson;
+
+    tbody.innerHTML = "";
+    for (const [arenaName, statsRaw] of Object.entries(singletonBreakdown)) {
+        const stats = statsRaw || {};
+        const handles = Number(stats["handles"] || 0);
+        const occupied = Number(stats["occupied"] || 0);
+        const empty = Number(stats["empty"] || 0);
+        const singletonBytes = Number(stats["singleton-storage-bytes"] || 0);
+        const regularBytes = Number(stats["hypothetical-regular-bytes"] || 0);
+        const savedBytes = Number(stats["estimated-saved-bytes"] || 0);
+        const savedShare = regularBytes > 0 ? savedBytes / regularBytes : 0;
+
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+            `<td>${arenaName}</td>` +
+            `<td class="number">${formatInt(handles)}</td>` +
+            `<td class="number">${formatInt(occupied)}</td>` +
+            `<td class="number">${formatInt(empty)}</td>` +
+            `<td class="number">${formatInt(singletonBytes)} (${formatBytes(singletonBytes)})</td>` +
+            `<td class="number">${formatInt(regularBytes)} (${formatBytes(regularBytes)})</td>` +
+            `<td class="number">${formatInt(savedBytes)} (${formatBytes(savedBytes)})</td>` +
+            `<td class="number">${formatPct(savedShare)}</td>`;
+        tbody.appendChild(tr);
+    }
 }
 
 function renderTileDistribution(service) {
@@ -371,8 +425,11 @@ function renderTileDistribution(service) {
     }
 }
 
-async function refreshStatus() {
+async function refreshStatus(force = false) {
     if (state.refreshInFlight) {
+        if (force) {
+            state.pendingForcedRefresh = true;
+        }
         return;
     }
     state.refreshInFlight = true;
@@ -382,10 +439,12 @@ async function refreshStatus() {
     }
     try {
         const includeTileSizeDistribution = !!byId("includeTileSizeDistribution")?.checked;
+        const includeCachedFeatureTreeBytes = includeTileSizeDistribution;
         const params = new URLSearchParams();
         if (includeTileSizeDistribution) {
             params.set("includeTileSizeDistribution", "1");
         }
+        params.set("includeCachedFeatureTreeBytes", includeCachedFeatureTreeBytes ? "1" : "0");
         params.set("_", String(Date.now()));
 
         const response = await fetch(`/status-data?${params.toString()}`, {cache: "no-store"});
@@ -409,6 +468,10 @@ async function refreshStatus() {
         }
     } finally {
         state.refreshInFlight = false;
+        if (state.pendingForcedRefresh) {
+            state.pendingForcedRefresh = false;
+            queueMicrotask(() => refreshStatus(false));
+        }
     }
 }
 
@@ -418,14 +481,14 @@ function resetTimer() {
     }
     const refreshMsInput = byId("refreshMs");
     const interval = Math.max(200, Number(refreshMsInput?.value || 1000));
-    state.timer = setInterval(refreshStatus, interval);
+    state.timer = setInterval(() => refreshStatus(false), interval);
 }
 
 byId("refreshMs")?.addEventListener("change", resetTimer);
-byId("refreshNow")?.addEventListener("click", refreshStatus);
-byId("includeTileSizeDistribution")?.addEventListener("change", refreshStatus);
+byId("refreshNow")?.addEventListener("click", () => refreshStatus(true));
+byId("includeTileSizeDistribution")?.addEventListener("change", () => refreshStatus(true));
 resetTimer();
-refreshStatus();
+refreshStatus(true);
 </script>
 </body>
 </html>

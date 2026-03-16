@@ -4,8 +4,9 @@
 #include "stringpool.h"
 
 #include <map>
-#include <sstream>
+#include <span>
 #include <shared_mutex>
+#include <vector>
 
 namespace mapget
 {
@@ -64,8 +65,13 @@ public:
      *   + Added errorCode field to TileLayer
      *   + Added Status Message
      *   + Added LoadStateChange Message
+     * - Version 1.2:
+     *   - Removed LoadStateChange Message.
+     *   + Added tile load stage.
+     *   + Feature geometry reference may point directly to a Geometry
+     *     (single-geometry fast-path) or to a GeometryCollection.
      */
-    static constexpr Version CurrentProtocolVersion{1, 1, 0};
+    static constexpr Version CurrentProtocolVersion{1, 2, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -101,7 +107,11 @@ public:
          * size, or false, if no sufficient bytes are available. Throws if the protocol version
          * in the header does not match the version currently used by mapget.
          */
-        static bool readMessageHeader(std::stringstream& stream, MessageType& outType, uint32_t& outSize);
+        static bool readMessageHeader(
+            std::span<const uint8_t> bytes,
+            MessageType& outType,
+            uint32_t& outSize,
+            size_t* bytesRead = nullptr);
 
     private:
         enum class Phase { ReadHeader, ReadValue };
@@ -116,7 +126,8 @@ public:
          */
         bool continueReading();
 
-        std::stringstream buffer_;
+        std::vector<uint8_t> buffer_;
+        size_t readOffset_ = 0;
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(TileLayer::Ptr)> onParsedLayer_;

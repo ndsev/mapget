@@ -2,8 +2,10 @@
 #include "mapget/log.h"
 
 #include <bitsery/bitsery.h>
+#include <bitsery/adapter/buffer.h>
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
+#include <bitsery/traits/vector.h>
 
 #include "simfil/model/bitsery-traits.h"
 
@@ -32,10 +34,23 @@ MapTileKey::MapTileKey(const std::string& str)
     mapId_ = std::string_view(&*partsVec[1].begin(), distance(partsVec[1]));
     layerId_ = std::string_view(&*partsVec[2].begin(), distance(partsVec[2]));
     std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
+    if (partsVec.size() >= 5) {
+        uint32_t parsedStage = 0;
+        auto* stageBegin = &*partsVec[4].begin();
+        auto* stageEnd = stageBegin + distance(partsVec[4]);
+        auto parseResult = std::from_chars(
+            stageBegin,
+            stageEnd,
+            parsedStage,
+            10);
+        if (parseResult.ec == std::errc() && parseResult.ptr == stageEnd) {
+            stage_ = parsedStage;
+        }
+    }
 }
 
-MapTileKey::MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId) :
-    layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), tileId_(tileId)
+MapTileKey::MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId, uint32_t stage) :
+    layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), tileId_(tileId), stage_(stage)
 {}
 
 MapTileKey::MapTileKey(const TileLayer& data)
@@ -44,28 +59,30 @@ MapTileKey::MapTileKey(const TileLayer& data)
     mapId_ = data.mapId();
     layerId_ = data.layerInfo()->layerId_;
     tileId_ = data.tileId();
+    stage_ = data.stage().value_or(0);
 }
 
 std::string MapTileKey::toString() const
 {
     return fmt::format(
-        "{}:{}:{}:{:0x}",
+        "{}:{}:{}:{:0x}:{}",
         nlohmann::json(layer_).get<std::string>(),
         mapId_,
         layerId_,
-        tileId_.value_);
+        tileId_.value_,
+        stage_);
 }
 
 bool MapTileKey::operator<(const MapTileKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_) <
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+    return std::tie(layer_, mapId_, layerId_, tileId_, stage_) <
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_, other.stage_);
 }
 
 bool MapTileKey::operator==(const MapTileKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_) ==
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+    return std::tie(layer_, mapId_, layerId_, tileId_, stage_) ==
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_, other.stage_);
 }
 
 bool MapTileKey::operator!=(const MapTileKey& other) const
@@ -89,14 +106,16 @@ TileLayer::TileLayer(
 }
 
 TileLayer::TileLayer(
-    std::istream& inputStream,
-    const LayerInfoResolveFun& layerInfoResolveFun
+    const std::vector<uint8_t>& input,
+    const LayerInfoResolveFun& layerInfoResolveFun,
+    size_t* bytesRead
 ) : tileId_(0)
 {
     using namespace std::chrono;
     using namespace nlohmann;
 
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(inputStream);
+    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+    bitsery::Deserializer<Adapter> s(Adapter(input.begin(), input.end()));
     s.text1b(mapId_, std::numeric_limits<uint32_t>::max());
     std::string layerName;
     s.text1b(layerName, std::numeric_limits<uint32_t>::max());
@@ -150,6 +169,15 @@ TileLayer::TileLayer(
     if (hasLegalInfo) {
         legalInfo_ = "";  // Tell the optional that it has a value.
         s.text1b(*legalInfo_, std::numeric_limits<uint32_t>::max());
+    }
+
+    if (s.adapter().error() != bitsery::ReaderError::NoError) {
+        raise(fmt::format(
+            "Failed to read TileLayer: Error {}",
+            static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
+    }
+    if (bytesRead != nullptr) {
+        *bytesRead = s.adapter().currentReadPos();
     }
 }
 
@@ -253,6 +281,16 @@ void TileLayer::setLoadState(LoadState state)
     if (onLoadStateChanged_) {
         onLoadStateChanged_(state);
     }
+}
+
+std::optional<uint32_t> TileLayer::stage() const
+{
+    return {};
+}
+
+void TileLayer::setStage(std::optional<uint32_t> /*stage*/)
+{
+    // Base TileLayer does not carry stage information.
 }
 
 tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)

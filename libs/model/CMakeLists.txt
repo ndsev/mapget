@@ -14,6 +14,7 @@ add_library(mapget-model STATIC
   include/mapget/model/relation.h
   include/mapget/model/point.h
   include/mapget/model/pointnode.h
+  include/mapget/model/geometry-data.h
   include/mapget/model/geometry.h
   include/mapget/model/simfilgeometry.h
   include/mapget/model/simfilutil.h
@@ -21,6 +22,7 @@ add_library(mapget-model STATIC
   include/mapget/model/sourcedatalayer.h
   include/mapget/model/sourceinfo.h
   include/mapget/model/sourcedatareference.h
+  include/mapget/model/validity-data.h
   include/mapget/model/validity.h
   include/mapget/model/hash.h
 

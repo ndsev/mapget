@@ -8,13 +8,41 @@
 #include "tileid.h"
 #include "relation.h"
 #include "geometry.h"
+#include "merged-array-view.h"
 
 #include "tl/expected.hpp"
 #include "sfl/small_vector.hpp"
 #include "nlohmann/json.hpp"
+#include <utility>
+#include <cstdint>
+#include <vector>
 
 namespace mapget
 {
+
+class RelationArrayView : public MergedArrayView<RelationArrayView, simfil::ModelNode>
+{
+public:
+    explicit RelationArrayView(simfil::detail::mp_key key)
+        : MergedArrayView<RelationArrayView, simfil::ModelNode>(key)
+    {
+    }
+
+    RelationArrayView(
+        simfil::ModelConstPtr pool,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key)
+        : MergedArrayView<RelationArrayView, simfil::ModelNode>(std::move(pool), address, key)
+    {
+    }
+
+    RelationArrayView() = delete;
+
+private:
+    [[nodiscard]] uint32_t localMergedSize() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr localMergedAt(int64_t i) const override;
+    bool localMergedIterate(simfil::ModelNode::IterCallback const& cb) const override;
+};
 
 /**
  * View onto a feature which belongs to a TileFeatureLayer.
@@ -55,10 +83,28 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class bitsery::Access;
     friend class TileFeatureLayer;
     friend class BoundFeature;
+    friend class RelationArrayView;
 
 public:
+    struct MergedBasicAttributesView;
+
+    enum class LOD : uint8_t {
+        LOD_0 = 0,
+        LOD_1 = 1,
+        LOD_2 = 2,
+        LOD_3 = 3,
+        LOD_4 = 4,
+        LOD_5 = 5,
+        LOD_6 = 6,
+        LOD_7 = 7
+    };
+
+    static constexpr LOD MAX_LOD = LOD::LOD_7;
+
     /** Get the name of this feature's type. */
     [[nodiscard]] std::string_view typeId() const;
+    [[nodiscard]] LOD lod() const;
+    void setLod(LOD lod);
 
     /** Get this feature's ID. */
     [[nodiscard]] model_ptr<FeatureId> id() const;
@@ -84,9 +130,13 @@ public:
      */
     model_ptr<Object> attributes();
     [[nodiscard]] model_ptr<Object> attributesOrNull() const;
+    [[nodiscard]] model_ptr<MergedBasicAttributesView> mergedAttributesOrNull() const;
 
     /** Add a point to the feature. */
     void addPoint(Point const& p);
+
+    /** Attach an existing geometry to the feature. */
+    void addGeometry(model_ptr<Geometry> const& geom);
 
     /** Add multiple points to the feature. */
     void addPoints(std::vector<Point> const& points);
@@ -155,6 +205,10 @@ public:
     [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
     void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
 
+    [[nodiscard]] model_ptr<Feature> extension() const;
+    void setExtension(model_ptr<Feature> extension);
+    void setExtensionAddress(TileFeatureLayer const* extensionModel, simfil::ModelNodeAddress extensionAddress);
+
 protected:
     /**
      * Simfil Model-Node Functions
@@ -175,49 +229,109 @@ protected:
      */
     [[nodiscard]] model_ptr<Array> relations();
     [[nodiscard]] model_ptr<Array> relationsOrNull() const;
+    [[nodiscard]] model_ptr<RelationArrayView> mergedRelationsOrNull() const;
+    void refreshExtensionBindingFromOverlay() const;
+
+    struct TypeIdAndLOD
+    {
+        MODEL_COLUMN_TYPE(4);
+
+        simfil::StringId typeId_ = 0;
+        uint8_t lod_ = static_cast<uint8_t>(MAX_LOD);
+    };
 
     /**
-     * Feature Data
+     * Feature data that is always allocated.
      */
-    struct Data
+    struct BasicData
     {
-        simfil::ModelNodeAddress id_;
-        simfil::ModelNodeAddress geom_;
-        simfil::ModelNodeAddress attrLayers_;
-        simfil::ModelNodeAddress attrs_;
-        simfil::ModelNodeAddress relations_;
-        simfil::ModelNodeAddress sourceData_;
+        MODEL_COLUMN_TYPE(12);
 
-        template <typename S>
-        void serialize(S& s)
-        {
-            s.object(id_);
-            s.object(geom_);
-            s.object(attrLayers_);
-            s.object(attrs_);
-            s.object(relations_);
-            s.object(sourceData_);
-        }
+        TypeIdAndLOD typeIdAndLod_{};
+        simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
+        simfil::ModelNodeAddress geom_{};
+    };
+
+    /**
+     * Feature data that is allocated lazily only once needed.
+     */
+    struct ComplexData
+    {
+        MODEL_COLUMN_TYPE(16);
+
+        simfil::ModelNodeAddress attrLayers_{};
+        simfil::ModelNodeAddress attrs_{};
+        simfil::ModelNodeAddress relations_{};
+        simfil::ModelNodeAddress sourceData_{};
     };
 
 public:
     explicit Feature(simfil::detail::mp_key key)
         : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
-    Feature(Data& d,
+    Feature(BasicData& d,
+            ComplexData* c,
             simfil::ModelConstPtr l,
             simfil::ModelNodeAddress a,
             simfil::detail::mp_key key);
     Feature() = delete;
 
 protected:
-    Data* data_ = nullptr;
+    BasicData* basicData_ = nullptr;
+    mutable ComplexData* complexData_ = nullptr;
+    mutable TileFeatureLayer const* extensionModel_ = nullptr;
+    mutable simfil::ModelNodeAddress extensionAddress_;
 
     // We keep the fields in a tiny vector on the stack,
     // because their number is dynamic, as a variable number
     // of id-part fields is adopted from the feature id.
-    sfl::small_vector<std::pair<simfil::StringId, simfil::ModelNode::Ptr>, 32> fields_;
-    void updateFields();
+    mutable sfl::small_vector<std::pair<simfil::StringId, simfil::ModelNode::Ptr>, 32> fields_;
+    mutable bool fieldsDirty_ = true;
+    void ensureFieldsReady() const;
+    [[nodiscard]] simfil::ModelNodeAddress featureIdNodeAddress() const;
+    [[nodiscard]] simfil::ModelNodeAddress sourceDataNodeAddress() const;
+    [[nodiscard]] simfil::ModelNodeAddress geometryNodeAddress() const;
+    [[nodiscard]] simfil::ModelNodeAddress& geometryNodeAddress();
+    [[nodiscard]] simfil::ModelNodeAddress attributeLayerNodeAddress() const;
+    [[nodiscard]] simfil::ModelNodeAddress& attributeLayerNodeAddress();
+    [[nodiscard]] simfil::ModelNodeAddress attributeNodeAddress() const;
+    [[nodiscard]] simfil::ModelNodeAddress& attributeNodeAddress();
+    [[nodiscard]] simfil::ModelNodeAddress relationNodeAddress() const;
+    [[nodiscard]] simfil::ModelNodeAddress& relationNodeAddress();
+    void updateFields() const;
+    void materializeGeometryCollection();
+    model_ptr<Geometry> appendGeometry(
+        GeomType type,
+        size_t initialCapacity,
+        bool fixedSize = false);
 
+public:
+    struct MergedBasicAttributesView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+    {
+        [[nodiscard]] simfil::ValueType type() const override;
+        [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+        [[nodiscard]] uint32_t size() const override;
+        [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
+        [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
+        [[nodiscard]] bool iterate(IterCallback const& cb) const override;
+
+        explicit MergedBasicAttributesView(simfil::detail::mp_key key)
+            : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        MergedBasicAttributesView(
+            simfil::ModelConstPtr model,
+            simfil::ModelNodeAddress address,
+            simfil::detail::mp_key key);
+        MergedBasicAttributesView() = delete;
+
+    private:
+        using AttrField = std::pair<simfil::StringId, simfil::ModelNode::Ptr>;
+        mutable std::vector<AttrField> mergedFields_;
+        mutable bool mergedFieldsDirty_ = true;
+
+        void ensureMergedFieldsReady() const;
+        void rebuildMergedFields() const;
+    };
+
+protected:
     struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
@@ -229,14 +343,9 @@ protected:
 
         explicit FeaturePropertyView(simfil::detail::mp_key key)
             : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
-        FeaturePropertyView(Data& d,
-                            simfil::ModelConstPtr l,
-                            simfil::ModelNodeAddress a,
+        FeaturePropertyView(model_ptr<Feature> feature,
                             simfil::detail::mp_key key);
         FeaturePropertyView() = delete;
-
-        Data* data_ = nullptr;
-        model_ptr<Object> attrs_;
     };
 };
 

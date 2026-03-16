@@ -1,4 +1,5 @@
 #include "http-service-impl.h"
+#include "tiles-request-json.h"
 
 #include "mapget/log.h"
 
@@ -117,14 +118,11 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
 
     void parseRequestFromJson(nlohmann::json const& requestJson)
     {
-        std::string mapId = requestJson["mapId"];
-        std::string layerId = requestJson["layerId"];
-        std::vector<TileId> tileIds;
-        tileIds.reserve(requestJson["tileIds"].size());
-        for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>()) {
-            tileIds.emplace_back(tid);
-        }
-        requests_.push_back(std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
+        auto parsed = detail::parseLayerTilesRequestJson(requestJson);
+        requests_.push_back(std::make_shared<LayerTilesRequest>(
+            std::move(parsed.mapId),
+            std::move(parsed.layerId),
+            std::move(parsed.tileIdsByNextStage)));
     }
 
     [[nodiscard]] bool setResponseTypeFromAccept(std::string_view acceptHeader, std::string& error)
@@ -357,8 +355,18 @@ void HttpService::Impl::handleTilesRequest(
     }
 
     log().info("Processing tiles request {}", state->requestId_);
-    for (auto& requestJson : *requestsIt) {
-        state->parseRequestFromJson(requestJson);
+    try {
+        for (auto& requestJson : *requestsIt) {
+            state->parseRequestFromJson(requestJson);
+        }
+    }
+    catch (const std::exception& e) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k400BadRequest);
+        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+        resp->setBody(std::string("Invalid request JSON: ") + e.what());
+        callback(resp);
+        return;
     }
 
     if (j.contains("stringPoolOffsets")) {

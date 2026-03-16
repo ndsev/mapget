@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "simfil/model/model.h"
 #include "simfil/environment.h"
@@ -46,7 +47,7 @@ public:
         std::shared_ptr<simfil::StringPool> const& stringPool);
 
     TileSourceDataLayer(
-        std::istream&,
+        const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter);
 

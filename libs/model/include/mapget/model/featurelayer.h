@@ -2,6 +2,9 @@
 
 #include <span>
 #include <string_view>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include "tl/expected.hpp"
 
@@ -32,6 +35,8 @@ namespace mapget
  */
 class TileFeatureLayer : public TileLayer, public simfil::ModelPool
 {
+    template<class, class>
+    friend class MergedArrayView;
     friend class Feature;
     friend class FeatureId;
     friend class Relation;
@@ -82,15 +87,15 @@ public:
         std::shared_ptr<simfil::StringPool> const& strings);
 
     /**
-     * Constructor which parses a TileFeatureLayer from a binary stream.
-     * @param inputStream The binary stream to parse.
+     * Constructor which parses a TileFeatureLayer from a binary byte buffer.
+     * @param input The binary bytes to parse.
      * @param layerInfoResolveFun Function which will be called to retrieve
      *  a layerInfo object for the layer name stored for the tile.
      * @param stringPoolGetter Function which will be called to retrieve
      *  a string pool for the node name of the tile.
      */
     TileFeatureLayer(
-        std::istream& inputStream,
+        const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter
     );
@@ -101,6 +106,7 @@ public:
      */
     void setIdPrefix(KeyValueViewPairs const& prefix);
     model_ptr<Object> getIdPrefix();
+    model_ptr<Object> getIdPrefix() const;
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer() override;
@@ -139,22 +145,25 @@ public:
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */
-    model_ptr<Attribute> newAttribute(std::string_view const& name, size_t initialCapacity=8);
+    model_ptr<Attribute> newAttribute(
+        std::string_view const& name,
+        size_t initialCapacity=8,
+        bool fixedSize=false);
 
     /**
      * Create a new attribute layer, which may be inserted into a feature.
      */
-    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8);
+    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8, bool fixedSize=false);
 
     /**
      * Create a new geometry collection.
      */
-    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=1);
+    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=2, bool fixedSize=false);
 
     /**
      * Create a new geometry.
      */
-    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=1);
+    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=2, bool fixedSize=false);
 
     /**
      * Create a new geometry view.
@@ -174,7 +183,16 @@ public:
     /**
      * Create a new validity collection.
      */
-    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 1);
+    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 2, bool fixedSize=false);
+
+    /**
+     * Internal validity upgrade helpers used by Validity.
+     */
+    simfil::ModelNodeAddress materializeSimpleValidity(
+        simfil::ModelNodeAddress simpleAddress,
+        Validity::Direction direction);
+    std::optional<simfil::ModelNodeAddress> upgradedSimpleValidityAddress(
+        simfil::ModelNodeAddress simpleAddress) const;
 
     /**
      * Return type for begin() and end() methods to support range-based
@@ -224,6 +242,13 @@ public:
     /** Access number of stored features */
     size_t size() const;
 
+    /** Access total number of geometry vertices across this tile. */
+    [[nodiscard]] uint64_t numVertices() const;
+
+    /** Access layer-wide geometry anchor used for anchor-relative vertex encoding. */
+    [[nodiscard]] Point geometryAnchor() const;
+    void setGeometryAnchor(Point const& anchor);
+
     /** Access feature at index i */
     model_ptr<Feature> at(size_t i) const;
 
@@ -234,6 +259,32 @@ public:
 
     /** Shared pointer type */
     using Ptr = std::shared_ptr<TileFeatureLayer>;
+
+    /** Optional staged-loading index (0-based) for this feature tile. */
+    [[nodiscard]] std::optional<uint32_t> stage() const override;
+    void setStage(std::optional<uint32_t> stage) override;
+
+    /**
+     * Configure expected feature-id sequence for strict staged overlay validation.
+     * When configured, every newFeature call must match the next expected id.
+     */
+    void setExpectedFeatureSequence(std::vector<std::string> expectedFeatureIds);
+    void clearExpectedFeatureSequence();
+    [[nodiscard]] bool hasExpectedFeatureSequence() const;
+    void validateExpectedFeatureSequenceComplete() const;
+
+    /**
+     * Attach an overlay tile. Overlay tiles must have the same features in the
+     * same positions. Additional attribute layers, geometries and relations from
+     * overlay features are attached to the base features efficiently and lazily
+     * when retrieving the feature from the base layer.
+     * If this tile already has an overlay, the new overlay gets attached at the
+     * tail of the overlay chain.
+     */
+    void attachOverlay(TileFeatureLayer::Ptr const& overlay);
+
+    /** Get the next overlay tile in the chain (if any). */
+    [[nodiscard]] TileFeatureLayer::Ptr overlay() const;
 
     /**
      * Evaluate a (potentially cached) simfil query on this pool
@@ -311,15 +362,22 @@ public:
      */
     struct ColumnId { enum : uint8_t {
         Features = FirstCustomColumnId,
+        FeatureComplexData,
         FeatureProperties,
         FeatureIds,
+        ExternalFeatureIds,
         Attributes,
         AttributeLayers,
         AttributeLayerLists,
         Relations,
         Points,
         PointBuffers,
-        Geometries,
+        PointBuffersView,
+        PointGeometries,
+        LineGeometries,
+        PolygonGeometries,
+        MeshGeometries,
+        GeometryViews,
         GeometryCollections,
         Mesh,
         MeshTriangleCollection,
@@ -331,6 +389,11 @@ public:
         Validities,
         ValidityPoints,
         ValidityCollections,
+        FeatureRelationsView,
+        GeometryArrayView,
+        // Compact validity form without backing struct storage.
+        // Direction is encoded in ModelNodeAddress::index().
+        SimpleValidity,
     }; };
     
 protected:
@@ -341,7 +404,7 @@ protected:
     /**
      * Create a new attribute layer collection.
      */
-    model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8);
+    model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8, bool fixedSize=false);
 
     /**
      * Generic node resolution overload.
@@ -349,9 +412,26 @@ protected:
     tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 
     Geometry::Storage& vertexBufferStorage();
+    [[nodiscard]] Geometry::ViewData const* geometryViewData(simfil::ModelNodeAddress address) const;
+    [[nodiscard]] simfil::ModelNodeAddress geometrySourceDataReferences(simfil::ModelNodeAddress address) const;
+    void setGeometrySourceDataReferences(simfil::ModelNodeAddress address, simfil::ModelNodeAddress refsAddress);
+    [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;
+    [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
+    Feature::ComplexData& ensureFeatureComplexData(uint32_t featureIndex);
+
+    void setMergedArrayExtension(
+        simfil::ModelNodeAddress baseAddress,
+        TileFeatureLayer const* extensionModel,
+        simfil::ModelNodeAddress extensionAddress);
+    void clearMergedArrayExtension(simfil::ModelNodeAddress baseAddress);
+    [[nodiscard]] std::optional<std::pair<TileFeatureLayer const*, simfil::ModelNodeAddress>>
+    mergedArrayExtension(simfil::ModelNodeAddress baseAddress) const;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    std::optional<uint32_t> stage_;
+    TileFeatureLayer::Ptr overlay_;
+    std::vector<std::string> expectedFeatureIds_;
 };
 
 // Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).

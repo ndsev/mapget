@@ -30,7 +30,10 @@ public:
     PointNode() = delete;
 
 public:
-    PointNode(ModelNode const& baseNode, Geometry::Data const* geomData, simfil::detail::mp_key key);
+    PointNode(
+        ModelNode const& baseNode,
+        simfil::ArrayIndex vertexArray,
+        simfil::detail::mp_key key);
     PointNode(ModelNode const& baseNode, Validity::Data const* geomData, simfil::detail::mp_key key);
 
 private:
@@ -39,11 +42,8 @@ private:
 
 template <typename LambdaType, class ModelType>
 bool Geometry::forEachPoint(LambdaType const& callback) const {
-    auto vertexBufferNode = model_ptr<PointBufferNode>::make(
-        geomData_, model_, ModelNodeAddress{ModelType::ColumnId::PointBuffers, addr_.index()});
-    for (auto i = 0; i < vertexBufferNode->size(); ++i) {
-        auto vertex = model_ptr<PointNode>::make(*vertexBufferNode->at(i), vertexBufferNode->baseGeomData_);
-        if (!callback(vertex->point_))
+    for (size_t i = 0; i < numPoints(); ++i) {
+        if (!callback(pointAt(i)))
             return false;
     }
     return true;

@@ -2,6 +2,7 @@
 
 #include "simfil/model/nodes.h"
 #include "info.h"
+#include <vector>
 
 namespace mapget
 {
@@ -35,6 +36,15 @@ public:
     /** Get all id-part key-value-pairs (including the common prefix). */
     [[nodiscard]] KeyValueViewPairs keyValuePairs() const;
 
+    struct Data {
+        MODEL_COLUMN_TYPE(8);
+
+        bool useCommonTilePrefix_ = false;
+        uint8_t idCompositionIndex_ = 0;
+        simfil::StringId typeId_ = 0;
+        simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
+    };
+
 protected:
     /**
      * Internal Node Access APIs
@@ -47,19 +57,6 @@ protected:
     [[nodiscard]] simfil::StringId keyAt(int64_t) const override;
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
-    struct Data {
-        bool useCommonTilePrefix_ = false;
-        simfil::StringId typeId_ = 0;
-        simfil::ModelNodeAddress idParts_;
-
-        template<typename S>
-        void serialize(S& s) {
-            s.value1b(useCommonTilePrefix_);
-            s.value2b(typeId_);
-            s.object(idParts_);
-        }
-    };
-
 public:
     explicit FeatureId(simfil::detail::mp_key key)
         : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
@@ -67,12 +64,17 @@ public:
               simfil::ModelConstPtr l,
               simfil::ModelNodeAddress a,
               simfil::detail::mp_key key);
+    FeatureId(Data const& data,
+              simfil::ModelConstPtr l,
+              simfil::ModelNodeAddress a,
+              simfil::detail::mp_key key);
     FeatureId() = delete;
 
 protected:
-    Data* data_ = nullptr;
-
-    model_ptr<Object> fields_;
+    Data data_{};
+    model_ptr<Array> values_;
+    std::vector<simfil::StringId> partNames_;
+    std::vector<uint32_t> visibleValueIndices_;
 };
 
 }

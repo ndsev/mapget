@@ -68,7 +68,7 @@ model_ptr<MultiValidity> Attribute::validity()
     if (auto returnValue = validityOrNull()) {
         return returnValue;
     }
-    auto returnValue = model().newValidityCollection(1);
+    auto returnValue = model().newValidityCollection(2);
     data_->validities_ = returnValue->addr();
     return returnValue;
 }

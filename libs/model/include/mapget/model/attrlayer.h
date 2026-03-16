@@ -2,6 +2,7 @@
 
 #include "featureid.h"
 #include "attr.h"
+#include "merged-array-view.h"
 
 namespace mapget
 {
@@ -26,7 +27,10 @@ public:
     /**
      * Create a new attribute and immediately insert it into the layer.
      */
-    model_ptr<Attribute> newAttribute(std::string_view const& name, size_t initialCapacity=8);
+    model_ptr<Attribute> newAttribute(
+        std::string_view const& name,
+        size_t initialCapacity=8,
+        bool fixedSize=false);
 
     /**
      * Add an attribute to the layer which was created before - note:
@@ -56,26 +60,32 @@ public:
  * stores (layer-name, layer) pairs.
  * TODO: Convert to use BaseObject
  */
-class AttributeLayerList : public simfil::BaseObject<TileFeatureLayer, AttributeLayer>
+class AttributeLayerList : public MergedArrayView<AttributeLayerList, AttributeLayer>
 {
     friend class TileFeatureLayer;
     friend class bitsery::Access;
     friend class Feature;
 
 public:
-    using BaseObject::addField;
-    using BaseObject::get;
-
     /**
      * Create a new named layer and immediately insert it into the collection.
      */
-    model_ptr<AttributeLayer> newLayer(std::string_view const& name, size_t initialCapacity=8);
+    model_ptr<AttributeLayer> newLayer(
+        std::string_view const& name,
+        size_t initialCapacity=8,
+        bool fixedSize=false);
 
     /**
      * Add an attribute layer to the collection which was previously created.
      * You can share a single layer between multiple collections, it will not be copied.
      */
     void addLayer(std::string_view const& name, model_ptr<AttributeLayer> l);
+
+    /**
+     * Backward-compatible alias for addLayer.
+     */
+    tl::expected<std::reference_wrapper<AttributeLayerList>, simfil::Error>
+    addField(std::string_view const& name, model_ptr<AttributeLayer> l);
 
     /**
      * Iterate over the stored layers. The passed lambda must return
@@ -87,12 +97,31 @@ public:
     ) const;
 
 public:
-    explicit AttributeLayerList(simfil::detail::mp_key key) : BaseObject(key) {}
+    explicit AttributeLayerList(simfil::detail::mp_key key)
+        : MergedArrayView<AttributeLayerList, AttributeLayer>(key)
+    {
+    }
+
     AttributeLayerList(simfil::ArrayIndex i,
                        simfil::ModelConstPtr l,
                        simfil::ModelNodeAddress a,
                        simfil::detail::mp_key key);
     AttributeLayerList() = delete;
+
+    [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr at(int64_t i) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr get(const simfil::StringId& field) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t i) const override;
+    bool iterate(simfil::ModelNode::IterCallback const& cb) const override;
+
+private:
+    [[nodiscard]] simfil::model_ptr<simfil::Object> localObject() const;
+    [[nodiscard]] uint32_t localMergedSize() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr localMergedAt(int64_t i) const override;
+    bool localMergedIterate(simfil::ModelNode::IterCallback const& cb) const override;
+
+    simfil::ArrayIndex members_ = simfil::InvalidArrayIndex;
 };
 
 }
