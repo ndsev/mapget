@@ -203,6 +203,8 @@ const state = {
     lastArrayArenaSingletonJson: "",
     lastDistributionJson: "",
 };
+)HTML"
+R"HTML(
 
 const wsMetricDefinitions = [
     ["active-connections", "active-connections", (v) => formatInt(v)],
@@ -332,6 +334,8 @@ function renderTreeBreakdown(service) {
     renderByteBreakdownRows("#modelPoolBreakdown tbody", breakdown["model-pool"], totalBytes);
     renderArrayArenaSingletons(breakdown);
 }
+)HTML"
+R"HTML(
 
 function renderArrayArenaSingletons(breakdown) {
     const tbody = qs("#arrayArenaSingletonsTable tbody");
@@ -424,6 +428,8 @@ function renderTileDistribution(service) {
         histogramBody.appendChild(tr);
     }
 }
+)HTML"
+R"HTML(
 
 async function refreshStatus(force = false) {
     if (state.refreshInFlight) {

@@ -34,10 +34,6 @@ endif()
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
 option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
-if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-  set(MAPGET_VALIDATE_MODEL_COLUMNS ON CACHE BOOL "Validate MODEL_COLUMN_TYPE structs in mapget.")
-endif()
-option(MAPGET_VALIDATE_MODEL_COLUMNS "Validate MODEL_COLUMN_TYPE structs in mapget.")
 
 if (MAPGET_ENABLE_TESTING)
   # Enable testing before adding CPM dependencies so stale/third-party CTest
@@ -95,18 +91,6 @@ if (NOT CPM_INITIALIZED)
   add_subdirectory(cmake/CPM.cmake)
 endif ()
 include(cmake/deps.cmake)
-set(MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE
-  "${simfil_SOURCE_DIR}/cmake/column_type_validator.cmake")
-if (MAPGET_VALIDATE_MODEL_COLUMNS)
-  if (EXISTS "${MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE}")
-    include("${MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE}")
-  else()
-    message(WARNING
-      "MAPGET_VALIDATE_MODEL_COLUMNS requested, but simfil does not provide "
-      "${MAPGET_COLUMN_TYPE_VALIDATOR_CMAKE}. Disabling column validation.")
-    set(MAPGET_VALIDATE_MODEL_COLUMNS OFF)
-  endif()
-endif()
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
@@ -161,12 +145,4 @@ endif()
 
 if (MAPGET_BUILD_EXAMPLES OR MAPGET_ENABLE_TESTING)
   add_subdirectory(examples)
-endif()
-
-if (MAPGET_VALIDATE_MODEL_COLUMNS)
-  simfil_enable_column_type_validation_for_linked_targets(
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "simfil::simfil"
-    "${simfil_SOURCE_DIR}/cmake/column_type_validator.py"
-    "mapget-column-type-validation")
 endif()
