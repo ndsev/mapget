@@ -444,11 +444,6 @@ nlohmann::json LayerInfo::toJson() const
         {"version", version_.toJson()}};
 }
 
-FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing)
-{
-    return static_cast<LayerInfo const&>(*this).getTypeInfo(sv, throwIfMissing);
-}
-
 FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const
 {
     auto typeIt = std::find_if(

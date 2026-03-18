@@ -477,3 +477,36 @@ TEST_CASE("Simple Validity Self Upgrade", "[validity]") {
     REQUIRE(upgraded->offsetPoint().has_value());
     REQUIRE(upgraded->offsetPoint()->x == 1.0);
 }
+
+TEST_CASE("Semantic feature transition validities compute transition geometry", "[validity]") {
+    auto modelPool = makeTile();
+
+    auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 2);
+    fromGeometry->append({0.0, 0.0, 0.0});
+    fromGeometry->append({1.0, 0.0, 0.0});
+
+    auto toFeature = modelPool->newFeature("Way", {{"wayId", int64_t(2)}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 2);
+    toGeometry->append({1.0, 0.0, 0.0});
+    toGeometry->append({2.0, 0.0, 0.0});
+
+    auto intersection = modelPool->newFeature("Way", {{"wayId", int64_t(3)}});
+    auto validity = intersection->attributeLayers()
+                        ->newLayer("rules")
+                        ->newAttribute("turn")
+                        ->validity()
+                        ->newFeatureTransition(
+                            fromFeature,
+                            Validity::End,
+                            toFeature,
+                            Validity::Start,
+                            7);
+
+    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    REQUIRE(geometry.geomType_ == GeomType::Line);
+    REQUIRE(geometry.points_.size() == 3);
+    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[1] == Point{1.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+}

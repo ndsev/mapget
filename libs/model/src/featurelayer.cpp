@@ -1706,6 +1706,9 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         case Validity::OffsetRangeValidity:
             increment(validityUsage["by-geometry-description"], "offset-range");
             break;
+        case Validity::FeatureTransition:
+            increment(validityUsage["by-geometry-description"], "feature-transition");
+            break;
         }
 
         switch (validity.geomOffsetType_) {
@@ -2116,6 +2119,14 @@ ModelNode::Ptr TileFeatureLayer::clone(
             else {
                 newNode->setOffsetRange(resolved->geometryOffsetType(), resolved->offsetRange()->first.x, resolved->offsetRange()->second.x);
             }
+            break;
+        case Validity::FeatureTransition:
+            newNode->setFeatureTransition(
+                resolve<Feature>(*clone(cache, otherLayer, resolved->transitionFromFeature())),
+                *resolved->transitionFromConnectedEnd(),
+                resolve<Feature>(*clone(cache, otherLayer, resolved->transitionToFeature())),
+                *resolved->transitionToConnectedEnd(),
+                *resolved->transitionNumber());
             break;
         }
         break;

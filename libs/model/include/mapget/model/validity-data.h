@@ -36,6 +36,7 @@ struct ValidityData
         SimpleGeometry = 1,
         OffsetPointValidity = 2,
         OffsetRangeValidity = 3,
+        FeatureTransition = 4,
     };
     enum GeometryOffsetType : uint8_t {
         InvalidOffsetType = 0,
@@ -50,11 +51,25 @@ struct ValidityData
         Point second;
     };
 
+    enum TransitionEnd : uint8_t {
+        Start = 0,
+        End = 1,
+    };
+
+    struct FeatureTransitionDescription {
+        simfil::ModelNodeAddress fromFeature_;
+        simfil::ModelNodeAddress toFeature_;
+        uint32_t transitionNumber_ = 0;
+        // Bit 0 encodes the connected end of fromFeature_, bit 1 the end of toFeature_.
+        uint8_t connectedEnds_ = 0;
+    };
+
     union GeometryDescription {
         GeometryDescription() : simpleGeometry_() {}
         simfil::ModelNodeAddress simpleGeometry_;
         Range range_;
         Point point_;
+        FeatureTransitionDescription featureTransition_;
     };
 
     Direction direction_ = Empty;

@@ -8,6 +8,8 @@ namespace mapget
 {
 
 class Geometry;
+class Feature;
+class FeatureId;
 
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
@@ -21,6 +23,7 @@ public:
     using Direction = ValidityData::Direction;
     using GeometryDescriptionType = ValidityData::GeometryDescriptionType;
     using GeometryOffsetType = ValidityData::GeometryOffsetType;
+    using TransitionEnd = ValidityData::TransitionEnd;
 
     // Keep existing Validity::Empty-style API surface.
     static constexpr Direction Empty = ValidityData::Empty;
@@ -33,12 +36,16 @@ public:
     static constexpr GeometryDescriptionType SimpleGeometry = ValidityData::SimpleGeometry;
     static constexpr GeometryDescriptionType OffsetPointValidity = ValidityData::OffsetPointValidity;
     static constexpr GeometryDescriptionType OffsetRangeValidity = ValidityData::OffsetRangeValidity;
+    static constexpr GeometryDescriptionType FeatureTransition = ValidityData::FeatureTransition;
 
     static constexpr GeometryOffsetType InvalidOffsetType = ValidityData::InvalidOffsetType;
     static constexpr GeometryOffsetType GeoPosOffset = ValidityData::GeoPosOffset;
     static constexpr GeometryOffsetType BufferOffset = ValidityData::BufferOffset;
     static constexpr GeometryOffsetType RelativeLengthOffset = ValidityData::RelativeLengthOffset;
     static constexpr GeometryOffsetType MetricLengthOffset = ValidityData::MetricLengthOffset;
+
+    static constexpr TransitionEnd Start = ValidityData::Start;
+    static constexpr TransitionEnd End = ValidityData::End;
 
     /**
      * Feature on which the validity applies.
@@ -88,6 +95,22 @@ public:
      */
     void setSimpleGeometry(model_ptr<Geometry>);
     [[nodiscard]] model_ptr<Geometry> simpleGeometry() const;
+
+    /**
+     * Get or set a semantic feature transition validity.
+     * The connected ends indicate which endpoint of each referenced feature touches the transition.
+     */
+    void setFeatureTransition(
+        model_ptr<Feature> const& fromFeature,
+        TransitionEnd fromConnectedEnd,
+        model_ptr<Feature> const& toFeature,
+        TransitionEnd toConnectedEnd,
+        uint32_t transitionNumber);
+    [[nodiscard]] model_ptr<Feature> transitionFromFeature() const;
+    [[nodiscard]] model_ptr<Feature> transitionToFeature() const;
+    [[nodiscard]] std::optional<TransitionEnd> transitionFromConnectedEnd() const;
+    [[nodiscard]] std::optional<TransitionEnd> transitionToConnectedEnd() const;
+    [[nodiscard]] std::optional<uint32_t> transitionNumber() const;
 
     /**
      * Compute the actual shape-points of the validity with respect to one
@@ -217,6 +240,23 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
      */
     model_ptr<Validity>
     newGeomStage(uint32_t geometryStage, Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a semantic transition validity connecting two feature endpoints.
+     */
+    model_ptr<Validity> newFeatureTransition(
+        model_ptr<Feature> const& fromFeature,
+        Validity::TransitionEnd fromConnectedEnd,
+        model_ptr<Feature> const& toFeature,
+        Validity::TransitionEnd toConnectedEnd,
+        uint32_t transitionNumber,
+        Validity::Direction direction = Validity::Empty);
+
+    /**
+     * Append a complete validity. If no explicit direction is given,
+     * it is represented as complete coverage in both directions.
+     */
+    model_ptr<Validity> newComplete(Validity::Direction direction = Validity::Empty);
 
     /**
      * Append a direction validity without further restricting the range.

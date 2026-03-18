@@ -163,7 +163,7 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
   | `RelativeLengthOffset` | Values represent fractions (0–1) along the total geometry length.                          |
   | `MetricLengthOffset`   | Values represent metres along the geometry (requires a polyline geometry).                 |
 
-- **Direction** (`POSITIVE`, `NEGATIVE`, `BOTH`, `NONE`) describes whether the attribute applies relative to the digitisation direction of the referenced geometry.
+- **Direction** (`POSITIVE`, `NEGATIVE`, `COMPLETE`, `NONE`) describes whether the attribute applies relative to the digitisation direction of the referenced geometry.
 
 Attributes and Relations can attach their own `MultiValidity` lists, so a datasource can mix and match: an attribute may reference a geometric sub‑range via `OffsetRangeValidity`, while the relation that connects two features uses a separate `SimpleGeometry` to express a polygon of influence.
 

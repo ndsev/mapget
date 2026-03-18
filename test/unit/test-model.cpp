@@ -157,7 +157,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"type":"Polygon"},)"  // Closed, CCW
             R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"type":"Polygon"},)"  // Closed, CW, Z!=0
             R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"type":"MultiPolygon"})"  // Mesh
-            R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":[{"direction":"POSITIVE"}]}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
+            R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":{"direction":"POSITIVE"}}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
             R"("lod":7,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
@@ -564,6 +564,113 @@ TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test
     REQUIRE(std::get<int64_t>(withOptionalPairs[1].second) == 7);
     REQUIRE(withOptionalPairs[2].first == "wayId");
     REQUIRE(std::get<int64_t>(withOptionalPairs[2].second) == 43);
+}
+
+TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("ValidityNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "ValidityNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    auto feature = tile->newFeature("Way", {{"wayId", 1}});
+
+    auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
+    attr->validity()->newDirection(Validity::Direction::Both);
+
+    auto relation = tile->newRelation("connectedTo", tile->newFeatureId("Way", {{"wayId", 2}}));
+    relation->sourceValidity()->newDirection(Validity::Direction::Positive);
+    relation->targetValidity()->newDirection(Validity::Direction::Negative);
+    feature->addRelation(relation);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto const attrValidityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(attrValidityNode);
+    REQUIRE(attrValidityNode->toJson() == nlohmann::json{{"direction", "COMPLETE"}});
+
+    auto materializedRelation = tile->resolve<Relation>(relation->addr());
+    REQUIRE(materializedRelation);
+    auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
+    auto const sourceValidityNode = relationNode.get(StringPool::SourceValidityStr);
+    REQUIRE(sourceValidityNode);
+    REQUIRE(sourceValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
+
+    auto const targetValidityNode = relationNode.get(StringPool::TargetValidityStr);
+    REQUIRE(targetValidityNode);
+    REQUIRE(targetValidityNode->toJson() == nlohmann::json{{"direction", "NEGATIVE"}});
+}
+
+TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("TransitionValidityNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "TransitionValidityNode",
+        "Tropico",
+        layerInfo,
+        strings);
+
+    auto fromFeature = tile->newFeature("Way", {{"wayId", 1}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 2);
+    fromGeometry->append({0., 0., 0.});
+    fromGeometry->append({1., 0., 0.});
+
+    auto toFeature = tile->newFeature("Way", {{"wayId", 2}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 2);
+    toGeometry->append({1., 0., 0.});
+    toGeometry->append({2., 0., 0.});
+
+    auto intersection = tile->newFeature("Way", {{"wayId", 3}});
+    auto attr = intersection->attributeLayers()->newLayer("rules")->newAttribute("turn");
+    attr->validity()->newFeatureTransition(
+        fromFeature,
+        Validity::End,
+        toFeature,
+        Validity::Start,
+        7);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto const attrValidityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(attrValidityNode);
+    REQUIRE(attrValidityNode->toJson() == nlohmann::json{
+        {"from", "Way.1"},
+        {"fromConnectedEnd", "END"},
+        {"to", "Way.2"},
+        {"toConnectedEnd", "START"},
+        {"transitionNumber", 7},
+    });
 }
 
 TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")

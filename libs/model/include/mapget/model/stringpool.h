@@ -51,7 +51,13 @@ struct StringPool : public simfil::StringPool
         StartStr,
         EndStr,
         PointStr,
-        FeatureIdStr
+        FeatureIdStr,
+        FromStr,
+        ToStr,
+        ConnectedEndStr,
+        FromConnectedEndStr,
+        ToConnectedEndStr,
+        TransitionNumberStr
     };
 
     explicit StringPool(const std::string_view& nodeId);

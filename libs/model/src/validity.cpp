@@ -16,10 +16,106 @@ std::string_view directionToString(Validity::Direction const& d)
     case Validity::Empty: return "EMPTY";
     case Validity::Positive: return "POSITIVE";
     case Validity::Negative: return "NEGATIVE";
-    case Validity::Both: return "BOTH";
+    case Validity::Both: return "COMPLETE";
     case Validity::None: return "NONE";
     }
     return "?";
+}
+
+std::string_view transitionEndToString(Validity::TransitionEnd const& end)
+{
+    switch (end) {
+    case Validity::Start: return "START";
+    case Validity::End: return "END";
+    }
+    return "?";
+}
+
+uint8_t packTransitionEnds(
+    Validity::TransitionEnd fromConnectedEnd,
+    Validity::TransitionEnd toConnectedEnd)
+{
+    return static_cast<uint8_t>(
+        static_cast<uint8_t>(fromConnectedEnd) |
+        (static_cast<uint8_t>(toConnectedEnd) << 1U));
+}
+
+Validity::TransitionEnd unpackFromConnectedEnd(uint8_t packedEnds)
+{
+    return (packedEnds & 0x1U) != 0 ? Validity::End : Validity::Start;
+}
+
+Validity::TransitionEnd unpackToConnectedEnd(uint8_t packedEnds)
+{
+    return (packedEnds & 0x2U) != 0 ? Validity::End : Validity::Start;
+}
+
+model_ptr<Geometry> resolveLineGeometry(
+    model_ptr<GeometryCollection> const& geometryCollection,
+    std::optional<uint32_t> referencedStage)
+{
+    if (!geometryCollection) {
+        return {};
+    }
+
+    model_ptr<Geometry> geometry;
+    geometryCollection->forEachGeometry([&](auto&& geom) {
+        if (referencedStage) {
+            const auto geometryStage = geom->model().stage().value_or(0U);
+            if (geometryStage != *referencedStage) {
+                return true;
+            }
+        }
+        if (!geometry && geom->geomType() == GeomType::Line) {
+            geometry = geom;
+            return false;
+        }
+        return true;
+    });
+    return geometry;
+}
+
+struct TransitionSegment
+{
+    Point outer_;
+    Point inner_;
+};
+
+std::optional<TransitionSegment> resolveTransitionSegment(
+    model_ptr<Feature> const& feature,
+    Validity::TransitionEnd connectedEnd)
+{
+    if (!feature) {
+        return std::nullopt;
+    }
+
+    auto geometry = resolveLineGeometry(feature->geomOrNull(), std::nullopt);
+    if (!geometry || geometry->numPoints() == 0) {
+        return std::nullopt;
+    }
+
+    const auto numPoints = geometry->numPoints();
+    const auto innerIndex = connectedEnd == Validity::End ? numPoints - 1U : 0U;
+    const auto outerIndex = connectedEnd == Validity::End
+        ? (numPoints > 1 ? numPoints - 2U : innerIndex)
+        : (numPoints > 1 ? 1U : innerIndex);
+    return TransitionSegment{
+        geometry->pointAt(outerIndex),
+        geometry->pointAt(innerIndex),
+    };
+}
+
+bool pointsCoincide(Point const& left, Point const& right)
+{
+    return left.distanceTo(right) < 1e-9;
+}
+
+void appendIfNotDuplicate(std::vector<Point>& points, Point const& point)
+{
+    if (!points.empty() && pointsCoincide(points.back(), point)) {
+        return;
+    }
+    points.emplace_back(point);
 }
 
 }
@@ -108,6 +204,52 @@ Validity::Validity(Validity::Data* data,
             {
                 return self.model().resolve(
                     self.data_->geomDescr_.simpleGeometry_);
+            });
+        return;
+    }
+
+    if (data_->geomDescrType_ == FeatureTransition) {
+        fields_.emplace_back(
+            StringPool::TransitionNumberStr,
+            [](Validity const& self)
+            {
+                return model_ptr<simfil::ValueNode>::make(
+                    static_cast<int64_t>(*self.transitionNumber()),
+                    self.model_);
+            });
+        fields_.emplace_back(
+            StringPool::FromStr,
+            [](Validity const& self)
+            {
+                auto fromFeature = self.transitionFromFeature();
+                return model_ptr<simfil::ValueNode>::make(
+                    fromFeature ? fromFeature->id()->toString() : std::string{},
+                    self.model_);
+            });
+        fields_.emplace_back(
+            StringPool::FromConnectedEndStr,
+            [](Validity const& self)
+            {
+                return model_ptr<simfil::ValueNode>::make(
+                    transitionEndToString(*self.transitionFromConnectedEnd()),
+                    self.model_);
+            });
+        fields_.emplace_back(
+            StringPool::ToStr,
+            [](Validity const& self)
+            {
+                auto toFeature = self.transitionToFeature();
+                return model_ptr<simfil::ValueNode>::make(
+                    toFeature ? toFeature->id()->toString() : std::string{},
+                    self.model_);
+            });
+        fields_.emplace_back(
+            StringPool::ToConnectedEndStr,
+            [](Validity const& self)
+            {
+                return model_ptr<simfil::ValueNode>::make(
+                    transitionEndToString(*self.transitionToConnectedEnd()),
+                    self.model_);
             });
         return;
     }
@@ -304,6 +446,69 @@ model_ptr<Geometry> Validity::simpleGeometry() const
     return model().resolve<Geometry>(data_->geomDescr_.simpleGeometry_);
 }
 
+void Validity::setFeatureTransition(
+    model_ptr<Feature> const& fromFeature,
+    TransitionEnd fromConnectedEnd,
+    model_ptr<Feature> const& toFeature,
+    TransitionEnd toConnectedEnd,
+    uint32_t transitionNumber)
+{
+    ensureMaterialized();
+    if (!fromFeature || !toFeature) {
+        raise("Validity::setFeatureTransition requires both from/to features.");
+    }
+    data_->geomDescrType_ = FeatureTransition;
+    data_->geomOffsetType_ = InvalidOffsetType;
+    data_->referencedStage_ = Data::InvalidReferencedStage;
+    data_->featureAddress_ = {};
+    data_->geomDescr_.featureTransition_ = {
+        fromFeature->addr(),
+        toFeature->addr(),
+        transitionNumber,
+        packTransitionEnds(fromConnectedEnd, toConnectedEnd),
+    };
+}
+
+model_ptr<Feature> Validity::transitionFromFeature() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return {};
+    }
+    return model().resolve<Feature>(data_->geomDescr_.featureTransition_.fromFeature_);
+}
+
+model_ptr<Feature> Validity::transitionToFeature() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return {};
+    }
+    return model().resolve<Feature>(data_->geomDescr_.featureTransition_.toFeature_);
+}
+
+std::optional<Validity::TransitionEnd> Validity::transitionFromConnectedEnd() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return std::nullopt;
+    }
+    return unpackFromConnectedEnd(data_->geomDescr_.featureTransition_.connectedEnds_);
+}
+
+std::optional<Validity::TransitionEnd> Validity::transitionToConnectedEnd() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return std::nullopt;
+    }
+    return unpackToConnectedEnd(data_->geomDescr_.featureTransition_.connectedEnds_);
+}
+
+std::optional<uint32_t> Validity::transitionNumber() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return std::nullopt;
+    }
+    return data_->geomDescr_.featureTransition_.transitionNumber_;
+}
+
 SelfContainedGeometry Validity::computeGeometry(
     model_ptr<GeometryCollection> geometryCollection,
     std::string* error) const
@@ -313,6 +518,49 @@ SelfContainedGeometry Validity::computeGeometry(
         auto simpleGeom = simpleGeometry();
         assert(simpleGeom);
         return simpleGeom->toSelfContained();
+    }
+
+    if (geometryDescriptionType() == FeatureTransition) {
+        auto fromFeature = transitionFromFeature();
+        auto toFeature = transitionToFeature();
+        auto fromConnectedEnd = transitionFromConnectedEnd();
+        auto toConnectedEnd = transitionToConnectedEnd();
+        if (!fromFeature || !toFeature || !fromConnectedEnd || !toConnectedEnd) {
+            if (error) {
+                *error = "Failed to resolve semantic feature transition validity.";
+            }
+            return {};
+        }
+
+        auto fromSegment = resolveTransitionSegment(fromFeature, *fromConnectedEnd);
+        if (!fromSegment) {
+            if (error) {
+                *error = fmt::format(
+                    "Failed to resolve transition source geometry for feature {}.",
+                    fromFeature->id()->toString());
+            }
+            return {};
+        }
+
+        auto toSegment = resolveTransitionSegment(toFeature, *toConnectedEnd);
+        if (!toSegment) {
+            if (error) {
+                *error = fmt::format(
+                    "Failed to resolve transition target geometry for feature {}.",
+                    toFeature->id()->toString());
+            }
+            return {};
+        }
+
+        std::vector<Point> points;
+        points.reserve(4);
+        // Render the transition as outer-from -> connected-from -> connected-to -> outer-to.
+        // Shared intersection points collapse naturally via consecutive deduplication.
+        appendIfNotDuplicate(points, fromSegment->outer_);
+        appendIfNotDuplicate(points, fromSegment->inner_);
+        appendIfNotDuplicate(points, toSegment->inner_);
+        appendIfNotDuplicate(points, toSegment->outer_);
+        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
     // If this validity references some feature directly,
@@ -333,20 +581,7 @@ SelfContainedGeometry Validity::computeGeometry(
     const auto referencedStage = geometryStage();
 
     // Resolve validity geometry by stage first (if specified), then by line type.
-    model_ptr<Geometry> geometry;
-    geometryCollection->forEachGeometry([&](auto&& geom){
-        if (referencedStage) {
-            const auto geometryStage = geom->model().stage().value_or(0U);
-            if (geometryStage != *referencedStage) {
-                return true;
-            }
-        }
-        if (!geometry && geom->geomType() == GeomType::Line) {
-            geometry = geom;
-            return false;
-        }
-        return true;
-    });
+    auto geometry = resolveLineGeometry(geometryCollection, referencedStage);
 
     if (!geometry) {
         if (error) {
@@ -552,6 +787,31 @@ MultiValidity::newGeomStage(uint32_t geometryStage, Validity::Direction directio
     result->setDirection(direction);
     append(result);
     return result;
+}
+
+model_ptr<Validity> MultiValidity::newFeatureTransition(
+    model_ptr<Feature> const& fromFeature,
+    Validity::TransitionEnd fromConnectedEnd,
+    model_ptr<Feature> const& toFeature,
+    Validity::TransitionEnd toConnectedEnd,
+    uint32_t transitionNumber,
+    Validity::Direction direction)
+{
+    auto result = model().newValidity();
+    result->setFeatureTransition(
+        fromFeature,
+        fromConnectedEnd,
+        toFeature,
+        toConnectedEnd,
+        transitionNumber);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> MultiValidity::newComplete(Validity::Direction direction)
+{
+    return newDirection(direction == Validity::Empty ? Validity::Both : direction);
 }
 
 model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)

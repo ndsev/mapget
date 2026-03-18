@@ -429,7 +429,7 @@ struct BoundAttribute : public BoundObject<Attribute>
             .value("EMPTY", Validity::Direction::Empty)
             .value("POSITIVE", Validity::Direction::Positive)
             .value("NEGATIVE", Validity::Direction::Negative)
-            .value("BOTH", Validity::Direction::Both)
+            .value("COMPLETE", Validity::Direction::Both)
             .value("NONE", Validity::Direction::None);
 
         auto boundClass =

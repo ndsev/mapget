@@ -280,9 +280,6 @@ struct LayerInfo
     std::vector<FeatureTypeInfo> featureTypes_;
 
     /** Utility function to get some feature type info by name. */
-    FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true);
-
-    /** Const overload of getTypeInfo(). */
     FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true) const;
 
     /** List of zoom levels */

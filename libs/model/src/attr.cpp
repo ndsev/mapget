@@ -5,6 +5,22 @@
 namespace mapget
 {
 
+namespace
+{
+simfil::ModelNode::Ptr exposedValidityNode(
+    TileFeatureLayer const& model,
+    simfil::ModelNodeAddress const& validityCollectionAddress)
+{
+    auto validities = model.resolve<MultiValidity>(validityCollectionAddress);
+    if (validities && validities->size() == 1) {
+        if (auto validity = validities->at(0)) {
+            return validity;
+        }
+    }
+    return model.resolve(validityCollectionAddress);
+}
+}
+
 Attribute::Attribute(Attribute::Data* data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
@@ -16,7 +32,7 @@ Attribute::Attribute(Attribute::Data* data,
         fields_.emplace_back(
             StringPool::ValidityStr,
             [](Attribute const& self) {
-                return model_ptr<simfil::ModelNode>::make(self.model_, self.data_->validities_);
+                return exposedValidityNode(self.model(), self.data_->validities_);
             });
 }
 

@@ -6,6 +6,22 @@
 namespace mapget
 {
 
+namespace
+{
+simfil::ModelNode::Ptr exposedValidityNode(
+    TileFeatureLayer const& model,
+    simfil::ModelNodeAddress const& validityCollectionAddress)
+{
+    auto validities = model.resolve<MultiValidity>(validityCollectionAddress);
+    if (validities && validities->size() == 1) {
+        if (auto validity = validities->at(0)) {
+            return validity;
+        }
+    }
+    return model.resolve(validityCollectionAddress);
+}
+}
+
 Relation::Relation(Relation::Data* data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
@@ -28,13 +44,13 @@ Relation::Relation(Relation::Data* data,
         fields_.emplace_back(
             StringPool::SourceValidityStr,
             [](Relation const& self) {
-                return self.model().resolve(self.data_->sourceValidity_);
+                return exposedValidityNode(self.model(), self.data_->sourceValidity_);
             });
     if (data_->targetValidity_)
         fields_.emplace_back(
             StringPool::TargetValidityStr,
             [](Relation const& self) {
-                return self.model().resolve(self.data_->targetValidity_);
+                return exposedValidityNode(self.model(), self.data_->targetValidity_);
             });
     if (data_->sourceData_)
         fields_.emplace_back(

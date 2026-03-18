@@ -411,7 +411,7 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
                     std::string dir = attr.value()["_direction"];
                     auto validDir = dir == "POSITIVE" ? Validity::Positive :
                                     dir == "NEGATIVE" ? Validity::Negative :
-                                    dir == "BOTH"     ? Validity::Both :
+                                    (dir == "COMPLETE" || dir == "BOTH") ? Validity::Both :
                                                         Validity::Empty;
                     attribute->validity()->newDirection(validDir);
                 }
