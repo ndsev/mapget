@@ -16,6 +16,7 @@
 #include <thread>
 #include <list>
 #include <chrono>
+#include <shared_mutex>
 #include <algorithm>
 #include <numeric>
 #include <unordered_map>
@@ -512,6 +513,7 @@ struct Service::Impl : public Service::Controller
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
     std::list<DataSource::Ptr> addOnDataSources_;
 
+    mutable std::shared_mutex dataSourcesMutex_;
     std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
     std::vector<DataSource::Ptr> dataSourcesFromConfig_;
 
@@ -526,19 +528,25 @@ struct Service::Impl : public Service::Controller
         configSubscription_ = DataSourceConfigService::get().subscribe(
             [this](auto&& dataSourceConfigNodes)
             {
+                std::vector<DataSource::Ptr> previousDataSources;
+                {
+                    std::unique_lock lock(dataSourcesMutex_);
+                    previousDataSources.swap(dataSourcesFromConfig_);
+                }
+
                 // Remove previous datasources.
                 log().info("Config changed. Removing previous datasources.");
-                for (auto const& datasource : dataSourcesFromConfig_) {
+                for (auto const& datasource : previousDataSources) {
                     removeDataSource(datasource);
                 }
-                dataSourcesFromConfig_.clear();
 
                 // Add datasources present in the new configuration.
                 auto index = 0;
+                std::vector<DataSource::Ptr> configuredDataSources;
                 for (const auto& configNode : dataSourceConfigNodes) {
                     if (auto dataSource = DataSourceConfigService::get().makeDataSource(configNode)) {
                         addDataSource(dataSource);
-                        dataSourcesFromConfig_.push_back(dataSource);
+                        configuredDataSources.push_back(dataSource);
                     }
                     else {
                         log().error(
@@ -546,6 +554,9 @@ struct Service::Impl : public Service::Controller
                     }
                     ++index;
                 }
+
+                std::unique_lock lock(dataSourcesMutex_);
+                dataSourcesFromConfig_ = std::move(configuredDataSources);
             });
     }
 
@@ -554,25 +565,34 @@ struct Service::Impl : public Service::Controller
         // Ensure that no new datasources are added while we are cleaning up.
         configSubscription_.reset();
 
-        for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
-            for (auto& worker : dataSourceAndWorkers.second) {
-                worker->shouldTerminate_ = true;
+        std::vector<Worker::Ptr> workersToJoin;
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            for (auto& [_, workers] : dataSourceWorkers_) {
+                for (auto& worker : workers) {
+                    worker->shouldTerminate_ = true;
+                    workersToJoin.push_back(worker);
+                }
             }
+            dataSourceWorkers_.clear();
+            dataSourceInfo_.clear();
+            addOnDataSources_.clear();
+            dataSourcesFromConfig_.clear();
         }
         // Wake up all workers to check shouldTerminate_.
         jobsAvailable_.notify_all();
 
-        for (auto& dataSourceAndWorkers : dataSourceWorkers_) {
-            for (auto& worker : dataSourceAndWorkers.second) {
-                if (worker->thread_.joinable()) {
-                    worker->thread_.join();
-                }
+        for (auto& worker : workersToJoin) {
+            if (worker->thread_.joinable()) {
+                worker->thread_.join();
             }
         }
     }
 
     void addDataSource(DataSource::Ptr const& dataSource)
     {
+        std::unique_lock lock(dataSourcesMutex_);
+
         if (dataSource->info().nodeId_.empty()) {
             // Unique node IDs are required for the string pool offsets.
             raise("Tried to create service worker for an unnamed node!");
@@ -608,27 +628,29 @@ struct Service::Impl : public Service::Controller
 
     void removeDataSource(DataSource::Ptr const& dataSource)
     {
-        dataSourceInfo_.erase(dataSource);
-        addOnDataSources_.remove(dataSource);
-
-        auto workers = dataSourceWorkers_.find(dataSource);
-        if (workers != dataSourceWorkers_.end())
+        std::vector<Worker::Ptr> workersToJoin;
         {
-            // Signal each worker thread to terminate.
+            std::unique_lock lock(dataSourcesMutex_);
+            dataSourceInfo_.erase(dataSource);
+            addOnDataSources_.remove(dataSource);
+
+            auto workers = dataSourceWorkers_.find(dataSource);
+            if (workers == dataSourceWorkers_.end()) {
+                return;
+            }
             for (auto& worker : workers->second) {
                 worker->shouldTerminate_ = true;
+                workersToJoin.push_back(worker);
             }
-            jobsAvailable_.notify_all();
-
-            // Wait for each worker thread to terminate.
-            for (auto& worker : workers->second) {
-                if (worker->thread_.joinable()) {
-                    worker->thread_.join();
-                }
-            }
-
-            // Remove workers.
             dataSourceWorkers_.erase(workers);
+        }
+
+        jobsAvailable_.notify_all();
+
+        for (auto& worker : workersToJoin) {
+            if (worker->thread_.joinable()) {
+                worker->thread_.join();
+            }
         }
     }
 
@@ -665,17 +687,24 @@ struct Service::Impl : public Service::Controller
     std::vector<DataSourceInfo> getDataSourceInfos(std::optional<AuthHeaders> const& clientHeaders)
     {
         std::vector<DataSourceInfo> infos;
+        std::shared_lock lock(dataSourcesMutex_);
         infos.reserve(dataSourceInfo_.size());
         for (const auto& [dataSource, info] : dataSourceInfo_) {
             if (!clientHeaders || dataSource->isDataSourceAuthorized(*clientHeaders)) {
                 infos.push_back(info);
             }
         }
-        return std::move(infos);
+        return infos;
     }
 
     void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) override {
-        for (auto const& auxDataSource : addOnDataSources_) {
+        std::vector<DataSource::Ptr> addOnDataSources;
+        {
+            std::shared_lock lock(dataSourcesMutex_);
+            addOnDataSources.assign(addOnDataSources_.begin(), addOnDataSources_.end());
+        }
+
+        for (auto const& auxDataSource : addOnDataSources) {
             if (auxDataSource->info().mapId_ == baseTile->mapId()) {
                 auto auxTile = [&]() -> TileFeatureLayer::Ptr
                 {
@@ -833,7 +862,13 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> const& requests, std::
 std::vector<LocateResponse> Service::locate(LocateRequest const& req)
 {
     std::vector<LocateResponse> results;
-    for (auto const& [ds, info] : impl_->dataSourceInfo_)
+    std::vector<std::pair<DataSource::Ptr, DataSourceInfo>> dataSources;
+    {
+        std::shared_lock lock(impl_->dataSourcesMutex_);
+        dataSources.assign(impl_->dataSourceInfo_.begin(), impl_->dataSourceInfo_.end());
+    }
+
+    for (auto const& [ds, info] : dataSources)
         if (info.mapId_ == req.mapId_ && !info.isAddOn_) {
             for (auto const& location : ds->locate(req))
                 results.emplace_back(location);
@@ -871,7 +906,7 @@ LayerRequestContext Service::resolveLayerRequest(
 {
     LayerRequestContext result;
 
-    std::unique_lock lock(impl_->jobsMutex_);
+    std::shared_lock lock(impl_->dataSourcesMutex_);
     bool layerExists = false;
     bool unauthorized = false;
     bool foundAuthorizedLayer = false;
@@ -1001,17 +1036,35 @@ nlohmann::json Service::getStatistics() const
 
 nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool includeTileSizeDistribution) const
 {
+    std::vector<std::pair<DataSourceInfo, size_t>> dataSources;
+    {
+        std::shared_lock lock(impl_->dataSourcesMutex_);
+        dataSources.reserve(impl_->dataSourceInfo_.size());
+        for (auto const& [dataSource, info] : impl_->dataSourceInfo_) {
+            auto workersIt = impl_->dataSourceWorkers_.find(dataSource);
+            auto workerCount = workersIt == impl_->dataSourceWorkers_.end()
+                ? size_t{0}
+                : workersIt->second.size();
+            dataSources.emplace_back(info, workerCount);
+        }
+    }
+
     auto datasources = nlohmann::json::array();
-    for (auto const& [dataSource, info] : impl_->dataSourceInfo_) {
+    for (auto const& [info, workerCount] : dataSources) {
         datasources.push_back({
             {"name", info.mapId_},
-            {"workers", impl_->dataSourceWorkers_[dataSource].size()}
+            {"workers", workerCount}
         });
     }
 
+    size_t activeRequests = 0;
+    {
+        std::unique_lock lock(impl_->jobsMutex_);
+        activeRequests = impl_->requests_.size();
+    }
     auto result = nlohmann::json{
         {"datasources", datasources},
-        {"active-requests", impl_->requests_.size()}
+        {"active-requests", activeRequests}
     };
 
     if (!includeCachedFeatureTreeBytes && !includeTileSizeDistribution) {
@@ -1047,7 +1100,15 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
     if (includeCachedFeatureTreeBytes) {
         auto layerInfoByMap =
             std::unordered_map<std::string, std::unordered_map<std::string, std::shared_ptr<LayerInfo>>>{};
-        for (auto const& [_, info] : impl_->dataSourceInfo_) {
+        std::vector<DataSourceInfo> infos;
+        {
+            std::shared_lock lock(impl_->dataSourcesMutex_);
+            infos.reserve(impl_->dataSourceInfo_.size());
+            for (auto const& [_, info] : impl_->dataSourceInfo_) {
+                infos.push_back(info);
+            }
+        }
+        for (auto const& info : infos) {
             auto& layers = layerInfoByMap[info.mapId_];
             for (auto const& [layerId, layerInfo] : info.layers_) {
                 layers[layerId] = layerInfo;

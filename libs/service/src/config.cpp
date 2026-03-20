@@ -503,10 +503,6 @@ void DataSourceConfigService::startConfigFileWatchThread()
             };
 
             auto lastModTime = modTime(path);
-            if (lastModTime)
-                loadConfig();
-            else
-                log().debug("The config file does not exist yet.");
 
             while (watching_) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
