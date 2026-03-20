@@ -52,7 +52,7 @@ def _patch_cache_dir(text: str, cache_path: str) -> str:
     if re.search(r"(?m)^\s*cache-dir:\s*.*$", text):
         return re.sub(
             r"(?m)^(\s*cache-dir:\s*).*$",
-            rf"\g<1>{cache_value}",
+            lambda match: f"{match.group(1)}{cache_value}",
             text,
             count=1,
         )
@@ -63,7 +63,7 @@ def _patch_cache_dir(text: str, cache_path: str) -> str:
     insert_line = f"{indent}cache-dir: {cache_value}"
     return re.sub(
         r"(?m)^(\s*cache-type:\s*.*)$",
-        rf"\g<1>\n{insert_line}",
+        lambda match: f"{match.group(1)}\n{insert_line}",
         text,
         count=1,
     )
