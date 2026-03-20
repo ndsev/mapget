@@ -33,10 +33,9 @@ Advanced clients can take advantage of this by setting the `stringPoolOffsets` f
 
 ## Inspecting cache statistics
 
-The easiest way to see how the cache behaves is to call `GET /status` on the running server. The HTML status page contains:
+The easiest way to see how the cache behaves is to call `GET /status` on the running server or query `GET /status-data` directly. The HTML status page contains:
 
 - Global service information such as the number of active datasources and worker threads.
 - Cache statistics, including `cache-hits`, `cache-misses` and the number of loaded string pools.
 
 When the in‑memory cache is used, additional fields show the current number of cached tiles and the size of the FIFO queue. These values provide a quick indication of whether the chosen cache size is appropriate for the workload.
-

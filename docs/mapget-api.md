@@ -1,6 +1,6 @@
 # HTTP / WebSocket API Guide
 
-Mapget exposes a small HTTP + WebSocket API that lets clients discover datasources, stream tiles, locate features by ID and inspect or update the running configuration. This guide describes the endpoints and their request and response formats.
+Mapget exposes a small HTTP + WebSocket API that lets clients discover datasources, stream tiles, locate features by ID and inspect or update the running configuration. Interactive tile streaming now uses a WebSocket control channel plus `/tiles/next` pull requests for the binary tile data. This guide describes the endpoints and their request and response formats.
 
 ## Base URL and formats
 
@@ -21,7 +21,7 @@ The binary format and the logical feature model are described in more detail in 
 - **Request body:** none
 - **Response:** `application/json` array of datasource descriptors
 
-Each item contains map ID, available layers and basic metadata. This endpoint is typically used by frontends to discover which maps and layers can be requested via `/tiles`.
+Each item contains map ID, available layers and basic metadata. Each layer entry includes its type, `zoomLevels`, `coverage`, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`) and feature-type information. This endpoint is typically used by frontends to discover which maps and layers can be requested via `/tiles`.
 
 ## `/tiles` – stream tiles (HTTP)
 
@@ -32,7 +32,8 @@ Each item contains map ID, available layers and basic metadata. This endpoint is
   - `requests`: array of objects, each with:
     - `mapId`: string, ID of the map to query.
     - `layerId`: string, ID of the layer within that map.
-    - `tileIds`: array of numeric tile IDs in mapget’s tiling scheme.
+    - either `tileIds`: array of numeric tile IDs in mapget’s tiling scheme,
+    - or `tileIdsByNextStage`: array of arrays where bucket `i` lists tiles whose next missing stage is `i`.
   - `stringPoolOffsets` (optional): dictionary from datasource node ID to last known string ID. Used by advanced clients to avoid receiving the same field names repeatedly in the binary stream.
 - **Response:**
   - `application/jsonl` if `Accept: application/jsonl` is sent.
@@ -44,18 +45,34 @@ If `Accept-Encoding: gzip` is set, the server compresses responses where possibl
 
 To cancel an in-flight HTTP stream, close the HTTP connection.
 
-## `/tiles` – stream tiles (WebSocket)
+## `/tiles` – interactive control channel (WebSocket)
 
-`GET /tiles` supports WebSocket upgrades. This is the preferred tile streaming mode for interactive clients because it supports long-lived connections and request replacement without introducing an extra abort endpoint.
+`GET /tiles` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/tiles/next`.
 
 - **Connect:** `ws://<host>:<port>/tiles`
 - **Client → Server:** send one *text* message containing the same JSON body as for `POST /tiles` (`requests`, optional `stringPoolOffsets`).
   - `stringPoolOffsets` is optional; the server remembers the latest offsets per WebSocket connection. Clients may re-send it to reset/resync offsets.
-- **Server → Client:** sends only *binary* WebSocket messages. Each WebSocket message contains exactly one `TileLayerStream` VTLV frame.
-  - `StringPool`, `TileFeatureLayer`, `TileSourceDataLayer` are unchanged.
-  - `Status` frames contain UTF-8 JSON payload describing per-request `RequestStatus` transitions and a human-readable message. The final status frame has `"allDone": true`.
+- **Server → Client:** sends *binary* WebSocket messages carrying VTLV control frames.
+  - `RequestContext` frames contain a UTF-8 JSON payload with `requestId` and `clientId`. The `clientId` is then used for `/tiles/next`.
+  - `Status` frames contain UTF-8 JSON describing per-request `RequestStatus` transitions and a human-readable message. The final status frame has `"allDone": true`.
+  - `LoadStateChange` exists in the protocol but is currently not emitted by the HTTP service.
 
 To cancel, either send a new request message on the same connection (which replaces the current one) or close the WebSocket connection.
+
+## `/tiles/next` – pull binary tile frames
+
+`GET /tiles/next` (also accepts `POST`) returns the next available binary tile frame batch for an active interactive `/tiles` session.
+
+- **Method:** `GET` or `POST`
+- **Query parameters:**
+  - `clientId` (required): numeric client id received via the websocket `RequestContext` frame.
+  - `waitMs` (optional): long-poll timeout in milliseconds. Defaults to 25000 and is clamped to 30000.
+  - `maxBytes` (optional): batch size budget. If greater than zero, the response may concatenate multiple VTLV frames up to that byte budget (capped at 5 MiB).
+  - `compress` (optional): set to `1` to enable gzip compression when the client also sends `Accept-Encoding: gzip`.
+- **Response:**
+  - `200 application/octet-stream` with one or more concatenated `TileLayerStream` VTLV frames.
+  - `204 No Content` if the long-poll timed out before any frame became available.
+  - `410 Gone` if the interactive session no longer exists.
 
 ### Why JSONL instead of JSON?
 
@@ -183,7 +200,24 @@ Keep in mind, that you can also run a `mapget` service without any RPCs in your 
 - **Request body:** none
 - **Response:** `text/html`
 
-The page shows the number of active datasources and worker threads, the size of the active request queue and cache statistics such as hit/miss counters. This endpoint is primarily used during development and debugging.
+The page shows the number of active datasources and worker threads, cache statistics, websocket/pull metrics, and optional tile-size-distribution data. It refreshes by polling `/status-data`. This endpoint is primarily used during development and debugging.
+
+## `/status-data` – machine-readable diagnostics
+
+`GET /status-data` returns the JSON payload that powers `/status`.
+
+- **Method:** `GET`
+- **Query parameters:**
+  - `includeTileSizeDistribution` (optional, default `false`): include the heavy cached-tile size histogram / distribution calculations.
+  - `includeCachedFeatureTreeBytes` (optional, default `true`): include cached feature-tree byte breakdowns.
+- **Response:** `application/json`
+
+The response contains:
+
+- `timestampMs`
+- `service`: service statistics, datasource info, cache occupancy, and optional tile-size-distribution data
+- `cache`: cache hit/miss counters and cache sizes
+- `tilesWebsocket`: control-channel metrics such as active sessions, pending queued frames for `/tiles/next`, blocked pull requests, and total forwarded bytes / frames
 
 ## `/locate` – resolve external feature IDs
 
