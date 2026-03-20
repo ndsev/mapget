@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/sourcedatareference.h"
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
 #include "mapget/log.h"
@@ -481,6 +482,132 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         );
 
         REQUIRE_FALSE(deserializedTile->stage().has_value());
+    }
+}
+
+TEST_CASE("FeatureLayer stores geometry source-data refs compactly for singleton geometries",
+          "[test.featurelayer][test.featurelayer.sourcedatarefs]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("SourceDataRefNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SourceDataRefNode",
+        "SourceDataRefMap",
+        layerInfo,
+        strings);
+
+    auto feature = tile->newFeature("Way", {{"wayId", 42}});
+    auto singletonPoint = feature->geom()->newGeometry(GeomType::Points, 1, true);
+    singletonPoint->append({42., 11., 0.});
+    auto line = feature->geom()->newGeometry(GeomType::Line, 2);
+    line->append({42., 11., 0.});
+    line->append({42.1, 11.1, 0.});
+
+    QualifiedSourceDataReference singletonPointRef{
+        .address_ = SourceDataAddress::fromBitPosition(8, 16),
+        .layerId_ = strings->emplace("DisplayLayer").value(),
+        .qualifier_ = strings->emplace("Position2D").value(),
+    };
+    QualifiedSourceDataReference lineRef{
+        .address_ = SourceDataAddress::fromBitPosition(24, 32),
+        .layerId_ = strings->emplace("DisplayLayer").value(),
+        .qualifier_ = strings->emplace("Line2D").value(),
+    };
+
+    singletonPoint->setSourceDataReferences(
+        tile->newSourceDataReferenceCollection({&singletonPointRef, 1}));
+    line->setSourceDataReferences(
+        tile->newSourceDataReferenceCollection({&lineRef, 1}));
+
+    SECTION("refs are accessible before serialization")
+    {
+        REQUIRE(singletonPoint->sourceDataReferences());
+        REQUIRE(singletonPoint->sourceDataReferences()->size() == 1);
+        std::string singletonPointQualifier;
+        singletonPoint->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            singletonPointQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(singletonPointQualifier == "Position2D");
+
+        REQUIRE(line->sourceDataReferences());
+        REQUIRE(line->sourceDataReferences()->size() == 1);
+        std::string lineQualifier;
+        line->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            lineQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(lineQualifier == "Line2D");
+
+        auto sizeStats = tile->serializationSizeStats();
+        REQUIRE(sizeStats["feature-layer"]["geometry-source-data-references"].get<int64_t>() < 1024);
+    }
+
+    SECTION("refs survive serialization roundtrip")
+    {
+        std::stringstream tileBytes;
+        REQUIRE(tile->write(tileBytes).has_value());
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBuffer,
+            [&](auto&&, auto&&) {
+                return layerInfo;
+            },
+            [&](auto&&) {
+                return strings;
+            });
+
+        auto deserializedFeature = deserializedTile->at(0);
+        REQUIRE(deserializedFeature);
+        auto deserializedGeometries = deserializedFeature->geomOrNull();
+        REQUIRE(deserializedGeometries);
+        REQUIRE(deserializedGeometries->numGeometries() == 2);
+
+        std::vector<simfil::model_ptr<Geometry>> deserializedGeometryList;
+        deserializedGeometries->forEachGeometry([&](auto const& geometry) {
+            deserializedGeometryList.push_back(geometry);
+            return true;
+        });
+        REQUIRE(deserializedGeometryList.size() == 2);
+
+        auto const& deserializedPoint = deserializedGeometryList[0];
+        auto const& deserializedLine = deserializedGeometryList[1];
+        REQUIRE(deserializedPoint->sourceDataReferences());
+        REQUIRE(deserializedLine->sourceDataReferences());
+
+        std::string deserializedPointQualifier;
+        deserializedPoint->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            deserializedPointQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(deserializedPointQualifier == "Position2D");
+
+        std::string deserializedLineQualifier;
+        deserializedLine->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            deserializedLineQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(deserializedLineQualifier == "Line2D");
+
+        auto sizeStats = deserializedTile->serializationSizeStats();
+        REQUIRE(sizeStats["feature-layer"]["geometry-source-data-references"].get<int64_t>() < 1024);
     }
 }
 

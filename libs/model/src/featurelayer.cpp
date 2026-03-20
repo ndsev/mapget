@@ -51,6 +51,9 @@ void serialize(S& s, glm::vec3& v) {
 
 namespace
 {
+    using GeometryPointBufferArena =
+        simfil::ArrayArena<glm::vec3, simfil::detail::ColumnPageSize * 2>;
+
     /**
      * Views into the sourceDataAddresses_ array are stored as a single u32, which
      * uses 20 bits for the index and 4 bits for the length.
@@ -124,6 +127,33 @@ void ensureGeometrySourceRefCapacity(
     while (refs.size() <= static_cast<size_t>(index)) {
         refs.emplace_back(simfil::ModelNodeAddress{});
     }
+}
+
+uint32_t geometrySourceRefStorageIndex(simfil::ArrayIndex geometryIndex)
+{
+    if (geometryIndex == simfil::InvalidArrayIndex) {
+        raiseFmt("Invalid geometry buffer index {}.", geometryIndex);
+    }
+
+    // Base geometries use point-buffer array handles as their geometry index.
+    // Singleton handles are intentionally sparse (0x00800000 | payload), so we
+    // compact both regular and singleton handles into one dense-ish storage
+    // index here to avoid materializing millions of empty ref slots.
+    if (GeometryPointBufferArena::is_singleton_handle(geometryIndex)) {
+        return (GeometryPointBufferArena::singleton_payload(geometryIndex) << 1U) | 1U;
+    }
+
+    return geometryIndex << 1U;
+}
+
+simfil::ModelNodeAddress geometrySourceRefsAt(
+    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> const& refs,
+    uint32_t index)
+{
+    if (index < refs.size()) {
+        return refs.at(index);
+    }
+    return {};
 }
 
 void ensureFeatureComplexDataRefCapacity(
@@ -2302,11 +2332,10 @@ simfil::ModelNodeAddress TileFeatureLayer::geometrySourceDataReferences(simfil::
     case ColumnId::PointGeometries:
     case ColumnId::LineGeometries:
     case ColumnId::PolygonGeometries:
-    case ColumnId::MeshGeometries:
-        if (address.index() < impl_->geomSourceDataRefs_.size()) {
-            return impl_->geomSourceDataRefs_.at(address.index());
-        }
-        return {};
+    case ColumnId::MeshGeometries: {
+        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        return geometrySourceRefsAt(impl_->geomSourceDataRefs_, compactIndex);
+    }
     case ColumnId::GeometryViews:
         return impl_->geomViews_.at(address.index()).sourceDataReferences_;
     default:
@@ -2322,10 +2351,12 @@ void TileFeatureLayer::setGeometrySourceDataReferences(
     case ColumnId::PointGeometries:
     case ColumnId::LineGeometries:
     case ColumnId::PolygonGeometries:
-    case ColumnId::MeshGeometries:
-        ensureGeometrySourceRefCapacity(impl_->geomSourceDataRefs_, address.index());
-        impl_->geomSourceDataRefs_.at(address.index()) = refsAddress;
+    case ColumnId::MeshGeometries: {
+        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        ensureGeometrySourceRefCapacity(impl_->geomSourceDataRefs_, compactIndex);
+        impl_->geomSourceDataRefs_.at(compactIndex) = refsAddress;
         break;
+    }
     case ColumnId::GeometryViews:
         impl_->geomViews_.at(address.index()).sourceDataReferences_ = refsAddress;
         break;
