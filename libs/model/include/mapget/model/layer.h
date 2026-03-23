@@ -12,12 +12,15 @@
 #include <memory>
 #include <functional>
 #include <vector>
+#include <limits>
 #include <tl/expected.hpp>
 
 namespace simfil { struct StringPool; }
 
 namespace mapget
 {
+
+constexpr uint32_t UnspecifiedStage = std::numeric_limits<uint32_t>::max();
 
 /**
  * Callback type for a function which returns a string pool instance

@@ -56,6 +56,7 @@ LayerTilesRequest::LayerTilesRequest(
           std::move(layerId),
           std::vector<std::vector<TileId>>{std::move(tiles)})
 {
+    usesStageBuckets_ = false;
 }
 
 LayerTilesRequest::LayerTilesRequest(
@@ -66,6 +67,7 @@ LayerTilesRequest::LayerTilesRequest(
       layerId_(std::move(layerId)),
       tileIdsByNextStage_(normalizeTileBuckets(std::move(tileIdsByNextStage)))
 {
+    usesStageBuckets_ = true;
     bool hasAnyTileIds = false;
     for (auto const& bucket : tileIdsByNextStage_) {
         if (!bucket.empty()) {
@@ -89,6 +91,24 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stage
     tileKeysNotStarted_.clear();
 
     const auto normalizedStages = std::max<uint32_t>(1U, stages);
+
+    if (!usesStageBuckets_) {
+        if (!tileIdsByNextStage_.empty()) {
+            for (auto const& tileId : tileIdsByNextStage_.front()) {
+                MapTileKey key(
+                    layerType,
+                    mapId_,
+                    layerId_,
+                    tileId,
+                    UnspecifiedStage);
+                if (tileKeysNotStarted_.insert(key).second) {
+                    resolvedTileKeys_.push_back(std::move(key));
+                }
+            }
+        }
+        status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
+        return;
+    }
 
     for (uint32_t stage = 0; stage < normalizedStages; ++stage) {
         // For all tiles in bucket 0, we need to enqueue N stages.

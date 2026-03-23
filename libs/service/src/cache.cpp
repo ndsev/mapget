@@ -102,7 +102,10 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
     tileReader.read(*tileBlob);
     if (tile) {
         if (auto layerInfo = dataSource.getLayer(tileKey.layerId_);
-            layerInfo && layerInfo->type_ == LayerType::Features && layerInfo->stages_ > 1)
+            layerInfo &&
+            layerInfo->type_ == LayerType::Features &&
+            layerInfo->stages_ > 1 &&
+            tileKey.stage_ != UnspecifiedStage)
         {
             tile->setStage(tileKey.stage_);
         } else {

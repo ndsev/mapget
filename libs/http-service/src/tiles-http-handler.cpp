@@ -119,10 +119,20 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     void parseRequestFromJson(nlohmann::json const& requestJson)
     {
         auto parsed = detail::parseLayerTilesRequestJson(requestJson);
-        requests_.push_back(std::make_shared<LayerTilesRequest>(
-            std::move(parsed.mapId),
-            std::move(parsed.layerId),
-            std::move(parsed.tileIdsByNextStage)));
+        if (parsed.usesStageBuckets) {
+            requests_.push_back(std::make_shared<LayerTilesRequest>(
+                std::move(parsed.mapId),
+                std::move(parsed.layerId),
+                std::move(parsed.tileIdsByNextStage)));
+        } else {
+            auto tileIds = parsed.tileIdsByNextStage.empty()
+                ? std::vector<TileId>{}
+                : std::move(parsed.tileIdsByNextStage.front());
+            requests_.push_back(std::make_shared<LayerTilesRequest>(
+                std::move(parsed.mapId),
+                std::move(parsed.layerId),
+                std::move(tileIds)));
+        }
     }
 
     [[nodiscard]] bool setResponseTypeFromAccept(std::string_view acceptHeader, std::string& error)

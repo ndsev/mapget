@@ -15,6 +15,7 @@ struct ParsedLayerTilesRequest
     std::string mapId;
     std::string layerId;
     std::vector<std::vector<TileId>> tileIdsByNextStage;
+    bool usesStageBuckets = false;
 };
 
 ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& requestJson);
@@ -25,4 +26,3 @@ std::vector<MapTileKey> expandLayerTilesRequestKeys(
     uint32_t stageCount);
 
 }  // namespace mapget::detail
-

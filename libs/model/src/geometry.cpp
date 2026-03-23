@@ -374,6 +374,11 @@ uint64_t Geometry::getHash() const
     return result.value();
 }
 
+std::optional<std::string_view> Geometry::name() const
+{
+    return geometryNameForStage(model(), stage());
+}
+
 std::optional<uint32_t> Geometry::stage() const
 {
     if (auto geometryStage = model().geometryStage(addr_)) {
@@ -400,7 +405,7 @@ ValueType Geometry::type() const {
 
 ModelNode::Ptr Geometry::at(int64_t i) const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
-    auto const geometryName = geometryNameForStage(model(), stage());
+    auto const geometryName = name();
     if (sourceDataReferences) {
         if (i == 0)
             return get(StringPool::SourceDataStr);
@@ -420,13 +425,13 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
 
 uint32_t Geometry::size() const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
-    auto const geometryName = geometryNameForStage(model(), stage());
+    auto const geometryName = name();
     return 2 + (sourceDataReferences ? 1 : 0) + (geometryName ? 1 : 0);
 }
 
 ModelNode::Ptr Geometry::get(const StringId& f) const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
-    auto const geometryName = geometryNameForStage(model(), stage());
+    auto const geometryName = name();
     auto const type = geomViewData_ ? geomViewData_->type_ : geometryTypeForColumn(addr_.column());
     if (f == StringPool::SourceDataStr && sourceDataReferences) {
         return model().resolve(sourceDataReferences);
@@ -466,7 +471,7 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
 
 StringId Geometry::keyAt(int64_t i) const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
-    auto const geometryName = geometryNameForStage(model(), stage());
+    auto const geometryName = name();
     if (sourceDataReferences) {
         if (i == 0)
             return StringPool::SourceDataStr;

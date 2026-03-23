@@ -76,6 +76,13 @@ public:
     std::vector<std::vector<TileId>> tileIdsByNextStage_;
 
     /**
+     * True iff the request explicitly uses `tileIdsByNextStage`.
+     * Legacy `tileIds` requests keep unstaged semantics and must not be
+     * expanded into one backend request per advertised stage.
+     */
+    bool usesStageBuckets_ = false;
+
+    /**
      * The callback function which is called when all tiles have been processed.
      */
     std::function<void(RequestStatus)> onDone_;

@@ -483,53 +483,73 @@ public:
                 .layerId = parsed.request.layerId,
             });
 
-            std::vector<std::vector<TileId>> tileIdsByNextStageToFetch(
-                parsed.request.tileIdsByNextStage.size());
+            std::vector<std::vector<TileId>> tileIdsByNextStageToFetch;
+            std::vector<TileId> unstagedTileIdsToFetch;
+            bool hasTilesToFetch = false;
             auto stageCount = std::max<uint32_t>(1U, parsed.context.stages_);
             {
                 std::lock_guard lock(mutex_);
-                for (size_t bucketIndex = 0; bucketIndex < parsed.request.tileIdsByNextStage.size(); ++bucketIndex) {
-                    auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
-                    if (nextMissingStage >= stageCount) {
-                        continue;
-                    }
-                    for (auto const& tileId : parsed.request.tileIdsByNextStage[bucketIndex]) {
-                        bool needsBackendFetch = false;
-                        for (uint32_t stage = nextMissingStage; stage < stageCount; ++stage) {
-                            auto requestedTileKey = makeCanonicalRequestedTileKey(
-                                parsed.request.mapId,
-                                parsed.request.layerId,
-                                tileId,
-                                stage);
-                            const bool alreadyQueued =
-                                queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
-                            if (!alreadyQueued) {
-                                needsBackendFetch = true;
-                                break;
+                if (parsed.request.usesStageBuckets) {
+                    tileIdsByNextStageToFetch.resize(parsed.request.tileIdsByNextStage.size());
+                    for (size_t bucketIndex = 0; bucketIndex < parsed.request.tileIdsByNextStage.size(); ++bucketIndex) {
+                        auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
+                        if (nextMissingStage >= stageCount) {
+                            continue;
+                        }
+                        for (auto const& tileId : parsed.request.tileIdsByNextStage[bucketIndex]) {
+                            bool needsBackendFetch = false;
+                            for (uint32_t stage = nextMissingStage; stage < stageCount; ++stage) {
+                                auto requestedTileKey = makeCanonicalRequestedTileKey(
+                                    parsed.request.mapId,
+                                    parsed.request.layerId,
+                                    tileId,
+                                    stage);
+                                const bool alreadyQueued =
+                                    queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
+                                if (!alreadyQueued) {
+                                    needsBackendFetch = true;
+                                    break;
+                                }
+                            }
+                            if (needsBackendFetch) {
+                                tileIdsByNextStageToFetch[bucketIndex].push_back(tileId);
+                                hasTilesToFetch = true;
                             }
                         }
-                        if (needsBackendFetch) {
-                            tileIdsByNextStageToFetch[bucketIndex].push_back(tileId);
+                    }
+                } else if (!parsed.request.tileIdsByNextStage.empty()) {
+                    for (auto const& tileId : parsed.request.tileIdsByNextStage.front()) {
+                        auto requestedTileKey = makeCanonicalRequestedTileKey(
+                            parsed.request.mapId,
+                            parsed.request.layerId,
+                            tileId,
+                            UnspecifiedStage);
+                        const bool alreadyQueued =
+                            queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
+                        if (!alreadyQueued) {
+                            unstagedTileIdsToFetch.push_back(tileId);
+                            hasTilesToFetch = true;
                         }
                     }
                 }
             }
 
-            bool hasTilesToFetch = false;
-            for (auto const& bucket : tileIdsByNextStageToFetch) {
-                if (!bucket.empty()) {
-                    hasTilesToFetch = true;
-                    break;
-                }
-            }
             if (!hasTilesToFetch) {
                 continue;
             }
 
-            auto request = std::make_shared<LayerTilesRequest>(
-                parsed.request.mapId,
-                parsed.request.layerId,
-                std::move(tileIdsByNextStageToFetch));
+            LayerTilesRequest::Ptr request;
+            if (parsed.request.usesStageBuckets) {
+                request = std::make_shared<LayerTilesRequest>(
+                    parsed.request.mapId,
+                    parsed.request.layerId,
+                    std::move(tileIdsByNextStageToFetch));
+            } else {
+                request = std::make_shared<LayerTilesRequest>(
+                    parsed.request.mapId,
+                    parsed.request.layerId,
+                    std::move(unstagedTileIdsToFetch));
+            }
             serviceRequests.push_back(request);
             nextActiveRequests.push_back(request);
             nextRequestStatuses[index] = RequestStatus::Open;

@@ -143,21 +143,26 @@ void ensureGeometryStageCapacity(
     }
 }
 
-uint32_t geometrySourceRefStorageIndex(simfil::ArrayIndex geometryIndex)
+uint32_t extraGeometryDataStorageIndex(simfil::ArrayIndex geometryIndex)
 {
     if (geometryIndex == simfil::InvalidArrayIndex) {
         raiseFmt("Invalid geometry buffer index {}.", geometryIndex);
     }
 
     // Base geometries use point-buffer array handles as their geometry index.
-    // Singleton handles are intentionally sparse (0x00800000 | payload), so we
-    // compact both regular and singleton handles into one dense-ish storage
-    // index here to avoid materializing millions of empty ref slots.
+    // Regular handles and singleton handles live in disjoint source domains:
+    // regular arrays are plain indices, while singleton handles are encoded as
+    // 0x00800000 | payload. We remap them into one collision-free auxiliary
+    // storage space for geometry stages and extra geometry data by reserving
+    // even indices for regular arrays and odd indices for singleton payloads:
+    //   regular n    -> 2 * n
+    //   singleton p  -> 2 * p + 1
+    // This keeps the storage compact without materializing huge sparse columns.
     if (GeometryPointBufferArena::is_singleton_handle(geometryIndex)) {
-        return (GeometryPointBufferArena::singleton_payload(geometryIndex) << 1U) | 1U;
+        return GeometryPointBufferArena::singleton_payload(geometryIndex) * 2U + 1U;
     }
 
-    return geometryIndex << 1U;
+    return geometryIndex * 2U;
 }
 
 simfil::ModelNodeAddress geometrySourceRefsAt(
@@ -2376,7 +2381,7 @@ std::optional<uint8_t> TileFeatureLayer::geometryStage(simfil::ModelNodeAddress 
     case ColumnId::LineGeometries:
     case ColumnId::PolygonGeometries:
     case ColumnId::MeshGeometries: {
-        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
         if (auto storedStage = geometryStageAt(impl_->geomStages_, compactIndex)) {
             return storedStage;
         }
@@ -2402,7 +2407,7 @@ void TileFeatureLayer::setGeometryStage(
     case ColumnId::LineGeometries:
     case ColumnId::PolygonGeometries:
     case ColumnId::MeshGeometries: {
-        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
         ensureGeometryStageCapacity(impl_->geomStages_, compactIndex);
         impl_->geomStages_.at(compactIndex) = stage.value_or(InvalidGeometryStage);
         break;
@@ -2421,7 +2426,7 @@ simfil::ModelNodeAddress TileFeatureLayer::geometrySourceDataReferences(simfil::
     case ColumnId::LineGeometries:
     case ColumnId::PolygonGeometries:
     case ColumnId::MeshGeometries: {
-        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
         return geometrySourceRefsAt(impl_->geomSourceDataRefs_, compactIndex);
     }
     case ColumnId::GeometryViews:
@@ -2440,7 +2445,7 @@ void TileFeatureLayer::setGeometrySourceDataReferences(
     case ColumnId::LineGeometries:
     case ColumnId::PolygonGeometries:
     case ColumnId::MeshGeometries: {
-        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
         ensureGeometrySourceRefCapacity(impl_->geomSourceDataRefs_, compactIndex);
         impl_->geomSourceDataRefs_.at(compactIndex) = refsAddress;
         break;

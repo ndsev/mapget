@@ -16,6 +16,7 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
     if (auto stagedIt = requestJson.find("tileIdsByNextStage");
         stagedIt != requestJson.end())
     {
+        result.usesStageBuckets = true;
         if (!stagedIt->is_array()) {
             throw std::runtime_error("tileIdsByNextStage must be an array");
         }
@@ -55,6 +56,23 @@ std::vector<MapTileKey> expandLayerTilesRequestKeys(
 {
     std::vector<MapTileKey> result;
     std::set<MapTileKey> seen;
+
+    if (!request.usesStageBuckets) {
+        if (!request.tileIdsByNextStage.empty()) {
+            for (auto const& tileId : request.tileIdsByNextStage.front()) {
+                MapTileKey key(
+                    layerType,
+                    request.mapId,
+                    request.layerId,
+                    tileId,
+                    UnspecifiedStage);
+                if (seen.insert(key).second) {
+                    result.push_back(std::move(key));
+                }
+            }
+        }
+        return result;
+    }
 
     auto const normalizedStageCount = std::max<uint32_t>(1U, stageCount);
     for (uint32_t stage = 0; stage < normalizedStageCount; ++stage) {

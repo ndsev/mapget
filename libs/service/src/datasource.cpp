@@ -35,7 +35,7 @@ TileLayer::Ptr DataSource::get(
         if (loadStateCallback) {
             tileFeatureLayer->setLoadStateCallback(loadStateCallback);
         }
-        if (layerInfo->stages_ > 1) {
+        if (layerInfo->stages_ > 1 && k.stage_ != UnspecifiedStage) {
             tileFeatureLayer->setStage(k.stage_);
             if (k.stage_ > 0) {
                 auto stageZeroKey = k;

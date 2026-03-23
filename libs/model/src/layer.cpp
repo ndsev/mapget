@@ -59,7 +59,7 @@ MapTileKey::MapTileKey(const TileLayer& data)
     mapId_ = data.mapId();
     layerId_ = data.layerInfo()->layerId_;
     tileId_ = data.tileId();
-    stage_ = data.stage().value_or(0);
+    stage_ = data.stage().value_or(UnspecifiedStage);
 }
 
 std::string MapTileKey::toString() const

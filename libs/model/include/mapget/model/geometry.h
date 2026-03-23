@@ -72,6 +72,9 @@ public:
     /** Get a point at an index. */
     [[nodiscard]] Point pointAt(size_t index) const;
 
+    /** Get the human-readable stage name if this geometry is above high fidelity. */
+    [[nodiscard]] std::optional<std::string_view> name() const;
+
     /** Get a hash of the geometry. **/
     [[nodiscard]] uint64_t getHash() const;
 
