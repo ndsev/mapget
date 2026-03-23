@@ -494,7 +494,9 @@ void Feature::updateFields() const {
 
 nlohmann::json Feature::toJson() const
 {
-    return simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
+    auto json = simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
+    json.erase("lod");
+    return json;
 }
 
 void Feature::addPoint(const Point& p) {
@@ -675,6 +677,32 @@ SelfContainedGeometry Feature::firstGeometry() const
     }
     if (result)
         return result->toSelfContained();
+    return {};
+}
+
+SelfContainedGeometry Feature::preferredGeometry() const
+{
+    model_ptr<Geometry> result;
+    if (auto geometryCollection = geomOrNull()) {
+        geometryCollection->forEachGeometryAtPreferredStage(
+            std::nullopt,
+            [&result](auto&& geometry)
+            {
+                result = geometry;
+                return false;
+            });
+        if (!result) {
+            geometryCollection->forEachGeometry(
+                [&result](auto&& geometry)
+                {
+                    result = geometry;
+                    return false;
+                });
+        }
+    }
+    if (result) {
+        return result->toSelfContained();
+    }
     return {};
 }
 

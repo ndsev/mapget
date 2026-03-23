@@ -129,6 +129,20 @@ void ensureGeometrySourceRefCapacity(
     }
 }
 
+constexpr uint8_t InvalidGeometryStage = std::numeric_limits<uint8_t>::max();
+
+void ensureGeometryStageCapacity(
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize>& stages,
+    simfil::ArrayIndex index)
+{
+    if (index == simfil::InvalidArrayIndex) {
+        raiseFmt("Invalid geometry buffer index {}.", index);
+    }
+    while (stages.size() <= static_cast<size_t>(index)) {
+        stages.emplace_back(InvalidGeometryStage);
+    }
+}
+
 uint32_t geometrySourceRefStorageIndex(simfil::ArrayIndex geometryIndex)
 {
     if (geometryIndex == simfil::InvalidArrayIndex) {
@@ -154,6 +168,20 @@ simfil::ModelNodeAddress geometrySourceRefsAt(
         return refs.at(index);
     }
     return {};
+}
+
+std::optional<uint8_t> geometryStageAt(
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> const& stages,
+    uint32_t index)
+{
+    if (index >= stages.size()) {
+        return std::nullopt;
+    }
+    auto const storedStage = stages.at(index);
+    if (storedStage == InvalidGeometryStage) {
+        return std::nullopt;
+    }
+    return storedStage;
 }
 
 void ensureFeatureComplexDataRefCapacity(
@@ -198,6 +226,7 @@ struct TileFeatureLayer::Impl {
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
     simfil::ModelColumn<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
     simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> geomSourceDataRefs_;
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> geomStages_;
     simfil::ModelColumn<Geometry::ViewData, simfil::detail::ColumnPageSize / 2> geomViews_;
     simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
     Geometry::Storage pointBuffers_;
@@ -244,6 +273,7 @@ struct TileFeatureLayer::Impl {
         s.object(geomViews_);
         s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
         s.object(sourceDataReferences_);
+        s.object(geomStages_);
     }
 
     explicit Impl(std::shared_ptr<simfil::StringPool> stringPool)
@@ -812,37 +842,43 @@ model_ptr<Geometry> TileFeatureLayer::newGeometry(
 {
     initialCapacity = std::max<size_t>(1, initialCapacity);
 
+    auto const currentGeometryStage = [this]() -> std::optional<uint8_t>
+    {
+        auto stage = stage_.value_or(layerInfo_ ? layerInfo_->highFidelityStage_ : 0U);
+        if (stage > std::numeric_limits<uint8_t>::max()) {
+            raiseFmt("Geometry stage {} exceeds uint8_t range.", stage);
+        }
+        return static_cast<uint8_t>(stage);
+    }();
+
+    auto makeGeometry =
+        [this, currentGeometryStage](uint8_t column, simfil::ArrayIndex vertexArray)
+    {
+        auto const geometryAddress =
+            simfil::ModelNodeAddress{column, static_cast<uint32_t>(vertexArray)};
+        setGeometryStage(geometryAddress, currentGeometryStage);
+        return Geometry(shared_from_this(), geometryAddress, mpKey_);
+    };
+
     switch (geomType) {
     case GeomType::Points: {
         auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
-        return Geometry(
-            shared_from_this(),
-            {ColumnId::PointGeometries, static_cast<uint32_t>(vertexArray)},
-            mpKey_);
+        return makeGeometry(ColumnId::PointGeometries, vertexArray);
     }
     case GeomType::Line:
     {
         auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
-        return Geometry(
-            shared_from_this(),
-            {ColumnId::LineGeometries, static_cast<uint32_t>(vertexArray)},
-            mpKey_);
+        return makeGeometry(ColumnId::LineGeometries, vertexArray);
     }
     case GeomType::Polygon:
     {
         auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
-        return Geometry(
-            shared_from_this(),
-            {ColumnId::PolygonGeometries, static_cast<uint32_t>(vertexArray)},
-            mpKey_);
+        return makeGeometry(ColumnId::PolygonGeometries, vertexArray);
     }
     case GeomType::Mesh:
     {
         auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
-        return Geometry(
-            shared_from_this(),
-            {ColumnId::MeshGeometries, static_cast<uint32_t>(vertexArray)},
-            mpKey_);
+        return makeGeometry(ColumnId::MeshGeometries, vertexArray);
     }
     }
 
@@ -1529,6 +1565,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     featureLayer["point-geometries"] = 0;
     featureLayer["geometries"] = impl_->geomViews_.byte_size();
     featureLayer["geometry-source-data-references"] = impl_->geomSourceDataRefs_.byte_size();
+    featureLayer["geometry-stages"] = impl_->geomStages_.byte_size();
     featureLayer["geometry-views"] = impl_->geomViews_.byte_size();
     featureLayer["point-buffers"] = impl_->pointBuffers_.byte_size();
     featureLayer["source-data-references"] = impl_->sourceDataReferences_.byte_size();
@@ -2043,6 +2080,12 @@ ModelNode::Ptr TileFeatureLayer::clone(
                 newNode->append(pt);
                 return true;
             });
+        if (auto geometryStage = resolved->stage()) {
+            if (*geometryStage > std::numeric_limits<uint8_t>::max()) {
+                raiseFmt("Geometry stage {} exceeds uint8_t range during clone.", *geometryStage);
+            }
+            setGeometryStage(newNode->addr(), static_cast<uint8_t>(*geometryStage));
+        }
         break;
     }
     case ColumnId::GeometryCollections: {
@@ -2324,6 +2367,51 @@ Geometry::ViewData const* TileFeatureLayer::geometryViewData(simfil::ModelNodeAd
         return nullptr;
     }
     return &impl_->geomViews_.at(address.index());
+}
+
+std::optional<uint8_t> TileFeatureLayer::geometryStage(simfil::ModelNodeAddress address) const
+{
+    switch (address.column()) {
+    case ColumnId::PointGeometries:
+    case ColumnId::LineGeometries:
+    case ColumnId::PolygonGeometries:
+    case ColumnId::MeshGeometries: {
+        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        if (auto storedStage = geometryStageAt(impl_->geomStages_, compactIndex)) {
+            return storedStage;
+        }
+        auto fallbackStage = stage_.value_or(layerInfo_ ? layerInfo_->highFidelityStage_ : 0U);
+        if (fallbackStage > std::numeric_limits<uint8_t>::max()) {
+            raiseFmt("Geometry stage {} exceeds uint8_t range.", fallbackStage);
+        }
+        return static_cast<uint8_t>(fallbackStage);
+    }
+    case ColumnId::GeometryViews:
+        return geometryStage(impl_->geomViews_.at(address.index()).baseGeometry_);
+    default:
+        return std::nullopt;
+    }
+}
+
+void TileFeatureLayer::setGeometryStage(
+    simfil::ModelNodeAddress address,
+    std::optional<uint8_t> stage)
+{
+    switch (address.column()) {
+    case ColumnId::PointGeometries:
+    case ColumnId::LineGeometries:
+    case ColumnId::PolygonGeometries:
+    case ColumnId::MeshGeometries: {
+        auto const compactIndex = geometrySourceRefStorageIndex(address.index());
+        ensureGeometryStageCapacity(impl_->geomStages_, compactIndex);
+        impl_->geomStages_.at(compactIndex) = stage.value_or(InvalidGeometryStage);
+        break;
+    }
+    case ColumnId::GeometryViews:
+        break;
+    default:
+        break;
+    }
 }
 
 simfil::ModelNodeAddress TileFeatureLayer::geometrySourceDataReferences(simfil::ModelNodeAddress address) const

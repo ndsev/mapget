@@ -14,7 +14,7 @@ class FeatureId;
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
  */
-class Validity : public simfil::ProceduralObject<6, Validity, TileFeatureLayer>
+class Validity : public simfil::ProceduralObject<7, Validity, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class PointNode;
@@ -129,7 +129,7 @@ protected:
 
 public:
     explicit Validity(simfil::detail::mp_key key)
-        : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(key) {}
+        : simfil::ProceduralObject<7, Validity, TileFeatureLayer>(key) {}
     Validity(Direction direction,
              simfil::ModelConstPtr layer,
              simfil::ModelNodeAddress a,

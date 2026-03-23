@@ -238,6 +238,35 @@ TEST_CASE("Spatial Operators", "[spatial.ops]") {
     }
 }
 
+TEST_CASE("GeoJSON geometry names are derived from non-default stages", "[geometry][geojson]")
+{
+    auto tile = makeTile();
+    tile->layerInfo()->stages_ = 3;
+    tile->layerInfo()->stageLabels_ = {"Low-Fi", "High-Fi", "ADAS"};
+    tile->layerInfo()->highFidelityStage_ = 1;
+
+    auto feature = tile->newFeature("Way", {{"wayId", 77}});
+
+    tile->setStage(1U);
+    auto baseGeometry = feature->geom()->newGeometry(GeomType::Line, 2);
+    baseGeometry->append({0., 0., 0.});
+    baseGeometry->append({1., 0., 0.});
+
+    tile->setStage(2U);
+    auto adasGeometry = feature->geom()->newGeometry(GeomType::Line, 2);
+    adasGeometry->append({1., 0., 0.});
+    adasGeometry->append({2., 0., 0.});
+
+    tile->setStage(std::nullopt);
+
+    auto json = feature->toJson();
+    REQUIRE_FALSE(json.contains("lod"));
+    auto const& geometries = json.at("geometry").at("geometries");
+    REQUIRE(geometries.size() == 2);
+    REQUIRE_FALSE(geometries[0].contains("geometryName"));
+    REQUIRE(geometries[1].at("geometryName") == "ADAS");
+}
+
 TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]") {
     auto model_pool = makeTile();
 
@@ -508,5 +537,76 @@ TEST_CASE("Semantic feature transition validities compute transition geometry", 
     REQUIRE(geometry.points_.size() == 3);
     REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
     REQUIRE(geometry.points_[1] == Point{1.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+}
+
+TEST_CASE("Semantic feature transition validities skip duplicate endpoint points", "[validity]") {
+    auto modelPool = makeTile();
+
+    auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 3);
+    fromGeometry->append({0.0, 0.0, 0.0});
+    fromGeometry->append({1.0, 0.0, 0.0});
+    fromGeometry->append({1.0, 0.0, 0.0});
+
+    auto toFeature = modelPool->newFeature("Way", {{"wayId", int64_t(2)}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 3);
+    toGeometry->append({1.0, 0.0, 0.0});
+    toGeometry->append({1.0, 0.0, 0.0});
+    toGeometry->append({2.0, 0.0, 0.0});
+
+    auto intersection = modelPool->newFeature("Way", {{"wayId", int64_t(3)}});
+    auto validity = intersection->attributeLayers()
+                        ->newLayer("rules")
+                        ->newAttribute("turn")
+                        ->validity()
+                        ->newFeatureTransition(
+                            fromFeature,
+                            Validity::End,
+                            toFeature,
+                            Validity::Start,
+                            7);
+
+    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    REQUIRE(geometry.geomType_ == GeomType::Line);
+    REQUIRE(geometry.points_.size() == 3);
+    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[1] == Point{1.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+}
+
+TEST_CASE("Semantic feature transition validities prefer host geometry as midpoint", "[validity]") {
+    auto modelPool = makeTile();
+
+    auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 2);
+    fromGeometry->append({0.0, 0.0, 0.0});
+    fromGeometry->append({1.0, 0.0, 0.0});
+
+    auto toFeature = modelPool->newFeature("Way", {{"wayId", int64_t(2)}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 2);
+    toGeometry->append({1.1, 0.0, 0.0});
+    toGeometry->append({2.0, 0.0, 0.0});
+
+    auto intersection = modelPool->newFeature("Way", {{"wayId", int64_t(3)}});
+    auto intersectionGeometry = intersection->geom()->newGeometry(GeomType::Points, 1);
+    intersectionGeometry->append({1.0, 0.5, 0.0});
+
+    auto validity = intersection->attributeLayers()
+                        ->newLayer("rules")
+                        ->newAttribute("turn")
+                        ->validity()
+                        ->newFeatureTransition(
+                            fromFeature,
+                            Validity::End,
+                            toFeature,
+                            Validity::Start,
+                            7);
+
+    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    REQUIRE(geometry.geomType_ == GeomType::Line);
+    REQUIRE(geometry.points_.size() == 3);
+    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[1] == Point{1.0, 0.5, 0.0});
     REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
 }

@@ -159,7 +159,6 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"type":"Polygon"},)"  // Closed, CW, Z!=0
             R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"type":"MultiPolygon"})"  // Mesh
             R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":{"direction":"POSITIVE"}}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
-            R"("lod":7,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
         auto res = feature1->toJson();
@@ -797,6 +796,49 @@ TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test
         {"to", "Way.2"},
         {"toConnectedEnd", "START"},
         {"transitionNumber", 7},
+    });
+}
+
+TEST_CASE("Validity GeoJSON exposes stage labels only beyond the default stage", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ],
+        "stages": 3,
+        "stageLabels": ["Low-Fi", "High-Fi", "ADAS"],
+        "highFidelityStage": 1
+    })"_json);
+
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "StageValidityNode",
+        "Tropico",
+        layerInfo,
+        std::make_shared<StringPool>("StageValidityNode"));
+
+    auto highFiValidity = tile->newValidity();
+    highFiValidity->setGeometryStage(1U);
+    highFiValidity->setDirection(Validity::Positive);
+    auto resolvedHighFiValidity = tile->resolve<Validity>(highFiValidity->addr());
+    REQUIRE(resolvedHighFiValidity);
+    REQUIRE(resolvedHighFiValidity->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
+
+    auto adasValidity = tile->newValidity();
+    adasValidity->setGeometryStage(2U);
+    adasValidity->setDirection(Validity::Positive);
+    auto resolvedAdasValidity = tile->resolve<Validity>(adasValidity->addr());
+    REQUIRE(resolvedAdasValidity);
+    REQUIRE(resolvedAdasValidity->toJson() == nlohmann::json{
+        {"direction", "POSITIVE"},
+        {"geometryName", "ADAS"},
     });
 }
 

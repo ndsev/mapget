@@ -413,6 +413,8 @@ protected:
 
     Geometry::Storage& vertexBufferStorage();
     [[nodiscard]] Geometry::ViewData const* geometryViewData(simfil::ModelNodeAddress address) const;
+    [[nodiscard]] std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const;
+    void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage);
     [[nodiscard]] simfil::ModelNodeAddress geometrySourceDataReferences(simfil::ModelNodeAddress address) const;
     void setGeometrySourceDataReferences(simfil::ModelNodeAddress address, simfil::ModelNodeAddress refsAddress);
     [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;

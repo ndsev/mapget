@@ -3,6 +3,7 @@
 #include "stringpool.h"
 #include "featurelayer.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace mapget
@@ -57,22 +58,7 @@ model_ptr<Geometry> resolveLineGeometry(
     if (!geometryCollection) {
         return {};
     }
-
-    model_ptr<Geometry> geometry;
-    geometryCollection->forEachGeometry([&](auto&& geom) {
-        if (referencedStage) {
-            const auto geometryStage = geom->model().stage().value_or(0U);
-            if (geometryStage != *referencedStage) {
-                return true;
-            }
-        }
-        if (!geometry && geom->geomType() == GeomType::Line) {
-            geometry = geom;
-            return false;
-        }
-        return true;
-    });
-    return geometry;
+    return geometryCollection->geometryOfTypeAtPreferredStage(GeomType::Line, referencedStage);
 }
 
 struct TransitionSegment
@@ -80,6 +66,11 @@ struct TransitionSegment
     Point outer_;
     Point inner_;
 };
+
+bool pointsCoincide(Point const& left, Point const& right)
+{
+    return left.distanceTo(right) < 1e-9;
+}
 
 std::optional<TransitionSegment> resolveTransitionSegment(
     model_ptr<Feature> const& feature,
@@ -96,26 +87,58 @@ std::optional<TransitionSegment> resolveTransitionSegment(
 
     const auto numPoints = geometry->numPoints();
     const auto innerIndex = connectedEnd == Validity::End ? numPoints - 1U : 0U;
-    const auto outerIndex = connectedEnd == Validity::End
-        ? (numPoints > 1 ? numPoints - 2U : innerIndex)
-        : (numPoints > 1 ? 1U : innerIndex);
+    auto outerIndex = innerIndex;
+    auto const innerPoint = geometry->pointAt(innerIndex);
+    if (connectedEnd == Validity::End) {
+        for (auto pointIndex = innerIndex; pointIndex-- > 0;) {
+            if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
+                outerIndex = pointIndex;
+                break;
+            }
+        }
+    } else {
+        for (auto pointIndex = innerIndex + 1U; pointIndex < numPoints; ++pointIndex) {
+            if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
+                outerIndex = pointIndex;
+                break;
+            }
+        }
+    }
     return TransitionSegment{
         geometry->pointAt(outerIndex),
-        geometry->pointAt(innerIndex),
+        innerPoint,
     };
 }
 
-bool pointsCoincide(Point const& left, Point const& right)
+SelfContainedGeometry applyDirectionToGeometry(
+    SelfContainedGeometry geometry,
+    Validity::Direction direction)
 {
-    return left.distanceTo(right) < 1e-9;
+    if (direction == Validity::Negative && geometry.points_.size() > 1) {
+        std::reverse(geometry.points_.begin(), geometry.points_.end());
+    }
+    return geometry;
 }
 
-void appendIfNotDuplicate(std::vector<Point>& points, Point const& point)
+std::optional<std::string_view> geometryNameForStage(
+    TileFeatureLayer const& model,
+    std::optional<uint32_t> geometryStage)
 {
-    if (!points.empty() && pointsCoincide(points.back(), point)) {
-        return;
+    if (!geometryStage || !model.layerInfo()) {
+        return std::nullopt;
     }
-    points.emplace_back(point);
+    auto const& layerInfo = *model.layerInfo();
+    if (*geometryStage <= layerInfo.highFidelityStage_) {
+        return std::nullopt;
+    }
+    if (*geometryStage >= layerInfo.stageLabels_.size()) {
+        return std::nullopt;
+    }
+    auto const& label = layerInfo.stageLabels_.at(*geometryStage);
+    if (label.empty()) {
+        return std::nullopt;
+    }
+    return label;
 }
 
 }
@@ -165,7 +188,7 @@ Validity::Validity(
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(std::move(layer), a, key),
+    : simfil::ProceduralObject<7, Validity, TileFeatureLayer>(std::move(layer), a, key),
       simpleDirection_(direction)
 {
     if (direction != Empty) {
@@ -184,7 +207,7 @@ Validity::Validity(Validity::Data* data,
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<6, Validity, TileFeatureLayer>(std::move(layer), a, key),
+    : simfil::ProceduralObject<7, Validity, TileFeatureLayer>(std::move(layer), a, key),
       data_(data)
 {
     if (data_->direction_)
@@ -196,6 +219,15 @@ Validity::Validity(Validity::Data* data,
                     directionToString(self.direction()),
                     self.model_);
             });
+
+    if (auto geometryName = geometryNameForStage(model(), geometryStage())) {
+        fields_.emplace_back(
+            StringPool::GeometryNameStr,
+            [geometryName](Validity const& self)
+            {
+                return model_ptr<simfil::ValueNode>::make(*geometryName, self.model_);
+            });
+    }
 
     if (data_->geomDescrType_ == SimpleGeometry) {
         fields_.emplace_back(
@@ -517,7 +549,7 @@ SelfContainedGeometry Validity::computeGeometry(
         // Return the self-contained geometry points.
         auto simpleGeom = simpleGeometry();
         assert(simpleGeom);
-        return simpleGeom->toSelfContained();
+        return applyDirectionToGeometry(simpleGeom->toSelfContained(), direction());
     }
 
     if (geometryDescriptionType() == FeatureTransition) {
@@ -553,13 +585,40 @@ SelfContainedGeometry Validity::computeGeometry(
         }
 
         std::vector<Point> points;
-        points.reserve(4);
-        // Render the transition as outer-from -> connected-from -> connected-to -> outer-to.
-        // Shared intersection points collapse naturally via consecutive deduplication.
-        appendIfNotDuplicate(points, fromSegment->outer_);
-        appendIfNotDuplicate(points, fromSegment->inner_);
-        appendIfNotDuplicate(points, toSegment->inner_);
-        appendIfNotDuplicate(points, toSegment->outer_);
+        points.reserve(3);
+        auto appendIfNotDuplicate = [&](Point const& point)
+        {
+            if (points.empty() || !pointsCoincide(points.back(), point)) {
+                points.emplace_back(point);
+            }
+        };
+        // Render the transition as outer-from -> shared transition midpoint -> outer-to.
+        // The midpoint prefers the hosting feature geometry (for example an intersection point)
+        // and otherwise falls back to the connected road endpoints.
+        appendIfNotDuplicate(fromSegment->outer_);
+        bool appendedHostMidpoint = false;
+        if (geometryCollection) {
+            geometryCollection->forEachGeometry([&](auto&& geom) {
+                if (geom->geomType() != GeomType::Points || geom->numPoints() == 0) {
+                    return true;
+                }
+                appendIfNotDuplicate(geom->pointAt(0));
+                appendedHostMidpoint = true;
+                return false;
+            });
+        }
+        if (!appendedHostMidpoint) {
+            if (pointsCoincide(fromSegment->inner_, toSegment->inner_)) {
+                appendIfNotDuplicate(fromSegment->inner_);
+            } else {
+                appendIfNotDuplicate(Point{
+                    (fromSegment->inner_.x + toSegment->inner_.x) * 0.5,
+                    (fromSegment->inner_.y + toSegment->inner_.y) * 0.5,
+                    (fromSegment->inner_.z + toSegment->inner_.z) * 0.5,
+                });
+            }
+        }
+        appendIfNotDuplicate(toSegment->outer_);
         return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
@@ -590,7 +649,7 @@ SelfContainedGeometry Validity::computeGeometry(
                     "Failed to find line geometry for validity stage {}.",
                     *referencedStage);
             } else {
-                *error = "Failed to find line geometry for validity.";
+                *error = "Failed to find line geometry for validity at the configured high-fidelity stage.";
             }
         }
         return {};
@@ -599,7 +658,7 @@ SelfContainedGeometry Validity::computeGeometry(
     // No geometry description from the attribute - just return the whole
     // geometry from the collection.
     if (geometryDescriptionType() == NoGeometry) {
-        return geometry->toSelfContained();
+        return applyDirectionToGeometry(geometry->toSelfContained(), direction());
     }
 
     // Now we have OffsetPointValidity or OffsetRangeValidity
@@ -625,7 +684,7 @@ SelfContainedGeometry Validity::computeGeometry(
     // Handle GeoPosOffset (a range of the geometry line, bound by two positions).
     if (offsetType == GeoPosOffset) {
         auto points = geometry->pointsFromPositionBound(startPoint, endPoint);
-        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
+        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
     }
 
     // Handle BufferOffset (a range of the geometry bound by two indices).
@@ -656,7 +715,7 @@ SelfContainedGeometry Validity::computeGeometry(
         for (auto pointIndex = startPointIndex; pointIndex <= endPointIndex; ++pointIndex) {
             points.emplace_back(geometry->pointAt(pointIndex));
         }
-        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
+        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
     }
 
     // Handle RelativeLengthOffset (a percentage range of the geometry).
@@ -672,7 +731,7 @@ SelfContainedGeometry Validity::computeGeometry(
     // Handle MetricLengthOffset (a length range of the geometry in meters).
     if (offsetType == MetricLengthOffset || offsetType == RelativeLengthOffset) {
         auto points = geometry->pointsFromLengthBound(startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
-        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
+        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
     }
 
     if (error) {

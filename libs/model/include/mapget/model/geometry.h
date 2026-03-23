@@ -75,6 +75,9 @@ public:
     /** Get a hash of the geometry. **/
     [[nodiscard]] uint64_t getHash() const;
 
+    /** Get the persisted logical stage of this geometry, if any. */
+    [[nodiscard]] std::optional<uint32_t> stage() const;
+
     /** Iterate over all Points in the geometry.
      * @param callback Function which is called for each contained point.
      *  Must return true to continue iteration, false to abort iteration.
@@ -181,6 +184,40 @@ public:
 
     /** Get the number of contained geometries. */
     [[nodiscard]] size_t numGeometries() const;
+
+    /**
+     * Resolve the geometry stage that should be used when no explicit stage
+     * override is given. This defaults to the layer's configured
+     * `highFidelityStage_`.
+     */
+    [[nodiscard]] std::optional<uint32_t> preferredGeometryStage(
+        std::optional<uint32_t> stageOverride = std::nullopt) const;
+
+    /**
+     * Find the first geometry of the requested type at the preferred stage.
+     * When `stageOverride` is omitted, the layer's `highFidelityStage_` is used.
+     */
+    [[nodiscard]] model_ptr<Geometry> geometryOfTypeAtPreferredStage(
+        GeomType type,
+        std::optional<uint32_t> stageOverride = std::nullopt) const;
+
+    /** Iterate over all geometries at the preferred stage. */
+    template <typename LambdaType>
+    bool forEachGeometryAtPreferredStage(
+        std::optional<uint32_t> stageOverride,
+        LambdaType const& callback) const
+    {
+        auto const preferredStage = preferredGeometryStage(stageOverride);
+        if (!preferredStage) {
+            return true;
+        }
+        return forEachGeometry([&](model_ptr<Geometry> const& geom) {
+            if (geom->stage().value_or(0U) != *preferredStage) {
+                return true;
+            }
+            return callback(geom);
+        });
+    }
 
     /** Iterate over all Geometries in the collection.
      * @param callback Function which is called for each contained geometry.

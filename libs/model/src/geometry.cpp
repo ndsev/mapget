@@ -91,6 +91,27 @@ GeomType geometryTypeForColumn(uint8_t column)
     }
 }
 
+std::optional<std::string_view> geometryNameForStage(
+    TileFeatureLayer const& model,
+    std::optional<uint32_t> geometryStage)
+{
+    if (!geometryStage || !model.layerInfo()) {
+        return std::nullopt;
+    }
+    auto const& layerInfo = *model.layerInfo();
+    if (*geometryStage <= layerInfo.highFidelityStage_) {
+        return std::nullopt;
+    }
+    if (*geometryStage >= layerInfo.stageLabels_.size()) {
+        return std::nullopt;
+    }
+    auto const& label = layerInfo.stageLabels_.at(*geometryStage);
+    if (label.empty()) {
+        return std::nullopt;
+    }
+    return label;
+}
+
 }
 
 /** Model node impls. for GeometryCollection */
@@ -187,6 +208,45 @@ size_t GeometryCollection::numGeometries() const
     if (auto ext = extension()) {
         result += ext->numGeometries();
     }
+    return result;
+}
+
+std::optional<uint32_t> GeometryCollection::preferredGeometryStage(
+    std::optional<uint32_t> stageOverride) const
+{
+    if (stageOverride) {
+        return stageOverride;
+    }
+
+    std::optional<uint32_t> preferredStage;
+    forEachGeometry([&](model_ptr<Geometry> const& geom) {
+        preferredStage = geom->model().layerInfo()->highFidelityStage_;
+        return false;
+    });
+    return preferredStage;
+}
+
+model_ptr<Geometry> GeometryCollection::geometryOfTypeAtPreferredStage(
+    GeomType type,
+    std::optional<uint32_t> stageOverride) const
+{
+    auto const preferredStage = preferredGeometryStage(stageOverride);
+    model_ptr<Geometry> result;
+    if (!preferredStage) {
+        return result;
+    }
+
+    forEachGeometry([&](model_ptr<Geometry> const& geom) {
+        if (geom->geomType() != type) {
+            return true;
+        }
+        auto const geometryStage = geom->stage().value_or(0U);
+        if (geometryStage != *preferredStage) {
+            return true;
+        }
+        result = geom;
+        return false;
+    });
     return result;
 }
 
@@ -314,6 +374,14 @@ uint64_t Geometry::getHash() const
     return result.value();
 }
 
+std::optional<uint32_t> Geometry::stage() const
+{
+    if (auto geometryStage = model().geometryStage(addr_)) {
+        return *geometryStage;
+    }
+    return std::nullopt;
+}
+
 SelfContainedGeometry Geometry::toSelfContained() const
 {
     SelfContainedGeometry result{{}, geomType()};
@@ -332,9 +400,15 @@ ValueType Geometry::type() const {
 
 ModelNode::Ptr Geometry::at(int64_t i) const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
+    auto const geometryName = geometryNameForStage(model(), stage());
     if (sourceDataReferences) {
         if (i == 0)
             return get(StringPool::SourceDataStr);
+        i -= 1;
+    }
+    if (geometryName) {
+        if (i == 0)
+            return get(StringPool::GeometryNameStr);
         i -= 1;
     }
     if (i == 0)
@@ -346,14 +420,19 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
 
 uint32_t Geometry::size() const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
-    return 2 + (sourceDataReferences ? 1 : 0);
+    auto const geometryName = geometryNameForStage(model(), stage());
+    return 2 + (sourceDataReferences ? 1 : 0) + (geometryName ? 1 : 0);
 }
 
 ModelNode::Ptr Geometry::get(const StringId& f) const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
+    auto const geometryName = geometryNameForStage(model(), stage());
     auto const type = geomViewData_ ? geomViewData_->type_ : geometryTypeForColumn(addr_.column());
     if (f == StringPool::SourceDataStr && sourceDataReferences) {
         return model().resolve(sourceDataReferences);
+    }
+    if (f == StringPool::GeometryNameStr && geometryName) {
+        return model_ptr<ValueNode>::make(*geometryName, model_);
     }
     if (f == StringPool::TypeStr) {
         return model_ptr<ValueNode>::make(
@@ -387,9 +466,15 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
 
 StringId Geometry::keyAt(int64_t i) const {
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
+    auto const geometryName = geometryNameForStage(model(), stage());
     if (sourceDataReferences) {
         if (i == 0)
             return StringPool::SourceDataStr;
+        i -= 1;
+    }
+    if (geometryName) {
+        if (i == 0)
+            return StringPool::GeometryNameStr;
         i -= 1;
     }
     if (i == 0) return StringPool::TypeStr;
