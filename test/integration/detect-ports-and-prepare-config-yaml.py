@@ -3,23 +3,41 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import socket
 from pathlib import Path
 
 
-def _pick_free_tcp_ports(count: int) -> list[int]:
+_PORT_RANGE_START = 20000
+_PORT_RANGE_END = 30000
+
+
+def _pick_free_tcp_ports(count: int, seed: str) -> list[int]:
     if count <= 0:
         raise ValueError("count must be > 0")
+    if count > (_PORT_RANGE_END - _PORT_RANGE_START):
+        raise ValueError("count exceeds available port range")
 
     sockets: list[socket.socket] = []
     ports: list[int] = []
+    port_span = _PORT_RANGE_END - _PORT_RANGE_START
+    start_offset = (sum(seed.encode("utf-8")) + os.getpid()) % port_span
     try:
-        for _ in range(count):
+        for candidate_offset in range(port_span):
+            if len(ports) == count:
+                break
+
+            port = _PORT_RANGE_START + ((start_offset + candidate_offset) % port_span)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.bind(("127.0.0.1", 0))
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                s.close()
+                continue
+
             sockets.append(s)
-            ports.append(int(s.getsockname()[1]))
+            ports.append(port)
     finally:
         for s in sockets:
             try:
@@ -27,6 +45,10 @@ def _pick_free_tcp_ports(count: int) -> list[int]:
             except Exception:
                 pass
 
+    if len(ports) != count:
+        raise RuntimeError(
+            f"Could not reserve {count} TCP ports in range {_PORT_RANGE_START}-{_PORT_RANGE_END - 1}"
+        )
     if len(set(ports)) != len(ports):
         raise RuntimeError(f"Port picker returned duplicates: {ports}")
 
@@ -87,7 +109,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Pick ports at test runtime (reduces collision risk vs. configure-time selection).
-    mapget_port, datasource_cpp_port, datasource_py_port = _pick_free_tcp_ports(3)
+    mapget_port, datasource_cpp_port, datasource_py_port = _pick_free_tcp_ports(3, str(out_dir))
 
     ports_env = out_dir / "ports.env"
     ports_env.write_text(
