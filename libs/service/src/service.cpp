@@ -195,7 +195,7 @@ nlohmann::json LayerTilesRequest::toJson()
         {"layerId", layerId_}
     });
 
-    if (tileIdsByNextStage_.size() <= 1) {
+    if (!usesStageBuckets_) {
         auto tileIds = nlohmann::json::array();
         if (!tileIdsByNextStage_.empty()) {
             for (auto const& tileId : tileIdsByNextStage_.front()) {
