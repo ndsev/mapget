@@ -407,7 +407,10 @@ TEST_CASE("SQLiteCache", "[Cache]")
 
 TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
 {
-    mapget::setLogLevel("trace", log());
+    // This test intentionally pounds the cache from multiple threads.
+    // Trace logging turns each cache hit into CI output and makes the Windows
+    // job spend most of its time flushing logs instead of running the test.
+    mapget::setLogLevel("warn", log());
     
     // Use common test data setup
     auto layerInfo = createTestLayerInfo();
