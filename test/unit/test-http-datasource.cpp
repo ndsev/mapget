@@ -765,6 +765,9 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     // Set up the config file.
     DataSourceConfigService::get().reset();
+    struct ConfigWatchGuard {
+        ~ConfigWatchGuard() { DataSourceConfigService::get().end(); }
+    } configWatchGuard;
     struct SchemaPatchGuard {
         ~SchemaPatchGuard() { DataSourceConfigService::get().setDataSourceConfigSchemaPatch(nlohmann::json::object()); }
     } schemaPatchGuard;
@@ -909,5 +912,6 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(configContent.find("hunter2") != std::string::npos);
     }
 
+    DataSourceConfigService::get().end();
     fs::remove(tempConfigPath);
 }
