@@ -32,14 +32,16 @@ Each item contains map ID, available layers and basic metadata. Each layer entry
   - `requests`: array of objects, each with:
     - `mapId`: string, ID of the map to query.
     - `layerId`: string, ID of the layer within that map.
-    - either `tileIds`: array of numeric tile IDs in mapget’s tiling scheme,
-    - or `tileIdsByNextStage`: array of arrays where bucket `i` lists tiles whose next missing stage is `i`.
+    - either `tileIds`: array of numeric tile IDs in mapget’s tiling scheme. This is an **unstaged** request shape: the service does not expand it into one backend fetch per advertised stage and returns one tile response per requested tile with no explicit stage affinity.
+    - or `tileIdsByNextStage`: array of arrays where bucket `i` lists tiles whose next missing stage is `i`. This is the **staged** request shape: the service expands each tile to stage `i` and all higher stages advertised by the layer.
   - `stringPoolOffsets` (optional): dictionary from datasource node ID to last known string ID. Used by advanced clients to avoid receiving the same field names repeatedly in the binary stream.
 - **Response:**
   - `application/jsonl` if `Accept: application/jsonl` is sent.
   - `application/binary` if `Accept: application/binary` is sent, using the tile stream protocol.
 
 Tiles are streamed as they become available. In JSONL mode, each line is the JSON representation of one tile layer. In binary mode, the response is a sequence of versioned messages that can be decoded using the tile stream protocol from `mapget-model.md`.
+
+For staged feature-layer clients, `tileIdsByNextStage` must be used even when only bucket `0` is non-empty. Collapsing such a request to plain `tileIds` changes its semantics to an unstaged request.
 
 If `Accept-Encoding: gzip` is set, the server compresses responses where possible, which is especially useful for JSONL streams.
 

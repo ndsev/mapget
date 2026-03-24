@@ -114,6 +114,8 @@ flowchart LR
 
 - `LayerInfo.stages` declares how many stages exist for a layer. `stageLabels` are presentation metadata only. `highFidelityStage` is the actual rule-fidelity cutover used by consumers: stages below it are low-fidelity, stages at/above it are high-fidelity.
 - Clients request staged tiles with `tileIdsByNextStage`: bucket `i` contains tiles whose next missing stage is `i`. The service expands each tile to the remaining stages for that layer.
+- Plain `tileIds` are an unstaged request form. They do not mean “bucket 0 only”; they mean “request this tile without stage-bucket expansion”.
+- Therefore a staged client must preserve `tileIdsByNextStage` even when only bucket `0` is populated.
 - Payload partitioning is datasource-defined. In current `mapget-live-cpp`, the common patterns are:
   - `SINGLE_STAGE`: stage `0` carries the complete feature payload.
   - `GEOMETRY_THEN_ATTRIBUTES`: stage `0` carries full geometry/internal relations, stage `1` carries non-ADAS attributes and relations.

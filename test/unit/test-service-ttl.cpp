@@ -84,6 +84,13 @@ private:
     std::optional<std::chrono::milliseconds> tileTtlOverride_;
 };
 
+class TestLayerTilesRequest : public LayerTilesRequest
+{
+public:
+    using LayerTilesRequest::LayerTilesRequest;
+    using LayerTilesRequest::toJson;
+};
+
 TEST_CASE("Service TTL behavior", "[Service][TTL]")
 {
     auto cache = std::make_shared<MemCache>(1024);
@@ -177,7 +184,7 @@ TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]"
 {
     SECTION("Legacy unstaged requests serialize as tileIds")
     {
-        auto request = std::make_shared<LayerTilesRequest>(
+        auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
             std::vector<TileId>{TileId(12345)});
@@ -191,7 +198,7 @@ TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]"
 
     SECTION("Single-bucket staged requests serialize as tileIdsByNextStage")
     {
-        auto request = std::make_shared<LayerTilesRequest>(
+        auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
             std::vector<std::vector<TileId>>{{TileId(12345)}});
