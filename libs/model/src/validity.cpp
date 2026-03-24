@@ -74,13 +74,14 @@ bool pointsCoincide(Point const& left, Point const& right)
 
 std::optional<TransitionSegment> resolveTransitionSegment(
     model_ptr<Feature> const& feature,
-    Validity::TransitionEnd connectedEnd)
+    Validity::TransitionEnd connectedEnd,
+    std::optional<uint32_t> referencedStage)
 {
     if (!feature) {
         return std::nullopt;
     }
 
-    auto geometry = resolveLineGeometry(feature->geomOrNull(), std::nullopt);
+    auto geometry = resolveLineGeometry(feature->geomOrNull(), referencedStage);
     if (!geometry || geometry->numPoints() == 0) {
         return std::nullopt;
     }
@@ -543,7 +544,8 @@ std::optional<uint32_t> Validity::transitionNumber() const
 
 SelfContainedGeometry Validity::computeGeometry(
     model_ptr<GeometryCollection> geometryCollection,
-    std::string* error) const
+    std::string* error,
+    std::optional<uint32_t> defaultGeometryStage) const
 {
     if (geometryDescriptionType() == SimpleGeometry) {
         // Return the self-contained geometry points.
@@ -551,6 +553,10 @@ SelfContainedGeometry Validity::computeGeometry(
         assert(simpleGeom);
         return applyDirectionToGeometry(simpleGeom->toSelfContained(), direction());
     }
+
+    const auto referencedStage = geometryStage().has_value()
+        ? geometryStage()
+        : defaultGeometryStage;
 
     if (geometryDescriptionType() == FeatureTransition) {
         auto fromFeature = transitionFromFeature();
@@ -564,7 +570,7 @@ SelfContainedGeometry Validity::computeGeometry(
             return {};
         }
 
-        auto fromSegment = resolveTransitionSegment(fromFeature, *fromConnectedEnd);
+        auto fromSegment = resolveTransitionSegment(fromFeature, *fromConnectedEnd, referencedStage);
         if (!fromSegment) {
             if (error) {
                 *error = fmt::format(
@@ -574,7 +580,7 @@ SelfContainedGeometry Validity::computeGeometry(
             return {};
         }
 
-        auto toSegment = resolveTransitionSegment(toFeature, *toConnectedEnd);
+        auto toSegment = resolveTransitionSegment(toFeature, *toConnectedEnd, referencedStage);
         if (!toSegment) {
             if (error) {
                 *error = fmt::format(
@@ -636,8 +642,6 @@ SelfContainedGeometry Validity::computeGeometry(
     if (!geometryCollection) {
         return {};
     }
-
-    const auto referencedStage = geometryStage();
 
     // Resolve validity geometry by stage first (if specified), then by line type.
     auto geometry = resolveLineGeometry(geometryCollection, referencedStage);

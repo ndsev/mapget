@@ -122,7 +122,10 @@ public:
      * - A vector containing a single point, if the validity resolved to a point geometry.
      * - A vector containing more than one point, if the validity resolved to a poly-line.
      */
-     SelfContainedGeometry computeGeometry(model_ptr<GeometryCollection> geometryCollection, std::string* error=nullptr) const;
+     SelfContainedGeometry computeGeometry(
+         model_ptr<GeometryCollection> geometryCollection,
+         std::string* error=nullptr,
+         std::optional<uint32_t> defaultGeometryStage = std::nullopt) const;
 
 protected:
     using Data = ValidityData;
