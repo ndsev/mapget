@@ -5,6 +5,7 @@
 #include <chrono>
 #include <optional>
 #include <functional>
+#include <atomic>
 
 #include "mapget/model/info.h"
 #include "mapget/model/featurelayer.h"
@@ -83,8 +84,8 @@ protected:
     TileLayerStream::StringPoolOffsetMap stringPoolOffsets_;
 
     // Statistics
-    int64_t cacheHits_ = 0;
-    int64_t cacheMisses_ = 0;
+    std::atomic<int64_t> cacheHits_{0};
+    std::atomic<int64_t> cacheMisses_{0};
 };
 
 }

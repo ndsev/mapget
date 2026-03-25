@@ -70,8 +70,8 @@ std::shared_ptr<StringPool> Cache::getStringPool(const std::string_view& nodeId)
 
 nlohmann::json Cache::getStatistics() const {
     return {
-        {"cache-hits", cacheHits_},
-        {"cache-misses", cacheMisses_},
+        {"cache-hits", cacheHits_.load()},
+        {"cache-misses", cacheMisses_.load()},
         {"loaded-string-pools", (int64_t)stringPoolOffsets().size()}
     };
 }
@@ -81,7 +81,7 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
     LookupResult result;
     auto tileBlob = getTileLayerBlob(tileKey);
     if (!tileBlob) {
-        ++cacheMisses_;
+        cacheMisses_.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     TileLayer::Ptr tile;
@@ -116,12 +116,12 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
             auto expiresAt = tile->timestamp() + *ttl;
             if (std::chrono::system_clock::now() > expiresAt) {
                 log().debug("Cache entry expired for {}", tileKey.toString());
-                ++cacheMisses_;
+                cacheMisses_.fetch_add(1, std::memory_order_relaxed);
                 result.expiredAt = expiresAt;
                 return result;
             }
         }
-        ++cacheHits_;
+        cacheHits_.fetch_add(1, std::memory_order_relaxed);
         log().debug("Returned tile from cache: {}", tileKey.tileId_.value_);
         result.tile = tile;
     }

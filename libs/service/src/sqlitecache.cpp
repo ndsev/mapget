@@ -217,11 +217,11 @@ std::optional<std::string> SQLiteCache::getTileLayerBlob(MapTileKey const& k)
         std::string result(static_cast<const char*>(data), size);
         
         log().trace(fmt::format("Key: {} | Layer size: {}", k.toString(), size));
-        log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
+        log().debug("Cache hits: {}, cache misses: {}", cacheHits_.load(), cacheMisses_.load());
         return result;
     }
     else if (rc == SQLITE_DONE) {
-        log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
+        log().debug("Cache hits: {}, cache misses: {}", cacheHits_.load(), cacheMisses_.load());
         return {};
     }
     else {
@@ -245,7 +245,7 @@ void SQLiteCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
         raise(fmt::format("Error writing to database: {}", sqlite3_errmsg(db_)));
     }
 
-    log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
+    log().debug("Cache hits: {}, cache misses: {}", cacheHits_.load(), cacheMisses_.load());
 
     // Check if we need to evict old tiles
     if (maxTileCount_ > 0) {

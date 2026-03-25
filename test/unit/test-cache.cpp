@@ -116,11 +116,14 @@ namespace {
 
     // Helper for creating temporary cache paths
     std::filesystem::path createTempCachePath(const std::string& prefix, bool needsDbExtension = true) {
-        auto now = std::chrono::system_clock::now();
-        auto epoch_time = std::chrono::system_clock::to_time_t(now);
+        static std::atomic<uint64_t> counter{0};
+        auto now = std::chrono::system_clock::now().time_since_epoch();
+        auto epoch_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+        auto unique_counter = counter.fetch_add(1, std::memory_order_relaxed);
         
         std::filesystem::path test_cache = std::filesystem::temp_directory_path() /
-            (prefix + std::to_string(epoch_time) + (needsDbExtension ? ".db" : ""));
+            (prefix + std::to_string(epoch_nanos) + "-" + std::to_string(unique_counter) +
+             (needsDbExtension ? ".db" : ""));
         
         // Delete cache if it already exists
         if (std::filesystem::exists(test_cache)) {
@@ -422,46 +425,65 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         // Create test data
         auto nodeId = "ConcurrentTestNode";
         auto mapId = "ConcurrentMap";
-        auto strings = std::make_shared<StringPool>(nodeId);
         DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
         
         // Create multiple tiles for testing
-        std::vector<std::shared_ptr<TileFeatureLayer>> tiles;
+        std::vector<TileId> tileIds;
+        std::vector<MapTileKey> tileKeys;
         for (int i = 0; i < 10; ++i) {
             auto tileId = TileId::fromWgs84(42.0 + i * 0.1, 11.0, 13);
-            tiles.push_back(createTestTile(tileId, nodeId, mapId, layerInfo, strings, 1));
-        }
-        
-        // Write initial tiles
-        for (const auto& tile : tiles) {
+            auto tile = createTestTile(
+                tileId,
+                nodeId,
+                mapId,
+                layerInfo,
+                std::make_shared<StringPool>(nodeId),
+                1);
+            tileIds.push_back(tileId);
+            tileKeys.push_back(tile->id());
             cache->putTileLayer(tile);
         }
-        
+
         ConcurrentTestMetrics metrics;
         std::atomic<int> updatedFeaturesFound{0};
+        std::atomic<bool> start{false};
+        std::atomic<int> completedWrites{0};
+        constexpr int kTotalWrites = 100;
         
         // Track the maximum feature count seen for each tile
-        std::vector<std::atomic<size_t>> maxFeatureCounts(tiles.size());
-        for (size_t i = 0; i < tiles.size(); ++i) {
+        std::vector<std::atomic<size_t>> maxFeatureCounts(tileIds.size());
+        std::vector<std::atomic<size_t>> expectedFeatureCounts(tileIds.size());
+        for (size_t i = 0; i < tileIds.size(); ++i) {
             maxFeatureCounts[i] = 1; // Initial count
+            expectedFeatureCounts[i] = 1;
         }
         
         // Start multiple reader threads
         std::vector<std::thread> readers;
         for (int i = 0; i < 4; ++i) {
-            readers.emplace_back([&cache, &tiles, &info, &metrics, 
-                                  &updatedFeaturesFound, &maxFeatureCounts]() {
-                for (int j = 0; j < 100; ++j) {
+            readers.emplace_back([&cache, &tileKeys, &info, &metrics,
+                                  &updatedFeaturesFound, &maxFeatureCounts,
+                                  &start, &completedWrites]() {
+                while (!start.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+
+                bool observedUpdate = false;
+                int j = 0;
+                do {
                     try {
                         // Read random tiles
-                        int tileIndex = j % tiles.size();
-                        auto tile = cache->getTileLayer(tiles[tileIndex]->id(), info);
+                        size_t tileIndex = static_cast<size_t>(j % tileKeys.size());
+                        auto tile = cache->getTileLayer(tileKeys[tileIndex], info);
                         if (tile.tile) {
                             metrics.successfulReads++;
                             auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile.tile);
                             
                             // Verify the tile data is correct
-                            REQUIRE(featureLayer->size() > 0);
+                            if (featureLayer->size() == 0) {
+                                metrics.readErrors++;
+                                continue;
+                            }
                             
                             // Track if we see increasing feature counts
                             size_t currentCount = featureLayer->size();
@@ -471,62 +493,70 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
                                 // Update previousMax and retry
                             }
                             
-                            // Check if we see features added by writers (wayId >= 1000)
-                            // For simplicity, just count features beyond the initial one per tile
-                            // Since writers add features with wayId >= 1000, any feature beyond
-                            // the first one in a tile must be from a writer
                             if (currentCount > 1) {
-                                // Additional features beyond initial must be from writers
                                 updatedFeaturesFound += (currentCount - 1);
+                                observedUpdate = true;
                             }
                         }
                     } catch (...) {
                         metrics.readErrors++;
                     }
-                }
+                    ++j;
+                } while (completedWrites.load(std::memory_order_acquire) < kTotalWrites || !observedUpdate);
             });
         }
         
         // Start writer threads that update tiles
         std::vector<std::thread> writers;
         for (int i = 0; i < 2; ++i) {
-            writers.emplace_back([&cache, &tiles, &metrics, i]() {
+            writers.emplace_back([&cache, &tileIds, &layerInfo, &metrics, i,
+                                  nodeId, mapId, &start, &completedWrites,
+                                  &expectedFeatureCounts]() {
+                while (!start.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+
                 for (int j = 0; j < 50; ++j) {
                     try {
-                        // Update tiles by adding more features
-                        int tileIndex = j % tiles.size();
-                        auto& tile = tiles[tileIndex];
-                        // Store the area ID to ensure it outlives the string_view
-                        auto areaId = "UpdatedArea" + std::to_string(i) + "_" + std::to_string(j);
-                        tile->newFeature("Way", {
-                            {"areaId", areaId},
-                            {"wayId", 1000 + i * 100 + j}
-                        });
+                        // Keep per-tile writes ordered by assigning each tile to one writer.
+                        const size_t tileIndex = static_cast<size_t>((i + 2 * j) % tileIds.size());
+                        const size_t featureCount =
+                            expectedFeatureCounts[tileIndex].fetch_add(1, std::memory_order_relaxed) + 1;
+                        auto tile = createTestTile(
+                            tileIds[tileIndex],
+                            nodeId,
+                            mapId,
+                            layerInfo,
+                            std::make_shared<StringPool>(nodeId),
+                            static_cast<int>(featureCount));
                         cache->putTileLayer(tile);
                         metrics.successfulWrites++;
+                        completedWrites.fetch_add(1, std::memory_order_release);
                     } catch (...) {
                         metrics.writeErrors++;
                     }
                 }
             });
         }
+
+        start.store(true, std::memory_order_release);
         
         // Wait for all threads to complete
-        joinThreads(readers);
         joinThreads(writers);
+        joinThreads(readers);
         
         // Verify no errors occurred
         REQUIRE(metrics.readErrors == 0);
         REQUIRE(metrics.writeErrors == 0);
         REQUIRE(metrics.successfulReads > 0);
-        REQUIRE(metrics.successfulWrites == 100); // 2 writers * 50 writes each
+        REQUIRE(metrics.successfulWrites == kTotalWrites); // 2 writers * 50 writes each
         
         // Verify that readers saw updates from writers
         REQUIRE(updatedFeaturesFound > 0);
         
         // Check that at least some tiles have more than the initial 1 feature
         size_t tilesWithUpdates = 0;
-        for (size_t i = 0; i < tiles.size(); ++i) {
+        for (size_t i = 0; i < tileIds.size(); ++i) {
             if (maxFeatureCounts[i].load() > 1) {
                 tilesWithUpdates++;
             }
@@ -534,13 +564,11 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         REQUIRE(tilesWithUpdates > 0);
         
         // Verify the final state - all tiles should have multiple features
-        for (size_t i = 0; i < tiles.size(); ++i) {
-            auto [tile, expiredAt] = cache->getTileLayer(tiles[i]->id(), info);
+        for (size_t i = 0; i < tileIds.size(); ++i) {
+            auto [tile, expiredAt] = cache->getTileLayer(tileKeys[i], info);
             REQUIRE(tile != nullptr);
             auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile);
-            // Each tile should have more than the initial 1 feature
-            // Writers add features, so final count should be > 1
-            REQUIRE(featureLayer->size() > 1);
+            REQUIRE(featureLayer->size() == expectedFeatureCounts[i].load());
         }
         
         // Clean up - reset cache to close DB connection before removing file
@@ -669,7 +697,9 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
                                 metrics.successfulReads++;
                                 // Verify we can cast and access the data
                                 auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile.tile);
-                                REQUIRE(featureLayer->size() == 1);
+                                if (featureLayer->size() != 1) {
+                                    metrics.readErrors++;
+                                }
                             }
                         }
                     } catch (...) {
