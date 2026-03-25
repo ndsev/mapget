@@ -194,7 +194,7 @@ The generator will produce deterministic but varied features for any requested t
 
 <!-- --8<-- [start:geojson] -->
 
-`GeoJsonFolder` serves tiles from a directory containing GeoJSON files.
+`GeoJsonFolder` serves tiles from a directory containing GeoJSON files. It accepts the usual GeoJSON geometry families, including `Point`, `MultiPoint`, `LineString`, `MultiLineString`, `Polygon`, `MultiPolygon`, and `GeometryCollection`.
 
 Required fields:
 
@@ -203,6 +203,7 @@ Required fields:
 
 Optional fields:
 
+- `mapId`: optional map ID override. If omitted, mapget derives a display name from the input directory.
 - `withAttrLayers` (default: `true`): boolean flag. If `true`, nested objects in the GeoJSON `properties` are converted to mapget attribute layers; if `false`, only scalar top‑level properties are emitted and nested objects are silently dropped.
 
 Example:
@@ -211,6 +212,7 @@ Example:
 sources:
   - type: GeoJsonFolder
     folder: /data/tiles
+    mapId: Road Test Data
     withAttrLayers: true
 ```
 
