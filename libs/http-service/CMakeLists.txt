@@ -6,7 +6,17 @@ add_library(mapget-http-service STATIC
   include/mapget/http-service/cli.h
 
   src/http-service.cpp
+  src/http-service-impl.h
+  src/http-service-impl.cpp
+  src/config-handler.cpp
   src/http-client.cpp
+  src/locate-handler.cpp
+  src/sources-handler.cpp
+  src/status-handler.cpp
+  src/tiles-request-json.h
+  src/tiles-request-json.cpp
+  src/tiles-http-handler.cpp
+  src/tiles-ws-controller.cpp
   src/cli.cpp)
 
 target_include_directories(mapget-http-service
@@ -17,7 +27,7 @@ target_include_directories(mapget-http-service
 
 target_link_libraries(mapget-http-service
   PUBLIC
-    httplib::httplib
+    drogon
     yaml-cpp
     CLI11::CLI11
     nlohmann_json_schema_validator

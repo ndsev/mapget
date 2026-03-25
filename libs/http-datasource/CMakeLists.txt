@@ -17,7 +17,7 @@ target_include_directories(mapget-http-datasource
 
 target_link_libraries(mapget-http-datasource
   PUBLIC
-    httplib::httplib
+    drogon
     mapget-model
     mapget-service
     tiny-process-library)

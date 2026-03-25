@@ -1,11 +1,12 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
-// Pre-declare httplib::Server to avoid including httplib.h in header
-namespace httplib {
-class Server;
+// Forward declare Drogon app type to avoid including drogon headers in public headers.
+namespace drogon {
+class HttpAppFramework;
 }
 
 namespace mapget {
@@ -76,7 +77,7 @@ protected:
      * This function is called upon the first call to go(),
      * and allows any derived server class to add endpoints.
      */
-    virtual void setup(httplib::Server&) = 0;
+    virtual void setup(drogon::HttpAppFramework&) = 0;
 
     /**
      * Derived servers can use this to control whether

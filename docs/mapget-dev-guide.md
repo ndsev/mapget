@@ -141,6 +141,8 @@ Jobs are keyed by `MapTileKey` so that concurrent requests for the same tile can
 
 The following sequence diagram summarises what happens when a client requests tiles through the HTTP service:
 
+The plain HTTP `/tiles` path looks like this:
+
 ```mermaid
 sequenceDiagram
   participant Client
@@ -150,7 +152,7 @@ sequenceDiagram
   participant Ds as DataSource
   participant Cache
 
-  Client->>Http: POST /tiles<br>requests, clientId
+  Client->>Http: POST /tiles<br>requests
   Http->>Service: request(requests, headers)
   Service->>Worker: enqueue jobs per datasource
   loop per tile
@@ -169,30 +171,52 @@ sequenceDiagram
   Service-->>Http: request complete
 ```
 
-If a client supplies a `clientId` in the `/tiles` request, the HTTP layer uses it to track open requests and to implement `/abort`.
+For interactive clients, the transport is split into a control channel and a pull channel:
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Ws as WebSocket /tiles
+  participant Http as /tiles/next
+  participant Service as Service
+  participant Worker as Service Worker
+
+  Client->>Ws: connect + send request JSON<br/>(tileIds or tileIdsByNextStage)
+  Ws->>Service: request(requests, headers)
+  Ws-->>Client: RequestContext(requestId, clientId)
+  Ws-->>Client: Status(requests, allDone=false)
+  loop while more frames are needed
+    Client->>Http: GET /tiles/next?clientId=...&maxBytes=...
+    Http->>Ws: pop queued VTLV frame batch
+    Worker-->>Ws: enqueue StringPool / TileLayer frames
+    Http-->>Client: binary VTLV batch
+  end
+  Ws-->>Client: Status(allDone=true)
+```
+
+For interactive clients, tile streaming uses WebSocket `GET /tiles` as a control channel. Clients send request updates there, receive `RequestContext` / `Status` control frames back, and pull the actual binary tile frames via `/tiles/next`. Sending a new request message replaces the current in-flight request on that connection.
 
 ## HTTP service internals
 
 `mapget::HttpService` binds the core service to an HTTP server implementation. Its responsibilities are:
 
-- map HTTP endpoints to service calls (`/sources`, `/tiles`, `/abort`, `/status`, `/locate`, `/config`),
+- map HTTP/WebSocket endpoints to service calls (`/sources`, `/tiles`, `/tiles/next`, `/status`, `/status-data`, `/locate`, `/config`),
 - parse JSON requests and build `LayerTilesRequest` objects,
 - serialize tile responses as JSONL or binary streams,
-- manage per‑client state such as `clientId` for abort handling, and
 - provide `/config` as a JSON view on the YAML config file.
 
 ### Tile streaming
 
 For `/tiles`, the HTTP layer:
 
-- parses the JSON body to extract `requests`, `stringPoolOffsets` and an optional `clientId`,
+- parses the JSON body to extract `requests` (`tileIds` or stage-aware `tileIdsByNextStage`) and optional `stringPoolOffsets`,
 - constructs one `LayerTilesRequest` per map–layer combination,
 - attaches callbacks that feed results into a shared `HttpTilesRequestState`, and
 - sends out each tile as soon as it is produced by the service.
 
 In JSONL mode the response is a sequence of newline‑separated JSON objects. In binary mode the HTTP layer uses `TileLayerStream::Writer` to serialize string pool updates and tile blobs. Binary responses can optionally be compressed using gzip if the client sends `Accept-Encoding: gzip`.
 
-The `/abort` endpoint uses the `clientId` mechanism to cancel all open tile requests for a given client and to prevent further work from being scheduled for them.
+WebSocket `/tiles` uses the same request JSON shape but serves only as the control plane: it emits `RequestContext` and `Status` VTLV frames, while `/tiles/next` performs the long-poll delivery of one or more binary tile frames (optionally batched up to `maxBytes`).
 
 ### Configuration endpoints
 
@@ -207,7 +231,7 @@ These endpoints are guarded by command‑line flags: `--no-get-config` disables 
 
 The model library provides both the binary tile encoding and the simfil query integration:
 
-- `TileLayerStream::Writer` and `TileLayerStream::Reader` handle versioned, type‑tagged messages for string pools and tile layers. Each message starts with a protocol version, a `MessageType` (string pool, feature tile, SourceData tile, end-of-stream), and a payload size.
+- `TileLayerStream::Writer` and `TileLayerStream::Reader` handle versioned, type‑tagged messages for string pools and tile layers. Each message starts with a protocol version, a `MessageType` (string pool, feature tile, SourceData tile, status, request-context, optional load-state change, end-of-stream), and a payload size.
 - `TileFeatureLayer` derives from `simfil::ModelPool` and exposes methods such as `evaluate(...)` and `complete(...)` to run simfil expressions and obtain completion candidates.
 
 String pools are streamed incrementally. The server keeps a `StringPoolOffsetMap` that tracks, for each ongoing tile request, the highest string ID known to a given client per datasource node id. When a tile is written, `TileLayerStream::Writer` compares that offset with the current `StringPool::highest()` value:
@@ -230,7 +254,7 @@ The details of simfil itself are covered in the simfil language and developer gu
 
 For development and operations it is important to understand how to observe a running mapget instance:
 
-- The `/status` endpoint shows JSON dumps of service and cache statistics embedded in a simple HTML page.
+- The `/status` endpoint renders a live HTML diagnostics page backed by `/status-data`.
 - Environment variables such as `MAPGET_LOG_LEVEL`, `MAPGET_LOG_FILE` and `MAPGET_LOG_FILE_MAXSIZE` control logging behaviour and are honoured by both the Python entry point and the native binary.
 - Cache statistics expose hit and miss counts, and in memory mode additional metrics about cached tiles.
 

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/sourcedatareference.h"
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
 #include "mapget/log.h"
@@ -147,17 +148,17 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         constexpr auto expected =
             R"({"areaId":"TheBestArea","geometry":{"geometries":[)"
-            R"({"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"name":"","type":"LineString"},)"
-            R"({"coordinates":[[41.5,10.5,0.0]],"name":"","type":"MultiPoint"},)"
-            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"name":"","type":"MultiPoint"},)"
-            R"({"coordinates":[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0]],"name":"","type":"LineString"},)"
-            R"({"coordinates":[[[[41.5,10.5,0.0],[41.5,10.299999997019768,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.5,0.0]]]],"name":"","type":"MultiPolygon"},)"
-            R"({"coordinates":[[[41.5,10.5,0.0],[41.600000001490116,10.700000002980232,0.0],[41.5,10.299999997019768,0.0],[41.80000001192093,10.900000005960464,0.0],[41.5,10.5,0.0]]],"name":"","type":"Polygon"},)"
-            R"({"coordinates":[[[0,1,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]]],"name":"","type":"Polygon"},)"  // Unclosed, CW
-            R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"name":"","type":"Polygon"},)"  // Closed, CCW
-            R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"name":"","type":"Polygon"},)"  // Closed, CW, Z!=0
-            R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"name":"","type":"MultiPolygon"})"  // Mesh
-            R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":[{"direction":"POSITIVE"}]}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
+            R"({"coordinates":[[41.0,10.0,0.0],[43.0,11.0,0.0]],"type":"LineString"},)"
+            R"({"coordinates":[[41.5,10.5,0.0]],"type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.599999994039536,10.699999988079071,0.0]],"type":"MultiPoint"},)"
+            R"({"coordinates":[[41.5,10.5,0.0],[41.599999994039536,10.699999988079071,0.0]],"type":"LineString"},)"
+            R"({"coordinates":[[[[41.5,10.5,0.0],[41.5,10.300000011920929,0.0],[41.599999994039536,10.699999988079071,0.0],[41.5,10.5,0.0]]]],"type":"MultiPolygon"},)"
+            R"({"coordinates":[[[41.5,10.5,0.0],[41.599999994039536,10.699999988079071,0.0],[41.5,10.300000011920929,0.0],[41.79999999701977,10.899999998509884,0.0],[41.5,10.5,0.0]]],"type":"Polygon"},)"
+            R"({"coordinates":[[[0,1,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]]],"type":"Polygon"},)"  // Unclosed, CW
+            R"({"coordinates":[[[1,0,0],[2,0,0],[2,1,0],[1,1,0],[1,0,0]]],"type":"Polygon"},)"  // Closed, CCW
+            R"({"coordinates":[[[2,1,0],[3,1,1],[3,0,2],[2,0,3],[2,1,0]]],"type":"Polygon"},)"  // Closed, CW, Z!=0
+            R"({"coordinates":[[[[3,0,0],[4,0,0],[4,1,0],[3,0,0]]],[[[4,1,0],[3,0,0],[3,1,0],[4,1,0]]]],"type":"MultiPolygon"})"  // Mesh
+            R"(],"type":"GeometryCollection"},"id":"Way.TheBestArea.42","properties":{"layer":{"cheese":{"mozzarella":{"smell":"neutral","validity":{"direction":"POSITIVE"}}}},"main_ingredient":"Pepper"},"type":"Feature","typeId":"Way","wayId":42,)"
             R"("layerId":"WayLayer","mapId":"Tropico"})";
 
         auto res = feature1->toJson();
@@ -171,6 +172,19 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         REQUIRE(feature1->typeId() == "Way");
         REQUIRE(feature1->id()->toString() == "Way.TheBestArea.42");
+    }
+
+    SECTION("Secondary feature ID compositions keep all labeled parts")
+    {
+        auto const keyValuePairs = featureForId1->keyValuePairs();
+        REQUIRE(featureForId1->toString() == "Way.42.84.0123456789abcdef");
+        REQUIRE(keyValuePairs.size() == 3);
+        REQUIRE(keyValuePairs[0].first == "wayIdU32");
+        REQUIRE(std::get<int64_t>(keyValuePairs[0].second) == 42);
+        REQUIRE(keyValuePairs[1].first == "wayIdU64");
+        REQUIRE(std::get<int64_t>(keyValuePairs[1].second) == 84);
+        REQUIRE(keyValuePairs[2].first == "wayIdUUID128");
+        REQUIRE(std::get<std::string_view>(keyValuePairs[2].second) == "0123456789abcdef");
     }
 
     SECTION("Evaluate simfil filter")
@@ -217,9 +231,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         std::stringstream tileBytes;
         tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
 
         auto deserializedTile = std::make_shared<TileFeatureLayer>(
-            tileBytes,
+            tileBuffer,
             [&](auto&& mapName, auto&& layerName){
                 REQUIRE(mapName == "Tropico");
                 REQUIRE(layerName == "WayLayer");
@@ -246,6 +262,18 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         for (auto feature : *deserializedTile) {
             REQUIRE(feature->id()->toString().substr(0, 16) == "Way.TheBestArea.");
         }
+
+        auto deserializedFeatureId = deserializedTile->resolve<FeatureId>(
+            simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::ExternalFeatureIds, 0});
+        REQUIRE(deserializedFeatureId);
+        auto const deserializedKeyValuePairs = deserializedFeatureId->keyValuePairs();
+        REQUIRE(deserializedKeyValuePairs.size() == 3);
+        REQUIRE(deserializedKeyValuePairs[0].first == "wayIdU32");
+        REQUIRE(std::get<int64_t>(deserializedKeyValuePairs[0].second) == 42);
+        REQUIRE(deserializedKeyValuePairs[1].first == "wayIdU64");
+        REQUIRE(std::get<int64_t>(deserializedKeyValuePairs[1].second) == 84);
+        REQUIRE(deserializedKeyValuePairs[2].first == "wayIdUUID128");
+        REQUIRE(std::get<std::string_view>(deserializedKeyValuePairs[2].second) == "0123456789abcdef");
     }
 
     SECTION("Stream")
@@ -389,9 +417,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         std::stringstream tileBytes;
         tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
 
         auto deserializedTile = std::make_shared<TileFeatureLayer>(
-            tileBytes,
+            tileBuffer,
             [&](auto&& mapName, auto&& layerName){
                 return layerInfo;
             },
@@ -407,6 +437,570 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->ttl() == tile->ttl());
         REQUIRE(deserializedTile->ttl().value().count() == 60000);
     }
+
+    SECTION("Serialization with stage")
+    {
+        tile->setStage(3U);
+
+        std::stringstream tileBytes;
+        tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBuffer,
+            [&](auto&&, auto&&) {
+                return layerInfo;
+            },
+            [&](auto&&) {
+                return strings;
+            }
+        );
+
+        REQUIRE(deserializedTile->stage().has_value());
+        REQUIRE(deserializedTile->stage().value() == 3U);
+    }
+
+    SECTION("Serialization without stage")
+    {
+        tile->setStage({});
+
+        std::stringstream tileBytes;
+        tile->write(tileBytes);
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBuffer,
+            [&](auto&&, auto&&) {
+                return layerInfo;
+            },
+            [&](auto&&) {
+                return strings;
+            }
+        );
+
+        REQUIRE_FALSE(deserializedTile->stage().has_value());
+    }
+}
+
+TEST_CASE("FeatureLayer stores geometry source-data refs compactly for singleton geometries",
+          "[test.featurelayer][test.featurelayer.sourcedatarefs]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("SourceDataRefNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SourceDataRefNode",
+        "SourceDataRefMap",
+        layerInfo,
+        strings);
+
+    auto feature = tile->newFeature("Way", {{"wayId", 42}});
+    auto singletonPoint = feature->geom()->newGeometry(GeomType::Points, 1, true);
+    singletonPoint->append({42., 11., 0.});
+    auto line = feature->geom()->newGeometry(GeomType::Line, 2);
+    line->append({42., 11., 0.});
+    line->append({42.1, 11.1, 0.});
+
+    QualifiedSourceDataReference singletonPointRef{
+        .address_ = SourceDataAddress::fromBitPosition(8, 16),
+        .layerId_ = strings->emplace("DisplayLayer").value(),
+        .qualifier_ = strings->emplace("Position2D").value(),
+    };
+    QualifiedSourceDataReference lineRef{
+        .address_ = SourceDataAddress::fromBitPosition(24, 32),
+        .layerId_ = strings->emplace("DisplayLayer").value(),
+        .qualifier_ = strings->emplace("Line2D").value(),
+    };
+
+    singletonPoint->setSourceDataReferences(
+        tile->newSourceDataReferenceCollection({&singletonPointRef, 1}));
+    line->setSourceDataReferences(
+        tile->newSourceDataReferenceCollection({&lineRef, 1}));
+
+    SECTION("refs are accessible before serialization")
+    {
+        REQUIRE(singletonPoint->sourceDataReferences());
+        REQUIRE(singletonPoint->sourceDataReferences()->size() == 1);
+        std::string singletonPointQualifier;
+        singletonPoint->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            singletonPointQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(singletonPointQualifier == "Position2D");
+
+        REQUIRE(line->sourceDataReferences());
+        REQUIRE(line->sourceDataReferences()->size() == 1);
+        std::string lineQualifier;
+        line->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            lineQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(lineQualifier == "Line2D");
+
+        auto sizeStats = tile->serializationSizeStats();
+        REQUIRE(sizeStats["feature-layer"]["geometry-source-data-references"].get<int64_t>() < 1024);
+    }
+
+    SECTION("refs survive serialization roundtrip")
+    {
+        std::stringstream tileBytes;
+        REQUIRE(tile->write(tileBytes).has_value());
+        auto serializedTile = tileBytes.str();
+        std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+
+        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+            tileBuffer,
+            [&](auto&&, auto&&) {
+                return layerInfo;
+            },
+            [&](auto&&) {
+                return strings;
+            });
+
+        auto deserializedFeature = deserializedTile->at(0);
+        REQUIRE(deserializedFeature);
+        auto deserializedGeometries = deserializedFeature->geomOrNull();
+        REQUIRE(deserializedGeometries);
+        REQUIRE(deserializedGeometries->numGeometries() == 2);
+
+        std::vector<simfil::model_ptr<Geometry>> deserializedGeometryList;
+        deserializedGeometries->forEachGeometry([&](auto const& geometry) {
+            deserializedGeometryList.push_back(geometry);
+            return true;
+        });
+        REQUIRE(deserializedGeometryList.size() == 2);
+
+        auto const& deserializedPoint = deserializedGeometryList[0];
+        auto const& deserializedLine = deserializedGeometryList[1];
+        REQUIRE(deserializedPoint->sourceDataReferences());
+        REQUIRE(deserializedLine->sourceDataReferences());
+
+        std::string deserializedPointQualifier;
+        deserializedPoint->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            deserializedPointQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(deserializedPointQualifier == "Position2D");
+
+        std::string deserializedLineQualifier;
+        deserializedLine->sourceDataReferences()->forEachReference([&](auto const& ref) {
+            deserializedLineQualifier = std::string(ref.qualifier());
+        });
+        REQUIRE(deserializedLineQualifier == "Line2D");
+
+        auto sizeStats = deserializedTile->serializationSizeStats();
+        REQUIRE(sizeStats["feature-layer"]["geometry-source-data-references"].get<int64_t>() < 1024);
+    }
+}
+
+TEST_CASE("Feature LOD Field", "[test.featurelayer][test.feature.lod]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "areaId", "datatype": "STR"},
+                    {"partId": "wayId", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("FeatureLodNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "FeatureLodNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    tile->setIdPrefix({{"areaId", "A"}});
+
+    auto feature = tile->newFeature("Way", {{"wayId", int64_t(42)}});
+    auto lodValueResult = feature->evaluate("lod");
+    REQUIRE(lodValueResult.has_value());
+    auto lodValue = lodValueResult.value().as<simfil::ValueType::Int>();
+    REQUIRE(lodValue >= 0);
+    REQUIRE(lodValue <= 7);
+    REQUIRE(static_cast<int64_t>(feature->lod()) == static_cast<int64_t>(lodValue));
+}
+
+TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test.feature.id.optionals]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "areaId", "datatype": "STR"},
+                    {"partId": "sideId", "datatype": "U32", "isOptional": true},
+                    {"partId": "wayId", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("FeatureOptionalIdNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "FeatureOptionalIdNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    tile->setIdPrefix({{"areaId", "A"}});
+
+    auto withoutOptional = tile->newFeature("Way", {{"wayId", int64_t(42)}});
+    auto withOptional = tile->newFeature("Way", {{"sideId", int64_t(7)}, {"wayId", int64_t(43)}});
+
+    auto const withoutOptionalPairs = withoutOptional->id()->keyValuePairs();
+    REQUIRE(withoutOptional->id()->toString() == "Way.A.42");
+    REQUIRE(withoutOptionalPairs.size() == 2);
+    REQUIRE(withoutOptionalPairs[0].first == "areaId");
+    REQUIRE(std::get<std::string_view>(withoutOptionalPairs[0].second) == "A");
+    REQUIRE(withoutOptionalPairs[1].first == "wayId");
+    REQUIRE(std::get<int64_t>(withoutOptionalPairs[1].second) == 42);
+
+    auto const withOptionalPairs = withOptional->id()->keyValuePairs();
+    REQUIRE(withOptional->id()->toString() == "Way.A.7.43");
+    REQUIRE(withOptionalPairs.size() == 3);
+    REQUIRE(withOptionalPairs[0].first == "areaId");
+    REQUIRE(std::get<std::string_view>(withOptionalPairs[0].second) == "A");
+    REQUIRE(withOptionalPairs[1].first == "sideId");
+    REQUIRE(std::get<int64_t>(withOptionalPairs[1].second) == 7);
+    REQUIRE(withOptionalPairs[2].first == "wayId");
+    REQUIRE(std::get<int64_t>(withOptionalPairs[2].second) == 43);
+}
+
+TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("ValidityNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "ValidityNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    auto feature = tile->newFeature("Way", {{"wayId", 1}});
+
+    auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
+    attr->validity()->newDirection(Validity::Direction::Both);
+
+    auto relation = tile->newRelation("connectedTo", tile->newFeatureId("Way", {{"wayId", 2}}));
+    relation->sourceValidity()->newDirection(Validity::Direction::Positive);
+    relation->targetValidity()->newDirection(Validity::Direction::Negative);
+    feature->addRelation(relation);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto const attrValidityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(attrValidityNode);
+    REQUIRE(attrValidityNode->toJson() == nlohmann::json{{"direction", "COMPLETE"}});
+
+    auto materializedRelation = tile->resolve<Relation>(relation->addr());
+    REQUIRE(materializedRelation);
+    auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
+    auto const sourceValidityNode = relationNode.get(StringPool::SourceValidityStr);
+    REQUIRE(sourceValidityNode);
+    REQUIRE(sourceValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
+
+    auto const targetValidityNode = relationNode.get(StringPool::TargetValidityStr);
+    REQUIRE(targetValidityNode);
+    REQUIRE(targetValidityNode->toJson() == nlohmann::json{{"direction", "NEGATIVE"}});
+}
+
+TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("TransitionValidityNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "TransitionValidityNode",
+        "Tropico",
+        layerInfo,
+        strings);
+
+    auto fromFeature = tile->newFeature("Way", {{"wayId", 1}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 2);
+    fromGeometry->append({0., 0., 0.});
+    fromGeometry->append({1., 0., 0.});
+
+    auto toFeature = tile->newFeature("Way", {{"wayId", 2}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 2);
+    toGeometry->append({1., 0., 0.});
+    toGeometry->append({2., 0., 0.});
+
+    auto intersection = tile->newFeature("Way", {{"wayId", 3}});
+    auto attr = intersection->attributeLayers()->newLayer("rules")->newAttribute("turn");
+    attr->validity()->newFeatureTransition(
+        fromFeature,
+        Validity::End,
+        toFeature,
+        Validity::Start,
+        7);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto const attrValidityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(attrValidityNode);
+    REQUIRE(attrValidityNode->toJson() == nlohmann::json{
+        {"from", "Way.1"},
+        {"fromConnectedEnd", "END"},
+        {"to", "Way.2"},
+        {"toConnectedEnd", "START"},
+        {"transitionNumber", 7},
+    });
+}
+
+TEST_CASE("Validity GeoJSON exposes stage labels only beyond the default stage", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ],
+        "stages": 3,
+        "stageLabels": ["Low-Fi", "High-Fi", "ADAS"],
+        "highFidelityStage": 1
+    })"_json);
+
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "StageValidityNode",
+        "Tropico",
+        layerInfo,
+        std::make_shared<StringPool>("StageValidityNode"));
+
+    auto highFiValidity = tile->newValidity();
+    highFiValidity->setGeometryStage(1U);
+    highFiValidity->setDirection(Validity::Positive);
+    auto resolvedHighFiValidity = tile->resolve<Validity>(highFiValidity->addr());
+    REQUIRE(resolvedHighFiValidity);
+    REQUIRE(resolvedHighFiValidity->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
+
+    auto adasValidity = tile->newValidity();
+    adasValidity->setGeometryStage(2U);
+    adasValidity->setDirection(Validity::Positive);
+    auto resolvedAdasValidity = tile->resolve<Validity>(adasValidity->addr());
+    REQUIRE(resolvedAdasValidity);
+    REQUIRE(resolvedAdasValidity->toJson() == nlohmann::json{
+        {"direction", "POSITIVE"},
+        {"geometryName", "ADAS"},
+    });
+}
+
+TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("OverlayNode");
+
+    auto makeTile = [&](std::string const& nodeName) {
+        return std::make_shared<TileFeatureLayer>(
+            TileId::fromWgs84(42., 11., 13),
+            nodeName,
+            "OverlayMap",
+            layerInfo,
+            strings);
+    };
+
+    auto base = makeTile("OverlayNode");
+    auto overlayStage1 = makeTile("OverlayNode");
+    auto overlayStage2 = makeTile("OverlayNode");
+
+    auto baseFeature = base->newFeature("Way", {{"wayId", 1}});
+    auto baseGeom = baseFeature->geom()->newGeometry(GeomType::Points, 1);
+    baseGeom->append({10., 10., 0.});
+    REQUIRE(baseFeature->attributes()->addField("plainA", "base").has_value());
+    REQUIRE(baseFeature->attributes()->addField("overrideA", "base").has_value());
+    auto baseLayer = baseFeature->attributeLayers()->newLayer("baseLayer");
+    auto baseAttr = baseLayer->newAttribute("baseAttr");
+    REQUIRE(baseAttr->addField("value", "base").has_value());
+    baseFeature->addRelation("baseRel", base->newFeatureId("Way", {{"wayId", 100}}));
+
+    auto overlayFeature1 = overlayStage1->newFeature("Way", {{"wayId", 1}});
+    auto overlayGeom1 = overlayFeature1->geom()->newGeometry(GeomType::Points, 1);
+    overlayGeom1->append({20., 20., 0.});
+    REQUIRE(overlayFeature1->attributes()->addField("overrideA", "overlay1").has_value());
+    auto overlayLayer1 = overlayFeature1->attributeLayers()->newLayer("overlayLayer1");
+    auto overlayAttr1 = overlayLayer1->newAttribute("overlayAttr1");
+    REQUIRE(overlayAttr1->addField("value", "overlay1").has_value());
+    overlayFeature1->addRelation("overlayRel1", overlayStage1->newFeatureId("Way", {{"wayId", 101}}));
+
+    auto overlayFeature2 = overlayStage2->newFeature("Way", {{"wayId", 1}});
+    auto overlayGeom2 = overlayFeature2->geom()->newGeometry(GeomType::Points, 1);
+    overlayGeom2->append({30., 30., 0.});
+    REQUIRE(overlayFeature2->attributes()->addField("plainB", "overlay2").has_value());
+    REQUIRE(overlayFeature2->attributes()->addField("overrideA", "overlay2").has_value());
+    auto overlayLayer2 = overlayFeature2->attributeLayers()->newLayer("overlayLayer2");
+    auto overlayAttr2 = overlayLayer2->newAttribute("overlayAttr2");
+    REQUIRE(overlayAttr2->addField("value", "overlay2").has_value());
+    overlayFeature2->addRelation("overlayRel2", overlayStage2->newFeatureId("Way", {{"wayId", 102}}));
+
+    base->attachOverlay(overlayStage1);
+    base->attachOverlay(overlayStage2);
+
+    auto mergedFeature = base->at(0);
+    REQUIRE(mergedFeature);
+
+    SECTION("Typed access sees merged data")
+    {
+        REQUIRE(mergedFeature->geomOrNull()->numGeometries() == 3);
+        REQUIRE(mergedFeature->mergedAttributesOrNull()->size() == 3);
+        REQUIRE(mergedFeature->evaluate("properties.plainA").value().toString() == "base");
+        REQUIRE(mergedFeature->evaluate("properties.plainB").value().toString() == "overlay2");
+        REQUIRE(mergedFeature->evaluate("properties.overrideA").value().toString() == "overlay2");
+        REQUIRE(mergedFeature->attributeLayersOrNull()->size() == 3);
+        REQUIRE(mergedFeature->numRelations() == 3);
+    }
+
+    SECTION("ModelNode access sees merged geometry and relations")
+    {
+        auto const& mergedFeatureNode = static_cast<simfil::ModelNode const&>(*mergedFeature);
+
+        auto geometryNode = mergedFeatureNode.get(StringPool::GeometryStr);
+        REQUIRE(geometryNode);
+        auto geometryArrayNode = geometryNode->get(StringPool::GeometriesStr);
+        REQUIRE(geometryArrayNode);
+        REQUIRE(geometryArrayNode->size() == 3);
+
+        auto relationsNode = mergedFeatureNode.get(StringPool::RelationsStr);
+        REQUIRE(relationsNode);
+        REQUIRE(relationsNode->size() == 3);
+
+        auto relationsJson = relationsNode->toJson();
+        REQUIRE(relationsJson[0]["name"] == "baseRel");
+        REQUIRE(relationsJson[1]["name"] == "overlayRel1");
+        REQUIRE(relationsJson[2]["name"] == "overlayRel2");
+    }
+
+    SECTION("ModelNode access sees merged attribute layers")
+    {
+        auto const& mergedFeatureNode = static_cast<simfil::ModelNode const&>(*mergedFeature);
+
+        auto propertiesNode = mergedFeatureNode.get(StringPool::PropertiesStr);
+        REQUIRE(propertiesNode);
+        auto layersNode = propertiesNode->get(StringPool::LayerStr);
+        REQUIRE(layersNode);
+        REQUIRE(layersNode->size() == 3);
+
+        auto layersJson = layersNode->toJson();
+        REQUIRE(layersJson.contains("baseLayer"));
+        REQUIRE(layersJson.contains("overlayLayer1"));
+        REQUIRE(layersJson.contains("overlayLayer2"));
+    }
+}
+
+TEST_CASE("FeatureLayer Overlay Size Check", "[test.featurelayer.overlay]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("OverlayNode");
+    auto base = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "OverlayNode",
+        "OverlayMap",
+        layerInfo,
+        strings);
+    auto overlay = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "OverlayNode",
+        "OverlayMap",
+        layerInfo,
+        strings);
+
+    base->newFeature("Way", {{"wayId", 1}});
+    base->newFeature("Way", {{"wayId", 2}});
+    overlay->newFeature("Way", {{"wayId", 1}});
+
+    REQUIRE_THROWS(base->attachOverlay(overlay));
 }
 
 // Helper function to compare two points with some tolerance

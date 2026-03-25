@@ -9,7 +9,7 @@ The atomic unit of data in mapget is the feature. Conceptually, a feature is clo
 - layered attributes with their own validity information, and
 - explicit relations and source data references.
 
-The `properties.layers` tree in a feature holds these layered attributes and their validity arrays, while top-level entries under `properties` are regular attributes without layering.
+The `properties.layers` tree in a feature holds these layered attributes and their validity entries, while top-level entries under `properties` are regular attributes without layering.
 
 To make this as fast as possible, mapget uses the simfil binary format with a small VTLV (Version-Type-Length-Value) message wrapper. This is explained in the following section.
 
@@ -34,6 +34,9 @@ classDiagram
     +LayerType type
     +vector<int> zoomLevels
     +vector<Coverage> coverage
+    +uint32_t stages
+    +vector<string> stageLabels
+    +uint32_t highFidelityStage
     +bool canRead
     +bool canWrite
     +Version version
@@ -65,7 +68,7 @@ classDiagram
 ```
 
 - **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
-- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), zoom levels, coverage rectangles, read/write flags and the semantic version. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
+- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), advertised zoom levels, coverage rectangles, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`), read/write flags and the semantic version. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
 - **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
 
@@ -82,6 +85,45 @@ Add‑on datasources are registered with `isAddOn` and must share the same `mapI
 - Only feature layers participate in this overlay path; add‑ons cannot introduce standalone maps or layers that are not already present in the base datasource metadata.
 
 Clients see both base and add‑on entries in the `/sources` response (add‑ons are marked `isAddOn`), but the base datasource remains the entry point for tile requests. This mechanism is used by Python LiveSource overlays that attach Road and Lane attribute layers to an existing NDS.Live or NDS.Classic base map.
+
+## Staged loading and feature LOD
+
+Mapget layer metadata can describe staged loading as well as a per-feature level-of-detail (LOD) signal used by low-fidelity renderers.
+
+```mermaid
+flowchart LR
+  LayerInfo["LayerInfo<br/>stages / stageLabels / highFidelityStage"]
+  ClientState["Client tracks nextMissingStage<br/>per tile"]
+  RequestJson["/tiles request<br/>tileIdsByNextStage[]"]
+  Service["Service expands each tile to<br/>requested stages"]
+  Stage0["Stage 0<br/>early geometry payload"]
+  Stage1["Stage 1<br/>full geometry / non-ADAS enrichment"]
+  Stage2["Stage 2<br/>ADAS enrichment"]
+  FeatureLOD["Feature.lod<br/>LOD_0..LOD_7"]
+  ClientPolicy["Low-fi client policy<br/>may cap rendered LOD"]
+
+  LayerInfo --> ClientState
+  ClientState --> RequestJson --> Service
+  LayerInfo --> Service
+  Service --> Stage0
+  Service --> Stage1
+  Service --> Stage2
+  Stage0 --> FeatureLOD
+  FeatureLOD --> ClientPolicy
+```
+
+- `LayerInfo.stages` declares how many stages exist for a layer. `stageLabels` are presentation metadata only. `highFidelityStage` is the actual rule-fidelity cutover used by consumers: stages below it are low-fidelity, stages at/above it are high-fidelity.
+- Clients request staged tiles with `tileIdsByNextStage`: bucket `i` contains tiles whose next missing stage is `i`. The service expands each tile to the remaining stages for that layer.
+- Plain `tileIds` are an unstaged request form. They do not mean “bucket 0 only”; they mean “request this tile without stage-bucket expansion”.
+- Therefore a staged client must preserve `tileIdsByNextStage` even when only bucket `0` is populated.
+- Payload partitioning is datasource-defined. In current `mapget-live-cpp`, the common patterns are:
+  - `SINGLE_STAGE`: stage `0` carries the complete feature payload.
+  - `GEOMETRY_THEN_ATTRIBUTES`: stage `0` carries full geometry/internal relations, stage `1` carries non-ADAS attributes and relations.
+  - `LOW_FI_HIGH_FI_ADAS`: stage `0` carries the low-fidelity geometry payload, stage `1` carries full geometry plus non-ADAS enrichment, stage `2` carries ADAS-only enrichment.
+  - `LOW_FI_FULL_GEOM_HIGH_FI_ADAS`: stage `0` already carries the canonical base geometry, stage `1` adds non-ADAS enrichment, stage `2` adds ADAS-only enrichment.
+- A consequence of the last two patterns: stage number and stage label do not, by themselves, tell you whether a stage is “high fidelity”. Use `highFidelityStage` instead.
+- Each feature also carries a backend `lod` (`LOD_0..LOD_7`). This is independent of stage: a stage answers “which payload slice arrived?”, while `lod` answers “how aggressively may a low-fidelity renderer cull this feature?”.
+- `TileFeatureLayer::newFeature(...)` defaults stage-`0` features to `LOD_0` and later-stage feature records to `MAX_LOD`. Converters may override the stage-`0` value semantically (for example by road class). During stage merge, the stage-`0` feature data remains authoritative for `lod`.
 
 ## Feature IDs
 
@@ -119,7 +161,7 @@ Mapget supports a range of geometry types, including:
 - Lines and polylines.
 - Polygons and derived meshes.
 
-All geometries may carry three‑dimensional coordinates. Internally, the model represents them as a geometry collection so that a feature can combine several geometry primitives if necessary. Each geometry may also have a `name`, which can be referenced by attribute validity information.
+All geometries may carry three‑dimensional coordinates. Internally, the model stores either a single geometry directly or a geometry collection when a feature combines several primitives. Each geometry may also have a `name`, which can be referenced by attribute validity information.
 
 Validity information describes where and how an attribute or relation applies along a feature. A validity entry may include:
 
@@ -130,21 +172,31 @@ Validity information describes where and how an attribute or relation applies al
 
 Together, these fields allow datasources to express, for example, that a speed limit applies only along part of a road, or that a relation to another feature is valid only within a spatial region.
 
-At the JSON level, validity entries inside `properties.layers` look like this:
+At the JSON level, a single validity is exposed as an object. Multiple validity entries are exposed as an array in request order. The same flattening rule applies to attribute `validity` as well as relation `sourceValidity` / `targetValidity`.
 
 ```json
-"validity": [
-  {
-    "direction": "POSITIVE",
-    "offsetType": "MetricLengthOffset",
-    "start": 31.0,
-    "end": 57.6,
-    "geometryName": "centerline"
-  }
-]
+"validity": {
+  "direction": "POSITIVE",
+  "offsetType": "MetricLengthOffset",
+  "start": 31.0,
+  "end": 57.6,
+  "geometryName": "centerline"
+}
 ```
 
 Here `offsetType` describes how `start` and `end` should be interpreted (for example as metric distance along the line string or as relative length fractions).
+
+Transition-number validities are exposed semantically rather than as baked helper geometry:
+
+```json
+"validity": {
+  "from": "Road.545555028.1",
+  "fromConnectedEnd": "END",
+  "to": "Road.545555028.2",
+  "toConnectedEnd": "START",
+  "transitionNumber": 1
+}
+```
 
 ### Validity internals
 
@@ -153,6 +205,7 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
 - **Geometry description** indicates how a validity links to geometry:
   - `SimpleGeometry` embeds or references a complete geometry object.
   - `OffsetPointValidity` and `OffsetRangeValidity` point into an existing geometry by name and add offsets.
+  - `FeatureTransition` references two features plus their connected ends; mapget derives the rendered transition polyline from that semantic payload.
   - `NoGeometry` is used when only direction or feature references are available.
 - **Geometry offset type** controls the coordinate space used for offsets:
 
@@ -163,9 +216,9 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
   | `RelativeLengthOffset` | Values represent fractions (0–1) along the total geometry length.                          |
   | `MetricLengthOffset`   | Values represent metres along the geometry (requires a polyline geometry).                 |
 
-- **Direction** (`POSITIVE`, `NEGATIVE`, `BOTH`, `NONE`) describes whether the attribute applies relative to the digitisation direction of the referenced geometry.
+- **Direction** (`POSITIVE`, `NEGATIVE`, `COMPLETE`, `NONE`) describes whether the attribute applies relative to the digitisation direction of the referenced geometry. `EMPTY` remains an internal sentinel and is not serialized.
 
-Attributes and Relations can attach their own `MultiValidity` lists, so a datasource can mix and match: an attribute may reference a geometric sub‑range via `OffsetRangeValidity`, while the relation that connects two features uses a separate `SimpleGeometry` to express a polygon of influence.
+Attributes and relations can attach their own validity lists, so a datasource can mix and match: an attribute may reference a geometric sub‑range via `OffsetRangeValidity`, while another attribute or relation may carry a semantic `FeatureTransition`.
 
 ## Source data references and relations
 
@@ -221,6 +274,8 @@ classDiagram
 
   class Feature {
     +string_view typeId()
+    +LOD lod()
+    +void setLod(LOD)
     +model_ptr~FeatureId~ id()
     +model_ptr~GeometryCollection~ geom()
     +model_ptr~AttributeLayerList~ attributeLayers()
@@ -265,6 +320,10 @@ classDiagram
     +model_ptr~Validity~ newPoint(...)
     +model_ptr~Validity~ newRange(...)
     +model_ptr~Validity~ newGeometry(...)
+    +model_ptr~Validity~ newFeatureId(...)
+    +model_ptr~Validity~ newGeomStage(...)
+    +model_ptr~Validity~ newFeatureTransition(...)
+    +model_ptr~Validity~ newComplete(...)
     +model_ptr~Validity~ newDirection(...)
   }
 
@@ -317,6 +376,7 @@ classDiagram
   Attribute "0..1" *-- "1" MultiValidity
   Relation "0..1" *-- "1" MultiValidity : source
   Relation "0..1" *-- "1" MultiValidity : target
+  Validity ..> Feature : transition refs
   MultiValidity "1" *-- "many" Validity
   Geometry "0..1" *-- "1" SourceDataReferenceCollection
   Attribute "0..1" *-- "1" SourceDataReferenceCollection
@@ -393,6 +453,13 @@ Each feature inside that tile looks like this:
               "offsetType": "RelativeLengthOffset",
               "start": 0.1,
               "end": 0.5,
+              "geometryName": "centerline"
+            },
+            {
+              "direction": "NEGATIVE",
+              "offsetType": "RelativeLengthOffset",
+              "start": 0.6,
+              "end": 1.0,
               "geometryName": "centerline"
             }
           ]

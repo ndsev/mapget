@@ -20,7 +20,6 @@ class SourceDataCompoundNode : public simfil::MandatoryDerivedModelNodeBase<Tile
 {
     struct Data;
     friend class TileSourceDataLayer;
-    friend struct simfil::model_ptr<SourceDataCompoundNode>;
 
 public:
     SourceDataCompoundNode() = delete;
@@ -52,24 +51,28 @@ public:
     simfil::StringId keyAt(int64_t) const override;
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
-protected:
-    SourceDataCompoundNode(Data* data, TileSourceDataLayer::ConstPtr model, simfil::ModelNodeAddress address);
-    SourceDataCompoundNode(Data* data, TileSourceDataLayer::Ptr model, simfil::ModelNodeAddress address, size_t initialSize);
+public:
+    explicit SourceDataCompoundNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileSourceDataLayer>(key),
+          data_(nullptr) {}
+    SourceDataCompoundNode(Data* data,
+                           TileSourceDataLayer::ConstPtr model,
+                           simfil::ModelNodeAddress address,
+                           simfil::detail::mp_key key);
+    SourceDataCompoundNode(Data* data,
+                           TileSourceDataLayer::Ptr model,
+                           simfil::ModelNodeAddress address,
+                           size_t initialSize,
+                           simfil::detail::mp_key key);
 
 private:
     struct Data
     {
+        MODEL_COLUMN_TYPE(16);
+
         simfil::ModelNodeAddress object_;
         simfil::StringId schemaName_ = {};
         SourceDataAddress sourceAddress_;
-
-        template <typename S>
-        void serialize(S& s)
-        {
-            s.object(object_);
-            s.value2b(schemaName_);
-            s.object(sourceAddress_);
-        }
     };
 
     Data* const data_;

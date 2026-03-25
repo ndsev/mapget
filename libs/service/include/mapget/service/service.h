@@ -10,6 +10,7 @@
 #include <mutex>
 #include <utility>
 #include <chrono>
+#include <set>
 
 namespace mapget
 {
@@ -20,6 +21,12 @@ enum class RequestStatus {
     NoDataSource = 0x2, /** No data source could provide the requested map + layer. */
     Unauthorized = 0x3, /** The user is not authorized to access the requested data source. */
     Aborted = 0x4 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
+};
+
+struct LayerRequestContext {
+    RequestStatus status_ = RequestStatus::NoDataSource;
+    LayerType layerType_ = LayerType::Features;
+    uint32_t stages_ = 1;
 };
 
 /**
@@ -41,6 +48,12 @@ public:
         std::string layerId,
         std::vector<TileId> tiles);
 
+    /** Construct a staged request with tile IDs grouped by next missing stage. */
+    LayerTilesRequest(
+        std::string mapId,
+        std::string layerId,
+        std::vector<std::vector<TileId>> tileIdsByNextStage);
+
     /** Get the current status of the request. */
     RequestStatus getStatus();
 
@@ -57,10 +70,17 @@ public:
     std::string layerId_;
 
     /**
-     * The map tile ids for which this request is dedicated.
-     * Must not be empty. Result tiles will be processed in the given order.
+     * The map tile IDs for this request, grouped by next missing stage.
+     * Bucket index N means: send stage N and all higher stages for these IDs.
      */
-    std::vector<TileId> tiles_;
+    std::vector<std::vector<TileId>> tileIdsByNextStage_;
+
+    /**
+     * True iff the request explicitly uses `tileIdsByNextStage`.
+     * Legacy `tileIds` requests keep unstaged semantics and must not be
+     * expanded into one backend request per advertised stage.
+     */
+    bool usesStageBuckets_ = false;
 
     /**
      * The callback function which is called when all tiles have been processed.
@@ -76,22 +96,39 @@ public:
     template <class Fun>
     LayerTilesRequest& onSourceDataLayer(Fun&& callback) { onSourceDataLayer_ = std::forward<Fun>(callback); return *this; }
 
+    /**
+     * Callback for per-tile load-state changes.
+     */
+    template <class Fun>
+    LayerTilesRequest& onLayerLoadStateChanged(Fun&& callback) { onLoadStateChanged_ = std::forward<Fun>(callback); return *this; }
+
 protected:
     virtual void notifyResult(TileLayer::Ptr);
+    void notifyLoadState(MapTileKey const& key, TileLayer::LoadState state) const;
     void setStatus(RequestStatus s);
     void notifyStatus();
     nlohmann::json toJson();
 
 private:
+    /** Resolve staged tile IDs into concrete stage-qualified tile keys. */
+    void prepareResolvedLayer(LayerType layerType, uint32_t stages);
+
     /**
      * The callback functions which are called when a result tile is available.
      */
     std::function<void(TileFeatureLayer::Ptr)> onFeatureLayer_;
     std::function<void(TileSourceDataLayer::Ptr)> onSourceDataLayer_;
+    std::function<void(MapTileKey const&, TileLayer::LoadState)> onLoadStateChanged_;
 
-    // So the service can track which tileId index from tiles_
+    // So the service can track which tile index from resolvedTileKeys_
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
+
+    // Resolved staged tile keys in scheduling order.
+    std::vector<MapTileKey> resolvedTileKeys_;
+
+    // Track which resolved tile keys still need to be scheduled/served.
+    std::set<MapTileKey> tileKeysNotStarted_;
 
     // So the requester can track how many results have been received.
     size_t resultCount_ = 0;
@@ -99,7 +136,7 @@ private:
     // Mutex/condition variable for reading/setting request status.
     std::mutex statusMutex_;
     std::condition_variable statusConditionVariable_;
-    RequestStatus status_ = RequestStatus::Open;
+    std::atomic<RequestStatus> status_ = RequestStatus::Open;
 };
 
 /**
@@ -186,6 +223,14 @@ public:
         std::optional<AuthHeaders> const& clientHeaders) const;
 
     /**
+     * Resolve request context (status, layer type, stage count) for one map+layer.
+     */
+    [[nodiscard]] LayerRequestContext resolveLayerRequest(
+        std::string const& mapId,
+        std::string const& layerId,
+        std::optional<AuthHeaders> const& clientHeaders) const;
+
+    /**
      * Get Statistics about the operation of this service.
      * Returns the following values:
      * - `workers`: Number of active workers.
@@ -193,6 +238,17 @@ public:
      * - `active-requests`: Number of in-flight requests.
      */
     [[nodiscard]] nlohmann::json getStatistics() const;
+
+    /**
+     * Variant of getStatistics() with optional expensive analyses:
+     * - includeCachedFeatureTreeBytes: Parse cached feature tiles and aggregate
+     *   detailed subtree sizes.
+     * - includeTileSizeDistribution: Build cached feature-tile size histogram
+     *   and percentiles.
+     */
+    [[nodiscard]] nlohmann::json getStatistics(
+        bool includeCachedFeatureTreeBytes,
+        bool includeTileSizeDistribution) const;
 
     /** Get the Cache which this service was constructed with. */
     [[nodiscard]] Cache::Ptr cache();

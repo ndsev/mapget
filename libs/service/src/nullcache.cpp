@@ -13,6 +13,11 @@ void NullCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
     // Do nothing - no caching
 }
 
+void NullCache::forEachTileLayerBlob(const TileBlobVisitor& cb) const
+{
+    // No cached tiles.
+}
+
 std::optional<std::string> NullCache::getStringPoolBlob(std::string_view const& sourceNodeId)
 {
     return std::nullopt;

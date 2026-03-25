@@ -217,11 +217,11 @@ std::optional<std::string> SQLiteCache::getTileLayerBlob(MapTileKey const& k)
         std::string result(static_cast<const char*>(data), size);
         
         log().trace(fmt::format("Key: {} | Layer size: {}", k.toString(), size));
-        log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
+        log().debug("Cache hits: {}, cache misses: {}", cacheHits_.load(), cacheMisses_.load());
         return result;
     }
     else if (rc == SQLITE_DONE) {
-        log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
+        log().debug("Cache hits: {}, cache misses: {}", cacheHits_.load(), cacheMisses_.load());
         return {};
     }
     else {
@@ -245,7 +245,7 @@ void SQLiteCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
         raise(fmt::format("Error writing to database: {}", sqlite3_errmsg(db_)));
     }
 
-    log().debug("Cache hits: {}, cache misses: {}", cacheHits_, cacheMisses_);
+    log().debug("Cache hits: {}, cache misses: {}", cacheHits_.load(), cacheMisses_.load());
 
     // Check if we need to evict old tiles
     if (maxTileCount_ > 0) {
@@ -257,6 +257,32 @@ void SQLiteCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
             }
         }
     }
+}
+
+void SQLiteCache::forEachTileLayerBlob(const TileBlobVisitor& cb) const
+{
+    std::lock_guard<std::mutex> lock(dbMutex_);
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, "SELECT key, data FROM tiles", -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        raise(fmt::format("Failed to prepare tile iteration statement: {}", sqlite3_errmsg(db_)));
+    }
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const void* data = sqlite3_column_blob(stmt, 1);
+        int size = sqlite3_column_bytes(stmt, 1);
+        if (key && data && size >= 0) {
+            cb(MapTileKey(key), std::string(static_cast<const char*>(data), size));
+        }
+    }
+    if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        raise(fmt::format("Error iterating cached tiles: {}", sqlite3_errmsg(db_)));
+    }
+
+    sqlite3_finalize(stmt);
 }
 
 void SQLiteCache::cleanupOldestTiles()

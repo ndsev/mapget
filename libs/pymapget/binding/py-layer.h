@@ -96,8 +96,17 @@ void bindTileLayer(py::module_& m)
                 std::visit(
                     [&](auto&& vv)
                     {
-                        if constexpr (!std::is_same_v<std::decay_t<decltype(vv)>, std::monostate>)
+                        using V = std::decay_t<decltype(vv)>;
+                        if constexpr (std::is_same_v<V, std::monostate>) {
+                            return;
+                        }
+                        else if constexpr (std::is_same_v<V, ByteArray>) {
+                            // Store bytes in hex to keep JSON valid and readable.
+                            self.setInfo(k, vv.toHex());
+                        }
+                        else {
                             self.setInfo(k, vv);
+                        }
                     },
                     v);
             },
@@ -106,7 +115,7 @@ void bindTileLayer(py::module_& m)
             R"pbdoc(
             Set a JSON field to store sizes, construction times,
             and other arbitrary meta-information. The value may be
-            bool, int, double or string.
+            bool, int, double or string. ByteArray values are stored as hex strings.
         )pbdoc")
         .def(
             "set_prefix",
@@ -215,5 +224,12 @@ void bindTileLayer(py::module_& m)
             { return self.toJson().dump(); },
             R"pbdoc(
             Convert this tile to a GeoJSON feature collection.
-        )pbdoc");
+        )pbdoc")
+        .def("__len__", [](TileFeatureLayer const& self) { return self.size(); })
+        .def("__getitem__", [](TileFeatureLayer const& self, int64_t i) {
+            auto sz = (int64_t)self.size();
+            if (i < 0) i += sz;
+            if (i < 0 || i >= sz) throw py::index_error();
+            return BoundFeature(self.at((size_t)i));
+        });
 }

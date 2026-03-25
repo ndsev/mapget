@@ -1,668 +1,81 @@
-#include "http-service.h"
-#include "mapget/log.h"
-#include "mapget/service/config.h"
+#include "http-service-impl.h"
 
-#include <atomic>
-#include <condition_variable>
-#include <filesystem>
-#include <fstream>
-#include <mutex>
-#include <sstream>
-#include <vector>
-#include "cli.h"
-#include "httplib.h"
-#include "nlohmann/json-schema.hpp"
-#include "nlohmann/json.hpp"
-#include "yaml-cpp/yaml.h"
-#include <zlib.h>
+#include "tiles-ws-controller.h"
 
-#ifdef __linux__
-#include <malloc.h>
-#endif
+#include <drogon/HttpAppFramework.h>
+#include <drogon/HttpRequest.h>
+#include <drogon/HttpResponse.h>
+
+#include <utility>
 
 namespace mapget
 {
 
-namespace
-{
-
-/**
- * Simple gzip compressor for streaming compression
- */
-class GzipCompressor {
-public:
-    GzipCompressor() {
-        strm_.zalloc = Z_NULL;
-        strm_.zfree = Z_NULL;
-        strm_.opaque = Z_NULL;
-        // 16+MAX_WBITS enables gzip format (not just deflate)
-        int ret = deflateInit2(&strm_, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                              16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
-        if (ret != Z_OK) {
-            throw std::runtime_error("Failed to initialize gzip compressor");
-        }
-    }
-
-    ~GzipCompressor() {
-        deflateEnd(&strm_);
-    }
-
-    std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH) {
-        std::string result;
-        if (size == 0 && flush_mode == Z_NO_FLUSH) {
-            return result;
-        }
-
-        strm_.avail_in = static_cast<uInt>(size);
-        strm_.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data));
-
-        char outbuf[8192];
-        do {
-            strm_.avail_out = sizeof(outbuf);
-            strm_.next_out = reinterpret_cast<Bytef*>(outbuf);
-            
-            int ret = deflate(&strm_, flush_mode);
-            if (ret == Z_STREAM_ERROR) {
-                throw std::runtime_error("Gzip compression failed");
-            }
-            
-            size_t have = sizeof(outbuf) - strm_.avail_out;
-            result.append(outbuf, have);
-        } while (strm_.avail_out == 0);
-
-        return result;
-    }
-
-    std::string finish() {
-        return compress(nullptr, 0, Z_FINISH);
-    }
-
-private:
-    z_stream strm_{};
-};
-
-/**
- * Recursively convert a YAML node to a JSON object,
- * with special handling for sensitive fields.
- * The function returns a nlohmann::json object and updates maskedSecretMap.
- */
-}  // namespace
-
-struct HttpService::Impl
-{
-    HttpService& self_;
-    HttpServiceConfig config_;
-    mutable std::atomic<uint64_t> binaryRequestCounter_{0};
-    mutable std::atomic<uint64_t> jsonRequestCounter_{0};
-
-    explicit Impl(HttpService& self, const HttpServiceConfig& config) 
-        : self_(self), config_(config) {}
-
-    enum class ResponseType {
-        Binary,
-        Json
-    };
-
-    void tryMemoryTrim(ResponseType responseType) const {
-        uint64_t interval = (responseType == ResponseType::Binary) 
-            ? config_.memoryTrimIntervalBinary 
-            : config_.memoryTrimIntervalJson;
-        
-        if (interval > 0) {
-            auto& counter = (responseType == ResponseType::Binary) 
-                ? binaryRequestCounter_ 
-                : jsonRequestCounter_;
-            
-            auto count = counter.fetch_add(1, std::memory_order_relaxed);
-            if ((count % interval) == 0) {
-#ifdef __linux__
-                // Only log in debug builds to reduce overhead
-                #ifndef NDEBUG
-                const char* typeStr = (responseType == ResponseType::Binary) ? "binary" : "JSON";
-                log().debug("Trimming memory after {} {} requests (interval: {})", count, typeStr, interval);
-                #endif
-                malloc_trim(0);
-#endif
-                // On non-Linux platforms, this is a no-op but we still track the counter
-            }
-        }
-    }
-
-    // Use a shared buffer for the responses and a mutex for thread safety.
-    struct HttpTilesRequestState
-    {
-        static constexpr auto binaryMimeType = "application/binary";
-        static constexpr auto jsonlMimeType = "application/jsonl";
-        static constexpr auto anyMimeType = "*/*";
-
-        std::mutex mutex_;
-        std::condition_variable resultEvent_;
-
-        uint64_t requestId_;
-        std::stringstream buffer_;
-        std::string responseType_;
-        std::unique_ptr<TileLayerStream::Writer> writer_;
-        std::vector<LayerTilesRequest::Ptr> requests_;
-        TileLayerStream::StringPoolOffsetMap stringOffsets_;
-        std::unique_ptr<GzipCompressor> compressor_;  // Store compressor per request
-
-        HttpTilesRequestState()
-        {
-            static std::atomic_uint64_t nextRequestId;
-            writer_ = std::make_unique<TileLayerStream::Writer>(
-                [&, this](auto&& msg, auto&& msgType) { buffer_ << msg; },
-                stringOffsets_);
-            requestId_ = nextRequestId++;
-        }
-
-        void parseRequestFromJson(nlohmann::json const& requestJson)
-        {
-            std::string mapId = requestJson["mapId"];
-            std::string layerId = requestJson["layerId"];
-            std::vector<TileId> tileIds;
-            tileIds.reserve(requestJson["tileIds"].size());
-            for (auto const& tid : requestJson["tileIds"].get<std::vector<uint64_t>>())
-                tileIds.emplace_back(tid);
-            requests_
-                .push_back(std::make_shared<LayerTilesRequest>(mapId, layerId, std::move(tileIds)));
-        }
-
-        void setResponseType(std::string const& s)
-        {
-            responseType_ = s;
-            if (responseType_ == HttpTilesRequestState::binaryMimeType)
-                return;
-            if (responseType_ == HttpTilesRequestState::jsonlMimeType)
-                return;
-            if (responseType_ == HttpTilesRequestState::anyMimeType) {
-                responseType_ = binaryMimeType;
-                return;
-            }
-            raise(fmt::format("Unknown Accept-Header value {}", responseType_));
-        }
-
-        void addResult(TileLayer::Ptr const& result)
-        {
-            std::unique_lock lock(mutex_);
-            log().debug("Response ready: {}", MapTileKey(*result).toString());
-            if (responseType_ == binaryMimeType) {
-                // Binary response
-                writer_->write(result);
-            }
-            else {
-                // JSON response - optimize with compact dump settings
-                // TODO: Implement direct streaming with result->writeGeoJsonTo(buffer_)
-                // to avoid intermediate JSON object creation entirely
-                auto json = result->toJson();
-                // Use compact dump: no indentation, no spaces, ignore errors
-                // This reduces string allocation overhead
-                buffer_ << json.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore) << "\n";
-            }
-            resultEvent_.notify_one();
-        }
-    };
-
-    mutable std::mutex clientRequestMapMutex_;
-    mutable std::unordered_map<std::string, std::shared_ptr<HttpTilesRequestState>> requestStatePerClientId_;
-
-    void abortRequestsForClientId(std::string clientId, std::shared_ptr<HttpTilesRequestState> newState = nullptr) const
-    {
-        std::unique_lock clientRequestMapAccess(clientRequestMapMutex_);
-        auto clientRequestIt = requestStatePerClientId_.find(clientId);
-        if (clientRequestIt != requestStatePerClientId_.end()) {
-            // Ensure that any previous requests from the same clientId
-            // are finished post-haste!
-            bool anySoftAbort = false;
-            for (auto const& req : clientRequestIt->second->requests_) {
-                if (!req->isDone()) {
-                    self_.abort(req);
-                    anySoftAbort = true;
-                }
-            }
-            if (anySoftAbort)
-                log().warn("Soft-aborting tiles request {}", clientRequestIt->second->requestId_);
-            requestStatePerClientId_.erase(clientRequestIt);
-        }
-        if (newState) {
-            requestStatePerClientId_.emplace(clientId, newState);
-        }
-    }
-
-    /**
-     * Wraps around the generic mapget service's request() function
-     * to include httplib request decoding and response encoding.
-     */
-    void handleTilesRequest(const httplib::Request& req, httplib::Response& res) const
-    {
-        // Parse the JSON request.
-        nlohmann::json j = nlohmann::json::parse(req.body);
-        auto requestsJson = j["requests"];
-
-        // TODO: Limit number of requests to avoid DoS to other users.
-        // Within one HTTP request, all requested tiles from the same map+layer
-        // combination should be in a single LayerTilesRequest.
-        auto state = std::make_shared<HttpTilesRequestState>();
-        log().info("Processing tiles request {}", state->requestId_);
-        for (auto& requestJson : requestsJson) {
-            state->parseRequestFromJson(requestJson);
-        }
-
-        // Parse stringPoolOffsets.
-        if (j.contains("stringPoolOffsets")) {
-            for (auto& item : j["stringPoolOffsets"].items()) {
-                state->stringOffsets_[item.key()] = item.value().get<simfil::StringId>();
-            }
-        }
-
-        // Determine response type.
-        state->setResponseType(req.get_header_value("Accept"));
-
-        // Process requests.
-        for (auto& request : state->requests_) {
-            request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
-            request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
-            request->onDone_ = [state](RequestStatus r)
-            {
-                state->resultEvent_.notify_one();
-            };
-        }
-        auto canProcess = self_.request(
-            state->requests_,
-            AuthHeaders{req.headers.begin(), req.headers.end()});
-
-        if (!canProcess) {
-            // Send a status report detailing for each request
-            // whether its data source is unavailable or it was aborted.
-            res.status = 400;
-            std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
-            for (const auto& r : state->requests_) {
-                requestStatuses.push_back(static_cast<std::underlying_type_t<RequestStatus>>(r->getStatus()));
-                if (r->getStatus() == RequestStatus::Unauthorized) {
-                    res.status = 403;  // Forbidden.
-                }
-            }
-            res.set_content(
-                nlohmann::json::object({{"requestStatuses", requestStatuses}}).dump(),
-                "application/json");
-            return;
-        }
-
-        // Parse/Process clientId.
-        if (j.contains("clientId")) {
-            auto clientId = j["clientId"].get<std::string>();
-            abortRequestsForClientId(clientId, state);
-        }
-
-        // Check if client accepts gzip compression
-        bool enableGzip = false;
-        if (req.has_header("Accept-Encoding")) {
-            std::string acceptEncoding = req.get_header_value("Accept-Encoding");
-            enableGzip = acceptEncoding.find("gzip") != std::string::npos;
-            log().debug("Accept-Encoding header: '{}', enableGzip: {}", acceptEncoding, enableGzip);
-        } else {
-            log().debug("No Accept-Encoding header present");
-        }
-
-        // Set Content-Encoding header if compression is enabled
-        if (enableGzip) {
-            res.set_header("Content-Encoding", "gzip");
-            state->compressor_ = std::make_unique<GzipCompressor>();
-            log().debug("Set Content-Encoding: gzip header");
-        }
-
-        // For efficiency, set up httplib to stream tile layer responses to client:
-        // (1) Lambda continuously supplies response data to httplib's DataSink,
-        //     picking up data from state->buffer_ until all tile requests are done.
-        //     Then, signal sink->done() to close the stream with a 200 status.
-        //     Using chunked transfer encoding with optional manual compression.
-        // (2) Lambda acts as a cleanup routine, triggered by httplib upon request wrap-up.
-        //     The success flag indicates if wrap-up was due to sink->done() or external factors
-        //     like network errors or request aborts in lengthy tile requests (e.g., map-viewer).
-        res.set_chunked_content_provider(
-            state->responseType_,
-            [state](size_t offset, httplib::DataSink& sink)
-            {
-                std::unique_lock lock(state->mutex_);
-
-                // Wait until there is data to be read.
-                std::string strBuf;
-                bool allDone = false;
-                state->resultEvent_.wait(
-                    lock,
-                    [&]
-                    {
-                        allDone = std::all_of(
-                            state->requests_.begin(),
-                            state->requests_.end(),
-                            [](const auto& r) { return r->isDone(); });
-                        if (allDone && state->responseType_ == HttpTilesRequestState::binaryMimeType)
-                            state->writer_->sendEndOfStream();
-                        strBuf = state->buffer_.str();
-                        return !strBuf.empty() || allDone;
-                    });
-
-                if (!strBuf.empty()) {
-                    // Compress data if gzip is enabled
-                    if (state->compressor_) {
-                        std::string compressed = state->compressor_->compress(strBuf.data(), strBuf.size());
-                        if (!compressed.empty()) {
-                            log().debug("Compressing: {} bytes -> {} bytes (request {})", 
-                                      strBuf.size(), compressed.size(), state->requestId_);
-                            sink.write(compressed.data(), compressed.size());
-                        }
-                    } else {
-                        log().debug("Streaming {} bytes (no compression)...", strBuf.size());
-                        sink.write(strBuf.data(), strBuf.size());
-                    }
-                    sink.os.flush();
-                    state->buffer_.str("");  // Clear buffer content
-                    state->buffer_.clear();  // Clear error flags
-                    // Force release of internal buffer memory
-                    std::stringstream().swap(state->buffer_);
-                }
-
-                // Call sink.done() when all requests are done.
-                if (allDone) {
-                    // Finish compression if enabled
-                    if (state->compressor_) {
-                        std::string finalChunk = state->compressor_->finish();
-                        log().debug(
-                            "Final compression chunk is {} bytes.",
-                            strBuf.size(), finalChunk.size(), state->requestId_);
-                        if (!finalChunk.empty()) {
-                            sink.write(finalChunk.data(), finalChunk.size());
-                        }
-                    }
-                    sink.done();
-                }
-
-                return true;
-            },
-            // Network error/timeout of request to datasource:
-            // cleanup callback to abort the requests.
-            [state, this](bool success)
-            {
-                if (!success) {
-                    log().warn("Aborting tiles request {}", state->requestId_);
-                    for (auto& request : state->requests_) {
-                        self_.abort(request);
-                    }
-                }
-                else {
-                    log().info("Tiles request {} was successful.", state->requestId_);
-                    // Determine response type and trim accordingly
-                    ResponseType respType = (state->responseType_ == HttpTilesRequestState::binaryMimeType) 
-                        ? ResponseType::Binary 
-                        : ResponseType::Json;
-                    tryMemoryTrim(respType);
-                }
-            });
-    }
-
-    void handleAbortRequest(const httplib::Request& req, httplib::Response& res) const
-    {
-        // Parse the JSON request.
-        nlohmann::json j = nlohmann::json::parse(req.body);
-        if (j.contains("clientId")) {
-            auto const clientId = j["clientId"].get<std::string>();
-            abortRequestsForClientId(clientId);
-        }
-        else {
-            res.status = 400;
-            res.set_content("Missing clientId", "text/plain");
-        }
-    }
-
-    void handleSourcesRequest(const httplib::Request& req, httplib::Response& res) const
-    {
-        auto sourcesInfo = nlohmann::json::array();
-        for (auto& source : self_.info(AuthHeaders{req.headers.begin(), req.headers.end()})) {
-            sourcesInfo.push_back(source.toJson());
-        }
-        res.set_content(sourcesInfo.dump(), "application/json");
-    }
-
-    void handleStatusRequest(const httplib::Request&, httplib::Response& res) const
-    {
-        auto serviceStats = self_.getStatistics();
-        auto cacheStats = self_.cache()->getStatistics();
-
-        std::ostringstream oss;
-        oss << "<html><body>";
-        oss << "<h1>Status Information</h1>";
-
-        // Output serviceStats
-        oss << "<h2>Service Statistics</h2>";
-        oss << "<pre>" << serviceStats.dump(4) << "</pre>";  // Indentation of 4 for pretty printing
-
-        // Output cacheStats
-        oss << "<h2>Cache Statistics</h2>";
-        oss << "<pre>" << cacheStats.dump(4) << "</pre>";  // Indentation of 4 for pretty printing
-
-        oss << "</body></html>";
-        res.set_content(oss.str(), "text/html");
-    }
-
-    void handleLocateRequest(const httplib::Request& req, httplib::Response& res) const
-    {
-        // Parse the JSON request.
-        nlohmann::json j = nlohmann::json::parse(req.body);
-        auto requestsJson = j["requests"];
-        auto allResponsesJson = nlohmann::json::array();
-
-        for (auto const& locateReqJson : requestsJson) {
-            LocateRequest locateReq{locateReqJson};
-            auto responsesJson = nlohmann::json::array();
-            for (auto const& resp : self_.locate(locateReq))
-                responsesJson.emplace_back(resp.serialize());
-            allResponsesJson.emplace_back(responsesJson);
-        }
-
-        res.set_content(
-            nlohmann::json::object({{"responses", allResponsesJson}}).dump(),
-            "application/json");
-    }
-
-    static bool openConfigFile(std::ifstream& configFile, httplib::Response& res)
-    {
-        auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
-        if (!configFilePath.has_value()) {
-            res.status = 404;  // Not found.
-            res.set_content(
-                "The config file path is not set. Check the server configuration.",
-                "text/plain");
-            return false;
-        }
-
-        std::filesystem::path path = *configFilePath;
-        if (!configFilePath || !std::filesystem::exists(path)) {
-            res.status = 404;  // Not found.
-            res.set_content("The server does not have a config file.", "text/plain");
-            return false;
-        }
-
-        configFile.open(*configFilePath);
-        if (!configFile) {
-            res.status = 500;  // Internal Server Error.
-            res.set_content("Failed to open config file.", "text/plain");
-            return false;
-        }
-
-        return true;
-    }
-
-    static void handleGetConfigRequest(const httplib::Request& req, httplib::Response& res)
-    {
-        if (!isGetConfigEndpointEnabled()) {
-            res.status = 403;  // Forbidden.
-            res.set_content(
-                "The GET /config endpoint is disabled by the server administrator.",
-                "text/plain");
-            return;
-        }
-
-        std::ifstream configFile;
-        if (!openConfigFile(configFile, res)) {
-            return;
-        }
-        nlohmann::json jsonSchema = DataSourceConfigService::get().getDataSourceConfigSchema();
-
-        try {
-            // Load config YAML, expose the parts which clients may edit.
-            YAML::Node configYaml = YAML::Load(configFile);
-            nlohmann::json jsonConfig;
-            std::unordered_map<std::string, std::string> maskedSecretMap;
-            for (const auto& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
-                if (auto configYamlEntry = configYaml[key])
-                    jsonConfig[key] = yamlToJson(configYaml[key], true, &maskedSecretMap);
-            }
-
-            nlohmann::json combinedJson;
-            combinedJson["schema"] = jsonSchema;
-            combinedJson["model"] = jsonConfig;
-            combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
-
-            // Set the response
-            res.status = 200;  // OK
-            res.set_content(combinedJson.dump(2), "application/json");
-        }
-        catch (const std::exception& e) {
-            res.status = 500;  // Internal Server Error
-            res.set_content("Error processing config file: " + std::string(e.what()), "text/plain");
-        }
-    }
-
-    static void handlePostConfigRequest(const httplib::Request& req, httplib::Response& res)
-    {
-        if (!isPostConfigEndpointEnabled()) {
-            res.status = 403;  // Forbidden.
-            res.set_content(
-                "The POST /config endpoint is not enabled by the server administrator.",
-                "text/plain");
-            return;
-        }
-
-        std::mutex mtx;
-        std::condition_variable cv;
-        bool update_done = false;
-
-        std::ifstream configFile;
-        if (!openConfigFile(configFile, res)) {
-            return;
-        }
-
-        // Subscribe to configuration changes.
-        auto subscription = DataSourceConfigService::get().subscribe(
-            [&](const std::vector<YAML::Node>& serviceConfigNodes)
-            {
-                std::lock_guard lock(mtx);
-                res.status = 200;
-                res.set_content("Configuration updated and applied successfully.", "text/plain");
-                update_done = true;
-                cv.notify_one();
-            },
-            [&](const std::string& error)
-            {
-                std::lock_guard lock(mtx);
-                res.status = 500;
-                res.set_content("Error applying the configuration: " + error, "text/plain");
-                update_done = true;
-                cv.notify_one();
-            });
-
-        // Parse the JSON from the request body.
-        nlohmann::json jsonConfig;
-        try {
-            jsonConfig = nlohmann::json::parse(req.body);
-        }
-        catch (const nlohmann::json::parse_error& e) {
-            res.status = 400;  // Bad Request
-            res.set_content("Invalid JSON format: " + std::string(e.what()), "text/plain");
-            return;
-        }
-
-        // Validate JSON against schema.
-        try {
-            DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
-        }
-        catch (const std::exception& e) {
-            res.status = 500;  // Internal Server Error.
-            res.set_content("Validation failed: " + std::string(e.what()), "text/plain");
-            return;
-        }
-
-        // Load the YAML, parse the secrets.
-        auto yamlConfig = YAML::Load(configFile);
-        std::unordered_map<std::string, std::string> maskedSecrets;
-        yamlToJson(yamlConfig, true, &maskedSecrets);
-
-        // Create YAML nodes from JSON nodes.
-        for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
-            if (jsonConfig.contains(key))
-                yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
-        }
-
-        // Write the YAML to configFilePath.
-        update_done = false;
-        configFile.close();
-        log().trace("Writing new config.");
-        std::ofstream newConfigFile(*DataSourceConfigService::get().getConfigFilePath());
-        newConfigFile << yamlConfig;
-        newConfigFile.close();
-
-        // Wait for the subscription callback.
-        std::unique_lock<std::mutex> lk(mtx);
-        if (!cv.wait_for(lk, std::chrono::seconds(60), [&] { return update_done; })) {
-            res.status = 500;  // Internal Server Error.
-            res.set_content("Timeout while waiting for config to update.", "text/plain");
-        }
-    }
-};
-
 HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
-    : Service(std::move(cache), config.watchConfig, config.defaultTtl),
-      impl_(std::make_unique<Impl>(*this, config))
+    : Service(std::move(cache), config.watchConfig, config.defaultTtl), impl_(std::make_unique<Impl>(*this, config))
 {
 }
 
 HttpService::~HttpService() = default;
 
-void HttpService::setup(httplib::Server& server)
+void HttpService::setup(drogon::HttpAppFramework& app)
 {
-    server.Post(
+    detail::registerTilesWebSocketController(app, *this);
+
+    app.registerHandler(
         "/tiles",
-        [&](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleTilesRequest(req, res); });
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleTilesRequest(req, std::move(callback));
+        },
+        {drogon::Post});
 
-    server.Post(
-        "/abort",
-        [&](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleAbortRequest(req, res); });
-
-    server.Get(
+    app.registerHandler(
         "/sources",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleSourcesRequest(req, res); });
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleSourcesRequest(req, std::move(callback));
+        },
+        {drogon::Get});
 
-    server.Get(
+    app.registerHandler(
         "/status",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleStatusRequest(req, res); });
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleStatusRequest(req, std::move(callback));
+        },
+        {drogon::Get});
 
-    server.Post(
+    app.registerHandler(
+        "/status-data",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleStatusDataRequest(req, std::move(callback));
+        },
+        {drogon::Get});
+
+    app.registerHandler(
         "/locate",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleLocateRequest(req, res); });
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleLocateRequest(req, std::move(callback));
+        },
+        {drogon::Post});
 
-    server.Get(
+    app.registerHandler(
         "/config",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handleGetConfigRequest(req, res); });
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (req->method() == drogon::Get) {
+                Impl::handleGetConfigRequest(req, std::move(callback));
+                return;
+            }
+            if (req->method() == drogon::Post) {
+                impl_->handlePostConfigRequest(req, std::move(callback));
+                return;
+            }
 
-    server.Post(
-        "/config",
-        [this](const httplib::Request& req, httplib::Response& res)
-        { impl_->handlePostConfigRequest(req, res); });
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k405MethodNotAllowed);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody("Method not allowed");
+            callback(resp);
+        },
+        {drogon::Get, drogon::Post});
 }
 
 }  // namespace mapget

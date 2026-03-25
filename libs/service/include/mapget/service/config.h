@@ -189,7 +189,7 @@ private:
     // Atomic flag to control the file watching thread.
     std::atomic<bool> watching_ = false;
 
-    // Thread which is watching the config file changed-timestamp.
+    // Thread which polls the config file for content changes.
     std::optional<std::thread> watchThread_;
 
     // Mutex to ensure that currentConfig_ and subscriptions_ are safely accessed.

@@ -121,7 +121,7 @@ void DataSourceConfigService::loadConfig()
 
         if (sha256 == lastConfigSHA256_)
         {
-            log().info("Config file unchanged. No need to reload.");
+            log().trace("Config file unchanged. No need to reload.");
             return;
         }
 
@@ -503,10 +503,6 @@ void DataSourceConfigService::startConfigFileWatchThread()
             };
 
             auto lastModTime = modTime(path);
-            if (lastModTime)
-                loadConfig();
-            else
-                log().debug("The config file does not exist yet.");
 
             while (watching_) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -515,7 +511,6 @@ void DataSourceConfigService::startConfigFileWatchThread()
                 if (currentModTime && !lastModTime) {
                     // The file has appeared since the last check.
                     log().debug("The config file exists now (t={}).", toStr(*currentModTime));
-                    loadConfig();
                 }
                 else if (!currentModTime && lastModTime) {
                     log().debug("The config file disappeared.");
@@ -527,13 +522,19 @@ void DataSourceConfigService::startConfigFileWatchThread()
                             "The config file changed (t0={} vs t1={}).",
                             toStr(*currentModTime),
                             toStr(*lastModTime));
-                        loadConfig();
                     }
                     else
                         log().trace(
                             "The config file is unchanged (t0={} vs t1={}).",
                             toStr(*currentModTime),
                             toStr(*lastModTime));
+                }
+
+                if (currentModTime) {
+                    // Reload by content hash, not only by timestamp. Fast rewrites can
+                    // otherwise be missed if the file system timestamp granularity is
+                    // coarse or the watch thread starts after the rewrite has landed.
+                    loadConfig();
                 }
 
                 lastModTime = currentModTime;

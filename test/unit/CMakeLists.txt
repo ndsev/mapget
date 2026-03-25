@@ -1,6 +1,7 @@
 project(test.mapget.unit CXX)
 
 add_executable(test.mapget
+  test-main.cpp
   test-model.cpp
   test-model-geometry.cpp
   test-simfil-geometry.cpp
@@ -16,6 +17,9 @@ add_executable(test.mapget
 add_executable(test.mapget.filelog
   test-file-logging.cpp)
 
+add_executable(test.mapget.datasource-server
+  test-datasource-server.cpp)
+
 target_link_libraries(test.mapget
   PUBLIC
     mapget-log
@@ -23,7 +27,16 @@ target_link_libraries(test.mapget
     mapget-http-datasource
     mapget-http-service
     geojsonsource
-    Catch2::Catch2WithMain)
+    Catch2::Catch2)
+
+target_link_libraries(test.mapget.datasource-server
+  PUBLIC
+    mapget-log
+    mapget-http-datasource)
+
+target_compile_definitions(test.mapget
+  PRIVATE
+    MAPGET_TEST_DATASOURCE_SERVER_EXE=\"$<TARGET_FILE:test.mapget.datasource-server>\")
 
 target_link_libraries(test.mapget.filelog
   PUBLIC

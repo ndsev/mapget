@@ -14,17 +14,53 @@ CPMAddPackage(
     OPTIONS
         "EXPECTED_BUILD_TESTS OFF"
         "EXPECTED_BUILD_PACKAGE_DEB OFF")
-CPMAddPackage(
-    URI "gh:Klebert-Engineering/simfil@0.6.2"
-    OPTIONS
-        "SIMFIL_WITH_MODEL_JSON ON"
-        "SIMFIL_SHARED OFF")
+
+set(MAPGET_SIMFIL_SOURCE_DIR "" CACHE PATH
+    "Local simfil source directory to use instead of fetching from Git.")
+
+set(_mapget_simfil_source_dir "${MAPGET_SIMFIL_SOURCE_DIR}")
+if ("${_mapget_simfil_source_dir}" STREQUAL ""
+    AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/../../simfil/CMakeLists.txt")
+    set(_mapget_simfil_source_dir "${CMAKE_CURRENT_LIST_DIR}/../../simfil")
+endif()
+
+if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
+    message(STATUS "Using local simfil from ${_mapget_simfil_source_dir}")
+    CPMAddPackage(
+        NAME simfil
+        SOURCE_DIR "${_mapget_simfil_source_dir}"
+        OPTIONS
+            "SIMFIL_WITH_MODEL_JSON ON"
+            "SIMFIL_SHARED OFF")
+else()
+    CPMAddPackage(
+        URI "gh:Klebert-Engineering/simfil#v0.7.0"
+        OPTIONS
+            "SIMFIL_WITH_MODEL_JSON ON"
+            "SIMFIL_SHARED OFF")
+endif()
+
 CPMAddPackage(
     URI "gl:eidheim/tiny-process-library#8bbb5a"  # Switch to release > 2.0.4 once available
     OPTIONS
         "BUILD_TESTING OFF")
 
 if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+    # OpenSSL's Configure script needs a "full" Perl distribution. Git for
+    # Windows ships a minimal perl that is missing required modules (e.g.
+    # Locale::Maketext::Simple), causing OpenSSL builds to fail.
+    if (WIN32)
+        if (NOT DEFINED PERL_EXECUTABLE OR PERL_EXECUTABLE MATCHES "[\\\\/]Git[\\\\/]usr[\\\\/]bin[\\\\/]perl\\.exe$")
+            find_program(_MAPGET_STRAWBERRY_PERL
+                NAMES perl.exe
+                PATHS "C:/Strawberry/perl/bin"
+                NO_DEFAULT_PATH)
+            if (_MAPGET_STRAWBERRY_PERL)
+                set(PERL_EXECUTABLE "${_MAPGET_STRAWBERRY_PERL}" CACHE FILEPATH "" FORCE)
+            endif()
+        endif()
+    endif()
+
     set (OPENSSL_VERSION openssl-3.5.2)
     CPMAddPackage("gh:klebert-engineering/openssl-cmake@1.0.0")
     CPMAddPackage(
@@ -40,19 +76,67 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     endif()
 
     CPMAddPackage(
-        URI "gh:yhirose/cpp-httplib@0.15.3"
+        NAME jsoncpp
+        GIT_REPOSITORY https://github.com/open-source-parsers/jsoncpp
+        GIT_TAG 1.9.5
+        GIT_SHALLOW ON
         OPTIONS
-            "CPPHTTPLIB_USE_POLL ON"
-            "HTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN OFF"
-            "HTTPLIB_INSTALL OFF"
-            "HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF"
-            "HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF")
-    # Manually enable openssl/zlib in httplib to avoid FindPackage calls.
-    target_compile_definitions(httplib INTERFACE
-        CPPHTTPLIB_OPENSSL_SUPPORT
-        CPPHTTPLIB_ZLIB_SUPPORT)
-    target_link_libraries(httplib INTERFACE
-        OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
+            "JSONCPP_WITH_TESTS OFF"
+            "JSONCPP_WITH_POST_BUILD_UNITTEST OFF"
+            "JSONCPP_WITH_PKGCONFIG_SUPPORT OFF"
+            "JSONCPP_WITH_CMAKE_PACKAGE OFF"
+            "BUILD_SHARED_LIBS OFF"
+            "BUILD_STATIC_LIBS ON"
+            "BUILD_OBJECT_LIBS OFF")
+    # Help Drogon's FindJsoncpp.cmake locate jsoncpp when built via CPM.
+    set(JSONCPP_INCLUDE_DIRS "${jsoncpp_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+    set(JSONCPP_LIBRARIES jsoncpp_static CACHE STRING "" FORCE)
+    # CPM generates a dummy package redirect config at
+    # `${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/jsoncpp-config.cmake`. Drogon uses
+    # `find_package(Jsoncpp)` (config-first), so make that redirect actually
+    # define the expected `Jsoncpp_lib` target.
+    if (DEFINED CMAKE_FIND_PACKAGE_REDIRECTS_DIR)
+        file(MAKE_DIRECTORY "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}")
+        file(WRITE "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/jsoncpp-extra.cmake" [=[
+if(NOT TARGET Jsoncpp_lib)
+  add_library(Jsoncpp_lib INTERFACE)
+  target_include_directories(Jsoncpp_lib INTERFACE "${JSONCPP_INCLUDE_DIRS}")
+  target_link_libraries(Jsoncpp_lib INTERFACE ${JSONCPP_LIBRARIES})
+endif()
+]=])
+    endif()
+
+    # Drogon defines install(EXPORT ...) rules unconditionally, which fail when
+    # used as a subproject with CPM-provided dependencies (zlib/jsoncpp/etc).
+    # Since mapget only needs Drogon for building, temporarily suppress install
+    # rule generation while configuring Drogon.
+    set(_MAPGET_PREV_SKIP_INSTALL_RULES "${CMAKE_SKIP_INSTALL_RULES}")
+    if (DEFINED BUILD_TESTING)
+        set(_MAPGET_PREV_BUILD_TESTING "${BUILD_TESTING}")
+    endif()
+    set(CMAKE_SKIP_INSTALL_RULES ON)
+    set(BUILD_TESTING OFF)
+
+    CPMAddPackage(
+        URI "gh:drogonframework/drogon@1.9.7"
+        OPTIONS
+            "BUILD_CTL OFF"
+            "BUILD_EXAMPLES OFF"
+            "BUILD_ORM OFF"
+            "BUILD_BROTLI OFF"
+            "BUILD_YAML_CONFIG OFF"
+            "BUILD_SHARED_LIBS OFF"
+            "USE_SUBMODULE ON"
+            "USE_STATIC_LIBS_ONLY OFF"
+            "USE_POSTGRESQL OFF"
+            "USE_MYSQL OFF"
+            "USE_SQLITE3 OFF"
+        GIT_SUBMODULES "trantor")
+
+    set(CMAKE_SKIP_INSTALL_RULES "${_MAPGET_PREV_SKIP_INSTALL_RULES}")
+    if (DEFINED _MAPGET_PREV_BUILD_TESTING)
+        set(BUILD_TESTING "${_MAPGET_PREV_BUILD_TESTING}")
+    endif()
 
     CPMAddPackage(
         URI "gh:jbeder/yaml-cpp#aa8d4e@0.8.0" # Use > 0.8.0 once available.
@@ -64,6 +148,7 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
     CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
     CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
+
 endif ()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
@@ -76,7 +161,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel@1.1.0")
+    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#v1.2.7@1.2.7")
 endif()
 
 if (MAPGET_ENABLE_TESTING)

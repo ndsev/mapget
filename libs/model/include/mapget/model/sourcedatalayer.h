@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "simfil/model/model.h"
 #include "simfil/environment.h"
@@ -16,11 +17,20 @@ class SourceDataCompoundNode;
 class TileSourceDataLayer : public TileLayer, public simfil::ModelPool
 {
 public:
+    // Keep ModelPool::resolve<T> overloads visible alongside the override below.
+    using ModelPool::resolve;
+
     using Ptr = std::shared_ptr<TileSourceDataLayer>;
     using ConstPtr = std::shared_ptr<const TileSourceDataLayer>;
 
     template <class T>
     using model_ptr = simfil::model_ptr<T>;
+
+    template<typename Target>
+    friend model_ptr<Target> resolveInternal(
+        simfil::res::tag<Target>,
+        TileSourceDataLayer const&,
+        simfil::ModelNode const&);
 
     /**
      * ModelPool colunm ids
@@ -37,7 +47,7 @@ public:
         std::shared_ptr<simfil::StringPool> const& stringPool);
 
     TileSourceDataLayer(
-        std::istream&,
+        const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter);
 
@@ -47,7 +57,6 @@ public:
      * Node factory interface
      */
     model_ptr<SourceDataCompoundNode> newCompound(size_t initialSize);
-    model_ptr<SourceDataCompoundNode> resolveCompound(simfil::ModelNode const&) const;
 
     /**
      * Get this pool's simfil evaluation environment.
@@ -87,5 +96,12 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// Primary template for ADL-based resolve hooks (specialized in sourcedatalayer.cpp).
+template<typename Target>
+simfil::model_ptr<Target> resolveInternal(
+    simfil::res::tag<Target>,
+    TileSourceDataLayer const& model,
+    simfil::ModelNode const& node);
 
 }

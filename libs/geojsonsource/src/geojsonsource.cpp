@@ -32,13 +32,13 @@ simfil::ModelNode::Ptr jsonToMapget(  // NOLINT (recursive)
     if (j.is_null())
         return {};
     if (j.is_object()) {
-        auto subObject = tfl->newObject(j.size());
+        auto subObject = tfl->newObject(j.size(), true);
         for (auto& el : j.items())
             subObject->addField(el.key(), jsonToMapget(tfl, el.value()));
         return subObject;
     }
     if (j.is_array()) {
-        auto subArray = tfl->newArray(j.size());
+        auto subArray = tfl->newArray(j.size(), true);
         for (auto& el : j.items())
             subArray->append(jsonToMapget(tfl, el.value()));
         return subArray;
@@ -335,18 +335,57 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
         auto feature = tile->newFeature(featureTypeName, {{"featureIndex", featureId}});
         featureId++;
 
-        // Get geometry data
-        auto geometry = feature_data["geometry"];
-        if (geometry["type"] == "Point") {
-            auto coordinates = geometry["coordinates"];
-            feature->addPoint({coordinates[0], coordinates[1]});
-        }
-        else if (geometry["type"] == "LineString") {
-            auto line = feature->geom()->newGeometry(GeomType::Line, 2);
-            for (auto& coordinates : geometry["coordinates"]) {
-                line->append({coordinates[0], coordinates[1]});
+        // Parse geometry data (recursive lambda to support GeometryCollection)
+        std::function<void(nlohmann::json const&)> addGeometry;
+        addGeometry = [&](nlohmann::json const& geom) {
+            if (!geom.is_object() || !geom.contains("type"))
+                return;
+            auto const type = geom["type"].get<std::string>();
+            if (type == "Point") {
+                auto const& c = geom["coordinates"];
+                feature->addPoint({c[0], c[1]});
             }
-        }
+            else if (type == "MultiPoint") {
+                auto points = feature->geom()->newGeometry(GeomType::Points, geom["coordinates"].size());
+                for (auto const& c : geom["coordinates"])
+                    points->append({c[0], c[1]});
+            }
+            else if (type == "LineString") {
+                auto line = feature->geom()->newGeometry(GeomType::Line, geom["coordinates"].size());
+                for (auto const& c : geom["coordinates"])
+                    line->append({c[0], c[1]});
+            }
+            else if (type == "MultiLineString") {
+                for (auto const& coords : geom["coordinates"]) {
+                    auto line = feature->geom()->newGeometry(GeomType::Line, coords.size());
+                    for (auto const& c : coords)
+                        line->append({c[0], c[1]});
+                }
+            }
+            else if (type == "Polygon") {
+                if (!geom["coordinates"].empty()) {
+                    auto const& ring = geom["coordinates"][0];
+                    auto poly = feature->geom()->newGeometry(GeomType::Polygon, ring.size());
+                    for (auto const& c : ring)
+                        poly->append({c[0], c[1]});
+                }
+            }
+            else if (type == "MultiPolygon") {
+                for (auto const& polygon : geom["coordinates"]) {
+                    if (!polygon.empty()) {
+                        auto const& ring = polygon[0];
+                        auto poly = feature->geom()->newGeometry(GeomType::Polygon, ring.size());
+                        for (auto const& c : ring)
+                            poly->append({c[0], c[1]});
+                    }
+                }
+            }
+            else if (type == "GeometryCollection") {
+                for (auto const& child : geom["geometries"])
+                    addGeometry(child);
+            }
+        };
+        addGeometry(feature_data["geometry"]);
 
         // Add top-level properties as attributes
         for (auto& property : feature_data["properties"].items()) {
@@ -372,7 +411,7 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
                     std::string dir = attr.value()["_direction"];
                     auto validDir = dir == "POSITIVE" ? Validity::Positive :
                                     dir == "NEGATIVE" ? Validity::Negative :
-                                    dir == "BOTH"     ? Validity::Both :
+                                    (dir == "COMPLETE" || dir == "BOTH") ? Validity::Both :
                                                         Validity::Empty;
                     attribute->validity()->newDirection(validDir);
                 }

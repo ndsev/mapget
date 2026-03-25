@@ -1,14 +1,21 @@
 #include "datasource.h"
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <stdexcept>
 #include <chrono>
+#include <vector>
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/info.h"
 
 namespace mapget
 {
 
-TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourceInfo const& info)
+TileLayer::Ptr DataSource::get(
+    const MapTileKey& k,
+    Cache::Ptr& cache,
+    DataSourceInfo const& info,
+    TileLayer::LoadStateCallback loadStateCallback)
 {
     auto layerInfo = info.getLayer(k.layerId_);
     if (!layerInfo)
@@ -25,7 +32,31 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
             info.mapId_,
             info.getLayer(k.layerId_),
             cache->getStringPool(info.nodeId_));
+        if (loadStateCallback) {
+            tileFeatureLayer->setLoadStateCallback(loadStateCallback);
+        }
+        if (layerInfo->stages_ > 1 && k.stage_ != UnspecifiedStage) {
+            tileFeatureLayer->setStage(k.stage_);
+            if (k.stage_ > 0) {
+                auto stageZeroKey = k;
+                stageZeroKey.stage_ = 0;
+                auto stageZeroLookup = cache->getTileLayer(stageZeroKey, info);
+                auto stageZeroLayer =
+                    std::dynamic_pointer_cast<TileFeatureLayer>(stageZeroLookup.tile);
+                if (stageZeroLayer) {
+                    std::vector<std::string> expectedFeatureIds;
+                    expectedFeatureIds.reserve(stageZeroLayer->size());
+                    for (auto const& feature : *stageZeroLayer) {
+                        expectedFeatureIds.emplace_back(feature->id()->toString());
+                    }
+                    tileFeatureLayer->setExpectedFeatureSequence(std::move(expectedFeatureIds));
+                }
+            }
+        } else {
+            tileFeatureLayer->setStage(std::nullopt);
+        }
         fill(tileFeatureLayer);
+        tileFeatureLayer->validateExpectedFeatureSequenceComplete();
         result = tileFeatureLayer;
         break;
     }
@@ -36,6 +67,9 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
             info.mapId_,
             info.getLayer(k.layerId_),
             cache->getStringPool(info.nodeId_));
+        if (loadStateCallback) {
+            tileSourceDataLayer->setLoadStateCallback(loadStateCallback);
+        }
         fill(tileSourceDataLayer);
         result = tileSourceDataLayer;
         break;
@@ -47,13 +81,14 @@ TileLayer::Ptr DataSource::get(const MapTileKey& k, Cache::Ptr& cache, DataSourc
     // Notify the tile how long it took to fill.
     if (result) {
         auto duration = std::chrono::steady_clock::now() - start;
-        result->setInfo("fill-time-ms", std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+        result->setInfo("Load+Convert/Total#ms", std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
     }
     return result;
 }
 
 void DataSource::requireAuthHeaderRegexMatchOption(std::string header, std::regex re)
 {
+    std::ranges::transform(header, header.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     authHeaderAlternatives_.insert({std::move(header), std::move(re)});
 }
 
@@ -64,7 +99,9 @@ bool DataSource::isDataSourceAuthorized(
         return true;
 
     for (auto const& [k, v] : clientHeaders) {
-        auto authHeaderPatternIt = authHeaderAlternatives_.find(k);
+        auto key = k;
+        std::ranges::transform(key, key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        auto authHeaderPatternIt = authHeaderAlternatives_.find(key);
         if (authHeaderPatternIt != authHeaderAlternatives_.end()) {
             if (std::regex_match(v, authHeaderPatternIt->second)) {
                 return true;

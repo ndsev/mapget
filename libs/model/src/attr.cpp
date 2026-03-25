@@ -5,14 +5,34 @@
 namespace mapget
 {
 
-Attribute::Attribute(Attribute::Data* data, simfil::ModelConstPtr l, simfil::ModelNodeAddress a)
-    : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(data->fields_, std::move(l), a), data_(data)
+namespace
+{
+simfil::ModelNode::Ptr exposedValidityNode(
+    TileFeatureLayer const& model,
+    simfil::ModelNodeAddress const& validityCollectionAddress)
+{
+    auto validities = model.resolve<MultiValidity>(validityCollectionAddress);
+    if (validities && validities->size() == 1) {
+        if (auto validity = validities->at(0)) {
+            return validity;
+        }
+    }
+    return model.resolve(validityCollectionAddress);
+}
+}
+
+Attribute::Attribute(Attribute::Data* data,
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(data->fields_, std::move(l), a, key),
+      data_(data)
 {
     if (data_->validities_)
         fields_.emplace_back(
             StringPool::ValidityStr,
             [](Attribute const& self) {
-                return model_ptr<simfil::ModelNode>::make(self.model_, self.data_->validities_);
+                return exposedValidityNode(self.model(), self.data_->validities_);
             });
 }
 
@@ -48,7 +68,8 @@ bool Attribute::forEachField(
 model_ptr<SourceDataReferenceCollection> Attribute::sourceDataReferences() const
 {
     if (data_->sourceDataRefs_) {
-        return model().resolveSourceDataReferenceCollection(*model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
+        return model().resolve<SourceDataReferenceCollection>(
+            *model_ptr<simfil::ModelNode>::make(model_, data_->sourceDataRefs_));
     }
     return {};
 }
@@ -63,7 +84,7 @@ model_ptr<MultiValidity> Attribute::validity()
     if (auto returnValue = validityOrNull()) {
         return returnValue;
     }
-    auto returnValue = model().newValidityCollection(1);
+    auto returnValue = model().newValidityCollection(2);
     data_->validities_ = returnValue->addr();
     return returnValue;
 }
@@ -73,7 +94,7 @@ model_ptr<MultiValidity> Attribute::validityOrNull() const
     if (!data_->validities_) {
         return {};
     }
-    return model().resolveValidityCollection(*ModelNode::Ptr::make(model_, data_->validities_));
+    return model().resolve<MultiValidity>(data_->validities_);
 }
 
 void Attribute::setValidity(const model_ptr<MultiValidity>& validities) const

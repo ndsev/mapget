@@ -4,8 +4,9 @@
 #include "stringpool.h"
 
 #include <map>
-#include <sstream>
+#include <span>
 #include <shared_mutex>
+#include <vector>
 
 namespace mapget
 {
@@ -29,13 +30,48 @@ public:
         StringPool = 1,
         TileFeatureLayer = 2,
         TileSourceDataLayer = 3,
+        /**
+         * JSON-encoded status updates, e.g. for WebSocket /tiles.
+         *
+         * Payload: UTF-8 JSON bytes (not null-terminated).
+         */
+        Status = 4,
+        /**
+         * JSON-encoded load-state updates for individual tiles.
+         *
+         * Payload: UTF-8 JSON bytes (not null-terminated).
+         */
+        LoadStateChange = 5,
+        /**
+         * JSON-encoded request-context marker for WebSocket /tiles streams.
+         *
+         * Payload: UTF-8 JSON bytes (not null-terminated).
+         */
+        RequestContext = 6,
         EndOfStream = 128
     };
 
     struct StringPoolCache;
 
-    /** Protocol Version which parsed blobs must be compatible with. */
-    static constexpr Version CurrentProtocolVersion{0, 1, 1};
+    /**
+     * Protocol Version which parsed blobs must be compatible with.
+     * Version History:
+     * - Version 1.0:
+     *   + Added TileFeatureLayer Message
+     *   + Added StringPool Message
+     *   + Added TileSourceDataLayer Message
+     *   + Added EndOfStream Message
+     * - Version 1.1:
+     *   + Added errorCode field to TileLayer
+     *   + Added Status Message
+     *   + Added LoadStateChange Message
+     * - Version 1.2:
+     *   - Removed LoadStateChange Message.
+     *   + Added tile load stage.
+     *   + Feature geometry reference may point directly to a Geometry
+     *     (single-geometry fast-path) or to a GeometryCollection.
+     */
+    static constexpr Version CurrentProtocolVersion{1, 2, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -71,7 +107,11 @@ public:
          * size, or false, if no sufficient bytes are available. Throws if the protocol version
          * in the header does not match the version currently used by mapget.
          */
-        static bool readMessageHeader(std::stringstream& stream, MessageType& outType, uint32_t& outSize);
+        static bool readMessageHeader(
+            std::span<const uint8_t> bytes,
+            MessageType& outType,
+            uint32_t& outSize,
+            size_t* bytesRead = nullptr);
 
     private:
         enum class Phase { ReadHeader, ReadValue };
@@ -86,7 +126,8 @@ public:
          */
         bool continueReading();
 
-        std::stringstream buffer_;
+        std::vector<uint8_t> buffer_;
+        size_t readOffset_ = 0;
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(TileLayer::Ptr)> onParsedLayer_;

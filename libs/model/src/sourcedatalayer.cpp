@@ -4,13 +4,13 @@
 #include <memory>
 
 #include "bitsery/bitsery.h"
-#include "bitsery/adapter/stream.h"
+#include "bitsery/adapter/buffer.h"
 #include "bitsery/adapter/stream.h"
 #include "bitsery/deserializer.h"
 #include "bitsery/serializer.h"
 #include "bitsery/traits/string.h"
 #include "bitsery/traits/vector.h"
-#include "simfil/model/bitsery-traits.h" // segmented_vector traits
+#include "simfil/model/bitsery-traits.h"
 
 #include "mapget/log.h"
 #include "sourcedata.h"
@@ -31,7 +31,7 @@ namespace mapget
 struct TileSourceDataLayer::Impl
 {
     SourceDataAddressFormat format_;
-    sfl::segmented_vector<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
+    simfil::ModelColumn<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
 
     // Simfil compiled expression and environment
     SimfilExpressionCache expressionCache_;
@@ -44,8 +44,7 @@ struct TileSourceDataLayer::Impl
     // Bitsery (de-)serialization interface
     template<typename S>
     void readWrite(S& s) {
-        constexpr size_t maxColumnSize = std::numeric_limits<uint32_t>::max();
-        s.container(compounds_, maxColumnSize);
+        s.object(compounds_);
         s.value1b(format_);
     }
 };
@@ -62,22 +61,31 @@ TileSourceDataLayer::TileSourceDataLayer(
 {}
 
 TileSourceDataLayer::TileSourceDataLayer(
-    std::istream& in,
+    const std::vector<uint8_t>& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
     StringPoolResolveFun const& stringPoolGetter
 ) :
-    TileLayer(in, layerInfoResolveFun),
+    TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
     ModelPool(stringPoolGetter(nodeId_)),
     impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
 {
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(in);
+    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+    if (deserializationOffsetBytes_ > input.size()) {
+        raise("Failed to read TileSourceDataLayer: invalid deserialization offset.");
+    }
+    bitsery::Deserializer<Adapter> s(Adapter(
+        input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
+        input.end()));
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raiseFmt(
             "Failed to read TileFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error()));
     }
-    ModelPool::read(in);
+    const auto modelOffset = deserializationOffsetBytes_ + s.adapter().currentReadPos();
+    if (auto result = ModelPool::read(input, modelOffset); !result) {
+        raise(result.error().message);
+    }
 }
 
 TileSourceDataLayer::~TileSourceDataLayer() = default;
@@ -96,21 +104,31 @@ model_ptr<SourceDataCompoundNode> TileSourceDataLayer::newCompound(size_t initia
         &data,
         std::static_pointer_cast<TileSourceDataLayer>(shared_from_this()),
         ModelNodeAddress(Compound, static_cast<uint32_t>(index)),
-        initialSize);
+        initialSize,
+        mpKey_);
 }
 
-model_ptr<SourceDataCompoundNode> TileSourceDataLayer::resolveCompound(simfil::ModelNode const& n) const
-{
-    assert(n.addr().column() == Compound && "Unexpected column type!");
+// Short aliases to keep resolve hook signatures compact.
+using simfil::ModelNode;
+using simfil::res::tag;
 
-    auto& data = impl_->compounds_.at(n.addr().index());
-    return SourceDataCompoundNode(&data, std::static_pointer_cast<const TileSourceDataLayer>(shared_from_this()), n.addr());
+template<>
+model_ptr<SourceDataCompoundNode> resolveInternal(tag<SourceDataCompoundNode>, TileSourceDataLayer const& model, ModelNode const& node)
+{
+    assert(node.addr().column() == TileSourceDataLayer::Compound && "Unexpected column type!");
+
+    auto& data = model.impl_->compounds_.at(node.addr().index());
+    return SourceDataCompoundNode(
+        &data,
+        std::static_pointer_cast<const TileSourceDataLayer>(model.shared_from_this()),
+        node.addr(),
+        model.mpKey_);
 }
 
 tl::expected<void, simfil::Error> TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
 {
     if (n.addr().column() == Compound) {
-        cb(*resolveCompound(n));
+        cb(*resolve<SourceDataCompoundNode>(n));
         return {};
     }
     return ModelPool::resolve(n, cb);

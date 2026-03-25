@@ -10,12 +10,17 @@
 #include <chrono>
 #include <optional>
 #include <memory>
+#include <functional>
+#include <vector>
+#include <limits>
 #include <tl/expected.hpp>
 
 namespace simfil { struct StringPool; }
 
 namespace mapget
 {
+
+constexpr uint32_t UnspecifiedStage = std::numeric_limits<uint32_t>::max();
 
 /**
  * Callback type for a function which returns a string pool instance
@@ -46,6 +51,9 @@ struct MapTileKey
     // The tile's associated map tile id
     TileId tileId_;
 
+    // Staged-loading index for this tile/layer request (0-based).
+    uint32_t stage_ = 0;
+
     /** Constructor to parse the key from a string, as returned by toString. */
     explicit MapTileKey(std::string const& str);
 
@@ -53,17 +61,18 @@ struct MapTileKey
     explicit MapTileKey(TileLayer const& data);
 
     /** Constructor to create the cache key from raw components. */
-    explicit MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId);
+    explicit MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId, uint32_t stage = 0);
 
     /** Allow default ctor. */
     MapTileKey() = default;
 
     /** Convert the key to a string. The string will be in the form of
-     *  "(0):(1):(2):(3)", with
+     *  "(0):(1):(2):(3):(4)", with
      *   (0) being the layer type enum name,
      *   (1) being the map id,
      *   (2) being the layer id,
-     *   (3) being the hexadecimal tile id.
+     *   (3) being the hexadecimal tile id,
+     *   (4) being the decimal stage index.
      */
     [[nodiscard]] std::string toString() const;
 
@@ -85,6 +94,12 @@ class TileLayer
 {
 public:
     using Ptr = std::shared_ptr<TileLayer>;
+    enum class LoadState : uint8_t {
+        LoadingQueued = 0,
+        BackendFetching = 1,
+        BackendConverting = 2
+    };
+    using LoadStateCallback = std::function<void(LoadState)>;
 
     /**
      * Constructor that takes tileId_, nodeId_, mapId_, layerInfo_,
@@ -97,13 +112,14 @@ public:
         const std::shared_ptr<LayerInfo>& info);
 
     /**
-     * Parse a tile layer from an input stream. Will throw if
+     * Parse a tile layer from a binary byte buffer. Will throw if
      * the resolved major-minor version of the TileLayer is not the same
-     * as the one read from the stream.
+     * as the one read from the input.
      */
     TileLayer(
-        std::istream& inputStream,
-        LayerInfoResolveFun const& layerInfoResolveFun);
+        const std::vector<uint8_t>& input,
+        LayerInfoResolveFun const& layerInfoResolveFun,
+        size_t* bytesRead = nullptr);
 
     virtual ~TileLayer() = default;
 
@@ -192,7 +208,24 @@ public:
     virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);
     virtual nlohmann::json toJson() const;
 
+    /**
+     * Set a load-state callback. Used by the service to forward state changes.
+     * Not serialized with the tile.
+     */
+    void setLoadStateCallback(LoadStateCallback cb);
+
+    /** Emit a load-state change (if a callback is registered). */
+    void setLoadState(LoadState state);
+
+    /**
+     * Optional staged-loading index for feature tiles.
+     * Base TileLayer implementation has no stage.
+     */
+    [[nodiscard]] virtual std::optional<uint32_t> stage() const;
+    virtual void setStage(std::optional<uint32_t> stage);
+
 protected:
+    size_t deserializationOffsetBytes_ = 0;
     Version mapVersion_{0, 0, 0};
     TileId tileId_;
     std::string nodeId_; // Identifier of the string-pool/datasource instance
@@ -204,6 +237,7 @@ protected:
     std::optional<std::chrono::milliseconds> ttl_;
     nlohmann::json info_;
     std::optional<std::string> legalInfo_; // Copyright-related information
+    LoadStateCallback onLoadStateChanged_;
 };
 
 }

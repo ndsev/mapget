@@ -9,32 +9,35 @@ namespace mapget
 
 /** Model node impls for VertexNode. */
 
-PointNode::PointNode(ModelNode const& baseNode, Geometry::Data const* geomData)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode)
+PointNode::PointNode(
+    ModelNode const& baseNode,
+    simfil::ArrayIndex vertexArray,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode, key)
 {
-    if (geomData->isView_)
-        throw std::runtime_error("Point must be constructed through VertexBuffer which resolves view to geometry.");
     auto i = std::get<int64_t>(data_);
-    point_ = geomData->detail_.geom_.offset_;
-    if (i > 0) {
-        auto vertexResult = model().vertexBufferStorage().at(geomData->detail_.geom_.vertexArray_, i - 1);
-        if (!vertexResult) {
-            raise("Failed to get vertex from buffer");
-        }
-        point_ += vertexResult->get();
+    point_ = model().geometryAnchor();
+    auto vertexResult = model().vertexBufferStorage().at(
+        vertexArray,
+        static_cast<size_t>(i));
+    if (!vertexResult) {
+        raise("Failed to get vertex from buffer");
     }
+    point_ += vertexResult->get();
 }
 
-PointNode::PointNode(ModelNode const& baseNode, Validity::Data const* geomData)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode)
+PointNode::PointNode(ModelNode const& baseNode,
+    Validity::Data const* geomData,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode, key)
 {
     auto i = std::get<int64_t>(data_);
     // The extracted point index may point to a validity's single point
     // or to one of its range points. These magic indices are used in validity.cpp.
     switch (i) {
-    case 0: point_ = std::get<Point>(geomData->geomDescr_); break;
-    case 1: point_ = std::get<Validity::Data::Range>(geomData->geomDescr_).first; break;
-    case 2: point_ = std::get<Validity::Data::Range>(geomData->geomDescr_).second; break;
+    case 0: point_ = geomData->geomDescr_.point_; break;
+    case 1: point_ = geomData->geomDescr_.range_.first; break;
+    case 2: point_ = geomData->geomDescr_.range_.second; break;
     default:
         mapget::raiseFmt<std::runtime_error>("Invalid validity point index {}", i);
     }
@@ -71,9 +74,9 @@ StringId PointNode::keyAt(int64_t i) const {
 
 bool PointNode::iterate(const IterCallback& cb) const
 {
-    if (!cb(ValueNode(point_.x, model_))) return false;
-    if (!cb(ValueNode(point_.y, model_))) return false;
-    if (!cb(ValueNode(point_.z, model_))) return false;
+    if (!cb(*model_ptr<ValueNode>::make(point_.x, model_))) return false;
+    if (!cb(*model_ptr<ValueNode>::make(point_.y, model_))) return false;
+    if (!cb(*model_ptr<ValueNode>::make(point_.z, model_))) return false;
     return true;
 }
 

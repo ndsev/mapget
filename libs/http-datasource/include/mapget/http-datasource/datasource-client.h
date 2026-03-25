@@ -3,13 +3,22 @@
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/service/datasource.h"
-#include "httplib.h"
 
 #include <memory>
+#include <atomic>
 #include <condition_variable>
+#include <vector>
 
 namespace TinyProcessLib {
     class Process;
+}
+
+namespace drogon {
+class HttpClient;
+}
+
+namespace trantor {
+class EventLoopThread;
 }
 
 namespace mapget
@@ -32,12 +41,17 @@ public:
      * fails for any reason.
      */
     RemoteDataSource(std::string const& host, uint16_t port);
+    ~RemoteDataSource();
 
     // DataSource method overrides
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     void fill(TileSourceDataLayer::Ptr const& blobTile) override;
-    TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    TileLayer::Ptr get(
+        MapTileKey const& k,
+        Cache::Ptr& cache,
+        DataSourceInfo const& info,
+        TileLayer::LoadStateCallback loadStateCallback = {}) override;
     std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:
@@ -48,7 +62,8 @@ private:
     std::string error_;
 
     // Multiple http clients allow parallel GET requests
-    std::vector<httplib::Client> httpClients_;
+    std::unique_ptr<trantor::EventLoopThread> httpClientLoop_;
+    std::vector<std::shared_ptr<drogon::HttpClient>> httpClients_;
     std::atomic_uint64_t nextClient_{0};
 };
 
@@ -76,7 +91,11 @@ public:
     DataSourceInfo info() override;
     void fill(TileFeatureLayer::Ptr const& featureTile) override;
     void fill(TileSourceDataLayer::Ptr const& sourceDataLayer) override;
-    TileLayer::Ptr get(MapTileKey const& k, Cache::Ptr& cache, DataSourceInfo const& info) override;
+    TileLayer::Ptr get(
+        MapTileKey const& k,
+        Cache::Ptr& cache,
+        DataSourceInfo const& info,
+        TileLayer::LoadStateCallback loadStateCallback = {}) override;
     std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
 
 private:

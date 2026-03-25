@@ -138,12 +138,11 @@ nlohmann::json IdPart::toJson() const
         {"isOptional", isOptional_}};
 }
 
-bool IdPart::idPartsMatchComposition(
+std::optional<uint32_t> IdPart::compositionMatchEndIndex(
     const std::vector<IdPart>& candidateComposition,
     uint32_t compositionMatchStartIdx,
     const KeyValueViewPairs& featureIdParts,
     size_t matchLength,
-    bool requireCompositionEnd,
     std::string* error)
 {
     auto featureIdIter = featureIdParts.begin();
@@ -157,7 +156,7 @@ bool IdPart::idPartsMatchComposition(
     while (matchLength > 0 && compositionIter != candidateComposition.end()) {
         // Have we exhausted feature ID parts?
         if (featureIdIter == featureIdParts.end()) {
-            return false;
+            return std::nullopt;
         }
 
         auto [idPartKey, idPartValue] = *featureIdIter;
@@ -168,26 +167,54 @@ bool IdPart::idPartsMatchComposition(
                 ++compositionIter;
                 continue;
             }
-            return false;
+            return std::nullopt;
         }
 
         // Does the ID part's value match?
         if (!compositionIter->validate(idPartValue, error))
-            return false;
+            return std::nullopt;
 
         ++featureIdIter;
         ++compositionIter;
         --matchLength;
     }
 
+    if (matchLength != 0) {
+        return std::nullopt;
+    }
+
+    return static_cast<uint32_t>(std::distance(candidateComposition.begin(), compositionIter));
+}
+
+bool IdPart::idPartsMatchComposition(
+    const std::vector<IdPart>& candidateComposition,
+    uint32_t compositionMatchStartIdx,
+    const KeyValueViewPairs& featureIdParts,
+    size_t matchLength,
+    bool requireCompositionEnd,
+    std::string* error)
+{
+    auto const matchEndIndex = compositionMatchEndIndex(
+        candidateComposition,
+        compositionMatchStartIdx,
+        featureIdParts,
+        matchLength,
+        error);
+    if (!matchEndIndex) {
+        return false;
+    }
+
     if (requireCompositionEnd) {
+        auto compositionIter = candidateComposition.begin() + *matchEndIndex;
         while (compositionIter != candidateComposition.end()) {
-            if (!compositionIter->isOptional_)
+            if (!compositionIter->isOptional_) {
                 return false;
+            }
+            ++compositionIter;
         }
     }
 
-    return matchLength == 0;
+    return true;
 }
 
 bool IdPart::validate(std::variant<int64_t, std::string>& val, std::string* error) const
@@ -358,12 +385,28 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
                 coverages.push_back(Coverage::fromJson(item));
             }
 
+        const auto stages = std::max<uint32_t>(1U, j.value("stages", 1U));
+        auto stageLabels = j.value("stageLabels", std::vector<std::string>{});
+        if (stageLabels.size() < stages) {
+            stageLabels.reserve(stages);
+            for (uint32_t i = static_cast<uint32_t>(stageLabels.size()); i < stages; ++i) {
+                stageLabels.emplace_back(fmt::format("Stage {}", i));
+            }
+        }
+        const auto defaultHighFidelityStage = stages > 1U ? 1U : 0U;
+        const auto highFidelityStage = std::min<uint32_t>(
+            stages - 1U,
+            j.value("highFidelityStage", defaultHighFidelityStage));
+
         return std::make_shared<LayerInfo>(LayerInfo{
             j.value("layerId", layerId),
             type,
             featureTypes,
             j.value("zoomLevels", std::vector<int>()),
             coverages,
+            stages,
+            stageLabels,
+            highFidelityStage,
             j.value("canRead", true),
             j.value("canWrite", false),
             Version::fromJson(j.value("version", Version().toJson()))});
@@ -393,12 +436,15 @@ nlohmann::json LayerInfo::toJson() const
         {"featureTypes", featureTypes},
         {"zoomLevels", zoomLevels_},
         {"coverage", coverages},
+        {"stages", stages_},
+        {"stageLabels", stageLabels_},
+        {"highFidelityStage", highFidelityStage_},
         {"canRead", canRead_},
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};
 }
 
-FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing)
+FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const
 {
     auto typeIt = std::find_if(
         featureTypes_.begin(),
@@ -412,32 +458,42 @@ FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool t
     return nullptr;
 }
 
-bool LayerInfo::validFeatureId(
+std::optional<uint8_t> LayerInfo::matchingFeatureIdCompositionIndex(
     const std::string_view& typeId,
     KeyValueViewPairs const& featureIdParts,
-    bool validateForNewFeature,
-    uint32_t compositionMatchStartIndex)
+    bool validateForNewFeature) const
 {
     auto typeInfo = getTypeInfo(typeId);
 
-    for (auto& candidateComposition : typeInfo->uniqueIdCompositions_) {
+    for (uint32_t compositionIndex = 0;
+         compositionIndex < typeInfo->uniqueIdCompositions_.size();
+         ++compositionIndex) {
+        auto const& candidateComposition = typeInfo->uniqueIdCompositions_[compositionIndex];
         if (IdPart::idPartsMatchComposition(
             candidateComposition,
-            compositionMatchStartIndex,
+            0,
             featureIdParts,
             featureIdParts.size(),
             true))
         {
-            return true;
+            return static_cast<uint8_t>(std::min<uint32_t>(compositionIndex, 255));
         }
 
         // References may use alternative ID compositions,
         // but the feature itself must always use the first (primary) one.
         if (validateForNewFeature)
-            return false;
+            return std::nullopt;
     }
 
-    return false;
+    return std::nullopt;
+}
+
+bool LayerInfo::validFeatureId(
+    const std::string_view& typeId,
+    KeyValueViewPairs const& featureIdParts,
+    bool validateForNewFeature) const
+{
+    return matchingFeatureIdCompositionIndex(typeId, featureIdParts, validateForNewFeature).has_value();
 }
 
 std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId, bool throwIfMissing) const

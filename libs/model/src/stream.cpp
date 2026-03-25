@@ -5,8 +5,10 @@
 #include "simfil/model/nodes.h"
 
 #include <bitsery/bitsery.h>
+#include <bitsery/adapter/buffer.h>
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
+#include <chrono>
 #include <memory>
 
 #include "featurelayer.h"
@@ -29,20 +31,37 @@ TileLayerStream::Reader::Reader(
 
 void TileLayerStream::Reader::read(const std::string_view& bytes)
 {
-    buffer_ << bytes;
-    while (continueReading());
+    buffer_.insert(
+        buffer_.end(),
+        reinterpret_cast<const uint8_t*>(bytes.data()),
+        reinterpret_cast<const uint8_t*>(bytes.data()) + bytes.size());
+    while (continueReading()) {}
+
+    if (readOffset_ == buffer_.size()) {
+        buffer_.clear();
+        readOffset_ = 0;
+    }
+    else if (readOffset_ > 65536 && (readOffset_ * 2 > buffer_.size())) {
+        buffer_.erase(
+            buffer_.begin(),
+            buffer_.begin() + static_cast<std::ptrdiff_t>(readOffset_));
+        readOffset_ = 0;
+    }
 }
 
 bool TileLayerStream::Reader::eos()
 {
-    return (buffer_.tellp() - buffer_.tellg()) == 0;
+    return readOffset_ == buffer_.size();
 }
 
 bool TileLayerStream::Reader::continueReading()
 {
     if (currentPhase_ == Phase::ReadHeader)
     {
-        if (readMessageHeader(buffer_, nextValueType_, nextValueSize_)) {
+        size_t headerBytesRead = 0;
+        auto unreadBytes = std::span<const uint8_t>(buffer_).subspan(readOffset_);
+        if (readMessageHeader(unreadBytes, nextValueType_, nextValueSize_, &headerBytesRead)) {
+            readOffset_ += headerBytesRead;
             currentPhase_ = Phase::ReadValue;
         }
         else {
@@ -50,15 +69,19 @@ bool TileLayerStream::Reader::continueReading()
         }
     }
 
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(buffer_);
-    auto numUnreadBytes = buffer_.tellp() - buffer_.tellg();
+    auto numUnreadBytes = buffer_.size() - readOffset_;
     if (numUnreadBytes < nextValueSize_)
         return false;
+
+    std::vector<uint8_t> payload(
+        buffer_.begin() + static_cast<std::ptrdiff_t>(readOffset_),
+        buffer_.begin() + static_cast<std::ptrdiff_t>(readOffset_ + nextValueSize_));
+    readOffset_ += nextValueSize_;
 
     if (nextValueType_ == MessageType::TileFeatureLayer)
     {
         auto start = std::chrono::system_clock::now();
-        auto layer = std::make_shared<TileFeatureLayer>(buffer_, layerInfoProvider_, [this](auto&& nodeId) {
+        auto layer = std::make_shared<TileFeatureLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
             return stringPoolProvider_->getStringPool(nodeId);
         });
 
@@ -69,16 +92,19 @@ bool TileLayerStream::Reader::continueReading()
     }
     else if (nextValueType_ == MessageType::TileSourceDataLayer)
     {
-        auto layer = std::make_shared<TileSourceDataLayer>(buffer_, layerInfoProvider_, [this](auto&& nodeId) {
+        auto layer = std::make_shared<TileSourceDataLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
             return stringPoolProvider_->getStringPool(nodeId);
         });
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::StringPool)
     {
-        // Read the node id which identifies the string pool.
-        std::string stringPoolNodeId = StringPool::readDataSourceNodeId(buffer_);
-        stringPoolProvider_->getStringPool(stringPoolNodeId)->read(buffer_);
+        size_t nodeIdBytesRead = 0;
+        auto stringPoolNodeId = StringPool::readDataSourceNodeId(payload, 0, &nodeIdBytesRead);
+        auto result = stringPoolProvider_->getStringPool(stringPoolNodeId)->read(payload, nodeIdBytesRead);
+        if (!result) {
+            raise(result.error().message);
+        }
     }
 
     currentPhase_ = Phase::ReadHeader;
@@ -90,26 +116,39 @@ std::shared_ptr<TileLayerStream::StringPoolCache> TileLayerStream::Reader::strin
     return stringPoolProvider_;
 }
 
-bool TileLayerStream::Reader::readMessageHeader(std::stringstream & stream, MessageType& outType, uint32_t& outSize)
+bool TileLayerStream::Reader::readMessageHeader(
+    std::span<const uint8_t> bytes,
+    MessageType& outType,
+    uint32_t& outSize,
+    size_t* bytesRead)
 {
-    bitsery::Deserializer<bitsery::InputStreamAdapter> s(stream);
-    auto numUnreadBytes = stream.tellp() - stream.tellg();
-
     // Version: 6B, Type: 1B, Size: 4B
-    constexpr auto headerSize = 6 + 1 + 4;
-    if (numUnreadBytes < headerSize)
+    constexpr size_t headerSize = 6 + 1 + 4;
+    if (bytes.size() < headerSize)
         return false;
+
+    std::vector<uint8_t> header(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(headerSize));
+    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+    bitsery::Deserializer<Adapter> s(Adapter(header.begin(), header.end()));
 
     Version protocolVersion;
     s.object(protocolVersion);
+    s.value1b(outType);
+    s.value4b(outSize);
+    if (s.adapter().error() != bitsery::ReaderError::NoError) {
+        raise(fmt::format(
+            "Failed to read stream message header: Error {}",
+            static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
+    }
     if (!protocolVersion.isCompatible(CurrentProtocolVersion)) {
         raise(fmt::format(
             "Unable to read message with version {} using version {}.",
             protocolVersion.toString(),
             CurrentProtocolVersion.toString()));
     }
-    s.value1b(outType);
-    s.value4b(outSize);
+    if (bytesRead != nullptr) {
+        *bytesRead = s.adapter().currentReadPos();
+    }
 
     return true;
 }
