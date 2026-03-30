@@ -746,6 +746,25 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
                 wsClient.stop();
             }
+
+            // WebSocket tiles: single-stage layers must also work through staged bucket requests.
+            {
+                auto req = nlohmann::json::object({
+                    {"requests", nlohmann::json::array({nlohmann::json::object({
+                        {"mapId", "Tropico"},
+                        {"layerId", "WayLayer"},
+                        {"tileIdsByNextStage", nlohmann::json::array({
+                            nlohmann::json::array({1234}),
+                        })},
+                    })})},
+                }).dump();
+
+                auto [status, wsTileCount] = runWsTilesRequest(true, req);
+                REQUIRE(wsTileCount == 1);
+                REQUIRE(status["requests"].size() == 1);
+                REQUIRE(status["requests"][0]["status"].get<int>() ==
+                        static_cast<int>(RequestStatus::Success));
+            }
         }
 
         service.remove(remoteDataSource);
