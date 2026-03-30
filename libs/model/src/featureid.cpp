@@ -2,7 +2,9 @@
 #include "featurelayer.h"
 
 #include <algorithm>
-#include <sstream>
+#include <string>
+
+#include <fmt/format.h>
 
 #include "mapget/log.h"
 
@@ -143,7 +145,7 @@ void appendTypedKeyValue(
         valueNode->value());
 }
 
-void appendNodeValueToString(std::stringstream& out, simfil::ModelNode::Ptr const& node)
+void appendNodeValueToString(std::string& out, simfil::ModelNode::Ptr const& node)
 {
     if (!node) {
         return;
@@ -157,7 +159,12 @@ void appendNodeValueToString(std::stringstream& out, simfil::ModelNode::Ptr cons
                 raiseFmt("FeatureId part value 'b\"{}\"' cannot be a ByteArray.", v.toHex());
             }
             else if constexpr (!std::is_same_v<T, std::monostate>) {
-                out << "." << v;
+                if constexpr (std::is_same_v<T, bool>) {
+                    fmt::format_to(std::back_inserter(out), FMT_STRING(".{:d}"), v);
+                }
+                else {
+                    fmt::format_to(std::back_inserter(out), FMT_STRING(".{}"), v);
+                }
             }
         },
         node->value());
@@ -208,8 +215,7 @@ std::string_view FeatureId::typeId() const
 
 std::string FeatureId::toString() const
 {
-    std::stringstream result;
-    result << typeId();
+    std::string result(typeId());
 
     if (data_.useCommonTilePrefix_) {
         if (auto idPrefix = model().getIdPrefix()) {
@@ -225,7 +231,7 @@ std::string FeatureId::toString() const
         }
     }
 
-    return result.str();
+    return result;
 }
 
 simfil::ValueType FeatureId::type() const

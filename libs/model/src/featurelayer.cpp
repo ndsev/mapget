@@ -501,18 +501,24 @@ namespace
  * Create a string representation of the given id parts.
  */
 std::string idPartsToString(KeyValueViewPairs const& idParts) {
-    std::stringstream result;
-    result << "{";
+    fmt::memory_buffer result;
+    fmt::format_to(std::back_inserter(result), FMT_STRING("{{"));
     for (auto i = 0; i < idParts.size(); ++i) {
-        if (i > 0)
-            result << ", ";
-        result << idParts[i].first << ": ";
-        std::visit([&result](auto&& value){
-           result << value;
+        if (i > 0) {
+            fmt::format_to(std::back_inserter(result), FMT_STRING(", "));
+        }
+        std::visit([&result, key = idParts[i].first](auto&& value){
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, bool>) {
+                fmt::format_to(std::back_inserter(result), FMT_STRING("{}: {:d}"), key, value);
+            }
+            else {
+                fmt::format_to(std::back_inserter(result), FMT_STRING("{}: {}"), key, value);
+            }
         }, idParts[i].second);
     }
-    result << "}";
-    return result.str();
+    fmt::format_to(std::back_inserter(result), FMT_STRING("}}"));
+    return fmt::to_string(result);
 }
 
 /**
