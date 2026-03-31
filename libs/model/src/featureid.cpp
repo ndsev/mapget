@@ -226,8 +226,11 @@ std::string FeatureId::toString() const
     }
 
     if (values_) {
-        for (auto const& value : *values_) {
-            appendNodeValueToString(result, value);
+        auto const limit = std::min<size_t>(partNames_.size(), visibleValueIndices_.size());
+        for (size_t i = 0; i < limit; ++i) {
+            appendNodeValueToString(
+                result,
+                values_->at(static_cast<int64_t>(visibleValueIndices_[i])));
         }
     }
 
