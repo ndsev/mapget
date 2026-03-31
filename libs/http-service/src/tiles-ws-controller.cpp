@@ -823,6 +823,36 @@ private:
         }
     }
 
+    /// Match one backend-produced tile key against the currently desired request set.
+    [[nodiscard]] std::optional<MapTileKey> matchDesiredTileKeyLocked(
+        MapTileKey key,
+        uint32_t advertisedStages) const
+    {
+        auto requestedTileKey = makeCanonicalRequestedTileKey(std::move(key));
+        if (desiredTileKeys_.find(requestedTileKey) != desiredTileKeys_.end()) {
+            return requestedTileKey;
+        }
+
+        // Single-stage datasources legitimately return stage-less tiles even when
+        // the client used staged bucket requests. Treat stage 0 and "unspecified"
+        // as equivalent only for those layers.
+        if (advertisedStages <= 1U) {
+            if (requestedTileKey.stage_ == UnspecifiedStage) {
+                requestedTileKey.stage_ = 0;
+                if (desiredTileKeys_.find(requestedTileKey) != desiredTileKeys_.end()) {
+                    return requestedTileKey;
+                }
+            } else if (requestedTileKey.stage_ == 0) {
+                requestedTileKey.stage_ = UnspecifiedStage;
+                if (desiredTileKeys_.find(requestedTileKey) != desiredTileKeys_.end()) {
+                    return requestedTileKey;
+                }
+            }
+        }
+
+        return std::nullopt;
+    }
+
     /// Complete all currently pending pull waiters with one terminal status.
     void collectAllPullWaitersLocked(PullFrameResult::Status status, std::vector<PullDispatch>& dispatches)
     {
@@ -1065,8 +1095,6 @@ private:
             return;
         if (!layer)
             return;
-
-        const auto requestedTileKey = makeCanonicalRequestedTileKey(layer->id());
         std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
         std::vector<PullDispatch> pullDispatches;
 
@@ -1074,8 +1102,11 @@ private:
             std::lock_guard lock(mutex_);
             if (cancelled_)
                 return;
+            auto requestedTileKey = matchDesiredTileKeyLocked(
+                layer->id(),
+                layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U);
             // Late-arriving tile for an outdated request: drop before serialization work.
-            if (desiredTileKeys_.find(requestedTileKey) == desiredTileKeys_.end()) {
+            if (!requestedTileKey.has_value()) {
                 return;
             }
 
@@ -1107,11 +1138,11 @@ private:
                 frame.type = m.type;
                 if (m.type == TileLayerStream::MessageType::StringPool) {
                     frame.stringPoolCommit = stringPoolCommit;
-                    frame.requestedTileKey = requestedTileKey;
+                    frame.requestedTileKey = *requestedTileKey;
                 }
                 if (m.type == TileLayerStream::MessageType::TileFeatureLayer
                     || m.type == TileLayerStream::MessageType::TileSourceDataLayer) {
-                    frame.requestedTileKey = requestedTileKey;
+                    frame.requestedTileKey = *requestedTileKey;
                 }
                 enqueueOutgoingLocked(std::move(frame));
             }
