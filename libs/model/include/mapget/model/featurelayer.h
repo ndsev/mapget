@@ -63,6 +63,27 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
 public:
     // Keep ModelPool::resolve<T> overloads visible alongside the override below.
     using ModelPool::resolve;
+    using Ptr = std::shared_ptr<TileFeatureLayer>;
+
+    struct CloneCacheKey
+    {
+        TileFeatureLayer const* model_ = nullptr;
+        uint32_t address_ = 0;
+
+        [[nodiscard]] bool operator==(CloneCacheKey const& other) const = default;
+    };
+
+    struct CloneCacheKeyHash
+    {
+        [[nodiscard]] size_t operator()(CloneCacheKey const& key) const noexcept
+        {
+            auto const modelHash = std::hash<TileFeatureLayer const*>{}(key.model_);
+            auto const addressHash = std::hash<uint32_t>{}(key.address_);
+            return modelHash ^ (addressHash + 0x9e3779b9U + (modelHash << 6U) + (modelHash >> 2U));
+        }
+    };
+
+    using CloneCache = std::unordered_map<CloneCacheKey, simfil::ModelNode::Ptr, CloneCacheKeyHash>;
 
     /**
      * This constructor initializes a new TileFeatureLayer instance.
@@ -257,9 +278,6 @@ public:
     model_ptr<Feature> find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
 
-    /** Shared pointer type */
-    using Ptr = std::shared_ptr<TileFeatureLayer>;
-
     /** Optional staged-loading index (0-based) for this feature tile. */
     [[nodiscard]] std::optional<uint32_t> stage() const override;
     void setStage(std::optional<uint32_t> stage) override;
@@ -340,7 +358,7 @@ public:
      * be appended to the existing feature.
      */
     void clone(
-        std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+        CloneCache& clonedModelNodes,
         TileFeatureLayer::Ptr const& otherLayer,
         Feature const& otherFeature,
         std::string_view const& type,
@@ -352,7 +370,7 @@ public:
      * of nodes which are referenced multiple times.
      */
     simfil::ModelNode::Ptr clone(
-        std::unordered_map<uint32_t, simfil::ModelNode::Ptr>& clonedModelNodes,
+        CloneCache& clonedModelNodes,
         TileFeatureLayer::Ptr const& otherLayer,
         simfil::ModelNode::Ptr const& otherNode);
 

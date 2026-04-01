@@ -2034,17 +2034,18 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 }
 
 ModelNode::Ptr TileFeatureLayer::clone(
-    std::unordered_map<uint32_t, ModelNode::Ptr>& cache,
+    CloneCache& cache,
     const TileFeatureLayer::Ptr& otherLayer,
     const ModelNode::Ptr& otherNode)
 {
-    auto it = cache.find(otherNode->addr().value_);
+    auto const cacheKey = CloneCacheKey{otherLayer.get(), otherNode->addr().value_};
+    auto it = cache.find(cacheKey);
     if (it != cache.end()) {
         return it->second;
     }
 
     using namespace simfil;
-    ModelNode::Ptr& newCacheNode = cache[otherNode->addr().value_];
+    ModelNode::Ptr& newCacheNode = cache[cacheKey];
     switch (otherNode->addr().column()) {
     case Objects: {
         auto resolved = otherLayer->resolve<simfil::Object>(otherNode);
@@ -2296,12 +2297,12 @@ ModelNode::Ptr TileFeatureLayer::clone(
         newCacheNode = resolve(otherNode->addr());
     }
     }
-    cache.insert({otherNode->addr().value_, newCacheNode});
+    cache.insert({cacheKey, newCacheNode});
     return newCacheNode;
 }
 
 void TileFeatureLayer::clone(
-    std::unordered_map<uint32_t, ModelNode::Ptr>& clonedModelNodes,
+    CloneCache& clonedModelNodes,
     const TileFeatureLayer::Ptr& otherLayer,
     const Feature& otherFeature,
     const std::string_view& type,
@@ -2323,6 +2324,12 @@ void TileFeatureLayer::clone(
         return clone(clonedModelNodes, otherLayer, n);
     };
 
+    auto owningLayer =
+        [](auto const& nodePtr) -> TileFeatureLayer::Ptr
+    {
+        return std::static_pointer_cast<TileFeatureLayer>(nodePtr->model().shared_from_this());
+    };
+
     // Adopt attributes
     if (auto attrs = otherFeature.attributesOrNull()) {
         auto baseAttrs = cloneTarget->attributes();
@@ -2336,21 +2343,23 @@ void TileFeatureLayer::clone(
     // Adopt attribute layers
     if (auto attrLayers = otherFeature.attributeLayersOrNull()) {
         auto baseAttrLayers = cloneTarget->attributeLayers();
-        for (auto const& [key, value] : attrLayers->fields()) {
-            if (auto keyStr = otherLayer->strings()->resolve(key)) {
-                baseAttrLayers->addLayer(*keyStr, resolve<AttributeLayer>(*lookupOrClone(value)));
-            }
-        }
+        attrLayers->forEachLayer(
+            [this, &baseAttrLayers, &clonedModelNodes, &owningLayer](std::string_view layerName, model_ptr<AttributeLayer> const& layer)
+            {
+                auto cloned = clone(clonedModelNodes, owningLayer(layer), ModelNode::Ptr(layer));
+                baseAttrLayers->addLayer(layerName, resolve<AttributeLayer>(*cloned));
+                return true;
+            });
     }
 
     // Adopt geometries
     if (auto geom = otherFeature.geomOrNull()) {
         auto baseGeom = cloneTarget->geom();
         geom->forEachGeometry(
-            [this, &baseGeom, &lookupOrClone](auto&& geomElement)
+            [this, &baseGeom, &clonedModelNodes, &owningLayer](auto&& geomElement)
             {
                 baseGeom->addGeometry(
-                    resolve<Geometry>(*lookupOrClone(geomElement)));
+                    resolve<Geometry>(*clone(clonedModelNodes, owningLayer(geomElement), ModelNode::Ptr(geomElement))));
                 return true;
             });
     }
@@ -2358,9 +2367,9 @@ void TileFeatureLayer::clone(
     // Adopt relations
     if (otherFeature.numRelations()) {
         otherFeature.forEachRelation(
-            [this, &cloneTarget, &lookupOrClone](auto&& rel)
+            [this, &cloneTarget, &clonedModelNodes, &owningLayer](auto&& rel)
             {
-                auto newRel = resolve<Relation>(*lookupOrClone(rel));
+                auto newRel = resolve<Relation>(*clone(clonedModelNodes, owningLayer(rel), ModelNode::Ptr(rel)));
                 cloneTarget->addRelation(newRel);
                 return true;
             });

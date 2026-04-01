@@ -762,7 +762,7 @@ struct Service::Impl : public Service::Controller
 
                 // Adopt new attributes, features and relations for the base feature
                 // from the auxiliary feature.
-                std::unordered_map<uint32_t, simfil::ModelNode::Ptr> clonedModelNodes;
+                TileFeatureLayer::CloneCache clonedModelNodes;
                 for (auto const& auxFeature : *auxTile)
                 {
                     // Note: A single secondary feature ID may resolve to multiple
