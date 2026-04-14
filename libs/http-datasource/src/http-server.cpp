@@ -153,6 +153,12 @@ void HttpServer::go(std::string const& interfaceAddr, uint16_t port, uint32_t wa
                 // Allow derived class to set up the server.
                 setup(app);
 
+                // Raise Drogon's default WebSocket client message size limit
+                // (128 KB) to 10 MB. Large tile requests with many tile IDs
+                // can exceed the default and trigger connection shutdown,
+                // cascading into a crash (std::terminate).
+                app.setClientMaxWebSocketMessageSize(10 * 1024 * 1024);
+
                 app.addListener(interfaceAddr, port);
 
                 app.registerBeginningAdvice([this]() {

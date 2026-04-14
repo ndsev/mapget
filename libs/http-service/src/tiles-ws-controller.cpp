@@ -1095,61 +1095,68 @@ private:
             return;
         if (!layer)
             return;
-        std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
-        std::vector<PullDispatch> pullDispatches;
 
-        {
-            std::lock_guard lock(mutex_);
-            if (cancelled_)
-                return;
-            auto requestedTileKey = matchDesiredTileKeyLocked(
-                layer->id(),
-                layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U);
-            // Late-arriving tile for an outdated request: drop before serialization work.
-            if (!requestedTileKey.has_value()) {
-                return;
-            }
+        try {
+            std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
+            std::vector<PullDispatch> pullDispatches;
 
-            if (currentWriteBatch_.has_value()) {
-                raise("TilesWsSession writer callback re-entered");
-            }
-            currentWriteBatch_.emplace();
-            writer_->write(layer);
-            auto batch = std::move(*currentWriteBatch_);
-            currentWriteBatch_.reset();
+            {
+                std::lock_guard lock(mutex_);
+                if (cancelled_)
+                    return;
+                auto requestedTileKey = matchDesiredTileKeyLocked(
+                    layer->id(),
+                    layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U);
+                // Late-arriving tile for an outdated request: drop before serialization work.
+                if (!requestedTileKey.has_value()) {
+                    return;
+                }
 
-            // If a StringPool message was generated, the writer updates writerOffsets_
-            // to the new highest string ID for this node after emitting it.
-            const auto nodeId = layer->nodeId();
-            const auto it = writerOffsets_.find(nodeId);
-            if (it != writerOffsets_.end()) {
-                const auto newOffset = it->second;
-                for (auto const& m : batch) {
-                    if (m.type == TileLayerStream::MessageType::StringPool) {
-                        stringPoolCommit = std::make_pair(nodeId, newOffset);
-                        break;
+                if (currentWriteBatch_.has_value()) {
+                    raise("TilesWsSession writer callback re-entered");
+                }
+                currentWriteBatch_.emplace();
+                writer_->write(layer);
+                auto batch = std::move(*currentWriteBatch_);
+                currentWriteBatch_.reset();
+
+                // If a StringPool message was generated, the writer updates writerOffsets_
+                // to the new highest string ID for this node after emitting it.
+                const auto nodeId = layer->nodeId();
+                const auto it = writerOffsets_.find(nodeId);
+                if (it != writerOffsets_.end()) {
+                    const auto newOffset = it->second;
+                    for (auto const& m : batch) {
+                        if (m.type == TileLayerStream::MessageType::StringPool) {
+                            stringPoolCommit = std::make_pair(nodeId, newOffset);
+                            break;
+                        }
                     }
                 }
-            }
 
-            for (auto& m : batch) {
-                OutgoingFrame frame;
-                frame.bytes = std::move(m.bytes);
-                frame.type = m.type;
-                if (m.type == TileLayerStream::MessageType::StringPool) {
-                    frame.stringPoolCommit = stringPoolCommit;
-                    frame.requestedTileKey = *requestedTileKey;
+                for (auto& m : batch) {
+                    OutgoingFrame frame;
+                    frame.bytes = std::move(m.bytes);
+                    frame.type = m.type;
+                    if (m.type == TileLayerStream::MessageType::StringPool) {
+                        frame.stringPoolCommit = stringPoolCommit;
+                        frame.requestedTileKey = *requestedTileKey;
+                    }
+                    if (m.type == TileLayerStream::MessageType::TileFeatureLayer
+                        || m.type == TileLayerStream::MessageType::TileSourceDataLayer) {
+                        frame.requestedTileKey = *requestedTileKey;
+                    }
+                    enqueueOutgoingLocked(std::move(frame));
                 }
-                if (m.type == TileLayerStream::MessageType::TileFeatureLayer
-                    || m.type == TileLayerStream::MessageType::TileSourceDataLayer) {
-                    frame.requestedTileKey = *requestedTileKey;
-                }
-                enqueueOutgoingLocked(std::move(frame));
+                // Newly queued frames can immediately satisfy blocked pull waiters.
+                drainReadyPullWaitersLocked(pullDispatches);
             }
-            // Newly queued frames can immediately satisfy blocked pull waiters.
-            drainReadyPullWaitersLocked(pullDispatches);
+            dispatchPullResults(std::move(pullDispatches));
         }
-        dispatchPullResults(std::move(pullDispatches));
+        catch (const std::exception& e) {
+            log().error("Failed to stream tile layer: {}", e.what());
+            cancelNoStatus();
+        }
     }
 
     /// Update per-request completion state and emit status when it changes.
@@ -1197,7 +1204,15 @@ private:
             cancelNoStatus();
             return;
         }
-        conn->send(encodeStreamMessage(type, payload), drogon::WebSocketMessageType::Binary);
+        try {
+            conn->send(
+                encodeStreamMessage(type, payload),
+                drogon::WebSocketMessageType::Binary);
+        }
+        catch (const std::exception& e) {
+            log().warn("WebSocket send failed: {}", e.what());
+            cancelNoStatus();
+        }
     }
 
     /// Send a status frame describing the current request statuses.
@@ -1339,66 +1354,73 @@ public:
     }
 
     /// Handle control and request messages from the websocket client.
+    /// Wrapped in try-catch because Drogon calls this with no exception
+    /// protection — an uncaught exception would terminate the process.
     void handleNewMessage(
         const drogon::WebSocketConnectionPtr& conn,
         std::string&& message,
         const drogon::WebSocketMessageType& type) override
     {
-        auto session = conn->getContext<TilesWsSession>();
-        if (!session) {
-            // This is a defensive fallback for unexpected context loss.
-            session = std::make_shared<TilesWsSession>(service_, conn, AuthHeaders{});
-            session->registerForMetrics();
-            {
-                std::lock_guard lock(gSessionRegistryMutex);
-                gSessionRegistry[session->clientId()] = session;
-            }
-            conn->setContext(session);
-        }
-
-        if (type != drogon::WebSocketMessageType::Text) {
-            const auto payload = nlohmann::json::object({
-                {"type", "mapget.tiles.status"},
-                {"allDone", true},
-                {"requests", nlohmann::json::array()},
-                {"message", "Expected a text message containing JSON."},
-            }).dump();
-            conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
-            return;
-        }
-
-        nlohmann::json j;
         try {
-            j = nlohmann::json::parse(message);
-        }
-        catch (const std::exception& e) {
-            const auto payload = nlohmann::json::object({
-                {"type", "mapget.tiles.status"},
-                {"allDone", true},
-                {"requests", nlohmann::json::array()},
-                {"message", fmt::format("Invalid JSON: {}", e.what())},
-            }).dump();
-            conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
-            return;
-        }
+            auto session = conn->getContext<TilesWsSession>();
+            if (!session) {
+                // This is a defensive fallback for unexpected context loss.
+                session = std::make_shared<TilesWsSession>(service_, conn, AuthHeaders{});
+                session->registerForMetrics();
+                {
+                    std::lock_guard lock(gSessionRegistryMutex);
+                    gSessionRegistry[session->clientId()] = session;
+                }
+                conn->setContext(session);
+            }
 
-        // Patch per-connection string pool offsets if supplied.
-        if (j.contains("stringPoolOffsets")) {
-            std::string errorMessage;
-            if (!session->applyStringPoolOffsetsPatch(j["stringPoolOffsets"], errorMessage)) {
+            if (type != drogon::WebSocketMessageType::Text) {
                 const auto payload = nlohmann::json::object({
                     {"type", "mapget.tiles.status"},
                     {"allDone", true},
                     {"requests", nlohmann::json::array()},
-                    {"message", std::move(errorMessage)},
+                    {"message", "Expected a text message containing JSON."},
                 }).dump();
                 conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
                 return;
             }
-        }
 
-        const auto requestId = session->allocateRequestId(j);
-        session->updateFromClientRequest(j, requestId);
+            nlohmann::json j;
+            try {
+                j = nlohmann::json::parse(message);
+            }
+            catch (const std::exception& e) {
+                const auto payload = nlohmann::json::object({
+                    {"type", "mapget.tiles.status"},
+                    {"allDone", true},
+                    {"requests", nlohmann::json::array()},
+                    {"message", fmt::format("Invalid JSON: {}", e.what())},
+                }).dump();
+                conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
+                return;
+            }
+
+            // Patch per-connection string pool offsets if supplied.
+            if (j.contains("stringPoolOffsets")) {
+                std::string errorMessage;
+                if (!session->applyStringPoolOffsetsPatch(j["stringPoolOffsets"], errorMessage)) {
+                    const auto payload = nlohmann::json::object({
+                        {"type", "mapget.tiles.status"},
+                        {"allDone", true},
+                        {"requests", nlohmann::json::array()},
+                        {"message", std::move(errorMessage)},
+                    }).dump();
+                    conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
+                    return;
+                }
+            }
+
+            const auto requestId = session->allocateRequestId(j);
+            session->updateFromClientRequest(j, requestId);
+        }
+        catch (const std::exception& e) {
+            log().error("WebSocket message handler failed: {}", e.what());
+        }
     }
 
     /// Abort outstanding backend work once the websocket is closed.
