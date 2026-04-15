@@ -211,4 +211,22 @@ TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]"
             })},
         });
     }
+
+    SECTION("Priority tile IDs are serialized as scheduling hints")
+    {
+        auto request = std::make_shared<TestLayerTilesRequest>(
+            "Tropico",
+            "WayLayer",
+            std::vector<std::vector<TileId>>{{TileId(12345), TileId(67890)}},
+            std::vector<TileId>{TileId(67890)});
+
+        REQUIRE(request->toJson() == nlohmann::json{
+            {"mapId", "Tropico"},
+            {"layerId", "WayLayer"},
+            {"tileIdsByNextStage", nlohmann::json::array({
+                nlohmann::json::array({12345, 67890})
+            })},
+            {"priorityTileIds", nlohmann::json::array({67890})},
+        });
+    }
 }

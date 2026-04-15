@@ -92,7 +92,8 @@ bool AttributeLayerList::forEachLayer(
 {
     if (!cb)
         return false;
-    for(auto const& [stringId, value] : fields()) {
+    auto local = localObject();
+    for (auto const& [stringId, value] : local->fields()) {
         if (auto layerName = model().strings()->resolve(stringId)) {
             if (value->addr().column() != TileFeatureLayer::ColumnId::AttributeLayers) {
                 log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
@@ -102,6 +103,9 @@ bool AttributeLayerList::forEachLayer(
             if (!cb(*layerName, attrLayer))
                 return false;
         }
+    }
+    if (auto ext = extension()) {
+        return ext->forEachLayer(cb);
     }
     return true;
 }

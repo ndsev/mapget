@@ -15,6 +15,7 @@ struct ParsedLayerTilesRequest
     std::string mapId;
     std::string layerId;
     std::vector<std::vector<TileId>> tileIdsByNextStage;
+    std::vector<TileId> priorityTileIds;
     bool usesStageBuckets = false;
 };
 

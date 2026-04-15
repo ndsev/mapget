@@ -34,6 +34,7 @@ Each item contains map ID, available layers and basic metadata. Each layer entry
     - `layerId`: string, ID of the layer within that map.
     - either `tileIds`: array of numeric tile IDs in mapget’s tiling scheme. This is an **unstaged** request shape: the service does not expand it into one backend fetch per advertised stage and returns one tile response per requested tile with no explicit stage affinity.
     - or `tileIdsByNextStage`: array of arrays where bucket `i` lists tiles whose next missing stage is `i`. This is the **staged** request shape: the service expands each tile to stage `i` and all higher stages advertised by the layer.
+    - `priorityTileIds` (optional): array of numeric tile IDs from the same request that should be scheduled before regular tile IDs. This is only a scheduling hint; it does not request additional tiles and does not change staged vs. unstaged semantics.
   - `stringPoolOffsets` (optional): dictionary from datasource node ID to last known string ID. Used by advanced clients to avoid receiving the same field names repeatedly in the binary stream.
 - **Response:**
   - `application/jsonl` if `Accept: application/jsonl` is sent.
@@ -42,6 +43,26 @@ Each item contains map ID, available layers and basic metadata. Each layer entry
 Tiles are streamed as they become available. In JSONL mode, each line is the JSON representation of one tile layer. In binary mode, the response is a sequence of versioned messages that can be decoded using the tile stream protocol from `mapget-model.md`.
 
 For staged feature-layer clients, `tileIdsByNextStage` must be used even when only bucket `0` is non-empty. Collapsing such a request to plain `tileIds` changes its semantics to an unstaged request.
+
+`priorityTileIds` is intended for interactive clients that need a few foreground tiles to finish before broad background loading. For example, a map viewer can prioritize the selected feature's tile so its high-stage inspection data arrives before unrelated viewport tiles. The server may still finish already-running jobs first.
+
+Example staged request with one foreground tile:
+
+```json
+{
+  "requests": [
+    {
+      "mapId": "Tropico",
+      "layerId": "WayLayer",
+      "tileIdsByNextStage": [
+        [1234, 5678],
+        [9112]
+      ],
+      "priorityTileIds": [9112]
+    }
+  ]
+}
+```
 
 If `Accept-Encoding: gzip` is set, the server compresses responses where possible, which is especially useful for JSONL streams.
 
@@ -69,7 +90,7 @@ To cancel, either send a new request message on the same connection (which repla
 - **Query parameters:**
   - `clientId` (required): numeric client id received via the websocket `RequestContext` frame.
   - `waitMs` (optional): long-poll timeout in milliseconds. Defaults to 25000 and is clamped to 30000.
-  - `maxBytes` (optional): batch size budget. If greater than zero, the response may concatenate multiple VTLV frames up to that byte budget (capped at 5 MiB).
+  - `maxBytes` (optional): batch size budget. If greater than zero, the response may concatenate multiple VTLV frames up to that byte budget (capped at 64 MiB; the budget is counted before optional gzip compression).
   - `compress` (optional): set to `1` to enable gzip compression when the client also sends `Accept-Encoding: gzip`.
 - **Response:**
   - `200 application/octet-stream` with one or more concatenated `TileLayerStream` VTLV frames.

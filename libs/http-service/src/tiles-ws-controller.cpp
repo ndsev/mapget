@@ -69,10 +69,23 @@ std::atomic<int64_t> gNextClientId{1};
 
 constexpr int64_t DEFAULT_PULL_WAIT_MS = 25000;
 constexpr int64_t MAX_PULL_WAIT_MS = 30000;
-constexpr int64_t MAX_PULL_BATCH_BYTES = 5 * 1024 * 1024;
+constexpr int64_t MAX_PULL_BATCH_BYTES = 64 * 1024 * 1024;
 constexpr LayerType REQUEST_TILE_LAYER_TYPE = LayerType::Features;
 constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
+
+struct ClientRequestChunk
+{
+    bool chunked = false;
+    uint64_t index = 0;
+    bool isLast = true;
+};
+
+enum class ClientRequestUpdateMode
+{
+    Replace,
+    Append,
+};
 
 /// Clamp an atomic metric value to zero to avoid exposing negative snapshots.
 [[nodiscard]] int64_t nonNegative(std::atomic<int64_t> const& value)
@@ -204,6 +217,37 @@ constexpr bool EMIT_LOAD_STATE_FRAMES = false;
         return std::max<int64_t>(0, raw);
     }
     return 0;
+}
+
+[[nodiscard]] ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j)
+{
+    auto chunkIt = j.find("chunk");
+    if (chunkIt == j.end()) {
+        return {};
+    }
+    if (!chunkIt->is_object()) {
+        throw std::runtime_error("chunk must be an object");
+    }
+
+    auto indexIt = chunkIt->find("index");
+    if (indexIt == chunkIt->end()
+        || !(indexIt->is_number_integer() || indexIt->is_number_unsigned())) {
+        throw std::runtime_error("chunk.index must be a non-negative integer");
+    }
+    if (indexIt->is_number_integer() && indexIt->get<int64_t>() < 0) {
+        throw std::runtime_error("chunk.index must be a non-negative integer");
+    }
+
+    auto isLastIt = chunkIt->find("isLast");
+    if (isLastIt == chunkIt->end() || !isLastIt->is_boolean()) {
+        throw std::runtime_error("chunk.isLast must be a boolean");
+    }
+
+    return ClientRequestChunk{
+        .chunked = true,
+        .index = static_cast<uint64_t>(parseNonNegativeInt64(*chunkIt, "index")),
+        .isLast = isLastIt->get<bool>(),
+    };
 }
 
 /// Build a canonical request key using map/layer/tile while normalizing layer type.
@@ -400,8 +444,108 @@ public:
         return requestId;
     }
 
+    /// Parse a possibly chunked request message and apply each chunk immediately.
+    void updateFromClientRequestMessage(const nlohmann::json& j, uint64_t requestId)
+    {
+        ClientRequestChunk chunk;
+        try {
+            chunk = parseClientRequestChunk(j);
+        }
+        catch (const std::exception& e) {
+            rejectClientRequest(requestId, fmt::format("Invalid request chunk: {}", e.what()));
+            return;
+        }
+
+        if (!chunk.chunked) {
+            {
+                std::lock_guard lock(mutex_);
+                pendingChunkedRequestId_ = 0;
+                pendingChunkedNextIndex_ = 0;
+                requestChunksComplete_ = true;
+            }
+            updateFromClientRequest(
+                j,
+                requestId,
+                ClientRequestUpdateMode::Replace,
+                true);
+            return;
+        }
+
+        auto updateMode = ClientRequestUpdateMode::Replace;
+        std::optional<std::string> errorMessage;
+        {
+            std::lock_guard lock(mutex_);
+            auto requestsIt = j.find("requests");
+            if (requestsIt == j.end() || !requestsIt->is_array()) {
+                pendingChunkedRequestId_ = 0;
+                pendingChunkedNextIndex_ = 0;
+                requestChunksComplete_ = true;
+                errorMessage = "Missing or invalid 'requests' array in chunk.";
+            } else if (chunk.index == 0) {
+                updateMode = ClientRequestUpdateMode::Replace;
+                if (chunk.isLast) {
+                    pendingChunkedRequestId_ = 0;
+                    pendingChunkedNextIndex_ = 0;
+                    requestChunksComplete_ = true;
+                } else {
+                    pendingChunkedRequestId_ = requestId;
+                    pendingChunkedNextIndex_ = 1;
+                    requestChunksComplete_ = false;
+                }
+            } else if (pendingChunkedRequestId_ != requestId || pendingChunkedNextIndex_ != chunk.index) {
+                const auto expectedRequestId = pendingChunkedRequestId_;
+                const auto expectedChunkIndex = pendingChunkedNextIndex_;
+                pendingChunkedRequestId_ = 0;
+                pendingChunkedNextIndex_ = 0;
+                requestChunksComplete_ = true;
+                errorMessage = fmt::format(
+                    "Invalid request chunk sequence: expected chunk {} for request {}, got chunk {} for request {}.",
+                    expectedChunkIndex,
+                    expectedRequestId,
+                    chunk.index,
+                    requestId);
+            } else {
+                updateMode = ClientRequestUpdateMode::Append;
+                if (chunk.isLast) {
+                    pendingChunkedRequestId_ = 0;
+                    pendingChunkedNextIndex_ = 0;
+                    requestChunksComplete_ = true;
+                } else {
+                    pendingChunkedNextIndex_ = chunk.index + 1;
+                    requestChunksComplete_ = false;
+                }
+            }
+        }
+
+        if (errorMessage) {
+            rejectClientRequest(requestId, std::move(*errorMessage));
+            return;
+        }
+        updateFromClientRequest(j, requestId, updateMode, chunk.isLast);
+    }
+
+    void rejectClientRequest(uint64_t requestId, std::string message)
+    {
+        {
+            std::lock_guard lock(mutex_);
+            requestId_ = requestId;
+            requestInfos_.clear();
+            requestStatuses_.clear();
+            pendingChunkedRequestId_ = 0;
+            pendingChunkedNextIndex_ = 0;
+            requestChunksComplete_ = true;
+            statusEmissionEnabled_ = true;
+        }
+        queueRequestContextMessage();
+        queueStatusMessage(std::move(message));
+    }
+
     /// Parse and apply a full logical tile request update from the client.
-    void updateFromClientRequest(const nlohmann::json& j, uint64_t requestId)
+    void updateFromClientRequest(
+        const nlohmann::json& j,
+        uint64_t requestId,
+        ClientRequestUpdateMode updateMode,
+        bool requestChunksComplete)
     {
         auto requestsIt = j.find("requests");
         if (requestsIt == j.end() || !requestsIt->is_array()) {
@@ -411,6 +555,9 @@ public:
                 requestId_ = requestId;
                 requestInfos_.clear();
                 requestStatuses_.clear();
+                pendingChunkedRequestId_ = 0;
+                pendingChunkedNextIndex_ = 0;
+                requestChunksComplete_ = true;
                 statusEmissionEnabled_ = true;
             }
             queueRequestContextMessage();
@@ -463,6 +610,9 @@ public:
                 requestId_ = requestId;
                 requestInfos_.clear();
                 requestStatuses_.clear();
+                pendingChunkedRequestId_ = 0;
+                pendingChunkedNextIndex_ = 0;
+                requestChunksComplete_ = true;
                 statusEmissionEnabled_ = true;
             }
             queueRequestContextMessage();
@@ -475,6 +625,23 @@ public:
         std::vector<RequestStatus> nextRequestStatuses(parsedRequests.size(), RequestStatus::Success);
         std::vector<RequestInfo> nextRequestInfos;
         nextRequestInfos.reserve(parsedRequests.size());
+        size_t requestIndexBase = 0;
+        std::optional<std::string> appendError;
+        if (updateMode == ClientRequestUpdateMode::Append) {
+            std::lock_guard lock(mutex_);
+            if (requestId_ != requestId) {
+                appendError = fmt::format(
+                    "Cannot append request chunk {} to active request {}.",
+                    requestId,
+                    requestId_);
+            } else {
+                requestIndexBase = requestInfos_.size();
+            }
+        }
+        if (appendError) {
+            rejectClientRequest(requestId, std::move(*appendError));
+            return;
+        }
 
         for (size_t index = 0; index < parsedRequests.size(); ++index) {
             auto& parsed = parsedRequests[index];
@@ -543,12 +710,14 @@ public:
                 request = std::make_shared<LayerTilesRequest>(
                     parsed.request.mapId,
                     parsed.request.layerId,
-                    std::move(tileIdsByNextStageToFetch));
+                    std::move(tileIdsByNextStageToFetch),
+                    parsed.request.priorityTileIds);
             } else {
                 request = std::make_shared<LayerTilesRequest>(
                     parsed.request.mapId,
                     parsed.request.layerId,
-                    std::move(unstagedTileIdsToFetch));
+                    std::move(unstagedTileIdsToFetch),
+                    parsed.request.priorityTileIds);
             }
             serviceRequests.push_back(request);
             nextActiveRequests.push_back(request);
@@ -556,6 +725,7 @@ public:
 
             const auto weak = weak_from_this();
             const auto expectedRequestId = requestId;
+            const auto statusIndex = requestIndexBase + index;
             request->onFeatureLayer([weak](auto&& layer) {
                 if (auto self = weak.lock()) {
                     self->onTileLayer(std::forward<decltype(layer)>(layer));
@@ -573,9 +743,9 @@ public:
                     }
                 });
             }
-            request->onDone_ = [weak, index, expectedRequestId, request](RequestStatus status) {
+            request->onDone_ = [weak, statusIndex, expectedRequestId, request](RequestStatus status) {
                 if (auto self = weak.lock()) {
-                    self->onRequestDone(index, expectedRequestId, request, status);
+                    self->onRequestDone(statusIndex, expectedRequestId, request, status);
                 }
             };
         }
@@ -583,15 +753,32 @@ public:
         std::vector<LayerTilesRequest::Ptr> replacedRequests;
         {
             std::lock_guard lock(mutex_);
-            replacedRequests = std::move(activeRequests_);
-            activeRequests_ = std::move(nextActiveRequests);
-            requestId_ = requestId;
-            requestInfos_ = std::move(nextRequestInfos);
-            requestStatuses_ = std::move(nextRequestStatuses);
-            desiredTileKeys_ = std::move(desiredTileKeys);
-            tilePriorityRanks_ = std::move(nextTilePriorityRanks);
-            // When request scope shrinks, remove stale tile data already queued for send.
-            filterOutgoingByDesiredLocked();
+            if (updateMode == ClientRequestUpdateMode::Append && requestId_ == requestId) {
+                for (auto& request : nextActiveRequests) {
+                    activeRequests_.push_back(std::move(request));
+                }
+                for (auto& info : nextRequestInfos) {
+                    requestInfos_.push_back(std::move(info));
+                }
+                for (auto status : nextRequestStatuses) {
+                    requestStatuses_.push_back(status);
+                }
+                desiredTileKeys_.insert(desiredTileKeys.begin(), desiredTileKeys.end());
+                for (auto const& [tileKey, priorityRank] : nextTilePriorityRanks) {
+                    tilePriorityRanks_.emplace(tileKey, priorityRank);
+                }
+            } else {
+                replacedRequests = std::move(activeRequests_);
+                activeRequests_ = std::move(nextActiveRequests);
+                requestId_ = requestId;
+                requestInfos_ = std::move(nextRequestInfos);
+                requestStatuses_ = std::move(nextRequestStatuses);
+                desiredTileKeys_ = std::move(desiredTileKeys);
+                tilePriorityRanks_ = std::move(nextTilePriorityRanks);
+                // When request scope shrinks, remove stale tile data already queued for send.
+                filterOutgoingByDesiredLocked();
+            }
+            requestChunksComplete_ = requestChunksComplete;
             // Refresh ordering so queued tiles follow the latest request priority.
             reprioritizeOutgoingLocked();
             statusEmissionEnabled_ = true;
@@ -1095,61 +1282,68 @@ private:
             return;
         if (!layer)
             return;
-        std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
-        std::vector<PullDispatch> pullDispatches;
 
-        {
-            std::lock_guard lock(mutex_);
-            if (cancelled_)
-                return;
-            auto requestedTileKey = matchDesiredTileKeyLocked(
-                layer->id(),
-                layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U);
-            // Late-arriving tile for an outdated request: drop before serialization work.
-            if (!requestedTileKey.has_value()) {
-                return;
-            }
+        try {
+            std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
+            std::vector<PullDispatch> pullDispatches;
 
-            if (currentWriteBatch_.has_value()) {
-                raise("TilesWsSession writer callback re-entered");
-            }
-            currentWriteBatch_.emplace();
-            writer_->write(layer);
-            auto batch = std::move(*currentWriteBatch_);
-            currentWriteBatch_.reset();
+            {
+                std::lock_guard lock(mutex_);
+                if (cancelled_)
+                    return;
+                auto requestedTileKey = matchDesiredTileKeyLocked(
+                    layer->id(),
+                    layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U);
+                // Late-arriving tile for an outdated request: drop before serialization work.
+                if (!requestedTileKey.has_value()) {
+                    return;
+                }
 
-            // If a StringPool message was generated, the writer updates writerOffsets_
-            // to the new highest string ID for this node after emitting it.
-            const auto nodeId = layer->nodeId();
-            const auto it = writerOffsets_.find(nodeId);
-            if (it != writerOffsets_.end()) {
-                const auto newOffset = it->second;
-                for (auto const& m : batch) {
-                    if (m.type == TileLayerStream::MessageType::StringPool) {
-                        stringPoolCommit = std::make_pair(nodeId, newOffset);
-                        break;
+                if (currentWriteBatch_.has_value()) {
+                    raise("TilesWsSession writer callback re-entered");
+                }
+                currentWriteBatch_.emplace();
+                writer_->write(layer);
+                auto batch = std::move(*currentWriteBatch_);
+                currentWriteBatch_.reset();
+
+                // If a StringPool message was generated, the writer updates writerOffsets_
+                // to the new highest string ID for this node after emitting it.
+                const auto nodeId = layer->nodeId();
+                const auto it = writerOffsets_.find(nodeId);
+                if (it != writerOffsets_.end()) {
+                    const auto newOffset = it->second;
+                    for (auto const& m : batch) {
+                        if (m.type == TileLayerStream::MessageType::StringPool) {
+                            stringPoolCommit = std::make_pair(nodeId, newOffset);
+                            break;
+                        }
                     }
                 }
-            }
 
-            for (auto& m : batch) {
-                OutgoingFrame frame;
-                frame.bytes = std::move(m.bytes);
-                frame.type = m.type;
-                if (m.type == TileLayerStream::MessageType::StringPool) {
-                    frame.stringPoolCommit = stringPoolCommit;
-                    frame.requestedTileKey = *requestedTileKey;
+                for (auto& m : batch) {
+                    OutgoingFrame frame;
+                    frame.bytes = std::move(m.bytes);
+                    frame.type = m.type;
+                    if (m.type == TileLayerStream::MessageType::StringPool) {
+                        frame.stringPoolCommit = stringPoolCommit;
+                        frame.requestedTileKey = *requestedTileKey;
+                    }
+                    if (m.type == TileLayerStream::MessageType::TileFeatureLayer
+                        || m.type == TileLayerStream::MessageType::TileSourceDataLayer) {
+                        frame.requestedTileKey = *requestedTileKey;
+                    }
+                    enqueueOutgoingLocked(std::move(frame));
                 }
-                if (m.type == TileLayerStream::MessageType::TileFeatureLayer
-                    || m.type == TileLayerStream::MessageType::TileSourceDataLayer) {
-                    frame.requestedTileKey = *requestedTileKey;
-                }
-                enqueueOutgoingLocked(std::move(frame));
+                // Newly queued frames can immediately satisfy blocked pull waiters.
+                drainReadyPullWaitersLocked(pullDispatches);
             }
-            // Newly queued frames can immediately satisfy blocked pull waiters.
-            drainReadyPullWaitersLocked(pullDispatches);
+            dispatchPullResults(std::move(pullDispatches));
         }
-        dispatchPullResults(std::move(pullDispatches));
+        catch (const std::exception& e) {
+            log().error("Failed to stream tile layer: {}", e.what());
+            cancelNoStatus();
+        }
     }
 
     /// Update per-request completion state and emit status when it changes.
@@ -1197,7 +1391,15 @@ private:
             cancelNoStatus();
             return;
         }
-        conn->send(encodeStreamMessage(type, payload), drogon::WebSocketMessageType::Binary);
+        try {
+            conn->send(
+                encodeStreamMessage(type, payload),
+                drogon::WebSocketMessageType::Binary);
+        }
+        catch (const std::exception& e) {
+            log().warn("WebSocket send failed: {}", e.what());
+            cancelNoStatus();
+        }
     }
 
     /// Send a status frame describing the current request statuses.
@@ -1242,6 +1444,7 @@ private:
 
         {
             std::lock_guard lock(mutex_);
+            allDone = requestChunksComplete_;
             for (size_t i = 0; i < requestInfos_.size(); ++i) {
                 const auto status = (i < requestStatuses_.size()) ? requestStatuses_[i] : RequestStatus::Open;
                 allDone &= (status != RequestStatus::Open);
@@ -1310,6 +1513,9 @@ private:
     std::map<MapTileKey, int64_t> tilePriorityRanks_;
     std::map<MapTileKey, int64_t> queuedTileFrameRefCount_;
     bool statusEmissionEnabled_ = false;
+    uint64_t pendingChunkedRequestId_ = 0;
+    uint64_t pendingChunkedNextIndex_ = 0;
+    bool requestChunksComplete_ = true;
 
     TileLayerStream::StringPoolOffsetMap committedStringPoolOffsets_;
     TileLayerStream::StringPoolOffsetMap writerOffsets_;
@@ -1339,66 +1545,73 @@ public:
     }
 
     /// Handle control and request messages from the websocket client.
+    /// Wrapped in try-catch because Drogon calls this with no exception
+    /// protection — an uncaught exception would terminate the process.
     void handleNewMessage(
         const drogon::WebSocketConnectionPtr& conn,
         std::string&& message,
         const drogon::WebSocketMessageType& type) override
     {
-        auto session = conn->getContext<TilesWsSession>();
-        if (!session) {
-            // This is a defensive fallback for unexpected context loss.
-            session = std::make_shared<TilesWsSession>(service_, conn, AuthHeaders{});
-            session->registerForMetrics();
-            {
-                std::lock_guard lock(gSessionRegistryMutex);
-                gSessionRegistry[session->clientId()] = session;
-            }
-            conn->setContext(session);
-        }
-
-        if (type != drogon::WebSocketMessageType::Text) {
-            const auto payload = nlohmann::json::object({
-                {"type", "mapget.tiles.status"},
-                {"allDone", true},
-                {"requests", nlohmann::json::array()},
-                {"message", "Expected a text message containing JSON."},
-            }).dump();
-            conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
-            return;
-        }
-
-        nlohmann::json j;
         try {
-            j = nlohmann::json::parse(message);
-        }
-        catch (const std::exception& e) {
-            const auto payload = nlohmann::json::object({
-                {"type", "mapget.tiles.status"},
-                {"allDone", true},
-                {"requests", nlohmann::json::array()},
-                {"message", fmt::format("Invalid JSON: {}", e.what())},
-            }).dump();
-            conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
-            return;
-        }
+            auto session = conn->getContext<TilesWsSession>();
+            if (!session) {
+                // This is a defensive fallback for unexpected context loss.
+                session = std::make_shared<TilesWsSession>(service_, conn, AuthHeaders{});
+                session->registerForMetrics();
+                {
+                    std::lock_guard lock(gSessionRegistryMutex);
+                    gSessionRegistry[session->clientId()] = session;
+                }
+                conn->setContext(session);
+            }
 
-        // Patch per-connection string pool offsets if supplied.
-        if (j.contains("stringPoolOffsets")) {
-            std::string errorMessage;
-            if (!session->applyStringPoolOffsetsPatch(j["stringPoolOffsets"], errorMessage)) {
+            if (type != drogon::WebSocketMessageType::Text) {
                 const auto payload = nlohmann::json::object({
                     {"type", "mapget.tiles.status"},
                     {"allDone", true},
                     {"requests", nlohmann::json::array()},
-                    {"message", std::move(errorMessage)},
+                    {"message", "Expected a text message containing JSON."},
                 }).dump();
                 conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
                 return;
             }
-        }
 
-        const auto requestId = session->allocateRequestId(j);
-        session->updateFromClientRequest(j, requestId);
+            nlohmann::json j;
+            try {
+                j = nlohmann::json::parse(message);
+            }
+            catch (const std::exception& e) {
+                const auto payload = nlohmann::json::object({
+                    {"type", "mapget.tiles.status"},
+                    {"allDone", true},
+                    {"requests", nlohmann::json::array()},
+                    {"message", fmt::format("Invalid JSON: {}", e.what())},
+                }).dump();
+                conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
+                return;
+            }
+
+            // Patch per-connection string pool offsets if supplied.
+            if (j.contains("stringPoolOffsets")) {
+                std::string errorMessage;
+                if (!session->applyStringPoolOffsetsPatch(j["stringPoolOffsets"], errorMessage)) {
+                    const auto payload = nlohmann::json::object({
+                        {"type", "mapget.tiles.status"},
+                        {"allDone", true},
+                        {"requests", nlohmann::json::array()},
+                        {"message", std::move(errorMessage)},
+                    }).dump();
+                    conn->send(encodeStreamMessage(TileLayerStream::MessageType::Status, payload), drogon::WebSocketMessageType::Binary);
+                    return;
+                }
+            }
+
+            const auto requestId = session->allocateRequestId(j);
+            session->updateFromClientRequestMessage(j, requestId);
+        }
+        catch (const std::exception& e) {
+            log().error("WebSocket message handler failed: {}", e.what());
+        }
     }
 
     /// Abort outstanding backend work once the websocket is closed.
@@ -1512,6 +1725,7 @@ void handleTilesNextRequest(
                 resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
                 if (enableGzip) {
                     if (auto compressed = gzipCompress(result.frameBytes)) {
+                        resp->addHeader("x-mapget-compressed-bytes", std::to_string(compressed->size()));
                         resp->setBody(std::move(*compressed));
                         resp->addHeader("Content-Encoding", "gzip");
                         resp->addHeader("Vary", "Accept-Encoding");

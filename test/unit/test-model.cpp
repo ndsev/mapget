@@ -1,4 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatareference.h"
@@ -8,6 +12,47 @@
 #include "nlohmann/json_fwd.hpp"
 
 using namespace mapget;
+
+namespace
+{
+
+using LayerAttributeValues = std::vector<std::tuple<std::string, std::string, std::string>>;
+
+std::string stringValue(simfil::ModelNode::Ptr const& value)
+{
+    auto scalar = value->value();
+    if (auto const* s = std::get_if<std::string>(&scalar)) {
+        return *s;
+    }
+    if (auto const* sv = std::get_if<std::string_view>(&scalar)) {
+        return std::string(*sv);
+    }
+    return {};
+}
+
+LayerAttributeValues collectLayerAttributeValues(model_ptr<AttributeLayerList> const& layers)
+{
+    LayerAttributeValues result;
+    REQUIRE(layers);
+    REQUIRE(layers->forEachLayer(
+        [&](std::string_view layerName, model_ptr<AttributeLayer> const& layer) {
+            return layer->forEachAttribute([&](model_ptr<Attribute> const& attr) {
+                std::string fieldValue;
+                REQUIRE(attr->forEachField(
+                    [&](std::string_view const& key, simfil::ModelNode::Ptr const& value) {
+                        if (key == "value") {
+                            fieldValue = stringValue(value);
+                        }
+                        return true;
+                    }));
+                result.emplace_back(std::string(layerName), std::string(attr->name()), fieldValue);
+                return true;
+            });
+        }));
+    return result;
+}
+
+}  // namespace
 
 TEST_CASE("FeatureLayer", "[test.featurelayer]")
 {
@@ -959,6 +1004,171 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
         REQUIRE(layersJson.contains("overlayLayer1"));
         REQUIRE(layersJson.contains("overlayLayer2"));
     }
+}
+
+TEST_CASE("FeatureLayer Overlay AttributeLayerList iteration uses owning model", "[test.featurelayer.overlay]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("OverlayNode");
+
+    auto makeTile = [&](std::string const& nodeName) {
+        return std::make_shared<TileFeatureLayer>(
+            TileId::fromWgs84(42., 11., 13),
+            nodeName,
+            "OverlayMap",
+            layerInfo,
+            strings);
+    };
+
+    auto base = makeTile("OverlayNode");
+    auto overlay = makeTile("OverlayNode");
+
+    auto baseFeature = base->newFeature("Way", {{"wayId", 1}});
+    auto dummyBaseLayer = baseFeature->attributeLayers()->newLayer("dummyBaseLayer");
+    auto dummyBaseAttr = dummyBaseLayer->newAttribute("dummyBaseAttr");
+    REQUIRE(dummyBaseAttr->addField("value", "dummy").has_value());
+    auto baseLayer = baseFeature->attributeLayers()->newLayer("baseLayer");
+    auto baseAttr = baseLayer->newAttribute("baseAttr");
+    REQUIRE(baseAttr->addField("value", "base").has_value());
+
+    auto overlayFeature = overlay->newFeature("Way", {{"wayId", 1}});
+    auto overlayLayer = overlayFeature->attributeLayers()->newLayer("overlayLayer");
+    auto overlayAttr = overlayLayer->newAttribute("overlayAttr");
+    REQUIRE(overlayAttr->addField("value", "overlay").has_value());
+
+    base->attachOverlay(overlay);
+
+    auto mergedFeature = base->at(0);
+    REQUIRE(mergedFeature);
+
+    auto layersSeen = collectLayerAttributeValues(mergedFeature->attributeLayersOrNull());
+
+    REQUIRE(layersSeen == std::vector<std::tuple<std::string, std::string, std::string>>{
+        {"dummyBaseLayer", "dummyBaseAttr", "dummy"},
+        {"baseLayer", "baseAttr", "base"},
+        {"overlayLayer", "overlayAttr", "overlay"},
+    });
+}
+
+TEST_CASE("FeatureLayer clone preserves merged staged attribute layers geometry and relations", "[test.featurelayer.overlay]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Globally unique 32b integer.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("OverlayNode");
+
+    auto makeTile = [&](std::string const& nodeName) {
+        return std::make_shared<TileFeatureLayer>(
+            TileId::fromWgs84(42., 11., 13),
+            nodeName,
+            "OverlayMap",
+            layerInfo,
+            strings);
+    };
+
+    auto target = makeTile("TargetNode");
+    auto sourceBase = makeTile("OverlayNode");
+    auto sourceOverlay = makeTile("OverlayNode");
+
+    auto sourceBaseFeature = sourceBase->newFeature("Way", {{"wayId", 1}});
+    auto sourceBaseGeom = sourceBaseFeature->geom()->newGeometry(GeomType::Points, 1);
+    sourceBaseGeom->append({10., 10., 0.});
+    auto dummyBaseLayer = sourceBaseFeature->attributeLayers()->newLayer("dummyBaseLayer");
+    auto dummyBaseAttr = dummyBaseLayer->newAttribute("dummyBaseAttr");
+    REQUIRE(dummyBaseAttr->addField("value", "dummy").has_value());
+    auto sourceBaseLayer = sourceBaseFeature->attributeLayers()->newLayer("baseLayer");
+    auto sourceBaseAttr = sourceBaseLayer->newAttribute("baseAttr");
+    REQUIRE(sourceBaseAttr->addField("value", "base").has_value());
+    sourceBaseFeature->addRelation("baseRel", sourceBase->newFeatureId("Way", {{"wayId", 100}}));
+
+    auto sourceOverlayFeature = sourceOverlay->newFeature("Way", {{"wayId", 1}});
+    auto sourceOverlayGeom = sourceOverlayFeature->geom()->newGeometry(GeomType::Points, 1);
+    sourceOverlayGeom->append({20., 20., 0.});
+    auto sourceOverlayLayer = sourceOverlayFeature->attributeLayers()->newLayer("overlayLayer");
+    auto sourceOverlayAttr = sourceOverlayLayer->newAttribute("overlayAttr");
+    REQUIRE(sourceOverlayAttr->addField("value", "overlay").has_value());
+    sourceOverlayFeature->addRelation("overlayRel", sourceOverlay->newFeatureId("Way", {{"wayId", 101}}));
+
+    sourceBase->attachOverlay(sourceOverlay);
+
+    auto mergedSourceFeature = sourceBase->at(0);
+    REQUIRE(mergedSourceFeature);
+
+    TileFeatureLayer::CloneCache clonedModelNodes;
+    target->clone(clonedModelNodes, sourceBase, *mergedSourceFeature, "Way", {{"wayId", 1}});
+
+    auto clonedFeature = target->at(0);
+    REQUIRE(clonedFeature);
+
+    auto layersSeen = collectLayerAttributeValues(clonedFeature->attributeLayersOrNull());
+
+    REQUIRE(layersSeen == std::vector<std::tuple<std::string, std::string, std::string>>{
+        {"dummyBaseLayer", "dummyBaseAttr", "dummy"},
+        {"baseLayer", "baseAttr", "base"},
+        {"overlayLayer", "overlayAttr", "overlay"},
+    });
+
+    std::vector<glm::dvec3> firstPoints;
+    auto clonedGeom = clonedFeature->geomOrNull();
+    REQUIRE(clonedGeom);
+    REQUIRE(clonedGeom->forEachGeometry([&](model_ptr<Geometry> const& geom) {
+        bool gotPoint = false;
+        geom->forEachPoint([&](glm::dvec3 const& point) {
+            firstPoints.push_back(point);
+            gotPoint = true;
+            return false;
+        });
+        REQUIRE(gotPoint);
+        return true;
+    }));
+    REQUIRE(firstPoints.size() == 2);
+    REQUIRE(firstPoints[0].x == 10.0);
+    REQUIRE(firstPoints[0].y == 10.0);
+    REQUIRE(firstPoints[0].z == 0.0);
+    REQUIRE(firstPoints[1].x == 20.0);
+    REQUIRE(firstPoints[1].y == 20.0);
+    REQUIRE(firstPoints[1].z == 0.0);
+
+    std::vector<std::string> relationNames;
+    REQUIRE(clonedFeature->forEachRelation([&](model_ptr<Relation> const& relation) {
+        relationNames.emplace_back(relation->name());
+        return true;
+    }));
+    REQUIRE(relationNames == std::vector<std::string>{"baseRel", "overlayRel"});
 }
 
 TEST_CASE("FeatureLayer Overlay Size Check", "[test.featurelayer.overlay]")
