@@ -137,6 +137,24 @@ Internally the service maintains a shared controller object and a pool of worker
 
 Jobs are keyed by `MapTileKey` so that concurrent requests for the same tile can take advantage of a single in‑progress computation. Once a tile finishes, waiting requests can receive the cached result instead of triggering duplicate work.
 
+### Staged request scheduling
+
+`LayerTilesRequest` supports two request shapes:
+
+- `tileIds` creates an unstaged request. The service asks the datasource for one tile per ID using `UnspecifiedStage`.
+- `tileIdsByNextStage` creates a staged request. Bucket `N` means “this tile has stages below `N`; request stage `N` and all higher stages advertised by the layer”.
+
+For staged requests, `prepareResolvedLayer(...)` expands logical tile IDs into concrete `MapTileKey`s in stage-major order. The service then schedules those keys through the shared controller. The controller rotates requests after each consumed candidate, so multiple active requests share datasource workers instead of one large request monopolizing the queue.
+
+Interactive frontends can add `priorityTileIds` to either request shape. This is a scheduling hint only:
+
+- it does not add tile IDs to the request,
+- it does not change staged vs. unstaged semantics,
+- it does not preempt jobs that are already running,
+- it only moves matching tile IDs to the front of that request’s resolved scheduling order.
+
+The intended use case is feature inspection: a selected tile may need a high-stage payload for full attributes while many background viewport tiles still need low-stage payloads. `priorityTileIds` lets the selected tile finish first without globally changing the low-fi-first behavior for normal map loading.
+
 ### Service-level sequence
 
 The following sequence diagram summarises what happens when a client requests tiles through the HTTP service:
@@ -209,7 +227,7 @@ For interactive clients, tile streaming uses WebSocket `GET /tiles` as a control
 
 For `/tiles`, the HTTP layer:
 
-- parses the JSON body to extract `requests` (`tileIds` or stage-aware `tileIdsByNextStage`) and optional `stringPoolOffsets`,
+- parses the JSON body to extract `requests` (`tileIds` or stage-aware `tileIdsByNextStage`), optional `priorityTileIds`, and optional `stringPoolOffsets`,
 - constructs one `LayerTilesRequest` per map–layer combination,
 - attaches callbacks that feed results into a shared `HttpTilesRequestState`, and
 - sends out each tile as soon as it is produced by the service.
@@ -217,6 +235,15 @@ For `/tiles`, the HTTP layer:
 In JSONL mode the response is a sequence of newline‑separated JSON objects. In binary mode the HTTP layer uses `TileLayerStream::Writer` to serialize string pool updates and tile blobs. Binary responses can optionally be compressed using gzip if the client sends `Accept-Encoding: gzip`.
 
 WebSocket `/tiles` uses the same request JSON shape but serves only as the control plane: it emits `RequestContext` and `Status` VTLV frames, while `/tiles/next` performs the long-poll delivery of one or more binary tile frames (optionally batched up to `maxBytes`).
+
+The WebSocket path also keeps queue-level priority metadata:
+
+- `expandLayerTilesRequestKeys(...)` expands staged requests in the same order as `LayerTilesRequest`.
+- The session records a priority rank for each desired `MapTileKey`.
+- Completed tile frames are inserted into the outgoing queue by that rank, with string-pool updates kept ahead of tile data.
+- When a replacement request arrives, queued frames outside the new desired tile set are dropped and the remaining frames are reprioritized.
+
+This means `priorityTileIds` affects both backend scheduling and already-produced outgoing frames, while still preserving request replacement semantics.
 
 ### Configuration endpoints
 

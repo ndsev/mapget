@@ -45,11 +45,6 @@ std::vector<std::vector<TileId>> normalizeTileBuckets(std::vector<std::vector<Ti
     return buckets;
 }
 
-std::set<TileId> normalizePriorityTileIds(std::vector<TileId> const& priorityTileIds)
-{
-    return {priorityTileIds.begin(), priorityTileIds.end()};
-}
-
 }  // namespace
 
 LayerTilesRequest::LayerTilesRequest(
@@ -68,7 +63,7 @@ LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
     std::vector<TileId> tiles,
-    std::vector<TileId> priorityTileIds)
+    std::vector<TileId> const& priorityTileIds)
     : LayerTilesRequest(
           std::move(mapId),
           std::move(layerId),
@@ -94,11 +89,11 @@ LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
     std::vector<std::vector<TileId>> tileIdsByNextStage,
-    std::vector<TileId> priorityTileIds)
+    std::vector<TileId> const& priorityTileIds)
     : mapId_(std::move(mapId)),
       layerId_(std::move(layerId)),
       tileIdsByNextStage_(normalizeTileBuckets(std::move(tileIdsByNextStage))),
-      priorityTileIds_(normalizePriorityTileIds(priorityTileIds))
+      priorityTileIds_({priorityTileIds.begin(), priorityTileIds.end()})
 {
     usesStageBuckets_ = true;
     bool hasAnyTileIds = false;

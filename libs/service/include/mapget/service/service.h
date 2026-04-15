@@ -54,7 +54,7 @@ public:
         std::string mapId,
         std::string layerId,
         std::vector<TileId> tiles,
-        std::vector<TileId> priorityTileIds);
+        std::vector<TileId> const& priorityTileIds);
 
     /** Construct a staged request with tile IDs grouped by next missing stage. */
     LayerTilesRequest(
@@ -67,7 +67,7 @@ public:
         std::string mapId,
         std::string layerId,
         std::vector<std::vector<TileId>> tileIdsByNextStage,
-        std::vector<TileId> priorityTileIds);
+        std::vector<TileId> const& priorityTileIds);
 
     /** Get the current status of the request. */
     RequestStatus getStatus();
