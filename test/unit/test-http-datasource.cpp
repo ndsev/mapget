@@ -177,7 +177,7 @@ public:
                     "/tiles/next?clientId={}&waitMs={}&maxBytes={}",
                     clientId,
                     waitMs,
-                    5 * 1024 * 1024));
+                    64 * 1024 * 1024));
 
                 if (result != drogon::ReqResult::Ok || !resp) {
                     setError("Failed to pull next tile frame");

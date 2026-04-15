@@ -69,7 +69,7 @@ To cancel, either send a new request message on the same connection (which repla
 - **Query parameters:**
   - `clientId` (required): numeric client id received via the websocket `RequestContext` frame.
   - `waitMs` (optional): long-poll timeout in milliseconds. Defaults to 25000 and is clamped to 30000.
-  - `maxBytes` (optional): batch size budget. If greater than zero, the response may concatenate multiple VTLV frames up to that byte budget (capped at 5 MiB).
+  - `maxBytes` (optional): batch size budget. If greater than zero, the response may concatenate multiple VTLV frames up to that byte budget (capped at 64 MiB; the budget is counted before optional gzip compression).
   - `compress` (optional): set to `1` to enable gzip compression when the client also sends `Accept-Encoding: gzip`.
 - **Response:**
   - `200 application/octet-stream` with one or more concatenated `TileLayerStream` VTLV frames.

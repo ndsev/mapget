@@ -69,7 +69,7 @@ std::atomic<int64_t> gNextClientId{1};
 
 constexpr int64_t DEFAULT_PULL_WAIT_MS = 25000;
 constexpr int64_t MAX_PULL_WAIT_MS = 30000;
-constexpr int64_t MAX_PULL_BATCH_BYTES = 5 * 1024 * 1024;
+constexpr int64_t MAX_PULL_BATCH_BYTES = 64 * 1024 * 1024;
 constexpr LayerType REQUEST_TILE_LAYER_TYPE = LayerType::Features;
 constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
@@ -1723,6 +1723,7 @@ void handleTilesNextRequest(
                 resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
                 if (enableGzip) {
                     if (auto compressed = gzipCompress(result.frameBytes)) {
+                        resp->addHeader("x-mapget-compressed-bytes", std::to_string(compressed->size()));
                         resp->setBody(std::move(*compressed));
                         resp->addHeader("Content-Encoding", "gzip");
                         resp->addHeader("Vary", "Accept-Encoding");
