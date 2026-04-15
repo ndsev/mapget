@@ -285,10 +285,8 @@ struct Service::Controller
         return {};
     }
 
-    [[nodiscard]] std::optional<Candidate> bestCandidate(DataSourceInfo const& info) const
+    [[nodiscard]] std::optional<Candidate> nextCandidateInRequestOrder(DataSourceInfo const& info) const
     {
-        std::optional<Candidate> best;
-
         for (auto reqIt = requests_.begin(); reqIt != requests_.end(); ++reqIt) {
             auto const& request = *reqIt;
             if (!requestMatchesDataSource(request, info))
@@ -299,17 +297,15 @@ struct Service::Controller
                 continue;
             auto pendingKey = request->resolvedTileKeys_[*pendingIndex];
 
-            if (!best || pendingKey.stage_ < best->tileKey_.stage_) {
-                best = Candidate{
-                    .requestIt_ = reqIt,
-                    .request_ = request,
-                    .tileKey_ = pendingKey,
-                    .nextTileIndex_ = *pendingIndex,
-                };
-            }
+            return Candidate{
+                .requestIt_ = reqIt,
+                .request_ = request,
+                .tileKey_ = pendingKey,
+                .nextTileIndex_ = *pendingIndex,
+            };
         }
 
-        return best;
+        return {};
     }
 
     void attachMatchingRequests(
@@ -338,6 +334,10 @@ struct Service::Controller
         request->nextTileIndex_ = candidate.nextTileIndex_;
         request->tileKeysNotStarted_.erase(candidate.tileKey_);
 
+        // Rotate on every consumed candidate. Cache hits and in-progress joins
+        // should participate in fairness just like newly started backend work.
+        requests_.splice(requests_.end(), requests_, candidate.requestIt_);
+
         auto cachedResult = cache_->getTileLayer(candidate.tileKey_, info);
         if (cachedResult.tile) {
             log().debug("Serving cached tile: {}", candidate.tileKey_.toString());
@@ -357,9 +357,6 @@ struct Service::Controller
         auto startedJob = std::make_shared<Job>(Job{candidate.tileKey_, {request}, cachedResult.expiredAt});
         attachMatchingRequests(request, candidate.tileKey_, startedJob->waitingRequests);
         jobsInProgress_.emplace(startedJob->tileKey, startedJob);
-
-        // Move this request to the end of the list, so others gain priority.
-        requests_.splice(requests_.end(), requests_, candidate.requestIt_);
         log().debug("Working on tile: {}", startedJob->tileKey.toString());
 
         return startedJob;
@@ -380,8 +377,8 @@ struct Service::Controller
         //  between sweeps to allow external updates.
 
         while (true) {
-            // 1) Pick highest-priority pending tile for this datasource worker.
-            auto candidate = bestCandidate(i);
+            // 1) Pick the next pending tile from the first matching request.
+            auto candidate = nextCandidateInRequestOrder(i);
             if (!candidate)
                 break;
 
