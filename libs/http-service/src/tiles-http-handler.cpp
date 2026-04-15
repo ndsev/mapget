@@ -123,7 +123,8 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             requests_.push_back(std::make_shared<LayerTilesRequest>(
                 std::move(parsed.mapId),
                 std::move(parsed.layerId),
-                std::move(parsed.tileIdsByNextStage)));
+                std::move(parsed.tileIdsByNextStage),
+                std::move(parsed.priorityTileIds)));
         } else {
             auto tileIds = parsed.tileIdsByNextStage.empty()
                 ? std::vector<TileId>{}
@@ -131,7 +132,8 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             requests_.push_back(std::make_shared<LayerTilesRequest>(
                 std::move(parsed.mapId),
                 std::move(parsed.layerId),
-                std::move(tileIds)));
+                std::move(tileIds),
+                std::move(parsed.priorityTileIds)));
         }
     }
 

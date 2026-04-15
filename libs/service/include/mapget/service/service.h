@@ -11,6 +11,7 @@
 #include <utility>
 #include <chrono>
 #include <set>
+#include <vector>
 
 namespace mapget
 {
@@ -48,11 +49,25 @@ public:
         std::string layerId,
         std::vector<TileId> tiles);
 
+    /** Construct an unstaged request with foreground tile IDs prioritized for scheduling. */
+    LayerTilesRequest(
+        std::string mapId,
+        std::string layerId,
+        std::vector<TileId> tiles,
+        std::vector<TileId> priorityTileIds);
+
     /** Construct a staged request with tile IDs grouped by next missing stage. */
     LayerTilesRequest(
         std::string mapId,
         std::string layerId,
         std::vector<std::vector<TileId>> tileIdsByNextStage);
+
+    /** Construct a staged request with foreground tile IDs prioritized for scheduling. */
+    LayerTilesRequest(
+        std::string mapId,
+        std::string layerId,
+        std::vector<std::vector<TileId>> tileIdsByNextStage,
+        std::vector<TileId> priorityTileIds);
 
     /** Get the current status of the request. */
     RequestStatus getStatus();
@@ -74,6 +89,13 @@ public:
      * Bucket index N means: send stage N and all higher stages for these IDs.
      */
     std::vector<std::vector<TileId>> tileIdsByNextStage_;
+
+    /**
+     * Tile IDs within this request that should be scheduled before regular
+     * tiles. This is a scheduling hint only; it does not add tiles to the
+     * request by itself.
+     */
+    std::set<TileId> priorityTileIds_;
 
     /**
      * True iff the request explicitly uses `tileIdsByNextStage`.

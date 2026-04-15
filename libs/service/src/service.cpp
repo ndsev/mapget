@@ -45,6 +45,11 @@ std::vector<std::vector<TileId>> normalizeTileBuckets(std::vector<std::vector<Ti
     return buckets;
 }
 
+std::set<TileId> normalizePriorityTileIds(std::vector<TileId> const& priorityTileIds)
+{
+    return {priorityTileIds.begin(), priorityTileIds.end()};
+}
+
 }  // namespace
 
 LayerTilesRequest::LayerTilesRequest(
@@ -54,7 +59,21 @@ LayerTilesRequest::LayerTilesRequest(
     : LayerTilesRequest(
           std::move(mapId),
           std::move(layerId),
-          std::vector<std::vector<TileId>>{std::move(tiles)})
+          std::move(tiles),
+          {})
+{
+}
+
+LayerTilesRequest::LayerTilesRequest(
+    std::string mapId,
+    std::string layerId,
+    std::vector<TileId> tiles,
+    std::vector<TileId> priorityTileIds)
+    : LayerTilesRequest(
+          std::move(mapId),
+          std::move(layerId),
+          std::vector<std::vector<TileId>>{std::move(tiles)},
+          std::move(priorityTileIds))
 {
     usesStageBuckets_ = false;
 }
@@ -63,9 +82,23 @@ LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
     std::vector<std::vector<TileId>> tileIdsByNextStage)
+    : LayerTilesRequest(
+          std::move(mapId),
+          std::move(layerId),
+          std::move(tileIdsByNextStage),
+          {})
+{
+}
+
+LayerTilesRequest::LayerTilesRequest(
+    std::string mapId,
+    std::string layerId,
+    std::vector<std::vector<TileId>> tileIdsByNextStage,
+    std::vector<TileId> priorityTileIds)
     : mapId_(std::move(mapId)),
       layerId_(std::move(layerId)),
-      tileIdsByNextStage_(normalizeTileBuckets(std::move(tileIdsByNextStage)))
+      tileIdsByNextStage_(normalizeTileBuckets(std::move(tileIdsByNextStage))),
+      priorityTileIds_(normalizePriorityTileIds(priorityTileIds))
 {
     usesStageBuckets_ = true;
     bool hasAnyTileIds = false;
@@ -91,41 +124,69 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stage
     tileKeysNotStarted_.clear();
 
     const auto normalizedStages = std::max<uint32_t>(1U, stages);
+    const auto isPriorityTile = [this](TileId const& tileId) {
+        return priorityTileIds_.find(tileId) != priorityTileIds_.end();
+    };
+    const auto appendKey = [this](MapTileKey key) {
+        if (tileKeysNotStarted_.insert(key).second) {
+            resolvedTileKeys_.push_back(std::move(key));
+        }
+    };
 
     if (!usesStageBuckets_) {
-        if (!tileIdsByNextStage_.empty()) {
+        const auto appendUnstagedTiles = [&](std::optional<bool> priorityFilter) {
+            if (tileIdsByNextStage_.empty()) {
+                return;
+            }
             for (auto const& tileId : tileIdsByNextStage_.front()) {
+                if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
+                    continue;
+                }
                 MapTileKey key(
                     layerType,
                     mapId_,
                     layerId_,
                     tileId,
                     UnspecifiedStage);
-                if (tileKeysNotStarted_.insert(key).second) {
-                    resolvedTileKeys_.push_back(std::move(key));
-                }
+                appendKey(std::move(key));
             }
+        };
+
+        if (priorityTileIds_.empty()) {
+            appendUnstagedTiles(std::nullopt);
+        } else {
+            appendUnstagedTiles(true);
+            appendUnstagedTiles(false);
         }
         status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
         return;
     }
 
-    for (uint32_t stage = 0; stage < normalizedStages; ++stage) {
-        // For all tiles in bucket 0, we need to enqueue N stages.
-        // For tiles in bucket 1, we need to enqueue N-1 stages.
-        // etc.
-        for (size_t bucketIndex = 0; bucketIndex < tileIdsByNextStage_.size(); ++bucketIndex) {
-            const auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
-            if (nextMissingStage > stage || nextMissingStage >= normalizedStages) {
-                continue;
-            }
-            for (auto const& tileId : tileIdsByNextStage_[bucketIndex]) {
-                MapTileKey key(layerType, mapId_, layerId_, tileId, stage);
-                if (tileKeysNotStarted_.insert(key).second) {
-                    resolvedTileKeys_.push_back(std::move(key));
+    const auto appendStagedTiles = [&](std::optional<bool> priorityFilter) {
+        for (uint32_t stage = 0; stage < normalizedStages; ++stage) {
+            // For all tiles in bucket 0, we need to enqueue N stages.
+            // For tiles in bucket 1, we need to enqueue N-1 stages.
+            // etc.
+            for (size_t bucketIndex = 0; bucketIndex < tileIdsByNextStage_.size(); ++bucketIndex) {
+                const auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
+                if (nextMissingStage > stage || nextMissingStage >= normalizedStages) {
+                    continue;
+                }
+                for (auto const& tileId : tileIdsByNextStage_[bucketIndex]) {
+                    if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
+                        continue;
+                    }
+                    appendKey(MapTileKey(layerType, mapId_, layerId_, tileId, stage));
                 }
             }
         }
+    };
+
+    if (priorityTileIds_.empty()) {
+        appendStagedTiles(std::nullopt);
+    } else {
+        appendStagedTiles(true);
+        appendStagedTiles(false);
     }
 
     status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
@@ -203,6 +264,13 @@ nlohmann::json LayerTilesRequest::toJson()
             }
         }
         requestJson["tileIds"] = std::move(tileIds);
+        if (!priorityTileIds_.empty()) {
+            auto priorityTileIds = nlohmann::json::array();
+            for (auto const& tileId : priorityTileIds_) {
+                priorityTileIds.emplace_back(tileId.value_);
+            }
+            requestJson["priorityTileIds"] = std::move(priorityTileIds);
+        }
         return requestJson;
     }
 
@@ -215,6 +283,13 @@ nlohmann::json LayerTilesRequest::toJson()
         tileIdsByNextStage.push_back(std::move(tileIds));
     }
     requestJson["tileIdsByNextStage"] = std::move(tileIdsByNextStage);
+    if (!priorityTileIds_.empty()) {
+        auto priorityTileIds = nlohmann::json::array();
+        for (auto const& tileId : priorityTileIds_) {
+            priorityTileIds.emplace_back(tileId.value_);
+        }
+        requestJson["priorityTileIds"] = std::move(priorityTileIds);
+    }
     return requestJson;
 }
 

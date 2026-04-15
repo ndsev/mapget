@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include <string>
+#include <string_view>
 #include <tuple>
+#include <vector>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatareference.h"
@@ -9,6 +12,47 @@
 #include "nlohmann/json_fwd.hpp"
 
 using namespace mapget;
+
+namespace
+{
+
+using LayerAttributeValues = std::vector<std::tuple<std::string, std::string, std::string>>;
+
+std::string stringValue(simfil::ModelNode::Ptr const& value)
+{
+    auto scalar = value->value();
+    if (auto const* s = std::get_if<std::string>(&scalar)) {
+        return *s;
+    }
+    if (auto const* sv = std::get_if<std::string_view>(&scalar)) {
+        return std::string(*sv);
+    }
+    return {};
+}
+
+LayerAttributeValues collectLayerAttributeValues(model_ptr<AttributeLayerList> const& layers)
+{
+    LayerAttributeValues result;
+    REQUIRE(layers);
+    REQUIRE(layers->forEachLayer(
+        [&](std::string_view layerName, model_ptr<AttributeLayer> const& layer) {
+            return layer->forEachAttribute([&](model_ptr<Attribute> const& attr) {
+                std::string fieldValue;
+                REQUIRE(attr->forEachField(
+                    [&](std::string_view const& key, simfil::ModelNode::Ptr const& value) {
+                        if (key == "value") {
+                            fieldValue = stringValue(value);
+                        }
+                        return true;
+                    }));
+                result.emplace_back(std::string(layerName), std::string(attr->name()), fieldValue);
+                return true;
+            });
+        }));
+    return result;
+}
+
+}  // namespace
 
 TEST_CASE("FeatureLayer", "[test.featurelayer]")
 {
@@ -1015,28 +1059,7 @@ TEST_CASE("FeatureLayer Overlay AttributeLayerList iteration uses owning model",
     auto mergedFeature = base->at(0);
     REQUIRE(mergedFeature);
 
-    std::vector<std::tuple<std::string, std::string, std::string>> layersSeen;
-    auto mergedLayers = mergedFeature->attributeLayersOrNull();
-    REQUIRE(mergedLayers);
-    REQUIRE(mergedLayers->forEachLayer(
-        [&](std::string_view layerName, model_ptr<AttributeLayer> const& layer) {
-            return layer->forEachAttribute([&](model_ptr<Attribute> const& attr) {
-                std::string fieldValue;
-                REQUIRE(attr->forEachField([&](std::string_view const& key, simfil::ModelNode::Ptr const& value) {
-                    if (key == "value") {
-                        auto scalar = value->value();
-                        if (auto const* s = std::get_if<std::string>(&scalar)) {
-                            fieldValue = *s;
-                        } else if (auto const* sv = std::get_if<std::string_view>(&scalar)) {
-                            fieldValue = std::string(*sv);
-                        }
-                    }
-                    return true;
-                }));
-                layersSeen.emplace_back(std::string(layerName), std::string(attr->name()), fieldValue);
-                return true;
-            });
-        }));
+    auto layersSeen = collectLayerAttributeValues(mergedFeature->attributeLayersOrNull());
 
     REQUIRE(layersSeen == std::vector<std::tuple<std::string, std::string, std::string>>{
         {"dummyBaseLayer", "dummyBaseAttr", "dummy"},
@@ -1111,28 +1134,7 @@ TEST_CASE("FeatureLayer clone preserves merged staged attribute layers geometry 
     auto clonedFeature = target->at(0);
     REQUIRE(clonedFeature);
 
-    std::vector<std::tuple<std::string, std::string, std::string>> layersSeen;
-    auto clonedLayers = clonedFeature->attributeLayersOrNull();
-    REQUIRE(clonedLayers);
-    REQUIRE(clonedLayers->forEachLayer(
-        [&](std::string_view layerName, model_ptr<AttributeLayer> const& layer) {
-            return layer->forEachAttribute([&](model_ptr<Attribute> const& attr) {
-                std::string fieldValue;
-                REQUIRE(attr->forEachField([&](std::string_view const& key, simfil::ModelNode::Ptr const& value) {
-                    if (key == "value") {
-                        auto scalar = value->value();
-                        if (auto const* s = std::get_if<std::string>(&scalar)) {
-                            fieldValue = *s;
-                        } else if (auto const* sv = std::get_if<std::string_view>(&scalar)) {
-                            fieldValue = std::string(*sv);
-                        }
-                    }
-                    return true;
-                }));
-                layersSeen.emplace_back(std::string(layerName), std::string(attr->name()), fieldValue);
-                return true;
-            });
-        }));
+    auto layersSeen = collectLayerAttributeValues(clonedFeature->attributeLayersOrNull());
 
     REQUIRE(layersSeen == std::vector<std::tuple<std::string, std::string, std::string>>{
         {"dummyBaseLayer", "dummyBaseAttr", "dummy"},

@@ -710,12 +710,14 @@ public:
                 request = std::make_shared<LayerTilesRequest>(
                     parsed.request.mapId,
                     parsed.request.layerId,
-                    std::move(tileIdsByNextStageToFetch));
+                    std::move(tileIdsByNextStageToFetch),
+                    parsed.request.priorityTileIds);
             } else {
                 request = std::make_shared<LayerTilesRequest>(
                     parsed.request.mapId,
                     parsed.request.layerId,
-                    std::move(unstagedTileIdsToFetch));
+                    std::move(unstagedTileIdsToFetch),
+                    parsed.request.priorityTileIds);
             }
             serviceRequests.push_back(request);
             nextActiveRequests.push_back(request);
