@@ -7,6 +7,23 @@ using namespace simfil;
 namespace mapget
 {
 
+namespace
+{
+Point boundsOrigin(model_ptr<Geometry> const& geometry)
+{
+    return geometry->geomType() == GeomType::AABB
+        ? geometry->aabbOrigin()
+        : geometry->gltfNodeAabbOrigin();
+}
+
+Point boundsSize(model_ptr<Geometry> const& geometry)
+{
+    return geometry->geomType() == GeomType::AABB
+        ? geometry->aabbSize()
+        : geometry->gltfNodeAabbSize();
+}
+}
+
 /** Model node impls for VertexNode. */
 
 PointNode::PointNode(
@@ -40,6 +57,44 @@ PointNode::PointNode(ModelNode const& baseNode,
     case 2: point_ = geomData->geomDescr_.range_.second; break;
     default:
         mapget::raiseFmt<std::runtime_error>("Invalid validity point index {}", i);
+    }
+}
+
+PointNode::PointNode(ModelNode const& baseNode, simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(baseNode, key)
+{
+    auto const encoded = std::get<int64_t>(data_);
+    auto const baseGeometryAddress = decodeGeometryHelperBaseAddress(addr_, encoded);
+    auto const kind = decodeGeometryPointViewKind(encoded);
+    auto const geometry = model().resolve<Geometry>(baseGeometryAddress);
+    auto const origin = boundsOrigin(geometry);
+    auto const size = boundsSize(geometry);
+
+    switch (kind) {
+    case GeometryPointViewKind::RawSize:
+        point_ = geometry->aabbSize();
+        break;
+    case GeometryPointViewKind::BoundsOrigin:
+        point_ = origin;
+        break;
+    case GeometryPointViewKind::BoundsSize:
+        point_ = size;
+        break;
+    case GeometryPointViewKind::BoundsCorner0:
+        point_ = {origin.x, origin.y, origin.z};
+        break;
+    case GeometryPointViewKind::BoundsCorner1:
+        point_ = {origin.x + size.x, origin.y, origin.z};
+        break;
+    case GeometryPointViewKind::BoundsCorner2:
+        point_ = {origin.x + size.x, origin.y + size.y, origin.z};
+        break;
+    case GeometryPointViewKind::BoundsCorner3:
+        point_ = {origin.x, origin.y + size.y, origin.z};
+        break;
+    case GeometryPointViewKind::BoundsCorner4:
+        point_ = {origin.x, origin.y, origin.z};
+        break;
     }
 }
 

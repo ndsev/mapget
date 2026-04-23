@@ -274,6 +274,8 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
     SECTION("Serialization")
     {
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
+
         std::stringstream tileBytes;
         tile->write(tileBytes);
         auto serializedTile = tileBytes.str();
@@ -302,6 +304,9 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->ttl() == tile->ttl());
         REQUIRE(deserializedTile->mapVersion() == tile->mapVersion());
         REQUIRE(deserializedTile->info() == tile->info());
+        REQUIRE(deserializedTile->glbAttachment() != nullptr);
+        REQUIRE(deserializedTile->glbAttachment()->name_ == "city.glb");
+        REQUIRE(deserializedTile->glbAttachment()->bytes_ == std::vector<uint8_t>({0x67, 0x6c, 0x54, 0x46}));
 
         REQUIRE(deserializedTile->strings() == tile->strings());
         for (auto feature : *deserializedTile) {
@@ -327,6 +332,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         // but expect the Fields object to be sent only once.
         // Then we add another feature with a yet unseen field, send it,
         // and expect an update for the fields dictionary to be sent along.
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
 
         auto messageCount = 0;
         std::stringstream byteStream;
@@ -378,6 +384,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(readTiles[0]->numRoots() == 2);
         REQUIRE(readTiles[1]->numRoots() == 2);
         REQUIRE(readTiles[2]->numRoots() == 3);
+        REQUIRE(readTiles[0]->glbAttachment() != nullptr);
+        REQUIRE(readTiles[1]->glbAttachment() != nullptr);
+        REQUIRE(readTiles[2]->glbAttachment() != nullptr);
+        REQUIRE(readTiles[2]->glbAttachment()->name_ == "city.glb");
+        REQUIRE(readTiles[2]->glbAttachment()->bytes_ == std::vector<uint8_t>({0x67, 0x6c, 0x54, 0x46}));
     }
 
     SECTION("Find")
@@ -408,6 +419,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         // Set TTL
         tile->setTtl(std::chrono::milliseconds(3600000));
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
 
         auto json = tile->toJson();
 
@@ -431,12 +443,32 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         // Verify TTL
         REQUIRE(json["ttl"] == 3600000);
 
+        REQUIRE(json["glbAttachment"].is_object());
+        REQUIRE(json["glbAttachment"]["name"] == "city.glb");
+        REQUIRE(json["glbAttachment"]["mimeType"] == "model/gltf-binary");
+        REQUIRE(json["glbAttachment"]["sizeBytes"] == 4);
+
         // Verify features array exists
         REQUIRE(json["features"].is_array());
         REQUIRE(json["features"].size() == 2);  // feature0 and feature1
 
         // Verify no error object when no error is set
         REQUIRE(!json.contains("error"));
+    }
+
+    SECTION("GLB attachment can be replaced")
+    {
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
+        REQUIRE(tile->glbAttachment() != nullptr);
+        REQUIRE(tile->glbAttachment()->name_ == "city.glb");
+
+        tile->setGlbAttachment("city-updated.glb", {0x01, 0x02});
+        REQUIRE(tile->glbAttachment() != nullptr);
+        REQUIRE(tile->glbAttachment()->name_ == "city-updated.glb");
+        REQUIRE(tile->glbAttachment()->bytes_ == std::vector<uint8_t>({0x01, 0x02}));
+
+        tile->clearGlbAttachment();
+        REQUIRE(tile->glbAttachment() == nullptr);
     }
 
     SECTION("toJson with error information")

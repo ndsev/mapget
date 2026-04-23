@@ -29,6 +29,21 @@ namespace mapget
 {
 
 /**
+ * Optional GLB payload stored alongside a TileFeatureLayer.
+ *
+ * The attachment lives on TileFeatureLayer rather than on the base TileLayer
+ * because only feature tiles need binary side payloads today. The model is
+ * intentionally opinionated: at most one GLB payload may be attached to a tile.
+ */
+struct TileGlbAttachment
+{
+    std::string name_;
+    std::vector<uint8_t> bytes_;
+
+    [[nodiscard]] nlohmann::json toJsonMetadata() const;
+};
+
+/**
  * The TileFeatureLayer class represents a specific map layer
  * within a map tile. It is a container for map features.
  * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
@@ -64,6 +79,7 @@ public:
     // Keep ModelPool::resolve<T> overloads visible alongside the override below.
     using ModelPool::resolve;
     using Ptr = std::shared_ptr<TileFeatureLayer>;
+    static constexpr std::string_view GLB_ATTACHMENT_MIME_TYPE = "model/gltf-binary";
 
     struct CloneCacheKey
     {
@@ -257,6 +273,17 @@ public:
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
 
+    /**
+     * Inspect or replace the optional tile-level GLB attachment without
+     * inlining payload bytes.
+     *
+     * `GeomType::GltfNodeIndex` always refers to nodes inside this GLB
+     * attachment when present.
+     */
+    [[nodiscard]] TileGlbAttachment const* glbAttachment() const;
+    void setGlbAttachment(std::string name, std::vector<uint8_t> bytes);
+    void clearGlbAttachment();
+
     /** Report serialized size stats for feature-layer data and model-pool columns. */
     [[nodiscard]] nlohmann::json serializationSizeStats() const;
 
@@ -395,6 +422,8 @@ public:
         LineGeometries,
         PolygonGeometries,
         MeshGeometries,
+        AabbGeometries,
+        GltfNodeIndexGeometries,
         GeometryViews,
         GeometryCollections,
         Mesh,
@@ -409,6 +438,10 @@ public:
         ValidityCollections,
         FeatureRelationsView,
         GeometryArrayView,
+        GeometryBoundsInfoView,
+        GeometryBoundsPolygonCoordinatesView,
+        GeometryBoundsRingView,
+        GeometryPointView,
         // Compact validity form without backing struct storage.
         // Direction is encoded in ModelNodeAddress::index().
         SimpleValidity,

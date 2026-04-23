@@ -8,6 +8,7 @@
 #include "sourcedatareference.h"
 #include "sourceinfo.h"
 #include "merged-array-view.h"
+#include "nlohmann/json_fwd.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -31,6 +32,9 @@ namespace mapget
 
 class TileFeatureLayer;
 class GeometryArrayView;
+class BoundsInfoNode;
+class BoundsPolygonCoordinatesNode;
+class BoundsRingNode;
 
 /**
  * Small interface container type which may be used
@@ -55,6 +59,9 @@ public:
     friend class PointBufferNode;
     friend class PolygonNode;
     friend class MeshNode;
+    friend class BoundsInfoNode;
+    friend class BoundsPolygonCoordinatesNode;
+    friend class BoundsRingNode;
 
     /** Source region */
     model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
@@ -62,6 +69,24 @@ public:
 
     /** Add a point to the Geometry. */
     void append(Point const& p);
+
+    /** Configure an AABB geometry as [origin, size]. */
+    void setAabb(Point const& origin, Point const& size);
+    [[nodiscard]] Point aabbOrigin() const;
+    [[nodiscard]] Point aabbSize() const;
+
+    /**
+     * Configure/query a GLTF node reference geometry.
+     *
+     * The node index is stored losslessly only up to 2^24 because it is encoded
+     * in the shared float-based point-buffer storage. The referenced binary
+     * payload is the tile's `glbAttachment()`.
+     */
+    void setGltfNodeIndex(uint32_t index);
+    [[nodiscard]] uint32_t gltfNodeIndex() const;
+    void setGltfNodeBounds(Point const& origin, Point const& size);
+    [[nodiscard]] Point gltfNodeAabbOrigin() const;
+    [[nodiscard]] Point gltfNodeAabbSize() const;
 
     /** Get the type of the geometry. */
     [[nodiscard]] GeomType geomType() const;
@@ -137,6 +162,7 @@ public:
      * struct which can be passed around.
      */
     [[nodiscard]] SelfContainedGeometry toSelfContained() const;
+    [[nodiscard]] nlohmann::json toJson() const override;
 
     protected:
     [[nodiscard]] ValueType type() const override;
@@ -203,6 +229,8 @@ public:
     [[nodiscard]] model_ptr<Geometry> geometryOfTypeAtPreferredStage(
         GeomType type,
         std::optional<uint32_t> stageOverride = std::nullopt) const;
+
+    [[nodiscard]] nlohmann::json toJson() const override;
 
     /** Iterate over all geometries at the preferred stage. */
     template <typename LambdaType>
@@ -346,6 +374,67 @@ private:
     Geometry::Storage* storage_ = nullptr;
     uint32_t offset_ = 0;
     uint32_t size_ = 0;
+};
+
+class BoundsInfoNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+{
+public:
+    explicit BoundsInfoNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+
+    [[nodiscard]] ValueType type() const override;
+    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
+    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
+    BoundsInfoNode() = delete;
+    BoundsInfoNode(ModelNode const& baseNode, simfil::detail::mp_key key);
+
+private:
+    ModelNodeAddress baseGeometryAddress_;
+};
+
+class BoundsPolygonCoordinatesNode final
+    : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+{
+public:
+    explicit BoundsPolygonCoordinatesNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+
+    [[nodiscard]] ValueType type() const override;
+    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
+    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
+    BoundsPolygonCoordinatesNode() = delete;
+    BoundsPolygonCoordinatesNode(ModelNode const& baseNode, simfil::detail::mp_key key);
+
+private:
+    ModelNodeAddress baseGeometryAddress_;
+};
+
+class BoundsRingNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+{
+public:
+    explicit BoundsRingNode(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+
+    [[nodiscard]] ValueType type() const override;
+    [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override;
+    [[nodiscard]] StringId keyAt(int64_t) const override;
+    bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+
+    BoundsRingNode() = delete;
+    BoundsRingNode(ModelNode const& baseNode, simfil::detail::mp_key key);
+
+private:
+    ModelNodeAddress baseGeometryAddress_;
 };
 
 /** Polygon Node */

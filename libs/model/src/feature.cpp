@@ -558,7 +558,9 @@ void Feature::materializeGeometryCollection()
         return column == Col::PointGeometries ||
                column == Col::LineGeometries ||
                column == Col::PolygonGeometries ||
-               column == Col::MeshGeometries;
+               column == Col::MeshGeometries ||
+               column == Col::AabbGeometries ||
+               column == Col::GltfNodeIndexGeometries;
     };
     auto currentGeomAddress = geometryNodeAddress();
     if (!currentGeomAddress ||

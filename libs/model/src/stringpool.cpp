@@ -41,6 +41,10 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(EndStr, "end");
     addStaticKey(PointStr, "point");
     addStaticKey(FeatureIdStr, "featureId");
+    addStaticKey(AabbStr, "aabb");
+    addStaticKey(OriginStr, "origin");
+    addStaticKey(SizeStr, "size");
+    addStaticKey(GltfNodeIndexStr, "gltfNodeIndex");
     addStaticKey(FromStr, "from");
     addStaticKey(ToStr, "to");
     addStaticKey(ConnectedEndStr, "connectedEnd");
