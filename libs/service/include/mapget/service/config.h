@@ -18,6 +18,13 @@
 namespace mapget
 {
 
+struct DataSourceConfigStats {
+    size_t configured = 0;
+    size_t enabled = 0;
+    size_t disabled = 0;
+    size_t constructionFailed = 0;
+};
+
 
     /**
  * Singleton class that watches a particular YAML config file path.
@@ -32,6 +39,9 @@ namespace mapget
 class DataSourceConfigService
 {
 public:
+    using PublicConfigSectionSerializer =
+        std::function<nlohmann::json(YAML::Node const& fullConfig)>;
+
     /**
      * Gets the singleton instance of the DataSourceConfig class.
      * @return Reference to the singleton instance.
@@ -124,6 +134,23 @@ public:
     /** Top-level JSON keys allowed by current schema (properties keys). */
     [[nodiscard]] std::vector<std::string> topLevelDataSourceConfigKeys() const;
 
+    /** Latest datasource config statistics from the most recent load. */
+    [[nodiscard]] DataSourceConfigStats getDataSourceConfigStats() const;
+
+    /**
+     * Register an additional public top-level config section for GET /config.
+     * The serializer receives the full YAML config document.
+     */
+    void registerPublicConfigSection(
+        std::string name,
+        PublicConfigSectionSerializer serializer);
+
+    /**
+     * Serialize registered public config sections.
+     * Every registered key is present in the result.
+     */
+    [[nodiscard]] nlohmann::json getPublicConfigSections(YAML::Node const& fullConfig) const;
+
     /**
      * Call this to stop the config file watching thread.
      */
@@ -185,6 +212,8 @@ private:
     std::optional<nlohmann::json> schemaPatch_;
     mutable std::optional<nlohmann::json> schema_;
     mutable std::unique_ptr<nlohmann::json_schema::json_validator> validator_;
+    std::map<std::string, PublicConfigSectionSerializer> publicConfigSectionSerializers_;
+    DataSourceConfigStats dataSourceConfigStats_;
 
     // Atomic flag to control the file watching thread.
     std::atomic<bool> watching_ = false;

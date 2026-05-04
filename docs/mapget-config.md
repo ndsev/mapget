@@ -24,6 +24,8 @@ For integration with configuration UIs there is an additional top‑level key:
 
 - `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents, but exposes it via `/config` and ensures that sensitive fields such as `password` and `api-key` are masked in responses.
 
+Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, MapViewer registers an `erdblick` section for frontend defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file.
+
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
 ## The `sources` section
@@ -38,6 +40,14 @@ By default, the HTTP service registers the following datasource types:
 - `GeoJsonFolder` – serve features from a directory containing `.geojson` files named by tile ID.
 
 Additional datasource types can be registered from C++ code using `DataSourceConfigService`, but those are outside the scope of this guide.
+
+Every datasource entry accepts these generic fields in addition to type-specific fields:
+
+- `enabled` (optional, default `true`): when set to `false`, the entry is skipped before its type-specific constructor is called.
+- `ttl` (optional): cache time-to-live override in seconds. `0` means infinite.
+- `auth-header` (optional): header-to-regular-expression map as described below.
+
+Disabled entries are counted separately in service diagnostics and are not treated as construction failures.
 
 ### Restricting access with `auth-header`
 
@@ -313,7 +323,7 @@ mapget:
     cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
     clear-cache: false          # --clear-cache
     allow-post-config: true     # --allow-post-config (enables POST /config)
-    no-get-config: false        # --no-get-config (set to true to disable GET /config)
+    no-get-config: false        # --no-get-config (set to true to hide datasource config in GET /config)
     memory-trim-binary-interval: 100  # --memory-trim-binary-interval
     memory-trim-json-interval: 0      # --memory-trim-json-interval
 

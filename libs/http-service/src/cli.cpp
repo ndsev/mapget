@@ -72,7 +72,6 @@ nlohmann::json gridDataSourceSchema()
     return {
         {"type", "object"},
         {"properties", {
-            {"enabled", {{"type", "boolean"}, {"title", "Enabled"}}},
             {"mapId", {{"type", "string"}, {"title", "Map ID"}}},
             {"spatialCoherence", {{"type", "boolean"}}},
             {"collisionGridSize", {{"type", "number"}}},
@@ -228,13 +227,7 @@ void registerDefaultDatasourceTypes() {
         dataSourceProcessSchema());
     service.registerDataSourceType(
         "GridDataSource",
-        [](YAML::Node const& config) -> DataSource::Ptr {
-            // Check if enabled flag is present and set to false
-            if (config["enabled"].IsDefined() && !config["enabled"].as<bool>()) {
-                return nullptr;  // Skip this datasource
-            }
-            return std::make_shared<gridsource::GridDataSource>(config);
-        },
+        [](YAML::Node const& config) -> DataSource::Ptr { return std::make_shared<gridsource::GridDataSource>(config); },
         gridDataSourceSchema());
     service.registerDataSourceType(
         "GeoJsonFolder",

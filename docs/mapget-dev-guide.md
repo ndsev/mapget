@@ -249,10 +249,12 @@ This means `priorityTileIds` affects both backend scheduling and already-produce
 
 The HTTP service also implements `/config`:
 
-- `GET /config` reads the YAML configuration file, extracts the `sources` and `http-settings` keys, masks any `password` or `api-key` values and returns the result alongside the JSON Schema configured via `--config-schema`.
-- `POST /config` validates an incoming JSON document against that schema, merges it back into the YAML file (unmasking secrets) and relies on `DataSourceConfigService` to apply the updated datasource configuration.
+- `GET /config` reads the YAML configuration file, extracts datasource-model keys such as `sources` and `http-settings`, masks any `password` or `api-key` values and returns the result alongside the JSON Schema configured via `--config-schema`.
+- `GET /config` also merges public read-only sections registered through `DataSourceConfigService::registerPublicConfigSection(...)` as top-level siblings of `model`. Mapget does not interpret those sections itself.
+- If datasource configuration cannot be exposed, `GET /config` still returns HTTP `200` from the handler and reports the problem through `datasourceConfigUnavailable` plus `datasourceConfigUnavailableReason`.
+- `POST /config` validates an incoming datasource-model JSON document against the schema, merges it back into the YAML file (unmasking secrets), preserves unknown top-level sections, and relies on `DataSourceConfigService` to apply the updated datasource configuration.
 
-These endpoints are guarded by command‑line flags: `--no-get-config` disables the GET endpoint, and `--allow-post-config` enables the POST endpoint. They are primarily intended for configuration editors and admin tools.
+These endpoints are guarded by command-line flags: `--no-get-config` makes `GET /config` return the unavailable response shape, and `--allow-post-config` enables the POST endpoint. They are primarily intended for configuration editors and admin tools.
 
 ## Binary streaming and simfil integration
 
