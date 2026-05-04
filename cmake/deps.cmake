@@ -34,7 +34,7 @@ if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
             "SIMFIL_SHARED OFF")
 else()
     CPMAddPackage(
-        URI "gh:Klebert-Engineering/simfil#v0.7.0"
+        URI "gh:Klebert-Engineering/simfil#release/0.7.1"
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
@@ -161,7 +161,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#v1.2.7@1.2.7")
+    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#v1.2.8@1.2.8")
 endif()
 
 if (MAPGET_ENABLE_TESTING)

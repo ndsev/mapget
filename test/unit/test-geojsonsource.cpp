@@ -2,14 +2,11 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <unordered_map>
 
 #include "geojsonsource/geojsonsource.h"
-#include "mapget/detail/http-server.h"
 #include "mapget/model/featurelayer.h"
-
-#include <drogon/HttpAppFramework.h>
-#include <drogon/HttpResponse.h>
 #include <fmt/format.h>
 
 using namespace mapget;
@@ -72,34 +69,6 @@ void writeFile(const std::filesystem::path& path, const std::string& content)
     file << content;
     file.close();
 }
-
-class TestGeoJsonEndpointServer : public mapget::HttpServer
-{
-public:
-    explicit TestGeoJsonEndpointServer(std::unordered_map<std::string, std::string> responses)
-        : responses_(std::move(responses))
-    {
-    }
-
-protected:
-    void setup(drogon::HttpAppFramework& app) override
-    {
-        for (const auto& [path, body] : responses_) {
-            app.registerHandler(
-                path,
-                [body](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-                    auto response = drogon::HttpResponse::newHttpResponse();
-                    response->setStatusCode(drogon::k200OK);
-                    response->setBody(body);
-                    callback(response);
-                },
-                {drogon::Get});
-        }
-    }
-
-private:
-    std::unordered_map<std::string, std::string> responses_;
-};
 
 }  // namespace
 
@@ -526,21 +495,26 @@ layers:
       - {}
 )yaml", largeTileId);
 
-        TestGeoJsonEndpointServer server({
-            {"/info.yaml", infoYaml},
-            {fmt::format("/tiles/Road/{}.geojson", largeTileId), sampleGeoJson},
-            {fmt::format("/{}.geojson", largeTileId), sampleGeoJson},
-        });
-        server.go("127.0.0.1", 0, 2000);
-
-        auto baseUrl = fmt::format("http://127.0.0.1:{}/tiles", server.port());
-        auto infoUrl = fmt::format("http://127.0.0.1:{}/info.yaml", server.port());
+        auto responses = std::make_shared<std::unordered_map<std::string, std::string>>(
+            std::unordered_map<std::string, std::string>{
+                {"http://geojson-endpoint.test/info.yaml", infoYaml},
+                {fmt::format("http://geojson-endpoint.test/tiles/Road/{}.geojson", largeTileId), sampleGeoJson},
+                {fmt::format("http://geojson-endpoint.test/{}.geojson", largeTileId), sampleGeoJson},
+            });
+        auto fetchText = [responses](std::string const& url) -> std::string {
+            auto it = responses->find(url);
+            if (it == responses->end()) {
+                throw std::runtime_error(fmt::format("Unexpected GeoJsonEndpoint test URL: {}", url));
+            }
+            return it->second;
+        };
 
         geojsonsource::GeoJsonEndpointSource source({
-            .baseUrl = baseUrl,
+            .baseUrl = "http://geojson-endpoint.test/tiles",
             .withAttrLayers = false,
             .tileUrlTemplate = "{layerId}/{tileId}.geojson",
-            .dataSourceInfoLocation = infoUrl,
+            .dataSourceInfoLocation = "http://geojson-endpoint.test/info.yaml",
+            .fetchText = fetchText,
         });
 
         auto info = source.info();
@@ -560,10 +534,11 @@ layers:
         REQUIRE_FALSE(roadTile->error().has_value());
 
         geojsonsource::GeoJsonEndpointSource fallbackSource({
-            .baseUrl = fmt::format("http://127.0.0.1:{}", server.port()),
+            .baseUrl = "http://geojson-endpoint.test",
             .withAttrLayers = false,
             .mapId = "FallbackEndpoint",
             .tileUrlTemplate = "{tileId}.geojson",
+            .fetchText = fetchText,
         });
 
         auto fallbackInfo = fallbackSource.info();

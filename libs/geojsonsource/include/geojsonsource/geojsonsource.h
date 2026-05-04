@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -100,6 +101,12 @@ struct GeoJsonEndpointSourceOptions
     std::string tileUrlTemplate;
     std::optional<nlohmann::json> dataSourceInfoJson;
     std::string dataSourceInfoLocation;
+
+    /**
+     * Optional text fetch override used for tests or custom transports.
+     * When unset, HTTP(S) URLs are fetched via the built-in HTTP client.
+     */
+    std::function<std::string(std::string const&)> fetchText;
 };
 
 /**
@@ -166,6 +173,7 @@ private:
     std::string baseUrl_;
     std::string tileUrlTemplate_;
     bool withAttrLayers_ = true;
+    std::function<std::string(std::string const&)> fetchText_;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

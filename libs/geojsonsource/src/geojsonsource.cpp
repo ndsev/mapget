@@ -224,7 +224,8 @@ struct ParsedHttpUrl
 
 [[nodiscard]] std::optional<DataSourceInfo> loadConfiguredDataSourceInfo(
     std::optional<nlohmann::json> const& inlineJson,
-    std::string const& location)
+    std::string const& location,
+    std::function<std::string(std::string const&)> const& fetchText = {})
 {
     if (inlineJson && !location.empty()) {
         raise("`dataSourceInfoJson` and `dataSourceInfoLocation` cannot be used together.");
@@ -238,8 +239,10 @@ struct ParsedHttpUrl
         return std::nullopt;
 
     nlohmann::json infoJson;
-    if (looksLikeHttpUrl(location))
-        infoJson = parseStructuredDocument(fetchHttpTextOnce(location), location);
+    if (looksLikeHttpUrl(location)) {
+        auto body = fetchText ? fetchText(location) : fetchHttpTextOnce(location);
+        infoJson = parseStructuredDocument(body, location);
+    }
     else
         infoJson = loadStructuredDocumentFile(location);
     return DataSourceInfo::fromJson(infoJson);
@@ -643,7 +646,8 @@ struct GeoJsonEndpointSource::Impl
 GeoJsonEndpointSource::GeoJsonEndpointSource(GeoJsonEndpointSourceOptions options)
     : baseUrl_(trimmed(options.baseUrl)),
       tileUrlTemplate_(options.tileUrlTemplate.empty() ? "{tileId}.geojson" : options.tileUrlTemplate),
-      withAttrLayers_(options.withAttrLayers)
+      withAttrLayers_(options.withAttrLayers),
+      fetchText_(std::move(options.fetchText))
 {
     if (baseUrl_.empty())
         raise("GeoJsonEndpoint requires a non-empty `baseUrl`.");
@@ -654,7 +658,8 @@ GeoJsonEndpointSource::GeoJsonEndpointSource(GeoJsonEndpointSourceOptions option
 
     if (auto loadedInfo = loadConfiguredDataSourceInfo(
             options.dataSourceInfoJson,
-            options.dataSourceInfoLocation)) {
+            options.dataSourceInfoLocation,
+            fetchText_)) {
         info_ = std::move(*loadedInfo);
         finalizeLoadedInfo(info_, options.mapId);
     }
@@ -697,6 +702,9 @@ std::string GeoJsonEndpointSource::renderTileUrl(uint64_t tileId, std::string_vi
 std::string GeoJsonEndpointSource::fetchTileBody(uint64_t tileId, std::string_view layerId) const
 {
     auto url = renderTileUrl(tileId, layerId);
+    if (fetchText_)
+        return fetchText_(url);
+
     auto parsedUrl = splitHttpUrl(url);
     auto client = impl_->acquireClient(parsedUrl.origin);
 
