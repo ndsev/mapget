@@ -17,6 +17,7 @@
 #include "stringpool.h"
 #include "layer.h"
 #include "sourceinfo.h"
+#include "geojson-import.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
@@ -273,6 +274,9 @@ public:
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
 
+    /** Import a mapget-flavoured or best-effort GeoJSON feature collection into this tile. */
+    void fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options = {});
+
     /**
      * Inspect or replace the optional tile-level GLB attachment without
      * inlining payload bytes.
@@ -307,6 +311,8 @@ public:
 
     /** Optional staged-loading index (0-based) for this feature tile. */
     [[nodiscard]] std::optional<uint32_t> stage() const override;
+
+    /** Store or clear the tile-stage marker without affecting contained geometries. */
     void setStage(std::optional<uint32_t> stage) override;
 
     /**

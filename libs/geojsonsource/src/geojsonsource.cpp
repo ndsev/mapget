@@ -3,52 +3,321 @@
 #include "geojsonsource/geojsonsource.h"
 
 #include "mapget/log.h"
-#include "mapget/model/sourcedatalayer.h"
+#include "mapget/service/config.h"
 
-#include "nlohmann/json.hpp"
-#include "fmt/format.h"
+#include <drogon/HttpClient.h>
+#include <drogon/HttpRequest.h>
+#include <trantor/net/EventLoopThread.h>
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
+
+#include "fmt/format.h"
+
+#include <zlib.h>
 
 namespace
 {
 
-simfil::ModelNode::Ptr jsonToMapget(  // NOLINT (recursive)
-    mapget::TileFeatureLayer::Ptr const& tfl,
-    const nlohmann::json& j)
-{
-    if (j.is_string())
-        return tfl->newValue(j.get<std::string>());
-    if (j.is_number_integer())
-        return tfl->newValue(j.get<int64_t>());
-    if (j.is_number_float())
-        return tfl->newValue(j.get<double>());
-    if (j.is_boolean())
-        return tfl->newSmallValue(j.get<bool>());
-    if (j.is_null())
-        return {};
-    if (j.is_object()) {
-        auto subObject = tfl->newObject(j.size(), true);
-        for (auto& el : j.items())
-            subObject->addField(el.key(), jsonToMapget(tfl, el.value()));
-        return subObject;
-    }
-    if (j.is_array()) {
-        auto subArray = tfl->newArray(j.size(), true);
-        for (auto& el : j.items())
-            subArray->append(jsonToMapget(tfl, el.value()));
-        return subArray;
-    }
+using namespace mapget;
 
-    mapget::log().debug("Unhandled JSON type: {}", j.type_name());
-    return {};
+constexpr auto MANIFEST_FILENAME = "manifest.json";
+
+[[nodiscard]] int defaultParallelJobs()
+{
+    const auto hardwareThreads = static_cast<int>(std::thread::hardware_concurrency());
+    return std::max(static_cast<int>(0.33 * std::max(hardwareThreads, 1)), 2);
 }
 
-constexpr auto manifestFilename = "manifest.json";
+[[nodiscard]] bool looksLikeHttpUrl(std::string_view value)
+{
+    return value.starts_with("http://") || value.starts_with("https://");
+}
+
+[[nodiscard]] std::string trimmed(std::string value)
+{
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
+        value.erase(value.begin());
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+        value.pop_back();
+    return value;
+}
+
+[[nodiscard]] std::string replaceAll(
+    std::string text,
+    std::string_view needle,
+    std::string_view replacement)
+{
+    if (needle.empty())
+        return text;
+
+    std::size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        text.replace(pos, needle.size(), replacement);
+        pos += replacement.size();
+    }
+    return text;
+}
+
+[[nodiscard]] std::string renderTemplate(
+    std::string const& input,
+    uint64_t tileId,
+    std::string_view layerId,
+    std::string_view baseUrl = {})
+{
+    auto result = replaceAll(input, "{tileId}", std::to_string(tileId));
+    result = replaceAll(result, "{layerId}", layerId);
+    if (!baseUrl.empty())
+        result = replaceAll(result, "{baseUrl}", baseUrl);
+    return result;
+}
+
+struct ParsedHttpUrl
+{
+    std::string origin;
+    std::string pathAndQuery;
+};
+
+[[nodiscard]] ParsedHttpUrl splitHttpUrl(std::string_view url)
+{
+    if (!looksLikeHttpUrl(url))
+        raise(fmt::format("Expected HTTP(S) URL, got `{}`.", url));
+
+    auto schemeEnd = url.find("://");
+    auto pathStart = url.find('/', schemeEnd + 3);
+    if (pathStart == std::string_view::npos)
+        return {std::string(url), "/"};
+    return {
+        std::string(url.substr(0, pathStart)),
+        std::string(url.substr(pathStart))};
+}
+
+[[nodiscard]] std::string joinUrlPrefixAndPath(
+    std::string_view baseUrl,
+    std::string_view relativePath)
+{
+    std::string result(baseUrl);
+    if (!result.empty() && result.back() == '/' &&
+        !relativePath.empty() && relativePath.front() == '/') {
+        result.pop_back();
+    }
+    else if (!result.empty() && result.back() != '/' &&
+             !relativePath.empty() && relativePath.front() != '/') {
+        result.push_back('/');
+    }
+    result.append(relativePath);
+    return result;
+}
+
+[[nodiscard]] bool hasGzipContentEncoding(std::string_view contentEncoding)
+{
+    if (contentEncoding.empty())
+        return false;
+
+    std::string normalized(contentEncoding);
+    std::ranges::transform(
+        normalized,
+        normalized.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return normalized.find("gzip") != std::string::npos;
+}
+
+[[nodiscard]] bool looksLikeGzip(std::string_view bytes)
+{
+    return bytes.size() >= 2 &&
+           static_cast<unsigned char>(bytes[0]) == 0x1f &&
+           static_cast<unsigned char>(bytes[1]) == 0x8b;
+}
+
+[[nodiscard]] std::optional<std::string> gunzip(std::string_view input)
+{
+    if (input.empty())
+        return std::string{};
+    if (input.size() > static_cast<std::size_t>(std::numeric_limits<uInt>::max()))
+        return std::nullopt;
+
+    z_stream stream{};
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
+    stream.avail_in = static_cast<uInt>(input.size());
+
+    if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK)
+        return std::nullopt;
+
+    std::string output;
+    output.reserve(input.size() * 2);
+
+    char outBuffer[8192];
+    int inflateResult = Z_OK;
+    do {
+        stream.next_out = reinterpret_cast<Bytef*>(outBuffer);
+        stream.avail_out = sizeof(outBuffer);
+        inflateResult = inflate(&stream, Z_NO_FLUSH);
+        if (inflateResult != Z_OK && inflateResult != Z_STREAM_END) {
+            inflateEnd(&stream);
+            return std::nullopt;
+        }
+        output.append(outBuffer, sizeof(outBuffer) - stream.avail_out);
+    } while (inflateResult != Z_STREAM_END);
+
+    inflateEnd(&stream);
+    return output;
+}
+
+[[nodiscard]] std::optional<std::string> decodeResponseBody(
+    const drogon::HttpResponsePtr& response)
+{
+    if (!response)
+        return std::nullopt;
+
+    auto body = std::string_view(response->body().data(), response->body().size());
+    auto contentEncoding = response->getHeader("Content-Encoding");
+    if (contentEncoding.empty())
+        contentEncoding = response->getHeader("content-encoding");
+
+    const auto headerSaysGzip = hasGzipContentEncoding(contentEncoding);
+    const auto bodyLooksGzip = looksLikeGzip(body);
+    if (headerSaysGzip && !bodyLooksGzip)
+        return std::string(body);
+    if (!headerSaysGzip && !bodyLooksGzip)
+        return std::string(body);
+    return gunzip(body);
+}
+
+[[nodiscard]] std::string fetchHttpTextOnce(std::string const& url)
+{
+    auto parsedUrl = splitHttpUrl(url);
+
+    trantor::EventLoopThread loopThread("GeoJsonSourceHttpFetch");
+    loopThread.run();
+
+    auto client = drogon::HttpClient::newHttpClient(parsedUrl.origin, loopThread.getLoop());
+    auto request = drogon::HttpRequest::newHttpRequest();
+    request->setMethod(drogon::Get);
+    request->setPath(parsedUrl.pathAndQuery);
+    request->addHeader("Accept-Encoding", "gzip");
+
+    auto [result, response] = client->sendRequest(request);
+    if (result != drogon::ReqResult::Ok || !response) {
+        raise(fmt::format(
+            "Failed to fetch `{}`: [{}]",
+            url,
+            drogon::to_string_view(result)));
+    }
+    if (static_cast<int>(response->statusCode()) >= 300) {
+        raise(fmt::format(
+            "Failed to fetch `{}`: HTTP {}",
+            url,
+            static_cast<int>(response->statusCode())));
+    }
+
+    auto decodedBody = decodeResponseBody(response);
+    if (!decodedBody)
+        raise(fmt::format("Failed to decode response body from `{}`.", url));
+    return *decodedBody;
+}
+
+[[nodiscard]] std::optional<DataSourceInfo> loadConfiguredDataSourceInfo(
+    std::optional<nlohmann::json> const& inlineJson,
+    std::string const& location)
+{
+    if (inlineJson && !location.empty()) {
+        raise("`dataSourceInfoJson` and `dataSourceInfoLocation` cannot be used together.");
+    }
+
+    if (inlineJson) {
+        return DataSourceInfo::fromJson(*inlineJson);
+    }
+
+    if (location.empty())
+        return std::nullopt;
+
+    nlohmann::json infoJson;
+    if (looksLikeHttpUrl(location))
+        infoJson = parseStructuredDocument(fetchHttpTextOnce(location), location);
+    else
+        infoJson = loadStructuredDocumentFile(location);
+    return DataSourceInfo::fromJson(infoJson);
+}
+
+void ensureFeatureLayerInfoOnly(DataSourceInfo const& info, std::string_view context)
+{
+    for (auto const& [layerId, layerInfo] : info.layers_) {
+        if (layerInfo->type_ != LayerType::Features) {
+            raise(fmt::format(
+                "{} only supports feature layers, but `{}` is configured as type `{}`.",
+                context,
+                layerId,
+                nlohmann::json(layerInfo->type_).dump()));
+        }
+    }
+}
+
+void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
+{
+    ensureFeatureLayerInfoOnly(info, "GeoJSON datasource");
+    info.maxParallelJobs_ = std::max(info.maxParallelJobs_, 1);
+    if (info.nodeId_.empty())
+        info.nodeId_ = generateNodeHexUuid();
+    if (!mapIdOverride.empty())
+        info.mapId_ = mapIdOverride;
+}
+
+[[nodiscard]] DataSourceInfo synthesizeFallbackInfo(std::string const& mapId)
+{
+    auto fallbackLayerJson = nlohmann::json::parse(R"json(
+    {
+      "featureTypes": [
+        {
+          "name": "AnyFeature",
+          "uniqueIdCompositions": [
+            [
+              {"partId": "tileId", "datatype": "U64"},
+              {"partId": "featureIndex", "datatype": "U32"}
+            ]
+          ]
+        }
+      ]
+    })json");
+
+    auto layerInfo = LayerInfo::fromJson(fallbackLayerJson, "GeoJsonAny");
+    DataSourceInfo info;
+    info.nodeId_ = generateNodeHexUuid();
+    info.mapId_ = mapId;
+    info.maxParallelJobs_ = defaultParallelJobs();
+    info.layers_.emplace(layerInfo->layerId_, std::move(layerInfo));
+    return info;
+}
+
+[[nodiscard]] std::string featureTypeNameForTile(const TileFeatureLayer::Ptr& tile)
+{
+    auto layerInfo = tile->layerInfo();
+    if (!layerInfo->featureTypes_.empty())
+        return layerInfo->featureTypes_.front().name_;
+
+    if (layerInfo->layerId_ == "GeoJsonAny")
+        return "AnyFeature";
+    return layerInfo->layerId_ + "Feature";
+}
+
+void fillGeoJsonTile(
+    const TileFeatureLayer::Ptr& tile,
+    std::string const& geoJsonBody,
+    bool withAttrLayers)
+{
+    tile->fromJson(
+        nlohmann::json::parse(geoJsonBody),
+        GeoJsonImportOptions{
+            .strict_ = false,
+            .fallbackFeatureType_ = featureTypeNameForTile(tile),
+            .objectPropertiesAsAttributeLayers_ = withAttrLayers,
+        });
+}
 
 }  // namespace
 
@@ -57,14 +326,7 @@ namespace mapget::geojsonsource
 
 nlohmann::json GeoJsonSource::createLayerInfoJson(const std::string& layerName)
 {
-    // Create feature type name from layer name (e.g., "Road" -> "RoadFeature")
-    std::string featureTypeName = layerName;
-    if (layerName != "GeoJsonAny") {
-        featureTypeName = layerName + "Feature";
-    } else {
-        featureTypeName = "AnyFeature";
-    }
-
+    std::string featureTypeName = layerName == "GeoJsonAny" ? "AnyFeature" : layerName + "Feature";
     return nlohmann::json::parse(fmt::format(R"json(
 {{
   "featureTypes": [
@@ -91,20 +353,14 @@ nlohmann::json GeoJsonSource::createLayerInfoJson(const std::string& layerName)
 
 bool GeoJsonSource::parseManifest()
 {
-    auto manifestPath = std::filesystem::path(inputDir_) / manifestFilename;
-    if (!std::filesystem::exists(manifestPath)) {
+    auto manifestPath = std::filesystem::path(inputDir_) / MANIFEST_FILENAME;
+    if (!std::filesystem::exists(manifestPath))
         return false;
-    }
 
     try {
-        std::ifstream manifestFile(manifestPath);
-        nlohmann::json manifestJson;
-        manifestFile >> manifestJson;
-
-        // Parse version (required)
+        auto manifestJson = loadStructuredDocumentFile(manifestPath.string());
         manifest_.version = manifestJson.value("version", 1);
 
-        // Parse metadata (optional)
         if (manifestJson.contains("metadata")) {
             auto& meta = manifestJson["metadata"];
             if (meta.contains("name"))
@@ -121,39 +377,32 @@ bool GeoJsonSource::parseManifest()
                 manifest_.metadata.license = meta["license"].get<std::string>();
         }
 
-        // Parse index (optional - if missing, will fall back to directory scan)
         if (manifestJson.contains("index")) {
             auto& index = manifestJson["index"];
-
-            // Default layer name
             manifest_.defaultLayer = index.value("defaultLayer", "GeoJsonAny");
 
-            // Parse files
             if (index.contains("files")) {
                 for (auto& [filename, fileInfo] : index["files"].items()) {
                     FileEntry entry;
                     entry.filename = filename;
 
                     if (fileInfo.is_object()) {
-                        // Full format: { "tileId": 123, "layer": "Road" }
                         entry.tileId = fileInfo.value("tileId", uint64_t{0});
                         entry.layer = fileInfo.value("layer", std::string{});
-                    } else if (fileInfo.is_number()) {
-                        // Short format: just the tile ID
+                    }
+                    else if (fileInfo.is_number()) {
                         entry.tileId = fileInfo.get<uint64_t>();
-                    } else {
+                    }
+                    else {
                         mapget::log().warn(
                             "Invalid file entry in manifest for '{}': expected object or number",
                             filename);
                         continue;
                     }
 
-                    // Use default layer if not specified
-                    if (entry.layer.empty()) {
+                    if (entry.layer.empty())
                         entry.layer = manifest_.defaultLayer;
-                    }
 
-                    // Validate file exists
                     auto filePath = std::filesystem::path(inputDir_) / filename;
                     if (!std::filesystem::exists(filePath)) {
                         mapget::log().warn(
@@ -170,10 +419,9 @@ bool GeoJsonSource::parseManifest()
         mapget::log().info(
             "Loaded manifest.json with {} file entries",
             manifest_.files.size());
-
         return true;
-
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         mapget::log().error("Failed to parse manifest.json: {}", e.what());
         return false;
     }
@@ -181,105 +429,111 @@ bool GeoJsonSource::parseManifest()
 
 void GeoJsonSource::initFromManifest()
 {
-    // Build layer coverage and file mapping from manifest entries
     for (const auto& entry : manifest_.files) {
-        // Track coverage per layer
         layerCoverage_[entry.layer].insert(entry.tileId);
-
-        // Map (tileId, layer) -> filename
-        TileLayerKey key{entry.tileId, entry.layer};
-        tileLayerToFile_[key] = entry.filename;
-
-        mapget::log().debug(
-            "Registered file '{}' -> tile {} in layer '{}'",
-            entry.filename, entry.tileId, entry.layer);
+        tileLayerToFile_[{entry.tileId, entry.layer}] = entry.filename;
     }
 
-    // Create LayerInfo for each discovered layer
     for (const auto& [layerName, tileIds] : layerCoverage_) {
-        auto layerJson = createLayerInfoJson(layerName);
-        auto layerInfo = mapget::LayerInfo::fromJson(layerJson, layerName);
-
-        // Add coverage entries
+        auto layerInfo = mapget::LayerInfo::fromJson(createLayerInfoJson(layerName), layerName);
         for (uint64_t tileId : tileIds) {
-            mapget::Coverage coverage({tileId, tileId, std::vector<bool>()});
-            layerInfo->coverage_.emplace_back(coverage);
+            layerInfo->coverage_.emplace_back(mapget::Coverage{tileId, tileId, {}});
         }
-
-        info_.layers_.emplace(layerName, layerInfo);
-        mapget::log().info(
-            "Layer '{}' initialized with {} tiles",
-            layerName, tileIds.size());
+        info_.layers_.emplace(layerName, std::move(layerInfo));
     }
 }
 
 void GeoJsonSource::initFromDirectory()
 {
-    // Legacy mode: scan for <tile-id>.geojson files
     const std::string defaultLayer = "GeoJsonAny";
-    auto layerJson = createLayerInfoJson(defaultLayer);
-    auto layerInfo = mapget::LayerInfo::fromJson(layerJson, defaultLayer);
+    auto layerInfo = mapget::LayerInfo::fromJson(createLayerInfoJson(defaultLayer), defaultLayer);
 
     for (const auto& file : std::filesystem::directory_iterator(inputDir_)) {
-        mapget::log().debug("Found file {}", file.path().string());
-        if (file.path().extension() == ".geojson") {
-            try {
-                auto tileId = static_cast<uint64_t>(std::stoull(file.path().stem()));
-                layerCoverage_[defaultLayer].insert(tileId);
+        if (file.path().extension() != ".geojson")
+            continue;
 
-                TileLayerKey key{tileId, defaultLayer};
-                tileLayerToFile_[key] = file.path().filename().string();
-
-                mapget::Coverage coverage({tileId, tileId, std::vector<bool>()});
-                layerInfo->coverage_.emplace_back(coverage);
-                mapget::log().debug("Added tile {}", tileId);
-            } catch (const std::exception& e) {
-                mapget::log().debug(
-                    "Skipping file '{}': filename is not a valid tile ID",
-                    file.path().filename().string());
-            }
+        try {
+            auto tileId = static_cast<uint64_t>(std::stoull(file.path().stem()));
+            layerCoverage_[defaultLayer].insert(tileId);
+            tileLayerToFile_[{tileId, defaultLayer}] = file.path().filename().string();
+            layerInfo->coverage_.emplace_back(mapget::Coverage{tileId, tileId, {}});
+        }
+        catch (const std::exception&) {
+            mapget::log().debug(
+                "Skipping file '{}': filename is not a valid tile ID",
+                file.path().filename().string());
         }
     }
 
-    info_.layers_.emplace(defaultLayer, layerInfo);
+    info_.layers_.emplace(defaultLayer, std::move(layerInfo));
 }
 
-GeoJsonSource::GeoJsonSource(const std::string& inputDir, bool withAttrLayers, const std::string& mapId)
-    : inputDir_(inputDir), withAttrLayers_(withAttrLayers)
+GeoJsonSource::GeoJsonSource(
+    const std::string& inputDir,
+    bool withAttrLayers,
+    const std::string& mapId)
+    : GeoJsonSource(
+        inputDir,
+        GeoJsonSourceOptions{
+            .withAttrLayers = withAttrLayers,
+            .mapId = mapId})
 {
-    // Compromise between performance and resource usage
-    info_.maxParallelJobs_ = std::max((int)(0.33*std::thread::hardware_concurrency()), 2);
-    info_.mapId_ = mapId.empty() ? mapNameFromUri(inputDir) : mapId;
+}
+
+GeoJsonSource::GeoJsonSource(std::string inputDir, GeoJsonSourceOptions options)
+    : inputDir_(std::move(inputDir)),
+      withAttrLayers_(options.withAttrLayers),
+      tilePathTemplate_(options.tilePathTemplate.empty() ? "{tileId}.geojson" : options.tilePathTemplate)
+{
+    info_.maxParallelJobs_ = defaultParallelJobs();
+    info_.mapId_ = options.mapId.empty() ? mapNameFromUri(inputDir_) : options.mapId;
     info_.nodeId_ = generateNodeHexUuid();
 
-    // Try to load manifest.json first
-    hasManifest_ = parseManifest();
+    if (auto loadedInfo = loadConfiguredDataSourceInfo(
+            options.dataSourceInfoJson,
+            options.dataSourceInfoLocation)) {
+        info_ = std::move(*loadedInfo);
+        finalizeLoadedInfo(info_, options.mapId);
+        usesTemplatePaths_ = true;
 
-    if (hasManifest_) {
-        if (!manifest_.files.empty()) {
-            initFromManifest();
-        } else {
+        if (std::filesystem::exists(std::filesystem::path(inputDir_) / MANIFEST_FILENAME)) {
             mapget::log().info(
-                "manifest.json found but has no index/files section - no tiles available");
+                "GeoJsonFolder is using explicit dataSourceInfo; manifest.json in '{}' is ignored.",
+                inputDir_);
         }
-    } else {
-        mapget::log().warn(
-            "No manifest.json found in '{}'. "
-            "Using deprecated legacy mode with filename-based tile ID detection. "
-            "Legacy mode will be removed in a future release. "
-            "Please add a manifest.json for file mapping and multi-layer support.",
-            inputDir);
-        initFromDirectory();
+    }
+    else {
+        if (!options.tilePathTemplate.empty()) {
+            mapget::log().warn(
+                "GeoJsonFolder ignores `tilePathTemplate` without explicit dataSourceInfo. "
+                "Using manifest or legacy filename discovery instead.");
+        }
+
+        hasManifest_ = parseManifest();
+        if (hasManifest_) {
+            if (!manifest_.files.empty()) {
+                initFromManifest();
+            }
+            else {
+                mapget::log().info(
+                    "manifest.json found but has no index/files section - no tiles available");
+            }
+        }
+        else {
+            mapget::log().warn(
+                "No manifest.json found in '{}'. "
+                "Using deprecated legacy mode with filename-based tile ID detection. "
+                "Provide `dataSourceInfo` for template-based loading.",
+                inputDir_);
+            initFromDirectory();
+        }
     }
 
-    // Log summary
-    size_t totalTiles = 0;
-    for (const auto& [layer, tileIds] : layerCoverage_) {
-        totalTiles += tileIds.size();
-    }
     mapget::log().info(
-        "GeoJsonSource initialized: {} layers, {} total tile entries",
-        info_.layers_.size(), totalTiles);
+        "GeoJsonFolder initialized: mapId='{}', layers={}, mode={}",
+        info_.mapId_,
+        info_.layers_.size(),
+        usesTemplatePaths_ ? "template" : hasManifest_ ? "manifest" : "legacy");
 }
 
 mapget::DataSourceInfo GeoJsonSource::info()
@@ -287,144 +541,220 @@ mapget::DataSourceInfo GeoJsonSource::info()
     return info_;
 }
 
-void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
+std::string GeoJsonSource::resolveTilePath(uint64_t tileId, std::string_view layerId) const
 {
-    using namespace mapget;
+    auto rendered = renderTemplate(tilePathTemplate_, tileId, layerId);
+    std::filesystem::path path(rendered);
+    if (path.is_absolute())
+        return path.string();
+    return (std::filesystem::path(inputDir_) / path).string();
+}
 
-    auto tileId = tile->tileId().value_;
-    auto layerName = tile->layerInfo()->layerId_;
+std::string GeoJsonSource::readTileBody(uint64_t tileId, std::string_view layerId) const
+{
+    if (usesTemplatePaths_) {
+        auto path = resolveTilePath(tileId, layerId);
+        std::ifstream geojsonFile(path);
+        if (!geojsonFile)
+            raise(fmt::format("Failed to open GeoJSON file `{}`.", path));
+        std::ostringstream buffer;
+        buffer << geojsonFile.rdbuf();
+        return buffer.str();
+    }
 
-    mapget::log().debug("Filling tile {} for layer '{}'", tileId, layerName);
-
-    // Look up the file for this (tileId, layer) combination
-    TileLayerKey key{tileId, layerName};
+    TileLayerKey key{tileId, std::string(layerId)};
     auto fileIt = tileLayerToFile_.find(key);
     if (fileIt == tileLayerToFile_.end()) {
-        mapget::log().error(
-            "No file registered for tile {} in layer '{}'",
-            tileId, layerName);
-        return;
+        raise(fmt::format(
+            "No GeoJSON file registered for tile {} in layer `{}`.",
+            tileId,
+            layerId));
     }
 
-    // All features share the same tile id
-    tile->setIdPrefix({{"tileId", static_cast<int64_t>(tileId)}});
-
-    // Build the full path
     auto path = (std::filesystem::path(inputDir_) / fileIt->second).string();
-
-    mapget::log().debug("Opening: {}", path);
-
     std::ifstream geojsonFile(path);
-    if (!geojsonFile) {
-        mapget::log().error("Failed to open file: {}", path);
-        return;
+    if (!geojsonFile)
+        raise(fmt::format("Failed to open GeoJSON file `{}`.", path));
+
+    std::ostringstream buffer;
+    buffer << geojsonFile.rdbuf();
+    return buffer.str();
+}
+
+void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
+{
+    try {
+        fillGeoJsonTile(
+            tile,
+            readTileBody(tile->tileId().value_, tile->layerInfo()->layerId_),
+            withAttrLayers_);
     }
-
-    nlohmann::json geojsonData;
-    geojsonFile >> geojsonData;
-
-    mapget::log().debug("Processing {} features...", geojsonData["features"].size());
-
-    // Get the feature type name for this layer
-    std::string featureTypeName = (layerName == "GeoJsonAny") ? "AnyFeature" : (layerName + "Feature");
-
-    // Iterate over each feature in the GeoJSON data
-    int featureId = 0;
-    for (auto& feature_data : geojsonData["features"]) {
-        // Create a new feature
-        auto feature = tile->newFeature(featureTypeName, {{"featureIndex", featureId}});
-        featureId++;
-
-        // Parse geometry data (recursive lambda to support GeometryCollection)
-        std::function<void(nlohmann::json const&)> addGeometry;
-        addGeometry = [&](nlohmann::json const& geom) {
-            if (!geom.is_object() || !geom.contains("type"))
-                return;
-            auto const type = geom["type"].get<std::string>();
-            if (type == "Point") {
-                auto const& c = geom["coordinates"];
-                feature->addPoint({c[0], c[1]});
-            }
-            else if (type == "MultiPoint") {
-                auto points = feature->geom()->newGeometry(GeomType::Points, geom["coordinates"].size());
-                for (auto const& c : geom["coordinates"])
-                    points->append({c[0], c[1]});
-            }
-            else if (type == "LineString") {
-                auto line = feature->geom()->newGeometry(GeomType::Line, geom["coordinates"].size());
-                for (auto const& c : geom["coordinates"])
-                    line->append({c[0], c[1]});
-            }
-            else if (type == "MultiLineString") {
-                for (auto const& coords : geom["coordinates"]) {
-                    auto line = feature->geom()->newGeometry(GeomType::Line, coords.size());
-                    for (auto const& c : coords)
-                        line->append({c[0], c[1]});
-                }
-            }
-            else if (type == "Polygon") {
-                if (!geom["coordinates"].empty()) {
-                    auto const& ring = geom["coordinates"][0];
-                    auto poly = feature->geom()->newGeometry(GeomType::Polygon, ring.size());
-                    for (auto const& c : ring)
-                        poly->append({c[0], c[1]});
-                }
-            }
-            else if (type == "MultiPolygon") {
-                for (auto const& polygon : geom["coordinates"]) {
-                    if (!polygon.empty()) {
-                        auto const& ring = polygon[0];
-                        auto poly = feature->geom()->newGeometry(GeomType::Polygon, ring.size());
-                        for (auto const& c : ring)
-                            poly->append({c[0], c[1]});
-                    }
-                }
-            }
-            else if (type == "GeometryCollection") {
-                for (auto const& child : geom["geometries"])
-                    addGeometry(child);
-            }
-        };
-        addGeometry(feature_data["geometry"]);
-
-        // Add top-level properties as attributes
-        for (auto& property : feature_data["properties"].items()) {
-
-            // Always emit scalar properties
-            if (!property.value().is_object()) {
-                feature->attributes()->addField(property.key(), jsonToMapget(tile, property.value()));
-                continue;
-            }
-
-            // Emit layers conditionally
-            if (!withAttrLayers_)
-                continue;
-
-            // If the property value is an object, add an attribute layer
-            auto attrLayer = feature->attributeLayers()->newLayer(property.key());
-            for (auto& attr : property.value().items()) {
-                auto attribute = attrLayer->newAttribute(attr.key());
-                attribute->addField(attr.key(), jsonToMapget(tile, attr.value()));
-
-                // Check if the value is an object and contains a "_direction" field
-                if (attr.value().is_object() && attr.value().contains("_direction")) {
-                    std::string dir = attr.value()["_direction"];
-                    auto validDir = dir == "POSITIVE" ? Validity::Positive :
-                                    dir == "NEGATIVE" ? Validity::Negative :
-                                    (dir == "COMPLETE" || dir == "BOTH") ? Validity::Both :
-                                                        Validity::Empty;
-                    attribute->validity()->newDirection(validDir);
-                }
-            }
-        }
+    catch (const std::exception& e) {
+        tile->setError(e.what());
+        mapget::log().error(
+            "GeoJsonFolder failed to fill tile {} for layer '{}': {}",
+            tile->tileId().value_,
+            tile->layerInfo()->layerId_,
+            e.what());
     }
-
-    mapget::log().debug("            done!");
 }
 
 void GeoJsonSource::fill(mapget::TileSourceDataLayer::Ptr const&)
 {
-    // Do nothing...
+    // This datasource only serves feature tiles.
+}
+
+struct GeoJsonEndpointSource::Impl
+{
+    struct ClientPool
+    {
+        std::vector<drogon::HttpClientPtr> clients;
+        std::size_t nextClient = 0;
+    };
+
+    explicit Impl(int clientCount)
+        : clientCount_(std::max(clientCount, 1))
+    {
+        loopThread_ = std::make_unique<trantor::EventLoopThread>("GeoJsonEndpointSource");
+        loopThread_->run();
+    }
+
+    [[nodiscard]] drogon::HttpClientPtr acquireClient(std::string const& origin)
+    {
+        std::lock_guard lock(mutex_);
+        auto& pool = pools_[origin];
+        if (pool.clients.empty()) {
+            pool.clients.reserve(clientCount_);
+            for (int i = 0; i < clientCount_; ++i) {
+                pool.clients.push_back(drogon::HttpClient::newHttpClient(origin, loopThread_->getLoop()));
+            }
+        }
+        auto client = pool.clients[pool.nextClient % pool.clients.size()];
+        ++pool.nextClient;
+        return client;
+    }
+
+    int clientCount_ = 1;
+    std::unique_ptr<trantor::EventLoopThread> loopThread_;
+    std::mutex mutex_;
+    std::unordered_map<std::string, ClientPool> pools_;
+};
+
+GeoJsonEndpointSource::GeoJsonEndpointSource(GeoJsonEndpointSourceOptions options)
+    : baseUrl_(trimmed(options.baseUrl)),
+      tileUrlTemplate_(options.tileUrlTemplate.empty() ? "{tileId}.geojson" : options.tileUrlTemplate),
+      withAttrLayers_(options.withAttrLayers)
+{
+    if (baseUrl_.empty())
+        raise("GeoJsonEndpoint requires a non-empty `baseUrl`.");
+
+    info_.maxParallelJobs_ = defaultParallelJobs();
+    info_.mapId_ = options.mapId.empty() ? mapNameFromUri(baseUrl_) : options.mapId;
+    info_.nodeId_ = generateNodeHexUuid();
+
+    if (auto loadedInfo = loadConfiguredDataSourceInfo(
+            options.dataSourceInfoJson,
+            options.dataSourceInfoLocation)) {
+        info_ = std::move(*loadedInfo);
+        finalizeLoadedInfo(info_, options.mapId);
+    }
+    else {
+        info_ = synthesizeFallbackInfo(info_.mapId_);
+        if (!options.mapId.empty())
+            info_.mapId_ = options.mapId;
+
+        mapget::log().warn(
+            "No `dataSourceInfo` configured for GeoJsonEndpoint '{}'. "
+            "Only `GeoJsonAny` will be advertised, coverage stays empty, "
+            "and conversion will run in best-effort mode.",
+            baseUrl_);
+    }
+
+    impl_ = std::make_unique<Impl>(std::max(info_.maxParallelJobs_, 1));
+
+    mapget::log().info(
+        "GeoJsonEndpoint initialized: mapId='{}', layers={}, baseUrl='{}'",
+        info_.mapId_,
+        info_.layers_.size(),
+        baseUrl_);
+}
+
+GeoJsonEndpointSource::~GeoJsonEndpointSource() = default;
+
+mapget::DataSourceInfo GeoJsonEndpointSource::info()
+{
+    return info_;
+}
+
+std::string GeoJsonEndpointSource::renderTileUrl(uint64_t tileId, std::string_view layerId) const
+{
+    auto rendered = renderTemplate(tileUrlTemplate_, tileId, layerId, baseUrl_);
+    if (looksLikeHttpUrl(rendered))
+        return rendered;
+    return joinUrlPrefixAndPath(baseUrl_, rendered);
+}
+
+std::string GeoJsonEndpointSource::fetchTileBody(uint64_t tileId, std::string_view layerId) const
+{
+    auto url = renderTileUrl(tileId, layerId);
+    auto parsedUrl = splitHttpUrl(url);
+    auto client = impl_->acquireClient(parsedUrl.origin);
+
+    auto request = drogon::HttpRequest::newHttpRequest();
+    request->setMethod(drogon::Get);
+    request->setPath(parsedUrl.pathAndQuery);
+    request->addHeader("Accept-Encoding", "gzip");
+
+    auto [result, response] = client->sendRequest(request);
+    if (result != drogon::ReqResult::Ok || !response) {
+        raise(fmt::format(
+            "Failed to fetch tile `{}` for layer `{}` from `{}`: [{}]",
+            tileId,
+            layerId,
+            url,
+            drogon::to_string_view(result)));
+    }
+    if (static_cast<int>(response->statusCode()) >= 300) {
+        raise(fmt::format(
+            "Failed to fetch tile `{}` for layer `{}` from `{}`: HTTP {}",
+            tileId,
+            layerId,
+            url,
+            static_cast<int>(response->statusCode())));
+    }
+
+    auto decodedBody = decodeResponseBody(response);
+    if (!decodedBody) {
+        raise(fmt::format(
+            "Failed to decode tile response for `{}` / `{}` from `{}`.",
+            tileId,
+            layerId,
+            url));
+    }
+    return *decodedBody;
+}
+
+void GeoJsonEndpointSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
+{
+    try {
+        fillGeoJsonTile(
+            tile,
+            fetchTileBody(tile->tileId().value_, tile->layerInfo()->layerId_),
+            withAttrLayers_);
+    }
+    catch (const std::exception& e) {
+        tile->setError(e.what());
+        mapget::log().error(
+            "GeoJsonEndpoint failed to fill tile {} for layer '{}': {}",
+            tile->tileId().value_,
+            tile->layerInfo()->layerId_,
+            e.what());
+    }
+}
+
+void GeoJsonEndpointSource::fill(mapget::TileSourceDataLayer::Ptr const&)
+{
+    // This datasource only serves feature tiles.
 }
 
 }  // namespace mapget::geojsonsource

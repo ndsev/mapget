@@ -430,10 +430,6 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(json["mapId"] == "Tropico");
         REQUIRE(json["mapgetLayerId"] == "WayLayer");
 
-        // Verify idPrefix
-        REQUIRE(json.contains("idPrefix"));
-        REQUIRE(json["idPrefix"]["areaId"] == "TheBestArea");
-
         // Verify timestamp is ISO 8601 format
         REQUIRE(json["timestamp"].is_string());
         std::string timestamp = json["timestamp"];

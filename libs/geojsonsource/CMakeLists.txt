@@ -10,6 +10,7 @@ target_include_directories(geojsonsource
 
 target_link_libraries(geojsonsource
     PUBLIC
+        drogon
         mapget-model
         mapget-service)
 

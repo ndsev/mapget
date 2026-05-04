@@ -694,6 +694,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
                 value->value());
         }
     }
+    // Validation runs against the full logical feature id, even though only the
+    // non-prefix suffix is materialized into the compact feature storage.
     fullFeatureIdParts.insert(fullFeatureIdParts.end(), featureIdParts.begin(), featureIdParts.end());
 
     if (!layerInfo_->validFeatureId(typeId, fullFeatureIdParts, true)) {
@@ -703,6 +705,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
             idPartsToString(fullFeatureIdParts)));
     }
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
+    // Stored feature ids omit the common tile prefix to save space, so we first
+    // determine where the feature-local suffix starts within the composition.
     auto const localStartIndex = prefixFeatureIdParts.empty()
         ? 0U
         : *IdPart::compositionMatchEndIndex(
@@ -755,6 +759,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
         auto const& expectedFeatureId = expectedFeatureIds_[featureIndex];
         auto const actualFeatureId = result.id()->toString();
         if (actualFeatureId != expectedFeatureId) {
+            // Overlay validation is sequence-based on purpose so stage imports
+            // fail immediately when converters reorder or drop features.
             raiseFmt(
                 "Feature sequence mismatch at index {}: expected {}, got {}.",
                 featureIndex,
@@ -1626,13 +1632,6 @@ nlohmann::json TileFeatureLayer::toJson() const
 
     if (impl_->glbAttachment_) {
         result["glbAttachment"] = impl_->glbAttachment_->toJsonMetadata();
-    }
-
-    // Add ID prefix if set
-    if (impl_->featureIdPrefix_) {
-        auto prefix = const_cast<TileFeatureLayer*>(this)->getIdPrefix();
-        if (prefix)
-            result["idPrefix"] = prefix->toJson();
     }
 
     // Add timestamp as ISO 8601 string
@@ -2625,58 +2624,11 @@ void TileFeatureLayer::setGeometrySourceDataReferences(
 
 model_ptr<Feature> TileFeatureLayer::find(const std::string_view& featureId) const
 {
-    using namespace std::ranges;
-    auto tokensRange = featureId | views::split('.');
-    auto tokens = std::vector<decltype(*tokensRange.begin())>(tokensRange.begin(), tokensRange.end());
-
-    if (tokens.empty()) {
+    ParsedFeatureId parsed;
+    if (!parseFeatureIdString(featureId, *layerInfo_, parsed)) {
         return {};
     }
-    auto tokenAt = [&tokens](auto&& i) {
-        return std::string_view(&*tokens[i].begin(), distance(tokens[i]));
-    };
-
-    auto typeInfo = layerInfo_->getTypeInfo(tokenAt(0), false);
-    if (!typeInfo || typeInfo->uniqueIdCompositions_.empty())
-        return {};
-
-    // Convert the part strings to key-value pairs using the first (primary) ID composition.
-    KeyValuePairs kvPairs;
-    for (auto withOptionalParts : {true, false}) {
-        size_t tokenIndex = 1;
-        bool error = false;
-        kvPairs.clear();
-
-        for (const auto& part : typeInfo->uniqueIdCompositions_[0]) {
-            if (part.isOptional_ && !withOptionalParts)
-                continue;
-
-            if (tokenIndex >= tokens.size()) {
-                error = true;
-                break;
-            }
-
-            std::variant<int64_t, std::string> parsedValue = std::string(tokenAt(tokenIndex++));
-            if (!part.validate(parsedValue)) {
-                error = true;
-                break;
-            }
-
-            kvPairs.emplace_back(part.idPartLabel_, parsedValue);
-        }
-
-        if (tokenIndex < tokens.size()) {
-            error = true;
-        }
-
-        if (error) {
-            if (!withOptionalParts)
-                return {};
-            // Go on to try without optional parts.
-        }
-    }
-
-    return find(typeInfo->name_, kvPairs);
+    return find(parsed.typeId_, parsed.keyValuePairs_);
 }
 
 }

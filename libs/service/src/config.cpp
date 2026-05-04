@@ -7,6 +7,7 @@
 #include <sstream>
 #include <chrono>
 #include <algorithm>
+#include <cctype>
 #include <nlohmann/json-schema.hpp>
 #include <fmt/format.h>
 
@@ -276,6 +277,53 @@ nlohmann::json yamlToJson(
 
     log().warn("Could not convert {} to JSON!", YAML::Dump(yamlNode));
     return {};
+}
+
+nlohmann::json parseStructuredDocument(
+    std::string_view content,
+    std::string_view sourceName)
+{
+    auto trimmed = content;
+    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.front())))
+        trimmed.remove_prefix(1);
+    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back())))
+        trimmed.remove_suffix(1);
+
+    if (trimmed.empty()) {
+        raise(fmt::format("Structured document `{}` is empty.", sourceName));
+    }
+
+    if (trimmed.front() == '{' || trimmed.front() == '[') {
+        try {
+            return nlohmann::json::parse(trimmed);
+        }
+        catch (const std::exception&) {
+            // Fall back to YAML parsing below. YAML is a superset of JSON,
+            // so this keeps error handling consistent for malformed input.
+        }
+    }
+
+    try {
+        return yamlToJson(YAML::Load(std::string(content)), false);
+    }
+    catch (const YAML::Exception& e) {
+        raise(fmt::format(
+            "Failed to parse structured document `{}` as YAML or JSON: {}",
+            sourceName,
+            e.what()));
+    }
+}
+
+nlohmann::json loadStructuredDocumentFile(std::string const& path)
+{
+    std::ifstream file(path);
+    if (!file) {
+        raise(fmt::format("Failed to open structured document file `{}`.", path));
+    }
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    return parseStructuredDocument(buffer.str(), path);
 }
 
 YAML::Node jsonToYaml(

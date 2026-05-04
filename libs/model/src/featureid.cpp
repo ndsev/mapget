@@ -2,7 +2,11 @@
 #include "featurelayer.h"
 
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -13,6 +17,7 @@ namespace mapget
 
 namespace
 {
+/** Resolve the concrete id composition used by a stored feature-id node. */
 std::vector<IdPart> const* resolveComposition(
     TileFeatureLayer const& model,
     simfil::StringId typeId,
@@ -34,6 +39,7 @@ std::vector<IdPart> const* resolveComposition(
     return &typeInfo->uniqueIdCompositions_[compositionIndex];
 }
 
+/** Build the externally visible id-part layout after removing an optional tile prefix. */
 void resolveVisiblePartLayout(
     TileFeatureLayer const& model,
     FeatureId::Data const& data,
@@ -91,6 +97,8 @@ void resolveVisiblePartLayout(
                 prefixFeatureIdParts,
                 prefixFeatureIdParts.size());
             if (!matchEndIndex) {
+                // A stored prefix that no longer matches the schema would make the
+                // visible id parts misleading, so we expose no parts instead.
                 return;
             }
             localStartIndex = *matchEndIndex;
@@ -120,6 +128,7 @@ void resolveVisiblePartLayout(
 }
 
 template<typename Fn>
+/** Forward a typed id-part value while rejecting node types that cannot appear in ids. */
 void appendTypedKeyValue(
     TileFeatureLayer const& model,
     simfil::StringId key,
@@ -145,6 +154,157 @@ void appendTypedKeyValue(
         valueNode->value());
 }
 
+/** Check whether a character can participate in a percent escape. */
+[[nodiscard]] bool isHexDigit(char ch)
+{
+    return std::isdigit(static_cast<unsigned char>(ch)) ||
+           (ch >= 'a' && ch <= 'f') ||
+           (ch >= 'A' && ch <= 'F');
+}
+
+/** Decode one hexadecimal digit used by feature-id escaping. */
+[[nodiscard]] uint8_t hexValue(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return static_cast<uint8_t>(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return static_cast<uint8_t>(10 + (ch - 'a'));
+    }
+    return static_cast<uint8_t>(10 + (ch - 'A'));
+}
+
+/** Escape separators and escape markers inside string-valued id parts. */
+[[nodiscard]] std::string escapeFeatureIdPart(std::string_view input)
+{
+    std::string result;
+    result.reserve(input.size());
+    for (char ch : input) {
+        if (ch == '.') {
+            // Dots delimit id parts in the canonical string form.
+            result.append("%2E");
+        }
+        else if (ch == '%') {
+            // Existing escape markers must be preserved literally.
+            result.append("%25");
+        }
+        else {
+            result.push_back(ch);
+        }
+    }
+    return result;
+}
+
+/** Reverse percent escaping for a single canonical feature-id token. */
+[[nodiscard]] bool unescapeFeatureIdPart(
+    std::string_view input,
+    std::string& output,
+    std::string* error)
+{
+    output.clear();
+    output.reserve(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        char const ch = input[i];
+        if (ch != '%') {
+            output.push_back(ch);
+            continue;
+        }
+        if (i + 2 >= input.size() || !isHexDigit(input[i + 1]) || !isHexDigit(input[i + 2])) {
+            if (error) {
+                *error = fmt::format("Malformed percent escape in feature id token '{}'.", input);
+            }
+            return false;
+        }
+        auto const decoded = static_cast<char>((hexValue(input[i + 1]) << 4U) | hexValue(input[i + 2]));
+        output.push_back(decoded);
+        i += 2;
+    }
+    return true;
+}
+
+/** Split a canonical feature-id string into type and id-part tokens. */
+[[nodiscard]] std::vector<std::string_view> splitFeatureIdTokens(std::string_view input)
+{
+    std::vector<std::string_view> tokens;
+    size_t start = 0;
+    for (size_t i = 0; i <= input.size(); ++i) {
+        if (i == input.size() || input[i] == '.') {
+            tokens.push_back(input.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    return tokens;
+}
+
+struct CompositionParseState
+{
+    KeyValuePairs values;
+};
+
+/** Try to parse one id composition, including optional parts that may consume no token. */
+[[nodiscard]] bool tryParseCompositionRecursive(
+    std::vector<IdPart> const& composition,
+    std::vector<std::string_view> const& tokens,
+    size_t partIndex,
+    size_t tokenIndex,
+    CompositionParseState const& current,
+    std::vector<CompositionParseState>& results,
+    std::string* error)
+{
+    if (partIndex == composition.size()) {
+        if (tokenIndex == tokens.size()) {
+            results.push_back(current);
+            return true;
+        }
+        return false;
+    }
+
+    auto const& part = composition[partIndex];
+    auto matched = false;
+
+    if (part.isOptional_) {
+        // Optional parts are explored both as present and as omitted so we can
+        // disambiguate compositions solely from the canonical string form.
+        matched = tryParseCompositionRecursive(
+            composition,
+            tokens,
+            partIndex + 1,
+            tokenIndex,
+            current,
+            results,
+            error) || matched;
+    }
+
+    if (tokenIndex >= tokens.size()) {
+        return matched;
+    }
+
+    std::string decoded;
+    if (!unescapeFeatureIdPart(tokens[tokenIndex], decoded, error)) {
+        return false;
+    }
+
+    std::variant<int64_t, std::string> parsedValue = decoded;
+    std::string localError;
+    if (!part.validate(parsedValue, &localError)) {
+        // Datatype mismatches do not fail the whole search immediately because a
+        // different composition may still accept the same token sequence.
+        return matched;
+    }
+
+    auto next = current;
+    next.values.emplace_back(part.idPartLabel_, std::move(parsedValue));
+    return tryParseCompositionRecursive(
+               composition,
+               tokens,
+               partIndex + 1,
+               tokenIndex + 1,
+               next,
+               results,
+               error) || matched;
+}
+
+/** Append one node value to the canonical dot-separated feature-id string. */
 void appendNodeValueToString(std::string& out, simfil::ModelNode::Ptr const& node)
 {
     if (!node) {
@@ -162,6 +322,10 @@ void appendNodeValueToString(std::string& out, simfil::ModelNode::Ptr const& nod
                 if constexpr (std::is_same_v<T, bool>) {
                     fmt::format_to(std::back_inserter(out), FMT_STRING(".{:d}"), v);
                 }
+                else if constexpr (std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>) {
+                    // String-valued parts must escape canonical separators before joining.
+                    fmt::format_to(std::back_inserter(out), FMT_STRING(".{}"), escapeFeatureIdPart(v));
+                }
                 else {
                     fmt::format_to(std::back_inserter(out), FMT_STRING(".{}"), v);
                 }
@@ -169,7 +333,7 @@ void appendNodeValueToString(std::string& out, simfil::ModelNode::Ptr const& nod
         },
         node->value());
 }
-}
+}  // namespace
 
 FeatureId::FeatureId(FeatureId::Data& data,
     simfil::ModelConstPtr l,
@@ -319,6 +483,80 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
     }
 
     return result;
+}
+
+bool parseFeatureIdString(
+    std::string_view featureId,
+    LayerInfo const& layerInfo,
+    ParsedFeatureId& result,
+    std::string* error)
+{
+    result = {};
+
+    auto const tokens = splitFeatureIdTokens(featureId);
+    if (tokens.empty() || tokens.front().empty()) {
+        if (error) {
+            *error = "Feature id must start with a non-empty type id.";
+        }
+        return false;
+    }
+
+    auto const typeId = std::string(tokens.front());
+    auto const* typeInfo = layerInfo.getTypeInfo(typeId, false);
+    if (!typeInfo) {
+        if (error) {
+            *error = fmt::format("Could not find feature type {}", typeId);
+        }
+        return false;
+    }
+
+    std::vector<std::pair<uint8_t, CompositionParseState>> matches;
+    std::string localError;
+    for (uint32_t compositionIndex = 0;
+         compositionIndex < typeInfo->uniqueIdCompositions_.size();
+         ++compositionIndex) {
+        auto const& composition = typeInfo->uniqueIdCompositions_[compositionIndex];
+        std::vector<CompositionParseState> parsedStates;
+        CompositionParseState emptyState{};
+        if (!tryParseCompositionRecursive(
+                composition,
+                std::vector<std::string_view>(tokens.begin() + 1, tokens.end()),
+                0,
+                0,
+                emptyState,
+                parsedStates,
+                &localError)) {
+            continue;
+        }
+        for (auto& parsed : parsedStates) {
+            // The parser keeps all valid matches so ambiguity can be reported explicitly.
+            matches.emplace_back(static_cast<uint8_t>(std::min<uint32_t>(compositionIndex, 255U)), std::move(parsed));
+        }
+    }
+
+    if (matches.empty()) {
+        if (error) {
+            *error = localError.empty()
+                ? fmt::format("Could not parse feature id '{}' for type '{}'.", featureId, typeId)
+                : localError;
+        }
+        return false;
+    }
+
+    if (matches.size() > 1) {
+        if (error) {
+            *error = fmt::format(
+                "Feature id '{}' matches multiple id compositions of type '{}'.",
+                featureId,
+                typeId);
+        }
+        return false;
+    }
+
+    result.typeId_ = typeId;
+    result.idCompositionIndex_ = matches.front().first;
+    result.keyValuePairs_ = std::move(matches.front().second.values);
+    return true;
 }
 
 }

@@ -4,6 +4,8 @@ add_library(mapget-model STATIC
   include/mapget/model/stringpool.h
   include/mapget/model/layer.h
   include/mapget/model/featurelayer.h
+  include/mapget/model/geojson-import.h
+  include/mapget/model/json-compare.h
   include/mapget/model/info.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
@@ -29,6 +31,8 @@ add_library(mapget-model STATIC
   src/stringpool.cpp
   src/layer.cpp
   src/featurelayer.cpp
+  src/geojson-import.cpp
+  src/json-compare.cpp
   src/info.cpp
   src/feature.cpp
   src/attr.cpp

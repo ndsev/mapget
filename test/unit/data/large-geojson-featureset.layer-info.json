@@ -1,0 +1,33 @@
+{
+  "layerId": "CollectionLayer",
+  "type": "Features",
+  "featureTypes": [
+    {
+      "name": "Entry",
+      "uniqueIdCompositions": [
+        [
+          {
+            "partId": "tileId",
+            "datatype": "U64",
+            "isSynthetic": true
+          },
+          {
+            "partId": "bucketId",
+            "datatype": "STR"
+          },
+          {
+            "partId": "recordId",
+            "datatype": "U32"
+          }
+        ]
+      ]
+    }
+  ],
+  "stages": 3,
+  "stageLabels": [
+    "draft",
+    "full",
+    "delta"
+  ],
+  "highFidelityStage": 1
+}
