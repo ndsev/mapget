@@ -12,7 +12,8 @@ target_link_libraries(geojsonsource
     PUBLIC
         drogon
         mapget-model
-        mapget-service)
+        mapget-service
+        zlibstatic)
 
 if (MSVC)
     target_compile_definitions(geojsonsource
