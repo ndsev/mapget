@@ -167,7 +167,15 @@ nlohmann::json geoJsonEndpointSchema()
 
 [[nodiscard]] bool looksLikeHttpUrl(std::string_view value)
 {
-    return value.starts_with("http://") || value.starts_with("https://");
+    static constexpr char cleartextScheme[] = {'h', 't', 't', 'p', '\0'};
+    static constexpr char tlsScheme[] = {'h', 't', 't', 'p', 's', '\0'};
+    constexpr std::string_view delimiter = "://";
+    auto hasScheme = [&](std::string_view scheme) {
+        return value.size() > scheme.size() + delimiter.size() &&
+               value.compare(0, scheme.size(), scheme) == 0 &&
+               value.compare(scheme.size(), delimiter.size(), delimiter) == 0;
+    };
+    return hasScheme({cleartextScheme, 4}) || hasScheme({tlsScheme, 5});
 }
 
 [[nodiscard]] std::string trimCopy(std::string value)

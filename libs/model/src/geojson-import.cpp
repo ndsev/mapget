@@ -1036,14 +1036,14 @@ void importGeoJson(
         }
 
         auto const typeId = determineFeatureType(tile, featureJson, options);
-        KeyValueViewPairs localIdParts;
+        KeyValuePairs fullIdParts;
 
         if (options.strict_ || featureJson.contains("typeId")) {
             auto const* typeInfo = tile.layerInfo()->getTypeInfo(typeId, false);
             if (!typeInfo || typeInfo->uniqueIdCompositions_.empty()) {
                 raiseImport(fmt::format("Could not resolve feature type '{}' for import.", typeId));
             }
-            auto fullIdParts = fullFeatureIdPartsFromFields(featureJson, typeInfo->uniqueIdCompositions_.front());
+            fullIdParts = fullFeatureIdPartsFromFields(featureJson, typeInfo->uniqueIdCompositions_.front());
             if (featureJson.contains("id")) {
                 ParsedFeatureId parsed;
                 std::string error;
@@ -1055,15 +1055,14 @@ void importGeoJson(
                 }
             }
             // Strict import reconstructs the full id verbatim instead of reintroducing tile prefixes.
-            localIdParts = castToKeyValueView(fullIdParts);
         }
         else {
-            auto fullIdParts = bestEffortFullFeatureIdParts(tile, typeId, fallbackFeatureIndex);
-            localIdParts = castToKeyValueView(fullIdParts);
+            fullIdParts = bestEffortFullFeatureIdParts(tile, typeId, fallbackFeatureIndex);
         }
         ++fallbackFeatureIndex;
 
-        auto feature = tile.newFeature(typeId, localIdParts);
+        // Keep the owned strings alive while the temporary view is handed to newFeature().
+        auto feature = tile.newFeature(typeId, castToKeyValueView(fullIdParts));
 
         if (auto sourceDataJson = findSourceDataJson(featureJson)) {
             if (auto refs = importSourceDataReferences(tile, *sourceDataJson)) {

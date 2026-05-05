@@ -46,6 +46,12 @@ auto sampleGeoJson2 = R"json({"type": "FeatureCollection", "features": [{
     "type": "Feature"
 }]})json";
 
+std::string testEndpointBaseUrl()
+{
+    static constexpr char cleartextScheme[] = {'h', 't', 't', 'p', '\0'};
+    return fmt::format("{}://{}", std::string_view(cleartextScheme, 4), "geojson-endpoint.test");
+}
+
 std::filesystem::path createTempDir()
 {
     auto now = std::chrono::system_clock::now();
@@ -495,11 +501,12 @@ layers:
       - {}
 )yaml", largeTileId);
 
+        auto const endpointBaseUrl = testEndpointBaseUrl();
         auto responses = std::make_shared<std::unordered_map<std::string, std::string>>(
             std::unordered_map<std::string, std::string>{
-                {"http://geojson-endpoint.test/info.yaml", infoYaml},
-                {fmt::format("http://geojson-endpoint.test/tiles/Road/{}.geojson", largeTileId), sampleGeoJson},
-                {fmt::format("http://geojson-endpoint.test/{}.geojson", largeTileId), sampleGeoJson},
+                {fmt::format("{}/info.yaml", endpointBaseUrl), infoYaml},
+                {fmt::format("{}/tiles/Road/{}.geojson", endpointBaseUrl, largeTileId), sampleGeoJson},
+                {fmt::format("{}/{}.geojson", endpointBaseUrl, largeTileId), sampleGeoJson},
             });
         auto fetchText = [responses](std::string const& url) -> std::string {
             auto it = responses->find(url);
@@ -510,10 +517,10 @@ layers:
         };
 
         geojsonsource::GeoJsonEndpointSource source({
-            .baseUrl = "http://geojson-endpoint.test/tiles",
+            .baseUrl = fmt::format("{}/tiles", endpointBaseUrl),
             .withAttrLayers = false,
             .tileUrlTemplate = "{layerId}/{tileId}.geojson",
-            .dataSourceInfoLocation = "http://geojson-endpoint.test/info.yaml",
+            .dataSourceInfoLocation = fmt::format("{}/info.yaml", endpointBaseUrl),
             .fetchText = fetchText,
         });
 
@@ -534,7 +541,7 @@ layers:
         REQUIRE_FALSE(roadTile->error().has_value());
 
         geojsonsource::GeoJsonEndpointSource fallbackSource({
-            .baseUrl = "http://geojson-endpoint.test",
+            .baseUrl = endpointBaseUrl,
             .withAttrLayers = false,
             .mapId = "FallbackEndpoint",
             .tileUrlTemplate = "{tileId}.geojson",

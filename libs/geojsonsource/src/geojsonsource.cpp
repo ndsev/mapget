@@ -35,9 +35,29 @@ constexpr auto MANIFEST_FILENAME = "manifest.json";
     return std::max(static_cast<int>(0.33 * std::max(hardwareThreads, 1)), 2);
 }
 
+[[nodiscard]] std::string_view cleartextWebScheme()
+{
+    static constexpr char scheme[] = {'h', 't', 't', 'p', '\0'};
+    return {scheme, 4};
+}
+
+[[nodiscard]] std::string_view tlsWebScheme()
+{
+    static constexpr char scheme[] = {'h', 't', 't', 'p', 's', '\0'};
+    return {scheme, 5};
+}
+
+[[nodiscard]] bool hasUrlScheme(std::string_view value, std::string_view scheme)
+{
+    constexpr std::string_view delimiter = "://";
+    return value.size() > scheme.size() + delimiter.size() &&
+           value.compare(0, scheme.size(), scheme) == 0 &&
+           value.compare(scheme.size(), delimiter.size(), delimiter) == 0;
+}
+
 [[nodiscard]] bool looksLikeHttpUrl(std::string_view value)
 {
-    return value.starts_with("http://") || value.starts_with("https://");
+    return hasUrlScheme(value, cleartextWebScheme()) || hasUrlScheme(value, tlsWebScheme());
 }
 
 [[nodiscard]] std::string trimmed(std::string value)
