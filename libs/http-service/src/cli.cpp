@@ -276,6 +276,7 @@ struct ServeCommand
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
     std::string webapp_;
+    std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
     uint64_t memoryTrimIntervalBinary_ = HttpServiceConfig{}.memoryTrimIntervalBinary;  // Use default from config
     uint64_t memoryTrimIntervalJson_ = HttpServiceConfig{}.memoryTrimIntervalJson;      // Use default from config
@@ -325,6 +326,10 @@ struct ServeCommand
             "-w,--webapp",
             webapp_,
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
+        serveCmd->add_option(
+            "--static-mount",
+            staticMounts_,
+            "Serve an additional static filesystem mount, in the format [<url-scope>:]<filesystem-path>. Can be specified multiple times.");
         serveCmd->add_flag(
             "--allow-post-config",
             isPostConfigEndpointEnabled_,
@@ -450,6 +455,16 @@ struct ServeCommand
             if (!srv.mountFileSystem(webapp_)) {
                 log().error("  ...failed to mount!");
                 raise("Failed to mount webapp filesystem path.");
+            }
+        }
+
+        if (!staticMounts_.empty()) {
+            for (auto const& staticMount : staticMounts_) {
+                log().info("Static mount: {}", staticMount);
+                if (!srv.mountFileSystem(staticMount)) {
+                    log().error("  ...failed to mount!");
+                    raise("Failed to mount static filesystem path.");
+                }
             }
         }
 
