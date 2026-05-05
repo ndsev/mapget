@@ -219,6 +219,18 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
         3,
         Validity::Positive);
 
+    auto externalRoadReference = tile->newFeatureId(
+        "Road",
+        {
+            {"tileId", static_cast<int64_t>(77)},
+            {"regionId", "DE.BY%"},
+            {"roadId", 11},
+        },
+        "ValidationMap");
+    auto clearance = restrictions->newAttribute("clearance");
+    requireExpectedOk(clearance->addField("value", double{3.5}));
+    clearance->validity()->newFeatureId(externalRoadReference, Validity::Negative);
+
     auto relation = tile->newRelation(
         "connectedTo",
         tile->newFeatureId(
@@ -227,7 +239,8 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
                 {"tileId", static_cast<int64_t>(77)},
                 {"regionId", "DE.BY%"},
                 {"roadId", 9},
-            }));
+            },
+            "ValidationMap"));
     relation->setSourceDataReferences(makeSourceDataRefs(
         *tile,
         {{70, 8, "rules-src", "relation"}}));
@@ -250,6 +263,16 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
     auto originalJson = tile->toJson();
     REQUIRE(originalJson["features"][0]["id"] == "Road.77.DE%2EBY%25.7");
     REQUIRE(originalJson["features"][0]["geometry"]["type"] == "GeometryCollection");
+    REQUIRE(originalJson["features"][0]["relations"][0]["target"] == nlohmann::json{
+        {"id", "Road.77.DE%2EBY%25.9"},
+        {"mapId", "ValidationMap"},
+    });
+    REQUIRE(
+        originalJson["features"][0]["properties"]["layer"]["restrictions"]["clearance"]["validity"]["featureId"] ==
+        nlohmann::json{
+            {"id", "Road.77.DE%2EBY%25.11"},
+            {"mapId", "ValidationMap"},
+        });
 
     auto imported = makeTile(77, layerInfo, "StrictImportNode", "StrictImportMap");
     REQUIRE_NOTHROW(imported->fromJson(originalJson));

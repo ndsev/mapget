@@ -166,10 +166,13 @@ public:
      * Create a new feature id. Use this function to create a reference to another
      * feature. The created feature id will not use the common feature id prefix from
      * this tile feature layer, since the reference may be to a feature stored in a
-     * different tile.
+     * different tile or map. When `externalMapId` is set to another map, the detached
+     * reference keeps that map id for binary serialization and JSON export.
      */
     model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
+        std::string_view const& typeId,
+        KeyValueViewPairs const& featureIdParts,
+        std::optional<std::string_view> externalMapId = std::nullopt);
 
     /**
      * Create a new relation. Use this function to create a named reference to another

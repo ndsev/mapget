@@ -367,9 +367,7 @@ Validity::Validity(Validity::Data* data,
             StringPool::FeatureIdStr,
             [](Validity const& self)
             {
-                return model_ptr<simfil::ValueNode>::make(
-                    self.featureId()->toString(),
-                    self.model_);
+                return self.featureId()->jsonReferenceNode();
             });
     }
 }

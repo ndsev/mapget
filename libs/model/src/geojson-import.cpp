@@ -446,22 +446,61 @@ void validateIdPartValue(
     return tile.newSourceDataReferenceCollection(refs);
 }
 
+struct ParsedFeatureReferenceJson
+{
+    ParsedFeatureId featureId_;
+    std::optional<std::string> externalMapId_;
+};
+
+/** Parse a local or external feature reference from JSON. */
+[[nodiscard]] ParsedFeatureReferenceJson parseFeatureReferenceJson(
+    TileFeatureLayer& tile,
+    nlohmann::json const& json)
+{
+    std::string canonicalId;
+    std::optional<std::string> externalMapId;
+
+    if (json.is_string()) {
+        canonicalId = json.get<std::string>();
+    }
+    else if (json.is_object()) {
+        auto const idIt = json.find("id");
+        if (idIt == json.end() || !idIt->is_string()) {
+            raiseImport("Feature reference objects must contain a string `id` field.");
+        }
+        canonicalId = idIt->get<std::string>();
+
+        if (auto mapIdIt = json.find("mapId"); mapIdIt != json.end()) {
+            if (!mapIdIt->is_string()) {
+                raiseImport("Feature reference `mapId` must be a string.");
+            }
+            externalMapId = mapIdIt->get<std::string>();
+        }
+    }
+    else {
+        raiseImport("Feature references must be encoded as canonical feature-id strings or `{id, mapId}` objects.");
+    }
+
+    ParsedFeatureReferenceJson parsed;
+    std::string error;
+    if (!parseFeatureIdString(canonicalId, *tile.layerInfo(), parsed.featureId_, &error)) {
+        raiseImport(error);
+    }
+    parsed.externalMapId_ = std::move(externalMapId);
+    return parsed;
+}
+
 /** Parse a canonical feature-id string into a detached FeatureId node. */
 [[nodiscard]] model_ptr<FeatureId> importFeatureReferenceId(
     TileFeatureLayer& tile,
     nlohmann::json const& json)
 {
-    if (!json.is_string()) {
-        raiseImport("Feature references must be encoded as canonical feature-id strings.");
-    }
-
-    ParsedFeatureId parsed;
-    std::string error;
-    if (!parseFeatureIdString(json.get<std::string>(), *tile.layerInfo(), parsed, &error)) {
-        raiseImport(error);
-    }
-    auto partsView = castToKeyValueView(parsed.keyValuePairs_);
-    return tile.newFeatureId(parsed.typeId_, partsView);
+    auto parsed = parseFeatureReferenceJson(tile, json);
+    auto partsView = castToKeyValueView(parsed.featureId_.keyValuePairs_);
+    auto externalMapId = parsed.externalMapId_
+        ? std::optional<std::string_view>(*parsed.externalMapId_)
+        : std::nullopt;
+    return tile.newFeatureId(parsed.featureId_.typeId_, partsView, externalMapId);
 }
 
 /** Resolve a canonical feature-id string to a feature already created in this tile. */
@@ -469,20 +508,18 @@ void validateIdPartValue(
     TileFeatureLayer& tile,
     nlohmann::json const& json)
 {
-    if (!json.is_string()) {
-        raiseImport("Feature transition references must be encoded as canonical feature-id strings.");
+    auto parsed = parseFeatureReferenceJson(tile, json);
+    if (parsed.externalMapId_ && *parsed.externalMapId_ != tile.mapId()) {
+        raiseImport(fmt::format(
+            "Feature transition references must stay local to map '{}'.",
+            tile.mapId()));
     }
 
-    ParsedFeatureId parsed;
-    std::string error;
-    if (!parseFeatureIdString(json.get<std::string>(), *tile.layerInfo(), parsed, &error)) {
-        raiseImport(error);
-    }
-
-    if (auto feature = tile.find(parsed.typeId_, parsed.keyValuePairs_)) {
+    if (auto feature = tile.find(parsed.featureId_.typeId_, parsed.featureId_.keyValuePairs_)) {
         return feature;
     }
-    raiseImport(fmt::format("Could not resolve local feature reference '{}'.", json.get<std::string>()));
+    auto referenceJson = json.is_string() ? json.get<std::string>() : json.dump();
+    raiseImport(fmt::format("Could not resolve local feature reference '{}'.", referenceJson));
     return {};
 }
 

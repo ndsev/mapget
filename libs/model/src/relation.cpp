@@ -38,7 +38,7 @@ Relation::Relation(Relation::Data* data,
         fields_.emplace_back(
             StringPool::TargetStr,
             [](Relation const& self) {
-                return self.model().resolve(self.data_->targetFeatureId_);
+                return self.target()->jsonReferenceNode();
             });
     if (data_->sourceValidity_)
         fields_.emplace_back(

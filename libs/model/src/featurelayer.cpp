@@ -786,7 +786,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
 model_ptr<FeatureId>
 TileFeatureLayer::newFeatureId(
     const std::string_view& typeId,
-    const KeyValueViewPairs& featureIdParts)
+    const KeyValueViewPairs& featureIdParts,
+    std::optional<std::string_view> externalMapId)
 {
     if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
         raise(fmt::format(
@@ -803,11 +804,21 @@ TileFeatureLayer::newFeatureId(
         *layerInfo_->matchingFeatureIdCompositionIndex(typeId, featureIdParts, false);
     auto const& composition =
         layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[idCompositionIndex];
+    simfil::StringId externalMapIdStringId = simfil::StringPool::Empty;
+    if (externalMapId && *externalMapId != mapId()) {
+        auto storedMapId = strings()->emplace(*externalMapId);
+        if (!storedMapId) {
+            raise(storedMapId.error().message);
+        }
+        // Local references omit the redundant map payload so legacy JSON stays compact.
+        externalMapIdStringId = *storedMapId;
+    }
     impl_->featureIds_.emplace_back(FeatureId::Data{
         false,
         idCompositionIndex,
         *typeIdStringId,
-        idPartValuesToArrayIndex(*this, composition, featureIdParts)
+        idPartValuesToArrayIndex(*this, composition, featureIdParts),
+        externalMapIdStringId,
     });
     return FeatureId(
         impl_->featureIds_.back(),
@@ -1171,7 +1182,8 @@ model_ptr<FeatureId> resolveInternal(tag<FeatureId>, TileFeatureLayer const& mod
                 true,
                 0,
                 featureData.typeIdAndLod_.typeId_,
-                featureData.idPartValues_},
+                featureData.idPartValues_,
+                simfil::StringPool::Empty},
             model.shared_from_this(),
             node.addr(),
             model.mpKey_);
@@ -2139,6 +2151,14 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
             else
                 return tl::unexpected<simfil::Error>(res.error());
         }
+        if (fid.extMapId_ != simfil::StringPool::Empty) {
+            if (auto resolvedName = oldDict->resolve(fid.extMapId_)) {
+                if (auto res = newDict->emplace(*resolvedName))
+                    fid.extMapId_ = *res;
+                else
+                    return tl::unexpected<simfil::Error>(res.error());
+            }
+        }
     }
     for (auto& feature : impl_->features_) {
         if (auto resolvedName = oldDict->resolve(feature.typeIdAndLod_.typeId_)) {
@@ -2292,13 +2312,19 @@ ModelNode::Ptr TileFeatureLayer::clone(
     }
     case ColumnId::FeatureIds: {
         auto resolved = otherLayer->resolve<FeatureId>(*otherNode);
-        auto newNode = newFeatureId(resolved->typeId(), resolved->keyValuePairs());
+        auto newNode = newFeatureId(
+            resolved->typeId(),
+            resolved->keyValuePairs(),
+            resolved->externalMapId());
         newCacheNode = newNode;
         break;
     }
     case ColumnId::ExternalFeatureIds: {
         auto resolved = otherLayer->resolve<FeatureId>(*otherNode);
-        auto newNode = newFeatureId(resolved->typeId(), resolved->keyValuePairs());
+        auto newNode = newFeatureId(
+            resolved->typeId(),
+            resolved->keyValuePairs(),
+            resolved->externalMapId());
         newCacheNode = newNode;
         break;
     }

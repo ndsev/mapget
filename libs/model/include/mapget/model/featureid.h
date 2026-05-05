@@ -36,17 +36,33 @@ public:
     /** Get the feature ID's type id. */
     [[nodiscard]] std::string_view typeId() const;
 
+    /** Get the effective map id referenced by this feature id. */
+    [[nodiscard]] std::string mapId() const;
+
+    /**
+     * Get the explicitly stored external map id for detached references.
+     * Returns nullopt when the reference points into the current tile's map.
+     */
+    [[nodiscard]] std::optional<std::string_view> externalMapId() const;
+
     /** Get all id-part key-value-pairs (including the common prefix). */
     [[nodiscard]] KeyValueViewPairs keyValuePairs() const;
 
+    /** Export local references as canonical strings and external references as `{id, mapId}` objects. */
+    [[nodiscard]] nlohmann::json toJson() const override;
+
+    /** Materialize the JSON reference shape as model nodes for relation/validity export. */
+    [[nodiscard]] ModelNode::Ptr jsonReferenceNode() const;
+
     /** Compact serialized representation of a feature id node. */
     struct Data {
-        MODEL_COLUMN_TYPE(8);
+        MODEL_COLUMN_TYPE(12);
 
         bool useCommonTilePrefix_ = false;
         uint8_t idCompositionIndex_ = 0;
         simfil::StringId typeId_ = 0;
         simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
+        simfil::StringId extMapId_ = simfil::StringPool::Empty;
     };
 
 protected:

@@ -565,7 +565,15 @@ struct BoundFeatureId : public BoundModelNode
             .def(
                 "type_id",
                 [](BoundFeatureId& self) { return self.modelNodePtr_->typeId(); },
-                "Get the feature ID's type ID.");
+                "Get the feature ID's type ID.")
+            .def(
+                "map_id",
+                [](BoundFeatureId& self) { return self.modelNodePtr_->mapId(); },
+                "Get the effective map ID referenced by this feature ID.")
+            .def(
+                "external_map_id",
+                [](BoundFeatureId& self) { return self.modelNodePtr_->externalMapId(); },
+                "Get the explicitly stored external map ID, or None for local references.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }

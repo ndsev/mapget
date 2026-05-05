@@ -377,6 +377,28 @@ std::string_view FeatureId::typeId() const
     return "err-unresolved-typename";
 }
 
+std::string FeatureId::mapId() const
+{
+    if (auto mapId = externalMapId()) {
+        return std::string(*mapId);
+    }
+    return model().mapId();
+}
+
+std::optional<std::string_view> FeatureId::externalMapId() const
+{
+    if (data_.extMapId_ == simfil::StringPool::Empty) {
+        return std::nullopt;
+    }
+
+    if (auto resolved = model().strings()->resolve(data_.extMapId_)) {
+        return *resolved;
+    }
+
+    raise("FeatureId external map id is not known to string pool.");
+    return std::nullopt;
+}
+
 std::string FeatureId::toString() const
 {
     std::string result(typeId());
@@ -399,6 +421,37 @@ std::string FeatureId::toString() const
     }
 
     return result;
+}
+
+nlohmann::json FeatureId::toJson() const
+{
+    auto const canonicalId = toString();
+    if (auto mapId = externalMapId()) {
+        // External references need an explicit map payload because the canonical
+        // feature-id string deliberately stays scoped to one layer schema.
+        return nlohmann::json{
+            {"id", canonicalId},
+            {"mapId", *mapId},
+        };
+    }
+    return canonicalId;
+}
+
+ModelNode::Ptr FeatureId::jsonReferenceNode() const
+{
+    if (auto mapId = externalMapId()) {
+        auto exportModel = std::make_shared<simfil::ModelPool>();
+        auto objectNode = exportModel->newObject(2, true);
+        if (auto result = objectNode->addField("id", toString()); !result) {
+            raise(result.error().message);
+        }
+        if (auto result = objectNode->addField("mapId", std::string(*mapId)); !result) {
+            raise(result.error().message);
+        }
+        return objectNode;
+    }
+
+    return model_ptr<simfil::ValueNode>::make(toString(), model_);
 }
 
 simfil::ValueType FeatureId::type() const
