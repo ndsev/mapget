@@ -455,11 +455,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(json["mapId"] == "Tropico");
         REQUIRE(json["mapgetLayerId"] == "WayLayer");
 
-        // Verify timestamp is ISO 8601 format
-        REQUIRE(json["timestamp"].is_string());
-        std::string timestamp = json["timestamp"];
-        REQUIRE(timestamp.find("T") != std::string::npos);
-        REQUIRE(timestamp.back() == 'Z');
+        // Verify timestamp stays in the binary microsecond representation.
+        REQUIRE(json["timestamp"].is_number_integer());
+        REQUIRE(json["timestamp"].get<int64_t>() ==
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                tile->timestamp().time_since_epoch()).count());
 
         // Verify TTL
         REQUIRE(json["ttl"] == 3600000);

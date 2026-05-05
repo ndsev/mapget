@@ -14,8 +14,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
-#include <ctime>
 #include <limits>
 #include <optional>
 #include <string>
@@ -35,66 +33,6 @@ namespace
 [[noreturn]] void raiseImport(std::string const& message)
 {
     raiseFmt("TileFeatureLayer::fromJson: {}", message);
-}
-
-/** Parse the timestamp format emitted by TileFeatureLayer::toJson(). */
-[[nodiscard]] auto parseTimestamp(std::string const& input)
-    -> std::optional<std::chrono::time_point<std::chrono::system_clock>>
-{
-    if (input.size() < 20 || input.back() != 'Z') {
-        return std::nullopt;
-    }
-
-    int year = 0;
-    int month = 0;
-    int day = 0;
-    int hour = 0;
-    int minute = 0;
-    int second = 0;
-    if (std::sscanf(
-            input.c_str(),
-            "%4d-%2d-%2dT%2d:%2d:%2d",
-            &year,
-            &month,
-            &day,
-            &hour,
-            &minute,
-            &second) != 6) {
-        return std::nullopt;
-    }
-
-    int micros = 0;
-    auto const dotPos = input.find('.');
-    if (dotPos != std::string::npos) {
-        auto const frac = input.substr(dotPos + 1, input.size() - dotPos - 2);
-        if (frac.size() > 6) {
-            return std::nullopt;
-        }
-        // Export always uses microsecond precision, so shorter fractions are right-padded.
-        std::string padded = frac;
-        padded.append(6 - padded.size(), '0');
-        for (char ch : padded) {
-            if (ch < '0' || ch > '9') {
-                return std::nullopt;
-            }
-        }
-        micros = std::stoi(padded);
-    }
-
-    std::tm tmValue{};
-    tmValue.tm_year = year - 1900;
-    tmValue.tm_mon = month - 1;
-    tmValue.tm_mday = day;
-    tmValue.tm_hour = hour;
-    tmValue.tm_min = minute;
-    tmValue.tm_sec = second;
-
-    auto const epoch = timegm(&tmValue);
-    if (epoch < 0) {
-        return std::nullopt;
-    }
-
-    return std::chrono::system_clock::from_time_t(epoch) + std::chrono::microseconds(micros);
 }
 
 /** Parse mapget validity direction labels, including legacy aliases. */
@@ -1038,11 +976,12 @@ void importGeoJson(
         tile.setGeometryAnchor(pointFromCoordinateJson(geoJson.at("geometryAnchor")));
     }
     if (geoJson.contains("timestamp")) {
-        auto parsed = parseTimestamp(geoJson.at("timestamp").get<std::string>());
-        if (!parsed) {
-            raiseImport("Invalid timestamp format.");
+        auto const& timestampJson = geoJson.at("timestamp");
+        if (!timestampJson.is_number_integer()) {
+            raiseImport("timestamp must be encoded as integer microseconds since the Unix epoch.");
         }
-        tile.setTimestamp(*parsed);
+        tile.setTimestamp(std::chrono::time_point<std::chrono::system_clock>(
+            std::chrono::microseconds(timestampJson.get<int64_t>())));
     }
     if (geoJson.contains("ttl")) {
         tile.setTtl(std::chrono::milliseconds(geoJson.at("ttl").get<int64_t>()));

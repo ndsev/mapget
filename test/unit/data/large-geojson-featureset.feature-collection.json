@@ -7257,7 +7257,7 @@
   "mapId": "DatasetAlpha",
   "mapgetLayerId": "CollectionLayer",
   "mapgetTileId": 444000777123,
-  "timestamp": "2024-06-01T12:34:56.123456Z",
+  "timestamp": 1717245296123456,
   "ttl": 60000,
   "type": "FeatureCollection"
 }

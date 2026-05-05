@@ -1646,21 +1646,9 @@ nlohmann::json TileFeatureLayer::toJson() const
         result["glbAttachment"] = impl_->glbAttachment_->toJsonMetadata();
     }
 
-    // Add timestamp as ISO 8601 string
-    {
-        auto time_t_val = std::chrono::system_clock::to_time_t(timestamp_);
-        auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
-            timestamp_.time_since_epoch()).count() % 1000000;
-        std::tm tm_val{};
-#ifdef _WIN32
-        gmtime_s(&tm_val, &time_t_val);
-#else
-        gmtime_r(&time_t_val, &tm_val);
-#endif
-        char buf[32];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm_val);
-        result["timestamp"] = fmt::format("{}.{:06d}Z", buf, microseconds);
-    }
+    // Preserve the binary timestamp representation exactly in strict JSON.
+    result["timestamp"] = std::chrono::duration_cast<std::chrono::microseconds>(
+        timestamp_.time_since_epoch()).count();
 
     // Add TTL if set (in milliseconds)
     if (ttl_)

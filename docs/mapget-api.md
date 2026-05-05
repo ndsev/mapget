@@ -111,7 +111,7 @@ Each line in the JSONL response is a GeoJSON-like FeatureCollection with additio
   "mapgetTileId": 281479271743500,
   "mapId": "EuropeHD",
   "mapgetLayerId": "Roads",
-  "timestamp": "2025-01-14T10:30:00.000000Z",
+  "timestamp": 1736850600000000,
   "ttl": 3600000,
   "error": {
     "code": 404,
@@ -127,7 +127,7 @@ Each line in the JSONL response is a GeoJSON-like FeatureCollection with additio
 | `mapgetTileId` | integer | The mapget tile ID (64-bit decimal) |
 | `mapId` | string | Map identifier |
 | `mapgetLayerId` | string | Layer identifier within the map |
-| `timestamp` | string | ISO 8601 timestamp when the tile was created |
+| `timestamp` | integer | Tile creation time in microseconds since the Unix epoch |
 | `ttl` | integer | Time-to-live in milliseconds (optional) |
 | `error` | object | Error information if tile creation failed (optional) |
 | `error.code` | integer | Numeric error code, e.g., HTTP status or database error (optional) |
