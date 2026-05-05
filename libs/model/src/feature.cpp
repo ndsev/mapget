@@ -463,9 +463,16 @@ void Feature::updateFields() const {
         }
     }
 
-    // Add feature-specific id-part fields
-    for (auto const& [idPartName, value] : idNode->fields()) {
-        fields_.emplace_back(idPartName, value);
+    // Keep regular feature ids scalar in the node protocol. Feature export still
+    // needs the explicit id-part fields, so materialize them from the typed
+    // feature-id storage instead of relying on object-style child traversal.
+    if (idNode->values_) {
+        auto const limit = std::min(idNode->partNames_.size(), idNode->visibleValueIndices_.size());
+        for (size_t i = 0; i < limit; ++i) {
+            if (auto value = idNode->values_->at(static_cast<int64_t>(idNode->visibleValueIndices_[i]))) {
+                fields_.emplace_back(idNode->partNames_[i], value);
+            }
+        }
     }
 
     // Add other fields

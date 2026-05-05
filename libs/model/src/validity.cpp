@@ -367,7 +367,7 @@ Validity::Validity(Validity::Data* data,
             StringPool::FeatureIdStr,
             [](Validity const& self)
             {
-                return self.featureId()->jsonReferenceNode();
+                return self.featureId();
             });
     }
 }

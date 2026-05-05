@@ -48,12 +48,6 @@ public:
     /** Get all id-part key-value-pairs (including the common prefix). */
     [[nodiscard]] KeyValueViewPairs keyValuePairs() const;
 
-    /** Export local references as canonical strings and external references as `{id, mapId}` objects. */
-    [[nodiscard]] nlohmann::json toJson() const override;
-
-    /** Materialize the JSON reference shape as model nodes for relation/validity export. */
-    [[nodiscard]] ModelNode::Ptr jsonReferenceNode() const;
-
     /** Compact serialized representation of a feature id node. */
     struct Data {
         MODEL_COLUMN_TYPE(12);

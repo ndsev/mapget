@@ -333,6 +333,23 @@ void appendNodeValueToString(std::string& out, simfil::ModelNode::Ptr const& nod
         },
         node->value());
 }
+
+/** Materialize one exported reference field for external-map feature ids. */
+[[nodiscard]] simfil::ModelNode::Ptr referenceFieldNode(
+    FeatureId const& featureId,
+    simfil::StringId field)
+{
+    auto owner = featureId.model().shared_from_this();
+    if (field == StringPool::IdStr) {
+        return model_ptr<simfil::ValueNode>::make(featureId.toString(), owner);
+    }
+    if (field == StringPool::MapIdStr) {
+        if (auto mapId = featureId.externalMapId()) {
+            return model_ptr<simfil::ValueNode>::make(std::string(*mapId), owner);
+        }
+    }
+    return {};
+}
 }  // namespace
 
 FeatureId::FeatureId(FeatureId::Data& data,
@@ -423,81 +440,62 @@ std::string FeatureId::toString() const
     return result;
 }
 
-nlohmann::json FeatureId::toJson() const
-{
-    auto const canonicalId = toString();
-    if (auto mapId = externalMapId()) {
-        // External references need an explicit map payload because the canonical
-        // feature-id string deliberately stays scoped to one layer schema.
-        return nlohmann::json{
-            {"id", canonicalId},
-            {"mapId", *mapId},
-        };
-    }
-    return canonicalId;
-}
-
-ModelNode::Ptr FeatureId::jsonReferenceNode() const
-{
-    if (auto mapId = externalMapId()) {
-        auto exportModel = std::make_shared<simfil::ModelPool>();
-        auto objectNode = exportModel->newObject(2, true);
-        if (auto result = objectNode->addField("id", toString()); !result) {
-            raise(result.error().message);
-        }
-        if (auto result = objectNode->addField("mapId", std::string(*mapId)); !result) {
-            raise(result.error().message);
-        }
-        return objectNode;
-    }
-
-    return model_ptr<simfil::ValueNode>::make(toString(), model_);
-}
-
 simfil::ValueType FeatureId::type() const
 {
-    return simfil::ValueType::String;
+    // Only external references need structural object access; all other ids
+    // stay canonical strings to preserve the historical feature-id surface.
+    return externalMapId().has_value() ? simfil::ValueType::Object : simfil::ValueType::String;
 }
 
 simfil::ScalarValueType FeatureId::value() const
 {
+    if (externalMapId()) {
+        return {};
+    }
     return toString();
 }
 
 simfil::ModelNode::Ptr FeatureId::at(int64_t i) const
 {
-    if (i < 0 || !values_ || i >= static_cast<int64_t>(visibleValueIndices_.size())) {
+    if (!externalMapId()) {
         return {};
     }
-    return values_->at(static_cast<int64_t>(visibleValueIndices_[static_cast<size_t>(i)]));
+    switch (i) {
+    case 0:
+        return referenceFieldNode(*this, StringPool::IdStr);
+    case 1:
+        return referenceFieldNode(*this, StringPool::MapIdStr);
+    default:
+        return {};
+    }
 }
 
 uint32_t FeatureId::size() const
 {
-    return static_cast<uint32_t>(visibleValueIndices_.size());
+    return externalMapId() ? 2U : 0U;
 }
 
 simfil::ModelNode::Ptr FeatureId::get(const simfil::StringId& f) const
 {
-    if (!values_) {
+    if (!externalMapId()) {
         return {};
     }
-
-    for (size_t i = 0; i < partNames_.size(); ++i) {
-        if (partNames_[i] == f && i < visibleValueIndices_.size()) {
-            return values_->at(static_cast<int64_t>(visibleValueIndices_[i]));
-        }
-    }
-
-    return {};
+    return referenceFieldNode(*this, f);
 }
 
 simfil::StringId FeatureId::keyAt(int64_t i) const
 {
-    if (i < 0 || i >= static_cast<int64_t>(partNames_.size())) {
+    if (!externalMapId()) {
         return {};
     }
-    return partNames_[static_cast<size_t>(i)];
+    switch (i) {
+    case 0:
+        return StringPool::IdStr;
+    case 1:
+        return StringPool::MapIdStr;
+    default:
+        return {};
+    }
 }
 
 bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
