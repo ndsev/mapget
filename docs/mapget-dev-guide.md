@@ -221,6 +221,7 @@ For interactive clients, tile streaming uses WebSocket `GET /tiles` as a control
 - map HTTP/WebSocket endpoints to service calls (`/sources`, `/tiles`, `/tiles/next`, `/status`, `/status-data`, `/locate`, `/config`),
 - parse JSON requests and build `LayerTilesRequest` objects,
 - serialize tile responses as JSONL or binary streams,
+- mount static filesystem roots configured through `--webapp` and `--static-mount`,
 - provide `/config` as a JSON view on the YAML config file.
 
 ### Tile streaming

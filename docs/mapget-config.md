@@ -324,6 +324,9 @@ mapget:
     clear-cache: false          # --clear-cache
     allow-post-config: true     # --allow-post-config (enables POST /config)
     no-get-config: false        # --no-get-config (set to true to hide datasource config in GET /config)
+    webapp: /srv/my-ui          # --webapp, one application document root
+    static-mount:               # --static-mount, additional static aliases
+      - /assets:/srv/assets
     memory-trim-binary-interval: 100  # --memory-trim-binary-interval
     memory-trim-json-interval: 0      # --memory-trim-json-interval
 
@@ -331,6 +334,6 @@ http-settings: ...
 sources: ...
 ```
 
-Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled).
+Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
 
 <!-- --8<-- [end:yamlconf] -->
