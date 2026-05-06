@@ -227,13 +227,13 @@ public:
     model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 2, bool fixedSize=false);
 
     /**
-     * Internal validity upgrade helpers used by Validity.
+     * Upgrade one compact simple-validity occurrence in-place to full storage.
      */
     simfil::ModelNodeAddress materializeSimpleValidity(
         simfil::ModelNodeAddress simpleAddress,
+        simfil::ArrayIndex ownerMembers,
+        uint32_t ownerElementIndex,
         Validity::Direction direction);
-    std::optional<simfil::ModelNodeAddress> upgradedSimpleValidityAddress(
-        simfil::ModelNodeAddress simpleAddress) const;
 
     /**
      * Return type for begin() and end() methods to support range-based

@@ -34,6 +34,40 @@ std::string_view transitionEndToString(Validity::TransitionEnd const& end)
     return "?";
 }
 
+constexpr uint64_t SimpleValidityOwnerTag = 0x01ull << 56U;
+
+/** Encode the owning validity-collection slot for a compact simple validity. */
+int64_t encodeSimpleValidityOwner(simfil::ArrayIndex members, uint32_t elementIndex)
+{
+    if (members == simfil::InvalidArrayIndex || members > 0x00ffffffu) {
+        raise("SimpleValidity owner members index out of range.");
+    }
+
+    return static_cast<int64_t>(
+        SimpleValidityOwnerTag |
+        (static_cast<uint64_t>(members) << 32U) |
+        static_cast<uint64_t>(elementIndex));
+}
+
+/** Decode the owning validity-collection slot for a compact simple validity. */
+std::optional<std::pair<simfil::ArrayIndex, uint32_t>> decodeSimpleValidityOwner(
+    simfil::ScalarValueType const& runtimeData)
+{
+    auto const* encodedOwner = std::get_if<int64_t>(&runtimeData);
+    if (!encodedOwner) {
+        return std::nullopt;
+    }
+
+    auto const raw = static_cast<uint64_t>(*encodedOwner);
+    if ((raw & 0xff00000000000000ull) != SimpleValidityOwnerTag) {
+        return std::nullopt;
+    }
+
+    return std::pair{
+        static_cast<simfil::ArrayIndex>((raw >> 32U) & 0x00ffffffu),
+        static_cast<uint32_t>(raw & 0xffffffffu)};
+}
+
 /** Pack both transition endpoint flags into the compact stored bitfield. */
 uint8_t packTransitionEnds(
     Validity::TransitionEnd fromConnectedEnd,
@@ -172,14 +206,24 @@ void Validity::ensureMaterialized()
         raise("Cannot materialize validity from non-simple address.");
     }
 
-    // Simple direction-only validities are stored as tiny singleton nodes and
-    // upgraded lazily only when a richer validity payload is needed.
-    auto upgradedAddress = model().materializeSimpleValidity(simpleAddress, simpleDirection_);
+    auto owner = decodeSimpleValidityOwner(ModelNode::data_);
+    if (!owner) {
+        raise("Cannot materialize detached simple validity without owner context.");
+    }
+
+    // Simple direction-only validities stay compact until one concrete
+    // occurrence needs richer state. Upgrade only the owning collection slot.
+    auto upgradedAddress = model().materializeSimpleValidity(
+        simpleAddress,
+        owner->first,
+        owner->second,
+        simpleDirection_);
     auto upgraded = model().resolve<Validity>(upgradedAddress);
     if (!upgraded || !upgraded->data_) {
         raise("Failed to materialize simple validity.");
     }
     data_ = upgraded->data_;
+    fields_ = upgraded->fields_;
 }
 
 model_ptr<FeatureId> Validity::featureId() const
@@ -221,6 +265,17 @@ Validity::Validity(
                     self.model_);
             });
     }
+}
+
+Validity::Validity(
+    Validity::Direction direction,
+    simfil::ModelConstPtr layer,
+    simfil::ModelNodeAddress a,
+    simfil::ScalarValueType runtimeData,
+    simfil::detail::mp_key key)
+    : Validity(direction, std::move(layer), a, key)
+{
+    ModelNode::data_ = std::move(runtimeData);
 }
 
 Validity::Validity(Validity::Data* data,
@@ -905,15 +960,53 @@ model_ptr<Validity> MultiValidity::newComplete(Validity::Direction direction)
 
 model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
 {
+    auto const elementIndex = size();
     const auto simpleAddr = simfil::ModelNodeAddress{
         TileFeatureLayer::ColumnId::SimpleValidity,
         static_cast<uint32_t>(direction)};
-    if (auto upgradedAddress = model().upgradedSimpleValidityAddress(simpleAddr)) {
-        appendInternal(model_ptr<simfil::ModelNode>::make(model_, *upgradedAddress));
-        return model().resolve<Validity>(*upgradedAddress);
-    }
     appendInternal(model_ptr<simfil::ModelNode>::make(model_, simpleAddr));
-    return model().resolve<Validity>(simpleAddr);
+    return model().resolve<Validity>(
+        simpleAddr,
+        encodeSimpleValidityOwner(members_, elementIndex));
+}
+
+ModelNode::Ptr MultiValidity::at(int64_t i) const
+{
+    if (i < 0 || i >= static_cast<int64_t>(storage_->size(members_))) {
+        return {};
+    }
+
+    auto value = storage_->at(members_, static_cast<size_t>(i));
+    if (!value) {
+        return {};
+    }
+
+    auto const memberAddress = value->get();
+    if (memberAddress.column() != TileFeatureLayer::ColumnId::SimpleValidity) {
+        return ModelNode::Ptr::make(model_, memberAddress);
+    }
+
+    return ModelNode::Ptr::make(
+        model_,
+        memberAddress,
+        encodeSimpleValidityOwner(members_, static_cast<uint32_t>(i)));
+}
+
+bool MultiValidity::iterate(ModelNode::IterCallback const& cb) const
+{
+    bool cont = true;
+    auto resolveAndCb = simfil::Model::Lambda([&cb, &cont](auto&& node) { cont = cb(node); });
+    for (int64_t index = 0; index < static_cast<int64_t>(size()); ++index) {
+        auto value = at(index);
+        if (!value) {
+            return false;
+        }
+        model_->resolve(*value, resolveAndCb);
+        if (!cont) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }

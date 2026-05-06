@@ -34,7 +34,7 @@ if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
             "SIMFIL_SHARED OFF")
 else()
     CPMAddPackage(
-        URI "gh:Klebert-Engineering/simfil@0.7.1"
+        URI "gh:Klebert-Engineering/simfil@0.7.2#modelnode-data-accessor"
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
@@ -139,7 +139,7 @@ endif()
     endif()
 
     CPMAddPackage(
-        URI "gh:jbeder/yaml-cpp#aa8d4e@0.8.0" # Use > 0.8.0 once available.
+        URI "gh:jbeder/yaml-cpp#yaml-cpp-0.9.0@0.9.0"
         GIT_SHALLOW OFF
         OPTIONS
             "YAML_CPP_BUILD_TESTS OFF"

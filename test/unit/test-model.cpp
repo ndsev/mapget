@@ -892,6 +892,62 @@ TEST_CASE("Feature-id validities expose external map references", "[test.feature
     });
 }
 
+TEST_CASE("Simple validities upgrade only their owning collection slot", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ],
+        "stages": 3,
+        "stageLabels": ["Low-Fi", "High-Fi", "ADAS"],
+        "highFidelityStage": 1
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("SimpleValidityUpgradeIsolation");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SimpleValidityUpgradeIsolation",
+        "Tropico",
+        layerInfo,
+        strings);
+    auto feature = tile->newFeature("Way", {{"wayId", 1}});
+
+    auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
+    auto attrValidity = attr->validity()->newDirection(Validity::Direction::Positive);
+
+    auto relation = tile->newRelation(
+        "connectedTo",
+        tile->newFeatureId("Way", {{"wayId", 2}}, "ValidationMap"));
+    auto relationValidity = relation->targetValidity()->newDirection(Validity::Direction::Positive);
+    relationValidity->setGeometryStage(2U);
+    feature->addRelation(relation);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto attrValidityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(attrValidityNode);
+
+    auto materializedRelation = tile->resolve<Relation>(relation->addr());
+    REQUIRE(materializedRelation);
+    auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
+    auto targetValidityNode = relationNode.get(StringPool::TargetValidityStr);
+    REQUIRE(targetValidityNode);
+
+    REQUIRE(attrValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
+    REQUIRE(targetValidityNode->toJson() == nlohmann::json{
+        {"direction", "POSITIVE"},
+        {"geometryName", "ADAS"},
+    });
+}
+
 TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test.featurelayer.validity]")
 {
     auto layerInfo = LayerInfo::fromJson(R"({

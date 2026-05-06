@@ -260,7 +260,6 @@ struct TileFeatureLayer::Impl {
      */
     simfil::ModelColumn<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4> featureHashIndex_;
     bool featureHashIndexNeedsSorting_ = false;
-    std::unordered_map<uint32_t, ModelNodeAddress> upgradedSimpleValidityAddresses_;
 
     void sortFeatureHashIndex() {
         if (!featureHashIndexNeedsSorting_)
@@ -1024,65 +1023,30 @@ model_ptr<MultiValidity> TileFeatureLayer::newValidityCollection(size_t initialC
         mpKey_);
 }
 
-std::optional<ModelNodeAddress> TileFeatureLayer::upgradedSimpleValidityAddress(
-    ModelNodeAddress simpleAddress) const
-{
-    if (simpleAddress.column() != ColumnId::SimpleValidity) {
-        return std::nullopt;
-    }
-    if (auto existing = impl_->upgradedSimpleValidityAddresses_.find(simpleAddress.value_);
-        existing != impl_->upgradedSimpleValidityAddresses_.end()) {
-        return existing->second;
-    }
-    return std::nullopt;
-}
-
 ModelNodeAddress TileFeatureLayer::materializeSimpleValidity(
     ModelNodeAddress simpleAddress,
+    simfil::ArrayIndex ownerMembers,
+    uint32_t ownerElementIndex,
     Validity::Direction direction)
 {
     if (simpleAddress.column() != ColumnId::SimpleValidity) {
         raise("Cannot materialize non-simple validity node.");
     }
-    ModelNodeAddress upgradedAddress{};
-    if (auto existing = upgradedSimpleValidityAddress(simpleAddress)) {
-        upgradedAddress = *existing;
+    auto memberAddress = arrayMemberStorage().at(ownerMembers, ownerElementIndex);
+    if (!memberAddress) {
+        raise("Simple validity owner slot could not be resolved.");
     }
-    else {
-        impl_->validities_.emplace_back();
-        upgradedAddress = ModelNodeAddress{
-            ColumnId::Validities,
-            static_cast<uint32_t>(impl_->validities_.size() - 1)};
-        auto& upgraded = impl_->validities_.back();
-        upgraded.direction_ = direction;
-        impl_->upgradedSimpleValidityAddresses_.emplace(simpleAddress.value_, upgradedAddress);
+    if (memberAddress->get().value_ != simpleAddress.value_) {
+        raise("Simple validity owner slot no longer points at the expected simple validity.");
     }
 
-    // Rebind every simple validity address reference to the upgraded full node.
-    auto& members = arrayMemberStorage();
-    auto rebindArrayMembers = [&](simfil::ArrayIndex arrayIndex)
-    {
-        members.iterate(
-            arrayIndex,
-            [&](ModelNodeAddress& memberAddress)
-            {
-                if (memberAddress.value_ == simpleAddress.value_) {
-                    memberAddress = upgradedAddress;
-                }
-            });
-    };
-
-    for (simfil::ArrayIndex arrayIndex = simfil::FirstRegularArrayIndex;
-         arrayIndex < static_cast<simfil::ArrayIndex>(members.size());
-         ++arrayIndex) {
-        rebindArrayMembers(arrayIndex);
-    }
-    for (simfil::ArrayIndex singletonOrdinal = 0;
-         singletonOrdinal < static_cast<simfil::ArrayIndex>(members.singleton_handle_count());
-         ++singletonOrdinal) {
-        rebindArrayMembers(simfil::SingletonArrayHandleMask | singletonOrdinal);
-    }
-
+    impl_->validities_.emplace_back();
+    auto upgradedAddress = ModelNodeAddress{
+        ColumnId::Validities,
+        static_cast<uint32_t>(impl_->validities_.size() - 1)};
+    auto& upgraded = impl_->validities_.back();
+    upgraded.direction_ = direction;
+    memberAddress->get() = upgradedAddress;
     return upgradedAddress;
 }
 
@@ -1408,20 +1372,18 @@ model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model
             node.addr(),
             model.mpKey_);
     case TileFeatureLayer::ColumnId::SimpleValidity: {
-        if (auto upgraded = model.upgradedSimpleValidityAddress(node.addr())) {
-            return Validity(
-                &model.impl_->validities_[upgraded->index()],
-                model.shared_from_this(),
-                *upgraded,
-                model.mpKey_);
-        }
         auto const direction = static_cast<Validity::Direction>(node.addr().index());
         if (direction < Validity::Empty || direction > Validity::None) {
             raiseFmt(
                 "Cannot cast this node to a Validity: invalid simple validity direction value {}.",
                 node.addr().index());
         }
-        return Validity(direction, model.shared_from_this(), node.addr(), model.mpKey_);
+        return Validity(
+            direction,
+            model.shared_from_this(),
+            node.addr(),
+            node.runtimeData(),
+            model.mpKey_);
     }
     default:
         raise("Cannot cast this node to a Validity.");
