@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <mutex>
 #include <map>
@@ -202,6 +203,14 @@ nlohmann::json yamlToJson(
     bool maskSecrets,
     std::unordered_map<std::string, std::string>* maskedSecretMap = nullptr,
     bool maskCurrentNode = false);
+
+/** Parse a YAML or JSON document from a string buffer into JSON. */
+[[nodiscard]] nlohmann::json parseStructuredDocument(
+    std::string_view content,
+    std::string_view sourceName = "<memory>");
+
+/** Load and parse a YAML or JSON document from disk into JSON. */
+[[nodiscard]] nlohmann::json loadStructuredDocumentFile(std::string const& path);
 
 /** Convert JSON to YAML, resolving masked secrets if provided. */
 YAML::Node jsonToYaml(

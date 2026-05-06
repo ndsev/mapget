@@ -11,6 +11,7 @@ namespace mapget
 
 namespace
 {
+/** Convert a validity direction enum into the exported JSON token. */
 std::string_view directionToString(Validity::Direction const& d)
 {
     switch (d) {
@@ -23,6 +24,7 @@ std::string_view directionToString(Validity::Direction const& d)
     return "?";
 }
 
+/** Convert a transition endpoint enum into the exported JSON token. */
 std::string_view transitionEndToString(Validity::TransitionEnd const& end)
 {
     switch (end) {
@@ -32,6 +34,7 @@ std::string_view transitionEndToString(Validity::TransitionEnd const& end)
     return "?";
 }
 
+/** Pack both transition endpoint flags into the compact stored bitfield. */
 uint8_t packTransitionEnds(
     Validity::TransitionEnd fromConnectedEnd,
     Validity::TransitionEnd toConnectedEnd)
@@ -41,16 +44,19 @@ uint8_t packTransitionEnds(
         (static_cast<uint8_t>(toConnectedEnd) << 1U));
 }
 
+/** Decode the source endpoint from the stored transition bitfield. */
 Validity::TransitionEnd unpackFromConnectedEnd(uint8_t packedEnds)
 {
     return (packedEnds & 0x1U) != 0 ? Validity::End : Validity::Start;
 }
 
+/** Decode the target endpoint from the stored transition bitfield. */
 Validity::TransitionEnd unpackToConnectedEnd(uint8_t packedEnds)
 {
     return (packedEnds & 0x2U) != 0 ? Validity::End : Validity::Start;
 }
 
+/** Pick the line geometry that should be used for line-based validity resolution. */
 model_ptr<Geometry> resolveLineGeometry(
     model_ptr<GeometryCollection> const& geometryCollection,
     std::optional<uint32_t> referencedStage)
@@ -67,11 +73,13 @@ struct TransitionSegment
     Point inner_;
 };
 
+/** Compare two validity points with a small tolerance to absorb numeric noise. */
 bool pointsCoincide(Point const& left, Point const& right)
 {
     return left.distanceTo(right) < 1e-9;
 }
 
+/** Resolve the endpoint segment that participates in a semantic feature transition. */
 std::optional<TransitionSegment> resolveTransitionSegment(
     model_ptr<Feature> const& feature,
     Validity::TransitionEnd connectedEnd,
@@ -91,6 +99,8 @@ std::optional<TransitionSegment> resolveTransitionSegment(
     auto outerIndex = innerIndex;
     auto const innerPoint = geometry->pointAt(innerIndex);
     if (connectedEnd == Validity::End) {
+        // Transition endpoints may be repeated at the tail, so walk backwards
+        // until the first distinct point to get a visible outgoing segment.
         for (auto pointIndex = innerIndex; pointIndex-- > 0;) {
             if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
                 outerIndex = pointIndex;
@@ -98,6 +108,8 @@ std::optional<TransitionSegment> resolveTransitionSegment(
             }
         }
     } else {
+        // Likewise, repeated points at the head must be skipped when entering
+        // a transition from the start of a polyline.
         for (auto pointIndex = innerIndex + 1U; pointIndex < numPoints; ++pointIndex) {
             if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
                 outerIndex = pointIndex;
@@ -111,16 +123,20 @@ std::optional<TransitionSegment> resolveTransitionSegment(
     };
 }
 
+/** Apply direction semantics to a resolved geometry after the shape has been computed. */
 SelfContainedGeometry applyDirectionToGeometry(
     SelfContainedGeometry geometry,
     Validity::Direction direction)
 {
     if (direction == Validity::Negative && geometry.points_.size() > 1) {
+        // Negative direction reuses the same geometric support but traverses it
+        // against the feature digitization order.
         std::reverse(geometry.points_.begin(), geometry.points_.end());
     }
     return geometry;
 }
 
+/** Map a stored geometry stage back to the optional exported `geometryName`. */
 std::optional<std::string_view> geometryNameForStage(
     TileFeatureLayer const& model,
     std::optional<uint32_t> geometryStage)
@@ -130,6 +146,7 @@ std::optional<std::string_view> geometryNameForStage(
     }
     auto const& layerInfo = *model.layerInfo();
     if (*geometryStage <= layerInfo.highFidelityStage_) {
+        // High-fidelity geometries intentionally omit a stage label in JSON.
         return std::nullopt;
     }
     if (*geometryStage >= layerInfo.stageLabels_.size()) {
@@ -155,6 +172,8 @@ void Validity::ensureMaterialized()
         raise("Cannot materialize validity from non-simple address.");
     }
 
+    // Simple direction-only validities are stored as tiny singleton nodes and
+    // upgraded lazily only when a richer validity payload is needed.
     auto upgradedAddress = model().materializeSimpleValidity(simpleAddress, simpleDirection_);
     auto upgraded = model().resolve<Validity>(upgradedAddress);
     if (!upgraded || !upgraded->data_) {
@@ -231,6 +250,8 @@ Validity::Validity(Validity::Data* data,
     }
 
     if (data_->geomDescrType_ == SimpleGeometry) {
+        // SimpleGeometry stores an explicit geometry node, so no offset or
+        // transition metadata fields are exposed in the JSON view.
         fields_.emplace_back(
             StringPool::GeometryStr,
             [](Validity const& self)
@@ -242,6 +263,8 @@ Validity::Validity(Validity::Data* data,
     }
 
     if (data_->geomDescrType_ == FeatureTransition) {
+        // Semantic transitions serialize as feature references plus endpoint
+        // metadata instead of an explicit geometry payload.
         fields_.emplace_back(
             StringPool::TransitionNumberStr,
             [](Validity const& self)
@@ -304,6 +327,8 @@ Validity::Validity(Validity::Data* data,
             });
     }
 
+    // Offset-point and offset-range validities share the same storage; the
+    // exported field names depend on the selected offset interpretation.
     auto exposeOffsetPoint = [this](StringId fieldName, uint32_t pointIndex, Point const& p)
     {
         fields_.emplace_back(
@@ -342,9 +367,7 @@ Validity::Validity(Validity::Data* data,
             StringPool::FeatureIdStr,
             [](Validity const& self)
             {
-                return model_ptr<simfil::ValueNode>::make(
-                    self.featureId()->toString(),
-                    self.model_);
+                return self.featureId();
             });
     }
 }
@@ -643,7 +666,8 @@ SelfContainedGeometry Validity::computeGeometry(
         return {};
     }
 
-    // Resolve validity geometry by stage first (if specified), then by line type.
+    // Line-based validities always resolve against the preferred line geometry
+    // for the chosen stage, not against arbitrary polygons or meshes.
     auto geometry = resolveLineGeometry(geometryCollection, referencedStage);
 
     if (!geometry) {
@@ -712,6 +736,8 @@ SelfContainedGeometry Validity::computeGeometry(
         }
 
         if (endPointIndex < startPointIndex) {
+            // Buffer indices are treated as an inclusive range independent of
+            // authoring order, so normalize to ascending storage order first.
             std::swap(startPointIndex, endPointIndex);
         }
 

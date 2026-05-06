@@ -182,6 +182,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     auto featureForId2 = tile->newFeatureId(
         "Way",
         {{"wayIdI32", -42}, {"wayIdI64", -84}, {"wayIdUUID128", "0123456789abcdef"}});
+    auto externalFeatureId = tile->newFeatureId(
+        "Way",
+        {{"wayIdU32", 7}, {"wayIdU64", 11}, {"wayIdUUID128", "fedcba9876543210"}},
+        "ValidationMap");
 
     SECTION("firstGeometry")
     {
@@ -230,6 +234,18 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(std::get<int64_t>(keyValuePairs[1].second) == 84);
         REQUIRE(keyValuePairs[2].first == "wayIdUUID128");
         REQUIRE(std::get<std::string_view>(keyValuePairs[2].second) == "0123456789abcdef");
+    }
+
+    SECTION("Detached feature IDs preserve optional external map IDs")
+    {
+        REQUIRE(featureForId1->toJson() == nlohmann::json("Way.42.84.0123456789abcdef"));
+        REQUIRE(externalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE(externalFeatureId->mapId() == "ValidationMap");
+        REQUIRE(externalFeatureId->externalMapId() == std::optional<std::string_view>{"ValidationMap"});
+        REQUIRE(externalFeatureId->toJson() == nlohmann::json{
+            {"id", "Way.7.11.fedcba9876543210"},
+            {"mapId", "ValidationMap"},
+        });
     }
 
     SECTION("Evaluate simfil filter")
@@ -324,6 +340,15 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(std::get<int64_t>(deserializedKeyValuePairs[1].second) == 84);
         REQUIRE(deserializedKeyValuePairs[2].first == "wayIdUUID128");
         REQUIRE(std::get<std::string_view>(deserializedKeyValuePairs[2].second) == "0123456789abcdef");
+
+        auto deserializedExternalFeatureId = deserializedTile->resolve<FeatureId>(
+            simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::ExternalFeatureIds, 2});
+        REQUIRE(deserializedExternalFeatureId);
+        REQUIRE(deserializedExternalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE(deserializedExternalFeatureId->mapId() == "ValidationMap");
+        REQUIRE(
+            deserializedExternalFeatureId->externalMapId() ==
+            std::optional<std::string_view>{"ValidationMap"});
     }
 
     SECTION("Stream")
@@ -430,15 +455,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(json["mapId"] == "Tropico");
         REQUIRE(json["mapgetLayerId"] == "WayLayer");
 
-        // Verify idPrefix
-        REQUIRE(json.contains("idPrefix"));
-        REQUIRE(json["idPrefix"]["areaId"] == "TheBestArea");
-
-        // Verify timestamp is ISO 8601 format
-        REQUIRE(json["timestamp"].is_string());
-        std::string timestamp = json["timestamp"];
-        REQUIRE(timestamp.find("T") != std::string::npos);
-        REQUIRE(timestamp.back() == 'Z');
+        // Verify timestamp stays in the binary microsecond representation.
+        REQUIRE(json["timestamp"].is_number_integer());
+        REQUIRE(json["timestamp"].get<int64_t>() ==
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                tile->timestamp().time_since_epoch()).count());
 
         // Verify TTL
         REQUIRE(json["ttl"] == 3600000);
@@ -796,7 +817,9 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
     auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
     attr->validity()->newDirection(Validity::Direction::Both);
 
-    auto relation = tile->newRelation("connectedTo", tile->newFeatureId("Way", {{"wayId", 2}}));
+    auto relation = tile->newRelation(
+        "connectedTo",
+        tile->newFeatureId("Way", {{"wayId", 2}}, "ValidationMap"));
     relation->sourceValidity()->newDirection(Validity::Direction::Positive);
     relation->targetValidity()->newDirection(Validity::Direction::Negative);
     feature->addRelation(relation);
@@ -810,7 +833,14 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
 
     auto materializedRelation = tile->resolve<Relation>(relation->addr());
     REQUIRE(materializedRelation);
+    REQUIRE(materializedRelation->target()->mapId() == "ValidationMap");
     auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
+    auto const targetNode = relationNode.get(StringPool::TargetStr);
+    REQUIRE(targetNode);
+    REQUIRE(targetNode->toJson() == nlohmann::json{
+        {"id", "Way.2"},
+        {"mapId", "ValidationMap"},
+    });
     auto const sourceValidityNode = relationNode.get(StringPool::SourceValidityStr);
     REQUIRE(sourceValidityNode);
     REQUIRE(sourceValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
@@ -818,6 +848,48 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
     auto const targetValidityNode = relationNode.get(StringPool::TargetValidityStr);
     REQUIRE(targetValidityNode);
     REQUIRE(targetValidityNode->toJson() == nlohmann::json{{"direction", "NEGATIVE"}});
+}
+
+TEST_CASE("Feature-id validities expose external map references", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("FeatureRefValidityNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "FeatureRefValidityNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    auto feature = tile->newFeature("Way", {{"wayId", 1}});
+    auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
+
+    auto externalReference = tile->newFeatureId("Way", {{"wayId", 2}}, "ValidationMap");
+    attr->validity()->newFeatureId(externalReference, Validity::Direction::Positive);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto const validityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(validityNode);
+    REQUIRE(validityNode->toJson() == nlohmann::json{
+        {"direction", "POSITIVE"},
+        {"featureId", {
+            {"id", "Way.2"},
+            {"mapId", "ValidationMap"},
+        }},
+    });
 }
 
 TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test.featurelayer.validity]")

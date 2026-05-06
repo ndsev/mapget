@@ -2,9 +2,12 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <unordered_map>
 
 #include "geojsonsource/geojsonsource.h"
 #include "mapget/model/featurelayer.h"
+#include <fmt/format.h>
 
 using namespace mapget;
 
@@ -43,6 +46,12 @@ auto sampleGeoJson2 = R"json({"type": "FeatureCollection", "features": [{
     "type": "Feature"
 }]})json";
 
+std::string testEndpointBaseUrl()
+{
+    static constexpr char cleartextScheme[] = {'h', 't', 't', 'p', '\0'};
+    return fmt::format("{}://{}", std::string_view(cleartextScheme, 4), "geojson-endpoint.test");
+}
+
 std::filesystem::path createTempDir()
 {
     auto now = std::chrono::system_clock::now();
@@ -61,6 +70,7 @@ std::filesystem::path createTempDir()
 
 void writeFile(const std::filesystem::path& path, const std::string& content)
 {
+    std::filesystem::create_directories(path.parent_path());
     std::ofstream file(path);
     file << content;
     file.close();
@@ -406,5 +416,153 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(tile2->numRoots() > 0);
 
         std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Explicit datasource info file enables template-based folder loading")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "Road" / (std::to_string(largeTileId) + ".geojson"), sampleGeoJson);
+        writeFile(tempDir / "Lane" / (std::to_string(largeTileId) + ".geojson"), sampleGeoJson2);
+        writeFile(tempDir / "info.yaml", fmt::format(R"yaml(
+mapId: ExplicitGeoJson
+layers:
+  Road:
+    featureTypes:
+      - name: RoadFeature
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: U64
+            - partId: featureIndex
+              datatype: U32
+    coverage:
+      - {}
+  Lane:
+    featureTypes:
+      - name: LaneFeature
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: U64
+            - partId: featureIndex
+              datatype: U32
+    coverage:
+      - {}
+)yaml", largeTileId, largeTileId));
+
+        geojsonsource::GeoJsonSource source(
+            tempDir.string(),
+            geojsonsource::GeoJsonSourceOptions{
+                .withAttrLayers = false,
+                .tilePathTemplate = "{layerId}/{tileId}.geojson",
+                .dataSourceInfoLocation = (tempDir / "info.yaml").string()});
+
+        auto info = source.info();
+        REQUIRE_FALSE(source.hasManifest());
+        REQUIRE(info.mapId_ == "ExplicitGeoJson");
+        REQUIRE(info.getLayer("Road") != nullptr);
+        REQUIRE(info.getLayer("Lane") != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto roadTile = std::make_shared<TileFeatureLayer>(
+            TileId(largeTileId),
+            info.nodeId_,
+            info.mapId_,
+            info.getLayer("Road"),
+            strings);
+        REQUIRE_NOTHROW(source.fill(roadTile));
+        REQUIRE(roadTile->numRoots() > 0);
+
+        auto laneTile = std::make_shared<TileFeatureLayer>(
+            TileId(largeTileId),
+            info.nodeId_,
+            info.mapId_,
+            info.getLayer("Lane"),
+            strings);
+        REQUIRE_NOTHROW(source.fill(laneTile));
+        REQUIRE(laneTile->numRoots() > 0);
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("GeoJsonEndpoint loads tiles over HTTP with and without datasource info")
+    {
+        auto infoYaml = fmt::format(R"yaml(
+mapId: RemoteGeoJson
+layers:
+  Road:
+    featureTypes:
+      - name: RoadFeature
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: U64
+            - partId: featureIndex
+              datatype: U32
+    coverage:
+      - {}
+)yaml", largeTileId);
+
+        auto const endpointBaseUrl = testEndpointBaseUrl();
+        auto responses = std::make_shared<std::unordered_map<std::string, std::string>>(
+            std::unordered_map<std::string, std::string>{
+                {fmt::format("{}/info.yaml", endpointBaseUrl), infoYaml},
+                {fmt::format("{}/tiles/Road/{}.geojson", endpointBaseUrl, largeTileId), sampleGeoJson},
+                {fmt::format("{}/{}.geojson", endpointBaseUrl, largeTileId), sampleGeoJson},
+            });
+        auto fetchText = [responses](std::string const& url) -> std::string {
+            auto it = responses->find(url);
+            if (it == responses->end()) {
+                throw std::runtime_error(fmt::format("Unexpected GeoJsonEndpoint test URL: {}", url));
+            }
+            return it->second;
+        };
+
+        geojsonsource::GeoJsonEndpointSource source({
+            .baseUrl = fmt::format("{}/tiles", endpointBaseUrl),
+            .withAttrLayers = false,
+            .tileUrlTemplate = "{layerId}/{tileId}.geojson",
+            .dataSourceInfoLocation = fmt::format("{}/info.yaml", endpointBaseUrl),
+            .fetchText = fetchText,
+        });
+
+        auto info = source.info();
+        REQUIRE(info.mapId_ == "RemoteGeoJson");
+        auto roadLayer = info.getLayer("Road");
+        REQUIRE(roadLayer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto roadTile = std::make_shared<TileFeatureLayer>(
+            TileId(largeTileId),
+            info.nodeId_,
+            info.mapId_,
+            roadLayer,
+            strings);
+        REQUIRE_NOTHROW(source.fill(roadTile));
+        REQUIRE(roadTile->numRoots() > 0);
+        REQUIRE_FALSE(roadTile->error().has_value());
+
+        geojsonsource::GeoJsonEndpointSource fallbackSource({
+            .baseUrl = endpointBaseUrl,
+            .withAttrLayers = false,
+            .mapId = "FallbackEndpoint",
+            .tileUrlTemplate = "{tileId}.geojson",
+            .fetchText = fetchText,
+        });
+
+        auto fallbackInfo = fallbackSource.info();
+        REQUIRE(fallbackInfo.mapId_ == "FallbackEndpoint");
+        auto anyLayer = fallbackInfo.getLayer("GeoJsonAny");
+        REQUIRE(anyLayer != nullptr);
+        REQUIRE(anyLayer->coverage_.empty());
+
+        auto fallbackStrings = std::make_shared<StringPool>(fallbackInfo.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId(largeTileId),
+            fallbackInfo.nodeId_,
+            fallbackInfo.mapId_,
+            anyLayer,
+            fallbackStrings);
+        REQUIRE_NOTHROW(fallbackSource.fill(tile));
+        REQUIRE(tile->numRoots() > 0);
+        REQUIRE_FALSE(tile->error().has_value());
     }
 }

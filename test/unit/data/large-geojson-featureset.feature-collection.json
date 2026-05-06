@@ -1,0 +1,7263 @@
+{
+  "features": [
+    {
+      "_sourceData": [
+        {
+          "address": 37795712204830,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 4294967296024,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.0,
+            48.0,
+            0.0
+          ],
+          [
+            11.000450134277344,
+            48.000221252441406,
+            0.0
+          ],
+          [
+            11.000900268554688,
+            48.00043869018555,
+            0.0
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.0",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-000",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-0",
+                  "b-0"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.0",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.1",
+                "toConnectedEnd": "START",
+                "transitionNumber": 1
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 0,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.0
+        }
+      },
+      "recordId": 0,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 26628797235228,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.1",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.000200271606445,
+              48.000099182128906,
+              0.0
+            ]
+          }
+        },
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.2"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.001500129699707,
+                48.0,
+                0.10000002384185791
+              ],
+              [
+                11.001850128173828,
+                48.000179290771484,
+                0.10000002384185791
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.001899719238281,
+                48.00019836425781,
+                0.10000002384185791
+              ],
+              [
+                11.002050399780273,
+                48.00032043457031,
+                0.2999999523162842
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.1",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-001",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-1",
+                  "b-1"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.3",
+                "geometryName": "delta"
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 1,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.1
+        }
+      },
+      "recordId": 1,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.003000259399414,
+              48.0,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.0,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.0004997253418,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.0004997253418,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.0,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.2",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-002",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-2",
+                  "b-2"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 2,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.2
+        }
+      },
+      "recordId": 2,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.004500389099121,
+                48.0,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00014877319336,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.000518798828125,
+                0.2999999523162842
+              ],
+              [
+                11.004500389099121,
+                48.0,
+                0.2999999523162842
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.004950523376465,
+                48.00014877319336,
+                0.2999999523162842
+              ],
+              [
+                11.005120277404785,
+                48.00054931640625,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.000518798828125,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00014877319336,
+                0.2999999523162842
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.3",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-003",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-3",
+                  "b-3"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.004600524902344,
+                  48.000099182128906,
+                  0.30000001192092896
+                ]
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 3,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.3
+        }
+      },
+      "recordId": 3,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.4",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.004700660705566,
+              48.000099182128906,
+              0.30000001192092896
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.005999565124512,
+            48.0,
+            0.0
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.005999565124512,
+              48.0,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.0,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00054999999702,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00054999999702,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.0,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.4",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-004",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-4",
+                  "b-4"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.005999565124512,
+                      48.0,
+                      0.0
+                    ],
+                    [
+                      11.006239891052246,
+                      48.000179290771484,
+                      0.0
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 4,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.4
+        }
+      },
+      "recordId": 4,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 38074885079064,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.007499694824219,
+            48.0,
+            0.10000002384185791
+          ],
+          [
+            11.007780075073242,
+            48.0001106262207,
+            0.3999999761581421
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.5",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-005",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-5",
+                  "b-5"
+                ]
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 5,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.5
+        }
+      },
+      "recordId": 5,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 4629974745118,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.008999824523926,
+            48.0,
+            0.20000004768371582
+          ],
+          [
+            11.00944995880127,
+            48.000221252441406,
+            0.20000004768371582
+          ],
+          [
+            11.009900093078613,
+            48.00043869018555,
+            0.20000004768371582
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.6",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-006",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-6",
+                  "b-6"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.6",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.7",
+                "toConnectedEnd": "START",
+                "transitionNumber": 2
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 6,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.6
+        }
+      },
+      "recordId": 6,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 26963804684322,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.7",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.009200096130371,
+              48.000099182128906,
+              0.20000000298023224
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.010499954223633,
+                48.0,
+                0.2999999523162842
+              ],
+              [
+                11.010849952697754,
+                48.000179290771484,
+                0.2999999523162842
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.010899543762207,
+                48.00019836425781,
+                0.2999999523162842
+              ],
+              [
+                11.0110502243042,
+                48.00032043457031,
+                0.5
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.7",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-007",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-7",
+                  "b-7"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.9",
+                "geometryName": "delta"
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 7,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.7
+        }
+      },
+      "recordId": 7,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.01200008392334,
+              48.0,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.0,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.0004997253418,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.0004997253418,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.0,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.8",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-008",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-8",
+                  "b-8"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 8,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.8
+        }
+      },
+      "recordId": 8,
+      "relations": [
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.10"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.013500213623047,
+                48.0,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00014877319336,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.000518798828125,
+                0.10000002384185791
+              ],
+              [
+                11.013500213623047,
+                48.0,
+                0.10000002384185791
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.01395034790039,
+                48.00014877319336,
+                0.10000002384185791
+              ],
+              [
+                11.014120101928711,
+                48.00054931640625,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.000518798828125,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00014877319336,
+                0.10000002384185791
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.9",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-009",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-9",
+                  "b-9"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.01360034942627,
+                  48.000099182128906,
+                  0.10000000149011612
+                ]
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 9,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.0
+        }
+      },
+      "recordId": 9,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.10",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.013700485229492,
+              48.000099182128906,
+              0.10000000149011612
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 38354057953309,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.015000343322754,
+            48.0,
+            0.20000004768371582
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.015000343322754,
+              48.0,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.0,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00054999999702,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00054999999702,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.0,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.10",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-010",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-10",
+                  "b-10"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.015000343322754,
+                      48.0,
+                      0.20000004768371582
+                    ],
+                    [
+                      11.015240669250488,
+                      48.000179290771484,
+                      0.20000004768371582
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 10,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.1
+        }
+      },
+      "recordId": 10,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.016500473022461,
+            48.0,
+            0.2999999523162842
+          ],
+          [
+            11.016780853271484,
+            48.0001106262207,
+            0.6000000238418579
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.11",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-011",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-11",
+                  "b-11"
+                ]
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 11,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.2
+        }
+      },
+      "recordId": 11,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 4964982194201,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.0,
+            48.00120162963867,
+            0.0
+          ],
+          [
+            11.000450134277344,
+            48.00142288208008,
+            0.0
+          ],
+          [
+            11.000900268554688,
+            48.00164031982422,
+            0.0
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.12",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-012",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-12",
+                  "b-12"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.12",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.13",
+                "toConnectedEnd": "START",
+                "transitionNumber": 3
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 12,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.3
+        }
+      },
+      "recordId": 12,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 27298812133405,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.13",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.000200271606445,
+              48.00130081176758,
+              0.0
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.001500129699707,
+                48.00120162963867,
+                0.10000002384185791
+              ],
+              [
+                11.001850128173828,
+                48.001380920410156,
+                0.10000002384185791
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.001899719238281,
+                48.001399993896484,
+                0.10000002384185791
+              ],
+              [
+                11.002050399780273,
+                48.001522064208984,
+                0.2999999523162842
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.13",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-013",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-13",
+                  "b-13"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.15",
+                "geometryName": "delta"
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 13,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.4
+        }
+      },
+      "recordId": 13,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.003000259399414,
+              48.00120162963867,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.00120162963867,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.00170135498047,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.00170135498047,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.00120162963867,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.14",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-014",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-14",
+                  "b-14"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 14,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.5
+        }
+      },
+      "recordId": 14,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 38633230827554,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.004500389099121,
+                48.00120162963867,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00135040283203,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.0017204284668,
+                0.2999999523162842
+              ],
+              [
+                11.004500389099121,
+                48.00120162963867,
+                0.2999999523162842
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.004950523376465,
+                48.00135040283203,
+                0.2999999523162842
+              ],
+              [
+                11.005120277404785,
+                48.00175094604492,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.0017204284668,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00135040283203,
+                0.2999999523162842
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.15",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-015",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-15",
+                  "b-15"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.004600524902344,
+                  48.00130081176758,
+                  0.30000001192092896
+                ]
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 15,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.6
+        }
+      },
+      "recordId": 15,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.16",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.004700660705566,
+              48.00130081176758,
+              0.30000001192092896
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.005999565124512,
+            48.00120162963867,
+            0.0
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.005999565124512,
+              48.00120162963867,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00120162963867,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00175162963569,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00175162963569,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00120162963867,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.16",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-016",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-16",
+                  "b-16"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.005999565124512,
+                      48.00120162963867,
+                      0.0
+                    ],
+                    [
+                      11.006239891052246,
+                      48.001380920410156,
+                      0.0
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 16,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.7
+        }
+      },
+      "recordId": 16,
+      "relations": [
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.18"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.007499694824219,
+            48.00120162963867,
+            0.10000002384185791
+          ],
+          [
+            11.007780075073242,
+            48.001312255859375,
+            0.3999999761581421
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.17",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-017",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-17",
+                  "b-17"
+                ]
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 0,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.8
+        }
+      },
+      "recordId": 17,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 5299989643295,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.008999824523926,
+            48.00120162963867,
+            0.20000004768371582
+          ],
+          [
+            11.00944995880127,
+            48.00142288208008,
+            0.20000004768371582
+          ],
+          [
+            11.009900093078613,
+            48.00164031982422,
+            0.20000004768371582
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.18",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-018",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-18",
+                  "b-18"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.18",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.19",
+                "toConnectedEnd": "START",
+                "transitionNumber": 4
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 1,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.0
+        }
+      },
+      "recordId": 18,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 27633819582488,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.19",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.009200096130371,
+              48.00130081176758,
+              0.20000000298023224
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.010499954223633,
+                48.00120162963867,
+                0.2999999523162842
+              ],
+              [
+                11.010849952697754,
+                48.001380920410156,
+                0.2999999523162842
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.010899543762207,
+                48.001399993896484,
+                0.2999999523162842
+              ],
+              [
+                11.0110502243042,
+                48.001522064208984,
+                0.5
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.19",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-019",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-19",
+                  "b-19"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.21",
+                "geometryName": "delta"
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 2,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.1
+        }
+      },
+      "recordId": 19,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 38912403701788,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.01200008392334,
+              48.00120162963867,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.00120162963867,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.00170135498047,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.00170135498047,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.00120162963867,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.20",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-020",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-20",
+                  "b-20"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 3,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.2
+        }
+      },
+      "recordId": 20,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.013500213623047,
+                48.00120162963867,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00135040283203,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.0017204284668,
+                0.10000002384185791
+              ],
+              [
+                11.013500213623047,
+                48.00120162963867,
+                0.10000002384185791
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.01395034790039,
+                48.00135040283203,
+                0.10000002384185791
+              ],
+              [
+                11.014120101928711,
+                48.00175094604492,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.0017204284668,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00135040283203,
+                0.10000002384185791
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.21",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-021",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-21",
+                  "b-21"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.01360034942627,
+                  48.00130081176758,
+                  0.10000000149011612
+                ]
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 4,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.3
+        }
+      },
+      "recordId": 21,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.22",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.013700485229492,
+              48.00130081176758,
+              0.10000000149011612
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.015000343322754,
+            48.00120162963867,
+            0.20000004768371582
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.015000343322754,
+              48.00120162963867,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00120162963867,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00175162963569,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00175162963569,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00120162963867,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.22",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-022",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-22",
+                  "b-22"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.015000343322754,
+                      48.00120162963867,
+                      0.20000004768371582
+                    ],
+                    [
+                      11.015240669250488,
+                      48.001380920410156,
+                      0.20000004768371582
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 5,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.4
+        }
+      },
+      "recordId": 22,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.016500473022461,
+            48.00120162963867,
+            0.2999999523162842
+          ],
+          [
+            11.016780853271484,
+            48.001312255859375,
+            0.6000000238418579
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.23",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-023",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-23",
+                  "b-23"
+                ]
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 6,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.5
+        }
+      },
+      "recordId": 23,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 5634997092378,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.0,
+            48.00239944458008,
+            0.0
+          ],
+          [
+            11.000450134277344,
+            48.002620697021484,
+            0.0
+          ],
+          [
+            11.000900268554688,
+            48.002838134765625,
+            0.0
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.24",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-024",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-24",
+                  "b-24"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.24",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.25",
+                "toConnectedEnd": "START",
+                "transitionNumber": 5
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 7,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.6
+        }
+      },
+      "recordId": 24,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 27968827031582,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.25",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.000200271606445,
+              48.002498626708984,
+              0.0
+            ]
+          }
+        },
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.26"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 39191576576033,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.001500129699707,
+                48.00239944458008,
+                0.10000002384185791
+              ],
+              [
+                11.001850128173828,
+                48.00257873535156,
+                0.10000002384185791
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.001899719238281,
+                48.00259780883789,
+                0.10000002384185791
+              ],
+              [
+                11.002050399780273,
+                48.00271987915039,
+                0.2999999523162842
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.25",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-025",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-25",
+                  "b-25"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.27",
+                "geometryName": "delta"
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 8,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.7
+        }
+      },
+      "recordId": 25,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.003000259399414,
+              48.00239944458008,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.00239944458008,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.002899169921875,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.002899169921875,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.00239944458008,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.26",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-026",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-26",
+                  "b-26"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 9,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.8
+        }
+      },
+      "recordId": 26,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.004500389099121,
+                48.00239944458008,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00254821777344,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.0029182434082,
+                0.2999999523162842
+              ],
+              [
+                11.004500389099121,
+                48.00239944458008,
+                0.2999999523162842
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.004950523376465,
+                48.00254821777344,
+                0.2999999523162842
+              ],
+              [
+                11.005120277404785,
+                48.00294876098633,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.0029182434082,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00254821777344,
+                0.2999999523162842
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.27",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-027",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-27",
+                  "b-27"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.004600524902344,
+                  48.002498626708984,
+                  0.30000001192092896
+                ]
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 10,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.0
+        }
+      },
+      "recordId": 27,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.28",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.004700660705566,
+              48.002498626708984,
+              0.30000001192092896
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.005999565124512,
+            48.00239944458008,
+            0.0
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.005999565124512,
+              48.00239944458008,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00239944458008,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.0029494445771,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.0029494445771,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00239944458008,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.28",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-028",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-28",
+                  "b-28"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.005999565124512,
+                      48.00239944458008,
+                      0.0
+                    ],
+                    [
+                      11.006239891052246,
+                      48.00257873535156,
+                      0.0
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 11,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.1
+        }
+      },
+      "recordId": 28,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.007499694824219,
+            48.00239944458008,
+            0.10000002384185791
+          ],
+          [
+            11.007780075073242,
+            48.00251007080078,
+            0.3999999761581421
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.29",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-029",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-29",
+                  "b-29"
+                ]
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 12,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.2
+        }
+      },
+      "recordId": 29,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 39470749450267,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 5970004541472,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.008999824523926,
+            48.00239944458008,
+            0.20000004768371582
+          ],
+          [
+            11.00944995880127,
+            48.002620697021484,
+            0.20000004768371582
+          ],
+          [
+            11.009900093078613,
+            48.002838134765625,
+            0.20000004768371582
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.30",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-030",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-30",
+                  "b-30"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.30",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.31",
+                "toConnectedEnd": "START",
+                "transitionNumber": 6
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 13,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.3
+        }
+      },
+      "recordId": 30,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 28303834480665,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.31",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.009200096130371,
+              48.002498626708984,
+              0.20000000298023224
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.010499954223633,
+                48.00239944458008,
+                0.2999999523162842
+              ],
+              [
+                11.010849952697754,
+                48.00257873535156,
+                0.2999999523162842
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.010899543762207,
+                48.00259780883789,
+                0.2999999523162842
+              ],
+              [
+                11.0110502243042,
+                48.00271987915039,
+                0.5
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.31",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-031",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-31",
+                  "b-31"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.33",
+                "geometryName": "delta"
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 14,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.4
+        }
+      },
+      "recordId": 31,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.01200008392334,
+              48.00239944458008,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.00239944458008,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.002899169921875,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.002899169921875,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.00239944458008,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.32",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-032",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-32",
+                  "b-32"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 15,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.5
+        }
+      },
+      "recordId": 32,
+      "relations": [
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.34"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.013500213623047,
+                48.00239944458008,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00254821777344,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.0029182434082,
+                0.10000002384185791
+              ],
+              [
+                11.013500213623047,
+                48.00239944458008,
+                0.10000002384185791
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.01395034790039,
+                48.00254821777344,
+                0.10000002384185791
+              ],
+              [
+                11.014120101928711,
+                48.00294876098633,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.0029182434082,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00254821777344,
+                0.10000002384185791
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.33",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-033",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-33",
+                  "b-33"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.01360034942627,
+                  48.002498626708984,
+                  0.10000000149011612
+                ]
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 16,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.6
+        }
+      },
+      "recordId": 33,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.34",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.013700485229492,
+              48.002498626708984,
+              0.10000000149011612
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.015000343322754,
+            48.00239944458008,
+            0.20000004768371582
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.015000343322754,
+              48.00239944458008,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00239944458008,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.0029494445771,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.0029494445771,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00239944458008,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.34",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-034",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-34",
+                  "b-34"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.015000343322754,
+                      48.00239944458008,
+                      0.20000004768371582
+                    ],
+                    [
+                      11.015240669250488,
+                      48.00257873535156,
+                      0.20000004768371582
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 0,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.7
+        }
+      },
+      "recordId": 34,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 39749922324512,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.016500473022461,
+            48.00239944458008,
+            0.2999999523162842
+          ],
+          [
+            11.016780853271484,
+            48.00251007080078,
+            0.6000000238418579
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.35",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-035",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-35",
+                  "b-35"
+                ]
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 1,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.8
+        }
+      },
+      "recordId": 35,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 6305011990555,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.0,
+            48.00360107421875,
+            0.0
+          ],
+          [
+            11.000450134277344,
+            48.003822326660156,
+            0.0
+          ],
+          [
+            11.000900268554688,
+            48.0040397644043,
+            0.0
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.36",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-036",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-36",
+                  "b-36"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.36",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.37",
+                "toConnectedEnd": "START",
+                "transitionNumber": 7
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 2,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.0
+        }
+      },
+      "recordId": 36,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 28638841929759,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.37",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.000200271606445,
+              48.003700256347656,
+              0.0
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.001500129699707,
+                48.00360107421875,
+                0.10000002384185791
+              ],
+              [
+                11.001850128173828,
+                48.003780364990234,
+                0.10000002384185791
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.001899719238281,
+                48.00379943847656,
+                0.10000002384185791
+              ],
+              [
+                11.002050399780273,
+                48.00392150878906,
+                0.2999999523162842
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.37",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-037",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-37",
+                  "b-37"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.39",
+                "geometryName": "delta"
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 3,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.1
+        }
+      },
+      "recordId": 37,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.003000259399414,
+              48.00360107421875,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.00360107421875,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.00410079956055,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.00410079956055,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.00360107421875,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.38",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-038",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-38",
+                  "b-38"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 4,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.2
+        }
+      },
+      "recordId": 38,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.004500389099121,
+                48.00360107421875,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00374984741211,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.004119873046875,
+                0.2999999523162842
+              ],
+              [
+                11.004500389099121,
+                48.00360107421875,
+                0.2999999523162842
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.004950523376465,
+                48.00374984741211,
+                0.2999999523162842
+              ],
+              [
+                11.005120277404785,
+                48.004150390625,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.004119873046875,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00374984741211,
+                0.2999999523162842
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.39",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-039",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-39",
+                  "b-39"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.004600524902344,
+                  48.003700256347656,
+                  0.30000001192092896
+                ]
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 5,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.3
+        }
+      },
+      "recordId": 39,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.40",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.004700660705566,
+              48.003700256347656,
+              0.30000001192092896
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 40029095198746,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.005999565124512,
+            48.00360107421875,
+            0.0
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.005999565124512,
+              48.00360107421875,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00360107421875,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00415107421577,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00415107421577,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00360107421875,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.40",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-040",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-40",
+                  "b-40"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.005999565124512,
+                      48.00360107421875,
+                      0.0
+                    ],
+                    [
+                      11.006239891052246,
+                      48.003780364990234,
+                      0.0
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 6,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.4
+        }
+      },
+      "recordId": 40,
+      "relations": [
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.42"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.007499694824219,
+            48.00360107421875,
+            0.10000002384185791
+          ],
+          [
+            11.007780075073242,
+            48.00371170043945,
+            0.3999999761581421
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.41",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-041",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-41",
+                  "b-41"
+                ]
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 7,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.5
+        }
+      },
+      "recordId": 41,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 6640019439649,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.008999824523926,
+            48.00360107421875,
+            0.20000004768371582
+          ],
+          [
+            11.00944995880127,
+            48.003822326660156,
+            0.20000004768371582
+          ],
+          [
+            11.009900093078613,
+            48.0040397644043,
+            0.20000004768371582
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.42",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-042",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-42",
+                  "b-42"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.42",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.43",
+                "toConnectedEnd": "START",
+                "transitionNumber": 8
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 8,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.6
+        }
+      },
+      "recordId": 42,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 28973849378842,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.43",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.009200096130371,
+              48.003700256347656,
+              0.20000000298023224
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.010499954223633,
+                48.00360107421875,
+                0.2999999523162842
+              ],
+              [
+                11.010849952697754,
+                48.003780364990234,
+                0.2999999523162842
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.010899543762207,
+                48.00379943847656,
+                0.2999999523162842
+              ],
+              [
+                11.0110502243042,
+                48.00392150878906,
+                0.5
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.43",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-043",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-43",
+                  "b-43"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.45",
+                "geometryName": "delta"
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 9,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.7
+        }
+      },
+      "recordId": 43,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.01200008392334,
+              48.00360107421875,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.00360107421875,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.00410079956055,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.00410079956055,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.00360107421875,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.44",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-044",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-44",
+                  "b-44"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 10,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.8
+        }
+      },
+      "recordId": 44,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 40308268072991,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.013500213623047,
+                48.00360107421875,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00374984741211,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.004119873046875,
+                0.10000002384185791
+              ],
+              [
+                11.013500213623047,
+                48.00360107421875,
+                0.10000002384185791
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.01395034790039,
+                48.00374984741211,
+                0.10000002384185791
+              ],
+              [
+                11.014120101928711,
+                48.004150390625,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.004119873046875,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00374984741211,
+                0.10000002384185791
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.45",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-045",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-45",
+                  "b-45"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.01360034942627,
+                  48.003700256347656,
+                  0.10000000149011612
+                ]
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 11,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.0
+        }
+      },
+      "recordId": 45,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.46",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.013700485229492,
+              48.003700256347656,
+              0.10000000149011612
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.015000343322754,
+            48.00360107421875,
+            0.20000004768371582
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.015000343322754,
+              48.00360107421875,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00360107421875,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00415107421577,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00415107421577,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00360107421875,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.46",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-046",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-46",
+                  "b-46"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.015000343322754,
+                      48.00360107421875,
+                      0.20000004768371582
+                    ],
+                    [
+                      11.015240669250488,
+                      48.003780364990234,
+                      0.20000004768371582
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 12,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.1
+        }
+      },
+      "recordId": 46,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.016500473022461,
+            48.00360107421875,
+            0.2999999523162842
+          ],
+          [
+            11.016780853271484,
+            48.00371170043945,
+            0.6000000238418579
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.47",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-047",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-47",
+                  "b-47"
+                ]
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 13,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.2
+        }
+      },
+      "recordId": 47,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 6975026888732,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.0,
+            48.004798889160156,
+            0.0
+          ],
+          [
+            11.000450134277344,
+            48.00502014160156,
+            0.0
+          ],
+          [
+            11.000900268554688,
+            48.0052375793457,
+            0.0
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.48",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-048",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-48",
+                  "b-48"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.48",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.49",
+                "toConnectedEnd": "START",
+                "transitionNumber": 9
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 14,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.3
+        }
+      },
+      "recordId": 48,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 29308856827936,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.49",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.000200271606445,
+              48.00489807128906,
+              0.0
+            ]
+          }
+        },
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.50"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.001500129699707,
+                48.004798889160156,
+                0.10000002384185791
+              ],
+              [
+                11.001850128173828,
+                48.00497817993164,
+                0.10000002384185791
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.001899719238281,
+                48.00499725341797,
+                0.10000002384185791
+              ],
+              [
+                11.002050399780273,
+                48.00511932373047,
+                0.2999999523162842
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.49",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-049",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-49",
+                  "b-49"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.51",
+                "geometryName": "delta"
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 15,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.4
+        }
+      },
+      "recordId": 49,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 40587440947225,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.003000259399414,
+              48.004798889160156,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.004798889160156,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.00529861450195,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.00529861450195,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.004798889160156,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.50",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-050",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-50",
+                  "b-50"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 16,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.5
+        }
+      },
+      "recordId": 50,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.004500389099121,
+                48.004798889160156,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.004947662353516,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.00531768798828,
+                0.2999999523162842
+              ],
+              [
+                11.004500389099121,
+                48.004798889160156,
+                0.2999999523162842
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.004950523376465,
+                48.004947662353516,
+                0.2999999523162842
+              ],
+              [
+                11.005120277404785,
+                48.005348205566406,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.00531768798828,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.004947662353516,
+                0.2999999523162842
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.51",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-051",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-51",
+                  "b-51"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.004600524902344,
+                  48.00489807128906,
+                  0.30000001192092896
+                ]
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 0,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.6
+        }
+      },
+      "recordId": 51,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.52",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.004700660705566,
+              48.00489807128906,
+              0.30000001192092896
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.005999565124512,
+            48.004798889160156,
+            0.0
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.005999565124512,
+              48.004798889160156,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.004798889160156,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.005348889157176,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.005348889157176,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.004798889160156,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.52",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-052",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-52",
+                  "b-52"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.005999565124512,
+                      48.004798889160156,
+                      0.0
+                    ],
+                    [
+                      11.006239891052246,
+                      48.00497817993164,
+                      0.0
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 1,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.7
+        }
+      },
+      "recordId": 52,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.007499694824219,
+            48.004798889160156,
+            0.10000002384185791
+          ],
+          [
+            11.007780075073242,
+            48.00490951538086,
+            0.3999999761581421
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.53",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-053",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-53",
+                  "b-53"
+                ]
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 2,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.8
+        }
+      },
+      "recordId": 53,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 7310034337826,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.008999824523926,
+            48.004798889160156,
+            0.20000004768371582
+          ],
+          [
+            11.00944995880127,
+            48.00502014160156,
+            0.20000004768371582
+          ],
+          [
+            11.009900093078613,
+            48.0052375793457,
+            0.20000004768371582
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.54",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-054",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-54",
+                  "b-54"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.54",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.55",
+                "toConnectedEnd": "START",
+                "transitionNumber": 10
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 3,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.0
+        }
+      },
+      "recordId": 54,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 29643864277019,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.55",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.009200096130371,
+              48.00489807128906,
+              0.20000000298023224
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 40866613821470,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.010499954223633,
+                48.004798889160156,
+                0.2999999523162842
+              ],
+              [
+                11.010849952697754,
+                48.00497817993164,
+                0.2999999523162842
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.010899543762207,
+                48.00499725341797,
+                0.2999999523162842
+              ],
+              [
+                11.0110502243042,
+                48.00511932373047,
+                0.5
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.55",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-055",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-55",
+                  "b-55"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.57",
+                "geometryName": "delta"
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 4,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.1
+        }
+      },
+      "recordId": 55,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.01200008392334,
+              48.004798889160156,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.004798889160156,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.00529861450195,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.00529861450195,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.004798889160156,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.56",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-056",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-56",
+                  "b-56"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 5,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.2
+        }
+      },
+      "recordId": 56,
+      "relations": [
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.58"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.013500213623047,
+                48.004798889160156,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.004947662353516,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.00531768798828,
+                0.10000002384185791
+              ],
+              [
+                11.013500213623047,
+                48.004798889160156,
+                0.10000002384185791
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.01395034790039,
+                48.004947662353516,
+                0.10000002384185791
+              ],
+              [
+                11.014120101928711,
+                48.005348205566406,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.00531768798828,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.004947662353516,
+                0.10000002384185791
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.57",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-057",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-57",
+                  "b-57"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.01360034942627,
+                  48.00489807128906,
+                  0.10000000149011612
+                ]
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 6,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.3
+        }
+      },
+      "recordId": 57,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.58",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.013700485229492,
+              48.00489807128906,
+              0.10000000149011612
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.015000343322754,
+            48.004798889160156,
+            0.20000004768371582
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.015000343322754,
+              48.004798889160156,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.004798889160156,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.005348889157176,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.005348889157176,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.004798889160156,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.58",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-058",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-58",
+                  "b-58"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.015000343322754,
+                      48.004798889160156,
+                      0.20000004768371582
+                    ],
+                    [
+                      11.015240669250488,
+                      48.00497817993164,
+                      0.20000004768371582
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 7,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.4
+        }
+      },
+      "recordId": 58,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.016500473022461,
+            48.004798889160156,
+            0.2999999523162842
+          ],
+          [
+            11.016780853271484,
+            48.00490951538086,
+            0.6000000238418579
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.59",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-059",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-59",
+                  "b-59"
+                ]
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 8,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.5
+        }
+      },
+      "recordId": 59,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 41145786695704,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 7645041786909,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.0,
+            48.00600051879883,
+            0.0
+          ],
+          [
+            11.000450134277344,
+            48.006221771240234,
+            0.0
+          ],
+          [
+            11.000900268554688,
+            48.006439208984375,
+            0.0
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.60",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-060",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-60",
+                  "b-60"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.60",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.61",
+                "toConnectedEnd": "START",
+                "transitionNumber": 11
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 9,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.6
+        }
+      },
+      "recordId": 60,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 29978871726113,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.61",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.000200271606445,
+              48.006099700927734,
+              0.0
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.001500129699707,
+                48.00600051879883,
+                0.10000002384185791
+              ],
+              [
+                11.001850128173828,
+                48.00617980957031,
+                0.10000002384185791
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.001899719238281,
+                48.00619888305664,
+                0.10000002384185791
+              ],
+              [
+                11.002050399780273,
+                48.00632095336914,
+                0.2999999523162842
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.61",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-061",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-61",
+                  "b-61"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.63",
+                "geometryName": "delta"
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 10,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.7
+        }
+      },
+      "recordId": 61,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.003000259399414,
+              48.00600051879883,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.00600051879883,
+              0.20000004768371582
+            ],
+            [
+              11.003650665283203,
+              48.006500244140625,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.006500244140625,
+              0.20000004768371582
+            ],
+            [
+              11.003000259399414,
+              48.00600051879883,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.62",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-062",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-62",
+                  "b-62"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 11,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.8
+        }
+      },
+      "recordId": 62,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.004500389099121,
+                48.00600051879883,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00614929199219,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.00651931762695,
+                0.2999999523162842
+              ],
+              [
+                11.004500389099121,
+                48.00600051879883,
+                0.2999999523162842
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.004950523376465,
+                48.00614929199219,
+                0.2999999523162842
+              ],
+              [
+                11.005120277404785,
+                48.00654983520508,
+                0.2999999523162842
+              ],
+              [
+                11.004650115966797,
+                48.00651931762695,
+                0.2999999523162842
+              ],
+              [
+                11.004950523376465,
+                48.00614929199219,
+                0.2999999523162842
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.63",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-063",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-63",
+                  "b-63"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.004600524902344,
+                  48.006099700927734,
+                  0.30000001192092896
+                ]
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-0",
+        "rank": 12,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.0
+        }
+      },
+      "recordId": 63,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.64",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.004700660705566,
+              48.006099700927734,
+              0.30000001192092896
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.005999565124512,
+            48.00600051879883,
+            0.0
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.005999565124512,
+              48.00600051879883,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00600051879883,
+              0.0
+            ],
+            [
+              11.006699565099552,
+              48.00655051879585,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00655051879585,
+              0.0
+            ],
+            [
+              11.005999565124512,
+              48.00600051879883,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.64",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-064",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-64",
+                  "b-64"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.005999565124512,
+                      48.00600051879883,
+                      0.0
+                    ],
+                    [
+                      11.006239891052246,
+                      48.00617980957031,
+                      0.0
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 13,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.1
+        }
+      },
+      "recordId": 64,
+      "relations": [
+        {
+          "name": "shadow",
+          "sourceValidity": {
+            "direction": "COMPLETE"
+          },
+          "target": "Entry.444000777123.group%2E00%25.66"
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 41424959569949,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.007499694824219,
+            48.00600051879883,
+            0.10000002384185791
+          ],
+          [
+            11.007780075073242,
+            48.00611114501953,
+            0.3999999761581421
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.65",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-065",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-65",
+                  "b-65"
+                ]
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-2",
+        "rank": 14,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.2
+        }
+      },
+      "recordId": 65,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "_sourceData": [
+          {
+            "address": 7980049235992,
+            "layerId": "src-set",
+            "qualifier": "geom-main"
+          }
+        ],
+        "coordinates": [
+          [
+            11.008999824523926,
+            48.00600051879883,
+            0.20000004768371582
+          ],
+          [
+            11.00944995880127,
+            48.006221771240234,
+            0.20000004768371582
+          ],
+          [
+            11.009900093078613,
+            48.006439208984375,
+            0.20000004768371582
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "LineString"
+      },
+      "id": "Entry.444000777123.group%2E00%25.66",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-066",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-66",
+                  "b-66"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "from": "Entry.444000777123.group%2E00%25.66",
+                "fromConnectedEnd": "END",
+                "to": "Entry.444000777123.group%2E00%25.67",
+                "toConnectedEnd": "START",
+                "transitionNumber": 12
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-3",
+        "rank": 15,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.3
+        }
+      },
+      "recordId": 66,
+      "relations": [
+        {
+          "_sourceData": [
+            {
+              "address": 30313879175196,
+              "layerId": "src-set",
+              "qualifier": "rel-main"
+            }
+          ],
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.67",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.009200096130371,
+              48.006099700927734,
+              0.20000000298023224
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "geometries": [
+          {
+            "coordinates": [
+              [
+                11.010499954223633,
+                48.00600051879883,
+                0.2999999523162842
+              ],
+              [
+                11.010849952697754,
+                48.00617980957031,
+                0.2999999523162842
+              ]
+            ],
+            "type": "LineString"
+          },
+          {
+            "coordinates": [
+              [
+                11.010899543762207,
+                48.00619888305664,
+                0.2999999523162842
+              ],
+              [
+                11.0110502243042,
+                48.00632095336914,
+                0.5
+              ]
+            ],
+            "type": "MultiPoint"
+          }
+        ],
+        "type": "GeometryCollection"
+      },
+      "id": "Entry.444000777123.group%2E00%25.67",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-067",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-67",
+                  "b-67"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "featureId": "Entry.444000777123.group%2E00%25.69",
+                "geometryName": "delta"
+              },
+              "value": "token-2"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-4",
+        "rank": 16,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.4
+        }
+      },
+      "recordId": 67,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              11.01200008392334,
+              48.00600051879883,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.00600051879883,
+              0.0
+            ],
+            [
+              11.012650489807129,
+              48.006500244140625,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.006500244140625,
+              0.0
+            ],
+            [
+              11.01200008392334,
+              48.00600051879883,
+              0.0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.68",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-068",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-68",
+                  "b-68"
+                ]
+              },
+              "validity": {
+                "direction": "POSITIVE",
+                "end": 0.8,
+                "geometryName": "delta",
+                "offsetType": "RelativeLengthOffset",
+                "start": 0.1
+              },
+              "value": "token-3"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": "note-5",
+        "rank": 0,
+        "summary": {
+          "kind": "kind-0",
+          "score": 0.5
+        }
+      },
+      "recordId": 68,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            [
+              [
+                11.013500213623047,
+                48.00600051879883,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00614929199219,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.00651931762695,
+                0.10000002384185791
+              ],
+              [
+                11.013500213623047,
+                48.00600051879883,
+                0.10000002384185791
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                11.01395034790039,
+                48.00614929199219,
+                0.10000002384185791
+              ],
+              [
+                11.014120101928711,
+                48.00654983520508,
+                0.10000002384185791
+              ],
+              [
+                11.013649940490723,
+                48.00651931762695,
+                0.10000002384185791
+              ],
+              [
+                11.01395034790039,
+                48.00614929199219,
+                0.10000002384185791
+              ]
+            ]
+          ]
+        ],
+        "geometryName": "delta",
+        "type": "MultiPolygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.69",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-069",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-69",
+                  "b-69"
+                ]
+              },
+              "validity": {
+                "direction": "NEGATIVE",
+                "offsetType": "GeoPosOffset",
+                "point": [
+                  11.01360034942627,
+                  48.006099700927734,
+                  0.10000000149011612
+                ]
+              },
+              "value": "token-4"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": true,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-6",
+        "rank": 1,
+        "summary": {
+          "kind": "kind-1",
+          "score": 0.6
+        }
+      },
+      "recordId": 69,
+      "relations": [
+        {
+          "name": "peer",
+          "sourceValidity": {
+            "direction": "POSITIVE",
+            "end": 0.7,
+            "geometryName": "delta",
+            "offsetType": "RelativeLengthOffset",
+            "start": 0.2
+          },
+          "target": "Entry.444000777123.group%2E00%25.70",
+          "targetValidity": {
+            "direction": "NEGATIVE",
+            "offsetType": "GeoPosOffset",
+            "point": [
+              11.013700485229492,
+              48.006099700927734,
+              0.10000000149011612
+            ]
+          }
+        }
+      ],
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "_sourceData": [
+        {
+          "address": 41704132444194,
+          "layerId": "src-set",
+          "qualifier": "feature-main"
+        }
+      ],
+      "bucketId": "group.00%",
+      "geometry": {
+        "aabb": {
+          "origin": [
+            11.015000343322754,
+            48.00600051879883,
+            0.20000004768371582
+          ],
+          "size": [
+            0.000699999975040555,
+            0.0005499999970197678,
+            0.20000000298023224
+          ]
+        },
+        "coordinates": [
+          [
+            [
+              11.015000343322754,
+              48.00600051879883,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00600051879883,
+              0.20000004768371582
+            ],
+            [
+              11.015700343297794,
+              48.00655051879585,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00655051879585,
+              0.20000004768371582
+            ],
+            [
+              11.015000343322754,
+              48.00600051879883,
+              0.20000004768371582
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "Entry.444000777123.group%2E00%25.70",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": true,
+        "label": "item-070",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-70",
+                  "b-70"
+                ]
+              },
+              "validity": {
+                "direction": "COMPLETE",
+                "geometry": {
+                  "coordinates": [
+                    [
+                      11.015000343322754,
+                      48.00600051879883,
+                      0.20000004768371582
+                    ],
+                    [
+                      11.015240669250488,
+                      48.00617980957031,
+                      0.20000004768371582
+                    ]
+                  ],
+                  "geometryName": "delta",
+                  "type": "LineString"
+                }
+              },
+              "value": "token-0"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "warm"
+            }
+          }
+        },
+        "notes": null,
+        "rank": 2,
+        "summary": {
+          "kind": "kind-2",
+          "score": 0.7
+        }
+      },
+      "recordId": 70,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    },
+    {
+      "bucketId": "group.00%",
+      "geometry": {
+        "coordinates": [
+          [
+            11.016500473022461,
+            48.00600051879883,
+            0.2999999523162842
+          ],
+          [
+            11.016780853271484,
+            48.00611114501953,
+            0.6000000238418579
+          ]
+        ],
+        "type": "MultiPoint"
+      },
+      "id": "Entry.444000777123.group%2E00%25.71",
+      "layerId": "CollectionLayer",
+      "mapId": "DatasetAlpha",
+      "properties": {
+        "active": false,
+        "label": "item-071",
+        "layer": {
+          "bundle": {
+            "slotMain": {
+              "meta": {
+                "_multimap": true,
+                "blob": [
+                  {
+                    "_bytes": true,
+                    "hex": "4142",
+                    "number": 16706
+                  }
+                ],
+                "tag": [
+                  "a-71",
+                  "b-71"
+                ]
+              },
+              "value": "token-1"
+            }
+          },
+          "status": {
+            "slotAux": {
+              "flag": false,
+              "state": "cold"
+            }
+          }
+        },
+        "notes": "note-1",
+        "rank": 3,
+        "summary": {
+          "kind": "kind-3",
+          "score": 0.8
+        }
+      },
+      "recordId": 71,
+      "tileId": 444000777123,
+      "type": "Feature",
+      "typeId": "Entry"
+    }
+  ],
+  "geometryAnchor": [
+    11.125,
+    48.125,
+    2.0
+  ],
+  "mapId": "DatasetAlpha",
+  "mapgetLayerId": "CollectionLayer",
+  "mapgetTileId": 444000777123,
+  "timestamp": 1717245296123456,
+  "ttl": 60000,
+  "type": "FeatureCollection"
+}

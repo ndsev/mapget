@@ -106,6 +106,9 @@ public:
     /** Get the persisted logical stage of this geometry, if any. */
     [[nodiscard]] std::optional<uint32_t> stage() const;
 
+    /** Persist an explicit geometry stage override used by JSON import/export. */
+    void setStage(std::optional<uint32_t> geometryStage);
+
     /** Iterate over all Points in the geometry.
      * @param callback Function which is called for each contained point.
      *  Must return true to continue iteration, false to abort iteration.

@@ -694,6 +694,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
                 value->value());
         }
     }
+    // Validation runs against the full logical feature id, even though only the
+    // non-prefix suffix is materialized into the compact feature storage.
     fullFeatureIdParts.insert(fullFeatureIdParts.end(), featureIdParts.begin(), featureIdParts.end());
 
     if (!layerInfo_->validFeatureId(typeId, fullFeatureIdParts, true)) {
@@ -703,6 +705,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
             idPartsToString(fullFeatureIdParts)));
     }
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
+    // Stored feature ids omit the common tile prefix to save space, so we first
+    // determine where the feature-local suffix starts within the composition.
     auto const localStartIndex = prefixFeatureIdParts.empty()
         ? 0U
         : *IdPart::compositionMatchEndIndex(
@@ -755,6 +759,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
         auto const& expectedFeatureId = expectedFeatureIds_[featureIndex];
         auto const actualFeatureId = result.id()->toString();
         if (actualFeatureId != expectedFeatureId) {
+            // Overlay validation is sequence-based on purpose so stage imports
+            // fail immediately when converters reorder or drop features.
             raiseFmt(
                 "Feature sequence mismatch at index {}: expected {}, got {}.",
                 featureIndex,
@@ -780,7 +786,8 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
 model_ptr<FeatureId>
 TileFeatureLayer::newFeatureId(
     const std::string_view& typeId,
-    const KeyValueViewPairs& featureIdParts)
+    const KeyValueViewPairs& featureIdParts,
+    std::optional<std::string_view> externalMapId)
 {
     if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
         raise(fmt::format(
@@ -797,11 +804,21 @@ TileFeatureLayer::newFeatureId(
         *layerInfo_->matchingFeatureIdCompositionIndex(typeId, featureIdParts, false);
     auto const& composition =
         layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[idCompositionIndex];
+    simfil::StringId externalMapIdStringId = simfil::StringPool::Empty;
+    if (externalMapId && *externalMapId != mapId()) {
+        auto storedMapId = strings()->emplace(*externalMapId);
+        if (!storedMapId) {
+            raise(storedMapId.error().message);
+        }
+        // Local references omit the redundant map payload so legacy JSON stays compact.
+        externalMapIdStringId = *storedMapId;
+    }
     impl_->featureIds_.emplace_back(FeatureId::Data{
         false,
         idCompositionIndex,
         *typeIdStringId,
-        idPartValuesToArrayIndex(*this, composition, featureIdParts)
+        idPartValuesToArrayIndex(*this, composition, featureIdParts),
+        externalMapIdStringId,
     });
     return FeatureId(
         impl_->featureIds_.back(),
@@ -1165,7 +1182,8 @@ model_ptr<FeatureId> resolveInternal(tag<FeatureId>, TileFeatureLayer const& mod
                 true,
                 0,
                 featureData.typeIdAndLod_.typeId_,
-                featureData.idPartValues_},
+                featureData.idPartValues_,
+                simfil::StringPool::Empty},
             model.shared_from_this(),
             node.addr(),
             model.mpKey_);
@@ -1628,28 +1646,9 @@ nlohmann::json TileFeatureLayer::toJson() const
         result["glbAttachment"] = impl_->glbAttachment_->toJsonMetadata();
     }
 
-    // Add ID prefix if set
-    if (impl_->featureIdPrefix_) {
-        auto prefix = const_cast<TileFeatureLayer*>(this)->getIdPrefix();
-        if (prefix)
-            result["idPrefix"] = prefix->toJson();
-    }
-
-    // Add timestamp as ISO 8601 string
-    {
-        auto time_t_val = std::chrono::system_clock::to_time_t(timestamp_);
-        auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
-            timestamp_.time_since_epoch()).count() % 1000000;
-        std::tm tm_val{};
-#ifdef _WIN32
-        gmtime_s(&tm_val, &time_t_val);
-#else
-        gmtime_r(&time_t_val, &tm_val);
-#endif
-        char buf[32];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm_val);
-        result["timestamp"] = fmt::format("{}.{:06d}Z", buf, microseconds);
-    }
+    // Preserve the binary timestamp representation exactly in strict JSON.
+    result["timestamp"] = std::chrono::duration_cast<std::chrono::microseconds>(
+        timestamp_.time_since_epoch()).count();
 
     // Add TTL if set (in milliseconds)
     if (ttl_)
@@ -2140,6 +2139,14 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
             else
                 return tl::unexpected<simfil::Error>(res.error());
         }
+        if (fid.extMapId_ != simfil::StringPool::Empty) {
+            if (auto resolvedName = oldDict->resolve(fid.extMapId_)) {
+                if (auto res = newDict->emplace(*resolvedName))
+                    fid.extMapId_ = *res;
+                else
+                    return tl::unexpected<simfil::Error>(res.error());
+            }
+        }
     }
     for (auto& feature : impl_->features_) {
         if (auto resolvedName = oldDict->resolve(feature.typeIdAndLod_.typeId_)) {
@@ -2293,13 +2300,19 @@ ModelNode::Ptr TileFeatureLayer::clone(
     }
     case ColumnId::FeatureIds: {
         auto resolved = otherLayer->resolve<FeatureId>(*otherNode);
-        auto newNode = newFeatureId(resolved->typeId(), resolved->keyValuePairs());
+        auto newNode = newFeatureId(
+            resolved->typeId(),
+            resolved->keyValuePairs(),
+            resolved->externalMapId());
         newCacheNode = newNode;
         break;
     }
     case ColumnId::ExternalFeatureIds: {
         auto resolved = otherLayer->resolve<FeatureId>(*otherNode);
-        auto newNode = newFeatureId(resolved->typeId(), resolved->keyValuePairs());
+        auto newNode = newFeatureId(
+            resolved->typeId(),
+            resolved->keyValuePairs(),
+            resolved->externalMapId());
         newCacheNode = newNode;
         break;
     }
@@ -2625,58 +2638,11 @@ void TileFeatureLayer::setGeometrySourceDataReferences(
 
 model_ptr<Feature> TileFeatureLayer::find(const std::string_view& featureId) const
 {
-    using namespace std::ranges;
-    auto tokensRange = featureId | views::split('.');
-    auto tokens = std::vector<decltype(*tokensRange.begin())>(tokensRange.begin(), tokensRange.end());
-
-    if (tokens.empty()) {
+    ParsedFeatureId parsed;
+    if (!parseFeatureIdString(featureId, *layerInfo_, parsed)) {
         return {};
     }
-    auto tokenAt = [&tokens](auto&& i) {
-        return std::string_view(&*tokens[i].begin(), distance(tokens[i]));
-    };
-
-    auto typeInfo = layerInfo_->getTypeInfo(tokenAt(0), false);
-    if (!typeInfo || typeInfo->uniqueIdCompositions_.empty())
-        return {};
-
-    // Convert the part strings to key-value pairs using the first (primary) ID composition.
-    KeyValuePairs kvPairs;
-    for (auto withOptionalParts : {true, false}) {
-        size_t tokenIndex = 1;
-        bool error = false;
-        kvPairs.clear();
-
-        for (const auto& part : typeInfo->uniqueIdCompositions_[0]) {
-            if (part.isOptional_ && !withOptionalParts)
-                continue;
-
-            if (tokenIndex >= tokens.size()) {
-                error = true;
-                break;
-            }
-
-            std::variant<int64_t, std::string> parsedValue = std::string(tokenAt(tokenIndex++));
-            if (!part.validate(parsedValue)) {
-                error = true;
-                break;
-            }
-
-            kvPairs.emplace_back(part.idPartLabel_, parsedValue);
-        }
-
-        if (tokenIndex < tokens.size()) {
-            error = true;
-        }
-
-        if (error) {
-            if (!withOptionalParts)
-                return {};
-            // Go on to try without optional parts.
-        }
-    }
-
-    return find(typeInfo->name_, kvPairs);
+    return find(parsed.typeId_, parsed.keyValuePairs_);
 }
 
 }
