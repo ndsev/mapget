@@ -1,13 +1,11 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <sstream>
 #include <chrono>
-#include <algorithm>
 #include <nlohmann/json-schema.hpp>
 #include <fmt/format.h>
 
@@ -45,27 +43,6 @@ nlohmann::json enabledSchema()
         {"title", "Enabled"},
         {"description", "If false, this datasource entry is skipped."}
     };
-}
-
-bool isYamlNodeMeaningful(YAML::Node const& node)
-{
-    if (!node || node.IsNull()) {
-        return false;
-    }
-    if (node.IsScalar()) {
-        auto const scalar = node.Scalar();
-        if (scalar.empty()) {
-            return false;
-        }
-        return std::any_of(
-            scalar.begin(),
-            scalar.end(),
-            [](unsigned char c) { return !std::isspace(c); });
-    }
-    if (node.IsSequence() || node.IsMap()) {
-        return node.size() > 0;
-    }
-    return true;
 }
 
 } // namespace
@@ -535,12 +512,6 @@ nlohmann::json DataSourceConfigService::getPublicConfigSections(YAML::Node const
         }
 
         try {
-            auto sectionNode = fullConfig[name];
-            if (!isYamlNodeMeaningful(sectionNode)) {
-                result[name] = std::move(section);
-                continue;
-            }
-
             auto serialized = serializer(fullConfig);
             if (serialized.is_object()) {
                 section = std::move(serialized);
