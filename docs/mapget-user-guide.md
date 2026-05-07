@@ -9,7 +9,7 @@ Most readers will only need the setup and API chapters. The model and configurat
 The guide is split into several focused documents:
 
 - [**Setup Guide**](mapget-setup.md) explains how to install mapget via `pip`, how to build the native executable from source, and how to start a server or use the built‑in `fetch` client for quick experiments.
-- [**Configuration Guide**](mapget-config.md) documents the YAML configuration file used with `--config`, the supported datasource types (`DataSourceHost`, `DataSourceProcess`, `GridDataSource`, `GeoJsonFolder`, `GeoJsonEndpoint`) and the optional `http-settings` section used by tools and UIs.
+- [**Configuration Guide**](mapget-config.md) documents the YAML configuration file used with `--config`, the supported datasource types (`DataSourceHost`, `DataSourceProcess`, `GridDataSource`, `GeoJsonFolder`, `GeoJsonEndpoint`), generic datasource fields such as `enabled`, and optional UI-facing sections such as `http-settings`.
 - [**HTTP / WebSocket API Guide**](mapget-api.md) describes the endpoints exposed by `mapget serve`, including `/sources`, `/tiles`, `/tiles/next`, `/status`, `/status-data`, `/locate` and `/config`, along with their request and response formats and example calls.
 - [**Caching Guide**](mapget-cache.md) covers the available cache modes (`memory`, `persistent`, `none`), explains how to configure cache size and location, and shows how to inspect cache statistics via the status endpoint.
 - [**Simfil Language Extensions**](mapget-simfil-extensions.md) introduces the feature model, tiling scheme, geometry and validity concepts, and the binary tile stream format. This chapter is especially relevant if you are writing datasources or low‑level clients.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -89,5 +90,31 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+/**
+ * Ensure that a static filesystem mount is available to the running HTTP server.
+ * This is intended for embedding applications that discover additional static
+ * assets after the server has already started. The mount is process-global
+ * because Drogon exposes a process-global application instance.
+ *
+ * @param urlPrefix URL path prefix, e.g. `/assets`.
+ * @param filesystemRoot Directory to serve under the prefix.
+ * @return true when the mount exists or was added successfully.
+ */
+bool ensureStaticMount(
+    std::string const& urlPrefix,
+    std::filesystem::path const& filesystemRoot);
+
+/**
+ * Ensure a static mount using the same `[<url-scope>:]<filesystem-path>` syntax
+ * as HttpServer::mountFileSystem().
+ */
+bool ensureStaticMount(std::string const& pathFromTo);
+
+/**
+ * Remove a runtime static mount previously added through ensureStaticMount().
+ * Startup mounts added through HttpServer::mountFileSystem() are not affected.
+ */
+bool removeStaticMount(std::string const& urlPrefix);
 
 }  // namespace mapget

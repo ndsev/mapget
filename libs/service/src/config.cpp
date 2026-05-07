@@ -6,7 +6,6 @@
 #include <functional>
 #include <sstream>
 #include <chrono>
-#include <algorithm>
 #include <cctype>
 #include <nlohmann/json-schema.hpp>
 #include <fmt/format.h>
@@ -35,6 +34,15 @@ nlohmann::json authHeaderSchema()
         {"title", "Authorization headers"},
         {"description", "Map of header names to regular expressions. At least one must match for access."},
         {"additionalProperties", {{"type", "string"}}}
+    };
+}
+
+nlohmann::json enabledSchema()
+{
+    return {
+        {"type", "boolean"},
+        {"title", "Enabled"},
+        {"description", "If false, this datasource entry is skipped."}
     };
 }
 
@@ -131,9 +139,20 @@ void DataSourceConfigService::loadConfig()
             std::lock_guard memberAccessLock(memberAccessMutex_);
             validateDataSourceConfig(config);
             currentConfig_.clear();
+            dataSourceConfigStats_ = {};
             if (auto sourcesNode = config["sources"]) {
                 for (auto const& node : sourcesNode)
+                {
+                    ++dataSourceConfigStats_.configured;
+                    const bool enabled = !node["enabled"].IsDefined() || node["enabled"].as<bool>(true);
+                    if (enabled) {
+                        ++dataSourceConfigStats_.enabled;
+                    }
+                    else {
+                        ++dataSourceConfigStats_.disabled;
+                    }
                     currentConfig_.push_back(node);
+                }
             }
             else {
                 log().debug(fmt::format("The config file {} does not have a sources node.", configFilePath_));
@@ -166,6 +185,18 @@ void DataSourceConfigService::loadConfig()
 
 DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descriptor)
 {
+    try {
+        if (auto enabledNode = descriptor["enabled"];
+            enabledNode.IsDefined() && !enabledNode.as<bool>(true))
+        {
+            return nullptr;
+        }
+    }
+    catch (std::exception const& e) {
+        log().error("Invalid datasource `enabled` value: {}", e.what());
+        return nullptr;
+    }
+
     if (auto typeNode = descriptor["type"]) {
         std::lock_guard memberAccessLock(memberAccessMutex_);
         auto type = typeNode.as<std::string>();
@@ -413,6 +444,8 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
             {"enum", nlohmann::json::array({typeName})}
         };
 
+        if (!properties.contains("enabled"))
+            properties["enabled"] = enabledSchema();
         if (!properties.contains("ttl"))
             properties["ttl"] = ttlSchema();
         if (!properties.contains("auth-header"))
@@ -436,6 +469,7 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
         {"type", "object"},
         {"properties", {
             {"type", typeProperty},
+            {"enabled", enabledSchema()},
             {"ttl", ttlSchema()},
             {"auth-header", authHeaderSchema()}
         }},
@@ -489,6 +523,67 @@ std::vector<std::string> DataSourceConfigService::topLevelDataSourceConfigKeys()
             keys.push_back(it.key());
     }
     return keys;
+}
+
+DataSourceConfigStats DataSourceConfigService::getDataSourceConfigStats() const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    return dataSourceConfigStats_;
+}
+
+void DataSourceConfigService::registerPublicConfigSection(
+    std::string name,
+    PublicConfigSectionSerializer serializer)
+{
+    if (name.empty()) {
+        log().warn("Refusing to register public config section with empty name.");
+        return;
+    }
+    if (!serializer) {
+        log().warn("Refusing to register public config section {} with NULL serializer.", name);
+        return;
+    }
+
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    publicConfigSectionSerializers_[std::move(name)] = std::move(serializer);
+}
+
+nlohmann::json DataSourceConfigService::getPublicConfigSections(YAML::Node const& fullConfig) const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    auto result = nlohmann::json::object();
+    for (auto const& [name, serializer] : publicConfigSectionSerializers_) {
+        nlohmann::json section = nlohmann::json::object();
+        if (!serializer) {
+            result[name] = std::move(section);
+            continue;
+        }
+
+        try {
+            auto serialized = serializer(fullConfig);
+            if (serialized.is_object()) {
+                section = std::move(serialized);
+            } else {
+                log().warn(
+                    "Public config section {} serializer returned non-object payload. Replacing with empty object.",
+                    name);
+            }
+        }
+        catch (std::exception const& e) {
+            log().warn(
+                "Public config section {} serializer failed: {}. Replacing with empty object.",
+                name,
+                e.what());
+        }
+        catch (...) {
+            log().warn(
+                "Public config section {} serializer failed with unknown error. Replacing with empty object.",
+                name);
+        }
+
+        result[name] = std::move(section);
+    }
+    return result;
 }
 
 void DataSourceConfigService::validateDataSourceConfig(nlohmann::json json) const
@@ -621,6 +716,8 @@ void DataSourceConfigService::reset() {
     configFilePath_.clear();
     schema_.reset();
     validator_.reset();
+    publicConfigSectionSerializers_.clear();
+    dataSourceConfigStats_ = {};
     end();
 }
 

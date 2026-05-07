@@ -10,6 +10,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -18,6 +19,43 @@
 
 namespace mapget
 {
+namespace
+{
+
+constexpr std::string_view kUnavailableReasonGetConfigDisabled = "getConfigDisabled";
+constexpr std::string_view kUnavailableReasonConfigPathUnset = "configPathUnset";
+constexpr std::string_view kUnavailableReasonConfigFileMissing = "configFileMissing";
+constexpr std::string_view kUnavailableReasonConfigFileOpenFailed = "configFileOpenFailed";
+constexpr std::string_view kUnavailableReasonConfigParseFailed = "configParseFailed";
+constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configValidationFailed";
+
+[[nodiscard]] nlohmann::json buildUnavailableConfigResponse(std::string_view reason)
+{
+    auto& configService = DataSourceConfigService::get();
+    nlohmann::json response = {
+        {"schema", nlohmann::json::object()},
+        {"model", nlohmann::json::object()},
+        {"readOnly", true},
+        {"datasourceConfigUnavailable", true},
+        {"datasourceConfigUnavailableReason", reason},
+    };
+    auto publicSections = configService.getPublicConfigSections(YAML::Node{});
+    for (auto& [name, value] : publicSections.items()) {
+        response[name] = std::move(value);
+    }
+    return response;
+}
+
+[[nodiscard]] drogon::HttpResponsePtr jsonResponse(nlohmann::json payload)
+{
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setStatusCode(drogon::k200OK);
+    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    resp->setBody(payload.dump(2));
+    return resp;
+}
+
+}  // namespace
 
 drogon::HttpResponsePtr HttpService::Impl::openConfigFile(std::ifstream& configFile)
 {
@@ -55,49 +93,67 @@ void HttpService::Impl::handleGetConfigRequest(
     const drogon::HttpRequestPtr& /*req*/,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback)
 {
+    auto& configService = DataSourceConfigService::get();
+
     if (!isGetConfigEndpointEnabled()) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k403Forbidden);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody("The GET /config endpoint is disabled by the server administrator.");
-        callback(resp);
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonGetConfigDisabled)));
         return;
     }
 
-    std::ifstream configFile;
-    if (auto errorResp = openConfigFile(configFile)) {
-        callback(errorResp);
+    auto configFilePath = configService.getConfigFilePath();
+    if (!configFilePath.has_value()) {
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigPathUnset)));
         return;
     }
 
-    nlohmann::json jsonSchema = DataSourceConfigService::get().getDataSourceConfigSchema();
+    std::filesystem::path path = *configFilePath;
+    if (!std::filesystem::exists(path)) {
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigFileMissing)));
+        return;
+    }
+
+    std::ifstream configFile(*configFilePath);
+    if (!configFile) {
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigFileOpenFailed)));
+        return;
+    }
 
     try {
         YAML::Node configYaml = YAML::Load(configFile);
+        configService.validateDataSourceConfig(configYaml);
+
         nlohmann::json jsonConfig;
         std::unordered_map<std::string, std::string> maskedSecretMap;
-        for (const auto& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
+        for (const auto& key : configService.topLevelDataSourceConfigKeys()) {
             if (auto configYamlEntry = configYaml[key])
                 jsonConfig[key] = yamlToJson(configYaml[key], true, &maskedSecretMap);
         }
 
-        nlohmann::json combinedJson;
-        combinedJson["schema"] = jsonSchema;
-        combinedJson["model"] = jsonConfig;
-        combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
+        nlohmann::json combinedJson = {
+            {"schema", configService.getDataSourceConfigSchema()},
+            {"model", std::move(jsonConfig)},
+            {"readOnly", !isPostConfigEndpointEnabled()},
+            {"datasourceConfigUnavailable", false},
+            {"datasourceConfigUnavailableReason", nullptr},
+        };
+        auto publicSections = configService.getPublicConfigSections(configYaml);
+        for (auto& [name, value] : publicSections.items()) {
+            combinedJson[name] = std::move(value);
+        }
 
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k200OK);
-        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-        resp->setBody(combinedJson.dump(2));
-        callback(resp);
+        callback(jsonResponse(std::move(combinedJson)));
+    }
+    catch (const std::invalid_argument& validationError) {
+        log().warn("GET /config validation failed: {}", validationError.what());
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigValidationFailed)));
+    }
+    catch (const YAML::Exception& yamlError) {
+        log().warn("GET /config parse failed: {}", yamlError.what());
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed)));
     }
     catch (const std::exception& e) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k500InternalServerError);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody(std::string("Error processing config file: ") + e.what());
-        callback(resp);
+        log().warn("GET /config failed: {}", e.what());
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed)));
     }
 }
 

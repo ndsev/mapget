@@ -45,6 +45,18 @@ std::vector<std::vector<TileId>> normalizeTileBuckets(std::vector<std::vector<Ti
     return buckets;
 }
 
+bool isDataSourceDescriptorEnabled(YAML::Node const& descriptor)
+{
+    if (!descriptor["enabled"].IsDefined()) {
+        return true;
+    }
+    try {
+        return descriptor["enabled"].as<bool>(true);
+    } catch (...) {
+        return true;
+    }
+}
+
 }  // namespace
 
 LayerTilesRequest::LayerTilesRequest(
@@ -603,6 +615,7 @@ struct Service::Impl : public Service::Controller
     mutable std::shared_mutex dataSourcesMutex_;
     std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
     std::vector<DataSource::Ptr> dataSourcesFromConfig_;
+    size_t dataSourceConstructionFailed_ = 0;
 
     explicit Impl(
         Cache::Ptr cache,
@@ -630,12 +643,18 @@ struct Service::Impl : public Service::Controller
                 // Add datasources present in the new configuration.
                 auto index = 0;
                 std::vector<DataSource::Ptr> configuredDataSources;
+                size_t constructionFailures = 0;
                 for (const auto& configNode : dataSourceConfigNodes) {
+                    if (!isDataSourceDescriptorEnabled(configNode)) {
+                        ++index;
+                        continue;
+                    }
                     if (auto dataSource = DataSourceConfigService::get().makeDataSource(configNode)) {
                         addDataSource(dataSource);
                         configuredDataSources.push_back(dataSource);
                     }
                     else {
+                        ++constructionFailures;
                         log().error(
                             "Failed to make datasource at index {}.", index);
                     }
@@ -644,6 +663,7 @@ struct Service::Impl : public Service::Controller
 
                 std::unique_lock lock(dataSourcesMutex_);
                 dataSourcesFromConfig_ = std::move(configuredDataSources);
+                dataSourceConstructionFailed_ = constructionFailures;
             });
     }
 
@@ -665,6 +685,7 @@ struct Service::Impl : public Service::Controller
             dataSourceInfo_.clear();
             addOnDataSources_.clear();
             dataSourcesFromConfig_.clear();
+            dataSourceConstructionFailed_ = 0;
         }
         // Wake up all workers to check shouldTerminate_.
         jobsAvailable_.notify_all();
@@ -1038,9 +1059,28 @@ LayerRequestContext Service::resolveLayerRequest(
 
     if (layerExists && unauthorized) {
         result.status_ = RequestStatus::Unauthorized;
+        result.noDataSourceReason_ = NoDataSourceReason::None;
     }
     else {
         result.status_ = RequestStatus::NoDataSource;
+        result.noDataSourceReason_ = NoDataSourceReason::MissingMapOrLayer;
+
+        if (impl_->dataSourceInfo_.empty()) {
+            auto const configPath = DataSourceConfigService::get().getConfigFilePath();
+            auto const configStats = DataSourceConfigService::get().getDataSourceConfigStats();
+            if (!configPath.has_value()) {
+                result.noDataSourceReason_ = NoDataSourceReason::NoConfig;
+            }
+            else if (configStats.configured == 0) {
+                result.noDataSourceReason_ = NoDataSourceReason::EmptySources;
+            }
+            else if (configStats.enabled == 0) {
+                result.noDataSourceReason_ = NoDataSourceReason::AllSourcesDisabled;
+            }
+            else if (impl_->dataSourceConstructionFailed_ > 0) {
+                result.noDataSourceReason_ = NoDataSourceReason::DatasourceInitializationFailed;
+            }
+        }
     }
     return result;
 }
@@ -1145,13 +1185,25 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
     }
 
     size_t activeRequests = 0;
+    size_t constructionFailures = 0;
     {
         std::unique_lock lock(impl_->jobsMutex_);
         activeRequests = impl_->requests_.size();
     }
+    {
+        std::shared_lock lock(impl_->dataSourcesMutex_);
+        constructionFailures = impl_->dataSourceConstructionFailed_;
+    }
+    auto configStats = DataSourceConfigService::get().getDataSourceConfigStats();
     auto result = nlohmann::json{
         {"datasources", datasources},
-        {"active-requests", activeRequests}
+        {"active-requests", activeRequests},
+        {"datasource-config", nlohmann::json{
+            {"configured", configStats.configured},
+            {"enabled", configStats.enabled},
+            {"disabled", configStats.disabled},
+            {"construction-failed", constructionFailures}
+        }}
     };
 
     if (!includeCachedFeatureTreeBytes && !includeTileSizeDistribution) {
