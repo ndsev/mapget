@@ -797,7 +797,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     SyncHttpClient cli("127.0.0.1", service.port());
 
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_http_config");
+    auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_test_http_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
     auto tempMissingConfigPath = tempDir / "missing_config.yaml";
@@ -854,6 +854,23 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     };
 
+    auto getConfigPayload = [&]() {
+        auto [result, res] = cli.get("/config");
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(res != nullptr);
+        REQUIRE(res->statusCode() == drogon::k200OK);
+        return nlohmann::json::parse(std::string(res->body()));
+    };
+
+    auto requireUnavailablePayload = [&](std::string_view reason) {
+        auto payload = getConfigPayload();
+        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == true);
+        REQUIRE(payload["datasourceConfigUnavailableReason"].get<std::string>() == reason);
+        REQUIRE(payload["model"] == nlohmann::json::object());
+        REQUIRE(payload["schema"] == nlohmann::json::object());
+        REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+    };
+
     writeConfigFile(
         "sources: []\n"
         "http-settings: [{'password': 'hunter2'}]\n"
@@ -867,76 +884,31 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Get Configuration - Config File Missing")
     {
         DataSourceConfigService::get().loadConfig(tempMissingConfigPath.string());
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k200OK);
-
-        auto payload = nlohmann::json::parse(std::string(res->body()));
-        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == true);
-        REQUIRE(payload["datasourceConfigUnavailableReason"].get<std::string>() == "configFileMissing");
-        REQUIRE(payload["model"] == nlohmann::json::object());
-        REQUIRE(payload["schema"] == nlohmann::json::object());
-        REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+        requireUnavailablePayload("configFileMissing");
     }
 
     SECTION("Get Configuration - Endpoint disabled returns flagged 200")
     {
         setGetConfigEndpointEnabled(false);
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k200OK);
-
-        auto payload = nlohmann::json::parse(std::string(res->body()));
-        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == true);
-        REQUIRE(payload["datasourceConfigUnavailableReason"].get<std::string>() == "getConfigDisabled");
-        REQUIRE(payload["model"] == nlohmann::json::object());
-        REQUIRE(payload["schema"] == nlohmann::json::object());
-        REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+        requireUnavailablePayload("getConfigDisabled");
     }
 
     SECTION("Get Configuration - No Config File Path Set")
     {
         DataSourceConfigService::get().loadConfig("");
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k200OK);
-
-        auto payload = nlohmann::json::parse(std::string(res->body()));
-        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == true);
-        REQUIRE(payload["datasourceConfigUnavailableReason"].get<std::string>() == "configPathUnset");
-        REQUIRE(payload["model"] == nlohmann::json::object());
-        REQUIRE(payload["schema"] == nlohmann::json::object());
-        REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+        requireUnavailablePayload("configPathUnset");
     }
 
     SECTION("Get Configuration - Validation failure is flagged")
     {
         writeConfigFile("sources: []\n");
         DataSourceConfigService::get().loadConfig(tempConfigPath.string());
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k200OK);
-
-        auto payload = nlohmann::json::parse(std::string(res->body()));
-        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == true);
-        REQUIRE(payload["datasourceConfigUnavailableReason"].get<std::string>() == "configValidationFailed");
-        REQUIRE(payload["model"] == nlohmann::json::object());
-        REQUIRE(payload["schema"] == nlohmann::json::object());
-        REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+        requireUnavailablePayload("configValidationFailed");
     }
 
     SECTION("Get Configuration - Success")
     {
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k200OK);
-
-        auto payload = nlohmann::json::parse(std::string(res->body()));
+        auto payload = getConfigPayload();
         REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == false);
         REQUIRE(payload["datasourceConfigUnavailableReason"].is_null());
         REQUIRE(payload["readOnly"].get<bool>() == true);
@@ -954,16 +926,15 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     SECTION("Get Configuration - Public section serializer exceptions are tolerated")
     {
+        struct ThrowingSectionError : std::runtime_error {
+            using std::runtime_error::runtime_error;
+        };
+
         DataSourceConfigService::get().registerPublicConfigSection(
             "throwingSection",
-            [](YAML::Node const&) -> nlohmann::json { throw std::runtime_error("boom"); });
+            [](YAML::Node const&) -> nlohmann::json { throw ThrowingSectionError("boom"); });
 
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k200OK);
-
-        auto payload = nlohmann::json::parse(std::string(res->body()));
+        auto payload = getConfigPayload();
         REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == false);
         REQUIRE(payload["throwingSection"] == nlohmann::json::object());
     }

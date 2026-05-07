@@ -257,11 +257,26 @@ void HttpService::Impl::handlePostConfigRequest(
 
     configFile.close();
     log().trace("Writing new config.");
-    state->wroteConfig = true;
     if (auto configFilePath = DataSourceConfigService::get().getConfigFilePath()) {
         std::ofstream newConfigFile(*configFilePath);
+        if (!newConfigFile) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k500InternalServerError);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Error applying the configuration: failed to open ") + *configFilePath);
+            state->done = true;
+            state->callback(resp);
+            state->subscription.reset();
+            return;
+        }
+
         newConfigFile << yamlConfig;
+        newConfigFile.flush();
         newConfigFile.close();
+
+        // Ignore watcher callbacks until the rewritten file has been fully flushed.
+        state->wroteConfig = true;
+        DataSourceConfigService::get().loadConfig(*configFilePath, false);
     }
 
     std::thread([weak = state->weak_from_this()]() {

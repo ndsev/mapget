@@ -17,6 +17,7 @@
 #include "stringpool.h"
 #include "layer.h"
 #include "sourceinfo.h"
+#include "geojson-import.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
@@ -165,10 +166,13 @@ public:
      * Create a new feature id. Use this function to create a reference to another
      * feature. The created feature id will not use the common feature id prefix from
      * this tile feature layer, since the reference may be to a feature stored in a
-     * different tile.
+     * different tile or map. When `externalMapId` is set to another map, the detached
+     * reference keeps that map id for binary serialization and JSON export.
      */
     model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
+        std::string_view const& typeId,
+        KeyValueViewPairs const& featureIdParts,
+        std::optional<std::string_view> externalMapId = std::nullopt);
 
     /**
      * Create a new relation. Use this function to create a named reference to another
@@ -223,13 +227,13 @@ public:
     model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 2, bool fixedSize=false);
 
     /**
-     * Internal validity upgrade helpers used by Validity.
+     * Upgrade one compact simple-validity occurrence in-place to full storage.
      */
     simfil::ModelNodeAddress materializeSimpleValidity(
         simfil::ModelNodeAddress simpleAddress,
+        simfil::ArrayIndex ownerMembers,
+        uint32_t ownerElementIndex,
         Validity::Direction direction);
-    std::optional<simfil::ModelNodeAddress> upgradedSimpleValidityAddress(
-        simfil::ModelNodeAddress simpleAddress) const;
 
     /**
      * Return type for begin() and end() methods to support range-based
@@ -273,6 +277,9 @@ public:
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
 
+    /** Import a mapget-flavoured or best-effort GeoJSON feature collection into this tile. */
+    void fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options = {});
+
     /**
      * Inspect or replace the optional tile-level GLB attachment without
      * inlining payload bytes.
@@ -307,6 +314,8 @@ public:
 
     /** Optional staged-loading index (0-based) for this feature tile. */
     [[nodiscard]] std::optional<uint32_t> stage() const override;
+
+    /** Store or clear the tile-stage marker without affecting contained geometries. */
     void setStage(std::optional<uint32_t> stage) override;
 
     /**

@@ -137,6 +137,11 @@ public:
              simfil::ModelConstPtr layer,
              simfil::ModelNodeAddress a,
              simfil::detail::mp_key key);
+    Validity(Direction direction,
+             simfil::ModelConstPtr layer,
+             simfil::ModelNodeAddress a,
+             simfil::ScalarValueType runtimeData,
+             simfil::detail::mp_key key);
     Validity(Data* data,
              simfil::ModelConstPtr layer,
              simfil::ModelNodeAddress a,
@@ -268,6 +273,9 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
      * "negative" means opposite.
      */
     model_ptr<Validity> newDirection(Validity::Direction direction = Validity::Empty);
+
+    [[nodiscard]] ModelNode::Ptr at(int64_t i) const override;
+    bool iterate(ModelNode::IterCallback const& cb) const override;  // NOLINT (allow discard)
 
 private:
     using simfil::BaseArray<TileFeatureLayer, Validity>::BaseArray;

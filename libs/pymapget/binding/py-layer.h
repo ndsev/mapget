@@ -165,14 +165,28 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_feature_id",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairVec const& idParts)
-            { return BoundFeatureId(self.newFeatureId(typeId, castToKeyValueView(idParts))); },
+            [](TileFeatureLayer& self,
+               std::string const& typeId,
+               KeyValuePairVec const& idParts,
+               std::optional<std::string> const& mapId)
+            {
+                auto externalMapId = mapId
+                    ? std::optional<std::string_view>(*mapId)
+                    : std::nullopt;
+                return BoundFeatureId(
+                    self.newFeatureId(
+                        typeId,
+                        castToKeyValueView(idParts),
+                        externalMapId));
+            },
             py::arg("type_id"),
             py::arg("feature_id_parts"),
+            py::arg("map_id") = py::none(),
             R"pbdoc(
             Create a new feature id. Use this function to create a reference to another
             feature. The created feature id will not use the common feature id prefix
-            from this tile feature layer.
+            from this tile feature layer. Pass `map_id` to reference a feature in
+            another map.
         )pbdoc")
         .def(
             "new_attribute",

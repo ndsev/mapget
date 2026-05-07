@@ -217,7 +217,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
 
 TEST_CASE("Datasource enabled flag is handled generically", "[DataSourceConfig]")
 {
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_ds_enabled");
+    auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_test_ds_enabled");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 

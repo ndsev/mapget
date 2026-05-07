@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string_view>
@@ -25,6 +26,7 @@ static const std::string_view MultiPolygonStr("MultiPolygon");
 
 namespace
 {
+/** Project a point onto a finite line segment in the x/y plane. */
 std::optional<glm::dvec3>
 projectPointOnLine(const glm::dvec3& point, const glm::dvec3& a, const glm::dvec3& b)
 {
@@ -64,6 +66,7 @@ using namespace simfil;
 
 namespace
 {
+/** Check whether a model column stores an actual geometry payload. */
 bool isBaseGeometryColumn(uint8_t column)
 {
     using Col = TileFeatureLayer::ColumnId;
@@ -75,6 +78,7 @@ bool isBaseGeometryColumn(uint8_t column)
            column == Col::GltfNodeIndexGeometries;
 }
 
+/** Map storage columns back to their logical geometry type. */
 GeomType geometryTypeForColumn(uint8_t column)
 {
     using Col = TileFeatureLayer::ColumnId;
@@ -97,6 +101,7 @@ GeomType geometryTypeForColumn(uint8_t column)
     }
 }
 
+/** Map a stored geometry stage back to the optional exported `geometryName`. */
 std::optional<std::string_view> geometryNameForStage(
     TileFeatureLayer const& model,
     std::optional<uint32_t> geometryStage)
@@ -106,6 +111,8 @@ std::optional<std::string_view> geometryNameForStage(
     }
     auto const& layerInfo = *model.layerInfo();
     if (*geometryStage <= layerInfo.highFidelityStage_) {
+        // The default high-fidelity stage is represented by the absence of a
+        // label so generic GeoJSON stays uncluttered.
         return std::nullopt;
     }
     if (*geometryStage >= layerInfo.stageLabels_.size()) {
@@ -118,11 +125,13 @@ std::optional<std::string_view> geometryNameForStage(
     return label;
 }
 
+/** Serialize one 3D coordinate triple in GeoJSON position form. */
 nlohmann::json positionJson(Point const& point)
 {
     return nlohmann::json::array({point.x, point.y, point.z});
 }
 
+/** Build the footprint polygon used to export AABB-like geometries. */
 nlohmann::json groundFootprintPolygon(Point const& origin, Point const& size)
 {
     auto const minX = origin.x;
@@ -142,6 +151,7 @@ nlohmann::json groundFootprintPolygon(Point const& origin, Point const& size)
     });
 }
 
+/** Resolve the origin of an AABB-like geometry regardless of storage flavor. */
 Point boundsOrigin(model_ptr<Geometry> const& geometry)
 {
     return geometry->geomType() == GeomType::AABB
@@ -149,6 +159,7 @@ Point boundsOrigin(model_ptr<Geometry> const& geometry)
         : geometry->gltfNodeAabbOrigin();
 }
 
+/** Resolve the size of an AABB-like geometry regardless of storage flavor. */
 Point boundsSize(model_ptr<Geometry> const& geometry)
 {
     return geometry->geomType() == GeomType::AABB
@@ -156,6 +167,7 @@ Point boundsSize(model_ptr<Geometry> const& geometry)
         : geometry->gltfNodeAabbSize();
 }
 
+/** Reinterpret a base geometry address in one of the helper-view columns. */
 ModelNodeAddress geometryHelperAddress(
     uint8_t helperColumn,
     ModelNodeAddress baseGeometryAddress)
@@ -163,11 +175,13 @@ ModelNodeAddress geometryHelperAddress(
     return {helperColumn, baseGeometryAddress.index()};
 }
 
+/** Encode the base geometry address into the helper node payload. */
 int64_t geometryHelperData(ModelNodeAddress baseGeometryAddress)
 {
     return encodeGeometryHelperData(baseGeometryAddress);
 }
 
+/** Encode base address plus point-view flavor for helper point nodes. */
 int64_t geometryPointHelperData(
     ModelNodeAddress baseGeometryAddress,
     GeometryPointViewKind pointKind)
@@ -175,6 +189,7 @@ int64_t geometryPointHelperData(
     return encodeGeometryHelperData(baseGeometryAddress, static_cast<uint8_t>(pointKind));
 }
 
+/** Create the object view that exposes origin/size for bounds geometries. */
 ModelNode::Ptr makeBoundsInfoView(
     TileFeatureLayer const& model,
     ModelNodeAddress baseGeometryAddress)
@@ -186,6 +201,7 @@ ModelNode::Ptr makeBoundsInfoView(
         geometryHelperData(baseGeometryAddress));
 }
 
+/** Create the polygon coordinate view used for AABB and GLTF-bounds export. */
 ModelNode::Ptr makeBoundsPolygonCoordinatesView(
     TileFeatureLayer const& model,
     ModelNodeAddress baseGeometryAddress)
@@ -197,6 +213,7 @@ ModelNode::Ptr makeBoundsPolygonCoordinatesView(
         geometryHelperData(baseGeometryAddress));
 }
 
+/** Create the single ring used by the bounds polygon coordinate view. */
 ModelNode::Ptr makeBoundsRingView(
     TileFeatureLayer const& model,
     ModelNodeAddress baseGeometryAddress)
@@ -208,6 +225,7 @@ ModelNode::Ptr makeBoundsRingView(
         geometryHelperData(baseGeometryAddress));
 }
 
+/** Create a procedural point view into either a bounds helper or point buffer. */
 ModelNode::Ptr makeGeometryPointView(
     TileFeatureLayer const& model,
     ModelNodeAddress baseGeometryAddress,
@@ -225,12 +243,14 @@ constexpr size_t GltfNodeAabbOriginSlot = 1;
 constexpr size_t GltfNodeAabbSizeSlot = 2;
 constexpr uint32_t MaxExactGltfNodeIndex = 1U << 24;
 
+/** Convert a geometry address to the corresponding point-buffer storage index. */
 simfil::ArrayIndex geometryBufferIndex(ModelNodeAddress geometryAddress)
 {
     return static_cast<simfil::ArrayIndex>(geometryAddress.index());
 }
 
 template <typename StorageType>
+/** Ensure GLTF node geometries expose the fixed [index, origin, size] slot layout. */
 void ensureGltfNodeStorageInitialized(StorageType& storage, simfil::ArrayIndex arrayIndex)
 {
     auto const currentSize = storage.size(arrayIndex);
@@ -534,6 +554,16 @@ std::optional<uint32_t> Geometry::stage() const
     return std::nullopt;
 }
 
+void Geometry::setStage(std::optional<uint32_t> geometryStage)
+{
+    if (geometryStage && *geometryStage > static_cast<uint32_t>(std::numeric_limits<uint8_t>::max())) {
+        raise("Geometry::setStage: stage is out of uint8_t range.");
+    }
+    model().setGeometryStage(
+        addr_,
+        geometryStage ? std::optional<uint8_t>{static_cast<uint8_t>(*geometryStage)} : std::nullopt);
+}
+
 SelfContainedGeometry Geometry::toSelfContained() const
 {
     SelfContainedGeometry result{{}, geomType()};
@@ -573,6 +603,8 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
         return get(StringPool::TypeStr);
     if (i == 1)
         return get(StringPool::CoordinatesStr);
+    // AABB and GLTF-node geometries serialize as polygons plus one auxiliary
+    // metadata field so they remain consumable as GeoJSON.
     if (type == GeomType::AABB && i == 2)
         return get(StringPool::AabbStr);
     if (type == GeomType::GltfNodeIndex && i == 2)
@@ -614,9 +646,13 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
             typeName = MultiPolygonStr;
             break;
         case GeomType::AABB:
+            // Bounds-only geometries are exported as footprint polygons plus an
+            // auxiliary `aabb` object containing the full 3D extent.
             typeName = PolygonStr;
             break;
         case GeomType::GltfNodeIndex:
+            // GLTF node references also export their bounds footprint so generic
+            // GeoJSON consumers can still place them spatially.
             typeName = PolygonStr;
             break;
         }
@@ -636,12 +672,15 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
             return makeBoundsPolygonCoordinatesView(model(), addr_);
         case GeomType::Polygon:
             if (geomViewData_) {
+                // Geometry views may expose only a point subrange, so they fall
+                // back to the generic point-buffer view instead of polygon rings.
                 break;
             }
             return model().resolve(
                 ModelNodeAddress{TileFeatureLayer::ColumnId::Polygon, addr_.index()});
         case GeomType::Mesh:
             if (geomViewData_) {
+                // Same for mesh views: only base meshes can present triangle collections.
                 break;
             }
             return model().resolve(
@@ -698,11 +737,14 @@ void Geometry::append(Point const& p)
 
     glm::vec3 storedPoint{};
     if (geomType() == GeomType::AABB && storage_->size(static_cast<simfil::ArrayIndex>(addr_.index())) == 1) {
+        // The second AABB slot stores size, not another anchor-relative point.
         storedPoint = glm::vec3{
             static_cast<float>(p.x),
             static_cast<float>(p.y),
             static_cast<float>(p.z)};
     } else {
+        // Regular geometry vertices are stored relative to the tile anchor to
+        // preserve precision while keeping the on-disk representation compact.
         auto const anchor = model().geometryAnchor();
         storedPoint = glm::vec3{
             static_cast<float>(p.x - anchor.x),
@@ -725,6 +767,8 @@ void Geometry::setAabb(Point const& origin, Point const& size)
     auto const arrayIndex = static_cast<simfil::ArrayIndex>(addr_.index());
     auto const currentSize = storage_->size(arrayIndex);
     if (currentSize == 0) {
+        // New AABBs reuse append() so the special origin/size storage layout is
+        // applied consistently.
         append(origin);
         append(size);
         return;
@@ -780,6 +824,8 @@ void Geometry::setGltfNodeIndex(uint32_t index)
         raise("Cannot mutate geometry view.");
     }
     if (index > MaxExactGltfNodeIndex) {
+        // The node index lives in a float-backed storage slot, so only integers
+        // within the exact mantissa range are lossless.
         raiseFmt(
             "GLTF node index {} exceeds the exact float storage limit of {}.",
             index,
@@ -882,6 +928,8 @@ bool Geometry::iterate(const IterCallback& cb) const
 size_t Geometry::numPoints() const
 {
     if (geomType() == GeomType::GltfNodeIndex) {
+        // GLTF node geometries expose only their node id and bounds; they do
+        // not behave like a coordinate buffer.
         return 0;
     }
     auto vertexBufferNode = model_ptr<PointBufferNode>::make(model_, addr_);
@@ -900,6 +948,8 @@ Point Geometry::pointAt(size_t index) const
 double Geometry::length() const
 {
     if (geomType() == GeomType::GltfNodeIndex || geomType() == GeomType::AABB) {
+        // Bounds-only geometries and GLTF node references do not define a
+        // traversable line length.
         return 0.0;
     }
     auto length = 0.0;
@@ -1043,6 +1093,8 @@ Point Geometry::percentagePositionFromGeometries(std::vector<model_ptr<Geometry>
             percentagePosition -= lengths[i];
         }
         else {
+            // Once the target falls into a segment geometry, reuse the
+            // length-bound sampling helper to get the final point.
             auto points = geoms[i]->pointsFromLengthBound(percentagePosition, std::nullopt);
             if (points.empty()) {
                 break;
@@ -1473,6 +1525,8 @@ PointBufferNode::PointBufferNode(
         baseGeomAddress_ = viewData->baseGeometry_;
 
         while (baseGeomAddress_.column() == TileFeatureLayer::ColumnId::GeometryViews) {
+            // Nested views accumulate offsets until a real base geometry buffer
+            // is reached, so point access stays O(1) afterwards.
             viewData = model().geometryViewData(baseGeomAddress_);
             if (!viewData) {
                 throw std::runtime_error("Failed to resolve nested geometry view.");

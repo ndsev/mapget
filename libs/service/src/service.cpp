@@ -1065,19 +1065,21 @@ LayerRequestContext Service::resolveLayerRequest(
         result.status_ = RequestStatus::NoDataSource;
         result.noDataSourceReason_ = NoDataSourceReason::MissingMapOrLayer;
 
-        auto const configPath = DataSourceConfigService::get().getConfigFilePath();
-        auto const configStats = DataSourceConfigService::get().getDataSourceConfigStats();
-        if (!configPath.has_value()) {
-            result.noDataSourceReason_ = NoDataSourceReason::NoConfig;
-        }
-        else if (configStats.configured == 0) {
-            result.noDataSourceReason_ = NoDataSourceReason::EmptySources;
-        }
-        else if (configStats.enabled == 0) {
-            result.noDataSourceReason_ = NoDataSourceReason::AllSourcesDisabled;
-        }
-        else if (impl_->dataSourceInfo_.empty() && impl_->dataSourceConstructionFailed_ > 0) {
-            result.noDataSourceReason_ = NoDataSourceReason::DatasourceInitializationFailed;
+        if (impl_->dataSourceInfo_.empty()) {
+            auto const configPath = DataSourceConfigService::get().getConfigFilePath();
+            auto const configStats = DataSourceConfigService::get().getDataSourceConfigStats();
+            if (!configPath.has_value()) {
+                result.noDataSourceReason_ = NoDataSourceReason::NoConfig;
+            }
+            else if (configStats.configured == 0) {
+                result.noDataSourceReason_ = NoDataSourceReason::EmptySources;
+            }
+            else if (configStats.enabled == 0) {
+                result.noDataSourceReason_ = NoDataSourceReason::AllSourcesDisabled;
+            }
+            else if (impl_->dataSourceConstructionFailed_ > 0) {
+                result.noDataSourceReason_ = NoDataSourceReason::DatasourceInitializationFailed;
+            }
         }
     }
     return result;

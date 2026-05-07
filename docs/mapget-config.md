@@ -37,7 +37,8 @@ By default, the HTTP service registers the following datasource types:
 - `DataSourceHost` – connect to a remote `DataSourceServer` over HTTP.
 - `DataSourceProcess` – spawn a datasource process locally and connect to it.
 - `GridDataSource` – generate synthetic tiles on the fly for testing and benchmarking.
-- `GeoJsonFolder` – serve features from a directory containing `.geojson` files named by tile ID.
+- `GeoJsonFolder` – serve features from local GeoJSON files.
+- `GeoJsonEndpoint` – serve features from GeoJSON files fetched over HTTP.
 
 Additional datasource types can be registered from C++ code using `DataSourceConfigService`, but those are outside the scope of this guide.
 
@@ -215,6 +216,8 @@ Optional fields:
 
 - `mapId`: optional map ID override. If omitted, mapget derives a display name from the input directory.
 - `withAttrLayers` (default: `true`): boolean flag. If `true`, nested objects in the GeoJSON `properties` are converted to mapget attribute layers; if `false`, only scalar top‑level properties are emitted and nested objects are silently dropped.
+- `dataSourceInfo`: inline datasource info object, local YAML/JSON file path, or HTTP(S) URL.
+- `tilePathTemplate`: relative path template used when `dataSourceInfo` is configured. Supported placeholders are `{tileId}` and `{layerId}`.
 
 Example:
 
@@ -226,9 +229,26 @@ sources:
     withAttrLayers: true
 ```
 
-#### Manifest Mode (Recommended)
+Example with explicit layer metadata and template-based file lookup:
 
-If a `manifest.json` file exists in the input directory, it is used to map filenames to tile IDs and layers. This allows arbitrary filenames and multi‑layer support.
+```yaml
+sources:
+  - type: GeoJsonFolder
+    folder: /data/tiles
+    dataSourceInfo: /data/tiles/info.yaml
+    tilePathTemplate: "{layerId}/{tileId}.geojson"
+```
+
+If `dataSourceInfo` is omitted, mapget falls back to legacy discovery:
+
+- first it looks for a legacy `manifest.json`
+- if no manifest exists, it scans the folder for files named `<tileId>.geojson`
+
+In that fallback mode, metadata is synthesized as a single `GeoJsonAny` layer and conversion is best-effort.
+
+#### Manifest Mode (Legacy)
+
+If no explicit `dataSourceInfo` is configured and a `manifest.json` file exists in the input directory, it is used to map filenames to tile IDs and layers. This allows arbitrary filenames and multi‑layer support.
 
 **Manifest Structure:**
 
@@ -285,6 +305,34 @@ This allows multiple GeoJSON files to contribute features to the same tile in di
 If no `manifest.json` exists, the datasource falls back to scanning for files named `<packed-tile-id>.geojson` (e.g., `123456.geojson`). All files are served from a single `GeoJsonAny` layer.
 
 <!-- --8<-- [end:geojson] -->
+
+### `GeoJsonEndpoint`
+
+`GeoJsonEndpoint` serves GeoJSON tiles from an HTTP(S) endpoint. It uses the same GeoJSON conversion logic as `GeoJsonFolder`, but fetches each tile body over the network.
+
+Required fields:
+
+- `type`: must be `GeoJsonEndpoint`.
+- `baseUrl`: base HTTP(S) URL used to fetch GeoJSON tiles.
+
+Optional fields:
+
+- `mapId`: optional map ID override. If omitted, mapget derives a display name from the base URL.
+- `withAttrLayers` (default: `true`): converts nested GeoJSON property objects to mapget attribute layers.
+- `dataSourceInfo`: inline datasource info object, local YAML/JSON file path, or HTTP(S) URL.
+- `tileUrlTemplate`: URL or relative path template used to fetch tiles. Supported placeholders are `{tileId}`, `{layerId}`, and `{baseUrl}`.
+
+Example:
+
+```yaml
+sources:
+  - type: GeoJsonEndpoint
+    baseUrl: https://example.test/tiles
+    dataSourceInfo: https://example.test/info.yaml
+    tileUrlTemplate: "{layerId}/{tileId}.geojson"
+```
+
+If `dataSourceInfo` is omitted, mapget emits a strong warning and falls back to a synthesized single-layer `GeoJsonAny` datasource with empty coverage. In that fallback mode, conversion is still attempted, but service discovery remains intentionally limited.
 
 ## HTTP settings for tools and UIs
 

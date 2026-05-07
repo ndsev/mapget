@@ -5,8 +5,9 @@ set -euo
 src_dir="$(cd "$(dirname "$0")" && pwd)/../.."
 example_dir="$src_dir/examples"
 
-if [[ "$OSTYPE" == "msys" ]]; then
-  # On Windows, convert path from /c/Users to C:/Users so python understands it.
+if command -v cygpath >/dev/null 2>&1; then
+  # On Windows-hosted bash variants, normalize /c/... or /d/... paths into a
+  # form the native Python executable understands.
   example_dir=$(cygpath -m "$example_dir")
 fi
 
