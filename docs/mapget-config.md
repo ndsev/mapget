@@ -22,7 +22,7 @@ Two top‑level keys are relevant for mapget itself:
 
 For integration with configuration UIs there is an additional top‑level key:
 
-- `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents, but exposes it via `/config` and ensures that sensitive fields such as `password` and `api-key` are masked in responses.
+- `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents. It is exposed through `/config.model` only when the active datasource schema includes `http-settings`, typically via a deployment-specific `--config-schema` patch.
 
 Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, MapViewer registers an `erdblick` section for frontend defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file.
 
@@ -338,7 +338,7 @@ If `dataSourceInfo` is omitted, mapget emits a strong warning and falls back to 
 
 The optional `http-settings` top‑level key is reserved for HTTP‑related configuration used by tools and user interfaces. It is typically a list of objects that may contain fields such as `scope`, `api-key` or `password`.
 
-Mapget itself treats this section as opaque data: it is read and written via the `/config` endpoint but not interpreted when serving tiles. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
+Mapget itself treats this section as opaque data and does not interpret it when serving tiles. It is included in `/config.model` only when the active datasource schema contains an `http-settings` property, for example through a deployment-specific `--config-schema` patch. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
 
 ## Environment variables
 

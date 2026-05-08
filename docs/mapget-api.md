@@ -282,7 +282,7 @@ The `/config` endpoint family exposes the YAML configuration used by `mapget` fo
 - **Request body:** none
 - **Response:** `application/json` object with the keys:
   - `schema`: JSON Schema used to validate datasource-model configurations.
-  - `model`: JSON representation of the current YAML config, limited to datasource-model top-level keys such as `sources` and `http-settings`.
+  - `model`: JSON representation of the current YAML config, limited to top-level keys in the active datasource schema. The built-in schema includes `sources`; deployments can add keys such as `http-settings` through `--config-schema`.
   - `readOnly`: boolean flag indicating whether `POST /config` is enabled.
   - `datasourceConfigUnavailable`: boolean flag indicating that datasource config could not or must not be exposed.
   - `datasourceConfigUnavailableReason`: `null` on success, otherwise a stable reason string.
