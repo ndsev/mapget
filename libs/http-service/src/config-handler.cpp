@@ -7,12 +7,23 @@
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpResponse.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <sstream>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "nlohmann/json.hpp"
 #include "yaml-cpp/yaml.h"
@@ -83,6 +94,67 @@ constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configVal
     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     resp->setBody(payload.dump(2));
     return resp;
+}
+
+/**
+ * Rewrite the config via a temporary file so filesystem watchers never observe
+ * an empty or partially written target file.
+ */
+[[nodiscard]] std::optional<std::string> replaceConfigFile(
+    std::filesystem::path const& configFilePath,
+    YAML::Node const& yamlConfig)
+{
+    std::ostringstream serializedConfig;
+    serializedConfig << yamlConfig;
+
+    static std::atomic_uint64_t tempFileCounter{0};
+    auto tempConfigPath = configFilePath;
+    auto tempFileSuffix = std::string(".tmp.")
+        + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "."
+        + std::to_string(tempFileCounter.fetch_add(1, std::memory_order_relaxed));
+    tempConfigPath += tempFileSuffix;
+
+    {
+        std::ofstream tempConfigFile(tempConfigPath, std::ios::out | std::ios::trunc);
+        if (!tempConfigFile) {
+            return std::string("failed to open temporary config file ") + tempConfigPath.string();
+        }
+
+        tempConfigFile << serializedConfig.str();
+        tempConfigFile.flush();
+        if (!tempConfigFile) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tempConfigPath, cleanupError);
+            return std::string("failed to write temporary config file ") + tempConfigPath.string();
+        }
+    }
+
+#ifdef _WIN32
+    // Windows std::filesystem::rename does not portably replace existing files.
+    if (!MoveFileExW(
+            tempConfigPath.wstring().c_str(),
+            configFilePath.wstring().c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        auto const errorCode = GetLastError();
+        std::error_code cleanupError;
+        std::filesystem::remove(tempConfigPath, cleanupError);
+        return std::string("failed to replace config file ") + configFilePath.string()
+            + " with temporary config file " + tempConfigPath.string() + ": Windows error "
+            + std::to_string(errorCode);
+    }
+#else
+    std::error_code replaceError;
+    std::filesystem::rename(tempConfigPath, configFilePath, replaceError);
+    if (replaceError) {
+        std::error_code cleanupError;
+        std::filesystem::remove(tempConfigPath, cleanupError);
+        return std::string("failed to replace config file ") + configFilePath.string()
+            + " with temporary config file " + tempConfigPath.string() + ": "
+            + replaceError.message();
+    }
+#endif
+
+    return std::nullopt;
 }
 
 }  // namespace
@@ -292,27 +364,32 @@ void HttpService::Impl::handlePostConfigRequest(
 
     configFile.close();
     log().trace("Writing new config.");
-    if (auto configFilePath = DataSourceConfigService::get().getConfigFilePath()) {
-        std::ofstream newConfigFile(*configFilePath);
-        if (!newConfigFile) {
-            auto resp = drogon::HttpResponse::newHttpResponse();
-            resp->setStatusCode(drogon::k500InternalServerError);
-            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-            resp->setBody(std::string("Error applying the configuration: failed to open ") + *configFilePath);
-            state->done = true;
-            state->callback(resp);
-            state->subscription.reset();
-            return;
-        }
-
-        newConfigFile << yamlConfig;
-        newConfigFile.flush();
-        newConfigFile.close();
-
-        // Ignore watcher callbacks until the rewritten file has been fully flushed.
-        state->wroteConfig = true;
-        DataSourceConfigService::get().loadConfig(*configFilePath, false);
+    auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
+    if (!configFilePath) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k500InternalServerError);
+        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+        resp->setBody("Error applying the configuration: config file path is no longer set.");
+        state->done = true;
+        state->callback(resp);
+        state->subscription.reset();
+        return;
     }
+
+    if (auto writeError = replaceConfigFile(*configFilePath, yamlConfig)) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k500InternalServerError);
+        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+        resp->setBody(std::string("Error applying the configuration: ") + *writeError);
+        state->done = true;
+        state->callback(resp);
+        state->subscription.reset();
+        return;
+    }
+
+    // Ignore watcher callbacks until the rewritten file has been fully replaced.
+    state->wroteConfig = true;
+    DataSourceConfigService::get().loadConfig(*configFilePath, false);
 
     std::thread([weak = state->weak_from_this()]() {
         std::this_thread::sleep_for(std::chrono::seconds(60));
