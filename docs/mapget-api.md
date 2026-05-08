@@ -288,7 +288,7 @@ The `/config` endpoint family exposes the YAML configuration used by `mapget` fo
   - `datasourceConfigUnavailableReason`: `null` on success, otherwise a stable reason string.
   - Additional public sections registered by the embedding application, returned as top-level siblings of `model`.
 
-When the endpoint handler is reached, `GET /config` returns HTTP `200`. If datasource configuration is unavailable, `schema` and `model` are empty objects, `readOnly` is `true`, and `datasourceConfigUnavailable` is `true`.
+When the endpoint handler is reached, `GET /config` returns HTTP `200`. `readOnly` reflects whether `POST /config` is enabled. If `--no-get-config` is set, `datasourceConfigUnavailable` is `true`, `datasourceConfigUnavailableReason` is `getConfigDisabled`, and `model` is empty. In that state, writable servers still return `schema` so clients can present an empty replacement editor; read-only servers return an empty schema.
 
 Unavailable reason values are:
 
@@ -301,7 +301,7 @@ Unavailable reason values are:
 
 On a successful datasource-config response, `datasourceConfigUnavailable` is `false` and `datasourceConfigUnavailableReason` is `null`. The returned model masks sensitive fields: any `password` or `api-key` values are replaced with stable masked tokens.
 
-Registered public sections are read-only. They are included as top-level siblings of `model` on successful responses. On datasource-config unavailable responses, registered public sections are still present but empty.
+Registered public sections are read-only. They are included as top-level siblings of `model` when the YAML config can be read and parsed, even if the datasource model itself is hidden through `--no-get-config`. If the YAML config cannot be read or parsed, registered public sections are still present but empty.
 
 ### `POST /config`
 

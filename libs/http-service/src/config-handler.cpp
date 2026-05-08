@@ -29,17 +29,47 @@ constexpr std::string_view kUnavailableReasonConfigFileOpenFailed = "configFileO
 constexpr std::string_view kUnavailableReasonConfigParseFailed = "configParseFailed";
 constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configValidationFailed";
 
-[[nodiscard]] nlohmann::json buildUnavailableConfigResponse(std::string_view reason)
+[[nodiscard]] YAML::Node loadConfigYamlForPublicSections()
+{
+    auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
+    if (!configFilePath.has_value()) {
+        return {};
+    }
+
+    std::filesystem::path path = *configFilePath;
+    if (!std::filesystem::exists(path)) {
+        return {};
+    }
+
+    std::ifstream configFile(*configFilePath);
+    if (!configFile) {
+        return {};
+    }
+
+    try {
+        return YAML::Load(configFile);
+    }
+    catch (const YAML::Exception& yamlError) {
+        log().warn("Failed to parse YAML config for public /config sections: {}", yamlError.what());
+    }
+    return {};
+}
+
+[[nodiscard]] nlohmann::json buildUnavailableConfigResponse(
+    std::string_view reason,
+    YAML::Node const& fullConfig = {},
+    bool readOnly = true,
+    bool includeSchema = false)
 {
     auto& configService = DataSourceConfigService::get();
     nlohmann::json response = {
-        {"schema", nlohmann::json::object()},
+        {"schema", includeSchema ? configService.getDataSourceConfigSchema() : nlohmann::json::object()},
         {"model", nlohmann::json::object()},
-        {"readOnly", true},
+        {"readOnly", readOnly},
         {"datasourceConfigUnavailable", true},
         {"datasourceConfigUnavailableReason", reason},
     };
-    auto publicSections = configService.getPublicConfigSections(YAML::Node{});
+    auto publicSections = configService.getPublicConfigSections(fullConfig);
     for (auto& [name, value] : publicSections.items()) {
         response[name] = std::move(value);
     }
@@ -96,7 +126,12 @@ void HttpService::Impl::handleGetConfigRequest(
     auto& configService = DataSourceConfigService::get();
 
     if (!isGetConfigEndpointEnabled()) {
-        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonGetConfigDisabled)));
+        const bool readOnly = !isPostConfigEndpointEnabled();
+        callback(jsonResponse(buildUnavailableConfigResponse(
+            kUnavailableReasonGetConfigDisabled,
+            loadConfigYamlForPublicSections(),
+            readOnly,
+            !readOnly)));
         return;
     }
 

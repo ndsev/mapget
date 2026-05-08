@@ -371,7 +371,7 @@ mapget:
     cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
     clear-cache: false          # --clear-cache
     allow-post-config: true     # --allow-post-config (enables POST /config)
-    no-get-config: false        # --no-get-config (set to true to hide datasource config in GET /config)
+    no-get-config: false        # --no-get-config (hides datasource model in GET /config)
     webapp: /srv/my-ui          # --webapp, one application document root
     static-mount:               # --static-mount, additional static aliases
       - /assets:/srv/assets
@@ -383,5 +383,14 @@ sources: ...
 ```
 
 Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
+
+Datasource editor visibility is controlled by `allow-post-config` and `no-get-config`:
+
+| `allow-post-config` | `no-get-config` | `/config` datasource model | Editor behaviour |
+| --- | --- | --- | --- |
+| `false` | `false` | Current model is returned. | Read-only. |
+| `true` | `false` | Current model is returned. | Editable. |
+| `false` | `true` | Model and schema are empty. | Disabled. |
+| `true` | `true` | Model is empty, schema is returned. | Empty editor; applying overwrites datasource config. |
 
 <!-- --8<-- [end:yamlconf] -->

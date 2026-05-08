@@ -862,13 +862,29 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         return nlohmann::json::parse(std::string(res->body()));
     };
 
-    auto requireUnavailablePayload = [&](std::string_view reason) {
+    auto requireUnavailablePayload = [&](
+        std::string_view reason,
+        bool expectPublicConfig = false,
+        bool expectReadOnly = true,
+        bool expectSchema = false) {
         auto payload = getConfigPayload();
         REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == true);
         REQUIRE(payload["datasourceConfigUnavailableReason"].get<std::string>() == reason);
         REQUIRE(payload["model"] == nlohmann::json::object());
-        REQUIRE(payload["schema"] == nlohmann::json::object());
-        REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+        REQUIRE(payload["readOnly"].get<bool>() == expectReadOnly);
+        if (expectSchema) {
+            REQUIRE(payload["schema"].is_object());
+            REQUIRE(payload["schema"].empty() == false);
+        }
+        else {
+            REQUIRE(payload["schema"] == nlohmann::json::object());
+        }
+        if (expectPublicConfig) {
+            REQUIRE(payload["publicConfig"]["featureFlag"].get<bool>() == true);
+        }
+        else {
+            REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+        }
     };
 
     writeConfigFile(
@@ -890,7 +906,14 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Get Configuration - Endpoint disabled returns flagged 200")
     {
         setGetConfigEndpointEnabled(false);
-        requireUnavailablePayload("getConfigDisabled");
+        requireUnavailablePayload("getConfigDisabled", true);
+    }
+
+    SECTION("Get Configuration - Endpoint hidden but POST enabled returns writable empty model")
+    {
+        setGetConfigEndpointEnabled(false);
+        setPostConfigEndpointEnabled(true);
+        requireUnavailablePayload("getConfigDisabled", true, false, true);
     }
 
     SECTION("Get Configuration - No Config File Path Set")

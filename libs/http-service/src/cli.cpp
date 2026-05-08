@@ -442,6 +442,8 @@ struct ServeCommand
     std::string cachePath_;
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
+    bool allowPostConfigEndpoint_ = false;
+    bool noGetConfigEndpoint_ = false;
     std::string webapp_;
     std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
@@ -499,12 +501,12 @@ struct ServeCommand
             "Serve an additional static filesystem mount, in the format [<url-scope>:]<filesystem-path>. Can be specified multiple times.");
         serveCmd->add_flag(
             "--allow-post-config",
-            isPostConfigEndpointEnabled_,
+            allowPostConfigEndpoint_,
             "Allow the POST /config endpoint.");
         serveCmd->add_flag(
             "--no-get-config",
-            isGetConfigEndpointEnabled_,
-            "Allow the GET /config endpoint.");
+            noGetConfigEndpoint_,
+            "Disable the GET /config datasource model endpoint.");
         serveCmd->add_option(
             "--memory-trim-binary-interval",
             memoryTrimIntervalBinary_,
@@ -527,6 +529,8 @@ struct ServeCommand
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
         }
+        setPostConfigEndpointEnabled(allowPostConfigEndpoint_);
+        setGetConfigEndpointEnabled(!noGetConfigEndpoint_);
         log().info("Starting server on port {}.", port_);
 
         std::shared_ptr<Cache> cache;
