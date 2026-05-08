@@ -28,10 +28,19 @@ def _post_json(url: str, body: dict):
 def main() -> int:
     point = mapget.Point
     cache_expired_calls: list[tuple[str, int]] = []
+    requested_stages: list[int | None] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
+        requested_stages.append(tile.stage())
         feature = tile.new_feature("Way", [("wayId", 1)])
-        feature.add_line([point(1.0, 2.0), point(2.0, 3.0)])
+        feature.set_lod(3)
+        assert feature.lod() == 3
+
+        geometry = feature.geom().new_geometry(mapget.GeomType.LINE)
+        geometry.append(point(1.0, 2.0))
+        geometry.append(point(2.0, 3.0))
+        assert geometry.stage() == tile.stage()
+        geometry.set_stage(tile.stage())
 
         attr = feature.attribute_layers().new_layer("rules").new_attribute("speed")
         attr.validity().new_offset_range(
@@ -78,6 +87,9 @@ def main() -> int:
             "mapId": "Map",
             "layers": {
                 "WayLayer": {
+                    "stages": 3,
+                    "stageLabels": ["Preview", "Complete", "Validation"],
+                    "highFidelityStage": 1,
                     "featureTypes": [
                         {
                             "name": "Way",
@@ -98,7 +110,8 @@ def main() -> int:
     try:
         base_url = f"http://127.0.0.1:{datasource.port()}"
 
-        feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=1&responseType=json")
+        feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=1&stage=2&responseType=json")
+        assert requested_stages == [2]
         feature = feature_tile["features"][0]
         assert feature["relations"][0]["name"] == "next"
         assert feature["relations"][0]["sourceValidity"]["direction"] == "COMPLETE"

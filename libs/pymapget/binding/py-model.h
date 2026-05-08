@@ -378,7 +378,16 @@ struct BoundGeometry : public BoundModelNode
                 return self.modelNodePtr_->pointAt(i);
             })
             .def("length", [](BoundGeometry& self) { return self.modelNodePtr_->length(); },
-                "Get total length in metres (for polylines).");
+                "Get total length in metres (for polylines).")
+            .def("stage", [](BoundGeometry& self) {
+                    return self.modelNodePtr_->stage();
+                },
+                "Get the geometry stage, or None if no stage is set.")
+            .def("set_stage", [](BoundGeometry& self, std::optional<uint32_t> stage) {
+                    self.modelNodePtr_->setStage(stage);
+                },
+                py::arg("stage") = std::nullopt,
+                "Set or clear the geometry stage.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -688,6 +697,21 @@ struct BoundFeature : public BoundModelNode
                 [](BoundFeature& self)
                 { return BoundAttributeLayerList(self.modelNodePtr_->attributeLayers()); },
                 "Access this feature's attribute layer collection.")
+            .def(
+                "lod",
+                [](BoundFeature& self) {
+                    return static_cast<uint32_t>(self.modelNodePtr_->lod());
+                },
+                "Get this feature's level-of-detail value as an integer in [0, 7].")
+            .def(
+                "set_lod",
+                [](BoundFeature& self, uint32_t lod) {
+                    if (lod > static_cast<uint32_t>(Feature::MAX_LOD))
+                        throw py::value_error("Feature LOD must be in the range [0, 7].");
+                    self.modelNodePtr_->setLod(static_cast<Feature::LOD>(lod));
+                },
+                py::arg("lod"),
+                "Set this feature's level-of-detail value as an integer in [0, 7].")
             .def(
                 "relations",
                 [](BoundFeature& self) {

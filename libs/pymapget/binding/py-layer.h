@@ -236,6 +236,20 @@ void bindTileLayer(py::module_& m)
             Get when this layer was created.
             )pbdoc")
         .def(
+            "stage",
+            [](TileFeatureLayer const& self) { return self.stage(); },
+            R"pbdoc(
+            Get the staged-loading index requested for this feature tile, or None
+            for unstaged requests.
+            )pbdoc")
+        .def(
+            "set_stage",
+            [](TileFeatureLayer& self, std::optional<uint32_t> stage) { self.setStage(stage); },
+            py::arg("stage") = std::nullopt,
+            R"pbdoc(
+            Set or clear the staged-loading index for this feature tile.
+            )pbdoc")
+        .def(
             "ttl",
             [](TileFeatureLayer const& self) {return self.ttl() ? self.ttl()->count() : -1; },
             R"pbdoc(
