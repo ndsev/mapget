@@ -129,7 +129,10 @@ def main() -> int:
     examples_config = repo_root / "examples" / "config"
 
     sample_service = (examples_config / "sample-service.yaml").read_text(encoding="utf-8")
-    cache_path = str((out_dir / "mapget-cache.db").resolve())
+    cache_file = out_dir / "mapget-cache.db"
+    for stale_cache_file in (cache_file, out_dir / "mapget-cache.db-shm", out_dir / "mapget-cache.db-wal"):
+        stale_cache_file.unlink(missing_ok=True)
+    cache_path = str(cache_file.resolve())
     (out_dir / "sample-service.yaml").write_text(
         _patch_cache_dir(
             _patch_sample_service_yaml(sample_service, mapget_port, datasource_cpp_port, datasource_py_port),

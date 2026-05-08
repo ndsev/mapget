@@ -2,6 +2,7 @@
 
 #include "mapget/http-datasource/datasource-server.h"
 
+#include <chrono>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -9,10 +10,139 @@
 namespace py = pybind11;
 using namespace py::literals;
 
+namespace
+{
+py::object datasourceJsonToPython(nlohmann::json const& j)
+{
+    switch (j.type()) {
+    case nlohmann::json::value_t::null:
+        return py::none();
+    case nlohmann::json::value_t::boolean:
+        return py::bool_(j.get<bool>());
+    case nlohmann::json::value_t::number_integer:
+        return py::int_(j.get<int64_t>());
+    case nlohmann::json::value_t::number_unsigned:
+        return py::int_(j.get<uint64_t>());
+    case nlohmann::json::value_t::number_float:
+        return py::float_(j.get<double>());
+    case nlohmann::json::value_t::string:
+        return py::str(j.get<std::string>());
+    case nlohmann::json::value_t::array: {
+        py::list result;
+        for (auto const& item : j)
+            result.append(datasourceJsonToPython(item));
+        return result;
+    }
+    case nlohmann::json::value_t::object: {
+        py::dict result;
+        for (auto const& [key, value] : j.items())
+            result[py::str(key)] = datasourceJsonToPython(value);
+        return result;
+    }
+    default:
+        mapget::raise("Unsupported JSON value type.");
+    }
+}
+}
+
 void bindDataSourceServer(py::module_& m)
 {
     using namespace mapget;
     using namespace simfil;
+
+    py::enum_<LayerType>(m, "LayerType")
+        .value("FEATURES", LayerType::Features)
+        .value("HEIGHTMAP", LayerType::Heightmap)
+        .value("ORTHO_IMAGE", LayerType::OrthoImage)
+        .value("GLTF", LayerType::GLTF)
+        .value("SOURCE_DATA", LayerType::SourceData);
+
+    py::class_<MapTileKey>(m, "MapTileKey")
+        .def(py::init<>(), "Construct an empty map tile key.")
+        .def(py::init<std::string const&>(), py::arg("value"), "Parse a map tile key from its string form.")
+        .def(py::init<LayerType, std::string, std::string, TileId, uint32_t>(),
+            py::arg("layer_type"),
+            py::arg("map_id"),
+            py::arg("layer_id"),
+            py::arg("tile_id"),
+            py::arg("stage") = 0,
+            "Construct a map tile key from individual components.")
+        .def_readwrite("layer_type", &MapTileKey::layer_)
+        .def_readwrite("map_id", &MapTileKey::mapId_)
+        .def_readwrite("layer_id", &MapTileKey::layerId_)
+        .def_readwrite("tile_id", &MapTileKey::tileId_)
+        .def_readwrite("stage", &MapTileKey::stage_)
+        .def("to_string", &MapTileKey::toString, "Convert this key to its stable string form.")
+        .def("__str__", &MapTileKey::toString);
+
+    py::class_<LocateRequest>(m, "LocateRequest")
+        .def(py::init([](std::string mapId, std::string typeId, KeyValuePairVec const& featureIdParts) {
+                return LocateRequest(std::move(mapId), std::move(typeId), castToKeyValue(castToKeyValueView(featureIdParts)));
+            }),
+            py::arg("map_id"),
+            py::arg("type_id"),
+            py::arg("feature_id_parts"),
+            "Construct a locate request for a feature id.")
+        .def(py::init([](py::dict const& dict) {
+                py::module jsonModule = py::module::import("json");
+                auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
+                return LocateRequest(nlohmann::json::parse(jsonString));
+            }),
+            py::arg("dict"),
+            "Construct a locate request from a Python dictionary.")
+        .def_readwrite("map_id", &LocateRequest::mapId_)
+        .def_readwrite("type_id", &LocateRequest::typeId_)
+        .def_property("feature_id_parts",
+            [](LocateRequest const& self) {
+                KeyValuePairVec result;
+                for (auto const& [key, value] : self.featureId_) {
+                    std::visit(
+                        [&result, &key](auto&& vv) {
+                            result.emplace_back(key, vv);
+                        },
+                        value);
+                }
+                return result;
+            },
+            [](LocateRequest& self, KeyValuePairVec const& parts) {
+                self.setFeatureId(castToKeyValueView(parts));
+            })
+        .def("set_feature_id", [](LocateRequest& self, KeyValuePairVec const& parts) {
+                self.setFeatureId(castToKeyValueView(parts));
+            },
+            py::arg("feature_id_parts"),
+            "Replace the feature-id parts.")
+        .def("get_int_id_part", &LocateRequest::getIntIdPart,
+            py::arg("part_id"),
+            "Get an integer id part by name.")
+        .def("get_str_id_part", &LocateRequest::getStrIdPart,
+            py::arg("part_id"),
+            "Get a string id part by name.")
+        .def("to_dict", [](LocateRequest const& self) {
+                return datasourceJsonToPython(self.serialize());
+            },
+            "Serialize the request to a Python dictionary.")
+        .def("to_json", [](LocateRequest const& self) { return self.serialize().dump(); },
+            "Serialize the request to a JSON string.");
+
+    py::class_<LocateResponse, LocateRequest>(m, "LocateResponse")
+        .def(py::init<LocateRequest const&>(),
+            py::arg("request"),
+            "Construct a response initialized from a request.")
+        .def(py::init([](py::dict const& dict) {
+                py::module jsonModule = py::module::import("json");
+                auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
+                return LocateResponse(nlohmann::json::parse(jsonString));
+            }),
+            py::arg("dict"),
+            "Construct a locate response from a Python dictionary.")
+        .def_readwrite("tile_key", &LocateResponse::tileKey_)
+        .def("to_dict", [](LocateResponse const& self) {
+                return datasourceJsonToPython(self.serialize());
+            },
+            "Serialize the response to a Python dictionary.")
+        .def("to_json", [](LocateResponse const& self) { return self.serialize().dump(); },
+            "Serialize the response to a JSON string.");
 
     py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer")
         .def(
@@ -34,13 +164,18 @@ void bindDataSourceServer(py::module_& m)
                 }),
             R"pbdoc(
                 Construct a DataSource with a DataSourceInfo metadata instance.
-            )pbdoc",
+        )pbdoc",
             py::arg("info_dict"))
         .def(
             "on_tile_feature_request",
-            &DataSourceServer::onTileFeatureRequest,
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+                return self.onTileFeatureRequest(
+                    [callback = std::move(callback)](TileFeatureLayer::Ptr tile) {
+                        py::gil_scoped_acquire gil;
+                        callback(std::move(tile));
+                    });
+            },
             py::arg("callback"),
-            py::call_guard<py::gil_scoped_acquire>(),
             R"pbdoc(
             Set the Callback which will be invoked when a `/tile`-request for a
             feature layer is received.
@@ -51,16 +186,54 @@ void bindDataSourceServer(py::module_& m)
         )pbdoc")
         .def(
             "on_tile_sourcedata_request",
-            &DataSourceServer::onTileSourceDataRequest,
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+                return self.onTileSourceDataRequest(
+                    [callback = std::move(callback)](TileSourceDataLayer::Ptr tile) {
+                        py::gil_scoped_acquire gil;
+                        callback(std::move(tile));
+                    });
+            },
             py::arg("callback"),
-            py::call_guard<py::gil_scoped_acquire>(),
             R"pbdoc(
             Set the Callback which will be invoked when a `/tile`-request for a
             source-data layer is received.
-            The callback argument is a fresh TileFeatureLayer, which the callback must
-            fill according to the set TileFeatureLayer's layer info and tile id. If an
+            The callback argument is a fresh TileSourceDataLayer, which the callback must
+            fill according to the set TileSourceDataLayer's layer info and tile id. If an
             error occurs while filling the tile, the callback can use
-            TileFeatureLayer::setError(...) to signal the error downstream.
+            TileSourceDataLayer::setError(...) to signal the error downstream.
+        )pbdoc")
+        .def(
+            "on_locate_request",
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+                return self.onLocateRequest(
+                    [callback = std::move(callback)](LocateRequest const& request) {
+                        py::gil_scoped_acquire gil;
+                        return callback(request).cast<std::vector<LocateResponse>>();
+                    });
+            },
+            py::arg("callback"),
+            R"pbdoc(
+            Set the Callback which will be invoked when a `/locate` request is received.
+            The callback receives a LocateRequest and must return a list of LocateResponse objects.
+        )pbdoc")
+        .def(
+            "on_cache_expired",
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+                return self.onCacheExpired(
+                    [callback = std::move(callback)](
+                        MapTileKey const& tileKey,
+                        std::chrono::system_clock::time_point expiredAt) {
+                        py::gil_scoped_acquire gil;
+                        auto expiredAtUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                            expiredAt.time_since_epoch()).count();
+                        callback(tileKey, expiredAtUs);
+                    });
+            },
+            py::arg("callback"),
+            R"pbdoc(
+            Set the callback invoked when a service reports that an expired cached
+            tile for this datasource is being refreshed. The callback receives
+            (MapTileKey, expired_at_unix_microseconds).
         )pbdoc")
         .def(
             "go",
@@ -103,7 +276,7 @@ void bindDataSourceServer(py::module_& m)
         )pbdoc")
         .def(
             "info",
-            &DataSourceServer::info,
+            [](DataSourceServer& self) { return datasourceJsonToPython(self.info().toJson()); },
             R"pbdoc(
             Get the DataSourceInfo metadata which this instance was constructed with.
         )pbdoc");

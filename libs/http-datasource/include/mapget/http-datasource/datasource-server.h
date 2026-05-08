@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/featurelayer.h"
@@ -43,6 +44,13 @@ public:
      */
     DataSourceServer&
     onLocateRequest(std::function<std::vector<LocateResponse>(LocateRequest const&)> const&);
+
+    /**
+     * Set the callback which will be invoked when a service reports that a
+     * cached tile for this remote datasource expired and is being refreshed.
+     */
+    DataSourceServer& onCacheExpired(
+        std::function<void(MapTileKey const&, std::chrono::system_clock::time_point)> const&);
 
     /**
      * Get the DataSourceInfo metadata which this instance was constructed with.

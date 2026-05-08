@@ -48,13 +48,47 @@ def handle_tile_request(tile: mapget.TileFeatureLayer):
     # Add an attribute layer
     attr_layer: mapget.Object = feature.attribute_layers().new_layer("rules")
     attr: mapget.Attribute = attr_layer.new_attribute("SPEED_LIMIT")
-    # TODO: Add Python bindings for validities.
-    # attr.set_direction(mapget.Direction.POSITIVE)
+    attr.validity().new_offset_range(
+        mapget.ValidityGeometryOffsetType.RELATIVE_LENGTH,
+        0.0,
+        1.0,
+        direction=mapget.Direction.POSITIVE)
     attr.add_field("speedLimit", 50)
 
-    # Add a child feature ID
-    # TODO: Add Python bindings for relations.
-    # feature.children().append(tile.new_feature_id("Way", [("wayId", 10)]))
+    # Add a feature relation
+    target = tile.new_feature_id("Way", [("wayId", 10)])
+    relation = feature.add_relation("successor", target)
+    relation.source_validity().new_complete()
+
+    # Attach source-data provenance.
+    refs = tile.new_source_data_references([
+        ("RawWayLayer", "primary", mapget.SourceDataAddress(0, 128))
+    ])
+    feature.set_source_data_references(refs)
+
+
+def handle_source_data_request(tile: mapget.TileSourceDataLayer):
+    compound = tile.new_compound(2)
+    compound.set_schema_name("example.RawWay")
+    compound.set_source_data_address(mapget.SourceDataAddress(0, 128))
+    compound.add_field("wayId", 0)
+    compound.add_field("name", "Main St.")
+    tile.add_root(compound)
+
+
+def handle_locate_request(request: mapget.LocateRequest):
+    response = mapget.LocateResponse(request)
+    response.tile_key = mapget.MapTileKey(
+        mapget.LayerType.FEATURES,
+        request.map_id,
+        "WayLayer",
+        mapget.TileId(12345),
+        0)
+    return [response]
+
+
+def handle_cache_expired(tile_key: mapget.MapTileKey, expired_at_us: int):
+    print(f"Cached tile expired: {tile_key} at {expired_at_us}us.")
 
 
 # Instantiate a data source with a minimal mandatory set
@@ -71,12 +105,18 @@ ds = mapget.DataSourceServer({
                     }]]
                 }
             ]
+        },
+        "RawWayLayer": {
+            "type": "SourceData"
         }
     }, "mapId": "TestMap"
 })
 
 # Set the callback which is invoked when a tile is requested.
 ds.on_tile_feature_request(handle_tile_request)
+ds.on_tile_sourcedata_request(handle_source_data_request)
+ds.on_locate_request(handle_locate_request)
+ds.on_cache_expired(handle_cache_expired)
 
 # Parse port as optional first argument
 port = 0  # Pick random free port
