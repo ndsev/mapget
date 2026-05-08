@@ -35,6 +35,7 @@ public:
         simfil::ArrayIndex vertexArray,
         simfil::detail::mp_key key);
     PointNode(ModelNode const& baseNode, Validity::Data const* geomData, simfil::detail::mp_key key);
+    PointNode(ModelNode const& baseNode, simfil::detail::mp_key key);
 
 private:
     Point point_;

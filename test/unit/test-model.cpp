@@ -182,6 +182,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     auto featureForId2 = tile->newFeatureId(
         "Way",
         {{"wayIdI32", -42}, {"wayIdI64", -84}, {"wayIdUUID128", "0123456789abcdef"}});
+    auto externalFeatureId = tile->newFeatureId(
+        "Way",
+        {{"wayIdU32", 7}, {"wayIdU64", 11}, {"wayIdUUID128", "fedcba9876543210"}},
+        "ValidationMap");
 
     SECTION("firstGeometry")
     {
@@ -232,6 +236,18 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(std::get<std::string_view>(keyValuePairs[2].second) == "0123456789abcdef");
     }
 
+    SECTION("Detached feature IDs preserve optional external map IDs")
+    {
+        REQUIRE(featureForId1->toJson() == nlohmann::json("Way.42.84.0123456789abcdef"));
+        REQUIRE(externalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE(externalFeatureId->mapId() == "ValidationMap");
+        REQUIRE(externalFeatureId->externalMapId() == std::optional<std::string_view>{"ValidationMap"});
+        REQUIRE(externalFeatureId->toJson() == nlohmann::json{
+            {"id", "Way.7.11.fedcba9876543210"},
+            {"mapId", "ValidationMap"},
+        });
+    }
+
     SECTION("Evaluate simfil filter")
     {
         REQUIRE(feature1->evaluate("**.mozzarella.smell").value().toString() == "neutral");
@@ -274,6 +290,8 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
     SECTION("Serialization")
     {
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
+
         std::stringstream tileBytes;
         tile->write(tileBytes);
         auto serializedTile = tileBytes.str();
@@ -302,6 +320,9 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->ttl() == tile->ttl());
         REQUIRE(deserializedTile->mapVersion() == tile->mapVersion());
         REQUIRE(deserializedTile->info() == tile->info());
+        REQUIRE(deserializedTile->glbAttachment() != nullptr);
+        REQUIRE(deserializedTile->glbAttachment()->name_ == "city.glb");
+        REQUIRE(deserializedTile->glbAttachment()->bytes_ == std::vector<uint8_t>({0x67, 0x6c, 0x54, 0x46}));
 
         REQUIRE(deserializedTile->strings() == tile->strings());
         for (auto feature : *deserializedTile) {
@@ -319,6 +340,15 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(std::get<int64_t>(deserializedKeyValuePairs[1].second) == 84);
         REQUIRE(deserializedKeyValuePairs[2].first == "wayIdUUID128");
         REQUIRE(std::get<std::string_view>(deserializedKeyValuePairs[2].second) == "0123456789abcdef");
+
+        auto deserializedExternalFeatureId = deserializedTile->resolve<FeatureId>(
+            simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::ExternalFeatureIds, 2});
+        REQUIRE(deserializedExternalFeatureId);
+        REQUIRE(deserializedExternalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE(deserializedExternalFeatureId->mapId() == "ValidationMap");
+        REQUIRE(
+            deserializedExternalFeatureId->externalMapId() ==
+            std::optional<std::string_view>{"ValidationMap"});
     }
 
     SECTION("Stream")
@@ -327,6 +357,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         // but expect the Fields object to be sent only once.
         // Then we add another feature with a yet unseen field, send it,
         // and expect an update for the fields dictionary to be sent along.
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
 
         auto messageCount = 0;
         std::stringstream byteStream;
@@ -378,6 +409,11 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(readTiles[0]->numRoots() == 2);
         REQUIRE(readTiles[1]->numRoots() == 2);
         REQUIRE(readTiles[2]->numRoots() == 3);
+        REQUIRE(readTiles[0]->glbAttachment() != nullptr);
+        REQUIRE(readTiles[1]->glbAttachment() != nullptr);
+        REQUIRE(readTiles[2]->glbAttachment() != nullptr);
+        REQUIRE(readTiles[2]->glbAttachment()->name_ == "city.glb");
+        REQUIRE(readTiles[2]->glbAttachment()->bytes_ == std::vector<uint8_t>({0x67, 0x6c, 0x54, 0x46}));
     }
 
     SECTION("Find")
@@ -408,6 +444,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     {
         // Set TTL
         tile->setTtl(std::chrono::milliseconds(3600000));
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
 
         auto json = tile->toJson();
 
@@ -418,18 +455,19 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(json["mapId"] == "Tropico");
         REQUIRE(json["mapgetLayerId"] == "WayLayer");
 
-        // Verify idPrefix
-        REQUIRE(json.contains("idPrefix"));
-        REQUIRE(json["idPrefix"]["areaId"] == "TheBestArea");
-
-        // Verify timestamp is ISO 8601 format
-        REQUIRE(json["timestamp"].is_string());
-        std::string timestamp = json["timestamp"];
-        REQUIRE(timestamp.find("T") != std::string::npos);
-        REQUIRE(timestamp.back() == 'Z');
+        // Verify timestamp stays in the binary microsecond representation.
+        REQUIRE(json["timestamp"].is_number_integer());
+        REQUIRE(json["timestamp"].get<int64_t>() ==
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                tile->timestamp().time_since_epoch()).count());
 
         // Verify TTL
         REQUIRE(json["ttl"] == 3600000);
+
+        REQUIRE(json["glbAttachment"].is_object());
+        REQUIRE(json["glbAttachment"]["name"] == "city.glb");
+        REQUIRE(json["glbAttachment"]["mimeType"] == "model/gltf-binary");
+        REQUIRE(json["glbAttachment"]["sizeBytes"] == 4);
 
         // Verify features array exists
         REQUIRE(json["features"].is_array());
@@ -437,6 +475,21 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         // Verify no error object when no error is set
         REQUIRE(!json.contains("error"));
+    }
+
+    SECTION("GLB attachment can be replaced")
+    {
+        tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
+        REQUIRE(tile->glbAttachment() != nullptr);
+        REQUIRE(tile->glbAttachment()->name_ == "city.glb");
+
+        tile->setGlbAttachment("city-updated.glb", {0x01, 0x02});
+        REQUIRE(tile->glbAttachment() != nullptr);
+        REQUIRE(tile->glbAttachment()->name_ == "city-updated.glb");
+        REQUIRE(tile->glbAttachment()->bytes_ == std::vector<uint8_t>({0x01, 0x02}));
+
+        tile->clearGlbAttachment();
+        REQUIRE(tile->glbAttachment() == nullptr);
     }
 
     SECTION("toJson with error information")
@@ -764,7 +817,9 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
     auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
     attr->validity()->newDirection(Validity::Direction::Both);
 
-    auto relation = tile->newRelation("connectedTo", tile->newFeatureId("Way", {{"wayId", 2}}));
+    auto relation = tile->newRelation(
+        "connectedTo",
+        tile->newFeatureId("Way", {{"wayId", 2}}, "ValidationMap"));
     relation->sourceValidity()->newDirection(Validity::Direction::Positive);
     relation->targetValidity()->newDirection(Validity::Direction::Negative);
     feature->addRelation(relation);
@@ -778,7 +833,14 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
 
     auto materializedRelation = tile->resolve<Relation>(relation->addr());
     REQUIRE(materializedRelation);
+    REQUIRE(materializedRelation->target()->mapId() == "ValidationMap");
     auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
+    auto const targetNode = relationNode.get(StringPool::TargetStr);
+    REQUIRE(targetNode);
+    REQUIRE(targetNode->toJson() == nlohmann::json{
+        {"id", "Way.2"},
+        {"mapId", "ValidationMap"},
+    });
     auto const sourceValidityNode = relationNode.get(StringPool::SourceValidityStr);
     REQUIRE(sourceValidityNode);
     REQUIRE(sourceValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
@@ -786,6 +848,104 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
     auto const targetValidityNode = relationNode.get(StringPool::TargetValidityStr);
     REQUIRE(targetValidityNode);
     REQUIRE(targetValidityNode->toJson() == nlohmann::json{{"direction", "NEGATIVE"}});
+}
+
+TEST_CASE("Feature-id validities expose external map references", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("FeatureRefValidityNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "FeatureRefValidityNode",
+        "Tropico",
+        layerInfo,
+        strings);
+    auto feature = tile->newFeature("Way", {{"wayId", 1}});
+    auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
+
+    auto externalReference = tile->newFeatureId("Way", {{"wayId", 2}}, "ValidationMap");
+    attr->validity()->newFeatureId(externalReference, Validity::Direction::Positive);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto const validityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(validityNode);
+    REQUIRE(validityNode->toJson() == nlohmann::json{
+        {"direction", "POSITIVE"},
+        {"featureId", {
+            {"id", "Way.2"},
+            {"mapId", "ValidationMap"},
+        }},
+    });
+}
+
+TEST_CASE("Simple validities upgrade only their owning collection slot", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [[
+                    {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                ]]
+            }
+        ],
+        "stages": 3,
+        "stageLabels": ["Low-Fi", "High-Fi", "ADAS"],
+        "highFidelityStage": 1
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("SimpleValidityUpgradeIsolation");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SimpleValidityUpgradeIsolation",
+        "Tropico",
+        layerInfo,
+        strings);
+    auto feature = tile->newFeature("Way", {{"wayId", 1}});
+
+    auto attr = feature->attributeLayers()->newLayer("limits")->newAttribute("speed");
+    auto attrValidity = attr->validity()->newDirection(Validity::Direction::Positive);
+
+    auto relation = tile->newRelation(
+        "connectedTo",
+        tile->newFeatureId("Way", {{"wayId", 2}}, "ValidationMap"));
+    auto relationValidity = relation->targetValidity()->newDirection(Validity::Direction::Positive);
+    relationValidity->setGeometryStage(2U);
+    feature->addRelation(relation);
+
+    auto materializedAttr = tile->resolve<Attribute>(attr->addr());
+    REQUIRE(materializedAttr);
+    auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
+    auto attrValidityNode = attrNode.get(StringPool::ValidityStr);
+    REQUIRE(attrValidityNode);
+
+    auto materializedRelation = tile->resolve<Relation>(relation->addr());
+    REQUIRE(materializedRelation);
+    auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
+    auto targetValidityNode = relationNode.get(StringPool::TargetValidityStr);
+    REQUIRE(targetValidityNode);
+
+    REQUIRE(attrValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
+    REQUIRE(targetValidityNode->toJson() == nlohmann::json{
+        {"direction", "POSITIVE"},
+        {"geometryName", "ADAS"},
+    });
 }
 
 TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test.featurelayer.validity]")

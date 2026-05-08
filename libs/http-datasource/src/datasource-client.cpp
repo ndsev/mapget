@@ -158,6 +158,33 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
     return responseVector;
 }
 
+void RemoteDataSource::onCacheExpired(
+    MapTileKey const& tileKey,
+    std::chrono::system_clock::time_point expiredAt)
+{
+    auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
+
+    auto cacheExpiredReq = drogon::HttpRequest::newHttpRequest();
+    cacheExpiredReq->setMethod(drogon::Post);
+    cacheExpiredReq->setPath("/cache-expired");
+    cacheExpiredReq->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    cacheExpiredReq->setBody(nlohmann::json{
+        {"tileKey", tileKey.toString()},
+        {"expiredAt", std::chrono::duration_cast<std::chrono::microseconds>(
+            expiredAt.time_since_epoch()).count()},
+    }.dump());
+
+    auto [resultCode, response] = client->sendRequest(cacheExpiredReq);
+    if (resultCode != drogon::ReqResult::Ok || !response || (int)response->statusCode() >= 300) {
+        log().warn(
+            "Failed to notify remote data source about cache expiry for {}: {}",
+            tileKey.toString(),
+            resultCode != drogon::ReqResult::Ok
+                ? drogon::to_string(resultCode)
+                : response ? fmt::format("HTTP {}", (int)response->statusCode()) : "No remote response");
+    }
+}
+
 std::shared_ptr<RemoteDataSource> RemoteDataSource::fromHostPort(const std::string& hostPort)
 {
     auto delimiterPos = hostPort.find(':');
@@ -267,6 +294,15 @@ std::vector<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest&
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
     return remoteSource_->locate(req);
+}
+
+void RemoteDataSourceProcess::onCacheExpired(
+    MapTileKey const& tileKey,
+    std::chrono::system_clock::time_point expiredAt)
+{
+    if (!remoteSource_)
+        raise("Remote data source is not initialized.");
+    remoteSource_->onCacheExpired(tileKey, expiredAt);
 }
 
 }

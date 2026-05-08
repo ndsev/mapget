@@ -2,6 +2,8 @@
 #include "mapget/log.h"
 
 #include <drogon/HttpAppFramework.h>
+#include <drogon/HttpRequest.h>
+#include <drogon/HttpResponse.h>
 
 #include <algorithm>
 #include <atomic>
@@ -12,9 +14,11 @@
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "fmt/format.h"
@@ -38,6 +42,12 @@ struct MountPoint
     std::filesystem::path fsRoot;
 };
 
+struct RuntimeStaticMountRegistry
+{
+    std::mutex mutex;
+    std::vector<MountPoint> mounts;
+};
+
 [[nodiscard]] bool looksLikeWindowsDrivePath(std::string_view s)
 {
     if (s.size() < 3)
@@ -55,6 +65,133 @@ struct MountPoint
     if (prefix.size() > 1 && prefix.back() == '/')
         prefix.pop_back();
     return prefix;
+}
+
+[[nodiscard]] RuntimeStaticMountRegistry& runtimeStaticMountRegistry()
+{
+    static RuntimeStaticMountRegistry registry;
+    return registry;
+}
+
+[[nodiscard]] std::optional<MountPoint> normalizeMountPoint(
+    std::string urlPrefix,
+    std::filesystem::path fsRoot)
+{
+    urlPrefix = normalizeUrlPrefix(std::move(urlPrefix));
+
+    std::error_code ec;
+    fsRoot = std::filesystem::absolute(fsRoot, ec);
+    if (ec)
+        return std::nullopt;
+    fsRoot = std::filesystem::weakly_canonical(fsRoot, ec);
+    if (ec)
+        return std::nullopt;
+
+    auto exists = std::filesystem::exists(fsRoot, ec);
+    if (!exists || ec)
+        return std::nullopt;
+    auto isDirectory = std::filesystem::is_directory(fsRoot, ec);
+    if (!isDirectory || ec)
+        return std::nullopt;
+
+    return MountPoint{std::move(urlPrefix), std::move(fsRoot)};
+}
+
+[[nodiscard]] std::optional<MountPoint> parseMountPoint(std::string const& pathFromTo)
+{
+    std::string urlPrefix;
+    std::string fsRootStr;
+
+    const auto firstColon = pathFromTo.find(':');
+    if (firstColon == std::string::npos || looksLikeWindowsDrivePath(pathFromTo)) {
+        urlPrefix = "/";
+        fsRootStr = pathFromTo;
+    } else {
+        urlPrefix = pathFromTo.substr(0, firstColon);
+        fsRootStr = pathFromTo.substr(firstColon + 1);
+        if (fsRootStr.empty())
+            return std::nullopt;
+    }
+
+    return normalizeMountPoint(std::move(urlPrefix), std::filesystem::path(fsRootStr));
+}
+
+[[nodiscard]] bool pathIsWithin(std::filesystem::path const& path, std::filesystem::path const& root)
+{
+    auto pathIt = path.begin();
+    for (auto rootIt = root.begin(); rootIt != root.end(); ++rootIt, ++pathIt) {
+        if (pathIt == path.end() || *pathIt != *rootIt) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool requestPathMatchesPrefix(std::string_view requestPath, std::string_view urlPrefix)
+{
+    if (requestPath == urlPrefix)
+        return true;
+    return requestPath.size() > urlPrefix.size()
+        && requestPath.substr(0, urlPrefix.size()) == urlPrefix
+        && requestPath[urlPrefix.size()] == '/';
+}
+
+[[nodiscard]] std::optional<std::filesystem::path> resolveMountedRequestPath(
+    MountPoint const& mount,
+    std::string const& requestPath)
+{
+    if (!requestPathMatchesPrefix(requestPath, mount.urlPrefix))
+        return std::nullopt;
+
+    auto relativePath = requestPath == mount.urlPrefix
+        ? std::string()
+        : requestPath.substr(mount.urlPrefix.size() + 1);
+    if (relativePath.empty())
+        return std::nullopt;
+
+    std::error_code ec;
+    auto candidate = std::filesystem::weakly_canonical(mount.fsRoot / std::filesystem::path(relativePath), ec);
+    if (ec || !pathIsWithin(candidate, mount.fsRoot))
+        return std::nullopt;
+
+    auto exists = std::filesystem::exists(candidate, ec);
+    if (!exists || ec)
+        return std::nullopt;
+    auto isRegularFile = std::filesystem::is_regular_file(candidate, ec);
+    if (!isRegularFile || ec)
+        return std::nullopt;
+
+    return candidate;
+}
+
+[[nodiscard]] std::optional<drogon::HttpResponsePtr> dynamicStaticMountResponse(
+    drogon::HttpRequestPtr const& req)
+{
+    if (req->method() != drogon::Get && req->method() != drogon::Head) {
+        return std::nullopt;
+    }
+
+    std::vector<MountPoint> mounts;
+    {
+        auto& registry = runtimeStaticMountRegistry();
+        std::lock_guard lock(registry.mutex);
+        mounts = registry.mounts;
+    }
+    if (mounts.empty())
+        return std::nullopt;
+
+    std::sort(
+        mounts.begin(),
+        mounts.end(),
+        [](MountPoint const& a, MountPoint const& b) { return a.urlPrefix.size() > b.urlPrefix.size(); });
+
+    for (auto const& mount : mounts) {
+        if (auto localPath = resolveMountedRequestPath(mount, req->path())) {
+            return drogon::HttpResponse::newFileResponse(localPath->string(), "", drogon::CT_NONE, "", req);
+        }
+    }
+
+    return std::nullopt;
 }
 
 }  // namespace
@@ -149,6 +286,17 @@ void HttpServer::go(std::string const& interfaceAddr, uint16_t port, uint32_t wa
                         app.addALocation(m.urlPrefix, "", m.fsRoot.generic_string());
                     }
                 }
+
+                app.registerPreRoutingAdvice(
+                    [](drogon::HttpRequestPtr const& req,
+                       drogon::AdviceCallback&& callback,
+                       drogon::AdviceChainCallback&& chainCallback) {
+                        if (auto response = dynamicStaticMountResponse(req)) {
+                            callback(*response);
+                            return;
+                        }
+                        chainCallback();
+                    });
 
                 // Allow derived class to set up the server.
                 setup(app);
@@ -245,43 +393,77 @@ void HttpServer::waitForSignal()
 
 bool HttpServer::mountFileSystem(std::string const& pathFromTo)
 {
-    std::string urlPrefix;
-    std::string fsRootStr;
-
-    const auto firstColon = pathFromTo.find(':');
-    if (firstColon == std::string::npos || looksLikeWindowsDrivePath(pathFromTo)) {
-        urlPrefix = "/";
-        fsRootStr = pathFromTo;
-    } else {
-        urlPrefix = pathFromTo.substr(0, firstColon);
-        fsRootStr = pathFromTo.substr(firstColon + 1);
-        if (fsRootStr.empty())
-            return false;
-    }
-
-    urlPrefix = normalizeUrlPrefix(std::move(urlPrefix));
-
-    std::filesystem::path fsRoot(fsRootStr);
-    std::error_code ec;
-    fsRoot = std::filesystem::absolute(fsRoot, ec);
-    if (ec)
-        return false;
-
-    auto exists = std::filesystem::exists(fsRoot, ec);
-    if (!exists || ec)
-        return false;
-    auto isDirectory = std::filesystem::is_directory(fsRoot, ec);
-    if (!isDirectory || ec)
+    auto mount = parseMountPoint(pathFromTo);
+    if (!mount)
         return false;
 
     std::scoped_lock lock(impl_->mountsMutex_);
-    impl_->mounts_.emplace_back(MountPoint{std::move(urlPrefix), std::move(fsRoot)});
+    impl_->mounts_.emplace_back(std::move(*mount));
     return true;
 }
 
 void HttpServer::printPortToStdOut(bool enabled)
 {
     impl_->printPortToStdout_ = enabled;
+}
+
+bool ensureStaticMount(std::string const& urlPrefix, std::filesystem::path const& filesystemRoot)
+{
+    auto mount = normalizeMountPoint(urlPrefix, filesystemRoot);
+    if (!mount)
+        return false;
+
+    auto& registry = runtimeStaticMountRegistry();
+    std::lock_guard lock(registry.mutex);
+    for (auto const& existing : registry.mounts) {
+        if (existing.urlPrefix != mount->urlPrefix)
+            continue;
+        if (existing.fsRoot == mount->fsRoot)
+            return true;
+        log().warn(
+            "Refusing to remount static URL prefix {} from {} to {}.",
+            mount->urlPrefix,
+            existing.fsRoot.generic_string(),
+            mount->fsRoot.generic_string());
+        return false;
+    }
+
+    log().info(
+        "Static mount: {}:{}",
+        mount->urlPrefix,
+        mount->fsRoot.generic_string());
+    registry.mounts.emplace_back(std::move(*mount));
+    return true;
+}
+
+bool ensureStaticMount(std::string const& pathFromTo)
+{
+    auto mount = parseMountPoint(pathFromTo);
+    if (!mount)
+        return false;
+    return ensureStaticMount(mount->urlPrefix, mount->fsRoot);
+}
+
+bool removeStaticMount(std::string const& urlPrefix)
+{
+    auto normalizedUrlPrefix = normalizeUrlPrefix(urlPrefix);
+    auto& registry = runtimeStaticMountRegistry();
+    std::lock_guard lock(registry.mutex);
+    auto previousSize = registry.mounts.size();
+    registry.mounts.erase(
+        std::remove_if(
+            registry.mounts.begin(),
+            registry.mounts.end(),
+            [&normalizedUrlPrefix](MountPoint const& mount) {
+                return mount.urlPrefix == normalizedUrlPrefix;
+            }),
+        registry.mounts.end());
+
+    if (registry.mounts.size() == previousSize)
+        return false;
+
+    log().info("Removed static mount: {}", normalizedUrlPrefix);
+    return true;
 }
 
 }  // namespace mapget

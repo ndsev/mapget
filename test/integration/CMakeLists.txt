@@ -11,6 +11,12 @@ add_wheel_test(test-local-example
     # that does not require networking
     -f "./cpp-sample-local-service")
 
+add_wheel_test(test-python-bindings-smoke
+  WORKING_DIRECTORY
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS
+    -f "python ${CMAKE_CURRENT_LIST_DIR}/python-bindings-smoke.py")
+
 if (NOT WITH_COVERAGE)
   # Python wheels currently don't play well with gcov.
   message(STATUS "WITH_COVERAGE: ${WITH_COVERAGE}: Enabling wheel-based integration test.")

@@ -214,3 +214,50 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     fs::remove_all(tempDir);
     DataSourceConfigService::get().end();
 }
+
+TEST_CASE("Datasource enabled flag is handled generically", "[DataSourceConfig]")
+{
+    auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_test_ds_enabled");
+    fs::create_directory(tempDir);
+    auto tempConfigPath = tempDir / "temp_config.yaml";
+
+    DataSourceConfigService::get().reset();
+    DataSourceConfigService::get().registerDataSourceType(
+        "TestDataSource",
+        [](const YAML::Node&) -> DataSource::Ptr
+        { return std::make_shared<TestDataSource>(); });
+
+    auto cache = std::make_shared<MemCache>();
+    Service service(cache, true);
+
+    {
+        std::ofstream out(tempConfigPath, std::ios_base::trunc);
+        out << R"(
+sources:
+  - type: TestDataSource
+    enabled: false
+  - type: TestDataSource
+    enabled: true
+)";
+        out.flush();
+        out.close();
+        syncFile(tempConfigPath);
+    }
+
+    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
+    waitForCondition([&service]() { return service.info().size() == 1; });
+
+    auto stats = DataSourceConfigService::get().getDataSourceConfigStats();
+    REQUIRE(stats.configured == 2);
+    REQUIRE(stats.enabled == 1);
+    REQUIRE(stats.disabled == 1);
+
+    auto serviceStats = service.getStatistics();
+    REQUIRE(serviceStats["datasource-config"]["configured"].get<size_t>() == 2);
+    REQUIRE(serviceStats["datasource-config"]["enabled"].get<size_t>() == 1);
+    REQUIRE(serviceStats["datasource-config"]["disabled"].get<size_t>() == 1);
+    REQUIRE(serviceStats["datasource-config"]["construction-failed"].get<size_t>() == 0);
+
+    fs::remove_all(tempDir);
+    DataSourceConfigService::get().end();
+}

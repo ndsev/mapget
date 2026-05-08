@@ -20,6 +20,9 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <string_view>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -72,7 +75,6 @@ nlohmann::json gridDataSourceSchema()
     return {
         {"type", "object"},
         {"properties", {
-            {"enabled", {{"type", "boolean"}, {"title", "Enabled"}}},
             {"mapId", {{"type", "string"}, {"title", "Map ID"}}},
             {"spatialCoherence", {{"type", "boolean"}}},
             {"collisionGridSize", {{"type", "number"}}},
@@ -102,11 +104,170 @@ nlohmann::json geoJsonFolderSchema()
                 {"title", "With Attribute Layers"},
                 {"description", "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
                 {"default", true}
+            }},
+            {"tilePathTemplate", {
+                {"type", "string"},
+                {"title", "Tile Path Template"},
+                {"description", "Relative path template used with explicit dataSourceInfo, e.g. `{layerId}/{tileId}.geojson`."}
+            }},
+            {"dataSourceInfo", {
+                {"title", "Datasource Info"},
+                {"description", "Inline datasource info object, local YAML/JSON file path, or HTTP(S) URL."},
+                {"oneOf", nlohmann::json::array({
+                    nlohmann::json{{"type", "string"}},
+                    nlohmann::json{{"type", "object"}}
+                })}
             }}
         }},
         {"required", nlohmann::json::array({"folder"})},
         {"additionalProperties", false}
     };
+}
+
+nlohmann::json geoJsonEndpointSchema()
+{
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"baseUrl", {
+                {"type", "string"},
+                {"title", "Base URL"},
+                {"description", "Base HTTP(S) URL used to fetch GeoJSON tiles."}
+            }},
+            {"mapId", {
+                {"type", "string"},
+                {"title", "Map ID"},
+                {"description", "Custom map identifier. If not provided, derived from the baseUrl."}
+            }},
+            {"withAttrLayers", {
+                {"type", "boolean"},
+                {"title", "With Attribute Layers"},
+                {"description", "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
+                {"default", true}
+            }},
+            {"tileUrlTemplate", {
+                {"type", "string"},
+                {"title", "Tile URL Template"},
+                {"description", "URL or relative path template used to fetch tiles, e.g. `{layerId}/{tileId}.geojson`."}
+            }},
+            {"dataSourceInfo", {
+                {"title", "Datasource Info"},
+                {"description", "Inline datasource info object, local YAML/JSON file path, or HTTP(S) URL."},
+                {"oneOf", nlohmann::json::array({
+                    nlohmann::json{{"type", "string"}},
+                    nlohmann::json{{"type", "object"}}
+                })}
+            }}
+        }},
+        {"required", nlohmann::json::array({"baseUrl"})},
+        {"additionalProperties", false}
+    };
+}
+
+[[nodiscard]] bool looksLikeHttpUrl(std::string_view value)
+{
+    static constexpr char cleartextScheme[] = {'h', 't', 't', 'p', '\0'};
+    static constexpr char tlsScheme[] = {'h', 't', 't', 'p', 's', '\0'};
+    constexpr std::string_view delimiter = "://";
+    auto hasScheme = [&](std::string_view scheme) {
+        return value.size() > scheme.size() + delimiter.size() &&
+               value.compare(0, scheme.size(), scheme) == 0 &&
+               value.compare(scheme.size(), delimiter.size(), delimiter) == 0;
+    };
+    return hasScheme({cleartextScheme, 4}) || hasScheme({tlsScheme, 5});
+}
+
+[[nodiscard]] std::string trimCopy(std::string value)
+{
+    auto isWhitespace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char ch) {
+        return !isWhitespace(static_cast<unsigned char>(ch));
+    }));
+    value.erase(std::find_if(value.rbegin(), value.rend(), [&](char ch) {
+        return !isWhitespace(static_cast<unsigned char>(ch));
+    }).base(), value.end());
+    return value;
+}
+
+[[nodiscard]] std::filesystem::path configDirectory()
+{
+    if (auto configPath = DataSourceConfigService::get().getConfigFilePath()) {
+        return std::filesystem::path(*configPath).parent_path();
+    }
+    return std::filesystem::current_path();
+}
+
+void applyStructuredDocumentOption(
+    const YAML::Node& config,
+    std::optional<nlohmann::json>& inlineJsonOut,
+    std::string& locationOut)
+{
+    if (!config) {
+        return;
+    }
+
+    if (config.IsMap() || config.IsSequence()) {
+        inlineJsonOut = yamlToJson(config, false);
+        return;
+    }
+
+    if (!config.IsScalar()) {
+        throw std::runtime_error("`dataSourceInfo` must be a mapping or scalar string.");
+    }
+
+    auto value = trimCopy(config.as<std::string>());
+    if (value.empty()) {
+        return;
+    }
+
+    if (value.front() == '{' || value.front() == '[') {
+        inlineJsonOut = parseStructuredDocument(value, "inline dataSourceInfo");
+        return;
+    }
+
+    if (looksLikeHttpUrl(value)) {
+        locationOut = value;
+        return;
+    }
+
+    auto path = std::filesystem::path(value);
+    if (path.is_relative())
+        path = configDirectory() / path;
+    locationOut = path.lexically_normal().string();
+}
+
+[[nodiscard]] geojsonsource::GeoJsonSourceOptions makeGeoJsonFolderOptions(YAML::Node const& config)
+{
+    geojsonsource::GeoJsonSourceOptions options;
+    if (auto withAttributeLayersNode = config["withAttrLayers"])
+        options.withAttrLayers = withAttributeLayersNode.as<bool>();
+    if (auto mapIdNode = config["mapId"])
+        options.mapId = mapIdNode.as<std::string>();
+    if (auto tilePathTemplateNode = config["tilePathTemplate"])
+        options.tilePathTemplate = tilePathTemplateNode.as<std::string>();
+    applyStructuredDocumentOption(
+        config["dataSourceInfo"],
+        options.dataSourceInfoJson,
+        options.dataSourceInfoLocation);
+    return options;
+}
+
+[[nodiscard]] geojsonsource::GeoJsonEndpointSourceOptions makeGeoJsonEndpointOptions(YAML::Node const& config)
+{
+    geojsonsource::GeoJsonEndpointSourceOptions options;
+    if (auto baseUrlNode = config["baseUrl"])
+        options.baseUrl = baseUrlNode.as<std::string>();
+    if (auto withAttributeLayersNode = config["withAttrLayers"])
+        options.withAttrLayers = withAttributeLayersNode.as<bool>();
+    if (auto mapIdNode = config["mapId"])
+        options.mapId = mapIdNode.as<std::string>();
+    if (auto tileUrlTemplateNode = config["tileUrlTemplate"])
+        options.tileUrlTemplate = tileUrlTemplateNode.as<std::string>();
+    applyStructuredDocumentOption(
+        config["dataSourceInfo"],
+        options.dataSourceInfoJson,
+        options.dataSourceInfoLocation);
+    return options;
 }
 
 class ConfigYAML : public CLI::Config
@@ -228,29 +389,28 @@ void registerDefaultDatasourceTypes() {
         dataSourceProcessSchema());
     service.registerDataSourceType(
         "GridDataSource",
-        [](YAML::Node const& config) -> DataSource::Ptr {
-            // Check if enabled flag is present and set to false
-            if (config["enabled"].IsDefined() && !config["enabled"].as<bool>()) {
-                return nullptr;  // Skip this datasource
-            }
-            return std::make_shared<gridsource::GridDataSource>(config);
-        },
+        [](YAML::Node const& config) -> DataSource::Ptr { return std::make_shared<gridsource::GridDataSource>(config); },
         gridDataSourceSchema());
     service.registerDataSourceType(
         "GeoJsonFolder",
         [](YAML::Node const& config) -> DataSource::Ptr {
             if (auto folder = config["folder"]) {
-                bool withAttributeLayers = true;
-                if (auto withAttributeLayersNode = config["withAttrLayers"])
-                    withAttributeLayers = withAttributeLayersNode.as<bool>();
-                std::string mapId;
-                if (auto mapIdNode = config["mapId"])
-                    mapId = mapIdNode.as<std::string>();
-                return std::make_shared<geojsonsource::GeoJsonSource>(folder.as<std::string>(), withAttributeLayers, mapId);
+                return std::make_shared<geojsonsource::GeoJsonSource>(
+                    folder.as<std::string>(),
+                    makeGeoJsonFolderOptions(config));
             }
             throw std::runtime_error("Missing `folder` field.");
         },
         geoJsonFolderSchema());
+    service.registerDataSourceType(
+        "GeoJsonEndpoint",
+        [](YAML::Node const& config) -> DataSource::Ptr {
+            auto options = makeGeoJsonEndpointOptions(config);
+            if (options.baseUrl.empty())
+                throw std::runtime_error("Missing `baseUrl` field.");
+            return std::make_shared<geojsonsource::GeoJsonEndpointSource>(std::move(options));
+        },
+        geoJsonEndpointSchema());
 }
 
 void loadConfigSchemaPatch(const std::string& schemaPath)
@@ -282,7 +442,10 @@ struct ServeCommand
     std::string cachePath_;
     int64_t cacheMaxTiles_ = 1024;
     bool clearCache_ = false;
+    bool allowPostConfigEndpoint_ = false;
+    bool noGetConfigEndpoint_ = false;
     std::string webapp_;
+    std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
     uint64_t memoryTrimIntervalBinary_ = HttpServiceConfig{}.memoryTrimIntervalBinary;  // Use default from config
     uint64_t memoryTrimIntervalJson_ = HttpServiceConfig{}.memoryTrimIntervalJson;      // Use default from config
@@ -332,14 +495,18 @@ struct ServeCommand
             "-w,--webapp",
             webapp_,
             "Serve a static web application, in the format [<url-scope>:]<filesystem-path>.");
+        serveCmd->add_option(
+            "--static-mount",
+            staticMounts_,
+            "Serve an additional static filesystem mount, in the format [<url-scope>:]<filesystem-path>. Can be specified multiple times.");
         serveCmd->add_flag(
             "--allow-post-config",
-            isPostConfigEndpointEnabled_,
+            allowPostConfigEndpoint_,
             "Allow the POST /config endpoint.");
         serveCmd->add_flag(
             "--no-get-config",
-            isGetConfigEndpointEnabled_,
-            "Allow the GET /config endpoint.");
+            noGetConfigEndpoint_,
+            "Disable the GET /config datasource model endpoint.");
         serveCmd->add_option(
             "--memory-trim-binary-interval",
             memoryTrimIntervalBinary_,
@@ -362,6 +529,8 @@ struct ServeCommand
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
         }
+        setPostConfigEndpointEnabled(allowPostConfigEndpoint_);
+        setGetConfigEndpointEnabled(!noGetConfigEndpoint_);
         log().info("Starting server on port {}.", port_);
 
         std::shared_ptr<Cache> cache;
@@ -457,6 +626,16 @@ struct ServeCommand
             if (!srv.mountFileSystem(webapp_)) {
                 log().error("  ...failed to mount!");
                 raise("Failed to mount webapp filesystem path.");
+            }
+        }
+
+        if (!staticMounts_.empty()) {
+            for (auto const& staticMount : staticMounts_) {
+                log().info("Static mount: {}", staticMount);
+                if (!srv.mountFileSystem(staticMount)) {
+                    log().error("  ...failed to mount!");
+                    raise("Failed to mount static filesystem path.");
+                }
             }
         }
 

@@ -38,10 +38,14 @@ void TileLayerStream::Reader::read(const std::string_view& bytes)
     while (continueReading()) {}
 
     if (readOffset_ == buffer_.size()) {
+        // Fully consumed buffers are reset eagerly so long-running streams do
+        // not retain capacity proportional to peak message size.
         buffer_.clear();
         readOffset_ = 0;
     }
     else if (readOffset_ > 65536 && (readOffset_ * 2 > buffer_.size())) {
+        // For partial consumption, compact only once the consumed prefix is
+        // large enough to pay for the memmove.
         buffer_.erase(
             buffer_.begin(),
             buffer_.begin() + static_cast<std::ptrdiff_t>(readOffset_));
@@ -58,6 +62,8 @@ bool TileLayerStream::Reader::continueReading()
 {
     if (currentPhase_ == Phase::ReadHeader)
     {
+        // The stream is framed, so parsing alternates strictly between header
+        // and payload phases until the current message is complete.
         size_t headerBytesRead = 0;
         auto unreadBytes = std::span<const uint8_t>(buffer_).subspan(readOffset_);
         if (readMessageHeader(unreadBytes, nextValueType_, nextValueSize_, &headerBytesRead)) {
@@ -99,6 +105,8 @@ bool TileLayerStream::Reader::continueReading()
     }
     else if (nextValueType_ == MessageType::StringPool)
     {
+        // String-pool updates are applied in-band so subsequent layer payloads
+        // in the same stream can resolve freshly introduced string ids.
         size_t nodeIdBytesRead = 0;
         auto stringPoolNodeId = StringPool::readDataSourceNodeId(payload, 0, &nodeIdBytesRead);
         auto result = stringPoolProvider_->getStringPool(stringPoolNodeId)->read(payload, nodeIdBytesRead);
@@ -141,6 +149,8 @@ bool TileLayerStream::Reader::readMessageHeader(
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
     if (!protocolVersion.isCompatible(CurrentProtocolVersion)) {
+        // Stream compatibility is defined at the Version major/minor level.
+        // Patch releases may still exchange the same wire format.
         raise(fmt::format(
             "Unable to read message with version {} using version {}.",
             protocolVersion.toString(),
@@ -172,13 +182,17 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
 
             if (highestStringKnownToClient < highestString)
             {
-                // Need to send the client an update for the string pool.
+                // String pools are streamed ahead of tile payloads so ids inside
+                // the upcoming layer bytes are immediately resolvable client-side.
                 std::string serializedStrings;
                 serializedStrings.reserve(1024); // Pre-allocate for typical string pool update
                 {
                     std::ostringstream stringsStream;
                     auto stringUpdateOffset = 0;
                     if (differentialStringUpdates_)
+                        // Differential mode sends only strings the client has
+                        // not acknowledged yet; caches must disable this and
+                        // store complete pools instead.
                         stringUpdateOffset = highestStringKnownToClient + 1;
                     strings->write(stringsStream, stringUpdateOffset);
                     serializedStrings = stringsStream.str();
@@ -210,6 +224,7 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
         case mapget::LayerType::SourceData:
             return MessageType::TileSourceDataLayer;
         default:
+            // Other layer types currently have no binary stream encoding.
             raiseFmt("Unsupported layer type: {}", static_cast<int>(layerType));
         }
         return MessageType::None;
@@ -221,7 +236,7 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
 void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::MessageType msgType)
 {
     // TODO refactor the preparation of tile layer & field dicts storage format
-    //  such that the encoding logic is not split over multiple functions.
+    // such that the encoding logic is not split over multiple functions.
 
     // Calculate actual header size
     // Protocol version: ~10 bytes (depending on version object size)
@@ -245,7 +260,8 @@ void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::
         message = headerStream.str();
     }
     
-    // Append content with move semantics
+    // Append the framed payload bytes after the header to produce one contiguous
+    // message for the caller's transport layer.
     message.append(std::move(bytes));
     
     // Send with move semantics
@@ -267,8 +283,9 @@ std::shared_ptr<StringPool> TileLayerStream::StringPoolCache::getStringPool(cons
         }
     }
     {
-        std::unique_lock stringPoolWriteLock(stringPoolCacheMutex_, std::defer_lock);
-        // Was it inserted already now?
+        std::unique_lock stringPoolWriteLock(stringPoolCacheMutex_);
+        // Another thread may have populated the cache between the shared-read
+        // miss and taking the write lock, so check again before inserting.
         auto it = stringPoolPerNodeId_.find(std::string(nodeId));
         if (it != stringPoolPerNodeId_.end())
             return it->second;

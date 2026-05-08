@@ -11,6 +11,7 @@ namespace mapget
 
 namespace
 {
+/** Convert a validity direction enum into the exported JSON token. */
 std::string_view directionToString(Validity::Direction const& d)
 {
     switch (d) {
@@ -23,6 +24,7 @@ std::string_view directionToString(Validity::Direction const& d)
     return "?";
 }
 
+/** Convert a transition endpoint enum into the exported JSON token. */
 std::string_view transitionEndToString(Validity::TransitionEnd const& end)
 {
     switch (end) {
@@ -32,6 +34,41 @@ std::string_view transitionEndToString(Validity::TransitionEnd const& end)
     return "?";
 }
 
+constexpr uint64_t SimpleValidityOwnerTag = 0x01ull << 56U;
+
+/** Encode the owning validity-collection slot for a compact simple validity. */
+int64_t encodeSimpleValidityOwner(simfil::ArrayIndex members, uint32_t elementIndex)
+{
+    if (members == simfil::InvalidArrayIndex || members > 0x00ffffffu) {
+        raise("SimpleValidity owner members index out of range.");
+    }
+
+    return static_cast<int64_t>(
+        SimpleValidityOwnerTag |
+        (static_cast<uint64_t>(members) << 32U) |
+        static_cast<uint64_t>(elementIndex));
+}
+
+/** Decode the owning validity-collection slot for a compact simple validity. */
+std::optional<std::pair<simfil::ArrayIndex, uint32_t>> decodeSimpleValidityOwner(
+    simfil::ScalarValueType const& runtimeData)
+{
+    auto const* encodedOwner = std::get_if<int64_t>(&runtimeData);
+    if (!encodedOwner) {
+        return std::nullopt;
+    }
+
+    auto const raw = static_cast<uint64_t>(*encodedOwner);
+    if ((raw & 0xff00000000000000ull) != SimpleValidityOwnerTag) {
+        return std::nullopt;
+    }
+
+    return std::pair{
+        static_cast<simfil::ArrayIndex>((raw >> 32U) & 0x00ffffffu),
+        static_cast<uint32_t>(raw & 0xffffffffu)};
+}
+
+/** Pack both transition endpoint flags into the compact stored bitfield. */
 uint8_t packTransitionEnds(
     Validity::TransitionEnd fromConnectedEnd,
     Validity::TransitionEnd toConnectedEnd)
@@ -41,16 +78,19 @@ uint8_t packTransitionEnds(
         (static_cast<uint8_t>(toConnectedEnd) << 1U));
 }
 
+/** Decode the source endpoint from the stored transition bitfield. */
 Validity::TransitionEnd unpackFromConnectedEnd(uint8_t packedEnds)
 {
     return (packedEnds & 0x1U) != 0 ? Validity::End : Validity::Start;
 }
 
+/** Decode the target endpoint from the stored transition bitfield. */
 Validity::TransitionEnd unpackToConnectedEnd(uint8_t packedEnds)
 {
     return (packedEnds & 0x2U) != 0 ? Validity::End : Validity::Start;
 }
 
+/** Pick the line geometry that should be used for line-based validity resolution. */
 model_ptr<Geometry> resolveLineGeometry(
     model_ptr<GeometryCollection> const& geometryCollection,
     std::optional<uint32_t> referencedStage)
@@ -67,11 +107,13 @@ struct TransitionSegment
     Point inner_;
 };
 
+/** Compare two validity points with a small tolerance to absorb numeric noise. */
 bool pointsCoincide(Point const& left, Point const& right)
 {
     return left.distanceTo(right) < 1e-9;
 }
 
+/** Resolve the endpoint segment that participates in a semantic feature transition. */
 std::optional<TransitionSegment> resolveTransitionSegment(
     model_ptr<Feature> const& feature,
     Validity::TransitionEnd connectedEnd,
@@ -91,6 +133,8 @@ std::optional<TransitionSegment> resolveTransitionSegment(
     auto outerIndex = innerIndex;
     auto const innerPoint = geometry->pointAt(innerIndex);
     if (connectedEnd == Validity::End) {
+        // Transition endpoints may be repeated at the tail, so walk backwards
+        // until the first distinct point to get a visible outgoing segment.
         for (auto pointIndex = innerIndex; pointIndex-- > 0;) {
             if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
                 outerIndex = pointIndex;
@@ -98,6 +142,8 @@ std::optional<TransitionSegment> resolveTransitionSegment(
             }
         }
     } else {
+        // Likewise, repeated points at the head must be skipped when entering
+        // a transition from the start of a polyline.
         for (auto pointIndex = innerIndex + 1U; pointIndex < numPoints; ++pointIndex) {
             if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
                 outerIndex = pointIndex;
@@ -111,16 +157,20 @@ std::optional<TransitionSegment> resolveTransitionSegment(
     };
 }
 
+/** Apply direction semantics to a resolved geometry after the shape has been computed. */
 SelfContainedGeometry applyDirectionToGeometry(
     SelfContainedGeometry geometry,
     Validity::Direction direction)
 {
     if (direction == Validity::Negative && geometry.points_.size() > 1) {
+        // Negative direction reuses the same geometric support but traverses it
+        // against the feature digitization order.
         std::reverse(geometry.points_.begin(), geometry.points_.end());
     }
     return geometry;
 }
 
+/** Map a stored geometry stage back to the optional exported `geometryName`. */
 std::optional<std::string_view> geometryNameForStage(
     TileFeatureLayer const& model,
     std::optional<uint32_t> geometryStage)
@@ -130,6 +180,7 @@ std::optional<std::string_view> geometryNameForStage(
     }
     auto const& layerInfo = *model.layerInfo();
     if (*geometryStage <= layerInfo.highFidelityStage_) {
+        // High-fidelity geometries intentionally omit a stage label in JSON.
         return std::nullopt;
     }
     if (*geometryStage >= layerInfo.stageLabels_.size()) {
@@ -155,12 +206,24 @@ void Validity::ensureMaterialized()
         raise("Cannot materialize validity from non-simple address.");
     }
 
-    auto upgradedAddress = model().materializeSimpleValidity(simpleAddress, simpleDirection_);
+    auto owner = decodeSimpleValidityOwner(ModelNode::data_);
+    if (!owner) {
+        raise("Cannot materialize detached simple validity without owner context.");
+    }
+
+    // Simple direction-only validities stay compact until one concrete
+    // occurrence needs richer state. Upgrade only the owning collection slot.
+    auto upgradedAddress = model().materializeSimpleValidity(
+        simpleAddress,
+        owner->first,
+        owner->second,
+        simpleDirection_);
     auto upgraded = model().resolve<Validity>(upgradedAddress);
     if (!upgraded || !upgraded->data_) {
         raise("Failed to materialize simple validity.");
     }
     data_ = upgraded->data_;
+    fields_ = upgraded->fields_;
 }
 
 model_ptr<FeatureId> Validity::featureId() const
@@ -204,6 +267,17 @@ Validity::Validity(
     }
 }
 
+Validity::Validity(
+    Validity::Direction direction,
+    simfil::ModelConstPtr layer,
+    simfil::ModelNodeAddress a,
+    simfil::ScalarValueType runtimeData,
+    simfil::detail::mp_key key)
+    : Validity(direction, std::move(layer), a, key)
+{
+    ModelNode::data_ = std::move(runtimeData);
+}
+
 Validity::Validity(Validity::Data* data,
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a,
@@ -231,6 +305,8 @@ Validity::Validity(Validity::Data* data,
     }
 
     if (data_->geomDescrType_ == SimpleGeometry) {
+        // SimpleGeometry stores an explicit geometry node, so no offset or
+        // transition metadata fields are exposed in the JSON view.
         fields_.emplace_back(
             StringPool::GeometryStr,
             [](Validity const& self)
@@ -242,6 +318,8 @@ Validity::Validity(Validity::Data* data,
     }
 
     if (data_->geomDescrType_ == FeatureTransition) {
+        // Semantic transitions serialize as feature references plus endpoint
+        // metadata instead of an explicit geometry payload.
         fields_.emplace_back(
             StringPool::TransitionNumberStr,
             [](Validity const& self)
@@ -304,6 +382,8 @@ Validity::Validity(Validity::Data* data,
             });
     }
 
+    // Offset-point and offset-range validities share the same storage; the
+    // exported field names depend on the selected offset interpretation.
     auto exposeOffsetPoint = [this](StringId fieldName, uint32_t pointIndex, Point const& p)
     {
         fields_.emplace_back(
@@ -342,9 +422,7 @@ Validity::Validity(Validity::Data* data,
             StringPool::FeatureIdStr,
             [](Validity const& self)
             {
-                return model_ptr<simfil::ValueNode>::make(
-                    self.featureId()->toString(),
-                    self.model_);
+                return self.featureId();
             });
     }
 }
@@ -643,7 +721,8 @@ SelfContainedGeometry Validity::computeGeometry(
         return {};
     }
 
-    // Resolve validity geometry by stage first (if specified), then by line type.
+    // Line-based validities always resolve against the preferred line geometry
+    // for the chosen stage, not against arbitrary polygons or meshes.
     auto geometry = resolveLineGeometry(geometryCollection, referencedStage);
 
     if (!geometry) {
@@ -712,6 +791,8 @@ SelfContainedGeometry Validity::computeGeometry(
         }
 
         if (endPointIndex < startPointIndex) {
+            // Buffer indices are treated as an inclusive range independent of
+            // authoring order, so normalize to ascending storage order first.
             std::swap(startPointIndex, endPointIndex);
         }
 
@@ -879,15 +960,53 @@ model_ptr<Validity> MultiValidity::newComplete(Validity::Direction direction)
 
 model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
 {
+    auto const elementIndex = size();
     const auto simpleAddr = simfil::ModelNodeAddress{
         TileFeatureLayer::ColumnId::SimpleValidity,
         static_cast<uint32_t>(direction)};
-    if (auto upgradedAddress = model().upgradedSimpleValidityAddress(simpleAddr)) {
-        appendInternal(model_ptr<simfil::ModelNode>::make(model_, *upgradedAddress));
-        return model().resolve<Validity>(*upgradedAddress);
-    }
     appendInternal(model_ptr<simfil::ModelNode>::make(model_, simpleAddr));
-    return model().resolve<Validity>(simpleAddr);
+    return model().resolve<Validity>(
+        simpleAddr,
+        encodeSimpleValidityOwner(members_, elementIndex));
+}
+
+ModelNode::Ptr MultiValidity::at(int64_t i) const
+{
+    if (i < 0 || i >= static_cast<int64_t>(storage_->size(members_))) {
+        return {};
+    }
+
+    auto value = storage_->at(members_, static_cast<size_t>(i));
+    if (!value) {
+        return {};
+    }
+
+    auto const memberAddress = value->get();
+    if (memberAddress.column() != TileFeatureLayer::ColumnId::SimpleValidity) {
+        return ModelNode::Ptr::make(model_, memberAddress);
+    }
+
+    return ModelNode::Ptr::make(
+        model_,
+        memberAddress,
+        encodeSimpleValidityOwner(members_, static_cast<uint32_t>(i)));
+}
+
+bool MultiValidity::iterate(ModelNode::IterCallback const& cb) const
+{
+    bool cont = true;
+    auto resolveAndCb = simfil::Model::Lambda([&cb, &cont](auto&& node) { cont = cb(node); });
+    for (int64_t index = 0; index < static_cast<int64_t>(size()); ++index) {
+        auto value = at(index);
+        if (!value) {
+            return false;
+        }
+        model_->resolve(*value, resolveAndCb);
+        if (!cont) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }

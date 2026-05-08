@@ -53,6 +53,21 @@ mapget --config examples/config/sample-service.yaml serve
 
 When `--config` is used, the HTTP service subscribes to the referenced YAML file. Any changes to its `sources` section are picked up while the server is running. Details of that file format are described in `mapget-config.md`.
 
+## Serving static files
+
+`mapget serve` can expose static filesystem directories in addition to datasource endpoints:
+
+```bash
+mapget serve \
+  --port 8080 \
+  --webapp /srv/my-ui \
+  --static-mount /assets:/srv/assets
+```
+
+`--webapp` is the single application document root, usually mounted at `/`. `--static-mount` is for additional static aliases and can be specified multiple times. Both options use `[<url-scope>:]<filesystem-path>` syntax; if the URL scope is omitted, the directory is mounted at `/`.
+
+Static mounts are generic HTTP serving functionality. Mapget does not interpret or validate the files beyond requiring the filesystem path to exist and be a directory. Higher-level applications such as MapViewer may use static mounts for their own assets, but application-specific configuration semantics live in those applications, not in mapget. Embedded applications that discover static roots after startup can call `mapget::ensureStaticMount()` instead of synthesizing command-line options.
+
 ## Using the fetch client
 
 The `fetch` subcommand is a simple HTTP client for `/tiles`. It requests one map layer for a set of tiles and prints each tile as a JSON feature collection.
@@ -78,4 +93,3 @@ For local experimentation it is often useful to increase log verbosity. You can 
 - `MAPGET_LOG_FILE_MAXSIZE` limits the size of a log file before it is rotated.
 
 These settings apply to both the Python entry point and the native executable and are especially handy when debugging datasources or cache behaviour.
-

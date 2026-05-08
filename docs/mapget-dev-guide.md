@@ -221,6 +221,8 @@ For interactive clients, tile streaming uses WebSocket `GET /tiles` as a control
 - map HTTP/WebSocket endpoints to service calls (`/sources`, `/tiles`, `/tiles/next`, `/status`, `/status-data`, `/locate`, `/config`),
 - parse JSON requests and build `LayerTilesRequest` objects,
 - serialize tile responses as JSONL or binary streams,
+- mount static filesystem roots configured through `--webapp` and `--static-mount`,
+- expose `mapget::ensureStaticMount()` and `mapget::removeStaticMount()` for embedding applications that discover additional static roots after startup,
 - provide `/config` as a JSON view on the YAML config file.
 
 ### Tile streaming
@@ -249,10 +251,12 @@ This means `priorityTileIds` affects both backend scheduling and already-produce
 
 The HTTP service also implements `/config`:
 
-- `GET /config` reads the YAML configuration file, extracts the `sources` and `http-settings` keys, masks any `password` or `api-key` values and returns the result alongside the JSON Schema configured via `--config-schema`.
-- `POST /config` validates an incoming JSON document against that schema, merges it back into the YAML file (unmasking secrets) and relies on `DataSourceConfigService` to apply the updated datasource configuration.
+- `GET /config` reads the YAML configuration file, extracts top-level keys from the active datasource schema, masks any `password` or `api-key` values and returns the result alongside that schema. The built-in schema includes `sources`; deployments can add keys such as `http-settings` via `--config-schema`.
+- `GET /config` also merges public read-only sections registered through `DataSourceConfigService::registerPublicConfigSection(...)` as top-level siblings of `model`. Mapget does not interpret those sections itself.
+- If datasource configuration cannot be exposed, `GET /config` still returns HTTP `200` from the handler and reports the problem through `datasourceConfigUnavailable` plus `datasourceConfigUnavailableReason`. Public read-only sections are still returned when the YAML config can be read and parsed. With `--no-get-config --allow-post-config`, the datasource model is empty but writable so clients can post a replacement configuration.
+- `POST /config` validates an incoming datasource-model JSON document against the schema, merges it back into the YAML file (unmasking secrets), preserves unknown top-level sections, and relies on `DataSourceConfigService` to apply the updated datasource configuration.
 
-These endpoints are guarded by command‑line flags: `--no-get-config` disables the GET endpoint, and `--allow-post-config` enables the POST endpoint. They are primarily intended for configuration editors and admin tools.
+These endpoints are guarded by command-line flags: `--no-get-config` hides the datasource model from `GET /config`, and `--allow-post-config` enables the POST endpoint. They are primarily intended for configuration editors and admin tools.
 
 ## Binary streaming and simfil integration
 

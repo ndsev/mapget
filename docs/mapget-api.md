@@ -80,6 +80,14 @@ To cancel an in-flight HTTP stream, close the HTTP connection.
   - `Status` frames contain UTF-8 JSON describing per-request `RequestStatus` transitions and a human-readable message. The final status frame has `"allDone": true`.
   - `LoadStateChange` exists in the protocol but is currently not emitted by the HTTP service.
 
+Each entry in a status frame's `requests` array contains `index`, `mapId`, `layerId`, numeric `status`, and `statusText`. For `NoDataSource` statuses, servers may also include `noDataSourceReason`:
+
+- `emptySources`
+- `allSourcesDisabled`
+- `datasourceInitializationFailed`
+- `missingMapOrLayer`
+- `noConfig`
+
 To cancel, either send a new request message on the same connection (which replaces the current one) or close the WebSocket connection.
 
 ## `/tiles/next` – pull binary tile frames
@@ -111,11 +119,7 @@ Each line in the JSONL response is a GeoJSON-like FeatureCollection with additio
   "mapgetTileId": 281479271743500,
   "mapId": "EuropeHD",
   "mapgetLayerId": "Roads",
-  "idPrefix": {
-    "areaId": 123,
-    "tileId": 456
-  },
-  "timestamp": "2025-01-14T10:30:00.000000Z",
+  "timestamp": 1736850600000000,
   "ttl": 3600000,
   "error": {
     "code": 404,
@@ -131,8 +135,7 @@ Each line in the JSONL response is a GeoJSON-like FeatureCollection with additio
 | `mapgetTileId` | integer | The mapget tile ID (64-bit decimal) |
 | `mapId` | string | Map identifier |
 | `mapgetLayerId` | string | Layer identifier within the map |
-| `idPrefix` | object | Common ID parts shared by all features in this tile (optional) |
-| `timestamp` | string | ISO 8601 timestamp when the tile was created |
+| `timestamp` | integer | Tile creation time in microseconds since the Unix epoch |
 | `ttl` | integer | Time-to-live in milliseconds (optional) |
 | `error` | object | Error information if tile creation failed (optional) |
 | `error.code` | integer | Numeric error code, e.g., HTTP status or database error (optional) |
@@ -238,9 +241,16 @@ The page shows the number of active datasources and worker threads, cache statis
 The response contains:
 
 - `timestampMs`
-- `service`: service statistics, datasource info, cache occupancy, and optional tile-size-distribution data
+- `service`: service statistics, datasource info, cache occupancy, datasource-config counts, and optional tile-size-distribution data
 - `cache`: cache hit/miss counters and cache sizes
 - `tilesWebsocket`: control-channel metrics such as active sessions, pending queued frames for `/tiles/next`, blocked pull requests, and total forwarded bytes / frames
+
+`service.datasource-config` reports datasource YAML load diagnostics:
+
+- `configured`: number of entries under `sources`.
+- `enabled`: number of entries not disabled by `enabled: false`.
+- `disabled`: number of entries skipped because `enabled: false`.
+- `construction-failed`: number of enabled entries whose datasource construction failed.
 
 ## `/locate` – resolve external feature IDs
 
@@ -262,7 +272,7 @@ Datasources are free to implement more advanced resolution schemes (for example 
 
 ## `/config` – inspect and update configuration
 
-The `/config` endpoint family exposes the YAML configuration used by `mapget` for datasource wiring and HTTP settings. It is optional and can be enabled or disabled from the command line.
+The `/config` endpoint family exposes the YAML configuration used by `mapget` for datasource wiring and HTTP settings. Command-line flags control whether datasource config is exposed and whether updates are accepted.
 
 <!-- --8<-- [start:config-endpoints] -->
 
@@ -271,21 +281,37 @@ The `/config` endpoint family exposes the YAML configuration used by `mapget` fo
 - **Method:** `GET`
 - **Request body:** none
 - **Response:** `application/json` object with the keys:
-  - `model`: JSON representation of the current YAML config, limited to the `sources` and `http-settings` top‑level keys.
-  - `schema`: JSON Schema used to validate incoming configurations.
+  - `schema`: JSON Schema used to validate datasource-model configurations.
+  - `model`: JSON representation of the current YAML config, limited to top-level keys in the active datasource schema. The built-in schema includes `sources`; deployments can add keys such as `http-settings` through `--config-schema`.
   - `readOnly`: boolean flag indicating whether `POST /config` is enabled.
+  - `datasourceConfigUnavailable`: boolean flag indicating that datasource config could not or must not be exposed.
+  - `datasourceConfigUnavailableReason`: `null` on success, otherwise a stable reason string.
+  - Additional public sections registered by the embedding application, returned as top-level siblings of `model`.
 
-This call is disabled if the server is started with `--no-get-config`. When enabled, it provides a safe way for tools and UIs to read the active configuration without exposing secrets in plain text: any `password` or `api-key` fields are replaced with stable masked tokens.
+When the endpoint handler is reached, `GET /config` returns HTTP `200`. `readOnly` reflects whether `POST /config` is enabled. If `--no-get-config` is set, `datasourceConfigUnavailable` is `true`, `datasourceConfigUnavailableReason` is `getConfigDisabled`, and `model` is empty. In that state, writable servers still return `schema` so clients can present an empty replacement editor; read-only servers return an empty schema.
+
+Unavailable reason values are:
+
+- `getConfigDisabled`
+- `configPathUnset`
+- `configFileMissing`
+- `configFileOpenFailed`
+- `configParseFailed`
+- `configValidationFailed`
+
+On a successful datasource-config response, `datasourceConfigUnavailable` is `false` and `datasourceConfigUnavailableReason` is `null`. The returned model masks sensitive fields: any `password` or `api-key` values are replaced with stable masked tokens.
+
+Registered public sections are read-only. They are included as top-level siblings of `model` when the YAML config can be read and parsed, even if the datasource model itself is hidden through `--no-get-config`. If the YAML config cannot be read or parsed, registered public sections are still present but empty.
 
 ### `POST /config`
 
 - **Method:** `POST`
 - **Request body:** `application/json` matching the schema returned by `GET /config`.
-  - Must contain both `sources` and `http-settings` keys at the top level.
+  - Must contain the datasource-model keys required by the schema.
 - **Response:**
   - `text/plain` success message when the configuration was validated, written to disk and successfully applied.
   - `text/plain` error description and a 4xx/5xx status code if validation or application failed.
 
-This call is only accepted if the server is started with `--allow-post-config`. When a valid configuration is posted, mapget rewrites the underlying YAML file, preserving real secret values where masked tokens were supplied, and then reloads the datasource configuration. Clients should be prepared for temporary 5xx errors if reloading fails.
+This call is only accepted if the server is started with `--allow-post-config`. When a valid configuration is posted, mapget rewrites the datasource-model fields in the underlying YAML file, preserving real secret values where masked tokens were supplied, and then reloads the datasource configuration. Unknown top-level YAML sections, including registered public sections, are preserved but not edited through this endpoint. Clients should be prepared for temporary 5xx errors if reloading fails.
 
 <!-- --8<-- [end:config-endpoints] -->

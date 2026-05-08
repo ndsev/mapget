@@ -10,6 +10,7 @@ add_executable(test.mapget
   test-cache.cpp
   test-service-ttl.cpp
   test-config.cpp
+  test-geojson-import.cpp
   test-geojsonsource.cpp
   utility.cpp
   utility.h)

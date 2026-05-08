@@ -7,17 +7,157 @@
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpResponse.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <sstream>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "nlohmann/json.hpp"
 #include "yaml-cpp/yaml.h"
 
 namespace mapget
 {
+namespace
+{
+
+constexpr std::string_view kUnavailableReasonGetConfigDisabled = "getConfigDisabled";
+constexpr std::string_view kUnavailableReasonConfigPathUnset = "configPathUnset";
+constexpr std::string_view kUnavailableReasonConfigFileMissing = "configFileMissing";
+constexpr std::string_view kUnavailableReasonConfigFileOpenFailed = "configFileOpenFailed";
+constexpr std::string_view kUnavailableReasonConfigParseFailed = "configParseFailed";
+constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configValidationFailed";
+
+[[nodiscard]] YAML::Node loadConfigYamlForPublicSections()
+{
+    auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
+    if (!configFilePath.has_value()) {
+        return {};
+    }
+
+    std::filesystem::path path = *configFilePath;
+    if (!std::filesystem::exists(path)) {
+        return {};
+    }
+
+    std::ifstream configFile(*configFilePath);
+    if (!configFile) {
+        return {};
+    }
+
+    try {
+        return YAML::Load(configFile);
+    }
+    catch (const YAML::Exception& yamlError) {
+        log().warn("Failed to parse YAML config for public /config sections: {}", yamlError.what());
+    }
+    return {};
+}
+
+[[nodiscard]] nlohmann::json buildUnavailableConfigResponse(
+    std::string_view reason,
+    YAML::Node const& fullConfig = {},
+    bool readOnly = true,
+    bool includeSchema = false)
+{
+    auto& configService = DataSourceConfigService::get();
+    nlohmann::json response = {
+        {"schema", includeSchema ? configService.getDataSourceConfigSchema() : nlohmann::json::object()},
+        {"model", nlohmann::json::object()},
+        {"readOnly", readOnly},
+        {"datasourceConfigUnavailable", true},
+        {"datasourceConfigUnavailableReason", reason},
+    };
+    auto publicSections = configService.getPublicConfigSections(fullConfig);
+    for (auto& [name, value] : publicSections.items()) {
+        response[name] = std::move(value);
+    }
+    return response;
+}
+
+[[nodiscard]] drogon::HttpResponsePtr jsonResponse(nlohmann::json payload)
+{
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setStatusCode(drogon::k200OK);
+    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    resp->setBody(payload.dump(2));
+    return resp;
+}
+
+/**
+ * Rewrite the config via a temporary file so filesystem watchers never observe
+ * an empty or partially written target file.
+ */
+[[nodiscard]] std::optional<std::string> replaceConfigFile(
+    std::filesystem::path const& configFilePath,
+    YAML::Node const& yamlConfig)
+{
+    std::ostringstream serializedConfig;
+    serializedConfig << yamlConfig;
+
+    static std::atomic_uint64_t tempFileCounter{0};
+    auto tempConfigPath = configFilePath;
+    auto tempFileSuffix = std::string(".tmp.")
+        + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "."
+        + std::to_string(tempFileCounter.fetch_add(1, std::memory_order_relaxed));
+    tempConfigPath += tempFileSuffix;
+
+    {
+        std::ofstream tempConfigFile(tempConfigPath, std::ios::out | std::ios::trunc);
+        if (!tempConfigFile) {
+            return std::string("failed to open temporary config file ") + tempConfigPath.string();
+        }
+
+        tempConfigFile << serializedConfig.str();
+        tempConfigFile.flush();
+        if (!tempConfigFile) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tempConfigPath, cleanupError);
+            return std::string("failed to write temporary config file ") + tempConfigPath.string();
+        }
+    }
+
+#ifdef _WIN32
+    // Windows std::filesystem::rename does not portably replace existing files.
+    if (!MoveFileExW(
+            tempConfigPath.wstring().c_str(),
+            configFilePath.wstring().c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        auto const errorCode = GetLastError();
+        std::error_code cleanupError;
+        std::filesystem::remove(tempConfigPath, cleanupError);
+        return std::string("failed to replace config file ") + configFilePath.string()
+            + " with temporary config file " + tempConfigPath.string() + ": Windows error "
+            + std::to_string(errorCode);
+    }
+#else
+    std::error_code replaceError;
+    std::filesystem::rename(tempConfigPath, configFilePath, replaceError);
+    if (replaceError) {
+        std::error_code cleanupError;
+        std::filesystem::remove(tempConfigPath, cleanupError);
+        return std::string("failed to replace config file ") + configFilePath.string()
+            + " with temporary config file " + tempConfigPath.string() + ": "
+            + replaceError.message();
+    }
+#endif
+
+    return std::nullopt;
+}
+
+}  // namespace
 
 drogon::HttpResponsePtr HttpService::Impl::openConfigFile(std::ifstream& configFile)
 {
@@ -55,49 +195,72 @@ void HttpService::Impl::handleGetConfigRequest(
     const drogon::HttpRequestPtr& /*req*/,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback)
 {
+    auto& configService = DataSourceConfigService::get();
+
     if (!isGetConfigEndpointEnabled()) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k403Forbidden);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody("The GET /config endpoint is disabled by the server administrator.");
-        callback(resp);
+        const bool readOnly = !isPostConfigEndpointEnabled();
+        callback(jsonResponse(buildUnavailableConfigResponse(
+            kUnavailableReasonGetConfigDisabled,
+            loadConfigYamlForPublicSections(),
+            readOnly,
+            !readOnly)));
         return;
     }
 
-    std::ifstream configFile;
-    if (auto errorResp = openConfigFile(configFile)) {
-        callback(errorResp);
+    auto configFilePath = configService.getConfigFilePath();
+    if (!configFilePath.has_value()) {
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigPathUnset)));
         return;
     }
 
-    nlohmann::json jsonSchema = DataSourceConfigService::get().getDataSourceConfigSchema();
+    std::filesystem::path path = *configFilePath;
+    if (!std::filesystem::exists(path)) {
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigFileMissing)));
+        return;
+    }
+
+    std::ifstream configFile(*configFilePath);
+    if (!configFile) {
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigFileOpenFailed)));
+        return;
+    }
 
     try {
         YAML::Node configYaml = YAML::Load(configFile);
+        configService.validateDataSourceConfig(configYaml);
+
         nlohmann::json jsonConfig;
         std::unordered_map<std::string, std::string> maskedSecretMap;
-        for (const auto& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
+        for (const auto& key : configService.topLevelDataSourceConfigKeys()) {
             if (auto configYamlEntry = configYaml[key])
                 jsonConfig[key] = yamlToJson(configYaml[key], true, &maskedSecretMap);
         }
 
-        nlohmann::json combinedJson;
-        combinedJson["schema"] = jsonSchema;
-        combinedJson["model"] = jsonConfig;
-        combinedJson["readOnly"] = !isPostConfigEndpointEnabled();
+        nlohmann::json combinedJson = {
+            {"schema", configService.getDataSourceConfigSchema()},
+            {"model", std::move(jsonConfig)},
+            {"readOnly", !isPostConfigEndpointEnabled()},
+            {"datasourceConfigUnavailable", false},
+            {"datasourceConfigUnavailableReason", nullptr},
+        };
+        auto publicSections = configService.getPublicConfigSections(configYaml);
+        for (auto& [name, value] : publicSections.items()) {
+            combinedJson[name] = std::move(value);
+        }
 
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k200OK);
-        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-        resp->setBody(combinedJson.dump(2));
-        callback(resp);
+        callback(jsonResponse(std::move(combinedJson)));
+    }
+    catch (const std::invalid_argument& validationError) {
+        log().warn("GET /config validation failed: {}", validationError.what());
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigValidationFailed)));
+    }
+    catch (const YAML::Exception& yamlError) {
+        log().warn("GET /config parse failed: {}", yamlError.what());
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed)));
     }
     catch (const std::exception& e) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k500InternalServerError);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody(std::string("Error processing config file: ") + e.what());
-        callback(resp);
+        log().warn("GET /config failed: {}", e.what());
+        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed)));
     }
 }
 
@@ -201,12 +364,32 @@ void HttpService::Impl::handlePostConfigRequest(
 
     configFile.close();
     log().trace("Writing new config.");
-    state->wroteConfig = true;
-    if (auto configFilePath = DataSourceConfigService::get().getConfigFilePath()) {
-        std::ofstream newConfigFile(*configFilePath);
-        newConfigFile << yamlConfig;
-        newConfigFile.close();
+    auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
+    if (!configFilePath) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k500InternalServerError);
+        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+        resp->setBody("Error applying the configuration: config file path is no longer set.");
+        state->done = true;
+        state->callback(resp);
+        state->subscription.reset();
+        return;
     }
+
+    if (auto writeError = replaceConfigFile(*configFilePath, yamlConfig)) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k500InternalServerError);
+        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+        resp->setBody(std::string("Error applying the configuration: ") + *writeError);
+        state->done = true;
+        state->callback(resp);
+        state->subscription.reset();
+        return;
+    }
+
+    // Ignore watcher callbacks until the rewritten file has been fully replaced.
+    state->wroteConfig = true;
+    DataSourceConfigService::get().loadConfig(*configFilePath, false);
 
     std::thread([weak = state->weak_from_this()]() {
         std::this_thread::sleep_for(std::chrono::seconds(60));
@@ -226,4 +409,3 @@ void HttpService::Impl::handlePostConfigRequest(
 }
 
 }  // namespace mapget
-

@@ -7,6 +7,7 @@
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpResponse.h>
 
+#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,7 @@ struct DataSourceServer::Impl
         throw std::runtime_error("TileSourceDataLayer callback is unset!");
     };
     std::function<std::vector<LocateResponse>(const LocateRequest&)> locateCallback_;
+    std::function<void(MapTileKey const&, std::chrono::system_clock::time_point)> cacheExpiredCallback_;
     std::shared_ptr<StringPool> strings_;
 
     explicit Impl(DataSourceInfo info) : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.nodeId_))
@@ -56,6 +58,13 @@ DataSourceServer& DataSourceServer::onLocateRequest(
     const std::function<std::vector<LocateResponse>(const LocateRequest&)>& callback)
 {
     impl_->locateCallback_ = callback;
+    return *this;
+}
+
+DataSourceServer& DataSourceServer::onCacheExpired(
+    const std::function<void(MapTileKey const&, std::chrono::system_clock::time_point)>& callback)
+{
+    impl_->cacheExpiredCallback_ = callback;
     return *this;
 }
 
@@ -183,6 +192,34 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                 resp->setStatusCode(drogon::k200OK);
                 resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
                 resp->setBody(responseJson.dump());
+                callback(resp);
+            }
+            catch (std::exception const& e) {
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k400BadRequest);
+                resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                resp->setBody(std::string("Invalid request: ") + e.what());
+                callback(resp);
+            }
+        },
+        {drogon::Post});
+
+    app.registerHandler(
+        "/cache-expired",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        {
+            try {
+                if (impl_->cacheExpiredCallback_) {
+                    auto const body = nlohmann::json::parse(std::string(req->body()));
+                    auto const tileKey = MapTileKey(body.at("tileKey").get<std::string>());
+                    auto const expiredAtUs = body.at("expiredAt").get<int64_t>();
+                    auto const expiredAt = std::chrono::system_clock::time_point{
+                        std::chrono::microseconds{expiredAtUs}};
+                    impl_->cacheExpiredCallback_(tileKey, expiredAt);
+                }
+
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k204NoContent);
                 callback(resp);
             }
             catch (std::exception const& e) {

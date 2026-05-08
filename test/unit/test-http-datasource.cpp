@@ -12,6 +12,7 @@
 #include <optional>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <tuple>
@@ -692,6 +693,24 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                         static_cast<int>(RequestStatus::Unauthorized));
             }
 
+            // WebSocket tiles: include noDataSourceReason in status payload when available.
+            {
+                auto req = nlohmann::json::object({
+                    {"requests", nlohmann::json::array({nlohmann::json::object({
+                        {"mapId", "UnknownMap"},
+                        {"layerId", "WayLayer"},
+                        {"tileIds", nlohmann::json::array({1234})},
+                    })})},
+                }).dump();
+
+                auto [status, wsTileCount] = runWsTilesRequest(true, req);
+                REQUIRE(wsTileCount == 0);
+                REQUIRE(status["requests"].size() == 1);
+                REQUIRE(status["requests"][0]["status"].get<int>() ==
+                        static_cast<int>(RequestStatus::NoDataSource));
+                REQUIRE(status["requests"][0]["noDataSourceReason"].get<std::string>() == "missingMapOrLayer");
+            }
+
             // WebSocket tiles: invalid request stays on the same connection, then succeeds.
             {
                 WsTilesClient wsClient(service.port(), layerInfo);
@@ -778,11 +797,11 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     SyncHttpClient cli("127.0.0.1", service.port());
 
-    auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_http_config");
+    auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_test_http_config");
     fs::create_directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
+    auto tempMissingConfigPath = tempDir / "missing_config.yaml";
 
-    // Set up the config file.
     DataSourceConfigService::get().reset();
     struct ConfigWatchGuard {
         ~ConfigWatchGuard() { DataSourceConfigService::get().end(); }
@@ -790,6 +809,13 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     struct SchemaPatchGuard {
         ~SchemaPatchGuard() { DataSourceConfigService::get().setDataSourceConfigSchemaPatch(nlohmann::json::object()); }
     } schemaPatchGuard;
+    struct EndpointToggleGuard {
+        ~EndpointToggleGuard()
+        {
+            setGetConfigEndpointEnabled(true);
+            setPostConfigEndpointEnabled(false);
+        }
+    } endpointToggleGuard;
 
     auto schemaPatch = nlohmann::json::parse(R"(
     {
@@ -803,23 +829,21 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     )");
     DataSourceConfigService::get().setDataSourceConfigSchemaPatch(schemaPatch);
 
-    SECTION("Get Configuration - Config File Not Found")
-    {
-        DataSourceConfigService::get().loadConfig(tempConfigPath.string());
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k404NotFound);
-        REQUIRE(std::string(res->body()) == "The server does not have a config file.");
-    }
+    DataSourceConfigService::get().registerPublicConfigSection(
+        "publicConfig",
+        [](YAML::Node const& fullConfig) -> nlohmann::json {
+            auto section = fullConfig["publicConfig"];
+            if (!section || !section.IsMap() || section.size() == 0) {
+                return nlohmann::json::object();
+            }
+            return yamlToJson(section, false);
+        });
 
-    // Create config file for tests that need it
-    {
+    auto writeConfigFile = [&](std::string const& contents) {
         std::ofstream configFile(tempConfigPath);
-        configFile << "sources: []\nhttp-settings: [{'password': 'hunter2'}]";
+        configFile << contents;
         configFile.flush();
         configFile.close();
-
 #ifndef _WIN32
         int fd = open(tempConfigPath.c_str(), O_RDONLY);
         if (fd != -1) {
@@ -828,47 +852,114 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         }
 #endif
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    };
 
-    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    SECTION("Get Configuration - Not allowed")
-    {
-        setGetConfigEndpointEnabled(false);
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k403Forbidden);
-    }
-
-    SECTION("Get Configuration - No Config File Path Set")
-    {
-        setGetConfigEndpointEnabled(true);
-        DataSourceConfigService::get().loadConfig("");
-        auto [result, res] = cli.get("/config");
-        REQUIRE(result == drogon::ReqResult::Ok);
-        REQUIRE(res != nullptr);
-        REQUIRE(res->statusCode() == drogon::k404NotFound);
-        REQUIRE(std::string(res->body()) ==
-                "The config file path is not set. Check the server configuration.");
-    }
-
-    SECTION("Get Configuration - Success")
-    {
-        setGetConfigEndpointEnabled(true);
+    auto getConfigPayload = [&]() {
         auto [result, res] = cli.get("/config");
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
         REQUIRE(res->statusCode() == drogon::k200OK);
+        return nlohmann::json::parse(std::string(res->body()));
+    };
 
-        auto body = std::string(res->body());
-        REQUIRE(body.find("sources") != std::string::npos);
-        REQUIRE(body.find("http-settings") != std::string::npos);
+    auto requireUnavailablePayload = [&](
+        std::string_view reason,
+        bool expectPublicConfig = false,
+        bool expectReadOnly = true,
+        bool expectSchema = false) {
+        auto payload = getConfigPayload();
+        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == true);
+        REQUIRE(payload["datasourceConfigUnavailableReason"].get<std::string>() == reason);
+        REQUIRE(payload["model"] == nlohmann::json::object());
+        REQUIRE(payload["readOnly"].get<bool>() == expectReadOnly);
+        if (expectSchema) {
+            REQUIRE(payload["schema"].is_object());
+            REQUIRE(payload["schema"].empty() == false);
+        }
+        else {
+            REQUIRE(payload["schema"] == nlohmann::json::object());
+        }
+        if (expectPublicConfig) {
+            REQUIRE(payload["publicConfig"]["featureFlag"].get<bool>() == true);
+        }
+        else {
+            REQUIRE(payload["publicConfig"] == nlohmann::json::object());
+        }
+    };
+
+    writeConfigFile(
+        "sources: []\n"
+        "http-settings: [{'password': 'hunter2'}]\n"
+        "publicConfig:\n"
+        "  featureFlag: true\n"
+        "erdblick:\n"
+        "  keepMe: true\n");
+    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    SECTION("Get Configuration - Config File Missing")
+    {
+        DataSourceConfigService::get().loadConfig(tempMissingConfigPath.string());
+        requireUnavailablePayload("configFileMissing");
+    }
+
+    SECTION("Get Configuration - Endpoint disabled returns flagged 200")
+    {
+        setGetConfigEndpointEnabled(false);
+        requireUnavailablePayload("getConfigDisabled", true);
+    }
+
+    SECTION("Get Configuration - Endpoint hidden but POST enabled returns writable empty model")
+    {
+        setGetConfigEndpointEnabled(false);
+        setPostConfigEndpointEnabled(true);
+        requireUnavailablePayload("getConfigDisabled", true, false, true);
+    }
+
+    SECTION("Get Configuration - No Config File Path Set")
+    {
+        DataSourceConfigService::get().loadConfig("");
+        requireUnavailablePayload("configPathUnset");
+    }
+
+    SECTION("Get Configuration - Validation failure is flagged")
+    {
+        writeConfigFile("sources: []\n");
+        DataSourceConfigService::get().loadConfig(tempConfigPath.string());
+        requireUnavailablePayload("configValidationFailed");
+    }
+
+    SECTION("Get Configuration - Success")
+    {
+        auto payload = getConfigPayload();
+        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == false);
+        REQUIRE(payload["datasourceConfigUnavailableReason"].is_null());
+        REQUIRE(payload["readOnly"].get<bool>() == true);
+        REQUIRE(payload["model"].contains("sources"));
+        REQUIRE(payload["model"].contains("http-settings"));
+        REQUIRE(payload["model"].contains("publicConfig") == false);
+        REQUIRE(payload["publicConfig"]["featureFlag"].get<bool>() == true);
+
+        auto body = payload.dump();
         REQUIRE(body.find("hunter2") == std::string::npos);
         REQUIRE(
             body.find("MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") !=
             std::string::npos);
+    }
+
+    SECTION("Get Configuration - Public section serializer exceptions are tolerated")
+    {
+        struct ThrowingSectionError : std::runtime_error {
+            using std::runtime_error::runtime_error;
+        };
+
+        DataSourceConfigService::get().registerPublicConfigSection(
+            "throwingSection",
+            [](YAML::Node const&) -> nlohmann::json { throw ThrowingSectionError("boom"); });
+
+        auto payload = getConfigPayload();
+        REQUIRE(payload["datasourceConfigUnavailable"].get<bool>() == false);
+        REQUIRE(payload["throwingSection"] == nlohmann::json::object());
     }
 
     SECTION("Post Configuration - Not Enabled")
@@ -910,7 +1001,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(std::string(res->body()).starts_with("Validation failed"));
     }
 
-    SECTION("Post Configuration - Valid JSON Config")
+    SECTION("Post Configuration - Valid JSON Config preserves top-level erdblick")
     {
         setPostConfigEndpointEnabled(true);
         std::string newConfig = R"({
@@ -929,8 +1020,10 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         configContentStream << config.rdbuf();
         auto configContent = configContentStream.str();
         REQUIRE(configContent.find("hunter2") != std::string::npos);
+        REQUIRE(configContent.find("erdblick") != std::string::npos);
+        REQUIRE(configContent.find("keepMe") != std::string::npos);
     }
 
     DataSourceConfigService::get().end();
-    fs::remove(tempConfigPath);
+    fs::remove_all(tempDir);
 }

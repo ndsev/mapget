@@ -70,8 +70,15 @@ public:
      *   + Added tile load stage.
      *   + Feature geometry reference may point directly to a Geometry
      *     (single-geometry fast-path) or to a GeometryCollection.
+     * - Version 1.3:
+     *   + Added tile-level binary attachments to TileFeatureLayer.
+     * - Version 1.4:
+     *   + Added AABB and GltfNodeIndex geometry kinds.
+     *   + Added point-buffer-backed GLTF node-index geometry storage.
+     * - Version 1.5:
+     *   + Replaced generic tile attachments with one optional tile-level GLB attachment.
      */
-    static constexpr Version CurrentProtocolVersion{1, 2, 0};
+    static constexpr Version CurrentProtocolVersion{1, 5, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

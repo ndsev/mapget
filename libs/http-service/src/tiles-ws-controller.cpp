@@ -122,6 +122,25 @@ enum class ClientRequestUpdateMode
     return "Unknown";
 }
 
+[[nodiscard]] std::string_view noDataSourceReasonToString(NoDataSourceReason reason)
+{
+    switch (reason) {
+    case NoDataSourceReason::EmptySources:
+        return "emptySources";
+    case NoDataSourceReason::AllSourcesDisabled:
+        return "allSourcesDisabled";
+    case NoDataSourceReason::DatasourceInitializationFailed:
+        return "datasourceInitializationFailed";
+    case NoDataSourceReason::MissingMapOrLayer:
+        return "missingMapOrLayer";
+    case NoDataSourceReason::NoConfig:
+        return "noConfig";
+    case NoDataSourceReason::None:
+        break;
+    }
+    return "";
+}
+
 /// Convert tile load-state enum values to stable UI-facing strings.
 [[nodiscard]] std::string_view loadStateToString(TileLayer::LoadState s)
 {
@@ -648,6 +667,7 @@ public:
             nextRequestInfos.push_back(RequestInfo{
                 .mapId = parsed.request.mapId,
                 .layerId = parsed.request.layerId,
+                .noDataSourceReason = parsed.context.noDataSourceReason_,
             });
 
             std::vector<std::vector<TileId>> tileIdsByNextStageToFetch;
@@ -837,6 +857,7 @@ private:
     {
         std::string mapId;
         std::string layerId;
+        NoDataSourceReason noDataSourceReason = NoDataSourceReason::None;
     };
 
     /// One queued websocket frame plus metadata used for bookkeeping.
@@ -1455,6 +1476,12 @@ private:
                 reqJson["layerId"] = requestInfos_[i].layerId;
                 reqJson["status"] = static_cast<std::underlying_type_t<RequestStatus>>(status);
                 reqJson["statusText"] = std::string(requestStatusToString(status));
+                if (status == RequestStatus::NoDataSource) {
+                    auto reason = noDataSourceReasonToString(requestInfos_[i].noDataSourceReason);
+                    if (!reason.empty()) {
+                        reqJson["noDataSourceReason"] = std::string(reason);
+                    }
+                }
                 requestsJson.push_back(std::move(reqJson));
             }
         }

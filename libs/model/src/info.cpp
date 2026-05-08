@@ -13,12 +13,14 @@ namespace mapget
 
 namespace {
 
+/** Standardize missing-field errors across model metadata JSON parsers. */
 auto missing_field(std::string const& error, std::string const& context) {
     return std::runtime_error(
         fmt::format("{}::fromJson(): `{}`", context, error));
 }
 
 template <class T, class... Args>
+/** Parse a full string into a number and reject trailing characters. */
 std::optional<T> from_chars(std::string_view s, Args... args)
 {
     auto end = s.data() + s.size();
@@ -164,6 +166,9 @@ std::optional<uint32_t> IdPart::compositionMatchEndIndex(
         // Does this ID part's field name match?
         if (compositionIter->idPartLabel_ != idPartKey) {
             if (compositionIter->isOptional_) {
+                // Optional composition slots may be absent entirely, so keep
+                // scanning until we either find the requested part or hit a
+                // required mismatch.
                 ++compositionIter;
                 continue;
             }
@@ -208,6 +213,8 @@ bool IdPart::idPartsMatchComposition(
         auto compositionIter = candidateComposition.begin() + *matchEndIndex;
         while (compositionIter != candidateComposition.end()) {
             if (!compositionIter->isOptional_) {
+                // Exact feature ids must consume every remaining required part
+                // of the composition. Only optional tail fields may be omitted.
                 return false;
             }
             ++compositionIter;
@@ -223,7 +230,8 @@ bool IdPart::validate(std::variant<int64_t, std::string>& val, std::string* erro
         auto& strVal = std::get<std::string>(val);
         auto result = std::variant<int64_t, std::string_view>(strVal);
         auto resultBool = validate(result, error);
-        // The string value may have been turned into an integer.
+        // Numeric id parts accept string input during parsing, but normalize to
+        // integers once validation succeeds.
         if (std::holds_alternative<int64_t>(result)) {
             val = std::get<int64_t>(result);
         }
@@ -279,6 +287,8 @@ bool IdPart::validate(std::variant<int64_t, std::string_view>& val, std::string*
 
     auto expectUuid128 = [&expectString]() -> bool {
         return expectString([](auto const& strVal, auto error){
+            // UUID128 ids are stored as the mapget-specific 16-character token,
+            // not a hyphenated RFC 4122 string.
             if (strVal.size() != 16) {
                 if (error)
                     *error = fmt::format("Value for {} must have 16 characters!", strVal);
@@ -345,11 +355,24 @@ Coverage Coverage::fromJson(const nlohmann::json& j)
 {
     try {
         if (j.is_number_unsigned())
+            // A bare integer is shorthand for a single covered tile.
             return {
                 j.get<uint64_t>(),
                 j.get<uint64_t>(),
                 std::vector<bool>()
             };
+        if (j.is_number_integer()) {
+            // YAML ingestion may materialize the same shorthand as a signed
+            // integer, so accept it as long as the tile id stays non-negative.
+            auto tileId = j.get<int64_t>();
+            if (tileId < 0)
+                raise("Coverage tile ID must be non-negative.");
+            return {
+                static_cast<uint64_t>(tileId),
+                static_cast<uint64_t>(tileId),
+                std::vector<bool>()
+            };
+        }
         return {
             TileId(j.at("min").get<uint64_t>()),
             TileId(j.at("max").get<uint64_t>()),
@@ -388,6 +411,8 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         const auto stages = std::max<uint32_t>(1U, j.value("stages", 1U));
         auto stageLabels = j.value("stageLabels", std::vector<std::string>{});
         if (stageLabels.size() < stages) {
+            // Import pads missing labels so stage index -> label lookup remains
+            // total even when metadata only names a few stages explicitly.
             stageLabels.reserve(stages);
             for (uint32_t i = static_cast<uint32_t>(stageLabels.size()); i < stages; ++i) {
                 stageLabels.emplace_back(fmt::format("Stage {}", i));
@@ -397,6 +422,8 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         const auto highFidelityStage = std::min<uint32_t>(
             stages - 1U,
             j.value("highFidelityStage", defaultHighFidelityStage));
+        // High-fidelity stage is clamped into the configured stage range so
+        // downstream geometry-name lookups never index past the metadata.
 
         return std::make_shared<LayerInfo>(LayerInfo{
             j.value("layerId", layerId),
@@ -482,6 +509,8 @@ std::optional<uint8_t> LayerInfo::matchingFeatureIdCompositionIndex(
         // References may use alternative ID compositions,
         // but the feature itself must always use the first (primary) one.
         if (validateForNewFeature)
+            // Once the primary composition failed, later alternatives are not
+            // considered for concrete feature creation.
             return std::nullopt;
     }
 
@@ -521,6 +550,8 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
         if (j.contains("nodeId"))
             nodeId = j.at("nodeId").get<std::string>();
         else
+            // Datasource metadata may omit a stable node id for ad-hoc JSON
+            // sources, so synthesize one to keep string-pool ownership valid.
             nodeId = generateNodeHexUuid();
 
         return {

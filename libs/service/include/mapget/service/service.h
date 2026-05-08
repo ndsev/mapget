@@ -24,8 +24,18 @@ enum class RequestStatus {
     Aborted = 0x4 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
 };
 
+enum class NoDataSourceReason {
+    None = 0x0,
+    EmptySources = 0x1,
+    AllSourcesDisabled = 0x2,
+    DatasourceInitializationFailed = 0x3,
+    MissingMapOrLayer = 0x4,
+    NoConfig = 0x5,
+};
+
 struct LayerRequestContext {
     RequestStatus status_ = RequestStatus::NoDataSource;
+    NoDataSourceReason noDataSourceReason_ = NoDataSourceReason::MissingMapOrLayer;
     LayerType layerType_ = LayerType::Features;
     uint32_t stages_ = 1;
 };

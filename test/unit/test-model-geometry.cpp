@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <sstream>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
@@ -358,6 +359,123 @@ TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]"
         // Explicit pass geometry object
         REQUIRE_EVAL_1("count(geo(geometry))", ValueType::Int, 3);
     }
+}
+
+TEST_CASE("AABB geometry roundtrip and JSON exposure", "[geom.aabb]")
+{
+    auto tile = makeTile();
+    auto feature = tile->newFeature("Way", {{"wayId", 101}});
+    auto aabb = feature->geom()->newGeometry(GeomType::AABB);
+    aabb->setAabb({1.0, 2.0, 3.0}, {10.0, 20.0, 30.0});
+
+    REQUIRE(aabb->geomType() == GeomType::AABB);
+    REQUIRE(aabb->numPoints() == 2);
+    REQUIRE(aabb->aabbOrigin() == Point{1.0, 2.0, 3.0});
+    REQUIRE(aabb->aabbSize() == Point{10.0, 20.0, 30.0});
+    REQUIRE(aabb->pointAt(0) == Point{1.0, 2.0, 3.0});
+    REQUIRE(aabb->pointAt(1) == Point{10.0, 20.0, 30.0});
+
+    auto json = feature->toJson();
+    REQUIRE(json["geometry"]["type"] == "Polygon");
+    REQUIRE(json["geometry"]["coordinates"].size() == 1);
+    REQUIRE(json["geometry"]["coordinates"][0].size() == 5);
+    REQUIRE(json["geometry"]["coordinates"][0][0] == nlohmann::json::array({1.0, 2.0, 3.0}));
+    REQUIRE(json["geometry"]["coordinates"][0][2] == nlohmann::json::array({11.0, 22.0, 3.0}));
+    REQUIRE(json["geometry"]["aabb"]["origin"] == nlohmann::json::array({1.0, 2.0, 3.0}));
+    REQUIRE(json["geometry"]["aabb"]["size"] == nlohmann::json::array({10.0, 20.0, 30.0}));
+    auto geometryNode = asModelNode(feature).get(StringPool::GeometryStr);
+    REQUIRE(geometryNode);
+    REQUIRE(geometryNode->toJson() == json["geometry"]);
+
+    std::stringstream tileBytes;
+    tile->write(tileBytes);
+    auto serializedTile = tileBytes.str();
+    std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+    auto deserializedTile = std::make_shared<TileFeatureLayer>(
+        tileBuffer,
+        [&](auto&&, auto&&) {
+            return tile->layerInfo();
+        },
+        [&](auto&&) {
+            return tile->strings();
+        });
+
+    auto roundTrippedFeature = deserializedTile->at(0);
+    auto roundTrippedAabb =
+        roundTrippedFeature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::AABB, 0U);
+    REQUIRE(roundTrippedAabb);
+    REQUIRE(roundTrippedAabb->aabbOrigin() == Point{1.0, 2.0, 3.0});
+    REQUIRE(roundTrippedAabb->aabbSize() == Point{10.0, 20.0, 30.0});
+}
+
+TEST_CASE("GltfNodeIndex geometry roundtrip and JSON exposure", "[geom.gltf]")
+{
+    auto tile = makeTile();
+    tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
+    auto feature = tile->newFeature("Way", {{"wayId", 202}});
+    auto first = feature->geom()->newGeometry(GeomType::GltfNodeIndex);
+    first->setGltfNodeIndex(17);
+    first->setGltfNodeBounds({1.0, 2.0, 3.0}, {10.0, 20.0, 30.0});
+    auto second = feature->geom()->newGeometry(GeomType::GltfNodeIndex);
+    second->setGltfNodeIndex(23);
+    second->setGltfNodeBounds({4.0, 5.0, 6.0}, {40.0, 50.0, 60.0});
+
+    REQUIRE(first->geomType() == GeomType::GltfNodeIndex);
+    REQUIRE(first->gltfNodeIndex() == 17);
+    REQUIRE(first->gltfNodeAabbOrigin() == Point{1.0, 2.0, 3.0});
+    REQUIRE(first->gltfNodeAabbSize() == Point{10.0, 20.0, 30.0});
+    REQUIRE(second->gltfNodeIndex() == 23);
+    REQUIRE(second->gltfNodeAabbOrigin() == Point{4.0, 5.0, 6.0});
+    REQUIRE(second->gltfNodeAabbSize() == Point{40.0, 50.0, 60.0});
+    second->setGltfNodeIndex(1U << 24);
+    REQUIRE(second->gltfNodeIndex() == (1U << 24));
+    REQUIRE_THROWS(second->setGltfNodeIndex((1U << 24) + 1U));
+    second->setGltfNodeIndex(23);
+    REQUIRE(first->numPoints() == 0);
+    REQUIRE_THROWS(first->pointAt(0));
+    REQUIRE(feature->geomOrNull()->numGeometries() == 2);
+
+    auto json = feature->toJson();
+    REQUIRE(json["geometry"]["type"] == "GeometryCollection");
+    REQUIRE(json["geometry"]["geometries"].size() == 2);
+    REQUIRE(json["geometry"]["geometries"][0]["type"] == "Polygon");
+    REQUIRE(json["geometry"]["geometries"][0]["gltfNodeIndex"] == 17);
+    REQUIRE(json["geometry"]["geometries"][0]["coordinates"][0][0] ==
+        nlohmann::json::array({1.0, 2.0, 3.0}));
+    REQUIRE(json["geometry"]["geometries"][0]["coordinates"][0][2] ==
+        nlohmann::json::array({11.0, 22.0, 3.0}));
+    REQUIRE(json["geometry"]["geometries"][1]["gltfNodeIndex"] == 23);
+    auto geometryNode = asModelNode(feature).get(StringPool::GeometryStr);
+    REQUIRE(geometryNode);
+    REQUIRE(geometryNode->toJson() == json["geometry"]);
+
+    std::stringstream tileBytes;
+    tile->write(tileBytes);
+    auto serializedTile = tileBytes.str();
+    std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
+    auto deserializedTile = std::make_shared<TileFeatureLayer>(
+        tileBuffer,
+        [&](auto&&, auto&&) {
+            return tile->layerInfo();
+        },
+        [&](auto&&) {
+            return tile->strings();
+        });
+
+    auto roundTrippedFeature = deserializedTile->at(0);
+    REQUIRE(roundTrippedFeature->geomOrNull()->numGeometries() == 2);
+    size_t geometryIndex = 0;
+    roundTrippedFeature->geomOrNull()->forEachGeometry([&](model_ptr<Geometry> const& geometry) {
+        REQUIRE(geometry->geomType() == GeomType::GltfNodeIndex);
+        REQUIRE(geometry->gltfNodeIndex() == (geometryIndex == 0 ? 17U : 23U));
+        REQUIRE(geometry->gltfNodeAabbOrigin() ==
+            (geometryIndex == 0 ? Point{1.0, 2.0, 3.0} : Point{4.0, 5.0, 6.0}));
+        REQUIRE(geometry->gltfNodeAabbSize() ==
+            (geometryIndex == 0 ? Point{10.0, 20.0, 30.0} : Point{40.0, 50.0, 60.0}));
+        ++geometryIndex;
+        return true;
+    });
+    REQUIRE(geometryIndex == 2);
 }
 
 TEST_CASE("Feature Geometry Direct Storage Upgrade", "[geom.collection][feature]")

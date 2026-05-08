@@ -22,7 +22,9 @@ Two top‑level keys are relevant for mapget itself:
 
 For integration with configuration UIs there is an additional top‑level key:
 
-- `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents, but exposes it via `/config` and ensures that sensitive fields such as `password` and `api-key` are masked in responses.
+- `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents. It is exposed through `/config.model` only when the active datasource schema includes `http-settings`, typically via a deployment-specific `--config-schema` patch.
+
+Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, MapViewer registers an `erdblick` section for frontend defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file.
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
@@ -35,9 +37,18 @@ By default, the HTTP service registers the following datasource types:
 - `DataSourceHost` – connect to a remote `DataSourceServer` over HTTP.
 - `DataSourceProcess` – spawn a datasource process locally and connect to it.
 - `GridDataSource` – generate synthetic tiles on the fly for testing and benchmarking.
-- `GeoJsonFolder` – serve features from a directory containing `.geojson` files named by tile ID.
+- `GeoJsonFolder` – serve features from local GeoJSON files.
+- `GeoJsonEndpoint` – serve features from GeoJSON files fetched over HTTP.
 
 Additional datasource types can be registered from C++ code using `DataSourceConfigService`, but those are outside the scope of this guide.
+
+Every datasource entry accepts these generic fields in addition to type-specific fields:
+
+- `enabled` (optional, default `true`): when set to `false`, the entry is skipped before its type-specific constructor is called.
+- `ttl` (optional): cache time-to-live override in seconds. `0` means infinite.
+- `auth-header` (optional): header-to-regular-expression map as described below.
+
+Disabled entries are counted separately in service diagnostics and are not treated as construction failures.
 
 ### Restricting access with `auth-header`
 
@@ -205,6 +216,8 @@ Optional fields:
 
 - `mapId`: optional map ID override. If omitted, mapget derives a display name from the input directory.
 - `withAttrLayers` (default: `true`): boolean flag. If `true`, nested objects in the GeoJSON `properties` are converted to mapget attribute layers; if `false`, only scalar top‑level properties are emitted and nested objects are silently dropped.
+- `dataSourceInfo`: inline datasource info object, local YAML/JSON file path, or HTTP(S) URL.
+- `tilePathTemplate`: relative path template used when `dataSourceInfo` is configured. Supported placeholders are `{tileId}` and `{layerId}`.
 
 Example:
 
@@ -216,9 +229,26 @@ sources:
     withAttrLayers: true
 ```
 
-#### Manifest Mode (Recommended)
+Example with explicit layer metadata and template-based file lookup:
 
-If a `manifest.json` file exists in the input directory, it is used to map filenames to tile IDs and layers. This allows arbitrary filenames and multi‑layer support.
+```yaml
+sources:
+  - type: GeoJsonFolder
+    folder: /data/tiles
+    dataSourceInfo: /data/tiles/info.yaml
+    tilePathTemplate: "{layerId}/{tileId}.geojson"
+```
+
+If `dataSourceInfo` is omitted, mapget falls back to legacy discovery:
+
+- first it looks for a legacy `manifest.json`
+- if no manifest exists, it scans the folder for files named `<tileId>.geojson`
+
+In that fallback mode, metadata is synthesized as a single `GeoJsonAny` layer and conversion is best-effort.
+
+#### Manifest Mode (Legacy)
+
+If no explicit `dataSourceInfo` is configured and a `manifest.json` file exists in the input directory, it is used to map filenames to tile IDs and layers. This allows arbitrary filenames and multi‑layer support.
 
 **Manifest Structure:**
 
@@ -276,11 +306,39 @@ If no `manifest.json` exists, the datasource falls back to scanning for files na
 
 <!-- --8<-- [end:geojson] -->
 
+### `GeoJsonEndpoint`
+
+`GeoJsonEndpoint` serves GeoJSON tiles from an HTTP(S) endpoint. It uses the same GeoJSON conversion logic as `GeoJsonFolder`, but fetches each tile body over the network.
+
+Required fields:
+
+- `type`: must be `GeoJsonEndpoint`.
+- `baseUrl`: base HTTP(S) URL used to fetch GeoJSON tiles.
+
+Optional fields:
+
+- `mapId`: optional map ID override. If omitted, mapget derives a display name from the base URL.
+- `withAttrLayers` (default: `true`): converts nested GeoJSON property objects to mapget attribute layers.
+- `dataSourceInfo`: inline datasource info object, local YAML/JSON file path, or HTTP(S) URL.
+- `tileUrlTemplate`: URL or relative path template used to fetch tiles. Supported placeholders are `{tileId}`, `{layerId}`, and `{baseUrl}`.
+
+Example:
+
+```yaml
+sources:
+  - type: GeoJsonEndpoint
+    baseUrl: https://example.test/tiles
+    dataSourceInfo: https://example.test/info.yaml
+    tileUrlTemplate: "{layerId}/{tileId}.geojson"
+```
+
+If `dataSourceInfo` is omitted, mapget emits a strong warning and falls back to a synthesized single-layer `GeoJsonAny` datasource with empty coverage. In that fallback mode, conversion is still attempted, but service discovery remains intentionally limited.
+
 ## HTTP settings for tools and UIs
 
 The optional `http-settings` top‑level key is reserved for HTTP‑related configuration used by tools and user interfaces. It is typically a list of objects that may contain fields such as `scope`, `api-key` or `password`.
 
-Mapget itself treats this section as opaque data: it is read and written via the `/config` endpoint but not interpreted when serving tiles. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
+Mapget itself treats this section as opaque data and does not interpret it when serving tiles. It is included in `/config.model` only when the active datasource schema contains an `http-settings` property, for example through a deployment-specific `--config-schema` patch. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
 
 ## Environment variables
 
@@ -313,7 +371,10 @@ mapget:
     cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
     clear-cache: false          # --clear-cache
     allow-post-config: true     # --allow-post-config (enables POST /config)
-    no-get-config: false        # --no-get-config (set to true to disable GET /config)
+    no-get-config: false        # --no-get-config (hides datasource model in GET /config)
+    webapp: /srv/my-ui          # --webapp, one application document root
+    static-mount:               # --static-mount, additional static aliases
+      - /assets:/srv/assets
     memory-trim-binary-interval: 100  # --memory-trim-binary-interval
     memory-trim-json-interval: 0      # --memory-trim-json-interval
 
@@ -321,6 +382,15 @@ http-settings: ...
 sources: ...
 ```
 
-Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled).
+Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
+
+Datasource editor visibility is controlled by `allow-post-config` and `no-get-config`:
+
+| `allow-post-config` | `no-get-config` | `/config` datasource model | Editor behaviour |
+| --- | --- | --- | --- |
+| `false` | `false` | Current model is returned. | Read-only. |
+| `true` | `false` | Current model is returned. | Editable. |
+| `false` | `true` | Model and schema are empty. | Disabled. |
+| `true` | `true` | Model is empty, schema is returned. | Empty editor; applying overwrites datasource config. |
 
 <!-- --8<-- [end:yamlconf] -->

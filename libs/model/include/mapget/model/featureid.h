@@ -17,7 +17,10 @@ using Object = simfil::Object;
 using Array = simfil::Array;
 
 /**
- * Unique feature ID
+ * Canonical feature identifier tied to a layer's configured id compositions.
+ *
+ * The string form is dot-separated and may elide a shared tile prefix when the
+ * backing storage uses `useCommonTilePrefix_`.
  */
 class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 {
@@ -33,16 +36,27 @@ public:
     /** Get the feature ID's type id. */
     [[nodiscard]] std::string_view typeId() const;
 
+    /** Get the effective map id referenced by this feature id. */
+    [[nodiscard]] std::string mapId() const;
+
+    /**
+     * Get the explicitly stored external map id for detached references.
+     * Returns nullopt when the reference points into the current tile's map.
+     */
+    [[nodiscard]] std::optional<std::string_view> externalMapId() const;
+
     /** Get all id-part key-value-pairs (including the common prefix). */
     [[nodiscard]] KeyValueViewPairs keyValuePairs() const;
 
+    /** Compact serialized representation of a feature id node. */
     struct Data {
-        MODEL_COLUMN_TYPE(8);
+        MODEL_COLUMN_TYPE(12);
 
         bool useCommonTilePrefix_ = false;
         uint8_t idCompositionIndex_ = 0;
         simfil::StringId typeId_ = 0;
         simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
+        simfil::StringId extMapId_ = simfil::StringPool::Empty;
     };
 
 protected:
@@ -76,5 +90,24 @@ protected:
     std::vector<simfil::StringId> partNames_;
     std::vector<uint32_t> visibleValueIndices_;
 };
+
+/** Parsed representation of a canonical feature-id string. */
+struct ParsedFeatureId
+{
+    std::string typeId_;
+    KeyValuePairs keyValuePairs_;
+    uint8_t idCompositionIndex_ = 0;
+};
+
+/**
+ * Parse a canonical dot-separated feature-id string as emitted by FeatureId::toString().
+ * String-valued id parts are percent-unescaped before datatype validation.
+ * Ambiguous matches are rejected so callers can resolve a single composition.
+ */
+bool parseFeatureIdString(
+    std::string_view featureId,
+    LayerInfo const& layerInfo,
+    ParsedFeatureId& result,
+    std::string* error = nullptr);
 
 }

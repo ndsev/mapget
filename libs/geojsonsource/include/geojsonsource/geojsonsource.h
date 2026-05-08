@@ -1,29 +1,33 @@
 #pragma once
 
-#include <unordered_set>
-#include <unordered_map>
-#include <string>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/service/datasource.h"
 
+#include <nlohmann/json.hpp>
+
 namespace mapget::geojsonsource
 {
 
 /**
- * Entry describing a single GeoJSON file in the manifest.
+ * Entry describing a single GeoJSON file in the legacy manifest.
  */
 struct FileEntry
 {
     std::string filename;
     uint64_t tileId = 0;
-    std::string layer;  // Empty means use default layer
+    std::string layer;
 };
 
 /**
- * Metadata section of the manifest (all fields optional).
+ * Metadata section of the legacy GeoJSON manifest.
  */
 struct ManifestMetadata
 {
@@ -36,7 +40,7 @@ struct ManifestMetadata
 };
 
 /**
- * Parsed manifest.json structure.
+ * Parsed legacy manifest.json structure.
  */
 struct Manifest
 {
@@ -47,115 +51,132 @@ struct Manifest
 };
 
 /**
- * Key for looking up files by (tileId, layer).
+ * Key for looking up legacy manifest files by tile and layer.
  */
 struct TileLayerKey
 {
-    uint64_t tileId;
+    uint64_t tileId = 0;
     std::string layer;
 
-    bool operator==(const TileLayerKey& other) const {
+    bool operator==(const TileLayerKey& other) const
+    {
         return tileId == other.tileId && layer == other.layer;
     }
 };
 
 struct TileLayerKeyHash
 {
-    std::size_t operator()(const TileLayerKey& k) const {
-        return std::hash<uint64_t>()(k.tileId) ^ (std::hash<std::string>()(k.layer) << 1);
+    std::size_t operator()(const TileLayerKey& key) const
+    {
+        return std::hash<uint64_t>()(key.tileId) ^ (std::hash<std::string>()(key.layer) << 1);
     }
 };
 
 /**
- * Data Source which may be used to load GeoJSON files from a directory.
+ * Optional overrides for GeoJsonFolder.
  *
- * Supports two modes of operation:
+ * `dataSourceInfoJson` and `dataSourceInfoLocation` are mutually exclusive.
+ * The location may point to a local YAML/JSON file or to an HTTP(S) URL.
+ */
+struct GeoJsonSourceOptions
+{
+    bool withAttrLayers = true;
+    std::string mapId;
+    std::string tilePathTemplate;
+    std::optional<nlohmann::json> dataSourceInfoJson;
+    std::string dataSourceInfoLocation;
+};
+
+/**
+ * Optional overrides for GeoJsonEndpoint.
  *
- * 1. **Manifest mode** (recommended): If a `manifest.json` file exists in the
- *    input directory, it is used to map filenames to tile IDs and layers.
- *    This allows arbitrary filenames and multi-layer support.
+ * `dataSourceInfoJson` and `dataSourceInfoLocation` are mutually exclusive.
+ * The location may point to a local YAML/JSON file or to an HTTP(S) URL.
+ */
+struct GeoJsonEndpointSourceOptions
+{
+    std::string baseUrl;
+    bool withAttrLayers = true;
+    std::string mapId;
+    std::string tileUrlTemplate;
+    std::optional<nlohmann::json> dataSourceInfoJson;
+    std::string dataSourceInfoLocation;
+
+    /**
+     * Optional text fetch override used for tests or custom transports.
+     * When unset, HTTP(S) URLs are fetched via the built-in HTTP client.
+     */
+    std::function<std::string(std::string const&)> fetchText;
+};
+
+/**
+ * Data source which loads GeoJSON tiles from a local folder.
  *
- *    Example manifest.json:
- *    ```json
- *    {
- *      "version": 1,
- *      "metadata": {
- *        "name": "My Dataset",
- *        "source": "OpenStreetMap",
- *        "created": "2024-01-15"
- *      },
- *      "index": {
- *        "defaultLayer": "GeoJsonAny",
- *        "files": {
- *          "roads.geojson": { "tileId": 121212121212, "layer": "Road" },
- *          "lanes.geojson": { "tileId": 121212121212, "layer": "Lane" },
- *          "other.geojson": { "tileId": 343434343434 }
- *        }
- *      }
- *    }
- *    ```
- *
- * 2. **Legacy mode**: If no manifest.json exists, falls back to scanning for
- *    files named `<packed-tile-id>.geojson`. All files go into a single
- *    "GeoJsonAny" layer.
- *
- * Note: This data source was mainly developed as a scalability test
- *  scenario for erdblick. In the future, the DBI will export the same
- *  GeoJSON feature model that is understood by mapget, and a GeoJSON
- *  data source will be part of the mapget code base.
+ * The datasource supports three modes:
+ * - explicit `dataSourceInfo` plus `tilePathTemplate`
+ * - legacy `manifest.json` filename mapping
+ * - legacy directory scanning for `<tileId>.geojson`
  */
 class GeoJsonSource : public mapget::DataSource
 {
 public:
-    /**
-     * Construct a GeoJSON data source from a directory.
-     *
-     * If a manifest.json exists in the directory, it will be used for
-     * file-to-tile mapping and layer configuration. Otherwise, falls back
-     * to legacy mode where files must be named `<tile-id>.geojson`.
-     *
-     * @param inputDir The directory with the GeoJSON files (and optional manifest.json).
-     * @param withAttrLayers Flag indicating whether compound GeoJSON
-     *  properties shall be converted to mapget attribute layers.
-     * @param mapId Optional map ID override. If empty, derived from inputDir.
-     */
-    GeoJsonSource(const std::string& inputDir, bool withAttrLayers, const std::string& mapId="");
+    GeoJsonSource(
+        const std::string& inputDir,
+        bool withAttrLayers,
+        const std::string& mapId = "");
+    explicit GeoJsonSource(std::string inputDir, GeoJsonSourceOptions options);
 
-    /** DataSource Interface */
     mapget::DataSourceInfo info() override;
     void fill(mapget::TileFeatureLayer::Ptr const&) override;
     void fill(mapget::TileSourceDataLayer::Ptr const&) override;
 
-    /** Returns true if a manifest.json was found and used. */
     [[nodiscard]] bool hasManifest() const { return hasManifest_; }
-
-    /** Returns the parsed manifest (only valid if hasManifest() is true). */
     [[nodiscard]] const Manifest& manifest() const { return manifest_; }
 
 private:
-    /** Parse manifest.json from the input directory. Returns true if found and valid. */
-    bool parseManifest();
-
-    /** Initialize coverage from manifest entries. */
+    [[nodiscard]] bool parseManifest();
     void initFromManifest();
-
-    /** Initialize coverage by scanning directory for <tile-id>.geojson files (legacy). */
     void initFromDirectory();
-
-    /** Create LayerInfo JSON for a given layer name. */
-    static nlohmann::json createLayerInfoJson(const std::string& layerName);
+    [[nodiscard]] std::string resolveTilePath(uint64_t tileId, std::string_view layerId) const;
+    [[nodiscard]] std::string readTileBody(uint64_t tileId, std::string_view layerId) const;
+    [[nodiscard]] static nlohmann::json createLayerInfoJson(const std::string& layerName);
 
     mapget::DataSourceInfo info_;
     std::string inputDir_;
     bool withAttrLayers_ = true;
     bool hasManifest_ = false;
+    bool usesTemplatePaths_ = false;
+    std::string tilePathTemplate_;
     Manifest manifest_;
-
-    // Mapping from (tileId, layer) -> filename
     std::unordered_map<TileLayerKey, std::string, TileLayerKeyHash> tileLayerToFile_;
-
-    // Set of covered tile IDs per layer (for legacy single-layer mode compatibility)
     std::unordered_map<std::string, std::unordered_set<uint64_t>> layerCoverage_;
+};
+
+/**
+ * Data source which loads GeoJSON tiles from an HTTP endpoint.
+ */
+class GeoJsonEndpointSource : public mapget::DataSource
+{
+public:
+    explicit GeoJsonEndpointSource(GeoJsonEndpointSourceOptions options);
+    ~GeoJsonEndpointSource();
+
+    mapget::DataSourceInfo info() override;
+    void fill(mapget::TileFeatureLayer::Ptr const&) override;
+    void fill(mapget::TileSourceDataLayer::Ptr const&) override;
+
+private:
+    [[nodiscard]] std::string renderTileUrl(uint64_t tileId, std::string_view layerId) const;
+    [[nodiscard]] std::string fetchTileBody(uint64_t tileId, std::string_view layerId) const;
+
+    mapget::DataSourceInfo info_;
+    std::string baseUrl_;
+    std::string tileUrlTemplate_;
+    bool withAttrLayers_ = true;
+    std::function<std::string(std::string const&)> fetchText_;
+
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace mapget::geojsonsource
