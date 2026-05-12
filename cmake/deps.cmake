@@ -1,7 +1,7 @@
 ### Dependencies via CPM (converted from FetchContent)
 
 CPMAddPackage("gh:g-truc/glm#1.0.1")
-CPMAddPackage(
+    CPMAddPackage(
     URI "gh:fmtlib/fmt#11.1.4"
     OPTIONS "FMT_HEADER_ONLY OFF")
 CPMAddPackage(
@@ -33,8 +33,8 @@ if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
 else()
-    CPMAddPackage(
-        URI "gh:Klebert-Engineering/simfil@0.7.2"
+CPMAddPackage(
+        URI "gh:Klebert-Engineering/simfil#release/1.0.0@1.0.0"
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
