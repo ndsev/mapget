@@ -215,6 +215,7 @@ protected:
      * Simfil Model-Node Functions
      */
     [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::SchemaId schema() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
     [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
@@ -309,6 +310,7 @@ public:
     struct MergedBasicAttributesView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
+        [[nodiscard]] simfil::SchemaId schema() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
         [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
@@ -336,6 +338,7 @@ protected:
     struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
+        [[nodiscard]] simfil::SchemaId schema() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
         [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;

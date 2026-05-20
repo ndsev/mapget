@@ -12,6 +12,8 @@
 namespace mapget
 {
 
+class SchemaRegistry;
+
 /**
  * The KeyValue(View)Pairs type is a vector of pairs, where each pair
  * consists of a string_view key and a variant value that can be
@@ -317,6 +319,18 @@ struct LayerInfo
     /** Version of the map layer. */
     Version version_;
 
+    /** JSON Schema describing one emitted feature object for this layer. */
+    nlohmann::json featureModelSchema_;
+
+    /**
+     * Return the parsed schema registry for this layer.
+     * SchemaIds are assigned by JSON Schema traversal and are independent of
+     * datasource-owned StringPool state.
+     */
+    [[nodiscard]] std::shared_ptr<SchemaRegistry> schemaRegistry() const;
+
+    mutable std::shared_ptr<SchemaRegistry> schemaRegistry_;
+
     /**
      * Return the index of the first unique ID composition that matches this feature ID.
      * The field values must match the limitations of the IdPartDataType, and
@@ -401,7 +415,8 @@ struct DataSourceInfo
      *         "major": <int>,                // Mandatory: The major version number.
      *         "minor": <int>,                // Mandatory: The minor version number.
      *         "patch": <int>                 // Mandatory: The patch version number.
-     *       }
+     *       },
+     *       "featureModelSchema": <object>    // Optional: JSON Schema for one emitted feature object.
      *     },
      *     ...
      *   },

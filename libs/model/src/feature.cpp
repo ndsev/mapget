@@ -2,6 +2,7 @@
 #include "featureid.h"
 #include "featurelayer.h"
 #include "geometry.h"
+#include "mapget/log.h"
 #include "relation.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
@@ -153,6 +154,12 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
 {
     if (!attributeLayerNodeAddress()) {
         auto result = model().newAttributeLayers();
+        if (auto schemaId = model().attributeLayerMapSchemaId(typeId());
+            schemaId != simfil::NoSchemaId) {
+            if (auto schemaResult = result->setObjectSchema(schemaId); !schemaResult) {
+                log().warn("Failed to set attribute-layer-list schema: {}", schemaResult.error().message);
+            }
+        }
         attributeLayerNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -180,6 +187,7 @@ model_ptr<Object> Feature::attributes()
 {
     if (!attributeNodeAddress()) {
         auto result = model().newObject(8);
+        model().applyObjectSchema(*result, model().featurePropertiesSchemaId(typeId()));
         attributeNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -208,6 +216,12 @@ model_ptr<Array> Feature::relations()
 {
     if (!relationNodeAddress()) {
         auto result = model().newArray(8);
+        model().applyArraySchema(
+            *result,
+            model().childSchemaId(
+                schema(),
+                StringPool::RelationsStr,
+                simfil::Schema::Kind::Array));
         relationNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -266,6 +280,11 @@ tl::expected<simfil::Value, simfil::Error> Feature::evaluate(const std::string_v
 simfil::ValueType Feature::type() const
 {
     return simfil::ValueType::Object;
+}
+
+simfil::SchemaId Feature::schema() const
+{
+    return model().featureSchemaId(typeId());
 }
 
 simfil::ModelNode::Ptr Feature::at(int64_t i) const
@@ -884,6 +903,14 @@ simfil::ValueType Feature::MergedBasicAttributesView::type() const
     return simfil::ValueType::Object;
 }
 
+simfil::SchemaId Feature::MergedBasicAttributesView::schema() const
+{
+    if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
+        return model().featurePropertiesSchemaId(feature->typeId());
+    }
+    return simfil::NoSchemaId;
+}
+
 simfil::ModelNode::Ptr Feature::MergedBasicAttributesView::at(int64_t i) const
 {
     ensureMergedFieldsReady();
@@ -947,6 +974,14 @@ Feature::FeaturePropertyView::FeaturePropertyView(
 simfil::ValueType Feature::FeaturePropertyView::type() const
 {
     return simfil::ValueType::Object;
+}
+
+simfil::SchemaId Feature::FeaturePropertyView::schema() const
+{
+    if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
+        return model().featurePropertiesSchemaId(feature->typeId());
+    }
+    return simfil::NoSchemaId;
 }
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const

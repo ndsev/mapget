@@ -108,6 +108,12 @@ public:
                        simfil::detail::mp_key key);
     AttributeLayerList() = delete;
 
+    /** Return the object schema assigned to the layer-name map. */
+    [[nodiscard]] simfil::SchemaId schema() const override;
+
+    /** Assign the object schema for the layer-name map stored by this view. */
+    tl::expected<void, simfil::Error> setObjectSchema(simfil::SchemaId schemaId);
+
     [[nodiscard]] simfil::ValueType type() const override;
     [[nodiscard]] simfil::ModelNode::Ptr at(int64_t i) const override;
     [[nodiscard]] uint32_t size() const override;

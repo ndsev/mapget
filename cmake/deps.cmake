@@ -9,6 +9,7 @@ CPMAddPackage(
     OPTIONS "SPDLOG_FMT_EXTERNAL ON")
 CPMAddPackage("gh:fraillt/bitsery@5.2.4")
 CPMAddPackage("gh:nlohmann/json@3.11.3")
+CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
 CPMAddPackage(
     URI "gh:TartanLlama/expected@1.1.0"
     OPTIONS
@@ -34,7 +35,7 @@ if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
             "SIMFIL_SHARED OFF")
 else()
 CPMAddPackage(
-        URI "gh:Klebert-Engineering/simfil#release/1.0.0@1.0.0"
+        URI "gh:Klebert-Engineering/simfil#schema-field-pruning@06c9fab"
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
@@ -146,7 +147,6 @@ endif()
             "YAML_CPP_BUILD_TOOLS OFF"
             "YAML_CPP_BUILD_CONTRIB OFF")
     CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
-    CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
     CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 
 endif ()

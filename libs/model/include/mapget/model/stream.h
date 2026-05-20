@@ -77,8 +77,10 @@ public:
      *   + Added point-buffer-backed GLTF node-index geometry storage.
      * - Version 1.5:
      *   + Replaced generic tile attachments with one optional tile-level GLB attachment.
+     * - Version 1.6:
+     *   + Added SIMFIL object/array SchemaId columns to ModelPool payloads.
      */
-    static constexpr Version CurrentProtocolVersion{1, 5, 0};
+    static constexpr Version CurrentProtocolVersion{1, 6, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

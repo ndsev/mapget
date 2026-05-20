@@ -18,6 +18,7 @@
 #include "layer.h"
 #include "sourceinfo.h"
 #include "geojson-import.h"
+#include "schemaregistry.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
@@ -277,6 +278,15 @@ public:
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
 
+    /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo. */
+    void validateSchema() const;
+
+    /** Return the schema registry attached through this tile's LayerInfo, if available. */
+    [[nodiscard]] std::shared_ptr<SchemaRegistry const> schemaRegistry() const;
+
+    /** Return a schema entry by registry key, or by feature type name as a convenience. */
+    [[nodiscard]] SchemaRegistry::Entry const* getSchema(std::string_view typeName) const;
+
     /** Import a mapget-flavoured or best-effort GeoJSON feature collection into this tile. */
     void fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options = {});
 
@@ -460,6 +470,22 @@ protected:
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
+
+    /** Resolve schema IDs used by mapget's custom feature-model nodes. */
+    [[nodiscard]] simfil::SchemaId featureSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::SchemaId featurePropertiesSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::SchemaId attributeLayerMapSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::SchemaId schemaIdForKey(std::string_view key) const;
+    [[nodiscard]] simfil::SchemaId childSchemaId(
+        simfil::SchemaId parent,
+        std::string_view fieldName,
+        std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
+    [[nodiscard]] simfil::SchemaId childSchemaId(
+        simfil::SchemaId parent,
+        simfil::StringId field,
+        std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
+    void applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId) const;
+    void applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const;
 
     /**
      * Create a new attribute layer collection.

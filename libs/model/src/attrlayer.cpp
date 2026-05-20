@@ -31,6 +31,13 @@ AttributeLayer::newAttribute(
 
 void AttributeLayer::addAttribute(model_ptr<Attribute> a)
 {
+    if (a) {
+        auto schemaId = model().childSchemaId(
+            schema(),
+            a->name(),
+            simfil::Schema::Kind::Object);
+        model().applyObjectSchema(*a, schemaId);
+    }
     addField(a->name(), a);
 }
 
@@ -74,6 +81,22 @@ AttributeLayerList::newLayer(
 
 void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<AttributeLayer> l)
 {
+    if (l) {
+        auto schemaId = model().childSchemaId(
+            schema(),
+            name,
+            simfil::Schema::Kind::Object);
+        if (schemaId != simfil::NoSchemaId) {
+            // A shared attribute layer may be reached through multiple feature schemas.
+            auto const current = l->schema();
+            auto const target = current == simfil::NoSchemaId || current == schemaId
+                ? schemaId
+                : simfil::NoSchemaId;
+            if (auto result = l->setSchema(target); !result) {
+                log().warn("Failed to set attribute layer schema: {}", result.error().message);
+            }
+        }
+    }
     (void) localObject()->addField(name, l);
 }
 
@@ -113,6 +136,16 @@ bool AttributeLayerList::forEachLayer(
 simfil::model_ptr<simfil::Object> AttributeLayerList::localObject() const
 {
     return simfil::model_ptr<simfil::Object>::make(members_, model_, addr_);
+}
+
+simfil::SchemaId AttributeLayerList::schema() const
+{
+    return localObject()->schema();
+}
+
+tl::expected<void, simfil::Error> AttributeLayerList::setObjectSchema(simfil::SchemaId schemaId)
+{
+    return localObject()->setSchema(schemaId);
 }
 
 uint32_t AttributeLayerList::localMergedSize() const

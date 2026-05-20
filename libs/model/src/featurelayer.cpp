@@ -24,6 +24,8 @@
 #include <bitsery/traits/string.h>
 #include <bitsery/traits/vector.h>
 
+#include <nlohmann/json-schema.hpp>
+
 #include "simfil/environment.h"
 #include "simfil/model/arena.h"
 #include "simfil/model/bitsery-traits.h"
@@ -268,8 +270,18 @@ struct TileFeatureLayer::Impl {
         std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
     }
 
-    // Simfil compiled expression cache and environment
+    // SIMFIL schema registry and compiled expression cache.
+    std::shared_ptr<SchemaRegistry> schemaRegistry_;
     SimfilExpressionCache expressionCache_;
+
+    static std::unique_ptr<simfil::Environment> makeSchemaAwareEnvironment(
+        std::shared_ptr<simfil::StringPool> stringPool,
+        std::shared_ptr<SchemaRegistry const> schemaRegistry)
+    {
+        auto env = makeEnvironment(stringPool);
+        installSchemaRegistry(*env, std::move(schemaRegistry), std::move(stringPool));
+        return env;
+    }
 
     // (De-)Serialization
     template<typename S>
@@ -297,8 +309,11 @@ struct TileFeatureLayer::Impl {
         s.object(geomStages_);
     }
 
-    explicit Impl(std::shared_ptr<simfil::StringPool> stringPool)
-        : expressionCache_(makeEnvironment(std::move(stringPool)))
+    Impl(
+        std::shared_ptr<simfil::StringPool> stringPool,
+        std::shared_ptr<LayerInfo> const& layerInfo)
+        : schemaRegistry_(layerInfo ? layerInfo->schemaRegistry() : nullptr),
+          expressionCache_(makeSchemaAwareEnvironment(std::move(stringPool), schemaRegistry_))
     {
     }
 
@@ -320,7 +335,7 @@ TileFeatureLayer::TileFeatureLayer(
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& strings) :
     ModelPool(strings),
-    impl_(std::make_unique<Impl>(strings)),
+    impl_(std::make_unique<Impl>(strings, layerInfo)),
     TileLayer(tileId, nodeId, mapId, layerInfo)
 {
     impl_->geometryAnchor_ = tileId.center();
@@ -333,7 +348,7 @@ TileFeatureLayer::TileFeatureLayer(
 ) :
     TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
     ModelPool(stringPoolGetter(nodeId_)),
-    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
+    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_), layerInfo_))
 {
     impl_->geometryAnchor_ = tileId_.center();
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
@@ -1635,6 +1650,101 @@ nlohmann::json TileFeatureLayer::toJson() const
     return result;
 }
 
+void TileFeatureLayer::validateSchema() const
+{
+    if (!layerInfo_ || layerInfo_->featureModelSchema_.is_null()) {
+        raise("TileFeatureLayer::validateSchema: layer has no featureModelSchema.");
+    }
+
+    nlohmann::json_schema::json_validator validator;
+    validator.set_root_schema(layerInfo_->featureModelSchema_);
+    for (auto const& feature : *this) {
+        validator.validate(feature->toJson());
+    }
+}
+
+std::shared_ptr<SchemaRegistry const> TileFeatureLayer::schemaRegistry() const
+{
+    return impl_->schemaRegistry_;
+}
+
+SchemaRegistry::Entry const* TileFeatureLayer::getSchema(std::string_view typeName) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->getSchema(typeName) : nullptr;
+}
+
+simfil::SchemaId TileFeatureLayer::featureSchemaId(std::string_view featureType) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->featureSchema(featureType) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::featurePropertiesSchemaId(std::string_view featureType) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->featurePropertiesSchema(featureType) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::attributeLayerMapSchemaId(std::string_view featureType) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->attributeLayerMapSchema(featureType) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::schemaIdForKey(std::string_view key) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->schemaId(key) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::childSchemaId(
+    simfil::SchemaId parent,
+    std::string_view fieldName,
+    std::optional<simfil::Schema::Kind> preferredKind) const
+{
+    return impl_->schemaRegistry_
+        ? impl_->schemaRegistry_->childSchema(parent, fieldName, preferredKind)
+        : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::childSchemaId(
+    simfil::SchemaId parent,
+    simfil::StringId field,
+    std::optional<simfil::Schema::Kind> preferredKind) const
+{
+    if (!impl_->schemaRegistry_) {
+        return simfil::NoSchemaId;
+    }
+    auto fieldName = strings()->resolve(field);
+    return fieldName
+        ? impl_->schemaRegistry_->childSchema(parent, *fieldName, preferredKind)
+        : simfil::NoSchemaId;
+}
+
+void TileFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId) const
+{
+    if (schemaId == simfil::NoSchemaId) {
+        return;
+    }
+    auto const current = object.schema();
+    auto const target = current == simfil::NoSchemaId || current == schemaId
+        ? schemaId
+        : simfil::NoSchemaId;
+    if (auto result = object.setSchema(target); !result) {
+        log().warn("Failed to set object schema: {}", result.error().message);
+    }
+}
+
+void TileFeatureLayer::applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const
+{
+    if (schemaId == simfil::NoSchemaId) {
+        return;
+    }
+    auto const current = array.schema();
+    auto const target = current == simfil::NoSchemaId || current == schemaId
+        ? schemaId
+        : simfil::NoSchemaId;
+    if (auto result = array.setSchema(target); !result) {
+        log().warn("Failed to set array schema: {}", result.error().message);
+    }
+}
+
 nlohmann::json TileFeatureLayer::serializationSizeStats() const
 {
     auto featureLayer = nlohmann::json::object();
@@ -2078,7 +2188,7 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     auto oldDict = strings();
     // Reset simfil environment and clear expression cache
-    impl_->expressionCache_.reset(makeEnvironment(newDict));
+    impl_->expressionCache_.reset(Impl::makeSchemaAwareEnvironment(newDict, impl_->schemaRegistry_));
     if (auto res = ModelPool::setStrings(newDict); !res)
         return tl::unexpected<simfil::Error>(std::move(res.error()));
 

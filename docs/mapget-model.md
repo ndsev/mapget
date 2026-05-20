@@ -41,6 +41,7 @@ classDiagram
     +bool canWrite
     +Version version
     +vector<FeatureTypeInfo> featureTypes
+    +json featureModelSchema
   }
 
   class FeatureTypeInfo {
@@ -68,11 +69,23 @@ classDiagram
 ```
 
 - **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
-- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), advertised zoom levels, coverage rectangles, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`), read/write flags and the semantic version. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
+- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), advertised zoom levels, coverage rectangles, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`), read/write flags, semantic version and optional `featureModelSchema`. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
 - **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
 
 When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` and uses it to validate feature IDs and field layouts. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
+
+### Feature Model Schema
+
+Feature layers may attach `LayerInfo.featureModelSchema`, a JSON Schema document that validates one emitted GeoJSON-style feature object from that layer.
+
+- The schema is optional; datasources can adopt it layer by layer.
+- The schema is serialized through `/sources` with the rest of `LayerInfo`.
+- `TileFeatureLayer::validateSchema()` validates every emitted feature against the layer's attached schema.
+- The schema is intended for validation and tooling: simfil wildcard pruning, search/autocomplete, value-aware coloring and generated user-facing feature-model documentation.
+- Datasources should keep `FeatureTypeInfo` as the source for feature ID compositions. `featureModelSchema` describes the full JSON shape and value domains, including converter-owned fields, relations, geometry/source-data extensions and attribute-layer containers.
+- Mapget-specific schema branches may carry `x-mapget.metaType` annotations such as `Feature`, `FeatureProperties`, `AttributeLayerMap`, `AttributeContainer` and `Attribute`. `SchemaRegistry` uses these annotations to map JSON Schema branches onto SIMFIL `SchemaId` values for feature, property and attribute-layer nodes.
+- `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
 
 ### Add‑on datasources
 
