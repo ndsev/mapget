@@ -8,10 +8,12 @@
 #include <glm/vec3.hpp>
 
 #include "simfil/model/arena.h"
+#include "simfil/model/bitsery-traits.h"
 #include "simfil/model/model.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
 
+#include "featureid-data.h"
 #include "geometry-data.h"
 #include "info.h"
 #include "layer.h"
@@ -34,7 +36,6 @@ class Geometry;
 class GeometryCollection;
 class SourceDataReferenceCollection;
 class SourceDataReferenceItem;
-struct QualifiedSourceDataReference;
 class PointNode;
 class PointBufferNode;
 class GeometryArrayView;
@@ -56,10 +57,10 @@ using Array = simfil::Array;
 /**
  * Common ModelPool base for tile layers that store map feature identifiers and geometry.
  *
- * The base deliberately owns no concrete columns. Instead, it defines the shared
- * column id domain and the factory/storage protocol used by reusable FeatureId
- * and geometry nodes. Concrete layers decide which roots and result-specific
- * columns they add on top.
+ * The base owns the concrete columns shared by TileFeatureLayer and
+ * TileSearchResultLayer: detached feature ids, reusable geometry storage, and
+ * source-data references. Concrete layers add only their root-specific columns
+ * and stage/feature-specific behavior on top.
  */
 class TileFeatureModelLayerBase : public TileLayer, public simfil::ModelPool
 {
@@ -157,51 +158,51 @@ public:
         std::span<QualifiedSourceDataReference> list) = 0;
 
     /** Resolve a stored feature-id node from the concrete layer's columns. */
-    [[nodiscard]] virtual model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const;
 
     /** Resolve a point node from the concrete layer's columns. */
-    [[nodiscard]] virtual model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const;
 
     /** Resolve a point-buffer node from the concrete layer's geometry storage. */
-    [[nodiscard]] virtual model_ptr<PointBufferNode> resolvePointBufferNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<PointBufferNode> resolvePointBufferNode(simfil::ModelNode const& node) const;
 
     /** Resolve a concrete geometry node from the concrete layer's geometry storage. */
-    [[nodiscard]] virtual model_ptr<Geometry> resolveGeometryNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<Geometry> resolveGeometryNode(simfil::ModelNode const& node) const;
 
     /** Resolve a geometry collection node from array storage. */
-    [[nodiscard]] virtual model_ptr<GeometryCollection> resolveGeometryCollectionNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<GeometryCollection> resolveGeometryCollectionNode(simfil::ModelNode const& node) const;
 
     /** Resolve a merged geometry-array view node. */
-    [[nodiscard]] virtual model_ptr<GeometryArrayView> resolveGeometryArrayViewNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<GeometryArrayView> resolveGeometryArrayViewNode(simfil::ModelNode const& node) const;
 
     /** Resolve the GeoJSON-style bounds-info object for one geometry. */
-    [[nodiscard]] virtual model_ptr<BoundsInfoNode> resolveBoundsInfoNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<BoundsInfoNode> resolveBoundsInfoNode(simfil::ModelNode const& node) const;
 
     /** Resolve the GeoJSON-style bounds coordinate array for one geometry. */
-    [[nodiscard]] virtual model_ptr<BoundsPolygonCoordinatesNode> resolveBoundsPolygonCoordinatesNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<BoundsPolygonCoordinatesNode> resolveBoundsPolygonCoordinatesNode(simfil::ModelNode const& node) const;
 
     /** Resolve one GeoJSON bounds ring array. */
-    [[nodiscard]] virtual model_ptr<BoundsRingNode> resolveBoundsRingNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<BoundsRingNode> resolveBoundsRingNode(simfil::ModelNode const& node) const;
 
     /** Resolve one mesh geometry view node. */
-    [[nodiscard]] virtual model_ptr<MeshNode> resolveMeshNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<MeshNode> resolveMeshNode(simfil::ModelNode const& node) const;
 
     /** Resolve one mesh triangle collection node. */
-    [[nodiscard]] virtual model_ptr<MeshTriangleCollectionNode> resolveMeshTriangleCollectionNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<MeshTriangleCollectionNode> resolveMeshTriangleCollectionNode(simfil::ModelNode const& node) const;
 
     /** Resolve one polygon linear ring node. */
-    [[nodiscard]] virtual model_ptr<LinearRingNode> resolveLinearRingNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<LinearRingNode> resolveLinearRingNode(simfil::ModelNode const& node) const;
 
     /** Resolve one polygon geometry node. */
-    [[nodiscard]] virtual model_ptr<PolygonNode> resolvePolygonNode(simfil::ModelNode const& node) const = 0;
+    [[nodiscard]] virtual model_ptr<PolygonNode> resolvePolygonNode(simfil::ModelNode const& node) const;
 
     /** Resolve a geometry source-data-reference collection. */
     [[nodiscard]] virtual model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollectionNode(
-        simfil::ModelNode const& node) const = 0;
+        simfil::ModelNode const& node) const;
 
     /** Resolve one geometry source-data-reference item. */
     [[nodiscard]] virtual model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItemNode(
-        simfil::ModelNode const& node) const = 0;
+        simfil::ModelNode const& node) const;
 
     /** Return an optional common feature-id prefix; search-result layers normally return null. */
     [[nodiscard]] virtual model_ptr<Object> getIdPrefix() const;
@@ -237,25 +238,53 @@ protected:
         size_t* bytesRead = nullptr);
 
     /** Access the concrete vertex buffer arena backing geometry nodes. */
-    virtual GeometryStorage& vertexBufferStorage() = 0;
+    GeometryStorage& vertexBufferStorage();
 
     /** Return geometry-view metadata for a stored geometry view address. */
-    [[nodiscard]] virtual GeometryViewData const* geometryViewData(simfil::ModelNodeAddress address) const = 0;
+    [[nodiscard]] GeometryViewData const* geometryViewData(simfil::ModelNodeAddress address) const;
 
     /** Return the persisted geometry stage for one geometry address. */
-    [[nodiscard]] virtual std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const = 0;
+    [[nodiscard]] virtual std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const;
 
     /** Store or clear the persisted geometry stage for one geometry address. */
-    virtual void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage) = 0;
+    virtual void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage);
 
     /** Return the source-data-reference collection address attached to one geometry. */
     [[nodiscard]] virtual simfil::ModelNodeAddress geometrySourceDataReferences(
-        simfil::ModelNodeAddress address) const = 0;
+        simfil::ModelNodeAddress address) const;
 
     /** Attach source-data references to one geometry. */
     virtual void setGeometrySourceDataReferences(
         simfil::ModelNodeAddress address,
-        simfil::ModelNodeAddress refsAddress) = 0;
+        simfil::ModelNodeAddress refsAddress);
+
+    /** Serialize/deserialize the shared feature-id and geometry columns. */
+    template<typename S>
+    void readWriteCommonColumns(S& s)
+    {
+        s.object(featureIds_);
+        s.object(geomSourceDataRefs_);
+        s.object(geomViews_);
+        s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
+        s.object(sourceDataReferences_);
+        s.object(geomStages_);
+    }
+
+    /** Allocate one detached feature id in shared storage. */
+    simfil::ModelNodeAddress appendFeatureId(FeatureIdData data);
+
+    /** Allocate one geometry view in shared storage. */
+    simfil::ModelNodeAddress appendGeometryView(GeometryViewData data);
+
+    /** Allocate a source-data-reference slice in shared storage. */
+    simfil::ModelNodeAddress appendSourceDataReferences(std::span<QualifiedSourceDataReference> list);
+
+    simfil::ModelColumn<FeatureIdData, simfil::detail::ColumnPageSize / 2> featureIds_;
+    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> geomSourceDataRefs_;
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> geomStages_;
+    simfil::ModelColumn<GeometryViewData, simfil::detail::ColumnPageSize / 2> geomViews_;
+    simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
+    GeometryStorage pointBuffers_;
 };
 
 // Primary template for ADL-based resolve hooks shared by feature and search-result layers.

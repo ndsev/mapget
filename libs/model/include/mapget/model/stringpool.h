@@ -65,9 +65,13 @@ struct StringPool : public simfil::StringPool
         AttributeIndexStr,
         ValuesStr,
         MatchStr,
-        AttributePathStr,
         ValidityIndexStr,
-        ValidityCountStr
+        ValidityCountStr,
+        OverlayNameStr,
+        OverlayFeatureStr,
+        OverlayLayerStr,
+        OverlayValidityIndexStr,
+        OverlayValidityCountStr
     };
 
     explicit StringPool(const std::string_view& nodeId);

@@ -34,8 +34,6 @@ struct FeatureLayerSearchRequest
     std::vector<std::string> withFields_;
     /** Optional client refresh counter for ordering updates of the same search id. */
     std::optional<int64_t> refresh_;
-    /** Optional override for the result layer's synthetic string-pool node id. */
-    std::optional<std::string> resultNodeId_;
     /** Source stage mask used to assemble the searched tile, if it came from staged payloads. */
     std::vector<uint32_t> sourceStageMask_;
     /** Result chunk index. V1 currently emits one result layer per searched tile. */
@@ -63,12 +61,11 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
 /**
  * Assemble a transient full feature tile from ordered staged payloads.
  *
- * The returned layer owns a caller-provided synthetic string pool and clones
- * every stage into a single feature model. Source tiles and datasource-owned
+ * The returned layer clones every stage into a single feature model using the
+ * source tile node id/string-pool namespace. Source tiles and datasource-owned
  * string pools are left untouched.
  */
 tl::expected<TileFeatureLayer::Ptr, simfil::Error> assembleFeatureLayerStages(
-    std::span<TileFeatureLayer::Ptr const> stages,
-    std::string_view evaluationNodeId);
+    std::span<TileFeatureLayer::Ptr const> stages);
 
 } // namespace mapget

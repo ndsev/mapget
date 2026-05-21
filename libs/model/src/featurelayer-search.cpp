@@ -14,18 +14,50 @@ namespace mapget
 {
 namespace
 {
-/** Produce a stable result string-pool id for one logical search refresh. */
-std::string makeDefaultResultNodeId(TileFeatureLayer const& sourceLayer, FeatureLayerSearchRequest const& request)
+/** Clone a mapget string pool so search can evaluate without mutating datasource-owned state. */
+tl::expected<std::shared_ptr<StringPool>, simfil::Error> copyStringPool(TileFeatureLayer const& sourceLayer)
 {
-    auto const refreshKey = request.refresh_
-        ? std::to_string(*request.refresh_)
-        : std::to_string(std::hash<std::string>{}(request.requestKey_));
-    return fmt::format(
-        "__mapget_search__:{}:{}:{}:{}",
-        sourceLayer.nodeId(),
-        request.searchId_,
-        sourceLayer.layerInfo() ? sourceLayer.layerInfo()->layerId_ : std::string{},
-        refreshKey);
+    auto sourceStrings = std::dynamic_pointer_cast<StringPool>(sourceLayer.strings());
+    if (!sourceStrings) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InternalError,
+            fmt::format("Feature layer '{}' does not use a mapget StringPool.", sourceLayer.nodeId())});
+    }
+    return std::make_shared<StringPool>(*sourceStrings);
+}
+
+/**
+ * Merge dynamic string IDs from one staged layer into an evaluation pool.
+ *
+ * Staged payloads from one datasource are expected to share one string-pool ID
+ * namespace. Replaying their exact id->string mappings into the copied pool lets
+ * staged search reuse the source node id without mutating the datasource pool.
+ */
+tl::expected<void, simfil::Error> mergeDynamicStrings(
+    StringPool& target,
+    TileFeatureLayer const& sourceLayer)
+{
+    auto sourceStrings = std::dynamic_pointer_cast<StringPool>(sourceLayer.strings());
+    if (!sourceStrings) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InternalError,
+            fmt::format("Feature layer '{}' does not use a mapget StringPool.", sourceLayer.nodeId())});
+    }
+
+    std::ostringstream serializedStrings;
+    if (auto writeResult = sourceStrings->simfil::StringPool::write(
+            serializedStrings,
+            simfil::StringPool::FirstDynamicId);
+        !writeResult) {
+        return tl::unexpected(writeResult.error());
+    }
+
+    auto bytesString = serializedStrings.str();
+    std::vector<uint8_t> bytes(bytesString.begin(), bytesString.end());
+    if (auto readResult = target.read(bytes); !readResult) {
+        return tl::unexpected(readResult.error());
+    }
+    return {};
 }
 
 /** Serialize/parse a feature layer with a copied string pool for side-effect-free SIMFIL evaluation. */
@@ -38,7 +70,11 @@ tl::expected<TileFeatureLayer::Ptr, simfil::Error> makeEvaluationLayerCopy(TileF
 
     auto bytesString = serialized.str();
     std::vector<uint8_t> bytes(bytesString.begin(), bytesString.end());
-    auto copiedStrings = std::make_shared<simfil::StringPool>(*sourceLayer.strings());
+    auto copiedStringsResult = copyStringPool(sourceLayer);
+    if (!copiedStringsResult) {
+        return tl::unexpected(copiedStringsResult.error());
+    }
+    std::shared_ptr<simfil::StringPool> copiedStrings = *copiedStringsResult;
     auto sourceInfo = sourceLayer.layerInfo();
     auto sourceMapId = sourceLayer.mapId();
     auto sourceLayerId = sourceInfo ? sourceInfo->layerId_ : std::string{};
@@ -229,7 +265,6 @@ std::vector<simfil::ModelNode::Ptr> evaluateWithFields(
 struct AttributeMatchInfo
 {
     uint32_t attributeIndex_ = SearchResult::InvalidAttributeIndex;
-    std::string attributePath_;
     uint32_t validityIndex_ = SearchResult::InvalidAttributeIndex;
     uint32_t validityCount_ = 0;
 };
@@ -262,9 +297,6 @@ tl::expected<void, simfil::Error> addSearchResult(
         copyGeometryCollection(resultLayer, sourceGeometry),
         values,
         attributeMatch ? std::optional<uint32_t>(attributeMatch->attributeIndex_) : std::nullopt,
-        attributeMatch && !attributeMatch->attributePath_.empty()
-            ? std::optional<std::string_view>(attributeMatch->attributePath_)
-            : std::nullopt,
         attributeMatch ? std::optional<uint32_t>(attributeMatch->validityIndex_) : std::nullopt,
         attributeMatch ? std::optional<uint32_t>(attributeMatch->validityCount_) : std::nullopt);
     return {};
@@ -273,8 +305,7 @@ tl::expected<void, simfil::Error> addSearchResult(
 } // namespace
 
 tl::expected<TileFeatureLayer::Ptr, simfil::Error> assembleFeatureLayerStages(
-    std::span<TileFeatureLayer::Ptr const> stages,
-    std::string_view evaluationNodeId)
+    std::span<TileFeatureLayer::Ptr const> stages)
 {
     std::vector<TileFeatureLayer::Ptr> orderedStages;
     orderedStages.reserve(stages.size());
@@ -294,13 +325,21 @@ tl::expected<TileFeatureLayer::Ptr, simfil::Error> assembleFeatureLayerStages(
     });
 
     auto const& base = orderedStages.front();
-    auto strings = std::make_shared<StringPool>(evaluationNodeId);
+    auto strings = copyStringPool(*base);
+    if (!strings) {
+        return tl::unexpected(strings.error());
+    }
+    for (auto const& stageLayer : orderedStages) {
+        if (auto result = mergeDynamicStrings(**strings, *stageLayer); !result) {
+            return tl::unexpected(result.error());
+        }
+    }
     auto assembled = std::make_shared<TileFeatureLayer>(
         base->tileId(),
-        std::string(evaluationNodeId),
+        base->nodeId(),
         base->mapId(),
         base->layerInfo(),
-        strings);
+        *strings);
     assembled->setGeometryAnchor(base->geometryAnchor());
     assembled->setTimestamp(base->timestamp());
     assembled->setStage(std::nullopt);
@@ -333,14 +372,12 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
     }
     auto& searchLayer = **evaluationLayer;
 
-    auto resultNodeId = request.resultNodeId_.value_or(makeDefaultResultNodeId(searchLayer, request));
-    auto resultStrings = std::make_shared<StringPool>(resultNodeId);
     auto resultLayer = std::make_shared<TileSearchResultLayer>(
         searchLayer.tileId(),
-        resultNodeId,
+        searchLayer.nodeId(),
         searchLayer.mapId(),
         searchLayer.layerInfo(),
-        resultStrings);
+        searchLayer.strings());
     resultLayer->setGeometryAnchor(searchLayer.geometryAnchor());
     resultLayer->setTimestamp(searchLayer.timestamp());
     resultLayer->setStage(searchLayer.stage());
@@ -400,15 +437,6 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
             }
         }
     } else {
-        auto nameId = searchLayer.strings()->emplace("$name");
-        auto featureId = searchLayer.strings()->emplace("$feature");
-        auto layerId = searchLayer.strings()->emplace("$layer");
-        auto validityIndexId = searchLayer.strings()->emplace("$validityIndex");
-        auto validityCountId = searchLayer.strings()->emplace("$validityCount");
-        if (!nameId || !featureId || !layerId || !validityIndexId || !validityCountId) {
-            return tl::unexpected(simfil::Error{simfil::Error::InternalError, "Failed to allocate attribute search context keys."});
-        }
-
         for (auto const& feature : searchLayer) {
             auto layers = feature->attributeLayersOrNull();
             if (!layers) {
@@ -420,14 +448,13 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
             layers->forEachLayer([&](std::string_view layerName, model_ptr<AttributeLayer> const& attrLayer) {
                 return attrLayer->forEachAttribute([&](model_ptr<Attribute> const& attr) {
                     auto const thisAttributeIndex = attributeIndex++;
-                    auto const attributePath = fmt::format("{}.{}", layerName, attr->name());
                     auto makeContext = [&](uint32_t validityIndex, uint32_t validityCount) {
                         auto context = simfil::model_ptr<simfil::OverlayNode>::make(simfil::Value::field(*attr));
-                        context->set(*nameId, simfil::Value(attr->name()));
-                        context->set(*featureId, simfil::Value::field(*feature));
-                        context->set(*layerId, simfil::Value(layerName));
-                        context->set(*validityIndexId, simfil::Value(static_cast<int64_t>(validityIndex)));
-                        context->set(*validityCountId, simfil::Value(static_cast<int64_t>(validityCount)));
+                        context->set(StringPool::OverlayNameStr, simfil::Value(attr->name()));
+                        context->set(StringPool::OverlayFeatureStr, simfil::Value::field(*feature));
+                        context->set(StringPool::OverlayLayerStr, simfil::Value(layerName));
+                        context->set(StringPool::OverlayValidityIndexStr, simfil::Value(static_cast<int64_t>(validityIndex)));
+                        context->set(StringPool::OverlayValidityCountStr, simfil::Value(static_cast<int64_t>(validityCount)));
                         return context;
                     };
 
@@ -437,7 +464,6 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                             auto context = makeContext(validityIndex, count);
                             auto match = AttributeMatchInfo{
                                 thisAttributeIndex,
-                                attributePath,
                                 validityIndex,
                                 count};
                             if (auto result = evaluateCandidate(feature, *context, match); !result) {
@@ -450,7 +476,6 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                         auto context = makeContext(0, 1);
                         auto match = AttributeMatchInfo{
                             thisAttributeIndex,
-                            attributePath,
                             0,
                             1};
                         if (auto result = evaluateCandidate(feature, *context, match); !result) {

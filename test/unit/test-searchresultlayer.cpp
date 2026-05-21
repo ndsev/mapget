@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -38,7 +39,7 @@ std::shared_ptr<LayerInfo> makeSearchResultLayerInfo()
 TileSearchResultLayer::Ptr makeSearchResultLayer()
 {
     auto layerInfo = makeSearchResultLayerInfo();
-    auto strings = std::make_shared<StringPool>("__mapget_search__:test:query:0");
+    auto strings = std::make_shared<StringPool>("SearchResultSourceNode");
     return std::make_shared<TileSearchResultLayer>(
         TileId(0x1234),
         strings->nodeId_,
@@ -205,7 +206,6 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
             .query_ = "typeId == 'Road'",
             .scope_ = FeatureLayerSearchScope::Feature,
             .withFields_ = {"'display label'", "typeId", "searchOnlyMissingField", "1 +"},
-            .resultNodeId_ = "__mapget_search__:unit-search:0",
         });
 
     REQUIRE(searchResult.has_value());
@@ -242,19 +242,16 @@ TEST_CASE("Attribute-scope search records deterministic match metadata", "[featu
             .query_ = "$name == 'speedLimit'",
             .scope_ = FeatureLayerSearchScope::Attribute,
             .withFields_ = {"limit", "$feature.typeId", "$layer", "$validityIndex", "$validityCount"},
-            .resultNodeId_ = "__mapget_search__:attribute-search:0",
         });
 
     REQUIRE(searchResult.has_value());
     REQUIRE(searchResult->layer_->size() == 1);
     auto result = searchResult->layer_->at(0);
     REQUIRE(result->attributeIndex() == 0U);
-    REQUIRE(result->attributePath() == std::optional<std::string_view>("rules.speedLimit"));
     REQUIRE(result->validityIndex() == 0U);
     REQUIRE(result->validityCount() == 1U);
     auto json = result->toJson();
     REQUIRE(json["match"]["attributeIndex"] == 0);
-    REQUIRE(json["match"]["attributePath"] == "rules.speedLimit");
     REQUIRE(json["match"]["validityIndex"] == 0);
     REQUIRE(json["match"]["validityCount"] == 1);
     REQUIRE(json["values"] == nlohmann::json::array({50, "Road", "rules", 0, 1}));
@@ -278,7 +275,6 @@ TEST_CASE("Service search loads staged payloads and evaluates in scheduled searc
             .scope_ = FeatureLayerSearchScope::Attribute,
             .withFields_ = {"limit", "$feature.typeId", "$layer"},
             .refresh_ = 1,
-            .resultNodeId_ = "__mapget_search__:service:service-search:1",
         });
 
     std::vector<TileSearchResultLayer::Ptr> results;
@@ -295,7 +291,7 @@ TEST_CASE("Service search loads staged payloads and evaluates in scheduled searc
 
     REQUIRE(request->getStatus() == RequestStatus::Success);
     REQUIRE(results.size() == 1);
-    REQUIRE(results.front()->nodeId() == "__mapget_search__:service:service-search:1");
+    REQUIRE(results.front()->nodeId() == "SearchStageNode");
     REQUIRE(results.front()->size() == 1);
     REQUIRE(results.front()->info()["sourceStageMask"] == nlohmann::json::array({0, 1}));
     REQUIRE(results.front()->info()["searchRequestKey"] == "service-search:1");
@@ -303,6 +299,7 @@ TEST_CASE("Service search loads staged payloads and evaluates in scheduled searc
     REQUIRE(results.front()->toJson()["results"][0]["values"] == nlohmann::json::array({80, "Road", "details"}));
 
     auto requestedStages = dataSource->requestedStages();
+    std::sort(requestedStages.begin(), requestedStages.end());
     REQUIRE(requestedStages.size() == 2);
     REQUIRE(requestedStages[0] == 0U);
     REQUIRE(requestedStages[1] == 1U);

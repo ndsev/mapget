@@ -98,4 +98,14 @@ struct SourceDataReference
     }
 };
 
+/** Source-data reference plus a qualifier used by feature geometry nodes. */
+struct QualifiedSourceDataReference
+{
+    MODEL_COLUMN_TYPE(12);
+
+    SourceDataAddress address_;
+    simfil::StringId layerId_;
+    simfil::StringId qualifier_;
+};
+
 }

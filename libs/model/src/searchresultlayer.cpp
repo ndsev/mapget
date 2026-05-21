@@ -187,13 +187,7 @@ struct TileSearchResultLayer::Impl
     Point geometryAnchor_{};
     std::optional<uint32_t> stage_;
     std::vector<std::string> resultFields_;
-    simfil::ModelColumn<FeatureId::Data, simfil::detail::ColumnPageSize / 2> featureIds_;
     simfil::ModelColumn<SearchResult::Data, simfil::detail::ColumnPageSize / 2> searchResults_;
-    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> geomSourceDataRefs_;
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> geomStages_;
-    simfil::ModelColumn<GeometryViewData, simfil::detail::ColumnPageSize / 2> geomViews_;
-    simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
-    GeometryStorage pointBuffers_;
 
     template<typename S>
     void readWrite(S& s)
@@ -205,13 +199,7 @@ struct TileSearchResultLayer::Impl
         s.container(resultFields_, std::numeric_limits<uint32_t>::max(), [](auto& serializer, std::string& field) {
             serializer.text1b(field, std::numeric_limits<uint32_t>::max());
         });
-        s.object(featureIds_);
         s.object(searchResults_);
-        s.object(geomSourceDataRefs_);
-        s.object(geomViews_);
-        s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
-        s.object(sourceDataReferences_);
-        s.object(geomStages_);
     }
 };
 
@@ -241,14 +229,6 @@ std::optional<uint32_t> SearchResult::attributeIndex() const
         return std::nullopt;
     }
     return data_->attributeIndex_;
-}
-
-std::optional<std::string_view> SearchResult::attributePath() const
-{
-    if (data_->attributePath_ == simfil::StringPool::Empty) {
-        return std::nullopt;
-    }
-    return model().strings()->resolve(data_->attributePath_);
 }
 
 std::optional<uint32_t> SearchResult::validityIndex() const
@@ -289,9 +269,6 @@ nlohmann::json SearchResult::toJson() const
         auto match = nlohmann::json::object({
             {"attributeIndex", *attrIndex},
         });
-        if (auto path = attributePath()) {
-            match["attributePath"] = std::string(*path);
-        }
         if (auto index = validityIndex()) {
             match["validityIndex"] = *index;
         }
@@ -315,7 +292,7 @@ simfil::ModelNode::Ptr SearchResult::at(int64_t i) const
 
 uint32_t SearchResult::size() const
 {
-    return attributeIndex() ? 7U : 3U;
+    return attributeIndex() ? 6U : 3U;
 }
 
 simfil::ModelNode::Ptr SearchResult::get(simfil::StringId const& field) const
@@ -332,11 +309,6 @@ simfil::ModelNode::Ptr SearchResult::get(simfil::StringId const& field) const
     if (field == StringPool::AttributeIndexStr) {
         if (auto attrIndex = attributeIndex()) {
             return model().newValue(static_cast<int64_t>(*attrIndex));
-        }
-    }
-    if (field == StringPool::AttributePathStr) {
-        if (auto path = attributePath()) {
-            return model().newValue(*path);
         }
     }
     if (field == StringPool::ValidityIndexStr) {
@@ -359,9 +331,8 @@ simfil::StringId SearchResult::keyAt(int64_t i) const
     case 1: return StringPool::GeometryStr;
     case 2: return StringPool::ValuesStr;
     case 3: return attributeIndex() ? static_cast<simfil::StringId>(StringPool::AttributeIndexStr) : simfil::StringPool::Empty;
-    case 4: return attributeIndex() ? static_cast<simfil::StringId>(StringPool::AttributePathStr) : simfil::StringPool::Empty;
-    case 5: return attributeIndex() ? static_cast<simfil::StringId>(StringPool::ValidityIndexStr) : simfil::StringPool::Empty;
-    case 6: return attributeIndex() ? static_cast<simfil::StringId>(StringPool::ValidityCountStr) : simfil::StringPool::Empty;
+    case 4: return attributeIndex() ? static_cast<simfil::StringId>(StringPool::ValidityIndexStr) : simfil::StringPool::Empty;
+    case 5: return attributeIndex() ? static_cast<simfil::StringId>(StringPool::ValidityCountStr) : simfil::StringPool::Empty;
     default: return simfil::StringPool::Empty;
     }
 }
@@ -405,6 +376,7 @@ TileSearchResultLayer::TileSearchResultLayer(
         input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
         input.end()));
     impl_->readWrite(s);
+    readWriteCommonColumns(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raiseFmt(
             "Failed to read TileSearchResultLayer: Error {}",
@@ -443,7 +415,6 @@ model_ptr<SearchResult> TileSearchResultLayer::newSearchResult(
     model_ptr<GeometryCollection> const& geometry,
     std::span<simfil::ModelNode::Ptr const> values,
     std::optional<uint32_t> attributeIndex,
-    std::optional<std::string_view> attributePath,
     std::optional<uint32_t> validityIndex,
     std::optional<uint32_t> validityCount)
 {
@@ -466,22 +437,12 @@ model_ptr<SearchResult> TileSearchResultLayer::newSearchResult(
             simfil::ScalarValueType{}));
     }
 
-    simfil::StringId attributePathId = simfil::StringPool::Empty;
-    if (attributePath && !attributePath->empty()) {
-        auto emplaced = strings()->emplace(*attributePath);
-        if (!emplaced) {
-            raise(emplaced.error().message);
-        }
-        attributePathId = *emplaced;
-    }
-
     auto const resultIndex = static_cast<uint32_t>(impl_->searchResults_.size());
     impl_->searchResults_.emplace_back(SearchResult::Data{
         featureId->addr(),
         geometry->addr(),
         static_cast<simfil::ArrayIndex>(valueArray->addr().index()),
         attributeIndex.value_or(SearchResult::InvalidAttributeIndex),
-        attributePathId,
         validityIndex.value_or(SearchResult::InvalidAttributeIndex),
         validityCount.value_or(0U),
     });
@@ -520,8 +481,8 @@ model_ptr<FeatureId> TileSearchResultLayer::newFeatureId(
         externalMapIdStringId = *storedMapId;
     }
 
-    auto const featureIdIndex = static_cast<uint32_t>(impl_->featureIds_.size());
-    impl_->featureIds_.emplace_back(FeatureId::Data{
+    auto const featureIdIndex = static_cast<uint32_t>(featureIds_.size());
+    featureIds_.emplace_back(FeatureId::Data{
         false,
         idCompositionIndex,
         *typeIdStringId,
@@ -529,7 +490,7 @@ model_ptr<FeatureId> TileSearchResultLayer::newFeatureId(
         externalMapIdStringId,
     });
     return FeatureId(
-        impl_->featureIds_.back(),
+        featureIds_.back(),
         shared_from_this(),
         {ColumnId::ExternalFeatureIds, featureIdIndex},
         mpKey_);
@@ -560,17 +521,17 @@ model_ptr<Geometry> TileSearchResultLayer::newGeometry(GeomType geomType, size_t
 
     switch (geomType) {
     case GeomType::Points:
-        return makeGeometry(ColumnId::PointGeometries, impl_->pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::PointGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
     case GeomType::Line:
-        return makeGeometry(ColumnId::LineGeometries, impl_->pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::LineGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
     case GeomType::Polygon:
-        return makeGeometry(ColumnId::PolygonGeometries, impl_->pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::PolygonGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
     case GeomType::Mesh:
-        return makeGeometry(ColumnId::MeshGeometries, impl_->pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::MeshGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
     case GeomType::AABB:
-        return makeGeometry(ColumnId::AabbGeometries, impl_->pointBuffers_.new_array(2, true));
+        return makeGeometry(ColumnId::AabbGeometries, pointBuffers_.new_array(2, true));
     case GeomType::GltfNodeIndex:
-        return makeGeometry(ColumnId::GltfNodeIndexGeometries, impl_->pointBuffers_.new_array(3, true));
+        return makeGeometry(ColumnId::GltfNodeIndexGeometries, pointBuffers_.new_array(3, true));
     }
     raise("Unsupported geometry type.");
     return {};
@@ -588,18 +549,18 @@ model_ptr<Geometry> TileSearchResultLayer::newGeometryView(
     if (base->geomType() == GeomType::AABB || base->geomType() == GeomType::GltfNodeIndex) {
         raise("Geometry views cannot reference AABB or GltfNodeIndex geometries.");
     }
-    impl_->geomViews_.emplace_back(geomType, offset, size, base->addr());
+    geomViews_.emplace_back(geomType, offset, size, base->addr());
     return Geometry(
-        &impl_->geomViews_.back(),
+        &geomViews_.back(),
         shared_from_this(),
-        {ColumnId::GeometryViews, static_cast<uint32_t>(impl_->geomViews_.size() - 1)},
+        {ColumnId::GeometryViews, static_cast<uint32_t>(geomViews_.size() - 1)},
         mpKey_);
 }
 
 model_ptr<SourceDataReferenceCollection> TileSearchResultLayer::newSourceDataReferenceCollection(
     std::span<QualifiedSourceDataReference> list)
 {
-    auto& arena = impl_->sourceDataReferences_;
+    auto& arena = sourceDataReferences_;
     auto const index = static_cast<uint32_t>(arena.size());
     auto const size = static_cast<uint32_t>(list.size());
     arena.insert(arena.end(), list.begin(), list.end());
@@ -616,6 +577,7 @@ tl::expected<void, simfil::Error> TileSearchResultLayer::write(std::ostream& out
     TileLayer::write(outputStream);
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     impl_->readWrite(s);
+    readWriteCommonColumns(s);
     return ModelPool::write(outputStream);
 }
 
@@ -731,216 +693,6 @@ tl::expected<void, simfil::Error> TileSearchResultLayer::resolve(simfil::ModelNo
     default:
         return ModelPool::resolve(n, cb);
     }
-}
-
-TileFeatureModelLayerBase::GeometryStorage& TileSearchResultLayer::vertexBufferStorage()
-{
-    return impl_->pointBuffers_;
-}
-
-GeometryViewData const* TileSearchResultLayer::geometryViewData(simfil::ModelNodeAddress address) const
-{
-    if (address.column() != ColumnId::GeometryViews || address.index() >= impl_->geomViews_.size()) {
-        return nullptr;
-    }
-    return &impl_->geomViews_.at(address.index());
-}
-
-std::optional<uint8_t> TileSearchResultLayer::geometryStage(simfil::ModelNodeAddress address) const
-{
-    if (!isBaseGeometryColumn(address.column()) && address.column() != ColumnId::GeometryViews) {
-        return std::nullopt;
-    }
-    auto const storageIndex = address.column() == ColumnId::GeometryViews
-        ? address.index()
-        : extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
-    return geometryStageAt(impl_->geomStages_, storageIndex);
-}
-
-void TileSearchResultLayer::setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage)
-{
-    if (!isBaseGeometryColumn(address.column()) && address.column() != ColumnId::GeometryViews) {
-        raise("Geometry stage can only be stored on geometry nodes.");
-    }
-    auto const storageIndex = address.column() == ColumnId::GeometryViews
-        ? address.index()
-        : extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
-    ensureGeometryStageCapacity(impl_->geomStages_, storageIndex);
-    impl_->geomStages_.at(storageIndex) = stage.value_or(InvalidGeometryStage);
-}
-
-simfil::ModelNodeAddress TileSearchResultLayer::geometrySourceDataReferences(simfil::ModelNodeAddress address) const
-{
-    if (!isBaseGeometryColumn(address.column())) {
-        return {};
-    }
-    return geometrySourceRefsAt(
-        impl_->geomSourceDataRefs_,
-        extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index())));
-}
-
-void TileSearchResultLayer::setGeometrySourceDataReferences(
-    simfil::ModelNodeAddress address,
-    simfil::ModelNodeAddress refsAddress)
-{
-    if (!isBaseGeometryColumn(address.column())) {
-        raise("Source data references can only be stored on base geometry nodes.");
-    }
-    auto const storageIndex = extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
-    ensureGeometrySourceRefCapacity(impl_->geomSourceDataRefs_, storageIndex);
-    impl_->geomSourceDataRefs_.at(storageIndex) = refsAddress;
-}
-
-model_ptr<FeatureId> TileSearchResultLayer::resolveFeatureIdNode(simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::ExternalFeatureIds) {
-        raise("Cannot cast this node to a FeatureId.");
-    }
-    return FeatureId(impl_->featureIds_[node.addr().index()], shared_from_this(), node.addr(), mpKey_);
-}
-
-model_ptr<PointNode> TileSearchResultLayer::resolvePointNode(simfil::ModelNode const& node) const
-{
-    switch (node.addr().column()) {
-    case ColumnId::Points:
-        return PointNode(node, static_cast<simfil::ArrayIndex>(node.addr().index()), mpKey_);
-    case ColumnId::GeometryPointView:
-        return PointNode(node, mpKey_);
-    default:
-        raise("Cannot cast this node to a Point.");
-    }
-}
-
-model_ptr<PointBufferNode> TileSearchResultLayer::resolvePointBufferNode(simfil::ModelNode const& node) const
-{
-    if (auto existing = dynamic_cast<PointBufferNode const*>(&node)) {
-        return PointBufferNode(shared_from_this(), existing->baseGeometryAddress(), mpKey_);
-    }
-    switch (node.addr().column()) {
-    case ColumnId::PointBuffers:
-        return PointBufferNode(
-            shared_from_this(),
-            ModelNodeAddress{ColumnId::PointGeometries, node.addr().index()},
-            mpKey_);
-    case ColumnId::PointBuffersView:
-        return PointBufferNode(
-            shared_from_this(),
-            ModelNodeAddress{ColumnId::GeometryViews, node.addr().index()},
-            mpKey_);
-    default:
-        raise("Cannot cast this node to a PointBuffer.");
-    }
-}
-
-model_ptr<Geometry> TileSearchResultLayer::resolveGeometryNode(simfil::ModelNode const& node) const
-{
-    switch (node.addr().column()) {
-    case ColumnId::PointGeometries:
-    case ColumnId::LineGeometries:
-    case ColumnId::PolygonGeometries:
-    case ColumnId::MeshGeometries:
-    case ColumnId::AabbGeometries:
-    case ColumnId::GltfNodeIndexGeometries:
-        return Geometry(shared_from_this(), node.addr(), mpKey_);
-    case ColumnId::GeometryViews: {
-        auto* geomData = &impl_->geomViews_.at(node.addr().index());
-        using MutableGeomData = std::remove_const_t<std::remove_reference_t<decltype(*geomData)>>;
-        return Geometry(const_cast<MutableGeomData*>(geomData), shared_from_this(), node.addr(), mpKey_);
-    }
-    default:
-        raise("Cannot cast this node to a Geometry.");
-    }
-}
-
-model_ptr<GeometryCollection> TileSearchResultLayer::resolveGeometryCollectionNode(simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::GeometryCollections &&
-        !isBaseGeometryColumn(node.addr().column()) &&
-        node.addr().column() != ColumnId::GeometryViews) {
-        raise("Cannot cast this node to a GeometryCollection.");
-    }
-    return GeometryCollection(shared_from_this(), node.addr(), mpKey_);
-}
-
-model_ptr<GeometryArrayView> TileSearchResultLayer::resolveGeometryArrayViewNode(simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::GeometryArrayView) {
-        raise("Cannot cast this node to a GeometryArrayView.");
-    }
-    return GeometryArrayView(shared_from_this(), node.addr(), mpKey_);
-}
-
-model_ptr<BoundsInfoNode> TileSearchResultLayer::resolveBoundsInfoNode(simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::GeometryBoundsInfoView) {
-        raise("Cannot cast this node to BoundsInfo.");
-    }
-    return BoundsInfoNode(node, mpKey_);
-}
-
-model_ptr<BoundsPolygonCoordinatesNode> TileSearchResultLayer::resolveBoundsPolygonCoordinatesNode(
-    simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::GeometryBoundsPolygonCoordinatesView) {
-        raise("Cannot cast this node to BoundsPolygonCoordinates.");
-    }
-    return BoundsPolygonCoordinatesNode(node, mpKey_);
-}
-
-model_ptr<BoundsRingNode> TileSearchResultLayer::resolveBoundsRingNode(simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::GeometryBoundsRingView) {
-        raise("Cannot cast this node to BoundsRing.");
-    }
-    return BoundsRingNode(node, mpKey_);
-}
-
-model_ptr<MeshNode> TileSearchResultLayer::resolveMeshNode(simfil::ModelNode const& node) const
-{
-    return MeshNode(shared_from_this(), node.addr(), mpKey_);
-}
-
-model_ptr<MeshTriangleCollectionNode> TileSearchResultLayer::resolveMeshTriangleCollectionNode(
-    simfil::ModelNode const& node) const
-{
-    return MeshTriangleCollectionNode(node, mpKey_);
-}
-
-model_ptr<LinearRingNode> TileSearchResultLayer::resolveLinearRingNode(simfil::ModelNode const& node) const
-{
-    switch (node.addr().column()) {
-    case ColumnId::LinearRing:
-        return LinearRingNode(node, mpKey_);
-    case ColumnId::MeshTriangleLinearRing:
-        return LinearRingNode(node, 3, mpKey_);
-    default:
-        raise("Cannot cast this node to a LinearRing.");
-    }
-}
-
-model_ptr<PolygonNode> TileSearchResultLayer::resolvePolygonNode(simfil::ModelNode const& node) const
-{
-    return PolygonNode(shared_from_this(), node.addr(), mpKey_);
-}
-
-model_ptr<SourceDataReferenceCollection> TileSearchResultLayer::resolveSourceDataReferenceCollectionNode(
-    simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::SourceDataReferenceCollections) {
-        raise("Cannot cast this node to a SourceDataReferenceCollection.");
-    }
-    auto [index, size] = modelAddressToSourceDataAddressList(node.addr().index());
-    return SourceDataReferenceCollection(index, size, shared_from_this(), node.addr(), mpKey_);
-}
-
-model_ptr<SourceDataReferenceItem> TileSearchResultLayer::resolveSourceDataReferenceItemNode(
-    simfil::ModelNode const& node) const
-{
-    if (node.addr().column() != ColumnId::SourceDataReferences) {
-        raise("Cannot cast this node to a SourceDataReferenceItem.");
-    }
-    auto const* data = &impl_->sourceDataReferences_.at(node.addr().index());
-    return SourceDataReferenceItem(data, shared_from_this(), node.addr(), mpKey_);
 }
 
 using simfil::ModelNode;

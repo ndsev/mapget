@@ -33,13 +33,12 @@ public:
     /** Compact serialized representation of a search result. */
     struct Data
     {
-        MODEL_COLUMN_TYPE(28);
+        MODEL_COLUMN_TYPE(24);
 
         simfil::ModelNodeAddress featureId_{};
         simfil::ModelNodeAddress geometry_{};
         simfil::ArrayIndex values_ = simfil::InvalidArrayIndex;
         uint32_t attributeIndex_ = InvalidAttributeIndex;
-        simfil::StringId attributePath_ = simfil::StringPool::Empty;
         uint32_t validityIndex_ = InvalidAttributeIndex;
         uint32_t validityCount_ = 0;
     };
@@ -52,9 +51,6 @@ public:
 
     /** Return the matched attribute-validity index for attribute-scope searches. */
     [[nodiscard]] std::optional<uint32_t> attributeIndex() const;
-
-    /** Return a stable, debuggable path to the matched attribute, when known. */
-    [[nodiscard]] std::optional<std::string_view> attributePath() const;
 
     /** Return the matched validity index within the matched attribute. */
     [[nodiscard]] std::optional<uint32_t> validityIndex() const;
@@ -95,8 +91,8 @@ private:
  *
  * The layer shares FeatureId and geometry node implementations with
  * TileFeatureLayer, but its roots are SearchResult objects rather than source
- * features. The string pool normally belongs to a synthetic search-result node
- * id and is independent from the datasource-owned source tile pools.
+ * features. Search results use the source tile's node id/string-pool namespace;
+ * arbitrary computed string values are stored in the ModelPool string buffer.
  */
 class TileSearchResultLayer : public TileFeatureModelLayerBase
 {
@@ -144,7 +140,6 @@ public:
         model_ptr<GeometryCollection> const& geometry,
         std::span<simfil::ModelNode::Ptr const> values = {},
         std::optional<uint32_t> attributeIndex = std::nullopt,
-        std::optional<std::string_view> attributePath = std::nullopt,
         std::optional<uint32_t> validityIndex = std::nullopt,
         std::optional<uint32_t> validityCount = std::nullopt);
 
@@ -181,31 +176,6 @@ public:
 
 protected:
     tl::expected<void, simfil::Error> resolve(simfil::ModelNode const& n, ResolveFn const& cb) const override;
-
-    GeometryStorage& vertexBufferStorage() override;
-    [[nodiscard]] GeometryViewData const* geometryViewData(simfil::ModelNodeAddress address) const override;
-    [[nodiscard]] std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const override;
-    void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage) override;
-    [[nodiscard]] simfil::ModelNodeAddress geometrySourceDataReferences(simfil::ModelNodeAddress address) const override;
-    void setGeometrySourceDataReferences(simfil::ModelNodeAddress address, simfil::ModelNodeAddress refsAddress) override;
-
-    [[nodiscard]] model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<PointBufferNode> resolvePointBufferNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<Geometry> resolveGeometryNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<GeometryCollection> resolveGeometryCollectionNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<GeometryArrayView> resolveGeometryArrayViewNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<BoundsInfoNode> resolveBoundsInfoNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<BoundsPolygonCoordinatesNode> resolveBoundsPolygonCoordinatesNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<BoundsRingNode> resolveBoundsRingNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<MeshNode> resolveMeshNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<MeshTriangleCollectionNode> resolveMeshTriangleCollectionNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<LinearRingNode> resolveLinearRingNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<PolygonNode> resolvePolygonNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollectionNode(
-        simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItemNode(
-        simfil::ModelNode const& node) const override;
 
 private:
     struct Impl;

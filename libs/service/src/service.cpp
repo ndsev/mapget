@@ -1319,13 +1319,7 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
             if (readyStages.size() == 1) {
                 searchSource = readyStages.front();
             } else {
-                auto evalNodeId = fmt::format(
-                    "__mapget_search_eval__:{}:{}:{}:{}",
-                    sourceInfo.nodeId_,
-                    request->search_.searchId_,
-                    request->search_.refresh_.value_or(0),
-                    readyStages.front()->tileId().value_);
-                auto assembled = assembleFeatureLayerStages(readyStages, evalNodeId);
+                auto assembled = assembleFeatureLayerStages(readyStages);
                 if (!assembled) {
                     fail(assembled.error());
                     markEvalDone(0, false);

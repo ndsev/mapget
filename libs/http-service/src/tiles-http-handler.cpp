@@ -90,14 +90,6 @@ private:
     return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;
 }
 
-std::string makeHttpSearchResultNodeId(uint64_t requestId, FeatureLayerSearchRequest const& search)
-{
-    auto const refreshKey = search.refresh_
-        ? std::to_string(*search.refresh_)
-        : std::to_string(std::hash<std::string>{}(search.requestKey_));
-    return fmt::format("__mapget_search__:http:{}:{}:{}", requestId, search.searchId_, refreshKey);
-}
-
 std::vector<TileId> collectSearchTileIds(detail::ParsedLayerTilesRequest const& parsed)
 {
     std::set<TileId> seen;
@@ -147,7 +139,6 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         auto parsed = detail::parseLayerTilesRequestJson(requestJson);
         auto searchRequest = std::move(parsed.searchRequest);
         if (searchRequest) {
-            searchRequest->resultNodeId_ = makeHttpSearchResultNodeId(requestId_, *searchRequest);
             auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
                 std::move(parsed.mapId),
                 std::move(parsed.layerId),

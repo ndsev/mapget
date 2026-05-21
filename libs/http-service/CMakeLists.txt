@@ -17,6 +17,14 @@ add_library(mapget-http-service STATIC
   src/tiles-request-json.cpp
   src/tiles-http-handler.cpp
   src/tiles-ws-controller.cpp
+  src/tiles-ws-outbox.h
+  src/tiles-ws-outbox.cpp
+  src/tiles-ws-request.h
+  src/tiles-ws-request.cpp
+  src/tiles-ws-session.h
+  src/tiles-ws-session.cpp
+  src/tiles-ws-status.h
+  src/tiles-ws-status.cpp
   src/cli.cpp)
 
 target_include_directories(mapget-http-service

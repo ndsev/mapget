@@ -20,14 +20,6 @@ namespace mapget
 class TileFeatureLayer;
 class SourceDataReferenceItem;
 
-struct QualifiedSourceDataReference {
-    MODEL_COLUMN_TYPE(12);
-
-    SourceDataAddress address_;
-    StringId layerId_;
-    StringId qualifier_;
-};
-
 /**
  * Proxy node that represents an array of Qualifier-String + SourceDataReference tuples.
  */

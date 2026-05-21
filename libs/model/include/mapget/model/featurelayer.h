@@ -444,27 +444,9 @@ protected:
      */
     tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 
-    Geometry::Storage& vertexBufferStorage() override;
-    [[nodiscard]] Geometry::ViewData const* geometryViewData(simfil::ModelNodeAddress address) const override;
     [[nodiscard]] std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const override;
-    void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage) override;
-    [[nodiscard]] simfil::ModelNodeAddress geometrySourceDataReferences(simfil::ModelNodeAddress address) const override;
-    void setGeometrySourceDataReferences(simfil::ModelNodeAddress address, simfil::ModelNodeAddress refsAddress) override;
     [[nodiscard]] model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const override;
     [[nodiscard]] model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<PointBufferNode> resolvePointBufferNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<Geometry> resolveGeometryNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<GeometryCollection> resolveGeometryCollectionNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<GeometryArrayView> resolveGeometryArrayViewNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<BoundsInfoNode> resolveBoundsInfoNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<BoundsPolygonCoordinatesNode> resolveBoundsPolygonCoordinatesNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<BoundsRingNode> resolveBoundsRingNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<MeshNode> resolveMeshNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<MeshTriangleCollectionNode> resolveMeshTriangleCollectionNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<LinearRingNode> resolveLinearRingNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<PolygonNode> resolvePolygonNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollectionNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItemNode(simfil::ModelNode const& node) const override;
 
     [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;
     [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
