@@ -3,7 +3,10 @@ project(mapget-model CXX)
 add_library(mapget-model STATIC
   include/mapget/model/stringpool.h
   include/mapget/model/layer.h
+  include/mapget/model/featuremodellayer.h
   include/mapget/model/featurelayer.h
+  include/mapget/model/searchresultlayer.h
+  include/mapget/model/featurelayer-search.h
   include/mapget/model/geojson-import.h
   include/mapget/model/json-compare.h
   include/mapget/model/schemaregistry.h
@@ -31,7 +34,10 @@ add_library(mapget-model STATIC
 
   src/stringpool.cpp
   src/layer.cpp
+  src/featuremodellayer.cpp
   src/featurelayer.cpp
+  src/searchresultlayer.cpp
+  src/featurelayer-search.cpp
   src/geojson-import.cpp
   src/json-compare.cpp
   src/schemaregistry.cpp

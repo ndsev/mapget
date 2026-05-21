@@ -2,7 +2,9 @@
 #include "tiles-request-json.h"
 
 #include "mapget/log.h"
+#include "mapget/model/featurelayer-search.h"
 
+#include <fmt/format.h>
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
@@ -11,11 +13,13 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <set>
 #include <vector>
 
 #include "nlohmann/json.hpp"
@@ -86,6 +90,28 @@ private:
     return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;
 }
 
+std::string makeHttpSearchResultNodeId(uint64_t requestId, FeatureLayerSearchRequest const& search)
+{
+    auto const refreshKey = search.refresh_
+        ? std::to_string(*search.refresh_)
+        : std::to_string(std::hash<std::string>{}(search.requestKey_));
+    return fmt::format("__mapget_search__:http:{}:{}:{}", requestId, search.searchId_, refreshKey);
+}
+
+std::vector<TileId> collectSearchTileIds(detail::ParsedLayerTilesRequest const& parsed)
+{
+    std::set<TileId> seen;
+    std::vector<TileId> result;
+    for (auto const& bucket : parsed.tileIdsByNextStage) {
+        for (auto const& tileId : bucket) {
+            if (seen.insert(tileId).second) {
+                result.push_back(tileId);
+            }
+        }
+    }
+    return result;
+}
+
 }  // namespace
 
 struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesStreamState>
@@ -119,22 +145,37 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     void parseRequestFromJson(nlohmann::json const& requestJson)
     {
         auto parsed = detail::parseLayerTilesRequestJson(requestJson);
+        auto searchRequest = std::move(parsed.searchRequest);
+        if (searchRequest) {
+            searchRequest->resultNodeId_ = makeHttpSearchResultNodeId(requestId_, *searchRequest);
+            auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
+                std::move(parsed.mapId),
+                std::move(parsed.layerId),
+                collectSearchTileIds(parsed),
+                std::move(*searchRequest),
+                std::move(parsed.priorityTileIds));
+            searchRequests_.push_back(std::move(request));
+            return;
+        }
+
+        LayerTilesRequest::Ptr request;
         if (parsed.usesStageBuckets) {
-            requests_.push_back(std::make_shared<LayerTilesRequest>(
+            request = std::make_shared<LayerTilesRequest>(
                 std::move(parsed.mapId),
                 std::move(parsed.layerId),
                 std::move(parsed.tileIdsByNextStage),
-                std::move(parsed.priorityTileIds)));
+                std::move(parsed.priorityTileIds));
         } else {
             auto tileIds = parsed.tileIdsByNextStage.empty()
                 ? std::vector<TileId>{}
                 : std::move(parsed.tileIdsByNextStage.front());
-            requests_.push_back(std::make_shared<LayerTilesRequest>(
+            request = std::make_shared<LayerTilesRequest>(
                 std::move(parsed.mapId),
                 std::move(parsed.layerId),
                 std::move(tileIds),
-                std::move(parsed.priorityTileIds)));
+                std::move(parsed.priorityTileIds));
         }
+        requests_.push_back(std::move(request));
     }
 
     [[nodiscard]] bool setResponseTypeFromAccept(std::string_view acceptHeader, std::string& error)
@@ -169,6 +210,11 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                 impl_.self_.abort(req);
             }
         }
+        for (auto const& req : searchRequests_) {
+            if (!req->isDone()) {
+                impl_.self_.abort(req);
+            }
+        }
         drogon::ResponseStreamPtr stream;
         {
             std::lock_guard lock(mutex_);
@@ -199,6 +245,23 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         scheduleDrain();
     }
 
+    void addStatus(nlohmann::json const& status)
+    {
+        {
+            std::lock_guard lock(mutex_);
+            if (aborted_)
+                return;
+            auto dumped = status.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore);
+            if (responseType_ == binaryMimeType) {
+                writer_->sendStatus(std::move(dumped));
+            } else {
+                appendOutgoingUnlocked(dumped);
+                appendOutgoingUnlocked("\n");
+            }
+        }
+        scheduleDrain();
+    }
+
     void onRequestDone()
     {
         {
@@ -207,7 +270,8 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                 return;
 
             bool allDoneNow =
-                std::all_of(requests_.begin(), requests_.end(), [](auto const& r) { return r->isDone(); });
+                std::all_of(requests_.begin(), requests_.end(), [](auto const& r) { return r->isDone(); }) &&
+                std::all_of(searchRequests_.begin(), searchRequests_.end(), [](auto const& r) { return r->isDone(); });
 
             if (allDoneNow && !allDone_) {
                 allDone_ = true;
@@ -321,6 +385,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     drogon::ResponseStreamPtr stream_;
     std::unique_ptr<TileLayerStream::Writer> writer_;
     std::vector<LayerTilesRequest::Ptr> requests_;
+    std::vector<FeatureLayerSearchTilesRequest::Ptr> searchRequests_;
     TileLayerStream::StringPoolOffsetMap stringOffsets_;
 
     std::unique_ptr<GzipCompressor> compressor_;
@@ -369,7 +434,9 @@ void HttpService::Impl::handleTilesRequest(
     log().info("Processing tiles request {}", state->requestId_);
     try {
         for (auto& requestJson : *requestsIt) {
-            state->parseRequestFromJson(requestJson);
+            auto effectiveRequestJson = requestJson;
+            detail::inheritSearchFields(effectiveRequestJson, j);
+            state->parseRequestFromJson(effectiveRequestJson);
         }
     }
     catch (const std::exception& e) {
@@ -402,17 +469,50 @@ void HttpService::Impl::handleTilesRequest(
         state->enableGzip();
     }
 
-    for (auto& request : state->requests_) {
-        request->onFeatureLayer([state](auto&& layer) { state->addResult(layer); });
-        request->onSourceDataLayer([state](auto&& layer) { state->addResult(layer); });
+    for (size_t i = 0; i < state->requests_.size(); ++i) {
+        auto& request = state->requests_[i];
+        request->onFeatureLayer([state](TileFeatureLayer::Ptr layer) {
+            state->addResult(std::move(layer));
+        });
+        request->onSourceDataLayer([state](TileSourceDataLayer::Ptr layer) {
+            state->addResult(std::move(layer));
+        });
+        request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
+    }
+    for (auto& request : state->searchRequests_) {
+        request->onSearchResult([state](TileSearchResultLayer::Ptr layer) {
+            state->addResult(std::move(layer));
+        });
+        request->onStatus([state](nlohmann::json const& status) {
+            state->addStatus(status);
+        });
         request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
     }
 
-    const auto canProcess = self_.request(state->requests_, clientHeaders);
+    const auto tileRequestsAccepted = self_.request(state->requests_, clientHeaders);
+    const auto searchRequestsAccepted =
+        tileRequestsAccepted ? self_.request(state->searchRequests_, clientHeaders) : state->searchRequests_.empty();
+    const auto canProcess = tileRequestsAccepted && searchRequestsAccepted;
     if (!canProcess) {
+        for (auto const& r : state->requests_) {
+            if (!r->isDone()) {
+                self_.abort(r);
+            }
+        }
+        for (auto const& r : state->searchRequests_) {
+            if (!r->isDone()) {
+                self_.abort(r);
+            }
+        }
+
         std::vector<std::underlying_type_t<RequestStatus>> requestStatuses{};
         bool anyUnauthorized = false;
         for (auto const& r : state->requests_) {
+            auto status = r->getStatus();
+            requestStatuses.emplace_back(static_cast<std::underlying_type_t<RequestStatus>>(status));
+            anyUnauthorized |= (status == RequestStatus::Unauthorized);
+        }
+        for (auto const& r : state->searchRequests_) {
             auto status = r->getStatus();
             requestStatuses.emplace_back(static_cast<std::underlying_type_t<RequestStatus>>(status));
             anyUnauthorized |= (status == RequestStatus::Unauthorized);

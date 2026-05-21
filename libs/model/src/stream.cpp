@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "featurelayer.h"
+#include "searchresultlayer.h"
 #include "sourcedatalayer.h"
 
 namespace mapget
@@ -94,6 +95,13 @@ bool TileLayerStream::Reader::continueReading()
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
         log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
+        onParsedLayer_(layer);
+    }
+    else if (nextValueType_ == MessageType::TileSearchResultLayer)
+    {
+        auto layer = std::make_shared<TileSearchResultLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
+            return stringPoolProvider_->getStringPool(nodeId);
+        });
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::TileSourceDataLayer)
@@ -216,6 +224,11 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
     log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
 
+    if (std::dynamic_pointer_cast<TileSearchResultLayer>(tileLayer)) {
+        sendMessage(std::move(bytes), MessageType::TileSearchResultLayer);
+        return;
+    }
+
     const auto layerType = tileLayer->layerInfo()->type_;
     const auto messageType = [&layerType]() {
         switch (layerType) {
@@ -266,6 +279,11 @@ void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::
     
     // Send with move semantics
     onMessage_(std::move(message), msgType);
+}
+
+void TileLayerStream::Writer::sendStatus(std::string statusJson)
+{
+    sendMessage(std::move(statusJson), MessageType::Status);
 }
 
 void TileLayerStream::Writer::sendEndOfStream()

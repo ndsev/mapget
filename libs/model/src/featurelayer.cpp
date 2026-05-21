@@ -253,7 +253,7 @@ struct TileFeatureLayer::Impl {
     simfil::ModelColumn<Geometry::ViewData, simfil::detail::ColumnPageSize / 2> geomViews_;
     simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
     Geometry::Storage pointBuffers_;
-    std::unordered_map<uint32_t, std::pair<TileFeatureLayer const*, ModelNodeAddress>> mergedArrayExtensions_;
+    std::unordered_map<uint32_t, std::pair<TileFeatureModelLayerBase const*, ModelNodeAddress>> mergedArrayExtensions_;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -334,9 +334,8 @@ TileFeatureLayer::TileFeatureLayer(
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& strings) :
-    ModelPool(strings),
-    impl_(std::make_unique<Impl>(strings, layerInfo)),
-    TileLayer(tileId, nodeId, mapId, layerInfo)
+    TileFeatureModelLayerBase(tileId, nodeId, mapId, layerInfo, strings),
+    impl_(std::make_unique<Impl>(strings, layerInfo))
 {
     impl_->geometryAnchor_ = tileId.center();
 }
@@ -346,9 +345,8 @@ TileFeatureLayer::TileFeatureLayer(
     LayerInfoResolveFun const& layerInfoResolveFun,
     StringPoolResolveFun const& stringPoolGetter
 ) :
-    TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
-    ModelPool(stringPoolGetter(nodeId_)),
-    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_), layerInfo_))
+    TileFeatureModelLayerBase(input, layerInfoResolveFun, stringPoolGetter, &deserializationOffsetBytes_),
+    impl_(std::make_unique<Impl>(strings(), layerInfo_))
 {
     impl_->geometryAnchor_ = tileId_.center();
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
@@ -522,7 +520,7 @@ TileFeatureLayer::Ptr TileFeatureLayer::overlay() const
 
 void TileFeatureLayer::setMergedArrayExtension(
     ModelNodeAddress baseAddress,
-    TileFeatureLayer const* extensionModel,
+    TileFeatureModelLayerBase const* extensionModel,
     ModelNodeAddress extensionAddress)
 {
     if (!baseAddress || !extensionModel || !extensionAddress) {
@@ -542,7 +540,7 @@ void TileFeatureLayer::clearMergedArrayExtension(ModelNodeAddress baseAddress)
     impl_->mergedArrayExtensions_.erase(baseAddress.value_);
 }
 
-std::optional<std::pair<TileFeatureLayer const*, ModelNodeAddress>>
+std::optional<std::pair<TileFeatureModelLayerBase const*, ModelNodeAddress>>
 TileFeatureLayer::mergedArrayExtension(ModelNodeAddress baseAddress) const
 {
     if (!baseAddress) {
@@ -1150,12 +1148,11 @@ model_ptr<RelationArrayView> resolveInternal(tag<RelationArrayView>, TileFeature
     return result;
 }
 
-template<>
-model_ptr<FeatureId> resolveInternal(tag<FeatureId>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::FeatureIds: {
-        auto const& featureData = model.impl_->features_[node.addr().index()];
+        auto const& featureData = impl_->features_[node.addr().index()];
         return FeatureId(
             FeatureId::Data{
                 true,
@@ -1163,16 +1160,16 @@ model_ptr<FeatureId> resolveInternal(tag<FeatureId>, TileFeatureLayer const& mod
                 featureData.typeIdAndLod_.typeId_,
                 featureData.idPartValues_,
                 simfil::StringPool::Empty},
-            model.shared_from_this(),
+            shared_from_this(),
             node.addr(),
-            model.mpKey_);
+            mpKey_);
     }
     case TileFeatureLayer::ColumnId::ExternalFeatureIds:
         return FeatureId(
-            model.impl_->featureIds_[node.addr().index()],
-            model.shared_from_this(),
+            impl_->featureIds_[node.addr().index()],
+            shared_from_this(),
             node.addr(),
-            model.mpKey_);
+            mpKey_);
     default:
         raise("Cannot cast this node to a FeatureId.");
     }
@@ -1190,53 +1187,50 @@ model_ptr<Relation> resolveInternal(tag<Relation>, TileFeatureLayer const& model
         model.mpKey_);
 }
 
-template<>
-model_ptr<PointNode> resolveInternal(tag<PointNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<PointNode> TileFeatureLayer::resolvePointNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::Points:
         return PointNode(
             node,
             static_cast<simfil::ArrayIndex>(node.addr().index()),
-            model.mpKey_);
+            mpKey_);
     case TileFeatureLayer::ColumnId::ValidityPoints:
-        return PointNode(node, &model.impl_->validities_.at(node.addr().index()), model.mpKey_);
+        return PointNode(node, &impl_->validities_.at(node.addr().index()), mpKey_);
     case TileFeatureLayer::ColumnId::GeometryPointView:
-        return PointNode(node, model.mpKey_);
+        return PointNode(node, mpKey_);
     default:
         raise("Cannot cast this node to a Point.");
     }
 }
 
-template<>
-model_ptr<PointBufferNode> resolveInternal(tag<PointBufferNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<PointBufferNode> TileFeatureLayer::resolvePointBufferNode(ModelNode const& node) const
 {
     if (auto existing = dynamic_cast<PointBufferNode const*>(&node)) {
         return PointBufferNode(
-            model.shared_from_this(),
+            shared_from_this(),
             existing->baseGeometryAddress(),
-            model.mpKey_);
+            mpKey_);
     }
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::PointBuffers:
         return PointBufferNode(
-            model.shared_from_this(),
+            shared_from_this(),
             ModelNodeAddress{
                 TileFeatureLayer::ColumnId::PointGeometries,
                 node.addr().index()},
-            model.mpKey_);
+            mpKey_);
     case TileFeatureLayer::ColumnId::PointBuffersView:
         return PointBufferNode(
-            model.shared_from_this(),
+            shared_from_this(),
             ModelNodeAddress{TileFeatureLayer::ColumnId::GeometryViews, node.addr().index()},
-            model.mpKey_);
+            mpKey_);
     default:
         raise("Cannot cast this node to a PointBuffer.");
     }
 }
 
-template<>
-model_ptr<Geometry> resolveInternal(tag<Geometry>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<Geometry> TileFeatureLayer::resolveGeometryNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::PointGeometries:
@@ -1247,133 +1241,112 @@ model_ptr<Geometry> resolveInternal(tag<Geometry>, TileFeatureLayer const& model
     case TileFeatureLayer::ColumnId::GltfNodeIndexGeometries:
     {
         return Geometry(
-            model.shared_from_this(),
+            shared_from_this(),
             node.addr(),
-            model.mpKey_);
+            mpKey_);
     }
     case TileFeatureLayer::ColumnId::GeometryViews: {
-        auto* geomData = &model.impl_->geomViews_.at(node.addr().index());
+        auto* geomData = &impl_->geomViews_.at(node.addr().index());
         using MutableGeomData =
             std::remove_const_t<std::remove_reference_t<decltype(*geomData)>>;
         return Geometry(
             const_cast<MutableGeomData*>(geomData), // FIXME: const_cast?!
-            model.shared_from_this(),
+            shared_from_this(),
             node.addr(),
-            model.mpKey_);
+            mpKey_);
     }
     default:
         raise("Cannot cast this node to a Geometry.");
     }
 }
 
-template<>
-model_ptr<GeometryCollection> resolveInternal(tag<GeometryCollection>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<GeometryCollection> TileFeatureLayer::resolveGeometryCollectionNode(ModelNode const& node) const
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryCollections &&
         !isBaseGeometryColumn(node.addr().column()) &&
         node.addr().column() != TileFeatureLayer::ColumnId::GeometryViews) {
         raise("Cannot cast this node to a GeometryCollection.");
     }
-    return GeometryCollection(
-        model.shared_from_this(), node.addr(), model.mpKey_);
+    return GeometryCollection(shared_from_this(), node.addr(), mpKey_);
 }
 
-template<>
-model_ptr<GeometryArrayView> resolveInternal(tag<GeometryArrayView>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<GeometryArrayView> TileFeatureLayer::resolveGeometryArrayViewNode(ModelNode const& node) const
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryArrayView)
         raise("Cannot cast this node to a GeometryArrayView.");
     return GeometryArrayView(
-        model.shared_from_this(),
+        shared_from_this(),
         node.addr(),
-        model.mpKey_);
+        mpKey_);
 }
 
-template<>
-model_ptr<BoundsInfoNode> resolveInternal(tag<BoundsInfoNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<BoundsInfoNode> TileFeatureLayer::resolveBoundsInfoNode(ModelNode const& node) const
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryBoundsInfoView) {
         raise("Cannot cast this node to BoundsInfo.");
     }
-    return BoundsInfoNode(node, model.mpKey_);
+    return BoundsInfoNode(node, mpKey_);
 }
 
-template<>
-model_ptr<BoundsPolygonCoordinatesNode> resolveInternal(
-    tag<BoundsPolygonCoordinatesNode>,
-    TileFeatureLayer const& model,
-    ModelNode const& node)
+model_ptr<BoundsPolygonCoordinatesNode> TileFeatureLayer::resolveBoundsPolygonCoordinatesNode(ModelNode const& node) const
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryBoundsPolygonCoordinatesView) {
         raise("Cannot cast this node to BoundsPolygonCoordinates.");
     }
-    return BoundsPolygonCoordinatesNode(node, model.mpKey_);
+    return BoundsPolygonCoordinatesNode(node, mpKey_);
 }
 
-template<>
-model_ptr<BoundsRingNode> resolveInternal(tag<BoundsRingNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<BoundsRingNode> TileFeatureLayer::resolveBoundsRingNode(ModelNode const& node) const
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryBoundsRingView) {
         raise("Cannot cast this node to BoundsRing.");
     }
-    return BoundsRingNode(node, model.mpKey_);
+    return BoundsRingNode(node, mpKey_);
 }
 
-template<>
-model_ptr<MeshNode> resolveInternal(tag<MeshNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<MeshNode> TileFeatureLayer::resolveMeshNode(ModelNode const& node) const
 {
-    return MeshNode(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
+    return MeshNode(shared_from_this(), node.addr(), mpKey_);
 }
 
-template<>
-model_ptr<MeshTriangleCollectionNode> resolveInternal(tag<MeshTriangleCollectionNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<MeshTriangleCollectionNode> TileFeatureLayer::resolveMeshTriangleCollectionNode(ModelNode const& node) const
 {
-    return MeshTriangleCollectionNode(node, model.mpKey_);
+    return MeshTriangleCollectionNode(node, mpKey_);
 }
 
-template<>
-model_ptr<LinearRingNode> resolveInternal(tag<LinearRingNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<LinearRingNode> TileFeatureLayer::resolveLinearRingNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::LinearRing:
-        return LinearRingNode(node, model.mpKey_);
+        return LinearRingNode(node, mpKey_);
     case TileFeatureLayer::ColumnId::MeshTriangleLinearRing:
-        return LinearRingNode(node, 3, model.mpKey_);
+        return LinearRingNode(node, 3, mpKey_);
     default:
         raise("Cannot cast this node to a LinearRing.");
     }
 }
 
-template<>
-model_ptr<PolygonNode> resolveInternal(tag<PolygonNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<PolygonNode> TileFeatureLayer::resolvePolygonNode(ModelNode const& node) const
 {
-    return PolygonNode(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
+    return PolygonNode(shared_from_this(), node.addr(), mpKey_);
 }
 
-template<>
-model_ptr<SourceDataReferenceCollection> resolveInternal(tag<SourceDataReferenceCollection>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<SourceDataReferenceCollection> TileFeatureLayer::resolveSourceDataReferenceCollectionNode(ModelNode const& node) const
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::SourceDataReferenceCollections)
         raise("Cannot cast this node to an SourceDataReferenceCollection.");
 
     auto [index, size] = modelAddressToSourceDataAddressList(node.addr().index());
-    return SourceDataReferenceCollection(index, size, model.shared_from_this(), node.addr(), model.mpKey_);
+    return SourceDataReferenceCollection(index, size, shared_from_this(), node.addr(), mpKey_);
 }
 
-template<>
-model_ptr<SourceDataReferenceItem> resolveInternal(tag<SourceDataReferenceItem>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<SourceDataReferenceItem> TileFeatureLayer::resolveSourceDataReferenceItemNode(ModelNode const& node) const
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::SourceDataReferences)
         raise("Cannot cast this node to an SourceDataReferenceItem.");
 
-    const auto* data = &model.impl_->sourceDataReferences_.at(node.addr().index());
-    return SourceDataReferenceItem(data, model.shared_from_this(), node.addr(), model.mpKey_);
+    const auto* data = &impl_->sourceDataReferences_.at(node.addr().index());
+    return SourceDataReferenceItem(data, shared_from_this(), node.addr(), mpKey_);
 }
 
 template<>

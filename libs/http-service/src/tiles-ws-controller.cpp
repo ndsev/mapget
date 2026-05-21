@@ -4,6 +4,8 @@
 #include "tiles-request-json.h"
 
 #include "mapget/log.h"
+#include "mapget/model/featurelayer-search.h"
+#include "mapget/model/searchresultlayer.h"
 #include "mapget/model/stream.h"
 
 #include <drogon/HttpAppFramework.h>
@@ -289,6 +291,62 @@ enum class ClientRequestUpdateMode
 {
     key.layer_ = REQUEST_TILE_LAYER_TYPE;
     return key;
+}
+
+/// Decorate server-internal queue keys so search results do not collide with source tile frames.
+[[nodiscard]] MapTileKey makeSearchRequestedTileKey(MapTileKey key, std::string_view searchRequestKey)
+{
+    key = makeCanonicalRequestedTileKey(std::move(key));
+    key.layerId_.append("#search:");
+    key.layerId_.append(searchRequestKey);
+    return key;
+}
+
+/// Build the outgoing-frame key for either normal feature tiles or a specific search request.
+[[nodiscard]] MapTileKey makeRequestedTileKey(
+    MapTileKey key,
+    std::optional<std::string_view> searchRequestKey)
+{
+    if (searchRequestKey && !searchRequestKey->empty()) {
+        return makeSearchRequestedTileKey(std::move(key), *searchRequestKey);
+    }
+    return makeCanonicalRequestedTileKey(std::move(key));
+}
+
+/// Extract the search request key attached to TileSearchResultLayer metadata.
+[[nodiscard]] std::optional<std::string> searchRequestKey(TileLayer::Ptr const& layer)
+{
+    if (!std::dynamic_pointer_cast<TileSearchResultLayer>(layer)) {
+        return std::nullopt;
+    }
+    auto info = layer->info();
+    auto it = info.find("searchRequestKey");
+    if (it == info.end() || !it->is_string()) {
+        return std::nullopt;
+    }
+    return it->get<std::string>();
+}
+
+std::string makeWsSearchResultNodeId(int64_t clientId, FeatureLayerSearchRequest const& search)
+{
+    auto const refreshKey = search.refresh_
+        ? std::to_string(*search.refresh_)
+        : std::to_string(std::hash<std::string>{}(search.requestKey_));
+    return fmt::format("__mapget_search__:ws:{}:{}:{}", clientId, search.searchId_, refreshKey);
+}
+
+std::vector<TileId> collectSearchTileIds(detail::ParsedLayerTilesRequest const& parsed)
+{
+    std::set<TileId> seen;
+    std::vector<TileId> result;
+    for (auto const& bucket : parsed.tileIdsByNextStage) {
+        for (auto const& tileId : bucket) {
+            if (seen.insert(tileId).second) {
+                result.push_back(tileId);
+            }
+        }
+    }
+    return result;
 }
 
 class TilesWsSession : public std::enable_shared_from_this<TilesWsSession>
@@ -597,23 +655,42 @@ public:
             parsedRequests.reserve(requestsIt->size());
             for (auto const& requestJson : *requestsIt) {
                 int64_t nextPriorityRank = 0;
-                auto parsedRequest = detail::parseLayerTilesRequestJson(requestJson);
+                auto effectiveRequestJson = requestJson;
+                detail::inheritSearchFields(effectiveRequestJson, j);
+                auto parsedRequest = detail::parseLayerTilesRequestJson(effectiveRequestJson);
                 auto layerContext = service_.resolveLayerRequest(
                     parsedRequest.mapId,
                     parsedRequest.layerId,
                     authHeaders_);
-                auto expandedTileKeys = detail::expandLayerTilesRequestKeys(
-                    parsedRequest,
-                    REQUEST_TILE_LAYER_TYPE,
-                    layerContext.stages_);
 
                 // Priority ranks are layer-local: rank 0 means "highest priority"
                 // within that layer request, then increases with request order/stage.
-                for (auto const& tileKey : expandedTileKeys) {
-                    auto requestedTileKey = makeCanonicalRequestedTileKey(tileKey);
-                    desiredTileKeys.insert(requestedTileKey);
-                    if (nextTilePriorityRanks.find(requestedTileKey) == nextTilePriorityRanks.end()) {
-                        nextTilePriorityRanks.emplace(requestedTileKey, nextPriorityRank++);
+                if (parsedRequest.searchRequest) {
+                    for (auto const& tileId : collectSearchTileIds(parsedRequest)) {
+                        auto requestedTileKey = makeRequestedTileKey(
+                            MapTileKey(
+                                REQUEST_TILE_LAYER_TYPE,
+                                parsedRequest.mapId,
+                                parsedRequest.layerId,
+                                tileId,
+                                UnspecifiedStage),
+                            std::optional<std::string_view>(parsedRequest.searchRequest->requestKey_));
+                        desiredTileKeys.insert(requestedTileKey);
+                        if (nextTilePriorityRanks.find(requestedTileKey) == nextTilePriorityRanks.end()) {
+                            nextTilePriorityRanks.emplace(requestedTileKey, nextPriorityRank++);
+                        }
+                    }
+                } else {
+                    auto expandedTileKeys = detail::expandLayerTilesRequestKeys(
+                        parsedRequest,
+                        REQUEST_TILE_LAYER_TYPE,
+                        layerContext.stages_);
+                    for (auto const& tileKey : expandedTileKeys) {
+                        auto requestedTileKey = makeRequestedTileKey(tileKey, std::nullopt);
+                        desiredTileKeys.insert(requestedTileKey);
+                        if (nextTilePriorityRanks.find(requestedTileKey) == nextTilePriorityRanks.end()) {
+                            nextTilePriorityRanks.emplace(requestedTileKey, nextPriorityRank++);
+                        }
                     }
                 }
 
@@ -640,7 +717,9 @@ public:
         }
 
         std::vector<LayerTilesRequest::Ptr> serviceRequests;
+        std::vector<FeatureLayerSearchTilesRequest::Ptr> searchServiceRequests;
         std::vector<LayerTilesRequest::Ptr> nextActiveRequests;
+        std::vector<FeatureLayerSearchTilesRequest::Ptr> nextActiveSearchRequests;
         std::vector<RequestStatus> nextRequestStatuses(parsedRequests.size(), RequestStatus::Success);
         std::vector<RequestInfo> nextRequestInfos;
         nextRequestInfos.reserve(parsedRequests.size());
@@ -670,6 +749,66 @@ public:
                 .noDataSourceReason = parsed.context.noDataSourceReason_,
             });
 
+            if (parsed.request.searchRequest) {
+                auto searchRequest = *parsed.request.searchRequest;
+                searchRequest.resultNodeId_ = makeWsSearchResultNodeId(clientId_, searchRequest);
+                std::vector<TileId> tileIdsToSearch;
+                {
+                    std::lock_guard lock(mutex_);
+                    for (auto const& tileId : collectSearchTileIds(parsed.request)) {
+                        auto requestedTileKey = makeRequestedTileKey(
+                            MapTileKey(
+                                REQUEST_TILE_LAYER_TYPE,
+                                parsed.request.mapId,
+                                parsed.request.layerId,
+                                tileId,
+                                UnspecifiedStage),
+                            std::optional<std::string_view>(searchRequest.requestKey_));
+                        const bool alreadyQueued =
+                            queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
+                        if (!alreadyQueued) {
+                            tileIdsToSearch.push_back(tileId);
+                        }
+                    }
+                }
+
+                if (tileIdsToSearch.empty()) {
+                    continue;
+                }
+
+                auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
+                    parsed.request.mapId,
+                    parsed.request.layerId,
+                    std::move(tileIdsToSearch),
+                    std::move(searchRequest),
+                    parsed.request.priorityTileIds);
+                searchServiceRequests.push_back(request);
+                nextActiveSearchRequests.push_back(request);
+                nextRequestStatuses[index] = RequestStatus::Open;
+
+                const auto weak = weak_from_this();
+                const auto expectedRequestId = requestId;
+                const auto statusIndex = requestIndexBase + index;
+                request->onSearchResult([weak](TileSearchResultLayer::Ptr layer) {
+                    if (auto self = weak.lock()) {
+                        self->onTileLayer(std::move(layer));
+                    }
+                });
+                request->onStatus([weak](nlohmann::json const& status) {
+                    if (auto self = weak.lock()) {
+                        self->sendControlMessage(
+                            TileLayerStream::MessageType::Status,
+                            status.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore));
+                    }
+                });
+                request->onDone_ = [weak, statusIndex, expectedRequestId, request](RequestStatus status) {
+                    if (auto self = weak.lock()) {
+                        self->onSearchRequestDone(statusIndex, expectedRequestId, request, status);
+                    }
+                };
+                continue;
+            }
+
             std::vector<std::vector<TileId>> tileIdsByNextStageToFetch;
             std::vector<TileId> unstagedTileIdsToFetch;
             bool hasTilesToFetch = false;
@@ -686,11 +825,16 @@ public:
                         for (auto const& tileId : parsed.request.tileIdsByNextStage[bucketIndex]) {
                             bool needsBackendFetch = false;
                             for (uint32_t stage = nextMissingStage; stage < stageCount; ++stage) {
-                                auto requestedTileKey = makeCanonicalRequestedTileKey(
-                                    parsed.request.mapId,
-                                    parsed.request.layerId,
-                                    tileId,
-                                    stage);
+                                auto requestedTileKey = makeRequestedTileKey(
+                                    MapTileKey(
+                                        REQUEST_TILE_LAYER_TYPE,
+                                        parsed.request.mapId,
+                                        parsed.request.layerId,
+                                        tileId,
+                                        stage),
+                                    parsed.request.searchRequest
+                                        ? std::optional<std::string_view>(parsed.request.searchRequest->requestKey_)
+                                        : std::nullopt);
                                 const bool alreadyQueued =
                                     queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
                                 if (!alreadyQueued) {
@@ -706,11 +850,16 @@ public:
                     }
                 } else if (!parsed.request.tileIdsByNextStage.empty()) {
                     for (auto const& tileId : parsed.request.tileIdsByNextStage.front()) {
-                        auto requestedTileKey = makeCanonicalRequestedTileKey(
-                            parsed.request.mapId,
-                            parsed.request.layerId,
-                            tileId,
-                            UnspecifiedStage);
+                        auto requestedTileKey = makeRequestedTileKey(
+                            MapTileKey(
+                                REQUEST_TILE_LAYER_TYPE,
+                                parsed.request.mapId,
+                                parsed.request.layerId,
+                                tileId,
+                                UnspecifiedStage),
+                            parsed.request.searchRequest
+                                ? std::optional<std::string_view>(parsed.request.searchRequest->requestKey_)
+                                : std::nullopt);
                         const bool alreadyQueued =
                             queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
                         if (!alreadyQueued) {
@@ -746,14 +895,14 @@ public:
             const auto weak = weak_from_this();
             const auto expectedRequestId = requestId;
             const auto statusIndex = requestIndexBase + index;
-            request->onFeatureLayer([weak](auto&& layer) {
+            request->onFeatureLayer([weak](TileFeatureLayer::Ptr layer) {
                 if (auto self = weak.lock()) {
-                    self->onTileLayer(std::forward<decltype(layer)>(layer));
+                    self->onTileLayer(std::move(layer));
                 }
             });
-            request->onSourceDataLayer([weak](auto&& layer) {
+            request->onSourceDataLayer([weak](TileSourceDataLayer::Ptr layer) {
                 if (auto self = weak.lock()) {
-                    self->onTileLayer(std::forward<decltype(layer)>(layer));
+                    self->onTileLayer(std::move(layer));
                 }
             });
             if (EMIT_LOAD_STATE_FRAMES) {
@@ -771,11 +920,15 @@ public:
         }
 
         std::vector<LayerTilesRequest::Ptr> replacedRequests;
+        std::vector<FeatureLayerSearchTilesRequest::Ptr> replacedSearchRequests;
         {
             std::lock_guard lock(mutex_);
             if (updateMode == ClientRequestUpdateMode::Append && requestId_ == requestId) {
                 for (auto& request : nextActiveRequests) {
                     activeRequests_.push_back(std::move(request));
+                }
+                for (auto& request : nextActiveSearchRequests) {
+                    activeSearchRequests_.push_back(std::move(request));
                 }
                 for (auto& info : nextRequestInfos) {
                     requestInfos_.push_back(std::move(info));
@@ -789,7 +942,9 @@ public:
                 }
             } else {
                 replacedRequests = std::move(activeRequests_);
+                replacedSearchRequests = std::move(activeSearchRequests_);
                 activeRequests_ = std::move(nextActiveRequests);
+                activeSearchRequests_ = std::move(nextActiveSearchRequests);
                 requestId_ = requestId;
                 requestInfos_ = std::move(nextRequestInfos);
                 requestStatuses_ = std::move(nextRequestStatuses);
@@ -810,10 +965,24 @@ public:
                 std::memory_order_relaxed);
             abortRequests(std::move(replacedRequests));
         }
+        if (!replacedSearchRequests.empty()) {
+            gTilesWsMetrics.replacedRequests.fetch_add(
+                static_cast<int64_t>(replacedSearchRequests.size()),
+                std::memory_order_relaxed);
+            abortSearchRequests(std::move(replacedSearchRequests));
+        }
 
         queueRequestContextMessage();
+        bool serviceRequestsAccepted = true;
         if (!serviceRequests.empty()) {
-            (void)service_.request(serviceRequests, authHeaders_);
+            serviceRequestsAccepted = service_.request(serviceRequests, authHeaders_);
+        }
+        if (serviceRequestsAccepted && !searchServiceRequests.empty()) {
+            serviceRequestsAccepted = service_.request(searchServiceRequests, authHeaders_);
+        }
+        if (!serviceRequestsAccepted) {
+            abortRequests(serviceRequests);
+            abortSearchRequests(searchServiceRequests);
         }
         queueStatusMessage({});
     }
@@ -823,6 +992,7 @@ public:
     {
         cancelled_ = true;
         std::vector<LayerTilesRequest::Ptr> requestsToAbort;
+        std::vector<FeatureLayerSearchTilesRequest::Ptr> searchRequestsToAbort;
         std::vector<PullDispatch> pullDispatches;
 
         // Stop sending any queued tile frames from this session.
@@ -831,11 +1001,14 @@ public:
             clearOutgoingLocked();
             requestsToAbort = std::move(activeRequests_);
             activeRequests_.clear();
+            searchRequestsToAbort = std::move(activeSearchRequests_);
+            activeSearchRequests_.clear();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
         }
 
         // Abort in-flight requests (best-effort).
         abortRequests(std::move(requestsToAbort));
+        abortSearchRequests(std::move(searchRequestsToAbort));
 
         // Refresh locally cached statuses after aborting.
         {
@@ -1034,9 +1207,10 @@ private:
     /// Match one backend-produced tile key against the currently desired request set.
     [[nodiscard]] std::optional<MapTileKey> matchDesiredTileKeyLocked(
         MapTileKey key,
-        uint32_t advertisedStages) const
+        uint32_t advertisedStages,
+        std::optional<std::string_view> searchKey = std::nullopt) const
     {
-        auto requestedTileKey = makeCanonicalRequestedTileKey(std::move(key));
+        auto requestedTileKey = makeRequestedTileKey(std::move(key), searchKey);
         if (desiredTileKeys_.find(requestedTileKey) != desiredTileKeys_.end()) {
             return requestedTileKey;
         }
@@ -1260,6 +1434,7 @@ private:
         if (cancelled_.exchange(true))
             return;
         std::vector<LayerTilesRequest::Ptr> requestsToAbort;
+        std::vector<FeatureLayerSearchTilesRequest::Ptr> searchRequestsToAbort;
         std::vector<PullDispatch> pullDispatches;
 
         // Ensure we stop emitting any further frames.
@@ -1268,15 +1443,29 @@ private:
             clearOutgoingLocked();
             requestsToAbort = std::move(activeRequests_);
             activeRequests_.clear();
+            searchRequestsToAbort = std::move(activeSearchRequests_);
+            activeSearchRequests_.clear();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
         }
 
         abortRequests(std::move(requestsToAbort));
+        abortSearchRequests(std::move(searchRequestsToAbort));
         dispatchPullResults(std::move(pullDispatches));
     }
 
     /// Abort a batch of backend requests outside `mutex_` to avoid lock inversion.
     void abortRequests(std::vector<LayerTilesRequest::Ptr> requests)
+    {
+        for (auto const& request : requests) {
+            if (!request || request->isDone()) {
+                continue;
+            }
+            service_.abort(request);
+        }
+    }
+
+    /// Abort a batch of backend search requests outside `mutex_` to avoid lock inversion.
+    void abortSearchRequests(std::vector<FeatureLayerSearchTilesRequest::Ptr> requests)
     {
         for (auto const& request : requests) {
             if (!request || request->isDone()) {
@@ -1312,9 +1501,11 @@ private:
                 std::lock_guard lock(mutex_);
                 if (cancelled_)
                     return;
+                auto searchKey = searchRequestKey(layer);
                 auto requestedTileKey = matchDesiredTileKeyLocked(
                     layer->id(),
-                    layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U);
+                    layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U,
+                    searchKey ? std::optional<std::string_view>(*searchKey) : std::nullopt);
                 // Late-arriving tile for an outdated request: drop before serialization work.
                 if (!requestedTileKey.has_value()) {
                     return;
@@ -1351,7 +1542,8 @@ private:
                         frame.requestedTileKey = *requestedTileKey;
                     }
                     if (m.type == TileLayerStream::MessageType::TileFeatureLayer
-                        || m.type == TileLayerStream::MessageType::TileSourceDataLayer) {
+                        || m.type == TileLayerStream::MessageType::TileSourceDataLayer
+                        || m.type == TileLayerStream::MessageType::TileSearchResultLayer) {
                         frame.requestedTileKey = *requestedTileKey;
                     }
                     enqueueOutgoingLocked(std::move(frame));
@@ -1390,6 +1582,43 @@ private:
                         return !req || req == completedRequest || req->isDone();
                     }),
                 activeRequests_.end());
+            if (expectedRequestId == requestId_ && requestIndex < requestStatuses_.size()) {
+                if (requestStatuses_[requestIndex] == status) {
+                    return;
+                }
+                requestStatuses_[requestIndex] = status;
+                shouldEmit = statusEmissionEnabled_;
+            }
+        }
+
+        if (shouldEmit) {
+            queueStatusMessage({});
+        }
+    }
+
+    /// Update per-search completion state and emit status when it changes.
+    void onSearchRequestDone(
+        size_t requestIndex,
+        uint64_t expectedRequestId,
+        const FeatureLayerSearchTilesRequest::Ptr& completedRequest,
+        RequestStatus status)
+    {
+        if (cancelled_)
+            return;
+
+        bool shouldEmit = false;
+        {
+            std::lock_guard lock(mutex_);
+            if (cancelled_)
+                return;
+            activeSearchRequests_.erase(
+                std::remove_if(
+                    activeSearchRequests_.begin(),
+                    activeSearchRequests_.end(),
+                    [&](const FeatureLayerSearchTilesRequest::Ptr& req) {
+                        return !req || req == completedRequest || req->isDone();
+                    }),
+                activeSearchRequests_.end());
             if (expectedRequestId == requestId_ && requestIndex < requestStatuses_.size()) {
                 if (requestStatuses_[requestIndex] == status) {
                     return;
@@ -1536,6 +1765,7 @@ private:
     std::vector<RequestInfo> requestInfos_;
     std::vector<RequestStatus> requestStatuses_;
     std::vector<LayerTilesRequest::Ptr> activeRequests_;
+    std::vector<FeatureLayerSearchTilesRequest::Ptr> activeSearchRequests_;
     std::set<MapTileKey> desiredTileKeys_;
     std::map<MapTileKey, int64_t> tilePriorityRanks_;
     std::map<MapTileKey, int64_t> queuedTileFrameRefCount_;

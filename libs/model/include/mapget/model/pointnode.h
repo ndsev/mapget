@@ -10,15 +10,16 @@ namespace mapget
 
 /** Vertex Node */
 
-class PointNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class PointNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
 {
 public:
+    friend class TileFeatureModelLayerBase;
     friend class TileFeatureLayer;
     friend class Geometry;
     friend class PointBufferNode;
 
     explicit PointNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;

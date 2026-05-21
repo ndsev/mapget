@@ -61,7 +61,13 @@ struct StringPool : public simfil::StringPool
         ConnectedEndStr,
         FromConnectedEndStr,
         ToConnectedEndStr,
-        TransitionNumberStr
+        TransitionNumberStr,
+        AttributeIndexStr,
+        ValuesStr,
+        MatchStr,
+        AttributePathStr,
+        ValidityIndexStr,
+        ValidityCountStr
     };
 
     explicit StringPool(const std::string_view& nodeId);

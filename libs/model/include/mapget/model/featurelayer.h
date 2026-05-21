@@ -19,6 +19,7 @@
 #include "sourceinfo.h"
 #include "geojson-import.h"
 #include "schemaregistry.h"
+#include "featuremodellayer.h"
 #include "feature.h"
 #include "attrlayer.h"
 #include "relation.h"
@@ -50,26 +51,15 @@ struct TileGlbAttachment
  * within a map tile. It is a container for map features.
  * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
  */
-class TileFeatureLayer : public TileLayer, public simfil::ModelPool
+class TileFeatureLayer : public TileFeatureModelLayerBase
 {
-    template<class, class>
+    template<class, class, class>
     friend class MergedArrayView;
     friend class Feature;
-    friend class FeatureId;
     friend class Relation;
     friend class Attribute;
     friend class AttributeLayer;
     friend class AttributeLayerList;
-    friend class Geometry;
-    friend class GeometryCollection;
-    friend class PointNode;
-    friend class PointBufferNode;
-    friend class PolygonNode;
-    friend class MeshNode;
-    friend class MeshTriangleCollectionNode;
-    friend class LinearRingNode;
-    friend class SourceDataReferenceCollection;
-    friend class SourceDataReferenceItem;
     friend class Validity;
     template<typename Target>
     friend model_ptr<Target> resolveInternal(
@@ -79,7 +69,7 @@ class TileFeatureLayer : public TileLayer, public simfil::ModelPool
 
 public:
     // Keep ModelPool::resolve<T> overloads visible alongside the override below.
-    using ModelPool::resolve;
+    using TileFeatureModelLayerBase::resolve;
     using Ptr = std::shared_ptr<TileFeatureLayer>;
     static constexpr std::string_view GLB_ATTACHMENT_MIME_TYPE = "model/gltf-binary";
 
@@ -145,7 +135,7 @@ public:
      */
     void setIdPrefix(KeyValueViewPairs const& prefix);
     model_ptr<Object> getIdPrefix();
-    model_ptr<Object> getIdPrefix() const;
+    model_ptr<Object> getIdPrefix() const override;
 
     /** Destructor for the TileFeatureLayer class. */
     ~TileFeatureLayer() override;
@@ -173,7 +163,7 @@ public:
     model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,
         KeyValueViewPairs const& featureIdParts,
-        std::optional<std::string_view> externalMapId = std::nullopt);
+        std::optional<std::string_view> externalMapId = std::nullopt) override;
 
     /**
      * Create a new relation. Use this function to create a named reference to another
@@ -200,22 +190,22 @@ public:
     /**
      * Create a new geometry collection.
      */
-    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=2, bool fixedSize=false);
+    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=2, bool fixedSize=false) override;
 
     /**
      * Create a new geometry.
      */
-    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=2, bool fixedSize=false);
+    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=2, bool fixedSize=false) override;
 
     /**
      * Create a new geometry view.
      */
-    model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base);
+    model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base) override;
 
     /**
      * Create a new list of qualified source-data references.
      */
-    model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list);
+    model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list) override;
 
     /**
      * Create a new validity.
@@ -311,7 +301,7 @@ public:
     [[nodiscard]] uint64_t numVertices() const;
 
     /** Access layer-wide geometry anchor used for anchor-relative vertex encoding. */
-    [[nodiscard]] Point geometryAnchor() const;
+    [[nodiscard]] Point geometryAnchor() const override;
     void setGeometryAnchor(Point const& anchor);
 
     /** Access feature at index i */
@@ -420,51 +410,8 @@ public:
         TileFeatureLayer::Ptr const& otherLayer,
         simfil::ModelNode::Ptr const& otherNode);
 
-    /**
-     * The ColumnId enum provides identifiers for different
-     * types of columns that can be associated with feature data.
-     */
-    struct ColumnId { enum : uint8_t {
-        Features = FirstCustomColumnId,
-        FeatureComplexData,
-        FeatureProperties,
-        FeatureIds,
-        ExternalFeatureIds,
-        Attributes,
-        AttributeLayers,
-        AttributeLayerLists,
-        Relations,
-        Points,
-        PointBuffers,
-        PointBuffersView,
-        PointGeometries,
-        LineGeometries,
-        PolygonGeometries,
-        MeshGeometries,
-        AabbGeometries,
-        GltfNodeIndexGeometries,
-        GeometryViews,
-        GeometryCollections,
-        Mesh,
-        MeshTriangleCollection,
-        MeshTriangleLinearRing, // LinearRing with fixed size 3
-        Polygon,
-        LinearRing,
-        SourceDataReferenceCollections,
-        SourceDataReferences,
-        Validities,
-        ValidityPoints,
-        ValidityCollections,
-        FeatureRelationsView,
-        GeometryArrayView,
-        GeometryBoundsInfoView,
-        GeometryBoundsPolygonCoordinatesView,
-        GeometryBoundsRingView,
-        GeometryPointView,
-        // Compact validity form without backing struct storage.
-        // Direction is encoded in ModelNodeAddress::index().
-        SimpleValidity,
-    }; };
+    using ColumnId = TileFeatureModelLayerBase::ColumnId;
+
     
 protected:
 
@@ -497,22 +444,38 @@ protected:
      */
     tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 
-    Geometry::Storage& vertexBufferStorage();
-    [[nodiscard]] Geometry::ViewData const* geometryViewData(simfil::ModelNodeAddress address) const;
-    [[nodiscard]] std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const;
-    void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage);
-    [[nodiscard]] simfil::ModelNodeAddress geometrySourceDataReferences(simfil::ModelNodeAddress address) const;
-    void setGeometrySourceDataReferences(simfil::ModelNodeAddress address, simfil::ModelNodeAddress refsAddress);
+    Geometry::Storage& vertexBufferStorage() override;
+    [[nodiscard]] Geometry::ViewData const* geometryViewData(simfil::ModelNodeAddress address) const override;
+    [[nodiscard]] std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const override;
+    void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage) override;
+    [[nodiscard]] simfil::ModelNodeAddress geometrySourceDataReferences(simfil::ModelNodeAddress address) const override;
+    void setGeometrySourceDataReferences(simfil::ModelNodeAddress address, simfil::ModelNodeAddress refsAddress) override;
+    [[nodiscard]] model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<PointBufferNode> resolvePointBufferNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<Geometry> resolveGeometryNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<GeometryCollection> resolveGeometryCollectionNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<GeometryArrayView> resolveGeometryArrayViewNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<BoundsInfoNode> resolveBoundsInfoNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<BoundsPolygonCoordinatesNode> resolveBoundsPolygonCoordinatesNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<BoundsRingNode> resolveBoundsRingNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<MeshNode> resolveMeshNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<MeshTriangleCollectionNode> resolveMeshTriangleCollectionNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<LinearRingNode> resolveLinearRingNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<PolygonNode> resolvePolygonNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<SourceDataReferenceCollection> resolveSourceDataReferenceCollectionNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItemNode(simfil::ModelNode const& node) const override;
+
     [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;
     [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
     Feature::ComplexData& ensureFeatureComplexData(uint32_t featureIndex);
 
     void setMergedArrayExtension(
         simfil::ModelNodeAddress baseAddress,
-        TileFeatureLayer const* extensionModel,
+        TileFeatureModelLayerBase const* extensionModel,
         simfil::ModelNodeAddress extensionAddress);
     void clearMergedArrayExtension(simfil::ModelNodeAddress baseAddress);
-    [[nodiscard]] std::optional<std::pair<TileFeatureLayer const*, simfil::ModelNodeAddress>>
+    [[nodiscard]] std::optional<std::pair<TileFeatureModelLayerBase const*, simfil::ModelNodeAddress>>
     mergedArrayExtension(simfil::ModelNodeAddress baseAddress) const;
 
     struct Impl;

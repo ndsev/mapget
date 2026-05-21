@@ -108,6 +108,13 @@ bool isArraySchema(nlohmann::json const& schema)
     return schema.contains("items") || hasType(schema, "array");
 }
 
+/** Return whether a oneOf object/array wrapper represents a mapget multimap view. */
+bool isMapgetMultimap(nlohmann::json const& schema)
+{
+    auto it = schema.find("x-mapget-multimap");
+    return it != schema.end() && it->is_boolean() && it->get<bool>();
+}
+
 /** Build a registry key from known x-mapget annotations. */
 std::string annotatedKey(
     nlohmann::json const& schema,
@@ -259,7 +266,10 @@ struct SchemaRegistry::Impl
         if (!valid(parent) || !valid(child)) {
             return;
         }
-        schemas_[parent].childSchemas_[std::string(fieldName)].push_back(child);
+        auto& children = schemas_[parent].childSchemas_[std::string(fieldName)];
+        if (std::ranges::find(children, child) == children.end()) {
+            children.push_back(child);
+        }
     }
 
     void addElementSchema(simfil::SchemaId parent, simfil::SchemaId child)
@@ -267,7 +277,10 @@ struct SchemaRegistry::Impl
         if (!valid(parent) || !valid(child)) {
             return;
         }
-        schemas_[parent].elementSchemas_.push_back(child);
+        auto& children = schemas_[parent].elementSchemas_;
+        if (std::ranges::find(children, child) == children.end()) {
+            children.push_back(child);
+        }
     }
 
     void finalizeAll()
@@ -516,13 +529,25 @@ private:
                 childContext.attributeLayerName_ = fieldName;
             }
 
-            auto childId = build(
-                childSchemaJson,
-                pointer + "/properties/" + pointerToken(fieldName),
-                std::move(childContext),
-                std::nullopt);
-            if (childId != simfil::NoSchemaId) {
-                registry_.addChild(id, fieldName, childId);
+            auto const childPointer = pointer + "/properties/" + pointerToken(fieldName);
+            auto addChildSchema = [&](std::optional<Kind> preferredKind) {
+                auto childId = build(
+                    childSchemaJson,
+                    childPointer,
+                    childContext,
+                    preferredKind);
+                if (childId != simfil::NoSchemaId) {
+                    registry_.addChild(id, fieldName, childId);
+                }
+            };
+
+            if (isMapgetMultimap(childSchemaJson)) {
+                // Simfil sees the logical object view. The array branch is only
+                // a JSON serialization detail for duplicate field names.
+                addChildSchema(Kind::Object);
+            }
+            else {
+                addChildSchema(std::nullopt);
             }
         }
         return id;

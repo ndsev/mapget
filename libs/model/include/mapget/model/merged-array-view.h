@@ -6,6 +6,7 @@ namespace mapget
 {
 
 class TileFeatureLayer;
+class TileFeatureModelLayerBase;
 
 /**
  * Generic forward-linked merged array view.
@@ -13,11 +14,11 @@ class TileFeatureLayer;
  * The local entries can be customized by derived classes via
  * localMerged* methods. By default this wraps the BaseArray storage.
  */
-template <class DerivedT, class ItemT>
-class MergedArrayView : public simfil::BaseArray<TileFeatureLayer, ItemT>
+template <class DerivedT, class ItemT, class ModelT = TileFeatureLayer>
+class MergedArrayView : public simfil::BaseArray<ModelT, ItemT>
 {
 public:
-    using Base = simfil::BaseArray<TileFeatureLayer, ItemT>;
+    using Base = simfil::BaseArray<ModelT, ItemT>;
     using ExtensionPtr = simfil::model_ptr<DerivedT>;
 
     explicit MergedArrayView(simfil::detail::mp_key key)

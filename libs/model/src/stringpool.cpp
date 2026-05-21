@@ -51,6 +51,12 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(FromConnectedEndStr, "fromConnectedEnd");
     addStaticKey(ToConnectedEndStr, "toConnectedEnd");
     addStaticKey(TransitionNumberStr, "transitionNumber");
+    addStaticKey(AttributeIndexStr, "attributeIndex");
+    addStaticKey(ValuesStr, "values");
+    addStaticKey(MatchStr, "match");
+    addStaticKey(AttributePathStr, "attributePath");
+    addStaticKey(ValidityIndexStr, "validityIndex");
+    addStaticKey(ValidityCountStr, "validityCount");
 }
 
 tl::expected<void, simfil::Error>

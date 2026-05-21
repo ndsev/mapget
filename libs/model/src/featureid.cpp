@@ -1,5 +1,5 @@
 #include "featureid.h"
-#include "featurelayer.h"
+#include "stringpool.h"
 
 #include <algorithm>
 #include <charconv>
@@ -19,7 +19,7 @@ namespace
 {
 /** Resolve the concrete id composition used by a stored feature-id node. */
 std::vector<IdPart> const* resolveComposition(
-    TileFeatureLayer const& model,
+    TileFeatureModelLayerBase const& model,
     simfil::StringId typeId,
     uint8_t idCompositionIndex)
 {
@@ -41,7 +41,7 @@ std::vector<IdPart> const* resolveComposition(
 
 /** Build the externally visible id-part layout after removing an optional tile prefix. */
 void resolveVisiblePartLayout(
-    TileFeatureLayer const& model,
+    TileFeatureModelLayerBase const& model,
     FeatureId::Data const& data,
     model_ptr<Array> const& values,
     std::vector<simfil::StringId>& partNames,
@@ -130,7 +130,7 @@ void resolveVisiblePartLayout(
 template<typename Fn>
 /** Forward a typed id-part value while rejecting node types that cannot appear in ids. */
 void appendTypedKeyValue(
-    TileFeatureLayer const& model,
+    TileFeatureModelLayerBase const& model,
     simfil::StringId key,
     simfil::ModelNode::Ptr const& valueNode,
     Fn&& fn)
@@ -356,7 +356,7 @@ FeatureId::FeatureId(FeatureId::Data& data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(l, a, key),
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(l, a, key),
       data_(data)
 {
     if (data_.idPartValues_ != simfil::InvalidArrayIndex) {
@@ -373,7 +373,7 @@ FeatureId::FeatureId(FeatureId::Data const& data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(l, a, key),
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(l, a, key),
       data_(data)
 {
     if (data_.idPartValues_ != simfil::InvalidArrayIndex) {

@@ -48,6 +48,10 @@ public:
          * Payload: UTF-8 JSON bytes (not null-terminated).
          */
         RequestContext = 6,
+        /**
+         * Binary TileSearchResultLayer payload for server-side search-as-map streams.
+         */
+        TileSearchResultLayer = 7,
         EndOfStream = 128
     };
 
@@ -79,8 +83,10 @@ public:
      *   + Replaced generic tile attachments with one optional tile-level GLB attachment.
      * - Version 1.6:
      *   + Added SIMFIL object/array SchemaId columns to ModelPool payloads.
+     * - Version 1.7:
+     *   + Added TileSearchResultLayer Message.
      */
-    static constexpr Version CurrentProtocolVersion{1, 6, 0};
+    static constexpr Version CurrentProtocolVersion{1, 7, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -166,6 +172,9 @@ public:
 
         /** Serialize a tile layer and the required part of a StringPool. */
         void write(TileLayer::Ptr const& tileLayer);
+
+        /** Send a JSON status message through the binary stream. */
+        void sendStatus(std::string statusJson);
 
         /** Send an EndOfStream message. */
         void sendEndOfStream();
