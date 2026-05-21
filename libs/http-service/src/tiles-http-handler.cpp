@@ -1,5 +1,6 @@
 #include "http-service-impl.h"
 #include "tiles-request-json.h"
+#include "tiles-stream-encoding.h"
 
 #include "mapget/log.h"
 #include "mapget/model/featurelayer-search.h"
@@ -19,7 +20,6 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <set>
 #include <vector>
 
 #include "nlohmann/json.hpp"
@@ -31,9 +31,16 @@ namespace mapget
 namespace
 {
 
+/**
+ * Incremental gzip compressor used by the HTTP streaming endpoint.
+ *
+ * The HTTP path cannot use the one-shot gzip helper because tile frames are
+ * produced asynchronously and may need to be flushed in several response chunks.
+ */
 class GzipCompressor
 {
 public:
+    /** Initialize a zlib stream configured to emit gzip framing. */
     GzipCompressor()
     {
         strm_.zalloc = Z_NULL;
@@ -47,11 +54,13 @@ public:
         }
     }
 
+    /** Release the zlib stream state; callers must have already emitted any footer via finish(). */
     ~GzipCompressor() { deflateEnd(&strm_); }
 
     GzipCompressor(GzipCompressor const&) = delete;
     GzipCompressor(GzipCompressor&&) = delete;
 
+    /** Compress the next response bytes, preserving stream state across calls. */
     std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH)
     {
         std::string result;
@@ -79,39 +88,28 @@ public:
         return result;
     }
 
+    /** Finalize the gzip stream and return the gzip footer/trailing bytes. */
     std::string finish() { return compress(nullptr, 0, Z_FINISH); }
 
 private:
     z_stream strm_{};
 };
 
-[[nodiscard]] bool containsGzip(std::string_view acceptEncoding)
-{
-    return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;
-}
-
-std::vector<TileId> collectSearchTileIds(detail::ParsedLayerTilesRequest const& parsed)
-{
-    std::set<TileId> seen;
-    std::vector<TileId> result;
-    for (auto const& bucket : parsed.tileIdsByNextStage) {
-        for (auto const& tileId : bucket) {
-            if (seen.insert(tileId).second) {
-                result.push_back(tileId);
-            }
-        }
-    }
-    return result;
-}
-
 }  // namespace
 
+/**
+ * Per-request state for the HTTP `/tiles` streaming response.
+ *
+ * It bridges backend tile callbacks into one Drogon async response stream while
+ * preserving binary/JSONL encoding, optional gzip compression, and abort cleanup.
+ */
 struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesStreamState>
 {
     static constexpr auto binaryMimeType = "application/binary";
     static constexpr auto jsonlMimeType = "application/jsonl";
     static constexpr auto anyMimeType = "*/*";
 
+    /** Construct one streaming response state object bound to the Drogon event loop. */
     explicit TilesStreamState(Impl const& impl, trantor::EventLoop* loop) : impl_(impl), loop_(loop)
     {
         static std::atomic_uint64_t nextRequestId;
@@ -120,6 +118,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             [this](auto&& msg, auto&& /*msgType*/) { appendOutgoingUnlocked(msg); }, stringOffsets_);
     }
 
+    /** Attach Drogon's stream handle once the async response starts and trigger draining. */
     void attachStream(drogon::ResponseStreamPtr stream)
     {
         {
@@ -134,6 +133,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         scheduleDrain();
     }
 
+    /** Convert one parsed request JSON object into a backend tile or search request. */
     void parseRequestFromJson(nlohmann::json const& requestJson)
     {
         auto parsed = detail::parseLayerTilesRequestJson(requestJson);
@@ -142,7 +142,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
                 std::move(parsed.mapId),
                 std::move(parsed.layerId),
-                collectSearchTileIds(parsed),
+                detail::collectSearchTileIds(parsed),
                 std::move(*searchRequest),
                 std::move(parsed.priorityTileIds));
             searchRequests_.push_back(std::move(request));
@@ -169,6 +169,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         requests_.push_back(std::move(request));
     }
 
+    /** Interpret the Accept header and choose the stream payload format. */
     [[nodiscard]] bool setResponseTypeFromAccept(std::string_view acceptHeader, std::string& error)
     {
         responseType_ = std::string(acceptHeader);
@@ -190,8 +191,10 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         return false;
     }
 
+    /** Enable incremental gzip compression for all subsequently appended response bytes. */
     void enableGzip() { compressor_ = std::make_unique<GzipCompressor>(); }
 
+    /** Abort backend work and close the response stream after client disconnect/send failure. */
     void onAborted()
     {
         if (aborted_.exchange(true))
@@ -217,6 +220,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             stream->close();
     }
 
+    /** Serialize one backend tile/search/source layer into the pending HTTP response buffer. */
     void addResult(TileLayer::Ptr const& result)
     {
         {
@@ -236,6 +240,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         scheduleDrain();
     }
 
+    /** Serialize one search status update into the pending HTTP response buffer. */
     void addStatus(nlohmann::json const& status)
     {
         {
@@ -253,6 +258,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         scheduleDrain();
     }
 
+    /** Mark backend completion and emit binary end-of-stream once all requests are done. */
     void onRequestDone()
     {
         {
@@ -275,6 +281,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         scheduleDrain();
     }
 
+    /** Schedule one event-loop drain pass unless one is already queued. */
     void scheduleDrain()
     {
         if (aborted_ || responseEnded_)
@@ -290,6 +297,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         });
     }
 
+    /** Send pending response bytes on Drogon's event loop and close once completion is flushed. */
     void drainOnLoop()
     {
         drainScheduled_ = false;
@@ -315,6 +323,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                     pending_.erase(0, n);
                 } else {
                     if (allDone_ && compressor_ && !compressionFinished_) {
+                        // Completion must wait until zlib has emitted the gzip footer.
                         pending_.append(compressor_->finish());
                         compressionFinished_ = true;
                         continue;
@@ -351,6 +360,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         }
     }
 
+    /** Append payload bytes to the response buffer, compressing when gzip is enabled. */
     void appendOutgoingUnlocked(std::string_view bytes)
     {
         if (bytes.empty())
@@ -389,6 +399,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     std::atomic_bool responseEnded_{false};
 };
 
+/** Handle the HTTP `/tiles` endpoint and stream tile/search results until backend completion. */
 void HttpService::Impl::handleTilesRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
@@ -439,9 +450,17 @@ void HttpService::Impl::handleTilesRequest(
         return;
     }
 
-    if (j.contains("stringPoolOffsets")) {
-        for (auto& item : j["stringPoolOffsets"].items()) {
-            state->stringOffsets_[item.key()] = item.value().get<simfil::StringId>();
+    if (auto offsetsIt = j.find("stringPoolOffsets"); offsetsIt != j.end()) {
+        try {
+            state->stringOffsets_ = detail::parseStringPoolOffsetsJson(*offsetsIt);
+        }
+        catch (const std::exception& e) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+            resp->setBody(std::string("Invalid stringPoolOffsets: ") + e.what());
+            callback(resp);
+            return;
         }
     }
 
@@ -455,7 +474,7 @@ void HttpService::Impl::handleTilesRequest(
         return;
     }
 
-    const bool gzip = containsGzip(acceptEncoding);
+    const bool gzip = detail::containsGzip(acceptEncoding);
     if (gzip) {
         state->enableGzip();
     }

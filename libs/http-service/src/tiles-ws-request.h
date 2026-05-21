@@ -14,6 +14,7 @@
 namespace mapget::detail
 {
 
+/** Layer type used for canonical websocket request keys regardless of backend payload subtype. */
 inline constexpr LayerType REQUEST_TILE_LAYER_TYPE = LayerType::Features;
 
 /** Chunk metadata carried by large websocket request updates. */
@@ -57,8 +58,5 @@ enum class ClientRequestUpdateMode
 
 /** Extract the search request key attached to TileSearchResultLayer metadata. */
 [[nodiscard]] std::optional<std::string> searchRequestKey(TileLayer::Ptr const& layer);
-
-/** Collapse staged search buckets into one deduplicated tile-id list. */
-[[nodiscard]] std::vector<TileId> collectSearchTileIds(detail::ParsedLayerTilesRequest const& parsed);
 
 } // namespace mapget::detail

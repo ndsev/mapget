@@ -1,4 +1,4 @@
-#include "tiles-ws-outbox.h"
+#include "tiles-stream-encoding.h"
 
 #include <bitsery/adapter/stream.h>
 #include <bitsery/bitsery.h>
@@ -11,6 +11,7 @@
 namespace mapget::detail
 {
 
+/** Encode one TileLayerStream frame as protocol version, message type, byte size, then payload. */
 std::string encodeStreamMessage(TileLayerStream::MessageType type, std::string_view payload)
 {
     std::ostringstream headerStream;
@@ -24,11 +25,13 @@ std::string encodeStreamMessage(TileLayerStream::MessageType type, std::string_v
     return message;
 }
 
+/** Check whether a raw Accept-Encoding header advertises gzip support. */
 bool containsGzip(std::string_view acceptEncoding)
 {
     return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;
 }
 
+/** Compress one complete payload into gzip format for `/tiles/next` long-poll responses. */
 std::optional<std::string> gzipCompress(std::string_view input)
 {
     z_stream stream{};

@@ -35,8 +35,10 @@ std::shared_ptr<TilesWsSession> tilesWsCreateSession(
 /** Register one session in the status-data weak list. */
 void tilesWsRegisterForMetrics(const std::shared_ptr<TilesWsSession>& session);
 
-/** Register/unregister one session for `/tiles/next?clientId=...` lookups. */
+/** Register one session for `/tiles/next?clientId=...` lookups. */
 void tilesWsRegisterSession(const std::shared_ptr<TilesWsSession>& session);
+
+/** Remove one session from `/tiles/next?clientId=...` lookups. */
 void tilesWsUnregisterSession(int64_t clientId);
 
 /** Return the numeric client id assigned to a session. */
@@ -48,10 +50,12 @@ bool tilesWsApplyStringPoolOffsetsPatch(
     const nlohmann::json& offsetsJson,
     std::string& errorMessage);
 
-/** Allocate/apply a logical request update received from the websocket client. */
+/** Allocate the logical request id for an incoming websocket client message. */
 uint64_t tilesWsAllocateRequestId(
     const std::shared_ptr<TilesWsSession>& session,
     const nlohmann::json& requestJson);
+
+/** Apply a logical request update received from the websocket client. */
 void tilesWsUpdateFromClientRequestMessage(
     const std::shared_ptr<TilesWsSession>& session,
     const nlohmann::json& requestJson,
@@ -60,8 +64,10 @@ void tilesWsUpdateFromClientRequestMessage(
 /** Abort outstanding backend work for one websocket session. */
 void tilesWsCancel(const std::shared_ptr<TilesWsSession>& session, std::string message);
 
-/** Maintain websocket connection counters for metrics. */
+/** Increment websocket connection counters for metrics. */
 void tilesWsRecordConnectionOpened();
+
+/** Decrement websocket connection counters for metrics. */
 void tilesWsRecordConnectionClosed();
 
 /** Handle one HTTP long-poll request for the next queued tile frame. */

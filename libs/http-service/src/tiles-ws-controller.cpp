@@ -24,6 +24,7 @@ namespace mapget::detail
 namespace
 {
 
+/** Drogon adapter that forwards websocket lifecycle events to `TilesWsSession`. */
 class TilesWebSocketController final : public drogon::WebSocketController<TilesWebSocketController, false>
 {
 public:
@@ -134,6 +135,7 @@ private:
 
 }  // namespace
 
+/** Register the websocket controller plus HTTP fallback pull endpoint. */
 void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService& service)
 {
     app.registerController(std::make_shared<TilesWebSocketController>(service));
@@ -145,6 +147,7 @@ void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService
         {drogon::Get, drogon::Post});
 }
 
+/** Return process-wide websocket metrics for `/status-data`. */
 nlohmann::json tilesWebSocketMetricsSnapshot()
 {
     return tilesWebSocketMetricsSnapshotImpl();

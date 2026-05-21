@@ -21,6 +21,7 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
     "withFields",
 };
 
+/** Detect whether a layer request/envelope uses any search-as-map fields. */
 [[nodiscard]] bool hasAnySearchField(const nlohmann::json& requestJson)
 {
     return std::any_of(SearchFieldNames.begin(), SearchFieldNames.end(), [&requestJson](std::string_view field) {
@@ -28,11 +29,13 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
     });
 }
 
+/** Convert search scope into the stable text token used by request-key hashing. */
 [[nodiscard]] std::string searchScopeToString(FeatureLayerSearchScope scope)
 {
     return scope == FeatureLayerSearchScope::Attribute ? "attribute" : "feature";
 }
 
+/** Build a stable in-session key separating concurrent searches on the same source layer. */
 [[nodiscard]] std::string makeSearchRequestKey(FeatureLayerSearchRequest const& search)
 {
     std::ostringstream fingerprint;
@@ -50,6 +53,7 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
     return search.searchId_ + ":" + std::to_string(std::hash<std::string>{}(fingerprint.str()));
 }
 
+/** Parse feature-vs-attribute search scope, defaulting to feature scope. */
 [[nodiscard]] FeatureLayerSearchScope parseSearchScope(const nlohmann::json& requestJson)
 {
     auto scope = requestJson.value("searchScope", std::string("feature"));
@@ -62,6 +66,7 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
     throw std::runtime_error("searchScope must be either 'feature' or 'attribute'");
 }
 
+/** Parse optional search-as-map fields from the shared layer request JSON shape. */
 [[nodiscard]] std::optional<FeatureLayerSearchRequest> parseSearchRequestJson(const nlohmann::json& requestJson)
 {
     if (!hasAnySearchField(requestJson)) {
@@ -105,6 +110,7 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
 
 }  // namespace
 
+/** Copy envelope-level search parameters into a layer request when omitted locally. */
 void inheritSearchFields(nlohmann::json& requestJson, const nlohmann::json& envelopeJson)
 {
     for (auto const field : SearchFieldNames) {
@@ -114,6 +120,7 @@ void inheritSearchFields(nlohmann::json& requestJson, const nlohmann::json& enve
     }
 }
 
+/** Parse the common HTTP/WS layer-tile request shape into the service request model. */
 ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& requestJson)
 {
     ParsedLayerTilesRequest result;
@@ -136,6 +143,7 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
     if (auto stagedIt = requestJson.find("tileIdsByNextStage");
         stagedIt != requestJson.end())
     {
+        // Staged requests use bucket index as the first missing stage for each tile.
         result.usesStageBuckets = true;
         if (!stagedIt->is_array()) {
             throw std::runtime_error("tileIdsByNextStage must be an array");
@@ -169,6 +177,36 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
     return result;
 }
 
+/** Parse client-known string-pool offsets used to suppress already-seen string data. */
+TileLayerStream::StringPoolOffsetMap parseStringPoolOffsetsJson(const nlohmann::json& offsetsJson)
+{
+    if (!offsetsJson.is_object()) {
+        throw std::runtime_error("stringPoolOffsets must be an object");
+    }
+
+    TileLayerStream::StringPoolOffsetMap result;
+    for (auto const& item : offsetsJson.items()) {
+        result[item.key()] = item.value().get<simfil::StringId>();
+    }
+    return result;
+}
+
+/** Deduplicate all tile ids from staged/unstaged buckets while preserving first-seen order. */
+std::vector<TileId> collectSearchTileIds(const ParsedLayerTilesRequest& request)
+{
+    std::set<TileId> seen;
+    std::vector<TileId> result;
+    for (auto const& bucket : request.tileIdsByNextStage) {
+        for (auto const& tileId : bucket) {
+            if (seen.insert(tileId).second) {
+                result.push_back(tileId);
+            }
+        }
+    }
+    return result;
+}
+
+/** Expand parsed tile ids into concrete tile-stage keys in the order they should be fetched. */
 std::vector<MapTileKey> expandLayerTilesRequestKeys(
     const ParsedLayerTilesRequest& request,
     LayerType layerType,

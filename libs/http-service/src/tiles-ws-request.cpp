@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <limits>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -10,6 +9,7 @@
 namespace mapget::detail
 {
 
+/** Read a numeric JSON field as non-negative int64, clamping unsigned overflow. */
 int64_t parseNonNegativeInt64(const nlohmann::json& j, std::string_view key)
 {
     const auto keyString = std::string(key);
@@ -29,6 +29,7 @@ int64_t parseNonNegativeInt64(const nlohmann::json& j, std::string_view key)
     return 0;
 }
 
+/** Parse optional WS request chunk metadata and validate chunk sequencing fields. */
 ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j)
 {
     auto chunkIt = j.find("chunk");
@@ -60,6 +61,7 @@ ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j)
     };
 }
 
+/** Build the canonical key used for matching client tile requests to backend frames. */
 MapTileKey makeCanonicalRequestedTileKey(
     std::string_view mapId,
     std::string_view layerId,
@@ -74,12 +76,14 @@ MapTileKey makeCanonicalRequestedTileKey(
         stage);
 }
 
+/** Normalize an existing backend tile key into the request-key namespace. */
 MapTileKey makeCanonicalRequestedTileKey(MapTileKey key)
 {
     key.layer_ = REQUEST_TILE_LAYER_TYPE;
     return key;
 }
 
+/** Decorate a canonical tile key so concurrent search results do not collide. */
 MapTileKey makeSearchRequestedTileKey(MapTileKey key, std::string_view searchRequestKey)
 {
     key = makeCanonicalRequestedTileKey(std::move(key));
@@ -88,6 +92,7 @@ MapTileKey makeSearchRequestedTileKey(MapTileKey key, std::string_view searchReq
     return key;
 }
 
+/** Build either a normal tile key or the search-specific key for the same source tile. */
 MapTileKey makeRequestedTileKey(
     MapTileKey key,
     std::optional<std::string_view> searchRequestKey)
@@ -98,6 +103,7 @@ MapTileKey makeRequestedTileKey(
     return makeCanonicalRequestedTileKey(std::move(key));
 }
 
+/** Extract the search request key carried by backend-produced search-result layers. */
 std::optional<std::string> searchRequestKey(TileLayer::Ptr const& layer)
 {
     if (!std::dynamic_pointer_cast<TileSearchResultLayer>(layer)) {
@@ -109,20 +115,6 @@ std::optional<std::string> searchRequestKey(TileLayer::Ptr const& layer)
         return std::nullopt;
     }
     return it->get<std::string>();
-}
-
-std::vector<TileId> collectSearchTileIds(detail::ParsedLayerTilesRequest const& parsed)
-{
-    std::set<TileId> seen;
-    std::vector<TileId> result;
-    for (auto const& bucket : parsed.tileIdsByNextStage) {
-        for (auto const& tileId : bucket) {
-            if (seen.insert(tileId).second) {
-                result.push_back(tileId);
-            }
-        }
-    }
-    return result;
 }
 
 } // namespace mapget::detail

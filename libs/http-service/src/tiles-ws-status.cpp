@@ -3,6 +3,7 @@
 namespace mapget::detail
 {
 
+/** Convert backend request status values into stable status-frame strings. */
 std::string_view requestStatusToString(RequestStatus status)
 {
     switch (status) {
@@ -20,6 +21,7 @@ std::string_view requestStatusToString(RequestStatus status)
     return "Unknown";
 }
 
+/** Convert missing-datasource diagnostics into compact JSON values. */
 std::string_view noDataSourceReasonToString(NoDataSourceReason reason)
 {
     switch (reason) {
@@ -39,6 +41,7 @@ std::string_view noDataSourceReasonToString(NoDataSourceReason reason)
     return "";
 }
 
+/** Convert tile load-state updates into stable load-state-frame strings. */
 std::string_view loadStateToString(TileLayer::LoadState state)
 {
     switch (state) {
