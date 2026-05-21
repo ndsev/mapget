@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -108,6 +109,59 @@ bool isArraySchema(nlohmann::json const& schema)
     return schema.contains("items") || hasType(schema, "array");
 }
 
+/** Return whether this schema branch should be treated as a scalar value schema. */
+bool isValueSchema(nlohmann::json const& schema)
+{
+    return schema.contains("const")
+        || schema.contains("enum")
+        || hasType(schema, "null")
+        || hasType(schema, "boolean")
+        || hasType(schema, "integer")
+        || hasType(schema, "number")
+        || hasType(schema, "string");
+}
+
+/** Collect string-valued const/enum entries from a JSON Schema branch. */
+std::vector<std::string> stringEnumSymbols(nlohmann::json const& schema)
+{
+    std::vector<std::string> symbols;
+    if (auto constIt = schema.find("const"); constIt != schema.end() && constIt->is_string()) {
+        symbols.push_back(constIt->get<std::string>());
+    }
+
+    if (auto enumIt = schema.find("enum"); enumIt != schema.end() && enumIt->is_array()) {
+        for (auto const& value : *enumIt) {
+            if (value.is_string()) {
+                symbols.push_back(value.get<std::string>());
+            }
+        }
+    }
+
+    std::ranges::sort(symbols);
+    auto duplicates = std::ranges::unique(symbols);
+    symbols.erase(duplicates.begin(), duplicates.end());
+    return symbols;
+}
+
+/** Stable suffix for memoizing the same JSON branch under different schema kinds. */
+std::string_view kindMemoSuffix(std::optional<Kind> kind)
+{
+    if (!kind) {
+        return "n";
+    }
+
+    switch (*kind) {
+    case Kind::Object:
+        return "o";
+    case Kind::Array:
+        return "a";
+    case Kind::Value:
+        return "v";
+    }
+
+    return "n";
+}
+
 /** Return whether a oneOf object/array wrapper represents a mapget multimap view. */
 bool isMapgetMultimap(nlohmann::json const& schema)
 {
@@ -193,16 +247,18 @@ std::string attributeLayerMapKey(std::string_view featureType)
 
 struct SchemaRegistry::Impl
 {
-    /** Logical object/array schema independent of any StringPool numbering. */
+    /** Logical object/array/value schema independent of any StringPool numbering. */
     struct LogicalSchema
     {
         simfil::SchemaId id_ = simfil::NoSchemaId;
         Kind kind_ = Kind::Object;
         Entry entry_;
         std::vector<std::string> directFields_;
+        std::vector<std::string> directEnumSymbols_;
         std::map<std::string, std::vector<simfil::SchemaId>, std::less<>> childSchemas_;
         std::vector<simfil::SchemaId> elementSchemas_;
         std::vector<std::string> flatFields_;
+        std::vector<std::string> flatEnumSymbols_;
         bool finalized_ = false;
     };
 
@@ -261,6 +317,22 @@ struct SchemaRegistry::Impl
         fields.emplace_back(fieldName);
     }
 
+    void addEnumSymbol(simfil::SchemaId parent, std::string_view symbolName)
+    {
+        if (!valid(parent)) {
+            return;
+        }
+        auto& symbols = schemas_[parent].directEnumSymbols_;
+        symbols.emplace_back(symbolName);
+    }
+
+    void addEnumSymbols(simfil::SchemaId parent, std::span<const std::string> symbolNames)
+    {
+        for (auto const& symbolName : symbolNames) {
+            addEnumSymbol(parent, symbolName);
+        }
+    }
+
     void addChild(simfil::SchemaId parent, std::string_view fieldName, simfil::SchemaId child)
     {
         if (!valid(parent) || !valid(child)) {
@@ -297,12 +369,21 @@ struct SchemaRegistry::Impl
         }
 
         std::vector<std::string> fields;
-        std::vector<simfil::SchemaId> visited;
-        collectFields(id, visited, fields);
+        std::vector<simfil::SchemaId> visitedFields;
+        collectFields(id, visitedFields, fields);
         std::ranges::sort(fields);
         auto duplicates = std::ranges::unique(fields);
         fields.erase(duplicates.begin(), duplicates.end());
         schemas_[id].flatFields_ = std::move(fields);
+
+        std::vector<std::string> symbols;
+        std::vector<simfil::SchemaId> visitedEnumSymbols;
+        collectEnumSymbols(id, visitedEnumSymbols, symbols);
+        std::ranges::sort(symbols);
+        auto symbolDuplicates = std::ranges::unique(symbols);
+        symbols.erase(symbolDuplicates.begin(), symbolDuplicates.end());
+        schemas_[id].flatEnumSymbols_ = std::move(symbols);
+
         schemas_[id].finalized_ = true;
     }
 
@@ -328,6 +409,28 @@ struct SchemaRegistry::Impl
         }
     }
 
+    void collectEnumSymbols(
+        simfil::SchemaId id,
+        std::vector<simfil::SchemaId>& visited,
+        std::vector<std::string>& symbols) const
+    {
+        if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
+            return;
+        }
+        visited.push_back(id);
+
+        auto const& schema = schemas_[id];
+        symbols.insert(symbols.end(), schema.directEnumSymbols_.begin(), schema.directEnumSymbols_.end());
+        for (auto const& [_, children] : schema.childSchemas_) {
+            for (auto child : children) {
+                collectEnumSymbols(child, visited, symbols);
+            }
+        }
+        for (auto child : schema.elementSchemas_) {
+            collectEnumSymbols(child, visited, symbols);
+        }
+    }
+
     [[nodiscard]] bool canHaveField(simfil::SchemaId id, std::string_view fieldName)
     {
         if (!valid(id)) {
@@ -336,6 +439,16 @@ struct SchemaRegistry::Impl
         finalize(id);
         auto const& fields = schemas_[id].flatFields_;
         return std::ranges::binary_search(fields, fieldName);
+    }
+
+    [[nodiscard]] bool canHaveEnumSymbol(simfil::SchemaId id, std::string_view symbolName)
+    {
+        if (!valid(id)) {
+            return false;
+        }
+        finalize(id);
+        auto const& symbols = schemas_[id].flatEnumSymbols_;
+        return std::ranges::binary_search(symbols, symbolName);
     }
 
     [[nodiscard]] simfil::SchemaId childSchema(
@@ -433,7 +546,7 @@ private:
         }
 
         auto const key = annotatedKey(schema, pointer, context);
-        auto const memoKey = pointer + "|" + (preferredKind ? (*preferredKind == Kind::Object ? "o" : "a") : "n");
+        auto const memoKey = pointer + "|" + std::string(kindMemoSuffix(preferredKind));
         if (auto memoIt = memo_.find(memoKey); memoIt != memo_.end()) {
             registry_.registerKey(key, memoIt->second);
             return memoIt->second;
@@ -447,6 +560,9 @@ private:
         }
         if (isArraySchema(schema) && (!preferredKind || *preferredKind == Kind::Array)) {
             return buildArray(schema, std::move(pointer), std::move(context), std::move(key), std::move(metaType), memoKey);
+        }
+        if (isValueSchema(schema) && (!preferredKind || *preferredKind == Kind::Value)) {
+            return buildValue(schema, std::move(pointer), std::move(key), std::move(metaType), memoKey);
         }
         return simfil::NoSchemaId;
     }
@@ -484,6 +600,10 @@ private:
             return selected;
         }
         if (auto selected = choose(Kind::Array); selected != simfil::NoSchemaId) {
+            registerCombinedAliases(schema, pointer, context, selected);
+            return selected;
+        }
+        if (auto selected = choose(Kind::Value); selected != simfil::NoSchemaId) {
             registerCombinedAliases(schema, pointer, context, selected);
             return selected;
         }
@@ -580,6 +700,25 @@ private:
         return id;
     }
 
+    simfil::SchemaId buildValue(
+        nlohmann::json const& schema,
+        std::string pointer,
+        std::string key,
+        std::string metaType,
+        std::string const& memoKey)
+    {
+        auto id = registry_.allocate(
+            Kind::Value,
+            std::move(key),
+            std::move(pointer),
+            std::move(metaType));
+        memo_[memoKey] = id;
+
+        auto symbols = stringEnumSymbols(schema);
+        registry_.addEnumSymbols(id, symbols);
+        return id;
+    }
+
     SchemaRegistry::Impl& registry_;
     nlohmann::json const& root_;
     std::map<std::string, simfil::SchemaId> memo_;
@@ -597,7 +736,7 @@ public:
     {
     }
 
-    /** Return the object/array kind for the stable mapget SchemaId. */
+    /** Return the object/array/value kind for the stable mapget SchemaId. */
     auto kind() const -> Kind override
     {
         return registry_ ? registry_->kind(id_) : Kind::Object;
@@ -613,8 +752,24 @@ public:
         return !fieldName || registry_->canHaveField(id_, *fieldName);
     }
 
+    /** Resolve enum-like string symbols through the datasource-owned pool and match by name. */
+    auto canHaveEnumSymbol(simfil::StringId symbolId) const -> bool override
+    {
+        if (!registry_ || !strings_) {
+            return false;
+        }
+        auto symbolName = strings_->resolve(symbolId);
+        return symbolName && registry_->canHaveEnumSymbol(id_, *symbolName);
+    }
+
     /** This adapter intentionally avoids materializing StringIds for schema-only field names. */
     auto nestedFields() const& -> std::span<const simfil::StringId> override
+    {
+        return {};
+    }
+
+    /** This adapter intentionally avoids materializing StringIds for schema-only enum symbols. */
+    auto nestedEnumSymbols() const& -> std::span<const simfil::StringId> override
     {
         return {};
     }
@@ -678,6 +833,11 @@ simfil::Schema::Kind SchemaRegistry::kind(simfil::SchemaId schemaId) const
 bool SchemaRegistry::canHaveField(simfil::SchemaId schemaId, std::string_view fieldName) const
 {
     return impl_->canHaveField(schemaId, fieldName);
+}
+
+bool SchemaRegistry::canHaveEnumSymbol(simfil::SchemaId schemaId, std::string_view symbolName) const
+{
+    return impl_->canHaveEnumSymbol(schemaId, symbolName);
 }
 
 simfil::SchemaId SchemaRegistry::featureSchema(std::string_view featureType) const

@@ -55,6 +55,9 @@ public:
     /** Return true if the schema can contain the field directly or through descendants. */
     [[nodiscard]] bool canHaveField(simfil::SchemaId schemaId, std::string_view fieldName) const;
 
+    /** Return true if the schema can contain the enum-like string symbol through descendants. */
+    [[nodiscard]] bool canHaveEnumSymbol(simfil::SchemaId schemaId, std::string_view symbolName) const;
+
     /** Resolve the Feature object schema for a concrete mapget feature type. */
     [[nodiscard]] simfil::SchemaId featureSchema(std::string_view featureType) const;
 

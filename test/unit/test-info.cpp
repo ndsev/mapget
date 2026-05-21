@@ -2,6 +2,7 @@
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
+#include "mapget/model/simfilutil.h"
 #include "mapget/model/stream.h"
 #include "mapget/log.h"
 
@@ -88,7 +89,7 @@ nlohmann::json schemaAnnotatedLayerInfoJson()
                         "attributeTypeCode": "speed"
                     },
                     "properties": {
-                        "unit": {"type": "string"},
+                        "unit": {"type": "string", "enum": ["km/h", "mph"]},
                         "value": {"type": "number"}
                     }
                 },
@@ -258,6 +259,35 @@ TEST_CASE("LayerInfo builds SchemaRegistry from x-mapget annotations", "[DataSou
     REQUIRE(registry->canHaveField(carrierSchema->id_, "properties"));
     REQUIRE(registry->canHaveField(carrierSchema->id_, "value"));
     REQUIRE_FALSE(registry->canHaveField(carrierSchema->id_, "notDeclaredBySchema"));
+
+    auto const typeIdId = registry->childSchema(
+        carrierSchema->id_,
+        "typeId",
+        simfil::Schema::Kind::Value);
+    auto const unitId = registry->childSchema(
+        speedId,
+        "unit",
+        simfil::Schema::Kind::Value);
+    REQUIRE(typeIdId != simfil::NoSchemaId);
+    REQUIRE(unitId != simfil::NoSchemaId);
+    REQUIRE(registry->kind(typeIdId) == simfil::Schema::Kind::Value);
+    REQUIRE(registry->kind(unitId) == simfil::Schema::Kind::Value);
+    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "Carrier"));
+    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "km/h"));
+    REQUIRE(registry->canHaveEnumSymbol(unitId, "mph"));
+    REQUIRE_FALSE(registry->canHaveEnumSymbol(carrierSchema->id_, "notAnEnum"));
+
+    auto strings = std::make_shared<StringPool>("SchemaRegistryEnums");
+    auto carrierSymbol = strings->emplace("Carrier").value();
+    auto speedUnitSymbol = strings->emplace("km/h").value();
+    auto missingSymbol = strings->emplace("missing").value();
+    simfil::Environment env(strings);
+    installSchemaRegistry(env, registry, strings);
+    auto schema = env.querySchema(carrierSchema->id_);
+    REQUIRE(schema != nullptr);
+    REQUIRE(schema->canHaveEnumSymbol(carrierSymbol));
+    REQUIRE(schema->canHaveEnumSymbol(speedUnitSymbol));
+    REQUIRE_FALSE(schema->canHaveEnumSymbol(missingSymbol));
 }
 
 TEST_CASE("SchemaRegistry does not mutate datasource StringPool", "[DataSourceInfo]")
