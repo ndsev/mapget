@@ -10,7 +10,7 @@ Every `TileFeatureLayer` embeds a `simfil::ModelPool`, so you can execute expres
 - `TileFeatureLayer::complete(query, caretPosition, completionOptions)` – produces auto-completion candidates for interactive editors.
 - `TileFeatureLayer::QueryResult::diagnostics` – exposes parser and runtime warnings that can be surfaced in UIs.
 
-Erdblick’s feature search dialog and the worker processes behind `/search` rely on these APIs: each worker compiles a simfil expression once per tile, runs it via `evaluate`, and then reports values plus diagnostics back to the UI.
+Erdblick’s feature search dialog and mapget’s `/tiles` search-as-map requests rely on these APIs: each worker compiles a simfil expression once per tile, runs it via `evaluate`, and then reports values plus diagnostics back to the UI.
 
 ## Geometry-aware operators
 

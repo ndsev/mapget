@@ -68,6 +68,145 @@ If `Accept-Encoding: gzip` is set, the server compresses responses where possibl
 
 To cancel an in-flight HTTP stream, close the HTTP connection.
 
+## `/tiles` – server-side search-as-map
+
+Server-side search is requested through the same `/tiles` endpoint as normal tile streaming. A request becomes a search request when it contains `searchId` and `searchQuery` (either on the top-level envelope or on an individual request object). The server loads the requested source tiles through the normal scheduler/cache path, evaluates the SIMFIL predicate on the backend, and streams `TileSearchResultLayer` chunks back to the client.
+
+Search requests are supported by both transports:
+
+- `POST /tiles` streams search status objects and search-result layers in the HTTP response.
+- WebSocket `GET /tiles` accepts the same request JSON; result layers are pulled as binary `TileSearchResultLayer` frames via `/tiles/next`.
+
+Search requests must use `tileIds`, not `tileIdsByNextStage`. The server always loads all advertised stages for every searched tile before evaluating the SIMFIL predicate, so client-side "next missing stage" buckets are not meaningful for search.
+
+Search fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `searchId` | string | yes | Client-visible identity for the logical search. Reusing the same ID updates the ongoing search in the client session. |
+| `searchQuery` | string | yes | SIMFIL predicate evaluated on each candidate context. A truthy result adds the feature to the search-result layer. |
+| `searchScope` | string | no | `"feature"` (default) evaluates once per feature. `"attribute"` evaluates once per attribute validity context. |
+| `withFields` | array of strings | no | SIMFIL expressions evaluated for every match. Their values are stored in `SearchResult.values` in the same order. |
+| `refresh` | integer | no | Optional client refresh counter. It is echoed in search status/result metadata so clients can order updates of the same `searchId`. |
+
+Search fields may be placed on the request envelope to apply to every request entry:
+
+```json
+{
+  "searchId": "road-label-search",
+  "searchQuery": "typeId == 'Road'",
+  "searchScope": "feature",
+  "withFields": ["name", "typeId", "speedLimitKmh"],
+  "requests": [
+    {
+      "mapId": "Tropico",
+      "layerId": "WayLayer",
+      "tileIds": [1234, 5678]
+    }
+  ]
+}
+```
+
+Or they may be attached to a single request object:
+
+```json
+{
+  "requests": [
+    {
+      "mapId": "Tropico",
+      "layerId": "WayLayer",
+      "tileIds": [1234],
+      "searchId": "speed-attributes",
+      "searchQuery": "$name == 'speedLimit' && limit > 50",
+      "searchScope": "attribute",
+      "withFields": ["limit", "$feature.typeId", "$layer", "$validityIndex", "$validityCount"]
+    }
+  ]
+}
+```
+
+For `searchScope: "feature"`, the SIMFIL context is the feature itself. For `searchScope: "attribute"`, the context is an attribute object with a few overlay fields:
+
+| Field | Meaning |
+|-------|---------|
+| `$name` | Attribute name. |
+| `$feature` | Owning feature object. |
+| `$layer` | Attribute-layer name. |
+| `$validityIndex` | Zero-based validity index being evaluated. |
+| `$validityCount` | Number of validity contexts for the matched attribute. |
+
+`withFields` expressions run in the same context as `searchQuery`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer.
+
+### Search result JSONL shape
+
+In `Accept: application/jsonl` mode, search result chunks are emitted as `SearchResultCollection` objects. Search progress status objects may appear between result chunks.
+
+```json
+{
+  "type": "SearchResultCollection",
+  "mapgetTileId": 1234,
+  "mapId": "Tropico",
+  "mapgetLayerId": "WayLayer",
+  "resultFields": ["limit", "$feature.typeId", "$layer"],
+  "info": {
+    "searchId": "speed-attributes",
+    "searchScope": "attribute",
+    "resultCount": 1,
+    "sourceNodeId": "WayDataSource",
+    "sourceMapId": "Tropico",
+    "sourceLayerId": "WayLayer",
+    "sourceTileId": 1234,
+    "searchRequestKey": "speed-attributes:123456789"
+  },
+  "results": [
+    {
+      "type": "SearchResult",
+      "featureId": "Road.42",
+      "geometry": {"type": "GeometryCollection", "geometries": []},
+      "values": [80, "Road", "details"],
+      "attributeIndex": 0,
+      "match": {
+        "attributeIndex": 0,
+        "validityIndex": 0,
+        "validityCount": 1
+      }
+    }
+  ]
+}
+```
+
+Important result fields:
+
+| Field | Description |
+|-------|-------------|
+| `resultFields` | Copy of the requested `withFields` expressions. Indices align with every result's `values` array. |
+| `results[].featureId` | Dot-separated feature ID string for the matched source feature. |
+| `results[].geometry` | Copied primary feature geometry used for map styling/highlighting. |
+| `results[].values` | Evaluated `withFields` values in order. |
+| `results[].match` | Present for attribute-scope matches and identifies the matched attribute/validity context. |
+| `info.sourceStageMask` | Present when staged source payloads were assembled before search evaluation. |
+| `info.traces` | SIMFIL `trace()` aggregates collected while evaluating the search and field expressions. |
+
+### Search status objects
+
+Search status frames/JSONL lines have `type: "mapget.search.status"` and describe backend progress independently from the regular `/tiles` request-status frame:
+
+```json
+{
+  "type": "mapget.search.status",
+  "searchId": "speed-attributes",
+  "refresh": 1,
+  "state": "TileSearched",
+  "tilesQueued": 8,
+  "tilesLoaded": 4,
+  "tilesSearched": 3,
+  "matches": 12,
+  "chunksEmitted": 3
+}
+```
+
+Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`, `Aborted` and `Failed`. Failed statuses also include an `error` string.
+
 ## `/tiles` – interactive control channel (WebSocket)
 
 `GET /tiles` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/tiles/next`.
@@ -77,8 +216,10 @@ To cancel an in-flight HTTP stream, close the HTTP connection.
   - `stringPoolOffsets` is optional; the server remembers the latest offsets per WebSocket connection. Clients may re-send it to reset/resync offsets.
 - **Server → Client:** sends *binary* WebSocket messages carrying VTLV control frames.
   - `RequestContext` frames contain a UTF-8 JSON payload with `requestId` and `clientId`. The `clientId` is then used for `/tiles/next`.
-  - `Status` frames contain UTF-8 JSON describing per-request `RequestStatus` transitions and a human-readable message. The final status frame has `"allDone": true`.
+  - `Status` frames contain UTF-8 JSON describing per-request `RequestStatus` transitions, search progress updates, and human-readable messages. The final regular tile status frame has `"allDone": true`.
   - `LoadStateChange` exists in the protocol but is currently not emitted by the HTTP service.
+
+For search requests, `/tiles/next` returns normal stream frames plus `TileSearchResultLayer` frames. Clients should decode the binary message type and handle search-result layers separately from source `TileFeatureLayer` / `TileSourceDataLayer` frames.
 
 Each entry in a status frame's `requests` array contains `index`, `mapId`, `layerId`, numeric `status`, and `statusText`. For `NoDataSource` statuses, servers may also include `noDataSourceReason`:
 

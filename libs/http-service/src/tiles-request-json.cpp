@@ -143,6 +143,9 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
     if (auto stagedIt = requestJson.find("tileIdsByNextStage");
         stagedIt != requestJson.end())
     {
+        if (result.searchRequest) {
+            throw std::runtime_error("search requests must use tileIds; tileIdsByNextStage is not supported");
+        }
         // Staged requests use bucket index as the first missing stage for each tile.
         result.usesStageBuckets = true;
         if (!stagedIt->is_array()) {

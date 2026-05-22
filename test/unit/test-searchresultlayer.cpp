@@ -330,4 +330,13 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     REQUIRE(parsed.searchRequest->scope_ == FeatureLayerSearchScope::Attribute);
     REQUIRE(parsed.searchRequest->withFields_ == std::vector<std::string>{"$feature.typeId", "$name"});
     REQUIRE_FALSE(parsed.searchRequest->requestKey_.empty());
+
+    request.erase("tileIds");
+    request["tileIdsByNextStage"] = nlohmann::json::array({nlohmann::json::array({1, 2})});
+    try {
+        (void)detail::parseLayerTilesRequestJson(request);
+        FAIL("search requests must reject tileIdsByNextStage");
+    } catch (const std::runtime_error& e) {
+        REQUIRE(std::string(e.what()) == "search requests must use tileIds; tileIdsByNextStage is not supported");
+    }
 }
