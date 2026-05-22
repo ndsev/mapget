@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,6 +55,18 @@ public:
 
     /** Return true if the schema can contain the field directly or through descendants. */
     [[nodiscard]] bool canHaveField(simfil::SchemaId schemaId, std::string_view fieldName) const;
+
+    /** Return true if the schema can contain the enum-like string symbol through descendants. */
+    [[nodiscard]] bool canHaveEnumSymbol(simfil::SchemaId schemaId, std::string_view symbolName) const;
+
+    /** Return field names directly declared by this schema node. */
+    [[nodiscard]] std::span<const std::string> directFields(simfil::SchemaId schemaId) const;
+
+    /** Return field names reachable from this schema node. */
+    [[nodiscard]] std::span<const std::string> nestedFields(simfil::SchemaId schemaId) const;
+
+    /** Return enum-like string symbols reachable from this schema node. */
+    [[nodiscard]] std::span<const std::string> nestedEnumSymbols(simfil::SchemaId schemaId) const;
 
     /** Resolve the Feature object schema for a concrete mapget feature type. */
     [[nodiscard]] simfil::SchemaId featureSchema(std::string_view featureType) const;

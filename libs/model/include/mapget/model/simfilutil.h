@@ -18,6 +18,12 @@ void installSchemaRegistry(
     std::shared_ptr<SchemaRegistry const> registry,
     std::shared_ptr<simfil::StringPool const> strings);
 
+/** Attach a completion-only SchemaRegistry callback which materializes schema strings locally. */
+void installCompletionSchemaRegistry(
+    simfil::Environment& env,
+    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<simfil::StringPool> strings);
+
 template <class... Args>
 std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
 {

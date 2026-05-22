@@ -1,7 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
+#include "mapget/model/simfilutil.h"
 #include "mapget/model/stream.h"
 #include "mapget/log.h"
 
@@ -88,7 +91,7 @@ nlohmann::json schemaAnnotatedLayerInfoJson()
                         "attributeTypeCode": "speed"
                     },
                     "properties": {
-                        "unit": {"type": "string"},
+                        "unit": {"type": "string", "enum": ["km/h", "mph"]},
                         "value": {"type": "number"}
                     }
                 },
@@ -101,6 +104,16 @@ nlohmann::json schemaAnnotatedLayerInfoJson()
             }
         }
     })"_json;
+}
+
+bool hasCompletion(
+    std::vector<simfil::CompletionCandidate> const& completions,
+    std::string_view text,
+    simfil::CompletionCandidate::Type type)
+{
+    return std::ranges::any_of(completions, [&](auto const& candidate) {
+        return candidate.text == text && candidate.type == type;
+    });
 }
 
 } // namespace
@@ -258,6 +271,35 @@ TEST_CASE("LayerInfo builds SchemaRegistry from x-mapget annotations", "[DataSou
     REQUIRE(registry->canHaveField(carrierSchema->id_, "properties"));
     REQUIRE(registry->canHaveField(carrierSchema->id_, "value"));
     REQUIRE_FALSE(registry->canHaveField(carrierSchema->id_, "notDeclaredBySchema"));
+
+    auto const typeIdId = registry->childSchema(
+        carrierSchema->id_,
+        "typeId",
+        simfil::Schema::Kind::Value);
+    auto const unitId = registry->childSchema(
+        speedId,
+        "unit",
+        simfil::Schema::Kind::Value);
+    REQUIRE(typeIdId != simfil::NoSchemaId);
+    REQUIRE(unitId != simfil::NoSchemaId);
+    REQUIRE(registry->kind(typeIdId) == simfil::Schema::Kind::Value);
+    REQUIRE(registry->kind(unitId) == simfil::Schema::Kind::Value);
+    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "Carrier"));
+    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "km/h"));
+    REQUIRE(registry->canHaveEnumSymbol(unitId, "mph"));
+    REQUIRE_FALSE(registry->canHaveEnumSymbol(carrierSchema->id_, "notAnEnum"));
+
+    auto strings = std::make_shared<StringPool>("SchemaRegistryEnums");
+    auto carrierSymbol = strings->emplace("Carrier").value();
+    auto speedUnitSymbol = strings->emplace("km/h").value();
+    auto missingSymbol = strings->emplace("missing").value();
+    simfil::Environment env(strings);
+    installSchemaRegistry(env, registry, strings);
+    auto schema = env.querySchema(carrierSchema->id_);
+    REQUIRE(schema != nullptr);
+    REQUIRE(schema->canHaveEnumSymbol(carrierSymbol));
+    REQUIRE(schema->canHaveEnumSymbol(speedUnitSymbol));
+    REQUIRE_FALSE(schema->canHaveEnumSymbol(missingSymbol));
 }
 
 TEST_CASE("SchemaRegistry does not mutate datasource StringPool", "[DataSourceInfo]")
@@ -281,6 +323,40 @@ TEST_CASE("SchemaRegistry does not mutate datasource StringPool", "[DataSourceIn
     REQUIRE(tile->schemaRegistry());
     REQUIRE(strings->highest() == highestBefore);
     REQUIRE(strings->size() == sizeBefore);
+}
+
+TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mutating datasource strings", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto strings = std::make_shared<StringPool>("SchemaCompletionNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SchemaCompletionNode",
+        "SchemaCompletionMap",
+        layerInfo,
+        strings);
+
+    auto feature = tile->newFeature("Carrier", {{"carrierId", 7}});
+    auto layer = feature->attributeLayers()->newLayer("limits");
+    auto speed = layer->newAttribute("speed");
+
+    REQUIRE(strings->get("unit") == simfil::StringPool::Empty);
+    REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
+
+    simfil::CompletionOptions opts;
+    opts.showWildcardHints = false;
+
+    simfil::ModelNode::Ptr speedNode = speed;
+    auto fieldCompletions = tile->complete("u", 1, *speedNode, opts);
+    REQUIRE(fieldCompletions);
+    REQUIRE(hasCompletion(*fieldCompletions, "unit", simfil::CompletionCandidate::Type::FIELD));
+
+    auto enumCompletions = tile->complete("k", 1, *speedNode, opts);
+    REQUIRE(enumCompletions);
+    REQUIRE(hasCompletion(*enumCompletions, "\"km/h\"", simfil::CompletionCandidate::Type::CONSTANT));
+
+    REQUIRE(strings->get("unit") == simfil::StringPool::Empty);
+    REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
 }
 
 TEST_CASE("TileFeatureLayer exposes SchemaIds on feature-model nodes", "[DataSourceInfo]")

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -108,6 +109,59 @@ bool isArraySchema(nlohmann::json const& schema)
     return schema.contains("items") || hasType(schema, "array");
 }
 
+/** Return whether this schema branch should be treated as a scalar value schema. */
+bool isValueSchema(nlohmann::json const& schema)
+{
+    return schema.contains("const")
+        || schema.contains("enum")
+        || hasType(schema, "null")
+        || hasType(schema, "boolean")
+        || hasType(schema, "integer")
+        || hasType(schema, "number")
+        || hasType(schema, "string");
+}
+
+/** Collect string-valued const/enum entries from a JSON Schema branch. */
+std::vector<std::string> stringEnumSymbols(nlohmann::json const& schema)
+{
+    std::vector<std::string> symbols;
+    if (auto constIt = schema.find("const"); constIt != schema.end() && constIt->is_string()) {
+        symbols.push_back(constIt->get<std::string>());
+    }
+
+    if (auto enumIt = schema.find("enum"); enumIt != schema.end() && enumIt->is_array()) {
+        for (auto const& value : *enumIt) {
+            if (value.is_string()) {
+                symbols.push_back(value.get<std::string>());
+            }
+        }
+    }
+
+    std::ranges::sort(symbols);
+    auto duplicates = std::ranges::unique(symbols);
+    symbols.erase(duplicates.begin(), duplicates.end());
+    return symbols;
+}
+
+/** Stable suffix for memoizing the same JSON branch under different schema kinds. */
+std::string_view kindMemoSuffix(std::optional<Kind> kind)
+{
+    if (!kind) {
+        return "n";
+    }
+
+    switch (*kind) {
+    case Kind::Object:
+        return "o";
+    case Kind::Array:
+        return "a";
+    case Kind::Value:
+        return "v";
+    }
+
+    return "n";
+}
+
 /** Return whether a oneOf object/array wrapper represents a mapget multimap view. */
 bool isMapgetMultimap(nlohmann::json const& schema)
 {
@@ -193,16 +247,18 @@ std::string attributeLayerMapKey(std::string_view featureType)
 
 struct SchemaRegistry::Impl
 {
-    /** Logical object/array schema independent of any StringPool numbering. */
+    /** Logical object/array/value schema independent of any StringPool numbering. */
     struct LogicalSchema
     {
         simfil::SchemaId id_ = simfil::NoSchemaId;
         Kind kind_ = Kind::Object;
         Entry entry_;
         std::vector<std::string> directFields_;
+        std::vector<std::string> directEnumSymbols_;
         std::map<std::string, std::vector<simfil::SchemaId>, std::less<>> childSchemas_;
         std::vector<simfil::SchemaId> elementSchemas_;
         std::vector<std::string> flatFields_;
+        std::vector<std::string> flatEnumSymbols_;
         bool finalized_ = false;
     };
 
@@ -261,6 +317,22 @@ struct SchemaRegistry::Impl
         fields.emplace_back(fieldName);
     }
 
+    void addEnumSymbol(simfil::SchemaId parent, std::string_view symbolName)
+    {
+        if (!valid(parent)) {
+            return;
+        }
+        auto& symbols = schemas_[parent].directEnumSymbols_;
+        symbols.emplace_back(symbolName);
+    }
+
+    void addEnumSymbols(simfil::SchemaId parent, std::span<const std::string> symbolNames)
+    {
+        for (auto const& symbolName : symbolNames) {
+            addEnumSymbol(parent, symbolName);
+        }
+    }
+
     void addChild(simfil::SchemaId parent, std::string_view fieldName, simfil::SchemaId child)
     {
         if (!valid(parent) || !valid(child)) {
@@ -297,12 +369,21 @@ struct SchemaRegistry::Impl
         }
 
         std::vector<std::string> fields;
-        std::vector<simfil::SchemaId> visited;
-        collectFields(id, visited, fields);
+        std::vector<simfil::SchemaId> visitedFields;
+        collectFields(id, visitedFields, fields);
         std::ranges::sort(fields);
         auto duplicates = std::ranges::unique(fields);
         fields.erase(duplicates.begin(), duplicates.end());
         schemas_[id].flatFields_ = std::move(fields);
+
+        std::vector<std::string> symbols;
+        std::vector<simfil::SchemaId> visitedEnumSymbols;
+        collectEnumSymbols(id, visitedEnumSymbols, symbols);
+        std::ranges::sort(symbols);
+        auto symbolDuplicates = std::ranges::unique(symbols);
+        symbols.erase(symbolDuplicates.begin(), symbolDuplicates.end());
+        schemas_[id].flatEnumSymbols_ = std::move(symbols);
+
         schemas_[id].finalized_ = true;
     }
 
@@ -328,6 +409,28 @@ struct SchemaRegistry::Impl
         }
     }
 
+    void collectEnumSymbols(
+        simfil::SchemaId id,
+        std::vector<simfil::SchemaId>& visited,
+        std::vector<std::string>& symbols) const
+    {
+        if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
+            return;
+        }
+        visited.push_back(id);
+
+        auto const& schema = schemas_[id];
+        symbols.insert(symbols.end(), schema.directEnumSymbols_.begin(), schema.directEnumSymbols_.end());
+        for (auto const& [_, children] : schema.childSchemas_) {
+            for (auto child : children) {
+                collectEnumSymbols(child, visited, symbols);
+            }
+        }
+        for (auto child : schema.elementSchemas_) {
+            collectEnumSymbols(child, visited, symbols);
+        }
+    }
+
     [[nodiscard]] bool canHaveField(simfil::SchemaId id, std::string_view fieldName)
     {
         if (!valid(id)) {
@@ -336,6 +439,40 @@ struct SchemaRegistry::Impl
         finalize(id);
         auto const& fields = schemas_[id].flatFields_;
         return std::ranges::binary_search(fields, fieldName);
+    }
+
+    [[nodiscard]] bool canHaveEnumSymbol(simfil::SchemaId id, std::string_view symbolName)
+    {
+        if (!valid(id)) {
+            return false;
+        }
+        finalize(id);
+        auto const& symbols = schemas_[id].flatEnumSymbols_;
+        return std::ranges::binary_search(symbols, symbolName);
+    }
+
+    [[nodiscard]] std::span<const std::string> directFields(simfil::SchemaId id) const
+    {
+        if (!valid(id)) {
+            return {};
+        }
+        return schemas_[id].directFields_;
+    }
+
+    [[nodiscard]] std::span<const std::string> nestedFields(simfil::SchemaId id) const
+    {
+        if (!valid(id)) {
+            return {};
+        }
+        return schemas_[id].flatFields_;
+    }
+
+    [[nodiscard]] std::span<const std::string> nestedEnumSymbols(simfil::SchemaId id) const
+    {
+        if (!valid(id)) {
+            return {};
+        }
+        return schemas_[id].flatEnumSymbols_;
     }
 
     [[nodiscard]] simfil::SchemaId childSchema(
@@ -433,7 +570,7 @@ private:
         }
 
         auto const key = annotatedKey(schema, pointer, context);
-        auto const memoKey = pointer + "|" + (preferredKind ? (*preferredKind == Kind::Object ? "o" : "a") : "n");
+        auto const memoKey = pointer + "|" + std::string(kindMemoSuffix(preferredKind));
         if (auto memoIt = memo_.find(memoKey); memoIt != memo_.end()) {
             registry_.registerKey(key, memoIt->second);
             return memoIt->second;
@@ -447,6 +584,9 @@ private:
         }
         if (isArraySchema(schema) && (!preferredKind || *preferredKind == Kind::Array)) {
             return buildArray(schema, std::move(pointer), std::move(context), std::move(key), std::move(metaType), memoKey);
+        }
+        if (isValueSchema(schema) && (!preferredKind || *preferredKind == Kind::Value)) {
+            return buildValue(schema, std::move(pointer), std::move(key), std::move(metaType), memoKey);
         }
         return simfil::NoSchemaId;
     }
@@ -484,6 +624,10 @@ private:
             return selected;
         }
         if (auto selected = choose(Kind::Array); selected != simfil::NoSchemaId) {
+            registerCombinedAliases(schema, pointer, context, selected);
+            return selected;
+        }
+        if (auto selected = choose(Kind::Value); selected != simfil::NoSchemaId) {
             registerCombinedAliases(schema, pointer, context, selected);
             return selected;
         }
@@ -580,6 +724,25 @@ private:
         return id;
     }
 
+    simfil::SchemaId buildValue(
+        nlohmann::json const& schema,
+        std::string pointer,
+        std::string key,
+        std::string metaType,
+        std::string const& memoKey)
+    {
+        auto id = registry_.allocate(
+            Kind::Value,
+            std::move(key),
+            std::move(pointer),
+            std::move(metaType));
+        memo_[memoKey] = id;
+
+        auto symbols = stringEnumSymbols(schema);
+        registry_.addEnumSymbols(id, symbols);
+        return id;
+    }
+
     SchemaRegistry::Impl& registry_;
     nlohmann::json const& root_;
     std::map<std::string, simfil::SchemaId> memo_;
@@ -592,12 +755,17 @@ public:
     BoundSchema(
         std::shared_ptr<SchemaRegistry const> registry,
         std::shared_ptr<simfil::StringPool const> strings,
-        simfil::SchemaId id)
+        simfil::SchemaId id,
+        bool materializeSchemaStrings = false)
         : registry_(std::move(registry)), strings_(std::move(strings)), id_(id)
     {
+        if (materializeSchemaStrings) {
+            auto mutableStrings = std::const_pointer_cast<simfil::StringPool>(strings_);
+            materializeStringIds(mutableStrings);
+        }
     }
 
-    /** Return the object/array kind for the stable mapget SchemaId. */
+    /** Return the object/array/value kind for the stable mapget SchemaId. */
     auto kind() const -> Kind override
     {
         return registry_ ? registry_->kind(id_) : Kind::Object;
@@ -613,13 +781,61 @@ public:
         return !fieldName || registry_->canHaveField(id_, *fieldName);
     }
 
-    /** This adapter intentionally avoids materializing StringIds for schema-only field names. */
+    /** Resolve enum-like string symbols through the datasource-owned pool and match by name. */
+    auto canHaveEnumSymbol(simfil::StringId symbolId) const -> bool override
+    {
+        if (!registry_ || !strings_) {
+            return false;
+        }
+        auto symbolName = strings_->resolve(symbolId);
+        return symbolName && registry_->canHaveEnumSymbol(id_, *symbolName);
+    }
+
+    /** Return nested schema fields when this adapter was built for completion. */
     auto nestedFields() const& -> std::span<const simfil::StringId> override
     {
-        return {};
+        return nestedFields_;
+    }
+
+    /** Return completion-local ids for direct schema fields, if materialized. */
+    auto directFields() const& -> std::span<const simfil::StringId> override
+    {
+        return directFields_;
+    }
+
+    /** Return nested schema enum symbols when this adapter was built for completion. */
+    auto nestedEnumSymbols() const& -> std::span<const simfil::StringId> override
+    {
+        return nestedEnumSymbols_;
     }
 
 private:
+    /** Insert schema-owned strings into the completion-local pool. */
+    auto materializeStringIds(std::shared_ptr<simfil::StringPool> const& strings) -> void
+    {
+        if (!registry_ || !strings) {
+            return;
+        }
+
+        materialize(registry_->directFields(id_), *strings, directFields_);
+        materialize(registry_->nestedFields(id_), *strings, nestedFields_);
+        materialize(registry_->nestedEnumSymbols(id_), *strings, nestedEnumSymbols_);
+    }
+
+    /** Convert schema-owned strings into StringIds in the provided temporary pool. */
+    static auto materialize(
+        std::span<const std::string> names,
+        simfil::StringPool& strings,
+        std::vector<simfil::StringId>& ids) -> void
+    {
+        ids.reserve(names.size());
+        for (auto const& name : names) {
+            if (auto id = strings.emplace(name)) {
+                ids.push_back(*id);
+            }
+        }
+    }
+
     /** Runtime pruning calls canHaveField directly, so no recursive StringId cache is built here. */
     auto collectNestedFields(
         const std::function<Schema*(simfil::SchemaId)>&,
@@ -631,9 +847,18 @@ private:
     std::shared_ptr<SchemaRegistry const> registry_;
     std::shared_ptr<simfil::StringPool const> strings_;
     simfil::SchemaId id_ = simfil::NoSchemaId;
+    std::vector<simfil::StringId> directFields_;
+    std::vector<simfil::StringId> nestedFields_;
+    std::vector<simfil::StringId> nestedEnumSymbols_;
 };
 
 } // namespace
+
+void installSchemaRegistryImpl(
+    simfil::Environment& env,
+    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<simfil::StringPool const> strings,
+    bool materializeSchemaStrings);
 
 SchemaRegistry::SchemaRegistry(nlohmann::json const& schema)
     : impl_(std::make_shared<Impl>())
@@ -680,6 +905,26 @@ bool SchemaRegistry::canHaveField(simfil::SchemaId schemaId, std::string_view fi
     return impl_->canHaveField(schemaId, fieldName);
 }
 
+bool SchemaRegistry::canHaveEnumSymbol(simfil::SchemaId schemaId, std::string_view symbolName) const
+{
+    return impl_->canHaveEnumSymbol(schemaId, symbolName);
+}
+
+std::span<const std::string> SchemaRegistry::directFields(simfil::SchemaId schemaId) const
+{
+    return impl_->directFields(schemaId);
+}
+
+std::span<const std::string> SchemaRegistry::nestedFields(simfil::SchemaId schemaId) const
+{
+    return impl_->nestedFields(schemaId);
+}
+
+std::span<const std::string> SchemaRegistry::nestedEnumSymbols(simfil::SchemaId schemaId) const
+{
+    return impl_->nestedEnumSymbols(schemaId);
+}
+
 simfil::SchemaId SchemaRegistry::featureSchema(std::string_view featureType) const
 {
     return schemaId(featureKey(featureType));
@@ -708,16 +953,34 @@ void installSchemaRegistry(
     std::shared_ptr<SchemaRegistry const> registry,
     std::shared_ptr<simfil::StringPool const> strings)
 {
+    installSchemaRegistryImpl(env, std::move(registry), std::move(strings), false);
+}
+
+void installCompletionSchemaRegistry(
+    simfil::Environment& env,
+    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<simfil::StringPool> strings)
+{
+    installSchemaRegistryImpl(env, std::move(registry), std::move(strings), true);
+}
+
+void installSchemaRegistryImpl(
+    simfil::Environment& env,
+    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<simfil::StringPool const> strings,
+    bool materializeSchemaStrings)
+{
     auto schemas = std::make_shared<std::map<simfil::SchemaId, std::unique_ptr<BoundSchema>>>();
     env.querySchemaCallback = [registry = std::move(registry),
                                strings = std::move(strings),
-                               schemas = std::move(schemas)](simfil::SchemaId schemaId) {
+                               schemas = std::move(schemas),
+                               materializeSchemaStrings](simfil::SchemaId schemaId) {
         if (!registry || schemaId == simfil::NoSchemaId) {
             return static_cast<simfil::Schema const*>(nullptr);
         }
         auto [it, inserted] = schemas->try_emplace(schemaId);
         if (inserted) {
-            it->second = std::make_unique<BoundSchema>(registry, strings, schemaId);
+            it->second = std::make_unique<BoundSchema>(registry, strings, schemaId, materializeSchemaStrings);
         }
         return static_cast<simfil::Schema const*>(it->second.get());
     };

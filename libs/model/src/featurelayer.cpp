@@ -277,6 +277,15 @@ struct TileFeatureLayer::Impl {
         return env;
     }
 
+    static std::unique_ptr<simfil::Environment> makeSchemaAwareCompletionEnvironment(
+        std::shared_ptr<simfil::StringPool> stringPool,
+        std::shared_ptr<SchemaRegistry const> schemaRegistry)
+    {
+        auto env = makeEnvironment(stringPool);
+        installCompletionSchemaRegistry(*env, std::move(schemaRegistry), std::move(stringPool));
+        return env;
+    }
+
     // (De-)Serialization
     template<typename S>
     void readWrite(S& s) {
@@ -1363,7 +1372,9 @@ TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::
 tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
 TileFeatureLayer::complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts)
 {
-    return impl_->expressionCache_.completions(query, point, node, opts);
+    auto completionStrings = std::make_shared<simfil::StringPool>(*strings());
+    auto completionEnv = Impl::makeSchemaAwareCompletionEnvironment(std::move(completionStrings), impl_->schemaRegistry_);
+    return simfil::complete(*completionEnv, query, point, node, opts);
 }
 
 void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
