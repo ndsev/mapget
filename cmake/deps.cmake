@@ -35,7 +35,7 @@ if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
             "SIMFIL_SHARED OFF")
 else()
 CPMAddPackage(
-        URI "gh:Klebert-Engineering/simfil#issue-146-schema-enums@b37fa78"
+        URI "gh:Klebert-Engineering/simfil#issue-146-schema-enums@65482b8"
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
