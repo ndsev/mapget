@@ -9,12 +9,14 @@
 #include <bitsery/adapter/stream.h>
 #include <bitsery/bitsery.h>
 #include <bitsery/ext/std_optional.h>
+#include <bitsery/ext/std_bitset.h>
 #include <bitsery/traits/string.h>
 #include <bitsery/traits/vector.h>
 
 #include "mapget/log.h"
 #include "pointnode.h"
 #include "simfil/model/bitsery-traits.h"
+#include "simfil/simfil.h"
 #include "sourcedatareference.h"
 
 namespace bitsery
@@ -180,6 +182,55 @@ nlohmann::json arrayToJson(model_ptr<Array> const& array)
     }
     return result;
 }
+
+/** Convert parsed SIMFIL diagnostics to the JSON shape used by tests and status tooling. */
+nlohmann::json diagnosticsToJson(simfil::Diagnostics const& diagnostics)
+{
+    auto result = nlohmann::json::array();
+    auto messages = simfil::diagnostics(diagnostics);
+    if (!messages) {
+        return result;
+    }
+    for (auto const& message : *messages) {
+        auto item = nlohmann::json::object({
+            {"message", message.message},
+            {"location", {
+                {"offset", message.location.offset},
+                {"size", message.location.size},
+            }},
+        });
+        if (message.fix) {
+            item["fix"] = *message.fix;
+        }
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+/** Serialize parsed diagnostics with the same binary layout as simfil::Diagnostics::write/read. */
+template<typename S>
+void readWriteDiagnostics(S& s, simfil::Diagnostics& data)
+{
+    s.container(data.exprIndex_, std::numeric_limits<uint16_t>::max(), [](auto& s2, std::uint32_t& v) {
+        s2.value4b(v);
+    });
+    s.container(data.fieldData_, std::numeric_limits<uint16_t>::max(), [](auto& s2, simfil::Diagnostics::FieldExprData& data) {
+        s2.value4b(data.location.offset);
+        s2.value4b(data.location.size);
+        s2.value4b(data.hits);
+        s2.value4b(data.evaluations);
+        s2.text1b(data.name, 0xff);
+    });
+    s.container(data.comparisonData_, std::numeric_limits<uint16_t>::max(), [](auto& s2, simfil::Diagnostics::ComparisonExprData& data) {
+        s2.value4b(data.location.offset);
+        s2.value4b(data.location.size);
+        s2.ext(data.leftTypes.flags, bitsery::ext::StdBitset{});
+        s2.ext(data.rightTypes.flags, bitsery::ext::StdBitset{});
+        s2.value4b(data.evaluations);
+        s2.value4b(data.trueResults);
+        s2.value4b(data.falseResults);
+    });
+}
 } // namespace
 
 struct TileSearchResultLayer::Impl
@@ -188,6 +239,7 @@ struct TileSearchResultLayer::Impl
     std::optional<uint32_t> stage_;
     std::vector<std::string> resultFields_;
     simfil::ModelColumn<SearchResult::Data, simfil::detail::ColumnPageSize / 2> searchResults_;
+    simfil::Diagnostics diagnostics_;
 
     template<typename S>
     void readWrite(S& s)
@@ -200,6 +252,7 @@ struct TileSearchResultLayer::Impl
             serializer.text1b(field, std::numeric_limits<uint32_t>::max());
         });
         s.object(searchResults_);
+        readWriteDiagnostics(s, diagnostics_);
     }
 };
 
@@ -410,6 +463,19 @@ void TileSearchResultLayer::setStage(std::optional<uint32_t> stage)
     impl_->stage_ = stage;
 }
 
+void TileSearchResultLayer::setDiagnostics(simfil::Diagnostics const& diagnostics)
+{
+    impl_->diagnostics_.exprIndex_.clear();
+    impl_->diagnostics_.fieldData_.clear();
+    impl_->diagnostics_.comparisonData_.clear();
+    impl_->diagnostics_.append(diagnostics);
+}
+
+simfil::Diagnostics const& TileSearchResultLayer::diagnostics() const
+{
+    return impl_->diagnostics_;
+}
+
 model_ptr<SearchResult> TileSearchResultLayer::newSearchResult(
     model_ptr<FeatureId> const& featureId,
     model_ptr<GeometryCollection> const& geometry,
@@ -595,6 +661,10 @@ nlohmann::json TileSearchResultLayer::toJson() const
     });
     if (impl_->stage_) {
         result["mapgetStage"] = *impl_->stage_;
+    }
+    auto diagnosticsJson = diagnosticsToJson(impl_->diagnostics_);
+    if (!diagnosticsJson.empty()) {
+        result["diagnostics"] = std::move(diagnosticsJson);
     }
     for (size_t i = 0; i < size(); ++i) {
         auto searchResult = at(i);

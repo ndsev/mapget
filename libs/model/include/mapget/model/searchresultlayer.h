@@ -9,6 +9,7 @@
 #include "featureid.h"
 #include "featuremodellayer.h"
 #include "geometry.h"
+#include "simfil/diagnostics.h"
 #include "stringpool.h"
 
 namespace mapget
@@ -19,7 +20,7 @@ class TileSearchResultLayer;
 /**
  * Search result root node streamed by TileSearchResultLayer.
  *
- * A result keeps the matched feature id, the copied primary feature geometry,
+ * A result keeps the matched feature id, the copied display geometry,
  * an optional attribute-validity index, and a fixed-size value array aligned to
  * TileSearchResultLayer::resultFields().
  */
@@ -46,7 +47,7 @@ public:
     /** Resolve the matched feature id. */
     [[nodiscard]] model_ptr<FeatureId> featureId() const;
 
-    /** Resolve the copied primary geometry. */
+    /** Resolve the copied display geometry for the match. */
     [[nodiscard]] model_ptr<GeometryCollection> geometry() const;
 
     /** Return the matched attribute-validity index for attribute-scope searches. */
@@ -133,6 +134,12 @@ public:
     /** Optional staged-loading index of the source feature tile this result was derived from. */
     [[nodiscard]] std::optional<uint32_t> stage() const override;
     void setStage(std::optional<uint32_t> stage) override;
+
+    /** Replace the layer-wide SIMFIL diagnostics collected while evaluating this result chunk. */
+    void setDiagnostics(simfil::Diagnostics const& diagnostics);
+
+    /** Return the parsed SIMFIL diagnostics collected while evaluating this result chunk. */
+    [[nodiscard]] simfil::Diagnostics const& diagnostics() const;
 
     /** Add one result using nodes already owned by this layer. */
     model_ptr<SearchResult> newSearchResult(

@@ -248,7 +248,7 @@ The search-as-map implementation deliberately reuses the existing tile streaming
 - `tiles-http-handler.cpp` turns HTTP search requests into `FeatureLayerSearchTilesRequest` objects and streams `TileSearchResultLayer` chunks or progress status objects into the same JSONL/binary response as normal tiles.
 - `tiles-ws-session.cpp` turns WebSocket search requests into `FeatureLayerSearchTilesRequest` objects, tracks search-specific outgoing queue keys, and sends result chunks as `TileSearchResultLayer` VTLV frames through `/tiles/next`.
 - `Service::request(FeatureLayerSearchTilesRequest)` validates datasource access, creates a child `LayerTilesRequest` for the source feature payloads, waits until every required stage for a tile is available, and schedules the SIMFIL evaluation job.
-- `searchFeatureLayerAsResultLayer(...)` evaluates the predicate and `withFields` expressions, copies the matched feature id and primary geometry into a transient `TileSearchResultLayer`, and attaches progress/traces/result metadata.
+- `searchFeatureLayerAsResultLayer(...)` evaluates the predicate and `withFields` expressions, copies the matched feature id and display geometry into a transient `TileSearchResultLayer`, and attaches progress/traces/result metadata plus parsed SIMFIL diagnostics.
 
 The result layer is transient: source feature tiles can still come from or be written to the normal tile cache, but search-result chunks are not stored as cache entries. Result layers reuse the source tile node id and string-pool namespace so regular stream string-pool handling still applies. Arbitrary strings produced by `withFields` expressions live in the result layer's model string buffer rather than mutating datasource-owned string pools.
 

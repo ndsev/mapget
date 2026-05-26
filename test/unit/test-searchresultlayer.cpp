@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "mapget/model/stream.h"
 #include "mapget/service/memcache.h"
 #include "mapget/service/service.h"
+#include "simfil/simfil.h"
 #include "../../libs/http-service/src/tiles-request-json.h"
 
 using namespace mapget;
@@ -113,6 +115,15 @@ private:
     mutable std::mutex mutex_;
     std::vector<uint32_t> requestedStages_;
 };
+
+bool containsDiagnosticMessage(simfil::Diagnostics const& diagnostics, std::string_view needle)
+{
+    auto messages = simfil::diagnostics(diagnostics);
+    REQUIRE(messages.has_value());
+    return std::any_of(messages->begin(), messages->end(), [needle](auto const& message) {
+        return message.message.find(needle) != std::string::npos;
+    });
+}
 
 } // namespace
 
@@ -220,6 +231,50 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
     REQUIRE(searchResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({"display label", "Road", nullptr, nullptr}));
 }
 
+TEST_CASE("Feature-layer search stores diagnostics on the result layer", "[feature-layer-search][search-result-layer]")
+{
+    auto layerInfo = makeSearchResultLayerInfo();
+    auto strings = std::make_shared<StringPool>("SearchDiagnosticsNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        "SearchDiagnosticsNode",
+        "TestMap",
+        layerInfo,
+        strings);
+    auto feature = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    feature->addLine({Point(11.0, 48.0, 0.0), Point(11.1, 48.1, 0.0)});
+
+    auto searchResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "diagnostics-search",
+            .query_ = "**.not_a_field > 0",
+            .scope_ = FeatureLayerSearchScope::Feature,
+        });
+
+    REQUIRE(searchResult.has_value());
+    REQUIRE(searchResult->layer_);
+    REQUIRE(searchResult->layer_->size() == 0);
+    REQUIRE(containsDiagnosticMessage(searchResult->layer_->diagnostics(), "No matches for field"));
+    REQUIRE_FALSE(searchResult->layer_->toJson()["diagnostics"].empty());
+
+    std::string streamBytes;
+    TileLayerStream::StringPoolOffsetMap offsets;
+    TileLayerStream::Writer writer(
+        [&](std::string bytes, TileLayerStream::MessageType) { streamBytes.append(bytes); },
+        offsets);
+    writer.write(searchResult->layer_);
+
+    TileSearchResultLayer::Ptr parsed;
+    TileLayerStream::Reader reader(
+        [&](std::string_view const&, std::string_view const&) { return layerInfo; },
+        [&](TileLayer::Ptr parsedLayer) { parsed = std::dynamic_pointer_cast<TileSearchResultLayer>(parsedLayer); });
+    reader.read(streamBytes);
+
+    REQUIRE(parsed);
+    REQUIRE(containsDiagnosticMessage(parsed->diagnostics(), "No matches for field"));
+}
+
 TEST_CASE("Attribute-scope search records deterministic match metadata", "[feature-layer-search]")
 {
     auto layerInfo = makeSearchResultLayerInfo();
@@ -255,6 +310,42 @@ TEST_CASE("Attribute-scope search records deterministic match metadata", "[featu
     REQUIRE(json["match"]["validityIndex"] == 0);
     REQUIRE(json["match"]["validityCount"] == 1);
     REQUIRE(json["values"] == nlohmann::json::array({50, "Road", "rules", 0, 1}));
+}
+
+TEST_CASE("Attribute-scope search copies computed validity geometry", "[feature-layer-search]")
+{
+    auto layerInfo = makeSearchResultLayerInfo();
+    auto strings = std::make_shared<StringPool>("ValidityGeometrySearchNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        "ValidityGeometrySearchNode",
+        "TestMap",
+        layerInfo,
+        strings);
+    auto feature = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    feature->addLine({Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0), Point(2.0, 0.0, 0.0)});
+    auto attr = feature->attributeLayers()->newLayer("rules")->newAttribute("speedLimit");
+    attr->addField("limit", source->newValue(int64_t(50)));
+    attr->validity()->newRange(Validity::BufferOffset, int32_t(1), int32_t(2));
+
+    auto searchResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "validity-geometry-search",
+            .query_ = "$name == 'speedLimit'",
+            .scope_ = FeatureLayerSearchScope::Attribute,
+        });
+
+    REQUIRE(searchResult.has_value());
+    REQUIRE(searchResult->layer_->size() == 1);
+
+    auto result = searchResult->layer_->at(0);
+    REQUIRE(result);
+    auto geometry = result->geometry()->geometryOfTypeAtPreferredStage(GeomType::Line);
+    REQUIRE(geometry);
+    REQUIRE(geometry->numPoints() == 2);
+    REQUIRE(std::abs(geometry->pointAt(0).x - 1.0) < 1e-4);
+    REQUIRE(std::abs(geometry->pointAt(1).x - 2.0) < 1e-4);
 }
 
 TEST_CASE("Service search loads staged payloads and evaluates in scheduled search jobs", "[feature-layer-search][Service]")

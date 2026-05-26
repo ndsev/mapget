@@ -26,40 +26,6 @@ tl::expected<std::shared_ptr<StringPool>, simfil::Error> copyStringPool(TileFeat
     return std::make_shared<StringPool>(*sourceStrings);
 }
 
-/**
- * Merge dynamic string IDs from one staged layer into an evaluation pool.
- *
- * Staged payloads from one datasource are expected to share one string-pool ID
- * namespace. Replaying their exact id->string mappings into the copied pool lets
- * staged search reuse the source node id without mutating the datasource pool.
- */
-tl::expected<void, simfil::Error> mergeDynamicStrings(
-    StringPool& target,
-    TileFeatureLayer const& sourceLayer)
-{
-    auto sourceStrings = std::dynamic_pointer_cast<StringPool>(sourceLayer.strings());
-    if (!sourceStrings) {
-        return tl::unexpected(simfil::Error{
-            simfil::Error::InternalError,
-            fmt::format("Feature layer '{}' does not use a mapget StringPool.", sourceLayer.nodeId())});
-    }
-
-    std::ostringstream serializedStrings;
-    if (auto writeResult = sourceStrings->simfil::StringPool::write(
-            serializedStrings,
-            simfil::StringPool::FirstDynamicId);
-        !writeResult) {
-        return tl::unexpected(writeResult.error());
-    }
-
-    auto bytesString = serializedStrings.str();
-    std::vector<uint8_t> bytes(bytesString.begin(), bytesString.end());
-    if (auto readResult = target.read(bytes); !readResult) {
-        return tl::unexpected(readResult.error());
-    }
-    return {};
-}
-
 /** Serialize/parse a feature layer with a copied string pool for side-effect-free SIMFIL evaluation. */
 tl::expected<TileFeatureLayer::Ptr, simfil::Error> makeEvaluationLayerCopy(TileFeatureLayer& sourceLayer)
 {
@@ -80,7 +46,7 @@ tl::expected<TileFeatureLayer::Ptr, simfil::Error> makeEvaluationLayerCopy(TileF
     auto sourceLayerId = sourceInfo ? sourceInfo->layerId_ : std::string{};
 
     try {
-        return std::make_shared<TileFeatureLayer>(
+        auto copiedLayer = std::make_shared<TileFeatureLayer>(
             bytes,
             [sourceInfo = std::move(sourceInfo),
              sourceMapId = std::move(sourceMapId),
@@ -95,6 +61,14 @@ tl::expected<TileFeatureLayer::Ptr, simfil::Error> makeEvaluationLayerCopy(TileF
             [copiedStrings = std::move(copiedStrings)](std::string_view) {
                 return copiedStrings;
             });
+        if (auto overlay = sourceLayer.overlay()) {
+            auto copiedOverlay = makeEvaluationLayerCopy(*overlay);
+            if (!copiedOverlay) {
+                return tl::unexpected(copiedOverlay.error());
+            }
+            copiedLayer->attachOverlay(*copiedOverlay);
+        }
+        return copiedLayer;
     } catch (std::exception const& e) {
         return tl::unexpected(simfil::Error{
             simfil::Error::InternalError,
@@ -186,6 +160,73 @@ model_ptr<GeometryCollection> copyGeometryCollection(
     return copied;
 }
 
+/** Materialize a computed validity geometry as a single-geometry collection. */
+model_ptr<GeometryCollection> copySelfContainedGeometryCollection(
+    TileSearchResultLayer& target,
+    SelfContainedGeometry const& source,
+    std::optional<uint32_t> stage)
+{
+    auto copied = target.newGeometryCollection(source.points_.empty() ? 0 : 1, false);
+    if (source.points_.empty()) {
+        return copied;
+    }
+
+    auto geometry = target.newGeometry(source.geomType_, std::max<size_t>(1, source.points_.size()), false);
+    switch (source.geomType_) {
+    case GeomType::AABB:
+        if (source.points_.size() >= 2) {
+            geometry->setAabb(source.points_[0], source.points_[1]);
+        }
+        break;
+    case GeomType::GltfNodeIndex:
+        // Computed validity geometries are spatial subsets, not GLTF node references.
+        return copied;
+    default:
+        for (auto const& point : source.points_) {
+            geometry->append(point);
+        }
+        break;
+    }
+    geometry->setStage(stage);
+    copied->addGeometry(geometry);
+    return copied;
+}
+
+/** Resolve and copy the geometry that should visually represent one attribute validity match. */
+model_ptr<GeometryCollection> copyValidityGeometryCollection(
+    TileSearchResultLayer& target,
+    model_ptr<Feature> const& feature,
+    model_ptr<Validity> const& validity)
+{
+    if (!feature || !validity) {
+        return {};
+    }
+    auto featureGeometry = feature->geomOrNull();
+    if (!featureGeometry) {
+        return {};
+    }
+
+    auto const fallbackStage = target.layerInfo()
+        ? std::optional<uint32_t>(target.layerInfo()->highFidelityStage_)
+        : std::nullopt;
+    std::string error;
+    auto computed = validity->computeGeometry(featureGeometry, &error, fallbackStage);
+    if (computed.points_.empty()) {
+        if (!error.empty()) {
+            log().warn(
+                "Search result validity geometry failed for {}: {}",
+                feature->id() ? feature->id()->toString() : std::string{"<unknown>"},
+                error);
+        }
+        return {};
+    }
+    auto resultStage = validity->geometryStage();
+    if (!resultStage) {
+        resultStage = fallbackStage;
+    }
+    return copySelfContainedGeometryCollection(target, computed, resultStage);
+}
+
 /** Copy a feature id into result-layer storage without retaining source-layer addresses. */
 model_ptr<FeatureId> copyFeatureId(TileSearchResultLayer& target, model_ptr<FeatureId> const& source)
 {
@@ -253,6 +294,8 @@ std::vector<simfil::ModelNode::Ptr> evaluateWithFields(
             continue;
         }
         mergeTraces(traces, std::move(evalResult->traces));
+        // Diagnostics are kept for the main search expression only:
+        // simfil::Diagnostics::append requires one AST/index layout.
         if (evalResult->values.empty()) {
             values.push_back(materializeResultValue(resultLayer, simfil::Value::null()));
         } else {
@@ -267,6 +310,7 @@ struct AttributeMatchInfo
     uint32_t attributeIndex_ = SearchResult::InvalidAttributeIndex;
     uint32_t validityIndex_ = SearchResult::InvalidAttributeIndex;
     uint32_t validityCount_ = 0;
+    model_ptr<Validity> validity_;
 };
 
 /** Add a result for one matched feature/context pair. */
@@ -288,13 +332,20 @@ tl::expected<void, simfil::Error> addSearchResult(
         traces,
         reportedFieldFailures);
 
-    auto sourceGeometry = feature->geomOrNull();
-    if (!sourceGeometry) {
-        return {};
+    model_ptr<GeometryCollection> resultGeometry;
+    if (attributeMatch && attributeMatch->validity_) {
+        resultGeometry = copyValidityGeometryCollection(resultLayer, feature, attributeMatch->validity_);
+    }
+    if (!resultGeometry || resultGeometry->numGeometries() == 0) {
+        auto sourceGeometry = feature->geomOrNull();
+        if (!sourceGeometry) {
+            return {};
+        }
+        resultGeometry = copyGeometryCollection(resultLayer, sourceGeometry);
     }
     resultLayer.newSearchResult(
         copyFeatureId(resultLayer, feature->id()),
-        copyGeometryCollection(resultLayer, sourceGeometry),
+        resultGeometry,
         values,
         attributeMatch ? std::optional<uint32_t>(attributeMatch->attributeIndex_) : std::nullopt,
         attributeMatch ? std::optional<uint32_t>(attributeMatch->validityIndex_) : std::nullopt,
@@ -324,39 +375,18 @@ tl::expected<TileFeatureLayer::Ptr, simfil::Error> assembleFeatureLayerStages(
         return lhs->stage().value_or(0U) < rhs->stage().value_or(0U);
     });
 
-    auto const& base = orderedStages.front();
-    auto strings = copyStringPool(*base);
-    if (!strings) {
-        return tl::unexpected(strings.error());
+    auto assembled = makeEvaluationLayerCopy(*orderedStages.front());
+    if (!assembled) {
+        return tl::unexpected(assembled.error());
     }
-    for (auto const& stageLayer : orderedStages) {
-        if (auto result = mergeDynamicStrings(**strings, *stageLayer); !result) {
-            return tl::unexpected(result.error());
-        }
-    }
-    auto assembled = std::make_shared<TileFeatureLayer>(
-        base->tileId(),
-        base->nodeId(),
-        base->mapId(),
-        base->layerInfo(),
-        *strings);
-    assembled->setGeometryAnchor(base->geometryAnchor());
-    assembled->setTimestamp(base->timestamp());
-    assembled->setStage(std::nullopt);
+    (*assembled)->setStage(std::nullopt);
 
-    TileFeatureLayer::CloneCache clonedModelNodes;
-    for (auto const& stageLayer : orderedStages) {
-        for (auto const& feature : *stageLayer) {
-            if (!feature || !feature->id()) {
-                continue;
-            }
-            assembled->clone(
-                clonedModelNodes,
-                stageLayer,
-                *feature,
-                feature->id()->typeId(),
-                feature->id()->keyValuePairs());
+    for (auto const& stageLayer : std::span(orderedStages).subspan(1)) {
+        auto copiedStage = makeEvaluationLayerCopy(*stageLayer);
+        if (!copiedStage) {
+            return tl::unexpected(copiedStage.error());
         }
+        (*assembled)->attachOverlay(*copiedStage);
     }
 
     return assembled;
@@ -465,7 +495,8 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                             auto match = AttributeMatchInfo{
                                 thisAttributeIndex,
                                 validityIndex,
-                                count};
+                                count,
+                                searchLayer.resolve<Validity>(validities->at(validityIndex))};
                             if (auto result = evaluateCandidate(feature, *context, match); !result) {
                                 error = result.error();
                                 aborted = true;
@@ -477,7 +508,8 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                         auto match = AttributeMatchInfo{
                             thisAttributeIndex,
                             0,
-                            1};
+                            1,
+                            {}};
                         if (auto result = evaluateCandidate(feature, *context, match); !result) {
                             error = result.error();
                             aborted = true;
@@ -495,7 +527,8 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
 
     resultLayer->setInfo("traces", tracesToJson(mergedTraces));
     resultLayer->setInfo("resultCount", resultLayer->size());
-    return FeatureLayerSearchResult{std::move(resultLayer), std::move(mergedDiagnostics)};
+    resultLayer->setDiagnostics(mergedDiagnostics);
+    return FeatureLayerSearchResult{std::move(resultLayer)};
 }
 
 } // namespace mapget

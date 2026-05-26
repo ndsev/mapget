@@ -44,14 +44,14 @@ struct FeatureLayerSearchRequest
 struct FeatureLayerSearchResult
 {
     TileSearchResultLayer::Ptr layer_;
-    simfil::Diagnostics diagnostics_;
 };
 
 /**
  * Evaluate a SIMFIL search query on one feature tile and return map-stylable result roots.
  *
- * The returned TileSearchResultLayer stores copied feature ids, copied primary feature
- * geometries, and a fixed values array for each expression in request.withFields_.
+ * The returned TileSearchResultLayer stores copied feature ids, copied display
+ * geometries, a fixed values array for each expression in request.withFields_,
+ * and the parsed SIMFIL diagnostics collected while evaluating this chunk.
  * SIMFIL trace() aggregates are attached to layer->info()["traces"].
  */
 tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResultLayer(

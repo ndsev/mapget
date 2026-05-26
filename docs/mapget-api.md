@@ -135,7 +135,7 @@ For `searchScope: "feature"`, the SIMFIL context is the feature itself. For `sea
 | `$validityIndex` | Zero-based validity index being evaluated. |
 | `$validityCount` | Number of validity contexts for the matched attribute. |
 
-`withFields` expressions run in the same context as `searchQuery`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer.
+`withFields` expressions run in the same context as `searchQuery`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer. Attribute-scope results use the computed validity geometry for the matched validity when one is available; otherwise they fall back to the feature display geometry.
 
 ### Search result JSONL shape
 
@@ -148,6 +148,12 @@ In `Accept: application/jsonl` mode, search result chunks are emitted as `Search
   "mapId": "Tropico",
   "mapgetLayerId": "WayLayer",
   "resultFields": ["limit", "$feature.typeId", "$layer"],
+  "diagnostics": [
+    {
+      "message": "No matches for field: someField",
+      "location": {"offset": 0, "size": 9}
+    }
+  ],
   "info": {
     "searchId": "speed-attributes",
     "searchScope": "attribute",
@@ -181,7 +187,8 @@ Important result fields:
 |-------|-------------|
 | `resultFields` | Copy of the requested `withFields` expressions. Indices align with every result's `values` array. |
 | `results[].featureId` | Dot-separated feature ID string for the matched source feature. |
-| `results[].geometry` | Copied primary feature geometry used for map styling/highlighting. |
+| `diagnostics` | Optional parsed SIMFIL diagnostics from `searchQuery` evaluation, serialized with the result layer and exported in JSONL mode. |
+| `results[].geometry` | Copied display geometry used for map styling/highlighting. For attribute-scope validity matches, this is the computed validity geometry when available. |
 | `results[].values` | Evaluated `withFields` values in order. |
 | `results[].match` | Present for attribute-scope matches and identifies the matched attribute/validity context. |
 | `info.sourceStageMask` | Present when staged source payloads were assembled before search evaluation. |
