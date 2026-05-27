@@ -444,7 +444,7 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
         strings);
     base->setStage(0);
     auto baseFeature = base->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
-    baseFeature->addLine({Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0)});
+    baseFeature->addLine({Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0), Point(2.0, 0.0, 0.0)});
 
     auto overlay = std::make_shared<TileFeatureLayer>(
         TileId(0x1234),
@@ -456,6 +456,9 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
     auto overlayFeature = overlay->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
     auto attr = overlayFeature->attributeLayers()->newLayer("details")->newAttribute("speedLimit");
     attr->addField("limit", overlay->newValue(int64_t(80)));
+    // This validity is owned by the overlay stage; search must not reinterpret
+    // its model address against the assembled base stage.
+    attr->validity()->newPoint(Validity::BufferOffset, int32_t(1));
     auto const sourceStringHighWatermark = strings->highest();
 
     std::vector<TileFeatureLayer::Ptr> stages{base, overlay};
@@ -475,6 +478,10 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
     REQUIRE(firstResult->layer_->stage() == std::nullopt);
     REQUIRE(firstResult->layer_->size() == 1);
     REQUIRE(firstResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({80}));
+    auto firstGeometry = firstResult->layer_->at(0)->geometry()->geometryOfTypeAtPreferredStage(GeomType::Points);
+    REQUIRE(firstGeometry);
+    REQUIRE(firstGeometry->numPoints() == 1);
+    REQUIRE(std::abs(firstGeometry->pointAt(0).x - 1.0) < 1e-4);
 
     auto secondAssembly = assembleFeatureLayerStages(stages);
     REQUIRE(secondAssembly.has_value());
@@ -483,6 +490,10 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
     REQUIRE(secondResult.has_value());
     REQUIRE(secondResult->layer_->size() == 1);
     REQUIRE(secondResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({80}));
+    auto secondGeometry = secondResult->layer_->at(0)->geometry()->geometryOfTypeAtPreferredStage(GeomType::Points);
+    REQUIRE(secondGeometry);
+    REQUIRE(secondGeometry->numPoints() == 1);
+    REQUIRE(std::abs(secondGeometry->pointAt(0).x - 1.0) < 1e-4);
     REQUIRE(strings->highest() == sourceStringHighWatermark);
 }
 

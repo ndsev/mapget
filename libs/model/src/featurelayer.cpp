@@ -1161,7 +1161,14 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& nod
 {
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::FeatureIds: {
-        auto const& featureData = impl_->features_[node.addr().index()];
+        auto const featureIndex = node.addr().index();
+        if (featureIndex >= impl_->features_.size()) {
+            raiseFmt(
+                "Cannot cast FeatureIds node {} to a FeatureId: feature index out of range ({} features).",
+                featureIndex,
+                impl_->features_.size());
+        }
+        auto const& featureData = impl_->features_.at(featureIndex);
         return FeatureId(
             FeatureId::Data{
                 true,
@@ -1173,12 +1180,20 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& nod
             node.addr(),
             mpKey_);
     }
-    case TileFeatureLayer::ColumnId::ExternalFeatureIds:
+    case TileFeatureLayer::ColumnId::ExternalFeatureIds: {
+        auto const featureIdIndex = node.addr().index();
+        if (featureIdIndex >= featureIds_.size()) {
+            raiseFmt(
+                "Cannot cast ExternalFeatureIds node {} to a FeatureId: external feature-id index out of range ({} feature ids).",
+                featureIdIndex,
+                featureIds_.size());
+        }
         return FeatureId(
-            featureIds_[node.addr().index()],
+            featureIds_.at(featureIdIndex),
             shared_from_this(),
             node.addr(),
             mpKey_);
+    }
     default:
         raise("Cannot cast this node to a FeatureId.");
     }
@@ -1217,12 +1232,20 @@ template<>
 model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model, ModelNode const& node)
 {
     switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::Validities:
+    case TileFeatureLayer::ColumnId::Validities: {
+        auto const validityIndex = node.addr().index();
+        if (validityIndex >= model.impl_->validities_.size()) {
+            raiseFmt(
+                "Cannot cast Validities node {} to a Validity: validity index out of range ({} validities).",
+                validityIndex,
+                model.impl_->validities_.size());
+        }
         return Validity(
-            &model.impl_->validities_[node.addr().index()],
+            &model.impl_->validities_.at(validityIndex),
             model.shared_from_this(),
             node.addr(),
             model.mpKey_);
+    }
     case TileFeatureLayer::ColumnId::SimpleValidity: {
         auto const direction = static_cast<Validity::Direction>(node.addr().index());
         if (direction < Validity::Empty || direction > Validity::None) {

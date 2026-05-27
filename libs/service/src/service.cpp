@@ -16,6 +16,7 @@
 #include <thread>
 #include <list>
 #include <chrono>
+#include <exception>
 #include <shared_mutex>
 #include <algorithm>
 #include <numeric>
@@ -811,9 +812,13 @@ struct Service::Worker
             controller_.jobsAvailable_.notify_all();
         }
         catch (std::exception& e) {
-            log().error("Could not load tile {}: {}",
-                job.tileKey.toString(),
-                e.what());
+            if (job.searchWork) {
+                log().error("Could not evaluate search job: {}", e.what());
+            } else {
+                log().error("Could not load tile {}: {}",
+                    job.tileKey.toString(),
+                    e.what());
+            }
         }
 
         return true;
@@ -1376,46 +1381,61 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
 
         void evaluate(std::vector<TileFeatureLayer::Ptr> readyStages)
         {
-            if (request->isCancelled()) {
-                markEvalDone(0, false);
-                return;
-            }
-
-            auto searchRequest = request->search_;
-            searchRequest.sourceStageMask_.clear();
-            searchRequest.sourceStageMask_.reserve(readyStages.size());
-            for (auto const& stageLayer : readyStages) {
-                if (stageLayer) {
-                    searchRequest.sourceStageMask_.push_back(
-                        stageCount > 1U ? stageLayer->stage().value_or(0U) : UnspecifiedStage);
-                }
-            }
-
-            TileFeatureLayer::Ptr searchSource;
-            if (readyStages.size() == 1) {
-                searchSource = readyStages.front();
-            } else {
-                auto assembled = assembleFeatureLayerStages(readyStages);
-                if (!assembled) {
-                    fail(assembled.error());
+            try {
+                if (request->isCancelled()) {
                     markEvalDone(0, false);
                     return;
                 }
-                searchSource = *assembled;
-            }
 
-            auto searchResult = searchFeatureLayerAsResultLayer(*searchSource, searchRequest);
-            if (!searchResult) {
-                fail(searchResult.error());
+                auto searchRequest = request->search_;
+                searchRequest.sourceStageMask_.clear();
+                searchRequest.sourceStageMask_.reserve(readyStages.size());
+                for (auto const& stageLayer : readyStages) {
+                    if (stageLayer) {
+                        searchRequest.sourceStageMask_.push_back(
+                            stageCount > 1U ? stageLayer->stage().value_or(0U) : UnspecifiedStage);
+                    }
+                }
+
+                TileFeatureLayer::Ptr searchSource;
+                if (readyStages.size() == 1) {
+                    searchSource = readyStages.front();
+                } else {
+                    auto assembled = assembleFeatureLayerStages(readyStages);
+                    if (!assembled) {
+                        fail(assembled.error());
+                        markEvalDone(0, false);
+                        return;
+                    }
+                    searchSource = *assembled;
+                }
+
+                auto searchResult = searchFeatureLayerAsResultLayer(*searchSource, searchRequest);
+                if (!searchResult) {
+                    fail(searchResult.error());
+                    markEvalDone(0, false);
+                    return;
+                }
+
+                auto resultCount = searchResult->layer_ ? searchResult->layer_->size() : 0;
+                if (searchResult->layer_) {
+                    request->notifyResult(std::move(searchResult->layer_));
+                }
+                markEvalDone(resultCount, true);
+            } catch (std::exception const& exception) {
+                auto const sourceTileId = readyStages.empty() || !readyStages.front()
+                    ? TileId{}
+                    : readyStages.front()->tileId();
+                fail(simfil::Error{
+                    simfil::Error::InternalError,
+                    fmt::format(
+                        "Search evaluation failed for {}::{} tile {:x}: {}",
+                        request->mapId_,
+                        request->layerId_,
+                        sourceTileId.value_,
+                        exception.what())});
                 markEvalDone(0, false);
-                return;
             }
-
-            auto resultCount = searchResult->layer_ ? searchResult->layer_->size() : 0;
-            if (searchResult->layer_) {
-                request->notifyResult(std::move(searchResult->layer_));
-            }
-            markEvalDone(resultCount, true);
         }
 
         void markEvalDone(size_t resultCount, bool emittedChunk)
@@ -1424,6 +1444,9 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
                 std::lock_guard lock(mutex);
                 if (pendingEvalJobs > 0) {
                     --pendingEvalJobs;
+                }
+                if (terminal) {
+                    return;
                 }
                 ++searchedTiles;
                 matches += resultCount;

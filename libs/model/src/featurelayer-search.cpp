@@ -1,6 +1,7 @@
 #include "featurelayer-search.h"
 
 #include <algorithm>
+#include <exception>
 #include <functional>
 #include <map>
 #include <set>
@@ -220,7 +221,16 @@ model_ptr<GeometryCollection> copyValidityGeometryCollection(
         ? std::optional<uint32_t>(target.layerInfo()->highFidelityStage_)
         : std::nullopt;
     std::string error;
-    auto computed = validity->computeGeometry(featureGeometry, &error, fallbackStage);
+    SelfContainedGeometry computed;
+    try {
+        computed = validity->computeGeometry(featureGeometry, &error, fallbackStage);
+    } catch (std::exception const& exception) {
+        log().warn(
+            "Search result validity geometry failed for {}: {}",
+            feature->id() ? feature->id()->toString() : std::string{"<unknown>"},
+            exception.what());
+        return {};
+    }
     if (computed.points_.empty()) {
         if (!error.empty()) {
             log().warn(
@@ -500,11 +510,15 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                         auto const count = validities->size();
                         for (uint32_t validityIndex = 0; validityIndex < count; ++validityIndex) {
                             auto context = makeContext(validityIndex, count);
+                            // Attribute layers may come from an attached stage overlay. Resolve the
+                            // validity through the attribute's owning model; resolving the overlay
+                            // address through searchLayer can reinterpret it as unrelated base data.
+                            auto validityNode = validities->at(validityIndex);
                             auto match = AttributeMatchInfo{
                                 thisAttributeIndex,
                                 validityIndex,
                                 count,
-                                searchLayer.resolve<Validity>(validities->at(validityIndex))};
+                                validityNode ? attr->model().resolve<Validity>(validityNode) : model_ptr<Validity>{}};
                             if (auto result = evaluateCandidate(feature, *context, match); !result) {
                                 error = result.error();
                                 aborted = true;
