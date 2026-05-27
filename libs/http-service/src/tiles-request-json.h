@@ -32,8 +32,22 @@ struct ParsedLayerTilesRequest
 /** Copy top-level search fields into one layer request when clients use envelope-level search syntax. */
 void inheritSearchFields(nlohmann::json& requestJson, const nlohmann::json& envelopeJson);
 
+/** Return true if a JSON object contains any legacy interactive-search fields. */
+bool containsInteractiveSearchFields(const nlohmann::json& requestJson);
+
+/** Return true if a JSON object contains fields reserved for REST `/search`. */
+bool containsRestSearchFields(const nlohmann::json& requestJson);
+
 /** Parse one layer tile request from the shared HTTP/WS request JSON shape. */
 ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& requestJson);
+
+/** Parse the simplified REST `/search` envelope into a reusable search template. */
+FeatureLayerSearchRequest parseRestSearchEnvelopeJson(const nlohmann::json& envelopeJson);
+
+/** Parse one REST `/search` source-layer request and attach the shared search template. */
+ParsedLayerTilesRequest parseRestSearchLayerRequestJson(
+    const nlohmann::json& requestJson,
+    const FeatureLayerSearchRequest& searchTemplate);
 
 /** Parse the optional string-pool offset map advertised by a reconnecting client. */
 TileLayerStream::StringPoolOffsetMap parseStringPoolOffsetsJson(const nlohmann::json& offsetsJson);

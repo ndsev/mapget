@@ -103,7 +103,8 @@ public:
         Reader(
             LayerInfoResolveFun layerInfoProvider,
             std::function<void(TileLayer::Ptr)> onParsedLayer,
-            std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr);
+            std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr,
+            std::function<void(MessageType, std::string_view)> onControlMessage = {});
 
         /**
          * Add some bytes to parse. The next object will be parsed once
@@ -146,6 +147,7 @@ public:
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(TileLayer::Ptr)> onParsedLayer_;
+        std::function<void(MessageType, std::string_view)> onControlMessage_;
     };
 
     /**

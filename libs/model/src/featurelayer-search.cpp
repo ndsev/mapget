@@ -417,7 +417,9 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
     resultLayer->setTimestamp(searchLayer.timestamp());
     resultLayer->setStage(request.sourceStageMask_.size() > 1 ? std::nullopt : searchLayer.stage());
     resultLayer->setResultFields(request.withFields_);
-    resultLayer->setInfo("searchId", request.searchId_);
+    if (!request.searchId_.empty()) {
+        resultLayer->setInfo("searchId", request.searchId_);
+    }
     resultLayer->setInfo("searchScope", request.scope_ == FeatureLayerSearchScope::Attribute ? "attribute" : "feature");
     resultLayer->setInfo("sourceNodeId", sourceLayer.nodeId());
     resultLayer->setInfo("sourceMapId", sourceLayer.mapId());

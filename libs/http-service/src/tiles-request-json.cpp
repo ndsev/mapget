@@ -21,10 +21,42 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
     "withFields",
 };
 
+constexpr std::array<std::string_view, 4> LegacyOnlySearchFieldNames = {
+    "searchId",
+    "refresh",
+    "searchQuery",
+    "searchScope",
+};
+
+constexpr std::array<std::string_view, 3> RestSearchFieldNames = {
+    "query",
+    "scope",
+    "withFields",
+};
+
 /** Detect whether a layer request/envelope uses any search-as-map fields. */
 [[nodiscard]] bool hasAnySearchField(const nlohmann::json& requestJson)
 {
     return std::any_of(SearchFieldNames.begin(), SearchFieldNames.end(), [&requestJson](std::string_view field) {
+        return requestJson.contains(field);
+    });
+}
+
+/** Detect interactive-only search fields which REST `/search` intentionally hides. */
+[[nodiscard]] bool hasAnyLegacyOnlySearchField(const nlohmann::json& requestJson)
+{
+    return std::any_of(
+        LegacyOnlySearchFieldNames.begin(),
+        LegacyOnlySearchFieldNames.end(),
+        [&requestJson](std::string_view field) {
+            return requestJson.contains(field);
+        });
+}
+
+/** Detect REST `/search` fields which are not valid in plain tile requests. */
+[[nodiscard]] bool hasAnyRestSearchField(const nlohmann::json& requestJson)
+{
+    return std::any_of(RestSearchFieldNames.begin(), RestSearchFieldNames.end(), [&requestJson](std::string_view field) {
         return requestJson.contains(field);
     });
 }
@@ -54,16 +86,57 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
 }
 
 /** Parse feature-vs-attribute search scope, defaulting to feature scope. */
-[[nodiscard]] FeatureLayerSearchScope parseSearchScope(const nlohmann::json& requestJson)
+[[nodiscard]] FeatureLayerSearchScope parseSearchScopeField(
+    const nlohmann::json& requestJson,
+    std::string_view key)
 {
-    auto scope = requestJson.value("searchScope", std::string("feature"));
+    auto scope = requestJson.value(std::string(key), std::string("feature"));
     if (scope == "feature") {
         return FeatureLayerSearchScope::Feature;
     }
     if (scope == "attribute") {
         return FeatureLayerSearchScope::Attribute;
     }
-    throw std::runtime_error("searchScope must be either 'feature' or 'attribute'");
+    throw std::runtime_error(std::string(key) + " must be either 'feature' or 'attribute'");
+}
+
+/** Parse optional withFields expression array from either search request shape. */
+void parseWithFields(const nlohmann::json& requestJson, FeatureLayerSearchRequest& search)
+{
+    auto withFieldsIt = requestJson.find("withFields");
+    if (withFieldsIt == requestJson.end()) {
+        return;
+    }
+    if (!withFieldsIt->is_array()) {
+        throw std::runtime_error("withFields must be an array");
+    }
+    search.withFields_.reserve(withFieldsIt->size());
+    for (auto const& fieldJson : *withFieldsIt) {
+        if (!fieldJson.is_string()) {
+            throw std::runtime_error("withFields entries must be strings");
+        }
+        search.withFields_.push_back(fieldJson.get<std::string>());
+    }
+}
+
+/** Parse the common non-staged source request fields used by REST search. */
+void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json& requestJson)
+{
+    if (requestJson.contains("tileIdsByNextStage")) {
+        throw std::runtime_error("search requests must use tileIds; tileIdsByNextStage is not supported");
+    }
+
+    auto const& tileIdsJson = requestJson.at("tileIds");
+    if (!tileIdsJson.is_array()) {
+        throw std::runtime_error("tileIds must be an array");
+    }
+
+    std::vector<TileId> tileIds;
+    tileIds.reserve(tileIdsJson.size());
+    for (auto const& tileIdJson : tileIdsJson) {
+        tileIds.emplace_back(tileIdJson.get<uint64_t>());
+    }
+    result.tileIdsByNextStage.push_back(std::move(tileIds));
 }
 
 /** Parse optional search-as-map fields from the shared layer request JSON shape. */
@@ -82,7 +155,7 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
     FeatureLayerSearchRequest search;
     search.searchId_ = requestJson.at("searchId").get<std::string>();
     search.query_ = requestJson.at("searchQuery").get<std::string>();
-    search.scope_ = parseSearchScope(requestJson);
+    search.scope_ = parseSearchScopeField(requestJson, "searchScope");
 
     if (auto refreshIt = requestJson.find("refresh"); refreshIt != requestJson.end()) {
         if (!(refreshIt->is_number_integer() || refreshIt->is_number_unsigned())) {
@@ -91,24 +164,22 @@ constexpr std::array<std::string_view, 5> SearchFieldNames = {
         search.refresh_ = refreshIt->get<int64_t>();
     }
 
-    if (auto withFieldsIt = requestJson.find("withFields"); withFieldsIt != requestJson.end()) {
-        if (!withFieldsIt->is_array()) {
-            throw std::runtime_error("withFields must be an array");
-        }
-        search.withFields_.reserve(withFieldsIt->size());
-        for (auto const& fieldJson : *withFieldsIt) {
-            if (!fieldJson.is_string()) {
-                throw std::runtime_error("withFields entries must be strings");
-            }
-            search.withFields_.push_back(fieldJson.get<std::string>());
-        }
-    }
-
+    parseWithFields(requestJson, search);
     search.requestKey_ = makeSearchRequestKey(search);
     return search;
 }
 
 }  // namespace
+
+bool containsInteractiveSearchFields(const nlohmann::json& requestJson)
+{
+    return requestJson.is_object() && hasAnySearchField(requestJson);
+}
+
+bool containsRestSearchFields(const nlohmann::json& requestJson)
+{
+    return requestJson.is_object() && hasAnyRestSearchField(requestJson);
+}
 
 /** Copy envelope-level search parameters into a layer request when omitted locally. */
 void inheritSearchFields(nlohmann::json& requestJson, const nlohmann::json& envelopeJson)
@@ -166,17 +237,52 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
         return result;
     }
 
-    auto const& tileIdsJson = requestJson.at("tileIds");
-    if (!tileIdsJson.is_array()) {
-        throw std::runtime_error("tileIds must be an array");
+    parsePlainTileIdsInto(result, requestJson);
+    return result;
+}
+
+FeatureLayerSearchRequest parseRestSearchEnvelopeJson(const nlohmann::json& envelopeJson)
+{
+    if (!envelopeJson.contains("query") || !envelopeJson.at("query").is_string()) {
+        throw std::runtime_error("query must be a string");
+    }
+    if (hasAnyLegacyOnlySearchField(envelopeJson)) {
+        throw std::runtime_error("REST /search uses query/scope; searchId/searchQuery/refresh are WebSocket-only fields");
     }
 
-    std::vector<TileId> tileIds;
-    tileIds.reserve(tileIdsJson.size());
-    for (auto const& tileIdJson : tileIdsJson) {
-        tileIds.emplace_back(tileIdJson.get<uint64_t>());
+    FeatureLayerSearchRequest search;
+    search.query_ = envelopeJson.at("query").get<std::string>();
+    search.scope_ = parseSearchScopeField(envelopeJson, "scope");
+    parseWithFields(envelopeJson, search);
+    return search;
+}
+
+ParsedLayerTilesRequest parseRestSearchLayerRequestJson(
+    const nlohmann::json& requestJson,
+    const FeatureLayerSearchRequest& searchTemplate)
+{
+    if (containsInteractiveSearchFields(requestJson) || containsRestSearchFields(requestJson)) {
+        throw std::runtime_error("REST /search query/scope/withFields must be specified on the request envelope");
     }
-    result.tileIdsByNextStage.push_back(std::move(tileIds));
+
+    ParsedLayerTilesRequest result;
+    result.mapId = requestJson.at("mapId").get<std::string>();
+    result.layerId = requestJson.at("layerId").get<std::string>();
+    result.searchRequest = searchTemplate;
+
+    if (auto priorityIt = requestJson.find("priorityTileIds");
+        priorityIt != requestJson.end())
+    {
+        if (!priorityIt->is_array()) {
+            throw std::runtime_error("priorityTileIds must be an array");
+        }
+        result.priorityTileIds.reserve(priorityIt->size());
+        for (auto const& tileIdJson : *priorityIt) {
+            result.priorityTileIds.emplace_back(tileIdJson.get<uint64_t>());
+        }
+    }
+
+    parsePlainTileIdsInto(result, requestJson);
     return result;
 }
 

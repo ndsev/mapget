@@ -520,3 +520,35 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
         REQUIRE(std::string(e.what()) == "search requests must use tileIds; tileIdsByNextStage is not supported");
     }
 }
+
+TEST_CASE("REST search parser keeps one-shot search fields on envelope", "[feature-layer-search][tiles-request]")
+{
+    nlohmann::json envelope = {
+        {"query", "typeId == 'Road'"},
+        {"scope", "attribute"},
+        {"withFields", {"$feature.typeId", "$name"}},
+    };
+    nlohmann::json request = {
+        {"mapId", "TestMap"},
+        {"layerId", "RoadLayer"},
+        {"tileIds", {1, 2}},
+    };
+
+    auto search = detail::parseRestSearchEnvelopeJson(envelope);
+    auto parsed = detail::parseRestSearchLayerRequestJson(request, search);
+
+    REQUIRE(parsed.searchRequest.has_value());
+    REQUIRE(parsed.searchRequest->searchId_.empty());
+    REQUIRE(parsed.searchRequest->requestKey_.empty());
+    REQUIRE(parsed.searchRequest->scope_ == FeatureLayerSearchScope::Attribute);
+    REQUIRE(parsed.searchRequest->withFields_ == std::vector<std::string>{"$feature.typeId", "$name"});
+    REQUIRE(detail::collectSearchTileIds(parsed) == std::vector<TileId>{TileId(1), TileId(2)});
+
+    envelope["searchId"] = "interactive-only";
+    try {
+        (void)detail::parseRestSearchEnvelopeJson(envelope);
+        FAIL("REST search must reject interactive search fields");
+    } catch (const std::runtime_error& e) {
+        REQUIRE(std::string(e.what()).find("WebSocket-only") != std::string::npos);
+    }
+}

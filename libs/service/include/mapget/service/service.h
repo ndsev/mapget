@@ -183,6 +183,7 @@ private:
 class FeatureLayerSearchTilesRequest
 {
     friend class Service;
+    friend class HttpClient;
 
 public:
     using Ptr = std::shared_ptr<FeatureLayerSearchTilesRequest>;
@@ -249,7 +250,7 @@ public:
     std::function<void(RequestStatus)> onDone_;
 
 protected:
-    void notifyResult(TileSearchResultLayer::Ptr);
+    virtual void notifyResult(TileSearchResultLayer::Ptr);
     void notifyProgress(nlohmann::json const& status);
     void setStatus(RequestStatus s);
     void notifyStatus();

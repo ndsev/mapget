@@ -21,12 +21,14 @@ namespace mapget
 TileLayerStream::Reader::Reader(
     LayerInfoResolveFun layerInfoProvider,
     std::function<void(TileLayer::Ptr)> onParsedLayer,
-    std::shared_ptr<StringPoolCache> stringPoolProvider)
+    std::shared_ptr<StringPoolCache> stringPoolProvider,
+    std::function<void(MessageType, std::string_view)> onControlMessage)
     : layerInfoProvider_(std::move(layerInfoProvider)),
       stringPoolProvider_(
           stringPoolProvider ? std::move(stringPoolProvider) :
                                std::make_shared<TileLayerStream::StringPoolCache>()),
-      onParsedLayer_(std::move(onParsedLayer))
+      onParsedLayer_(std::move(onParsedLayer)),
+      onControlMessage_(std::move(onControlMessage))
 {
 }
 
@@ -121,6 +123,18 @@ bool TileLayerStream::Reader::continueReading()
         if (!result) {
             raise(result.error().message);
         }
+    }
+    else if (onControlMessage_
+             && (nextValueType_ == MessageType::Status
+                 || nextValueType_ == MessageType::LoadStateChange
+                 || nextValueType_ == MessageType::RequestContext
+                 || nextValueType_ == MessageType::EndOfStream))
+    {
+        onControlMessage_(
+            nextValueType_,
+            std::string_view(
+                reinterpret_cast<const char*>(payload.data()),
+                payload.size()));
     }
 
     currentPhase_ = Phase::ReadHeader;

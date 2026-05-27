@@ -57,6 +57,27 @@ bool isDataSourceDescriptorEnabled(YAML::Node const& descriptor)
     }
 }
 
+/** Build the common search-status payload, omitting interactive-only fields when absent. */
+nlohmann::json makeSearchStatusJson(
+    FeatureLayerSearchTilesRequest const& request,
+    std::string state)
+{
+    auto status = nlohmann::json::object({
+        {"type", "mapget.search.status"},
+        {"mapId", request.mapId_},
+        {"layerId", request.layerId_},
+        {"state", std::move(state)},
+    });
+    if (!request.search_.searchId_.empty()) {
+        status["searchId"] = request.search_.searchId_;
+        status["refresh"] = request.search_.refresh_.value_or(0);
+    }
+    if (!request.search_.requestKey_.empty()) {
+        status["requestKey"] = request.search_.requestKey_;
+    }
+    return status;
+}
+
 }  // namespace
 
 LayerTilesRequest::LayerTilesRequest(
@@ -1242,20 +1263,13 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
 
         [[nodiscard]] nlohmann::json progress(std::string state) const
         {
-            return nlohmann::json::object({
-                {"type", "mapget.search.status"},
-                {"searchId", request->search_.searchId_},
-                {"refresh", request->search_.refresh_.value_or(0)},
-                {"requestKey", request->search_.requestKey_},
-                {"mapId", request->mapId_},
-                {"layerId", request->layerId_},
-                {"state", std::move(state)},
-                {"tilesQueued", expectedTiles},
-                {"tilesLoaded", loadedStages},
-                {"tilesSearched", searchedTiles},
-                {"matches", matches},
-                {"chunksEmitted", chunksEmitted},
-            });
+            auto status = makeSearchStatusJson(*request, std::move(state));
+            status["tilesQueued"] = expectedTiles;
+            status["tilesLoaded"] = loadedStages;
+            status["tilesSearched"] = searchedTiles;
+            status["matches"] = matches;
+            status["chunksEmitted"] = chunksEmitted;
+            return status;
         }
 
         void emitProgress(std::string state)
@@ -1310,16 +1324,9 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
                 request->mapId_,
                 request->layerId_,
                 error.message);
-            request->notifyProgress(nlohmann::json::object({
-                {"type", "mapget.search.status"},
-                {"searchId", request->search_.searchId_},
-                {"refresh", request->search_.refresh_.value_or(0)},
-                {"requestKey", request->search_.requestKey_},
-                {"mapId", request->mapId_},
-                {"layerId", request->layerId_},
-                {"state", "Failed"},
-                {"error", error.message},
-            }));
+            auto status = makeSearchStatusJson(*request, "Failed");
+            status["error"] = error.message;
+            request->notifyProgress(status);
             abortChildRequests();
             request->setStatus(RequestStatus::Aborted);
         }
@@ -1462,20 +1469,13 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
         state->childFinished(status);
     };
 
-    request->notifyProgress(nlohmann::json::object({
-        {"type", "mapget.search.status"},
-        {"searchId", request->search_.searchId_},
-        {"refresh", request->search_.refresh_.value_or(0)},
-        {"requestKey", request->search_.requestKey_},
-        {"mapId", request->mapId_},
-        {"layerId", request->layerId_},
-        {"state", "Open"},
-        {"tilesQueued", request->tileIds_.size()},
-        {"tilesLoaded", 0},
-        {"tilesSearched", 0},
-        {"matches", 0},
-        {"chunksEmitted", 0},
-    }));
+    auto status = makeSearchStatusJson(*request, "Open");
+    status["tilesQueued"] = request->tileIds_.size();
+    status["tilesLoaded"] = 0;
+    status["tilesSearched"] = 0;
+    status["matches"] = 0;
+    status["chunksEmitted"] = 0;
+    request->notifyProgress(status);
 
     return this->request(std::vector<LayerTilesRequest::Ptr>{childRequest}, clientHeaders);
 }

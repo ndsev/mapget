@@ -6,7 +6,7 @@ Mapget exposes a small HTTP + WebSocket API that lets clients discover datasourc
 
 The server started by `mapget serve` listens on the configured host and port (by default on all interfaces and an automatically chosen port). All endpoints are rooted at that host and port.
 
-Requests that send JSON use `Content-Type: application/json`. HTTP tile streaming supports two response encodings, selected via the `Accept` header:
+Requests that send JSON use `Content-Type: application/json`. HTTP tile/search streaming supports two response encodings, selected via the `Accept` header or a top-level `responseType` override:
 
 - `Accept: application/jsonl` returns a JSON‑Lines stream where each line is one JSON object.
 - `Accept: application/binary` returns a compact binary stream optimized for high-volume traffic.
@@ -35,6 +35,7 @@ Each item contains map ID, available layers and basic metadata. Each layer entry
     - either `tileIds`: array of numeric tile IDs in mapget’s tiling scheme. This is an **unstaged** request shape: the service does not expand it into one backend fetch per advertised stage and returns one tile response per requested tile with no explicit stage affinity.
     - or `tileIdsByNextStage`: array of arrays where bucket `i` lists tiles whose next missing stage is `i`. This is the **staged** request shape: the service expands each tile to stage `i` and all higher stages advertised by the layer.
     - `priorityTileIds` (optional): array of numeric tile IDs from the same request that should be scheduled before regular tile IDs. This is only a scheduling hint; it does not request additional tiles and does not change staged vs. unstaged semantics.
+  - `responseType` (optional): `binary`, `jsonl` or `json`. This overrides `Accept`; `json` is an alias for JSON Lines.
   - `stringPoolOffsets` (optional): dictionary from datasource node ID to last known string ID. Used by advanced clients to avoid receiving the same field names repeatedly in the binary stream.
 - **Response:**
   - `application/jsonl` if `Accept: application/jsonl` is sent.
@@ -68,35 +69,32 @@ If `Accept-Encoding: gzip` is set, the server compresses responses where possibl
 
 To cancel an in-flight HTTP stream, close the HTTP connection.
 
-## `/tiles` – server-side search-as-map
+## `/search` – server-side search-as-map (HTTP)
 
-Server-side search is requested through the same `/tiles` endpoint as normal tile streaming. A request becomes a search request when it contains `searchId` and `searchQuery` (either on the top-level envelope or on an individual request object). The server loads the requested source tiles through the normal scheduler/cache path, evaluates the SIMFIL predicate on the backend, and streams `TileSearchResultLayer` chunks back to the client.
+`POST /search` runs a one-shot server-side SIMFIL search over feature tiles and streams `TileSearchResultLayer` chunks back to the client. `POST /tiles` is tile-only; REST clients must use `/search` for search.
 
-Search requests are supported by both transports:
-
-- `POST /tiles` streams search status objects and search-result layers in the HTTP response.
-- WebSocket `GET /tiles` accepts the same request JSON; result layers are pulled as binary `TileSearchResultLayer` frames via `/tiles/next`.
+- **Method:** `POST`
+- **Request body (JSON):**
+  - `query`: string SIMFIL predicate evaluated on each candidate context.
+  - `scope` (optional): `"feature"` (default) evaluates once per feature. `"attribute"` evaluates once per attribute validity context.
+  - `withFields` (optional): array of SIMFIL expressions evaluated for every match. Values are stored in `SearchResult.values` in the same order.
+  - `responseType` (optional): `"binary"`, `"jsonl"` or `"json"`. This overrides `Accept`; `"json"` is an alias for JSON Lines.
+  - `requests`: array of source-layer requests with `mapId`, `layerId`, `tileIds`, and optional `priorityTileIds`.
+  - `stringPoolOffsets` (optional): same binary stream optimization as `/tiles`.
+- **Response:**
+  - `application/jsonl` if `Accept: application/jsonl` or `responseType: "jsonl"` is used.
+  - `application/binary` if `Accept: application/binary`, `responseType: "binary"`, or no response type is specified.
 
 Search requests must use `tileIds`, not `tileIdsByNextStage`. The server always loads all advertised stages for every searched tile before evaluating the SIMFIL predicate, so client-side "next missing stage" buckets are not meaningful for search.
 
-Search fields:
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `searchId` | string | yes | Client-visible identity for the logical search. Reusing the same ID updates the ongoing search in the client session. |
-| `searchQuery` | string | yes | SIMFIL predicate evaluated on each candidate context. A truthy result adds the feature to the search-result layer. |
-| `searchScope` | string | no | `"feature"` (default) evaluates once per feature. `"attribute"` evaluates once per attribute validity context. |
-| `withFields` | array of strings | no | SIMFIL expressions evaluated for every match. Their values are stored in `SearchResult.values` in the same order. |
-| `refresh` | integer | no | Optional client refresh counter. It is echoed in search status/result metadata so clients can order updates of the same `searchId`. |
-
-Search fields may be placed on the request envelope to apply to every request entry:
+Example REST search request:
 
 ```json
 {
-  "searchId": "road-label-search",
-  "searchQuery": "typeId == 'Road'",
-  "searchScope": "feature",
+  "query": "typeId == 'Road'",
+  "scope": "feature",
   "withFields": ["name", "typeId", "speedLimitKmh"],
+  "responseType": "jsonl",
   "requests": [
     {
       "mapId": "Tropico",
@@ -107,25 +105,7 @@ Search fields may be placed on the request envelope to apply to every request en
 }
 ```
 
-Or they may be attached to a single request object:
-
-```json
-{
-  "requests": [
-    {
-      "mapId": "Tropico",
-      "layerId": "WayLayer",
-      "tileIds": [1234],
-      "searchId": "speed-attributes",
-      "searchQuery": "$name == 'speedLimit' && limit > 50",
-      "searchScope": "attribute",
-      "withFields": ["limit", "$feature.typeId", "$layer", "$validityIndex", "$validityCount"]
-    }
-  ]
-}
-```
-
-For `searchScope: "feature"`, the SIMFIL context is the feature itself. For `searchScope: "attribute"`, the context is an attribute object with a few overlay fields:
+For `scope: "feature"`, the SIMFIL context is the feature itself. For `scope: "attribute"`, the context is an attribute object with a few overlay fields:
 
 | Field | Meaning |
 |-------|---------|
@@ -135,11 +115,15 @@ For `searchScope: "feature"`, the SIMFIL context is the feature itself. For `sea
 | `$validityIndex` | Zero-based validity index being evaluated. |
 | `$validityCount` | Number of validity contexts for the matched attribute. |
 
-`withFields` expressions run in the same context as `searchQuery`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer. Attribute-scope results use the computed validity geometry for the matched validity when one is available; otherwise they fall back to the feature display geometry.
+`withFields` expressions run in the same context as `query`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer. Attribute-scope results use the computed validity geometry for the matched validity when one is available; otherwise they fall back to the feature display geometry.
+
+### Interactive WebSocket Search
+
+WebSocket search remains part of the `/tiles` control channel because it supports replacing an ongoing logical search. The WebSocket request shape uses `searchId`, `searchQuery`, optional `searchScope`, optional `withFields`, and optional `refresh`. Reusing the same `searchId` updates the ongoing query in the client session.
 
 ### Search result JSONL shape
 
-In `Accept: application/jsonl` mode, search result chunks are emitted as `SearchResultCollection` objects. Search progress status objects may appear between result chunks.
+In JSONL mode, search result chunks are emitted as `SearchResultCollection` objects. Search progress status objects may appear between result chunks.
 
 ```json
 {
@@ -155,14 +139,12 @@ In `Accept: application/jsonl` mode, search result chunks are emitted as `Search
     }
   ],
   "info": {
-    "searchId": "speed-attributes",
     "searchScope": "attribute",
     "resultCount": 1,
     "sourceNodeId": "WayDataSource",
     "sourceMapId": "Tropico",
     "sourceLayerId": "WayLayer",
-    "sourceTileId": 1234,
-    "searchRequestKey": "speed-attributes:123456789"
+    "sourceTileId": 1234
   },
   "results": [
     {
@@ -181,13 +163,15 @@ In `Accept: application/jsonl` mode, search result chunks are emitted as `Search
 }
 ```
 
+Interactive WebSocket search result layers additionally carry `info.searchId`, `info.searchRequestKey`, and optional `info.refresh` so clients can route replacement-search updates.
+
 Important result fields:
 
 | Field | Description |
 |-------|-------------|
 | `resultFields` | Copy of the requested `withFields` expressions. Indices align with every result's `values` array. |
 | `results[].featureId` | Dot-separated feature ID string for the matched source feature. |
-| `diagnostics` | Optional parsed SIMFIL diagnostics from `searchQuery` evaluation, serialized with the result layer and exported in JSONL mode. |
+| `diagnostics` | Optional parsed SIMFIL diagnostics from `query` evaluation, serialized with the result layer and exported in JSONL mode. |
 | `results[].geometry` | Copied display geometry used for map styling/highlighting. For attribute-scope validity matches, this is the computed validity geometry when available. |
 | `results[].values` | Evaluated `withFields` values in order. |
 | `results[].match` | Present for attribute-scope matches and identifies the matched attribute/validity context. |
@@ -196,13 +180,11 @@ Important result fields:
 
 ### Search status objects
 
-Search status frames/JSONL lines have `type: "mapget.search.status"` and describe backend progress independently from the regular `/tiles` request-status frame:
+Search status frames/JSONL lines have `type: "mapget.search.status"` and describe backend progress:
 
 ```json
 {
   "type": "mapget.search.status",
-  "searchId": "speed-attributes",
-  "refresh": 1,
   "state": "TileSearched",
   "tilesQueued": 8,
   "tilesLoaded": 4,
@@ -212,14 +194,14 @@ Search status frames/JSONL lines have `type: "mapget.search.status"` and describ
 }
 ```
 
-Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`, `Aborted` and `Failed`. Failed statuses also include an `error` string.
+Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`, `Aborted` and `Failed`. Failed statuses also include an `error` string. WebSocket status objects also include `searchId`, `requestKey`, and optional `refresh`.
 
 ## `/tiles` – interactive control channel (WebSocket)
 
 `GET /tiles` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/tiles/next`.
 
 - **Connect:** `ws://<host>:<port>/tiles`
-- **Client → Server:** send one *text* message containing the same JSON body as for `POST /tiles` (`requests`, optional `stringPoolOffsets`).
+- **Client → Server:** send one *text* message containing tile `requests`, optional `stringPoolOffsets`, and optional interactive search fields (`searchId`, `searchQuery`, `searchScope`, `withFields`, `refresh`).
   - `stringPoolOffsets` is optional; the server remembers the latest offsets per WebSocket connection. Clients may re-send it to reset/resync offsets.
 - **Server → Client:** sends *binary* WebSocket messages carrying VTLV control frames.
   - `RequestContext` frames contain a UTF-8 JSON payload with `requestId` and `clientId`. The `clientId` is then used for `/tiles/next`.
@@ -351,15 +333,29 @@ void main(int argc, char const *argv[])
      HttpClient client("localhost", service.port());
      // Or disable compression: HttpClient client("localhost", service.port(), {}, false);
 
-     auto receivedTileCount = 0;
-     client.request(std::make_shared<LayerTilesRequest>(
+     auto tileRequest = std::make_shared<LayerTilesRequest>(
          "Tropico",
          "WayLayer",
-         std::vector<TileId>{{1234, 5678, 9112, 1234}},
-         [&](auto&& tile) { receivedTileCount++; }
-     ))->wait();
+         std::vector<TileId>{{1234, 5678, 9112, 1234}});
+     auto receivedTileCount = 0;
+     tileRequest->onFeatureLayer([&](auto&& tile) { receivedTileCount++; });
+     client.request(tileRequest)->wait();
 
      std::cout << receivedTileCount << std::endl;
+
+     FeatureLayerSearchRequest search;
+     search.query_ = "typeId == 'Road'";
+     search.withFields_ = {"name", "typeId"};
+     auto searchRequest = std::make_shared<FeatureLayerSearchTilesRequest>(
+         "Tropico",
+         "WayLayer",
+         std::vector<TileId>{{1234, 5678}},
+         std::move(search));
+     searchRequest->onSearchResult([](TileSearchResultLayer::Ptr layer) {
+         std::cout << "matches in tile: " << layer->size() << std::endl;
+     });
+     client.search(searchRequest)->wait();
+
      service.stop();
 }
 ```

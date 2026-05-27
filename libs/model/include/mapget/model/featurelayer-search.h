@@ -22,7 +22,7 @@ enum class FeatureLayerSearchScope
 /** Request parameters for turning a TileFeatureLayer into a TileSearchResultLayer. */
 struct FeatureLayerSearchRequest
 {
-    /** Client-visible search identity. Reusing this id updates the logical search. */
+    /** Optional client-visible search identity used by interactive transports. */
     std::string searchId_;
     /** Transport-internal refresh/fingerprint key used to drop stale result frames. */
     std::string requestKey_;
@@ -59,11 +59,10 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
     FeatureLayerSearchRequest const& request);
 
 /**
- * Assemble a transient full feature tile from ordered staged payloads.
+ * Assemble a full feature tile from ordered staged payloads.
  *
- * The returned layer clones every stage into a single feature model using the
- * source tile node id/string-pool namespace. Source tiles and datasource-owned
- * string pools are left untouched.
+ * The first stage is reused as the base layer and later stages are attached as
+ * overlays. Repeated assembly with the same stage pointers is idempotent.
  */
 tl::expected<TileFeatureLayer::Ptr, simfil::Error> assembleFeatureLayerStages(
     std::span<TileFeatureLayer::Ptr const> stages);

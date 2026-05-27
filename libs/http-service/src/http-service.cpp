@@ -30,6 +30,13 @@ void HttpService::setup(drogon::HttpAppFramework& app)
         {drogon::Post});
 
     app.registerHandler(
+        "/search",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleSearchRequest(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    app.registerHandler(
         "/sources",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             impl_->handleSourcesRequest(req, std::move(callback));

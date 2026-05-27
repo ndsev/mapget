@@ -46,6 +46,15 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    void handleSearchRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
+
+    void handleTilesLikeRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+        bool searchEndpoint) const;
+
     void handleSourcesRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;

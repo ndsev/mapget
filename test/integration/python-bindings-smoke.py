@@ -26,6 +26,9 @@ def _post_json(url: str, body: dict):
 
 
 def main() -> int:
+    assert hasattr(mapget, "SearchRequest")
+    assert hasattr(mapget, "TileSearchResultLayer")
+
     point = mapget.Point
     cache_expired_calls: list[tuple[str, int]] = []
     requested_stages: list[int | None] = []
