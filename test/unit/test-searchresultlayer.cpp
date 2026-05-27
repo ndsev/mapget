@@ -397,6 +397,60 @@ TEST_CASE("Service search loads staged payloads and evaluates in scheduled searc
     REQUIRE_FALSE(statuses.empty());
 }
 
+TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", "[feature-layer-search]")
+{
+    auto layerInfo = makeSearchResultLayerInfo();
+    auto strings = std::make_shared<StringPool>("RepeatedSearchStageNode");
+    auto base = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        strings->nodeId_,
+        "TestMap",
+        layerInfo,
+        strings);
+    base->setStage(0);
+    auto baseFeature = base->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    baseFeature->addLine({Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0)});
+
+    auto overlay = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        strings->nodeId_,
+        "TestMap",
+        layerInfo,
+        strings);
+    overlay->setStage(1);
+    auto overlayFeature = overlay->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    auto attr = overlayFeature->attributeLayers()->newLayer("details")->newAttribute("speedLimit");
+    attr->addField("limit", overlay->newValue(int64_t(80)));
+    auto const sourceStringHighWatermark = strings->highest();
+
+    std::vector<TileFeatureLayer::Ptr> stages{base, overlay};
+    auto request = FeatureLayerSearchRequest{
+        .searchId_ = "repeat-assembly-search",
+        .query_ = "$name == 'speedLimit'",
+        .scope_ = FeatureLayerSearchScope::Attribute,
+        .withFields_ = {"limit"},
+        .sourceStageMask_ = {0, 1},
+    };
+
+    auto firstAssembly = assembleFeatureLayerStages(stages);
+    REQUIRE(firstAssembly.has_value());
+    REQUIRE(*firstAssembly == base);
+    auto firstResult = searchFeatureLayerAsResultLayer(**firstAssembly, request);
+    REQUIRE(firstResult.has_value());
+    REQUIRE(firstResult->layer_->stage() == std::nullopt);
+    REQUIRE(firstResult->layer_->size() == 1);
+    REQUIRE(firstResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({80}));
+
+    auto secondAssembly = assembleFeatureLayerStages(stages);
+    REQUIRE(secondAssembly.has_value());
+    REQUIRE(*secondAssembly == base);
+    auto secondResult = searchFeatureLayerAsResultLayer(**secondAssembly, request);
+    REQUIRE(secondResult.has_value());
+    REQUIRE(secondResult->layer_->size() == 1);
+    REQUIRE(secondResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({80}));
+    REQUIRE(strings->highest() == sourceStringHighWatermark);
+}
+
 TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer-search][tiles-request]")
 {
     nlohmann::json envelope = {

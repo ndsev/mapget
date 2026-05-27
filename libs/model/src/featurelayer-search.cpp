@@ -4,11 +4,13 @@
 #include <functional>
 #include <map>
 #include <set>
-#include <sstream>
+#include <tuple>
 
 #include "fmt/format.h"
 #include "mapget/log.h"
+#include "mapget/model/simfilutil.h"
 #include "simfil/overlay.h"
+#include "simfil/simfil.h"
 
 namespace mapget
 {
@@ -26,54 +28,62 @@ tl::expected<std::shared_ptr<StringPool>, simfil::Error> copyStringPool(TileFeat
     return std::make_shared<StringPool>(*sourceStrings);
 }
 
-/** Serialize/parse a feature layer with a copied string pool for side-effect-free SIMFIL evaluation. */
-tl::expected<TileFeatureLayer::Ptr, simfil::Error> makeEvaluationLayerCopy(TileFeatureLayer& sourceLayer)
+/** Cache and evaluate SIMFIL expressions without touching the source layer's expression cache. */
+class SearchEvaluator
 {
-    std::ostringstream serialized;
-    if (auto writeResult = sourceLayer.write(serialized); !writeResult) {
-        return tl::unexpected(writeResult.error());
-    }
+public:
+    explicit SearchEvaluator(std::unique_ptr<simfil::Environment> env)
+        : env_(std::move(env))
+    {}
 
-    auto bytesString = serialized.str();
-    std::vector<uint8_t> bytes(bytesString.begin(), bytesString.end());
-    auto copiedStringsResult = copyStringPool(sourceLayer);
-    if (!copiedStringsResult) {
-        return tl::unexpected(copiedStringsResult.error());
-    }
-    std::shared_ptr<simfil::StringPool> copiedStrings = *copiedStringsResult;
-    auto sourceInfo = sourceLayer.layerInfo();
-    auto sourceMapId = sourceLayer.mapId();
-    auto sourceLayerId = sourceInfo ? sourceInfo->layerId_ : std::string{};
-
-    try {
-        auto copiedLayer = std::make_shared<TileFeatureLayer>(
-            bytes,
-            [sourceInfo = std::move(sourceInfo),
-             sourceMapId = std::move(sourceMapId),
-             sourceLayerId = std::move(sourceLayerId)](
-                std::string_view mapId,
-                std::string_view layerId) -> std::shared_ptr<LayerInfo> {
-                if (mapId == sourceMapId && layerId == sourceLayerId) {
-                    return sourceInfo;
-                }
-                return {};
-            },
-            [copiedStrings = std::move(copiedStrings)](std::string_view) {
-                return copiedStrings;
-            });
-        if (auto overlay = sourceLayer.overlay()) {
-            auto copiedOverlay = makeEvaluationLayerCopy(*overlay);
-            if (!copiedOverlay) {
-                return tl::unexpected(copiedOverlay.error());
+    /** Evaluate one expression against a source-layer node using search-local mutable state. */
+    tl::expected<TileFeatureLayer::QueryResult, simfil::Error> evaluate(
+        std::string_view query,
+        simfil::ModelNode const& node,
+        bool anyMode,
+        bool autoWildcard)
+    {
+        auto key = std::make_tuple(std::string(query), anyMode, autoWildcard);
+        auto astIt = cache_.find(key);
+        if (astIt == cache_.end()) {
+            auto ast = simfil::compile(*env_, query, anyMode, autoWildcard);
+            if (!ast) {
+                return tl::unexpected<simfil::Error>(std::move(ast.error()));
             }
-            copiedLayer->attachOverlay(*copiedOverlay);
+            astIt = cache_.emplace(std::move(key), std::move(*ast)).first;
         }
-        return copiedLayer;
-    } catch (std::exception const& e) {
-        return tl::unexpected(simfil::Error{
-            simfil::Error::InternalError,
-            fmt::format("Failed to create side-effect-free search evaluation layer: {}", e.what())});
+
+        env_->warnings.clear();
+        env_->traces.clear();
+
+        TileFeatureLayer::QueryResult result;
+        auto values = simfil::eval(*env_, *astIt->second, node, &result.diagnostics);
+        if (!values) {
+            env_->traces.clear();
+            return tl::unexpected<simfil::Error>(std::move(values.error()));
+        }
+
+        result.values = std::move(*values);
+        result.traces = std::move(env_->traces);
+        env_->traces.clear();
+        return result;
     }
+
+private:
+    std::unique_ptr<simfil::Environment> env_;
+    std::map<std::tuple<std::string, bool, bool>, simfil::ASTPtr> cache_;
+};
+
+/** Build a search-local evaluator whose string IDs match the source layer. */
+tl::expected<std::unique_ptr<SearchEvaluator>, simfil::Error> makeSearchEvaluator(TileFeatureLayer const& sourceLayer)
+{
+    auto copiedStrings = copyStringPool(sourceLayer);
+    if (!copiedStrings) {
+        return tl::unexpected(copiedStrings.error());
+    }
+    auto env = makeEnvironment(*copiedStrings);
+    installSchemaRegistry(*env, sourceLayer.schemaRegistry(), *copiedStrings);
+    return std::make_unique<SearchEvaluator>(std::move(env));
 }
 
 /** Convert a SIMFIL value into a node owned by the search-result layer. */
@@ -272,6 +282,7 @@ nlohmann::json tracesToJson(std::map<std::string, simfil::Trace> const& traces)
 /** Evaluate withFields expressions in the same context as the match expression. */
 std::vector<simfil::ModelNode::Ptr> evaluateWithFields(
     TileFeatureLayer& sourceLayer,
+    SearchEvaluator& evaluator,
     TileSearchResultLayer& resultLayer,
     simfil::ModelNode const& context,
     std::vector<std::string> const& expressions,
@@ -281,7 +292,7 @@ std::vector<simfil::ModelNode::Ptr> evaluateWithFields(
     std::vector<simfil::ModelNode::Ptr> values;
     values.reserve(expressions.size());
     for (auto const& expression : expressions) {
-        auto evalResult = sourceLayer.evaluate(expression, context, false, false);
+        auto evalResult = evaluator.evaluate(expression, context, false, false);
         if (!evalResult) {
             if (reportedFieldFailures.insert(expression).second) {
                 log().warn(
@@ -316,6 +327,7 @@ struct AttributeMatchInfo
 /** Add a result for one matched feature/context pair. */
 tl::expected<void, simfil::Error> addSearchResult(
     TileFeatureLayer& sourceLayer,
+    SearchEvaluator& evaluator,
     TileSearchResultLayer& resultLayer,
     FeatureLayerSearchRequest const& request,
     model_ptr<Feature> const& feature,
@@ -326,6 +338,7 @@ tl::expected<void, simfil::Error> addSearchResult(
 {
     auto values = evaluateWithFields(
         sourceLayer,
+        evaluator,
         resultLayer,
         context,
         request.withFields_,
@@ -375,18 +388,10 @@ tl::expected<TileFeatureLayer::Ptr, simfil::Error> assembleFeatureLayerStages(
         return lhs->stage().value_or(0U) < rhs->stage().value_or(0U);
     });
 
-    auto assembled = makeEvaluationLayerCopy(*orderedStages.front());
-    if (!assembled) {
-        return tl::unexpected(assembled.error());
-    }
-    (*assembled)->setStage(std::nullopt);
+    auto assembled = orderedStages.front();
 
     for (auto const& stageLayer : std::span(orderedStages).subspan(1)) {
-        auto copiedStage = makeEvaluationLayerCopy(*stageLayer);
-        if (!copiedStage) {
-            return tl::unexpected(copiedStage.error());
-        }
-        (*assembled)->attachOverlay(*copiedStage);
+        assembled->attachOverlay(stageLayer);
     }
 
     return assembled;
@@ -396,21 +401,21 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
     TileFeatureLayer& sourceLayer,
     FeatureLayerSearchRequest const& request)
 {
-    auto evaluationLayer = makeEvaluationLayerCopy(sourceLayer);
-    if (!evaluationLayer) {
-        return tl::unexpected(evaluationLayer.error());
+    auto evaluator = makeSearchEvaluator(sourceLayer);
+    if (!evaluator) {
+        return tl::unexpected(evaluator.error());
     }
-    auto& searchLayer = **evaluationLayer;
+    auto& searchLayer = sourceLayer;
 
     auto resultLayer = std::make_shared<TileSearchResultLayer>(
         searchLayer.tileId(),
         searchLayer.nodeId(),
         searchLayer.mapId(),
         searchLayer.layerInfo(),
-        searchLayer.strings());
+        sourceLayer.strings());
     resultLayer->setGeometryAnchor(searchLayer.geometryAnchor());
     resultLayer->setTimestamp(searchLayer.timestamp());
-    resultLayer->setStage(searchLayer.stage());
+    resultLayer->setStage(request.sourceStageMask_.size() > 1 ? std::nullopt : searchLayer.stage());
     resultLayer->setResultFields(request.withFields_);
     resultLayer->setInfo("searchId", request.searchId_);
     resultLayer->setInfo("searchScope", request.scope_ == FeatureLayerSearchScope::Attribute ? "attribute" : "feature");
@@ -440,7 +445,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                                  std::optional<AttributeMatchInfo> const& attributeMatch)
         -> tl::expected<void, simfil::Error>
     {
-        auto evalResult = searchLayer.evaluate(request.query_, context, true);
+        auto evalResult = (*evaluator)->evaluate(request.query_, context, true, true);
         if (!evalResult) {
             return tl::unexpected(evalResult.error());
         }
@@ -451,6 +456,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
         }
         return addSearchResult(
             searchLayer,
+            **evaluator,
             *resultLayer,
             request,
             feature,

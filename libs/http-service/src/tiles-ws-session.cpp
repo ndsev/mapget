@@ -723,6 +723,7 @@ private:
         size_t statusIndex)
     {
         const auto weak = weak_from_this();
+        const std::weak_ptr<FeatureLayerSearchTilesRequest> weakRequest = request;
         request->onSearchResult([weak](TileSearchResultLayer::Ptr layer) {
             if (auto self = weak.lock()) {
                 self->onTileLayer(std::move(layer));
@@ -735,9 +736,11 @@ private:
                     status.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore));
             }
         });
-        request->onDone_ = [weak, statusIndex, expectedRequestId, request](RequestStatus status) {
+        request->onDone_ = [weak, statusIndex, expectedRequestId, weakRequest](RequestStatus status) {
             if (auto self = weak.lock()) {
-                self->onSearchRequestDone(statusIndex, expectedRequestId, request, status);
+                if (auto request = weakRequest.lock()) {
+                    self->onSearchRequestDone(statusIndex, expectedRequestId, request, status);
+                }
             }
         };
     }
@@ -775,6 +778,7 @@ private:
         size_t statusIndex)
     {
         const auto weak = weak_from_this();
+        const std::weak_ptr<LayerTilesRequest> weakRequest = request;
         request->onFeatureLayer([weak](TileFeatureLayer::Ptr layer) {
             if (auto self = weak.lock()) {
                 self->onTileLayer(std::move(layer));
@@ -792,9 +796,11 @@ private:
                 }
             });
         }
-        request->onDone_ = [weak, statusIndex, expectedRequestId, request](RequestStatus status) {
+        request->onDone_ = [weak, statusIndex, expectedRequestId, weakRequest](RequestStatus status) {
             if (auto self = weak.lock()) {
-                self->onRequestDone(statusIndex, expectedRequestId, request, status);
+                if (auto request = weakRequest.lock()) {
+                    self->onRequestDone(statusIndex, expectedRequestId, request, status);
+                }
             }
         };
     }

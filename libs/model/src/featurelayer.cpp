@@ -495,12 +495,23 @@ void TileFeatureLayer::attachOverlay(TileFeatureLayer::Ptr const& overlay)
     if (!overlay) {
         return;
     }
+    if (overlay.get() == this) {
+        raise("Cannot attach a feature layer as its own overlay.");
+    }
 
     if (overlay->size() < size()) {
         raiseFmt(
             "Overlay feature count {} is smaller than base feature count {}.",
             overlay->size(),
             size());
+    }
+
+    // Search may assemble the same cached stage stack repeatedly. Treat an
+    // already-attached overlay as a no-op so the chain cannot grow unbounded.
+    for (auto cursor = overlay_; cursor; cursor = cursor->overlay_) {
+        if (cursor == overlay) {
+            return;
+        }
     }
 
     if (overlay_) {

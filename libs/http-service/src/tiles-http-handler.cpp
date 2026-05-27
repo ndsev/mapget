@@ -194,6 +194,20 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     /** Enable incremental gzip compression for all subsequently appended response bytes. */
     void enableGzip() { compressor_ = std::make_unique<GzipCompressor>(); }
 
+    /** Drop backend request references once no later callback needs completion accounting. */
+    void releaseBackendRequestsUnlocked()
+    {
+        requests_.clear();
+        searchRequests_.clear();
+    }
+
+    /** Thread-safe variant used by early error exits outside the stream mutex. */
+    void releaseBackendRequests()
+    {
+        std::lock_guard lock(mutex_);
+        releaseBackendRequestsUnlocked();
+    }
+
     /** Abort backend work and close the response stream after client disconnect/send failure. */
     void onAborted()
     {
@@ -215,6 +229,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             if (responseEnded_.exchange(true))
                 return;
             stream = std::move(stream_);
+            releaseBackendRequestsUnlocked();
         }
         if (stream)
             stream->close();
@@ -340,6 +355,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                 } else if (done) {
                     responseEnded_ = true;
                     streamToClose = std::move(stream_);
+                    releaseBackendRequestsUnlocked();
                 }
             }
 
@@ -532,6 +548,7 @@ void HttpService::Impl::handleTilesRequest(
         resp->setStatusCode(anyUnauthorized ? drogon::k403Forbidden : drogon::k400BadRequest);
         resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
         resp->setBody(nlohmann::json::object({{"status", requestStatuses}}).dump());
+        state->releaseBackendRequests();
         callback(resp);
         return;
     }
