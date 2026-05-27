@@ -348,6 +348,41 @@ TEST_CASE("Attribute-scope search copies computed validity geometry", "[feature-
     REQUIRE(std::abs(geometry->pointAt(1).x - 2.0) < 1e-4);
 }
 
+TEST_CASE("Attribute-scope search preserves offset point validity geometry type", "[feature-layer-search]")
+{
+    auto layerInfo = makeSearchResultLayerInfo();
+    auto strings = std::make_shared<StringPool>("PointValidityGeometrySearchNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        "PointValidityGeometrySearchNode",
+        "TestMap",
+        layerInfo,
+        strings);
+    auto feature = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    feature->addLine({Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0), Point(2.0, 0.0, 0.0)});
+    auto attr = feature->attributeLayers()->newLayer("rules")->newAttribute("warningSign");
+    attr->validity()->newPoint(Validity::BufferOffset, int32_t(1));
+
+    auto searchResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "point-validity-geometry-search",
+            .query_ = "$name == 'warningSign'",
+            .scope_ = FeatureLayerSearchScope::Attribute,
+        });
+
+    REQUIRE(searchResult.has_value());
+    REQUIRE(searchResult->layer_->size() == 1);
+
+    auto result = searchResult->layer_->at(0);
+    REQUIRE(result);
+    auto geometry = result->geometry()->geometryOfTypeAtPreferredStage(GeomType::Points);
+    REQUIRE(geometry);
+    REQUIRE(geometry->numPoints() == 1);
+    REQUIRE(std::abs(geometry->pointAt(0).x - 1.0) < 1e-4);
+    REQUIRE_FALSE(result->geometry()->geometryOfTypeAtPreferredStage(GeomType::Line));
+}
+
 TEST_CASE("Service search loads staged payloads and evaluates in scheduled search jobs", "[feature-layer-search][Service]")
 {
     auto cache = std::make_shared<MemCache>(32);

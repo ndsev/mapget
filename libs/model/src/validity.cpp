@@ -170,6 +170,17 @@ SelfContainedGeometry applyDirectionToGeometry(
     return geometry;
 }
 
+/** Preserve point-vs-range validity semantics after offset resolution. */
+GeomType geomTypeForOffsetValidity(
+    Validity::GeometryDescriptionType descriptionType,
+    std::vector<Point> const& points)
+{
+    if (descriptionType == Validity::OffsetPointValidity) {
+        return GeomType::Points;
+    }
+    return points.size() > 1 ? GeomType::Line : GeomType::Points;
+}
+
 /** Map a stored geometry stage back to the optional exported `geometryName`. */
 std::optional<std::string_view> geometryNameForStage(
     TileFeatureLayer const& model,
@@ -767,7 +778,7 @@ SelfContainedGeometry Validity::computeGeometry(
     // Handle GeoPosOffset (a range of the geometry line, bound by two positions).
     if (offsetType == GeoPosOffset) {
         auto points = geometry->pointsFromPositionBound(startPoint, endPoint);
-        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
+        return applyDirectionToGeometry({points, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
     }
 
     // Handle BufferOffset (a range of the geometry bound by two indices).
@@ -800,7 +811,7 @@ SelfContainedGeometry Validity::computeGeometry(
         for (auto pointIndex = startPointIndex; pointIndex <= endPointIndex; ++pointIndex) {
             points.emplace_back(geometry->pointAt(pointIndex));
         }
-        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
+        return applyDirectionToGeometry({points, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
     }
 
     // Handle RelativeLengthOffset (a percentage range of the geometry).
@@ -816,7 +827,7 @@ SelfContainedGeometry Validity::computeGeometry(
     // Handle MetricLengthOffset (a length range of the geometry in meters).
     if (offsetType == MetricLengthOffset || offsetType == RelativeLengthOffset) {
         auto points = geometry->pointsFromLengthBound(startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
-        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
+        return applyDirectionToGeometry({points, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
     }
 
     if (error) {
