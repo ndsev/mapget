@@ -359,6 +359,37 @@ TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mut
     REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
 }
 
+TEST_CASE("TileFeatureLayer auto-wildcard uses schema enum paths", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto strings = std::make_shared<StringPool>("SchemaAutoWildcardNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SchemaAutoWildcardNode",
+        "SchemaAutoWildcardMap",
+        layerInfo,
+        strings);
+
+    auto feature = tile->newFeature("Carrier", {{"carrierId", 7}});
+    auto attrs = feature->attributes();
+    REQUIRE(attrs->addField("displayName", "km/h").has_value());
+    auto layer = feature->attributeLayers()->newLayer("limits");
+    auto speed = layer->newAttribute("speed");
+    REQUIRE(speed->addField("unit", "mph").has_value());
+
+    auto matchingEnum = tile->evaluate("mph", *feature, false, true);
+    REQUIRE(matchingEnum);
+    REQUIRE(matchingEnum->values.size() == 1);
+    REQUIRE(matchingEnum->values.front().isa(simfil::ValueType::Bool));
+    REQUIRE(matchingEnum->values.front().as<simfil::ValueType::Bool>());
+
+    auto unrelatedString = tile->evaluate(R"("km/h")", *feature, false, true);
+    REQUIRE(unrelatedString);
+    REQUIRE(unrelatedString->values.size() == 1);
+    REQUIRE(unrelatedString->values.front().isa(simfil::ValueType::Bool));
+    REQUIRE_FALSE(unrelatedString->values.front().as<simfil::ValueType::Bool>());
+}
+
 TEST_CASE("TileFeatureLayer exposes SchemaIds on feature-model nodes", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());

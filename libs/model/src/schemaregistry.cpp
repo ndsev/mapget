@@ -475,6 +475,45 @@ struct SchemaRegistry::Impl
         return schemas_[id].flatEnumSymbols_;
     }
 
+    [[nodiscard]] std::span<const std::string> directEnumSymbols(simfil::SchemaId id) const
+    {
+        if (!valid(id)) {
+            return {};
+        }
+        return schemas_[id].directEnumSymbols_;
+    }
+
+    void forEachDirectField(
+        simfil::SchemaId id,
+        const std::function<void(std::string_view, std::span<const simfil::SchemaId>)>& fn) const
+    {
+        if (!valid(id)) {
+            return;
+        }
+
+        auto const& schema = schemas_[id];
+        for (auto const& fieldName : schema.directFields_) {
+            auto childIt = schema.childSchemas_.find(fieldName);
+            if (childIt == schema.childSchemas_.end()) {
+                fn(fieldName, {});
+            }
+            else {
+                fn(fieldName, childIt->second);
+            }
+        }
+    }
+
+    void forEachElementSchema(simfil::SchemaId id, const std::function<void(simfil::SchemaId)>& fn) const
+    {
+        if (!valid(id)) {
+            return;
+        }
+
+        for (auto childSchemaId : schemas_[id].elementSchemas_) {
+            fn(childSchemaId);
+        }
+    }
+
     [[nodiscard]] simfil::SchemaId childSchema(
         simfil::SchemaId parent,
         std::string_view fieldName,
@@ -809,7 +848,39 @@ public:
         return nestedEnumSymbols_;
     }
 
+    /** Return direct schema enum symbols when this adapter was built for completion/compile. */
+    auto directEnumSymbols() const& -> std::span<const simfil::StringId> override
+    {
+        return directEnumSymbols_;
+    }
+
 private:
+    /** Visit direct fields using ids from the completion/compile-local pool. */
+    auto forEachDirectField(
+        const std::function<void(simfil::StringId, std::span<const simfil::SchemaId>)>& fn) const -> void override
+    {
+        if (!registry_ || !strings_) {
+            return;
+        }
+
+        auto mutableStrings = std::const_pointer_cast<simfil::StringPool>(strings_);
+        registry_->forEachDirectField(id_, [&](std::string_view fieldName, std::span<const simfil::SchemaId> schemas) {
+            auto fieldId = mutableStrings->get(fieldName);
+            if (fieldId != simfil::StringPool::Empty) {
+                fn(fieldId, schemas);
+            }
+        });
+    }
+
+    /** Visit possible array element schemas. */
+    auto forEachElementSchema(const std::function<void(simfil::SchemaId)>& fn) const -> void override
+    {
+        if (!registry_) {
+            return;
+        }
+        registry_->forEachElementSchema(id_, fn);
+    }
+
     /** Insert schema-owned strings into the completion-local pool. */
     auto materializeStringIds(std::shared_ptr<simfil::StringPool> const& strings) -> void
     {
@@ -820,6 +891,7 @@ private:
         materialize(registry_->directFields(id_), *strings, directFields_);
         materialize(registry_->nestedFields(id_), *strings, nestedFields_);
         materialize(registry_->nestedEnumSymbols(id_), *strings, nestedEnumSymbols_);
+        materialize(registry_->directEnumSymbols(id_), *strings, directEnumSymbols_);
     }
 
     /** Convert schema-owned strings into StringIds in the provided temporary pool. */
@@ -850,6 +922,7 @@ private:
     std::vector<simfil::StringId> directFields_;
     std::vector<simfil::StringId> nestedFields_;
     std::vector<simfil::StringId> nestedEnumSymbols_;
+    std::vector<simfil::StringId> directEnumSymbols_;
 };
 
 } // namespace
@@ -923,6 +996,25 @@ std::span<const std::string> SchemaRegistry::nestedFields(simfil::SchemaId schem
 std::span<const std::string> SchemaRegistry::nestedEnumSymbols(simfil::SchemaId schemaId) const
 {
     return impl_->nestedEnumSymbols(schemaId);
+}
+
+std::span<const std::string> SchemaRegistry::directEnumSymbols(simfil::SchemaId schemaId) const
+{
+    return impl_->directEnumSymbols(schemaId);
+}
+
+void SchemaRegistry::forEachDirectField(
+    simfil::SchemaId schemaId,
+    const std::function<void(std::string_view, std::span<const simfil::SchemaId>)>& fn) const
+{
+    impl_->forEachDirectField(schemaId, fn);
+}
+
+void SchemaRegistry::forEachElementSchema(
+    simfil::SchemaId schemaId,
+    const std::function<void(simfil::SchemaId)>& fn) const
+{
+    impl_->forEachElementSchema(schemaId, fn);
 }
 
 simfil::SchemaId SchemaRegistry::featureSchema(std::string_view featureType) const

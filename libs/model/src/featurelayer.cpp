@@ -309,7 +309,12 @@ struct TileFeatureLayer::Impl {
         std::shared_ptr<simfil::StringPool> stringPool,
         std::shared_ptr<LayerInfo> const& layerInfo)
         : schemaRegistry_(layerInfo ? layerInfo->schemaRegistry() : nullptr),
-          expressionCache_(makeSchemaAwareEnvironment(std::move(stringPool), schemaRegistry_))
+          expressionCache_(
+              makeSchemaAwareEnvironment(std::move(stringPool), schemaRegistry_),
+              [this]() {
+                  auto compileStrings = std::make_shared<simfil::StringPool>(*expressionCache_.environment().strings());
+                  return makeSchemaAwareCompletionEnvironment(std::move(compileStrings), schemaRegistry_);
+              })
     {
     }
 
@@ -1379,7 +1384,11 @@ TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildca
 tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
 TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode)
 {
-    return impl_->expressionCache_.diagnostics(query, diag, anyMode);
+    auto rootResult = root(0);
+    auto rootSchema = rootResult && *rootResult
+        ? (*rootResult)->schema()
+        : simfil::NoSchemaId;
+    return impl_->expressionCache_.diagnostics(query, diag, anyMode, rootSchema);
 }
 
 tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>

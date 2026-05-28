@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -67,6 +68,19 @@ public:
 
     /** Return enum-like string symbols reachable from this schema node. */
     [[nodiscard]] std::span<const std::string> nestedEnumSymbols(simfil::SchemaId schemaId) const;
+
+    /** Return enum-like string symbols declared directly by this schema node. */
+    [[nodiscard]] std::span<const std::string> directEnumSymbols(simfil::SchemaId schemaId) const;
+
+    /** Visit direct fields and their possible child schemas. */
+    void forEachDirectField(
+        simfil::SchemaId schemaId,
+        const std::function<void(std::string_view, std::span<const simfil::SchemaId>)>& fn) const;
+
+    /** Visit possible array element schemas. */
+    void forEachElementSchema(
+        simfil::SchemaId schemaId,
+        const std::function<void(simfil::SchemaId)>& fn) const;
 
     /** Resolve the Feature object schema for a concrete mapget feature type. */
     [[nodiscard]] simfil::SchemaId featureSchema(std::string_view featureType) const;

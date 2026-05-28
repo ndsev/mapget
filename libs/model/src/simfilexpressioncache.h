@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -25,31 +26,61 @@ namespace mapget
  * for a given node identifier.
  */
 using StringPoolResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
+using CompileEnvironmentFactory = std::function<std::unique_ptr<simfil::Environment>()>;
 
 /**
  * Simfil compiled expression cache.
  */
 struct SimfilExpressionCache
 {
-    explicit SimfilExpressionCache(std::unique_ptr<simfil::Environment> env)
+    explicit SimfilExpressionCache(
+        std::unique_ptr<simfil::Environment> env,
+        CompileEnvironmentFactory compileEnvironmentFactory = {})
         : env_(std::move(env))
+        , compileEnvironmentFactory_(std::move(compileEnvironmentFactory))
     {}
 
-    auto eval(std::string_view query, bool anyMode, bool autoWildcard, std::function<tl::expected<TileFeatureLayer::QueryResult, simfil::Error>(const simfil::AST&)> evalFun) -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
+    struct CacheKey
     {
+        std::string query;
+        bool anyMode = true;
+        bool autoWildcard = true;
+        simfil::SchemaId rootSchema = simfil::NoSchemaId;
+
+        auto operator<=>(CacheKey const&) const = default;
+    };
+
+    auto eval(
+        std::string_view query,
+        bool anyMode,
+        bool autoWildcard,
+        simfil::SchemaId rootSchema,
+        std::function<tl::expected<TileFeatureLayer::QueryResult, simfil::Error>(const simfil::AST&)> evalFun)
+        -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
+    {
+        auto key = CacheKey{std::string(query), anyMode, autoWildcard, rootSchema};
+
         std::shared_lock s(mtx_);
-        auto iter = cache_.find(query);
+        auto iter = cache_.find(key);
         if (iter != cache_.end())
             return evalFun(*iter->second);
         s.unlock();
 
         std::unique_lock u(mtx_);
-        auto ast = simfil::compile(*env_, query, anyMode, autoWildcard);
+        auto compileEnv = compileEnvironmentFactory_ ? compileEnvironmentFactory_() : nullptr;
+        auto& env = compileEnv ? *compileEnv : *env_;
+        auto ast = simfil::compile(
+            env,
+            query,
+            simfil::CompileOptions{
+                .any = anyMode,
+                .autoWildcard = autoWildcard,
+                .rootSchema = rootSchema});
         if (!ast)
             return tl::unexpected<simfil::Error>(std::move(ast.error()));
 
         auto [newIter, _] = cache_.emplace(
-            std::string(query),
+            std::move(key),
             std::move(*ast)
         );
         return evalFun(*newIter->second);
@@ -69,32 +100,50 @@ struct SimfilExpressionCache
             return r;
         };
 
-        return eval(query, anyMode, autoWildcard, evalFun);
+        return eval(query, anyMode, autoWildcard, node.schema(), evalFun);
     }
 
-    auto compile(std::string_view query, bool anyMode) -> tl::expected<std::reference_wrapper<const simfil::ASTPtr>, simfil::Error>
+    auto compile(
+        std::string_view query,
+        bool anyMode,
+        bool autoWildcard,
+        simfil::SchemaId rootSchema) -> tl::expected<std::reference_wrapper<const simfil::ASTPtr>, simfil::Error>
     {
+        auto key = CacheKey{std::string(query), anyMode, autoWildcard, rootSchema};
+
         std::shared_lock s(mtx_);
-        auto iter = cache_.find(query);
+        auto iter = cache_.find(key);
         if (iter != cache_.end())
             return iter->second;
         s.unlock();
 
         std::unique_lock u(mtx_);
-        auto ast = simfil::compile(*env_, query, anyMode, true);
+        auto compileEnv = compileEnvironmentFactory_ ? compileEnvironmentFactory_() : nullptr;
+        auto& env = compileEnv ? *compileEnv : *env_;
+        auto ast = simfil::compile(
+            env,
+            query,
+            simfil::CompileOptions{
+                .any = anyMode,
+                .autoWildcard = autoWildcard,
+                .rootSchema = rootSchema});
         if (!ast)
             return tl::unexpected<simfil::Error>(std::move(ast.error()));
 
         auto [newIter, _] = cache_.emplace(
-            std::string(query),
+            std::move(key),
             std::move(*ast)
         );
         return newIter->second;
     }
 
-    auto diagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode) -> tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
+    auto diagnostics(
+        std::string_view query,
+        const simfil::Diagnostics& diag,
+        bool anyMode,
+        simfil::SchemaId rootSchema = simfil::NoSchemaId) -> tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
     {
-        auto ast = compile(query, anyMode);
+        auto ast = compile(query, anyMode, true, rootSchema);
         if (!ast)
             return tl::unexpected<simfil::Error>(std::move(ast.error()));
 
@@ -119,8 +168,9 @@ struct SimfilExpressionCache
     }
 
     mutable std::shared_mutex mtx_;
-    std::map<std::string, simfil::ASTPtr, std::less<>> cache_;
+    std::map<CacheKey, simfil::ASTPtr> cache_;
     std::unique_ptr<simfil::Environment> env_;
+    CompileEnvironmentFactory compileEnvironmentFactory_;
 };
 
 }
