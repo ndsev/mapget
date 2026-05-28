@@ -39,6 +39,7 @@ public:
     RelationArrayView() = delete;
 
 private:
+    [[nodiscard]] ExtensionPtr mergedExtension() const override;
     [[nodiscard]] uint32_t localMergedSize() const override;
     [[nodiscard]] simfil::ModelNode::Ptr localMergedAt(int64_t i) const override;
     bool localMergedIterate(simfil::ModelNode::IterCallback const& cb) const override;
@@ -84,6 +85,9 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class TileFeatureLayer;
     friend class BoundFeature;
     friend class RelationArrayView;
+    friend class GeometryCollection;
+    friend class GeometryArrayView;
+    friend class AttributeLayerList;
 
 public:
     struct MergedBasicAttributesView;

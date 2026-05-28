@@ -150,25 +150,6 @@ model_ptr<Object> TileFeatureModelLayerBase::getIdPrefix() const
     return {};
 }
 
-void TileFeatureModelLayerBase::setMergedArrayExtension(
-    simfil::ModelNodeAddress /*baseAddress*/,
-    TileFeatureModelLayerBase const* /*extensionModel*/,
-    simfil::ModelNodeAddress /*extensionAddress*/)
-{
-    // Search-result layers do not use overlay chains. Feature layers override this.
-}
-
-void TileFeatureModelLayerBase::clearMergedArrayExtension(simfil::ModelNodeAddress /*baseAddress*/)
-{
-    // Search-result layers do not use overlay chains. Feature layers override this.
-}
-
-std::optional<std::pair<TileFeatureModelLayerBase const*, simfil::ModelNodeAddress>>
-TileFeatureModelLayerBase::mergedArrayExtension(simfil::ModelNodeAddress /*baseAddress*/) const
-{
-    return {};
-}
-
 model_ptr<FeatureId> TileFeatureModelLayerBase::resolveFeatureIdNode(simfil::ModelNode const&) const
 {
     raise("Cannot cast this node to a FeatureId.");
@@ -424,6 +405,7 @@ template<>
 model_ptr<GeometryCollection> resolveInternal(tag<GeometryCollection>, TileFeatureModelLayerBase const& model, ModelNode const& node)
 {
     if (node.addr().column() != TileFeatureModelLayerBase::ColumnId::GeometryCollections &&
+        node.addr().column() != TileFeatureModelLayerBase::ColumnId::FeatureGeometryCollectionView &&
         !isBaseGeometryColumn(node.addr().column()) &&
         node.addr().column() != TileFeatureModelLayerBase::ColumnId::GeometryViews) {
         raise("Cannot cast this node to a GeometryCollection.");
@@ -434,7 +416,8 @@ model_ptr<GeometryCollection> resolveInternal(tag<GeometryCollection>, TileFeatu
 template<>
 model_ptr<GeometryArrayView> resolveInternal(tag<GeometryArrayView>, TileFeatureModelLayerBase const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureModelLayerBase::ColumnId::GeometryArrayView) {
+    if (node.addr().column() != TileFeatureModelLayerBase::ColumnId::GeometryArrayView &&
+        node.addr().column() != TileFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView) {
         raise("Cannot cast this node to a GeometryArrayView.");
     }
     return GeometryArrayView(model.shared_from_this(), node.addr(), model.mpKey_);

@@ -3,6 +3,7 @@
 #include <span>
 #include <string_view>
 #include <optional>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -452,18 +453,11 @@ protected:
     [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
     Feature::ComplexData& ensureFeatureComplexData(uint32_t featureIndex);
 
-    void setMergedArrayExtension(
-        simfil::ModelNodeAddress baseAddress,
-        TileFeatureModelLayerBase const* extensionModel,
-        simfil::ModelNodeAddress extensionAddress);
-    void clearMergedArrayExtension(simfil::ModelNodeAddress baseAddress);
-    [[nodiscard]] std::optional<std::pair<TileFeatureModelLayerBase const*, simfil::ModelNodeAddress>>
-    mergedArrayExtension(simfil::ModelNodeAddress baseAddress) const;
-
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::optional<uint32_t> stage_;
     TileFeatureLayer::Ptr overlay_;
+    mutable std::mutex overlayMutex_;
     std::vector<std::string> expectedFeatureIds_;
 };
 

@@ -1,4 +1,5 @@
 #include "attrlayer.h"
+#include "feature.h"
 #include "featurelayer.h"
 #include "mapget/log.h"
 
@@ -74,6 +75,9 @@ AttributeLayerList::newLayer(
     size_t initialCapacity,
     bool fixedSize)
 {
+    if (isFeatureScopedView()) {
+        raise("Cannot mutate a feature-scoped AttributeLayerList view.");
+    }
     auto result = modelPtr<TileFeatureLayer>()->newAttributeLayer(initialCapacity, fixedSize);
     addLayer(name, result);
     return result;
@@ -81,6 +85,9 @@ AttributeLayerList::newLayer(
 
 void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<AttributeLayer> l)
 {
+    if (isFeatureScopedView()) {
+        raise("Cannot mutate a feature-scoped AttributeLayerList view.");
+    }
     if (l) {
         auto schemaId = model().childSchemaId(
             schema(),
@@ -103,6 +110,11 @@ void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<Attrib
 tl::expected<std::reference_wrapper<AttributeLayerList>, simfil::Error>
 AttributeLayerList::addField(std::string_view const& name, model_ptr<AttributeLayer> l)
 {
+    if (isFeatureScopedView()) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InternalError,
+            "Cannot mutate a feature-scoped AttributeLayerList view."});
+    }
     auto result = localObject()->addField(name, l);
     if (!result) {
         return tl::unexpected(result.error());
@@ -116,18 +128,20 @@ bool AttributeLayerList::forEachLayer(
     if (!cb)
         return false;
     auto local = localObject();
-    for (auto const& [stringId, value] : local->fields()) {
-        if (auto layerName = model().strings()->resolve(stringId)) {
-            if (value->addr().column() != TileFeatureLayer::ColumnId::AttributeLayers) {
-                log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
-                continue;
+    if (local) {
+        for (auto const& [stringId, value] : local->fields()) {
+            if (auto layerName = model().strings()->resolve(stringId)) {
+                if (value->addr().column() != TileFeatureLayer::ColumnId::AttributeLayers) {
+                    log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
+                    continue;
+                }
+                auto attrLayer = static_cast<TileFeatureLayer&>(model()).resolve<AttributeLayer>(*value);
+                if (!cb(*layerName, attrLayer))
+                    return false;
             }
-            auto attrLayer = static_cast<TileFeatureLayer&>(model()).resolve<AttributeLayer>(*value);
-            if (!cb(*layerName, attrLayer))
-                return false;
         }
     }
-    if (auto ext = extension()) {
+    if (auto ext = mergedExtension()) {
         return ext->forEachLayer(cb);
     }
     return true;
@@ -135,32 +149,91 @@ bool AttributeLayerList::forEachLayer(
 
 simfil::model_ptr<simfil::Object> AttributeLayerList::localObject() const
 {
+    if (isFeatureScopedView()) {
+        auto localList = localConcreteList();
+        return localList ? localList->localObject() : simfil::model_ptr<simfil::Object>{};
+    }
     return simfil::model_ptr<simfil::Object>::make(members_, model_, addr_);
+}
+
+simfil::model_ptr<AttributeLayerList> AttributeLayerList::localConcreteList() const
+{
+    auto feature = featureScopedFeature();
+    if (!feature) {
+        return {};
+    }
+    auto const localAddress = feature->attributeLayerNodeAddress();
+    return localAddress ? model().resolve<AttributeLayerList>(localAddress) : simfil::model_ptr<AttributeLayerList>{};
+}
+
+bool AttributeLayerList::isFeatureScopedView() const
+{
+    return addr_.column() == TileFeatureLayer::ColumnId::FeatureAttributeLayerListView;
+}
+
+model_ptr<Feature> AttributeLayerList::featureScopedFeature() const
+{
+    if (!isFeatureScopedView()) {
+        return {};
+    }
+    auto rootResult = model().root(addr().index());
+    if (!rootResult || !*rootResult) {
+        return {};
+    }
+    return model().resolve<Feature>(**rootResult);
+}
+
+AttributeLayerList::ExtensionPtr AttributeLayerList::mergedExtension() const
+{
+    if (!isFeatureScopedView()) {
+        return {};
+    }
+    auto overlay = model().overlay();
+    if (!overlay || addr().index() >= overlay->size()) {
+        return {};
+    }
+    return overlay->resolve<AttributeLayerList>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureAttributeLayerListView, addr().index()});
 }
 
 simfil::SchemaId AttributeLayerList::schema() const
 {
-    return localObject()->schema();
+    if (auto local = localObject()) {
+        return local->schema();
+    }
+    if (auto feature = featureScopedFeature()) {
+        return model().attributeLayerMapSchemaId(feature->typeId());
+    }
+    return simfil::NoSchemaId;
 }
 
 tl::expected<void, simfil::Error> AttributeLayerList::setObjectSchema(simfil::SchemaId schemaId)
 {
-    return localObject()->setSchema(schemaId);
+    auto local = localObject();
+    if (!local) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InternalError,
+            "Cannot assign schema to an empty feature-scoped AttributeLayerList view."});
+    }
+    return local->setSchema(schemaId);
 }
 
 uint32_t AttributeLayerList::localMergedSize() const
 {
-    return localObject()->size();
+    auto local = localObject();
+    return local ? local->size() : 0;
 }
 
 simfil::ModelNode::Ptr AttributeLayerList::localMergedAt(int64_t i) const
 {
-    return localObject()->at(i);
+    auto local = localObject();
+    return local ? local->at(i) : simfil::ModelNode::Ptr{};
 }
 
 bool AttributeLayerList::localMergedIterate(simfil::ModelNode::IterCallback const& cb) const
 {
-    return localObject()->iterate(cb);
+    auto local = localObject();
+    return local ? local->iterate(cb) : true;
 }
 
 simfil::ValueType AttributeLayerList::type() const
@@ -174,12 +247,13 @@ simfil::ModelNode::Ptr AttributeLayerList::at(int64_t i) const
         return {};
     }
 
-    auto localSize = static_cast<int64_t>(localObject()->size());
+    auto local = localObject();
+    auto localSize = local ? static_cast<int64_t>(local->size()) : 0;
     if (i < localSize) {
-        return localObject()->at(i);
+        return local->at(i);
     }
 
-    if (auto ext = extension()) {
+    if (auto ext = mergedExtension()) {
         return ext->at(i - localSize);
     }
     return {};
@@ -187,8 +261,9 @@ simfil::ModelNode::Ptr AttributeLayerList::at(int64_t i) const
 
 uint32_t AttributeLayerList::size() const
 {
-    auto result = localObject()->size();
-    if (auto ext = extension()) {
+    auto local = localObject();
+    auto result = local ? local->size() : 0;
+    if (auto ext = mergedExtension()) {
         result += ext->size();
     }
     return result;
@@ -196,11 +271,13 @@ uint32_t AttributeLayerList::size() const
 
 simfil::ModelNode::Ptr AttributeLayerList::get(const simfil::StringId& field) const
 {
-    auto local = localObject()->get(field);
+    auto local = localObject();
     if (local) {
-        return local;
+        if (auto localValue = local->get(field)) {
+            return localValue;
+        }
     }
-    if (auto ext = extension()) {
+    if (auto ext = mergedExtension()) {
         return ext->get(field);
     }
     return {};
@@ -212,12 +289,13 @@ simfil::StringId AttributeLayerList::keyAt(int64_t i) const
         return {};
     }
 
-    auto localSize = static_cast<int64_t>(localObject()->size());
+    auto local = localObject();
+    auto localSize = local ? static_cast<int64_t>(local->size()) : 0;
     if (i < localSize) {
-        return localObject()->keyAt(i);
+        return local->keyAt(i);
     }
 
-    if (auto ext = extension()) {
+    if (auto ext = mergedExtension()) {
         return ext->keyAt(i - localSize);
     }
     return {};
@@ -225,10 +303,11 @@ simfil::StringId AttributeLayerList::keyAt(int64_t i) const
 
 bool AttributeLayerList::iterate(simfil::ModelNode::IterCallback const& cb) const
 {
-    if (!localObject()->iterate(cb)) {
+    auto local = localObject();
+    if (local && !local->iterate(cb)) {
         return false;
     }
-    if (auto ext = extension()) {
+    if (auto ext = mergedExtension()) {
         return ext->iterate(cb);
     }
     return true;

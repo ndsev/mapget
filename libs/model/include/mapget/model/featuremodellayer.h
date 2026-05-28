@@ -67,6 +67,7 @@ class TileFeatureModelLayerBase : public TileLayer, public simfil::ModelPool
     friend class FeatureId;
     friend class Geometry;
     friend class GeometryCollection;
+    friend class GeometryArrayView;
     friend class PointNode;
     friend class PointBufferNode;
     friend class PolygonNode;
@@ -127,6 +128,9 @@ public:
         SimpleValidity,
         SearchResults,
         SearchResultValues,
+        FeatureGeometryCollectionView,
+        FeatureGeometryArrayView,
+        FeatureAttributeLayerListView,
     }; };
 
     /** Create a feature id in the concrete layer's shared FeatureId storage. */
@@ -209,19 +213,6 @@ public:
 
     /** Access layer-wide geometry anchor used for anchor-relative vertex encoding. */
     [[nodiscard]] virtual Point geometryAnchor() const = 0;
-
-    /** Link a merged array to an extension array in another compatible layer. */
-    virtual void setMergedArrayExtension(
-        simfil::ModelNodeAddress baseAddress,
-        TileFeatureModelLayerBase const* extensionModel,
-        simfil::ModelNodeAddress extensionAddress);
-
-    /** Clear a previously configured merged-array extension link. */
-    virtual void clearMergedArrayExtension(simfil::ModelNodeAddress baseAddress);
-
-    /** Return the extension link for a merged array, if one has been configured. */
-    [[nodiscard]] virtual std::optional<std::pair<TileFeatureModelLayerBase const*, simfil::ModelNodeAddress>>
-    mergedArrayExtension(simfil::ModelNodeAddress baseAddress) const;
 
 protected:
     TileFeatureModelLayerBase(

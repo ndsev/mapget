@@ -26,6 +26,7 @@ namespace mapget
 
 class TileFeatureLayer;
 class TileFeatureModelLayerBase;
+class Feature;
 class GeometryArrayView;
 class BoundsInfoNode;
 class BoundsPolygonCoordinatesNode;
@@ -274,7 +275,7 @@ public:
                 return false;
             }
         }
-        if (auto ext = extension()) {
+        if (auto ext = mergedExtension()) {
             return ext->forEachGeometry(callback);
         }
         return true;
@@ -287,9 +288,13 @@ public:
     GeometryCollection() = delete;
 
 private:
+    [[nodiscard]] ExtensionPtr mergedExtension() const override;
     [[nodiscard]] uint32_t localMergedSize() const override;
     [[nodiscard]] ModelNode::Ptr localMergedAt(int64_t i) const override;
     bool localMergedIterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+    [[nodiscard]] bool isFeatureScopedView() const;
+    [[nodiscard]] model_ptr<Feature> featureScopedFeature() const;
+    [[nodiscard]] ModelNodeAddress featureScopedGeometryAddress() const;
     [[nodiscard]] ModelNode::Ptr localGeometryAt(int64_t i) const;
     [[nodiscard]] model_ptr<GeometryArrayView> mergedGeometryArray() const;
     [[nodiscard]] ValueType type() const override;
@@ -331,9 +336,13 @@ public:
     GeometryArrayView() = delete;
 
 private:
+    [[nodiscard]] ExtensionPtr mergedExtension() const override;
     [[nodiscard]] uint32_t localMergedSize() const override;
     [[nodiscard]] ModelNode::Ptr localMergedAt(int64_t i) const override;
     bool localMergedIterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
+    [[nodiscard]] bool isFeatureScopedView() const;
+    [[nodiscard]] model_ptr<Feature> featureScopedFeature() const;
+    [[nodiscard]] ModelNodeAddress featureScopedGeometryAddress() const;
 
     ModelNodeAddress singleGeometryAddress_;
 };

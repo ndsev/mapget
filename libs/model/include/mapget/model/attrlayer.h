@@ -8,6 +8,7 @@ namespace mapget
 {
 
 class AttributeLayerList;
+class Feature;
 
 /**
  * Represents a collection of Attributes which are semantically related.
@@ -123,6 +124,10 @@ public:
 
 private:
     [[nodiscard]] simfil::model_ptr<simfil::Object> localObject() const;
+    [[nodiscard]] simfil::model_ptr<AttributeLayerList> localConcreteList() const;
+    [[nodiscard]] bool isFeatureScopedView() const;
+    [[nodiscard]] model_ptr<Feature> featureScopedFeature() const;
+    [[nodiscard]] ExtensionPtr mergedExtension() const override;
     [[nodiscard]] uint32_t localMergedSize() const override;
     [[nodiscard]] simfil::ModelNode::Ptr localMergedAt(int64_t i) const override;
     bool localMergedIterate(simfil::ModelNode::IterCallback const& cb) const override;

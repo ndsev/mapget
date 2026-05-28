@@ -34,31 +34,10 @@ public:
     {
     }
 
-    void setExtension(ExtensionPtr extension)
-    {
-        if (!extension) {
-            this->model().clearMergedArrayExtension(this->addr());
-            return;
-        }
-        this->model().setMergedArrayExtension(
-            this->addr(),
-            &extension->model(),
-            extension->addr());
-    }
-
-    [[nodiscard]] ExtensionPtr extension() const
-    {
-        auto link = this->model().mergedArrayExtension(this->addr());
-        if (!link || !link->first || !link->second) {
-            return {};
-        }
-        return link->first->template resolve<DerivedT>(link->second);
-    }
-
     [[nodiscard]] uint32_t mergedSize() const
     {
         auto size = localMergedSize();
-        if (auto ext = extension()) {
+        if (auto ext = mergedExtension()) {
             size += ext->mergedSize();
         }
         return size;
@@ -75,7 +54,7 @@ public:
             return localMergedAt(i);
         }
 
-        auto ext = extension();
+        auto ext = mergedExtension();
         if (!ext) {
             return {};
         }
@@ -87,7 +66,7 @@ public:
         if (!localMergedIterate(cb)) {
             return false;
         }
-        if (auto ext = extension()) {
+        if (auto ext = mergedExtension()) {
             return ext->mergedIterate(cb);
         }
         return true;
@@ -109,6 +88,18 @@ public:
     }
 
 protected:
+    /**
+     * Return the overlay portion of this view.
+     *
+     * Derived feature-scoped views compute this from the layer overlay chain
+     * on demand. Keeping the link implicit avoids mutating shared tile state
+     * during read-only traversal.
+     */
+    [[nodiscard]] virtual ExtensionPtr mergedExtension() const
+    {
+        return {};
+    }
+
     [[nodiscard]] virtual uint32_t localMergedSize() const
     {
         return Base::size();

@@ -27,6 +27,17 @@ model_ptr<Feature> resolveFeatureByRootIndex(TileFeatureLayer const& model, uint
 }
 }
 
+RelationArrayView::ExtensionPtr RelationArrayView::mergedExtension() const
+{
+    auto overlay = model().overlay();
+    if (!overlay || addr().index() >= overlay->size()) {
+        return {};
+    }
+
+    return overlay->resolve<RelationArrayView>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, addr().index()});
+}
+
 uint32_t RelationArrayView::localMergedSize() const
 {
     auto feature = resolveFeatureByRootIndex(model(), addr().index());
@@ -130,24 +141,24 @@ model_ptr<GeometryCollection> Feature::geom()
         return result;
     }
     materializeGeometryCollection();
-    return const_cast<const Feature*>(this)->geomOrNull();
+    return model().resolve<GeometryCollection>(geometryNodeAddress());
 }
 
 model_ptr<GeometryCollection> Feature::geomOrNull() const
 {
-    model_ptr<GeometryCollection> local;
-    auto localGeomAddress = geometryNodeAddress();
-    if (localGeomAddress) {
-        local = model().resolve<GeometryCollection>(localGeomAddress);
-    }
-
+    auto const hasLocalGeometry = static_cast<bool>(geometryNodeAddress());
     auto extFeature = extension();
     auto ext = extFeature ? extFeature->geomOrNull() : model_ptr<GeometryCollection>{};
-    if (!local) {
+    if (!hasLocalGeometry) {
         return ext;
     }
-    local->setExtension(ext);
-    return local;
+    if (!ext) {
+        return model().resolve<GeometryCollection>(geometryNodeAddress());
+    }
+
+    return model_ptr<GeometryCollection>::make(
+        model_,
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureGeometryCollectionView, addr().index()});
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
@@ -164,23 +175,23 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
         fieldsDirty_ = true;
         return result;
     }
-    return attributeLayersOrNull();
+    return model().resolve<AttributeLayerList>(attributeLayerNodeAddress());
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayersOrNull() const
 {
-    model_ptr<AttributeLayerList> local;
-    if (auto localAddress = attributeLayerNodeAddress()) {
-        local = model().resolve<AttributeLayerList>(localAddress);
-    }
-
+    auto const hasLocalAttributeLayers = static_cast<bool>(attributeLayerNodeAddress());
     auto extFeature = extension();
     auto ext = extFeature ? extFeature->attributeLayersOrNull() : model_ptr<AttributeLayerList>{};
-    if (!local) {
+    if (!hasLocalAttributeLayers) {
         return ext;
     }
-    local->setExtension(ext);
-    return local;
+    if (!ext) {
+        return model().resolve<AttributeLayerList>(attributeLayerNodeAddress());
+    }
+
+    return model().resolve<AttributeLayerList>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureAttributeLayerListView, addr().index()});
 }
 
 model_ptr<Object> Feature::attributes()
@@ -241,14 +252,13 @@ model_ptr<RelationArrayView> Feature::mergedRelationsOrNull() const
 {
     auto extFeature = extension();
     auto ext = extFeature ? extFeature->mergedRelationsOrNull() : model_ptr<RelationArrayView>{};
-    if (!relationNodeAddress() && !ext) {
-        return {};
+    if (!relationNodeAddress()) {
+        return ext;
     }
-    auto result = model_ptr<RelationArrayView>::make(
+
+    return model_ptr<RelationArrayView>::make(
         model_,
         simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, addr().index()});
-    result->setExtension(ext);
-    return result;
 }
 
 tl::expected<std::vector<simfil::Value>, simfil::Error>

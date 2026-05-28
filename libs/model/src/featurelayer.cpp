@@ -247,7 +247,6 @@ struct TileFeatureLayer::Impl {
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
     simfil::ModelColumn<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
-    std::unordered_map<uint32_t, std::pair<TileFeatureModelLayerBase const*, ModelNodeAddress>> mergedArrayExtensions_;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -508,58 +507,32 @@ void TileFeatureLayer::attachOverlay(TileFeatureLayer::Ptr const& overlay)
 
     // Search may assemble the same cached stage stack repeatedly. Treat an
     // already-attached overlay as a no-op so the chain cannot grow unbounded.
-    for (auto cursor = overlay_; cursor; cursor = cursor->overlay_) {
+    for (auto cursor = this->overlay(); cursor; cursor = cursor->overlay()) {
         if (cursor == overlay) {
             return;
         }
     }
 
-    if (overlay_) {
-        overlay_->attachOverlay(overlay);
-        return;
+    TileFeatureLayer::Ptr currentOverlay;
+    {
+        std::lock_guard lock(overlayMutex_);
+        if (!overlay_) {
+            overlay_ = overlay;
+            return;
+        }
+        currentOverlay = overlay_;
     }
 
-    overlay_ = overlay;
+    if (currentOverlay == overlay) {
+        return;
+    }
+    currentOverlay->attachOverlay(overlay);
 }
 
 TileFeatureLayer::Ptr TileFeatureLayer::overlay() const
 {
+    std::lock_guard lock(overlayMutex_);
     return overlay_;
-}
-
-void TileFeatureLayer::setMergedArrayExtension(
-    ModelNodeAddress baseAddress,
-    TileFeatureModelLayerBase const* extensionModel,
-    ModelNodeAddress extensionAddress)
-{
-    if (!baseAddress || !extensionModel || !extensionAddress) {
-        clearMergedArrayExtension(baseAddress);
-        return;
-    }
-    impl_->mergedArrayExtensions_[baseAddress.value_] = {
-        extensionModel,
-        extensionAddress};
-}
-
-void TileFeatureLayer::clearMergedArrayExtension(ModelNodeAddress baseAddress)
-{
-    if (!baseAddress) {
-        return;
-    }
-    impl_->mergedArrayExtensions_.erase(baseAddress.value_);
-}
-
-std::optional<std::pair<TileFeatureModelLayerBase const*, ModelNodeAddress>>
-TileFeatureLayer::mergedArrayExtension(ModelNodeAddress baseAddress) const
-{
-    if (!baseAddress) {
-        return {};
-    }
-    auto it = impl_->mergedArrayExtensions_.find(baseAddress.value_);
-    if (it == impl_->mergedArrayExtensions_.end()) {
-        return {};
-    }
-    return it->second;
 }
 
 namespace
@@ -1091,10 +1064,13 @@ model_ptr<AttributeLayer> resolveInternal(tag<AttributeLayer>, TileFeatureLayer 
 template<>
 model_ptr<AttributeLayerList> resolveInternal(tag<AttributeLayerList>, TileFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttributeLayerLists)
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttributeLayerLists &&
+        node.addr().column() != TileFeatureLayer::ColumnId::FeatureAttributeLayerListView)
         raise("Cannot cast this node to an AttributeLayerList.");
     return AttributeLayerList(
-        model.impl_->attrLayerLists_[node.addr().index()],
+        node.addr().column() == TileFeatureLayer::ColumnId::AttributeLayerLists
+            ? model.impl_->attrLayerLists_[node.addr().index()]
+            : simfil::InvalidArrayIndex,
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
@@ -1127,9 +1103,10 @@ model_ptr<Feature> resolveInternal(tag<Feature>, TileFeatureLayer const& model, 
         node.addr(),
         model.mpKey_);
 
-    if (model.overlay_ && node.addr().index() < model.overlay_->size()) {
+    auto overlay = model.overlay();
+    if (overlay && node.addr().index() < overlay->size()) {
         result->setExtensionAddress(
-            model.overlay_.get(),
+            overlay.get(),
             ModelNodeAddress{
                 TileFeatureLayer::ColumnId::Features,
                 static_cast<uint32_t>(node.addr().index())});
@@ -1147,13 +1124,6 @@ model_ptr<RelationArrayView> resolveInternal(tag<RelationArrayView>, TileFeature
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
-
-    if (model.overlay_ && node.addr().index() < model.overlay_->size()) {
-        result.setExtension(model.overlay_->resolve<RelationArrayView>(
-            ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, node.addr().index()}));
-    } else {
-        result.setExtension({});
-    }
     return result;
 }
 
@@ -1294,6 +1264,15 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
     }
     case ColumnId::FeatureRelationsView:
         cb(*resolve<RelationArrayView>(n));
+        return {};
+    case ColumnId::FeatureGeometryCollectionView:
+        cb(*resolve<GeometryCollection>(n));
+        return {};
+    case ColumnId::FeatureGeometryArrayView:
+        cb(*resolve<GeometryArrayView>(n));
+        return {};
+    case ColumnId::FeatureAttributeLayerListView:
+        cb(*resolve<AttributeLayerList>(n));
         return {};
     case ColumnId::FeatureIds:
     case ColumnId::ExternalFeatureIds:
@@ -2136,7 +2115,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
-    case ColumnId::GeometryArrayView: {
+    case ColumnId::GeometryArrayView:
+    case ColumnId::FeatureGeometryArrayView: {
         auto resolved = otherLayer->resolve<GeometryArrayView>(*otherNode);
         auto newNode = newArray(resolved->size(), true);
         newCacheNode = newNode;
@@ -2184,7 +2164,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
-    case ColumnId::GeometryCollections: {
+    case ColumnId::GeometryCollections:
+    case ColumnId::FeatureGeometryCollectionView: {
         auto resolved = otherLayer->resolve<GeometryCollection>(*otherNode);
         auto newNode = newGeometryCollection(resolved->numGeometries(), true);
         newCacheNode = newNode;
@@ -2336,7 +2317,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
-    case ColumnId::AttributeLayerLists: {
+    case ColumnId::AttributeLayerLists:
+    case ColumnId::FeatureAttributeLayerListView: {
         auto resolved = otherLayer->resolve<AttributeLayerList>(*otherNode);
         auto newNode = newAttributeLayers(resolved->size(), true);
         newCacheNode = newNode;

@@ -1,4 +1,5 @@
 #include "geometry.h"
+#include "feature.h"
 #include "featurelayer.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
@@ -66,6 +67,16 @@ using namespace simfil;
 
 namespace
 {
+/** Resolve the feature root that owns a feature-scoped procedural view. */
+model_ptr<Feature> resolveFeatureByRootIndex(TileFeatureLayer const& model, uint32_t index)
+{
+    auto rootResult = model.root(index);
+    if (!rootResult || !*rootResult) {
+        return {};
+    }
+    return model.resolve<Feature>(**rootResult);
+}
+
 /** Check whether a model column stores an actual geometry payload. */
 bool isBaseGeometryColumn(uint8_t column)
 {
@@ -332,15 +343,22 @@ bool GeometryCollection::iterate(const IterCallback& cb) const
 
 ModelNode::Ptr GeometryCollection::singleGeom() const
 {
-    if (extension()) {
+    if (auto ext = mergedExtension(); ext && ext->mergedSize() > 0) {
         return {};
     }
-    if (isBaseGeometryColumn(addr_.column()) ||
-        addr_.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
-        return model().resolve(addr_);
+
+    auto const localAddress = isFeatureScopedView()
+        ? featureScopedGeometryAddress()
+        : addr_;
+    if (!localAddress) {
+        return {};
     }
-    if (model().arrayMemberStorage().size((ArrayIndex)addr_.index()) == 1) {
-        auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    if (isBaseGeometryColumn(localAddress.column()) ||
+        localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+        return model().resolve(localAddress);
+    }
+    if (model().arrayMemberStorage().size((ArrayIndex)localAddress.index()) == 1) {
+        auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, localAddress.index()});
         return array->at(0);
     }
     return {};
@@ -363,7 +381,7 @@ void GeometryCollection::addGeometry(const model_ptr<Geometry>& geom)
 size_t GeometryCollection::numGeometries() const
 {
     auto result = localMergedSize();
-    if (auto ext = extension()) {
+    if (auto ext = mergedExtension()) {
         result += ext->numGeometries();
     }
     return result;
@@ -413,14 +431,20 @@ ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
     if (i < 0) {
         return {};
     }
-    if (isBaseGeometryColumn(addr_.column()) ||
-        addr_.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+    auto const localAddress = isFeatureScopedView()
+        ? featureScopedGeometryAddress()
+        : addr_;
+    if (!localAddress) {
+        return {};
+    }
+    if (isBaseGeometryColumn(localAddress.column()) ||
+        localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
         if (i == 0) {
-            return model().resolve(addr_);
+            return model().resolve(localAddress);
         }
         return {};
     }
-    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, localAddress.index()});
     if (i >= static_cast<int64_t>(array->size())) {
         return {};
     }
@@ -429,6 +453,12 @@ ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
 
 model_ptr<GeometryArrayView> GeometryCollection::mergedGeometryArray() const
 {
+    if (isFeatureScopedView()) {
+        return model_ptr<GeometryArrayView>::make(
+            model_,
+            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView, addr_.index()});
+    }
+
     auto result = (isBaseGeometryColumn(addr_.column()) ||
         addr_.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews)
         ? model_ptr<GeometryArrayView>::make(
@@ -438,21 +468,22 @@ model_ptr<GeometryArrayView> GeometryCollection::mergedGeometryArray() const
         : model_ptr<GeometryArrayView>::make(
             model_,
             ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::GeometryArrayView, addr_.index()});
-    if (auto ext = extension()) {
-        result->setExtension(ext->mergedGeometryArray());
-    } else {
-        result->setExtension({});
-    }
     return result;
 }
 
 uint32_t GeometryCollection::localMergedSize() const
 {
-    if (isBaseGeometryColumn(addr_.column()) ||
-        addr_.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+    auto const localAddress = isFeatureScopedView()
+        ? featureScopedGeometryAddress()
+        : addr_;
+    if (!localAddress) {
+        return 0;
+    }
+    if (isBaseGeometryColumn(localAddress.column()) ||
+        localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
         return 1;
     }
-    return model().arrayMemberStorage().size(static_cast<ArrayIndex>(addr_.index()));
+    return model().arrayMemberStorage().size(static_cast<ArrayIndex>(localAddress.index()));
 }
 
 ModelNode::Ptr GeometryCollection::localMergedAt(int64_t i) const
@@ -473,8 +504,99 @@ bool GeometryCollection::localMergedIterate(const IterCallback& cb) const
     return true;
 }
 
+GeometryCollection::ExtensionPtr GeometryCollection::mergedExtension() const
+{
+    if (!isFeatureScopedView()) {
+        return {};
+    }
+    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
+    if (!featureLayer) {
+        return {};
+    }
+    auto overlay = featureLayer->overlay();
+    if (!overlay || addr().index() >= overlay->size()) {
+        return {};
+    }
+    return overlay->resolve<GeometryCollection>(
+        ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::FeatureGeometryCollectionView, addr().index()});
+}
+
+bool GeometryCollection::isFeatureScopedView() const
+{
+    return addr_.column() == TileFeatureModelLayerBase::ColumnId::FeatureGeometryCollectionView;
+}
+
+model_ptr<Feature> GeometryCollection::featureScopedFeature() const
+{
+    if (!isFeatureScopedView()) {
+        return {};
+    }
+    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
+    if (!featureLayer) {
+        return {};
+    }
+    return resolveFeatureByRootIndex(*featureLayer, addr().index());
+}
+
+ModelNodeAddress GeometryCollection::featureScopedGeometryAddress() const
+{
+    auto feature = featureScopedFeature();
+    return feature ? feature->geometryNodeAddress() : ModelNodeAddress{};
+}
+
+GeometryArrayView::ExtensionPtr GeometryArrayView::mergedExtension() const
+{
+    if (!isFeatureScopedView()) {
+        return {};
+    }
+    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
+    if (!featureLayer) {
+        return {};
+    }
+    auto overlay = featureLayer->overlay();
+    if (!overlay || addr().index() >= overlay->size()) {
+        return {};
+    }
+    return overlay->resolve<GeometryArrayView>(
+        ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView, addr().index()});
+}
+
+bool GeometryArrayView::isFeatureScopedView() const
+{
+    return addr_.column() == TileFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView;
+}
+
+model_ptr<Feature> GeometryArrayView::featureScopedFeature() const
+{
+    if (!isFeatureScopedView()) {
+        return {};
+    }
+    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
+    if (!featureLayer) {
+        return {};
+    }
+    return resolveFeatureByRootIndex(*featureLayer, addr().index());
+}
+
+ModelNodeAddress GeometryArrayView::featureScopedGeometryAddress() const
+{
+    auto feature = featureScopedFeature();
+    return feature ? feature->geometryNodeAddress() : ModelNodeAddress{};
+}
+
 uint32_t GeometryArrayView::localMergedSize() const
 {
+    if (isFeatureScopedView()) {
+        auto const localAddress = featureScopedGeometryAddress();
+        if (!localAddress) {
+            return 0;
+        }
+        if (isBaseGeometryColumn(localAddress.column()) ||
+            localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+            return 1;
+        }
+        return model().arrayMemberStorage().size(static_cast<ArrayIndex>(localAddress.index()));
+    }
     if (singleGeometryAddress_) {
         return 1;
     }
@@ -483,6 +605,22 @@ uint32_t GeometryArrayView::localMergedSize() const
 
 ModelNode::Ptr GeometryArrayView::localMergedAt(int64_t i) const
 {
+    if (isFeatureScopedView()) {
+        if (i < 0) {
+            return {};
+        }
+        auto const localAddress = featureScopedGeometryAddress();
+        if (!localAddress) {
+            return {};
+        }
+        if (isBaseGeometryColumn(localAddress.column()) ||
+            localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+            return i == 0 ? this->model().resolve(localAddress) : ModelNode::Ptr{};
+        }
+        auto array = this->model().resolve<simfil::Array>(
+            ModelNodeAddress{simfil::ModelPool::Arrays, localAddress.index()});
+        return i < static_cast<int64_t>(array->size()) ? array->at(i) : ModelNode::Ptr{};
+    }
     if (singleGeometryAddress_) {
         if (i == 0) {
             return this->model().resolve(singleGeometryAddress_);
@@ -494,6 +632,17 @@ ModelNode::Ptr GeometryArrayView::localMergedAt(int64_t i) const
 
 bool GeometryArrayView::localMergedIterate(const IterCallback& cb) const
 {
+    if (isFeatureScopedView()) {
+        auto const localCount = localMergedSize();
+        for (uint32_t i = 0; i < localCount; ++i) {
+            if (auto node = localMergedAt(i)) {
+                if (!cb(*node)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
     if (singleGeometryAddress_) {
         if (auto node = this->model().resolve(singleGeometryAddress_)) {
             return cb(*node);
