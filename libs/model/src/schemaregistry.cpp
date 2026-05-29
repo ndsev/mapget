@@ -162,6 +162,28 @@ std::string_view kindMemoSuffix(std::optional<Kind> kind)
     return "n";
 }
 
+/** Build a memo key that keeps x-mapget context-sensitive aliases distinct. */
+std::string contextMemoKey(
+    std::string_view pointer,
+    std::optional<Kind> kind,
+    BuildContext const& context)
+{
+    auto appendSized = [](std::string& result, std::string_view value) {
+        result += std::to_string(value.size());
+        result += ':';
+        result += value;
+    };
+
+    std::string result(pointer);
+    result += '|';
+    result += kindMemoSuffix(kind);
+    result += '|';
+    appendSized(result, context.featureType_);
+    result += '|';
+    appendSized(result, context.attributeLayerName_);
+    return result;
+}
+
 /** Return whether a oneOf object/array wrapper represents a mapget multimap view. */
 bool isMapgetMultimap(nlohmann::json const& schema)
 {
@@ -259,6 +281,10 @@ struct SchemaRegistry::Impl
         std::vector<simfil::SchemaId> elementSchemas_;
         std::vector<std::string> flatFields_;
         std::vector<std::string> flatEnumSymbols_;
+        std::vector<AttributePathOwner> attributeOwners_;
+        std::string attributeTypeCode_;
+        std::string attributeType_;
+        std::string zserioType_;
         bool finalized_ = false;
     };
 
@@ -282,6 +308,16 @@ struct SchemaRegistry::Impl
         return valid(id) ? schemas_[id].kind_ : Kind::Object;
     }
 
+    [[nodiscard]] std::string_view metaType(simfil::SchemaId id) const
+    {
+        return valid(id) ? entriesById_[id].metaType_ : std::string_view{};
+    }
+
+    [[nodiscard]] std::string_view attributeTypeCode(simfil::SchemaId id) const
+    {
+        return valid(id) ? schemas_[id].attributeTypeCode_ : std::string_view{};
+    }
+
     simfil::SchemaId allocate(Kind kind, std::string key, std::string pointer, std::string metaType)
     {
         if (schemas_.size() > simfil::MaxSchemaId) {
@@ -299,6 +335,124 @@ struct SchemaRegistry::Impl
         registerKey(key, id);
         registerKey(pointer, id);
         return id;
+    }
+
+    void registerAttributeOwner(simfil::SchemaId id, AttributePathOwner owner)
+    {
+        if (!valid(id) ||
+            owner.featureType_.empty() ||
+            owner.attributeLayerName_.empty() ||
+            owner.attributeName_.empty()) {
+            return;
+        }
+
+        owner.attributeSchema_ = id;
+        auto& owners = schemas_[id].attributeOwners_;
+        auto duplicate = std::ranges::find_if(owners, [&](auto const& existing) {
+            return existing.featureType_ == owner.featureType_ &&
+                   existing.attributeLayerName_ == owner.attributeLayerName_ &&
+                   existing.attributeName_ == owner.attributeName_;
+        });
+        if (duplicate == owners.end()) {
+            owners.push_back(std::move(owner));
+        }
+    }
+
+    void registerSchemaMetadata(
+        simfil::SchemaId id,
+        nlohmann::json const& schema,
+        BuildContext const& context,
+        std::string_view metaType)
+    {
+        if (!valid(id)) {
+            return;
+        }
+
+        auto const* metadata = mapgetMetadata(schema);
+        auto zserioType = metadataString(metadata, "zserioType");
+        if (!zserioType.empty()) {
+            schemas_[id].zserioType_ = std::move(zserioType);
+        }
+
+        if (metaType != "Attribute") {
+            return;
+        }
+
+        auto attributeName = metadataString(metadata, "attributeTypeCode");
+        schemas_[id].attributeType_ = metadataString(metadata, "attributeType");
+        schemas_[id].attributeTypeCode_ = attributeName;
+        registerAttributeOwner(
+            id,
+            AttributePathOwner{
+                context.featureType_,
+                context.attributeLayerName_,
+                std::move(attributeName),
+                id});
+    }
+
+    [[nodiscard]] std::optional<AttributePathOwner> uniqueAttributeOwner(
+        simfil::SchemaId id,
+        std::string_view featureType) const
+    {
+        if (!valid(id)) {
+            return std::nullopt;
+        }
+
+        std::optional<AttributePathOwner> result;
+        for (auto const& owner : schemas_[id].attributeOwners_) {
+            if (owner.featureType_ != featureType) {
+                continue;
+            }
+            if (result) {
+                return std::nullopt;
+            }
+            result = owner;
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::vector<std::string> constantTypeNames(
+        simfil::SchemaId id,
+        std::string_view symbolName) const
+    {
+        std::vector<std::string> result;
+        std::vector<simfil::SchemaId> visited;
+        collectConstantTypeNames(id, symbolName, visited, result);
+        std::ranges::sort(result);
+        auto duplicates = std::ranges::unique(result);
+        result.erase(duplicates.begin(), duplicates.end());
+        return result;
+    }
+
+    void collectConstantTypeNames(
+        simfil::SchemaId id,
+        std::string_view symbolName,
+        std::vector<simfil::SchemaId>& visited,
+        std::vector<std::string>& result) const
+    {
+        if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
+            return;
+        }
+        visited.push_back(id);
+
+        auto const& schema = schemas_[id];
+        if (schema.attributeTypeCode_ == symbolName && !schema.attributeType_.empty()) {
+            result.push_back(schema.attributeType_);
+        }
+        auto const hasDirectEnumSymbol =
+            std::ranges::find(schema.directEnumSymbols_, symbolName) != schema.directEnumSymbols_.end();
+        if (!schema.zserioType_.empty() && hasDirectEnumSymbol) {
+            result.push_back(schema.zserioType_);
+        }
+
+        for (auto const& [_, children] : schema.childSchemas_) {
+            for (auto child : children) {
+                collectConstantTypeNames(child, symbolName, visited, result);
+            }
+        }
+        for (auto child : schema.elementSchemas_) {
+            collectConstantTypeNames(child, symbolName, visited, result);
+        }
     }
 
     void registerKey(std::string const& key, simfil::SchemaId id)
@@ -609,9 +763,10 @@ private:
         }
 
         auto const key = annotatedKey(schema, pointer, context);
-        auto const memoKey = pointer + "|" + std::string(kindMemoSuffix(preferredKind));
+        auto const memoKey = contextMemoKey(pointer, preferredKind, context);
         if (auto memoIt = memo_.find(memoKey); memoIt != memo_.end()) {
             registry_.registerKey(key, memoIt->second);
+            registry_.registerSchemaMetadata(memoIt->second, schema, context, metaType);
             return memoIt->second;
         }
 
@@ -625,7 +780,7 @@ private:
             return buildArray(schema, std::move(pointer), std::move(context), std::move(key), std::move(metaType), memoKey);
         }
         if (isValueSchema(schema) && (!preferredKind || *preferredKind == Kind::Value)) {
-            return buildValue(schema, std::move(pointer), std::move(key), std::move(metaType), memoKey);
+            return buildValue(schema, std::move(pointer), std::move(context), std::move(key), std::move(metaType), memoKey);
         }
         return simfil::NoSchemaId;
     }
@@ -682,6 +837,11 @@ private:
         registry_.registerKey(pointer, selected);
         auto key = annotatedKey(schema, pointer, context);
         registry_.registerKey(key, selected);
+        registry_.registerSchemaMetadata(
+            selected,
+            schema,
+            context,
+            metadataString(mapgetMetadata(schema), "metaType"));
     }
 
     simfil::SchemaId buildObject(
@@ -697,6 +857,7 @@ private:
             std::move(key),
             pointer,
             metaType);
+        registry_.registerSchemaMetadata(id, schema, context, metaType);
         memo_[memoKey] = id;
 
         auto propertiesIt = schema.find("properties");
@@ -748,7 +909,8 @@ private:
             Kind::Array,
             std::move(key),
             pointer,
-            std::move(metaType));
+            metaType);
+        registry_.registerSchemaMetadata(id, schema, context, metaType);
         memo_[memoKey] = id;
 
         auto itemsIt = schema.find("items");
@@ -766,6 +928,7 @@ private:
     simfil::SchemaId buildValue(
         nlohmann::json const& schema,
         std::string pointer,
+        BuildContext context,
         std::string key,
         std::string metaType,
         std::string const& memoKey)
@@ -774,7 +937,8 @@ private:
             Kind::Value,
             std::move(key),
             std::move(pointer),
-            std::move(metaType));
+            metaType);
+        registry_.registerSchemaMetadata(id, schema, context, metaType);
         memo_[memoKey] = id;
 
         auto symbols = stringEnumSymbols(schema);
@@ -1003,6 +1167,13 @@ std::span<const std::string> SchemaRegistry::directEnumSymbols(simfil::SchemaId 
     return impl_->directEnumSymbols(schemaId);
 }
 
+std::vector<std::string> SchemaRegistry::constantTypeNames(
+    simfil::SchemaId schemaId,
+    std::string_view symbolName) const
+{
+    return impl_->constantTypeNames(schemaId, symbolName);
+}
+
 void SchemaRegistry::forEachDirectField(
     simfil::SchemaId schemaId,
     const std::function<void(std::string_view, std::span<const simfil::SchemaId>)>& fn) const
@@ -1038,6 +1209,94 @@ simfil::SchemaId SchemaRegistry::childSchema(
     std::optional<simfil::Schema::Kind> preferredKind) const
 {
     return impl_->childSchema(parent, fieldName, preferredKind);
+}
+
+SchemaRegistry::PathOwner SchemaRegistry::ownerForPath(
+    std::string_view featureType,
+    simfil::SchemaId rootSchema,
+    std::span<const std::string> fieldPath) const
+{
+    auto currentSchema = rootSchema;
+    if (!impl_->valid(currentSchema)) {
+        return {};
+    }
+
+    auto attributeOwner = impl_->uniqueAttributeOwner(rootSchema, featureType);
+    auto currentLayerName = std::optional<std::string>{};
+    auto enteredAttributeBranch =
+        impl_->metaType(rootSchema) == "AttributeLayerMap" ||
+        impl_->metaType(rootSchema) == "AttributeContainer" ||
+        impl_->metaType(rootSchema) == "Attribute";
+
+    for (auto const& fieldName : fieldPath) {
+        if (fieldName.empty()) {
+            continue;
+        }
+
+        auto const parentSchema = currentSchema;
+        auto const parentMetaType = impl_->metaType(parentSchema);
+        auto pendingAttributeName = std::optional<std::string>{};
+
+        if (parentMetaType == "AttributeLayerMap") {
+            // This edge selects the concrete attribute layer, but not yet a
+            // concrete attribute within that layer.
+            enteredAttributeBranch = true;
+            currentLayerName = fieldName;
+        }
+        else if (parentMetaType == "AttributeContainer") {
+            // This edge selects the attribute object inside the active layer.
+            enteredAttributeBranch = true;
+            pendingAttributeName = fieldName;
+        }
+
+        currentSchema = impl_->childSchema(currentSchema, fieldName, std::nullopt);
+        if (currentSchema == simfil::NoSchemaId) {
+            return {};
+        }
+
+        auto const currentMetaType = impl_->metaType(currentSchema);
+        if (currentMetaType == "AttributeLayerMap" || currentMetaType == "AttributeContainer") {
+            enteredAttributeBranch = true;
+        }
+        if (currentMetaType == "Attribute") {
+            enteredAttributeBranch = true;
+            if (auto owner = impl_->uniqueAttributeOwner(currentSchema, featureType)) {
+                attributeOwner = *owner;
+                continue;
+            }
+
+            // If the schema id is intentionally shared, the path edge still
+            // contains enough context to identify the selected attribute.
+            auto attributeName = std::string(impl_->attributeTypeCode(currentSchema));
+            if (attributeName.empty() && pendingAttributeName) {
+                attributeName = *pendingAttributeName;
+            }
+            if (currentLayerName && !attributeName.empty()) {
+                attributeOwner = AttributePathOwner{
+                    std::string(featureType),
+                    *currentLayerName,
+                    std::move(attributeName),
+                    currentSchema};
+            }
+        }
+        else if (auto owner = impl_->uniqueAttributeOwner(currentSchema, featureType)) {
+            attributeOwner = *owner;
+        }
+    }
+
+    if (attributeOwner) {
+        return {PathOwnerKind::Attribute, *attributeOwner};
+    }
+
+    if (enteredAttributeBranch) {
+        return {};
+    }
+
+    if (rootSchema == featureSchema(featureType) || rootSchema == featurePropertiesSchema(featureType)) {
+        return {PathOwnerKind::Feature, {}};
+    }
+
+    return {};
 }
 
 void installSchemaRegistry(

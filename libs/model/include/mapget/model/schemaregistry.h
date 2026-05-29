@@ -39,6 +39,29 @@ public:
         std::string metaType_;
     };
 
+    /** Owner classification for a schema path starting at a known root. */
+    enum class PathOwnerKind {
+        Unknown,
+        Feature,
+        Attribute,
+    };
+
+    /** Concrete attribute context owning a schema path. */
+    struct AttributePathOwner
+    {
+        std::string featureType_;
+        std::string attributeLayerName_;
+        std::string attributeName_;
+        simfil::SchemaId attributeSchema_ = simfil::NoSchemaId;
+    };
+
+    /** Result returned by ownerForPath for downstream scope decisions. */
+    struct PathOwner
+    {
+        PathOwnerKind kind_ = PathOwnerKind::Unknown;
+        AttributePathOwner attribute_;
+    };
+
     /** Parse all supported schema branches and assign deterministic SchemaIds. */
     explicit SchemaRegistry(nlohmann::json const& schema);
 
@@ -72,6 +95,11 @@ public:
     /** Return enum-like string symbols declared directly by this schema node. */
     [[nodiscard]] std::span<const std::string> directEnumSymbols(simfil::SchemaId schemaId) const;
 
+    /** Return enum/zserio type names attached to a constant-like completion candidate. */
+    [[nodiscard]] std::vector<std::string> constantTypeNames(
+        simfil::SchemaId schemaId,
+        std::string_view symbolName) const;
+
     /** Visit direct fields and their possible child schemas. */
     void forEachDirectField(
         simfil::SchemaId schemaId,
@@ -96,6 +124,12 @@ public:
         simfil::SchemaId parent,
         std::string_view fieldName,
         std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
+
+    /** Classify whether a path belongs to the feature itself or to an attribute branch. */
+    [[nodiscard]] PathOwner ownerForPath(
+        std::string_view featureType,
+        simfil::SchemaId rootSchema,
+        std::span<const std::string> fieldPath) const;
 
 private:
     std::shared_ptr<Impl> impl_;
