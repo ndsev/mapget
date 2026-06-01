@@ -161,7 +161,7 @@ protected:
 /**
  * Array of Validity objects with convenience constructors.
  */
-struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
+struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Validity>
 {
     friend class TileFeatureLayer;
 
@@ -278,7 +278,14 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureLayer, Validity>
     bool iterate(ModelNode::IterCallback const& cb) const override;  // NOLINT (allow discard)
 
 private:
-    using simfil::BaseArray<TileFeatureLayer, Validity>::BaseArray;
+    /**
+     * Access the concrete owning feature layer for validity data allocation.
+     * The array base is intentionally the common model type so MSVC does not
+     * instantiate simfil BaseArray helpers against an incomplete TileFeatureLayer.
+     */
+    TileFeatureLayer& featureLayer();
+
+    using simfil::BaseArray<TileFeatureModelLayerBase, Validity>::BaseArray;
 };
 
 }

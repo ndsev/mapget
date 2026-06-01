@@ -1240,17 +1240,6 @@ model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model
     }
 }
 
-template<>
-model_ptr<MultiValidity> resolveInternal(tag<MultiValidity>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::ValidityCollections)
-        raise("Cannot cast this node to a ValidityCollection.");
-    return MultiValidity(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
-}
-
 tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveFn& cb) const
 {
     switch (n.addr().column())

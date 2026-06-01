@@ -836,10 +836,15 @@ SelfContainedGeometry Validity::computeGeometry(
     return {};
 }
 
+TileFeatureLayer& MultiValidity::featureLayer()
+{
+    return static_cast<TileFeatureLayer&>(model());
+}
+
 model_ptr<Validity>
 MultiValidity::newPoint(Point pos, std::optional<uint32_t> geometryStage, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetPoint(pos);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -853,7 +858,7 @@ model_ptr<Validity> MultiValidity::newRange(
     std::optional<uint32_t> geometryStage,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetRange(start, end);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -867,7 +872,7 @@ model_ptr<Validity> MultiValidity::newPoint(
     std::optional<uint32_t> geometryStage,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetPoint(offsetType, pos);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -891,7 +896,7 @@ model_ptr<Validity> MultiValidity::newRange(
     std::optional<uint32_t> geometryStage,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetRange(offsetType, start, end);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -917,7 +922,7 @@ model_ptr<Validity> MultiValidity::newRange(
 model_ptr<Validity>
 MultiValidity::newGeometry(model_ptr<Geometry> geom, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setSimpleGeometry(geom);
     result->setDirection(direction);
     append(result);
@@ -927,7 +932,7 @@ MultiValidity::newGeometry(model_ptr<Geometry> geom, Validity::Direction directi
 model_ptr<Validity>
 MultiValidity::newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setFeatureId(featureId);
     result->setDirection(direction);
     append(result);
@@ -937,7 +942,7 @@ MultiValidity::newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Dir
 model_ptr<Validity>
 MultiValidity::newGeomStage(uint32_t geometryStage, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
     append(result);
@@ -952,7 +957,7 @@ model_ptr<Validity> MultiValidity::newFeatureTransition(
     uint32_t transitionNumber,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setFeatureTransition(
         fromFeature,
         fromConnectedEnd,
@@ -976,7 +981,7 @@ model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
         TileFeatureLayer::ColumnId::SimpleValidity,
         static_cast<uint32_t>(direction)};
     appendInternal(model_ptr<simfil::ModelNode>::make(model_, simpleAddr));
-    return model().resolve<Validity>(
+    return featureLayer().resolve<Validity>(
         simpleAddr,
         encodeSimpleValidityOwner(members_, elementIndex));
 }
@@ -1018,6 +1023,24 @@ bool MultiValidity::iterate(ModelNode::IterCallback const& cb) const
         }
     }
     return true;
+}
+
+template<>
+model_ptr<MultiValidity> resolveInternal(
+    simfil::res::tag<MultiValidity>,
+    TileFeatureModelLayerBase const& model,
+    ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureModelLayerBase::ColumnId::ValidityCollections) {
+        raise("Cannot cast this node to a ValidityCollection.");
+    }
+    if (dynamic_cast<TileFeatureLayer const*>(&model) == nullptr) {
+        raise("Validity collections are only supported by TileFeatureLayer.");
+    }
+    return MultiValidity(
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
 }
 
 }
