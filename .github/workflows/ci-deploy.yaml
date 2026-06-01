@@ -94,7 +94,7 @@ jobs:
 
   build-manylinux-aarch64:
     needs: [determine-version]
-    continue-on-error: true
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
