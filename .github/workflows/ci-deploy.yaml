@@ -105,7 +105,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+      - name: Init submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --recursive --depth=1
       - name: Build aarch64 wheel in manylinux container
         timeout-minutes: 60
         run: |
