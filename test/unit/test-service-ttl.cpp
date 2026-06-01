@@ -18,7 +18,9 @@ public:
     TestTtlDataSource()
         : info_(DataSourceInfo::fromJson(R"(
         {
+            "nodeId": "TtlTestNode",
             "mapId": "Tropico",
+            "maxParallelJobs": 1,
             "layers": {
                 "WayLayer": {
                     "featureTypes":
