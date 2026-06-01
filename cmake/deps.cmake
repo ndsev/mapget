@@ -34,8 +34,11 @@ if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
 else()
-CPMAddPackage(
-        URI "gh:Klebert-Engineering/simfil#schema-auto-wildcard@a58b5dc"
+    CPMAddPackage(
+        NAME simfil
+        GITHUB_REPOSITORY Klebert-Engineering/simfil
+        GIT_TAG 6961c23ebf66c3b8b0620678ecdaa33dfa44d0ce
+        GIT_SHALLOW FALSE
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
