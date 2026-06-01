@@ -244,7 +244,10 @@ nlohmann::json const& resolveLocalRef(nlohmann::json const& root, std::string co
 /** Convert a local JSON Schema reference into a canonical registry pointer. */
 std::string refToPointer(std::string const& ref)
 {
-    return ref.empty() || ref.front() != '#' ? ref : ref;
+    if (ref.empty() || ref.front() != '#') {
+        throw std::runtime_error("SchemaRegistry only supports local JSON Schema references.");
+    }
+    return ref.size() == 1 ? "#" : ref.substr(1);
 }
 
 /** Return the deterministic key used by feature schema annotations. */

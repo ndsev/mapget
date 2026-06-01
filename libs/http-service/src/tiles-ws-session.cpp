@@ -117,13 +117,21 @@ public:
     /** Destroy the session and abort any in-flight backend work. */
     ~TilesWsSession()
     {
-        {
-            std::lock_guard lock(gSessionRegistryMutex);
-            gSessionRegistry.erase(clientId_);
+        try {
+            {
+                std::lock_guard lock(gSessionRegistryMutex);
+                gSessionRegistry.erase(clientId_);
+            }
+            gTilesWsMetrics.activeSessions.fetch_sub(1, std::memory_order_relaxed);
+            // Best-effort cleanup: abort any in-flight requests if the session is destroyed.
+            cancelNoStatus();
         }
-        gTilesWsMetrics.activeSessions.fetch_sub(1, std::memory_order_relaxed);
-        // Best-effort cleanup: abort any in-flight requests if the session is destroyed.
-        cancelNoStatus();
+        catch (std::exception const& e) {
+            log().warn("TilesWsSession cleanup failed: {}", e.what());
+        }
+        catch (...) {
+            log().warn("TilesWsSession cleanup failed with an unknown exception.");
+        }
     }
 
     TilesWsSession(TilesWsSession const&) = delete;

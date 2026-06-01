@@ -1,9 +1,7 @@
 #include "searchresultlayer.h"
 
 #include <algorithm>
-#include <chrono>
 #include <limits>
-#include <type_traits>
 
 #include <bitsery/adapter/buffer.h>
 #include <bitsery/adapter/stream.h>
@@ -36,109 +34,6 @@ namespace mapget
 {
 namespace
 {
-using GeometryPointBufferArena = TileFeatureModelLayerBase::GeometryStorage;
-
-constexpr uint32_t SourceAddressArenaIndexBits = 20;
-constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaIndexBits);
-constexpr uint32_t SourceAddressArenaSizeBits = 4;
-constexpr uint32_t SourceAddressArenaSizeMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaSizeBits);
-constexpr uint8_t InvalidGeometryStage = std::numeric_limits<uint8_t>::max();
-
-std::tuple<size_t, size_t> modelAddressToSourceDataAddressList(uint32_t addr)
-{
-    auto const index = addr >> SourceAddressArenaSizeBits;
-    auto const size = addr & SourceAddressArenaSizeMax;
-    return {index, size};
-}
-
-uint32_t sourceDataAddressListToModelAddress(uint32_t index, uint32_t size)
-{
-    if (index > SourceAddressArenaIndexMax) {
-        raise("Source-data reference index out of range.");
-    }
-    if (size > SourceAddressArenaSizeMax) {
-        raise("Source-data reference list size out of range.");
-    }
-    return (index << SourceAddressArenaSizeBits) | size;
-}
-
-bool isBufferedGeometryColumn(uint8_t column)
-{
-    using Col = TileFeatureModelLayerBase::ColumnId;
-    return column == Col::LineGeometries ||
-           column == Col::PolygonGeometries ||
-           column == Col::MeshGeometries ||
-           column == Col::AabbGeometries ||
-           column == Col::GltfNodeIndexGeometries;
-}
-
-bool isBaseGeometryColumn(uint8_t column)
-{
-    using Col = TileFeatureModelLayerBase::ColumnId;
-    return column == Col::PointGeometries ||
-           column == Col::GltfNodeIndexGeometries ||
-           isBufferedGeometryColumn(column);
-}
-
-void ensureGeometrySourceRefCapacity(
-    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2>& refs,
-    simfil::ArrayIndex index)
-{
-    if (index == simfil::InvalidArrayIndex) {
-        raiseFmt("Invalid geometry buffer index {}.", index);
-    }
-    while (refs.size() <= static_cast<size_t>(index)) {
-        refs.emplace_back(simfil::ModelNodeAddress{});
-    }
-}
-
-void ensureGeometryStageCapacity(
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize>& stages,
-    simfil::ArrayIndex index)
-{
-    if (index == simfil::InvalidArrayIndex) {
-        raiseFmt("Invalid geometry buffer index {}.", index);
-    }
-    while (stages.size() <= static_cast<size_t>(index)) {
-        stages.emplace_back(InvalidGeometryStage);
-    }
-}
-
-uint32_t extraGeometryDataStorageIndex(simfil::ArrayIndex geometryIndex)
-{
-    if (geometryIndex == simfil::InvalidArrayIndex) {
-        raiseFmt("Invalid geometry buffer index {}.", geometryIndex);
-    }
-    if (GeometryPointBufferArena::is_singleton_handle(geometryIndex)) {
-        return GeometryPointBufferArena::singleton_payload(geometryIndex) * 2U + 1U;
-    }
-    return geometryIndex * 2U;
-}
-
-simfil::ModelNodeAddress geometrySourceRefsAt(
-    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> const& refs,
-    uint32_t index)
-{
-    if (index < refs.size()) {
-        return refs.at(index);
-    }
-    return {};
-}
-
-std::optional<uint8_t> geometryStageAt(
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> const& stages,
-    uint32_t index)
-{
-    if (index >= stages.size()) {
-        return std::nullopt;
-    }
-    auto const storedStage = stages.at(index);
-    if (storedStage == InvalidGeometryStage) {
-        return std::nullopt;
-    }
-    return storedStage;
-}
-
 simfil::ArrayIndex idPartValuesToArrayIndex(
     TileSearchResultLayer& layer,
     std::vector<IdPart> const& composition,
@@ -547,8 +442,7 @@ model_ptr<FeatureId> TileSearchResultLayer::newFeatureId(
         externalMapIdStringId = *storedMapId;
     }
 
-    auto const featureIdIndex = static_cast<uint32_t>(featureIds_.size());
-    featureIds_.emplace_back(FeatureId::Data{
+    auto const featureIdAddress = appendFeatureId(FeatureId::Data{
         false,
         idCompositionIndex,
         *typeIdStringId,
@@ -556,9 +450,9 @@ model_ptr<FeatureId> TileSearchResultLayer::newFeatureId(
         externalMapIdStringId,
     });
     return FeatureId(
-        featureIds_.back(),
+        featureIds_.at(featureIdAddress.index()),
         shared_from_this(),
-        {ColumnId::ExternalFeatureIds, featureIdIndex},
+        featureIdAddress,
         mpKey_);
 }
 
@@ -587,17 +481,17 @@ model_ptr<Geometry> TileSearchResultLayer::newGeometry(GeomType geomType, size_t
 
     switch (geomType) {
     case GeomType::Points:
-        return makeGeometry(ColumnId::PointGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::PointGeometries, vertexBufferStorage().new_array(initialCapacity, fixedSize));
     case GeomType::Line:
-        return makeGeometry(ColumnId::LineGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::LineGeometries, vertexBufferStorage().new_array(initialCapacity, fixedSize));
     case GeomType::Polygon:
-        return makeGeometry(ColumnId::PolygonGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::PolygonGeometries, vertexBufferStorage().new_array(initialCapacity, fixedSize));
     case GeomType::Mesh:
-        return makeGeometry(ColumnId::MeshGeometries, pointBuffers_.new_array(initialCapacity, fixedSize));
+        return makeGeometry(ColumnId::MeshGeometries, vertexBufferStorage().new_array(initialCapacity, fixedSize));
     case GeomType::AABB:
-        return makeGeometry(ColumnId::AabbGeometries, pointBuffers_.new_array(2, true));
+        return makeGeometry(ColumnId::AabbGeometries, vertexBufferStorage().new_array(2, true));
     case GeomType::GltfNodeIndex:
-        return makeGeometry(ColumnId::GltfNodeIndexGeometries, pointBuffers_.new_array(3, true));
+        return makeGeometry(ColumnId::GltfNodeIndexGeometries, vertexBufferStorage().new_array(3, true));
     }
     raise("Unsupported geometry type.");
     return {};
@@ -615,26 +509,25 @@ model_ptr<Geometry> TileSearchResultLayer::newGeometryView(
     if (base->geomType() == GeomType::AABB || base->geomType() == GeomType::GltfNodeIndex) {
         raise("Geometry views cannot reference AABB or GltfNodeIndex geometries.");
     }
-    geomViews_.emplace_back(geomType, offset, size, base->addr());
+    auto const geometryViewAddress = appendGeometryView(GeometryViewData{geomType, offset, size, base->addr()});
     return Geometry(
-        &geomViews_.back(),
+        &geomViews_.at(geometryViewAddress.index()),
         shared_from_this(),
-        {ColumnId::GeometryViews, static_cast<uint32_t>(geomViews_.size() - 1)},
+        geometryViewAddress,
         mpKey_);
 }
 
 model_ptr<SourceDataReferenceCollection> TileSearchResultLayer::newSourceDataReferenceCollection(
     std::span<QualifiedSourceDataReference> list)
 {
-    auto& arena = sourceDataReferences_;
-    auto const index = static_cast<uint32_t>(arena.size());
+    auto const index = static_cast<uint32_t>(sourceDataReferences_.size());
     auto const size = static_cast<uint32_t>(list.size());
-    arena.insert(arena.end(), list.begin(), list.end());
+    auto const refsAddress = appendSourceDataReferences(list);
     return SourceDataReferenceCollection(
         index,
         size,
         shared_from_this(),
-        ModelNodeAddress(ColumnId::SourceDataReferenceCollections, sourceDataAddressListToModelAddress(index, size)),
+        refsAddress,
         mpKey_);
 }
 
