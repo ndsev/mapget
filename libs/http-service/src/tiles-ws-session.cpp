@@ -126,11 +126,9 @@ public:
             // Best-effort cleanup: abort any in-flight requests if the session is destroyed.
             cancelNoStatus();
         }
-        catch (std::exception const& e) {
-            log().warn("TilesWsSession cleanup failed: {}", e.what());
+        catch (std::exception const&) {
         }
         catch (...) {
-            log().warn("TilesWsSession cleanup failed with an unknown exception.");
         }
     }
 
