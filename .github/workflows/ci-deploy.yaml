@@ -39,8 +39,8 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
-        arch: ["x86_64", "aarch64"]
-    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+        arch: ["x86_64"]
+    runs-on: ubuntu-latest
     container: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}-${{ matrix.arch }}:2025.1
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
@@ -50,7 +50,9 @@ jobs:
         with:
           submodules: false
       - name: Init submodules
-        run: git submodule update --init --recursive --depth=1
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --recursive --depth=1
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Install libuuid
@@ -89,6 +91,56 @@ jobs:
         with:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest-${{ matrix.arch }}
           path: build/bin/wheel/*.whl
+
+  build-manylinux-aarch64:
+    needs: [determine-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ubuntu-24.04-arm
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+      MANYLINUX_IMAGE: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}-aarch64:2025.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build aarch64 wheel in manylinux container
+        timeout-minutes: 60
+        run: |
+          docker pull "$MANYLINUX_IMAGE"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            -e MAPGET_VERSION="${{ needs.determine-version.outputs.version }}" \
+            "$MANYLINUX_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              yum -y install libuuid-devel
+              python3 -m venv venv && . ./venv/bin/activate
+              pip install -U setuptools wheel pip
+              rm -rf build
+              mkdir -p build && cd build
+              cmake .. -DCMAKE_BUILD_TYPE=Release \
+                -DMAPGET_ENABLE_TESTING=True \
+                -DMAPGET_BUILD_EXAMPLES=True \
+                -DMAPGET_WITH_WHEEL=True \
+                -DMAPGET_WITH_SERVICE=True \
+                -DMAPGET_WITH_HTTPLIB=True \
+                -DMAPGET_VERSION="$MAPGET_VERSION" \
+                -GNinja
+              cmake --build .
+              mv bin/wheel bin/wheel-auditme
+              auditwheel repair bin/wheel-auditme/mapget*.whl -w bin/wheel
+              ctest --verbose --no-tests=error
+            '
+      - name: Deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapget-py${{ matrix.python-version }}-ubuntu-latest-aarch64
+          path: build/bin/wheel/*.whl
+
   build:
     needs: [determine-version]
     runs-on: ${{ matrix.os }}
@@ -172,7 +224,7 @@ jobs:
           ctest -C Release --verbose --no-tests=error
 
   deploy:
-    needs: [determine-version, build-manylinux, build]
+    needs: [determine-version, build-manylinux, build-manylinux-aarch64, build]
     if: |
       (github.event_name == 'push' && 
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
