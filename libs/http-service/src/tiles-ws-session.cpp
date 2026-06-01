@@ -79,16 +79,6 @@ constexpr bool EMIT_LOAD_STATE_FRAMES = false;
     return v < 0 ? 0 : v;
 }
 
-/** Copy inbound HTTP headers so backend requests can preserve auth context. */
-[[nodiscard]] AuthHeaders authHeadersFromRequest(const drogon::HttpRequestPtr& req)
-{
-    AuthHeaders headers;
-    for (auto const& [k, v] : req->headers()) {
-        headers.emplace(k, v);
-    }
-    return headers;
-}
-
 /**
  * Per-client streaming state for `/tiles` and `/tiles/next`.
  *
@@ -1779,7 +1769,11 @@ void handleTilesNextRequest(
 /** Forward auth-header extraction through the opaque-session adapter boundary. */
 AuthHeaders tilesWsAuthHeadersFromRequest(const drogon::HttpRequestPtr& req)
 {
-    return authHeadersFromRequest(req);
+    AuthHeaders headers;
+    for (auto const& [k, v] : req->headers()) {
+        headers.emplace(k, v);
+    }
+    return headers;
 }
 
 /** Encode a stream frame without exposing session internals to the Drogon controller. */
