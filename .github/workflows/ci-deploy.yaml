@@ -36,6 +36,7 @@ jobs:
   build-manylinux:
     needs: [determine-version]
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
         arch: ["x86_64", "aarch64"]
@@ -47,7 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+      - name: Init submodules
+        run: git submodule update --init --recursive --depth=1
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Install libuuid
