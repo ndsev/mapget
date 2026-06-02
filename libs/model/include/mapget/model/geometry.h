@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <utility>
 
 using simfil::ValueType;
@@ -39,6 +40,7 @@ class BoundsRingNode;
 struct SelfContainedGeometry
 {
     std::vector<Point> points_;
+    std::vector<uint32_t> polygonRingStarts_;
     GeomType geomType_ = GeomType::Points;
 };
 
@@ -93,6 +95,15 @@ public:
 
     /** Get a point at an index. */
     [[nodiscard]] Point pointAt(size_t index) const;
+
+    /** Return the number of rings in a polygon geometry; non-polygons always have zero rings. */
+    [[nodiscard]] uint32_t numPolygonRings() const;
+
+    /** Return the start vertex of one polygon ring in the shared point buffer. */
+    [[nodiscard]] uint32_t polygonRingStart(uint32_t ringIndex) const;
+
+    /** Store explicit polygon ring starts; ring zero must start at vertex zero. */
+    void setPolygonRingStarts(std::span<uint32_t const> ringStarts);
 
     /** Get the human-readable stage name if this geometry is above high fidelity. */
     [[nodiscard]] std::optional<std::string_view> name() const;
@@ -559,9 +570,11 @@ private:
 
     enum class Orientation : uint8_t { CW, CCW };
     Orientation orientation_ = Orientation::CW;
+    Orientation desiredOrientation_ = Orientation::CCW;
     bool closed_ = false;
     uint32_t offset_ = 0;
     uint32_t size_ = 0;
+    uint32_t ringIndex_ = 0;
 };
 
 }

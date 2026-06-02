@@ -487,6 +487,41 @@ void applyGeometryDecorations(
     }
 }
 
+/** Import a GeoJSON Polygon, preserving explicit hole-ring boundaries. */
+[[nodiscard]] model_ptr<Geometry> importPolygonGeometry(
+    TileFeatureLayer& tile,
+    nlohmann::json const& coords)
+{
+    if (!coords.is_array() || coords.empty()) {
+        raiseImport("Polygon coordinates must contain at least one linear ring.");
+    }
+
+    size_t pointCount = 0;
+    std::vector<uint32_t> ringStarts;
+    ringStarts.reserve(coords.size());
+    for (auto const& ring : coords) {
+        if (!ring.is_array() || ring.empty()) {
+            raiseImport("Polygon rings must be non-empty coordinate arrays.");
+        }
+        if (ring.size() > std::numeric_limits<uint32_t>::max() - pointCount) {
+            raiseImport("Polygon has too many vertices.");
+        }
+        ringStarts.push_back(static_cast<uint32_t>(pointCount));
+        pointCount += ring.size();
+    }
+
+    auto geometry = tile.newGeometry(GeomType::Polygon, pointCount, true);
+    for (auto const& ring : coords) {
+        for (auto const& coord : ring) {
+            geometry->append(pointFromCoordinateJson(coord));
+        }
+    }
+    if (ringStarts.size() > 1) {
+        geometry->setPolygonRingStarts(ringStarts);
+    }
+    return geometry;
+}
+
 /** Import one standalone geometry object outside of feature-collection splitting logic. */
 [[nodiscard]] model_ptr<Geometry> importStandaloneGeometry(
     TileFeatureLayer& tile,
@@ -547,19 +582,7 @@ void applyGeometryDecorations(
             return geometry;
         }
 
-        auto const& coords = geometryJson.at("coordinates");
-        if (!coords.is_array() || coords.empty()) {
-            raiseImport("Polygon coordinates must contain at least one linear ring.");
-        }
-        if (coords.size() > 1 && options.strict_) {
-            // Native mapget polygons do not preserve hole rings, so strict mode rejects them.
-            raiseImport("Polygon holes are not supported by mapget polygon geometries.");
-        }
-        auto const& outerRing = coords.at(0);
-        auto geometry = tile.newGeometry(GeomType::Polygon, outerRing.size(), true);
-        for (auto const& coord : outerRing) {
-            geometry->append(pointFromCoordinateJson(coord));
-        }
+        auto geometry = importPolygonGeometry(tile, geometryJson.at("coordinates"));
         applyGeometryDecorations(tile, geometry, geometryJson, options);
         return geometry;
     }
@@ -658,10 +681,9 @@ void importFeatureGeometry(
             if (!polygon.is_array() || polygon.empty() || !polygon.at(0).is_array()) {
                 raiseImport("Generic MultiPolygon import expects every polygon to contain at least one ring.");
             }
-            // Best-effort mode degrades each polygon to its outer ring because mapget polygons have no holes.
             auto polyJson = nlohmann::json::object({
                 {"type", "Polygon"},
-                {"coordinates", nlohmann::json::array({polygon.at(0)})},
+                {"coordinates", polygon},
             });
             if (auto stage = stageFromGeometryName(tile, geometryJson, options.strict_)) {
                 polyJson["geometryName"] = geometryJson.at("geometryName");

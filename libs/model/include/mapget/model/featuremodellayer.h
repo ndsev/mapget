@@ -86,6 +86,7 @@ class TileFeatureModelLayerBase : public TileLayer, public simfil::ModelPool
 public:
     using ModelPool::resolve;
     using GeometryStorage = simfil::ArrayArena<glm::vec3, simfil::detail::ColumnPageSize * 2>;
+    using PolygonRingStartStorage = simfil::ArrayArena<uint32_t, simfil::detail::ColumnPageSize / 2>;
 
     /** Shared custom column ids used by reusable feature-id and geometry nodes. */
     struct ColumnId { enum : uint8_t {
@@ -259,6 +260,8 @@ protected:
         s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
         s.object(sourceDataReferences_);
         s.object(geomStages_);
+        s.object(polygonRingStartRefs_);
+        s.ext(polygonRingStarts_, bitsery::ext::ArrayArenaExt{});
     }
 
     /** Allocate one detached feature id in shared storage. */
@@ -270,12 +273,26 @@ protected:
     /** Allocate a source-data-reference slice in shared storage. */
     simfil::ModelNodeAddress appendSourceDataReferences(std::span<QualifiedSourceDataReference> list);
 
+    /** Return the number of explicitly declared rings for a polygon geometry. */
+    [[nodiscard]] uint32_t polygonRingCount(simfil::ModelNodeAddress address) const;
+
+    /** Return the start vertex of one explicit polygon ring. */
+    [[nodiscard]] uint32_t polygonRingStart(simfil::ModelNodeAddress address, uint32_t ringIndex) const;
+
+    /** Return the end vertex of one explicit polygon ring. */
+    [[nodiscard]] uint32_t polygonRingEnd(simfil::ModelNodeAddress address, uint32_t ringIndex) const;
+
+    /** Attach explicit ring starts to a polygon geometry. */
+    void setPolygonRingStarts(simfil::ModelNodeAddress address, std::span<uint32_t const> ringStarts);
+
     simfil::ModelColumn<FeatureIdData, simfil::detail::ColumnPageSize / 2> featureIds_;
     simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> geomSourceDataRefs_;
     simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> geomStages_;
     simfil::ModelColumn<GeometryViewData, simfil::detail::ColumnPageSize / 2> geomViews_;
+    simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> polygonRingStartRefs_;
     simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
     GeometryStorage pointBuffers_;
+    PolygonRingStartStorage polygonRingStarts_;
 };
 
 // Primary template for ADL-based resolve hooks shared by feature and search-result layers.

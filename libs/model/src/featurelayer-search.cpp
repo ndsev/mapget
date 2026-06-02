@@ -134,6 +134,14 @@ model_ptr<Geometry> copyGeometry(TileSearchResultLayer& target, model_ptr<Geomet
             copied->append(point);
             return true;
         });
+        if (source->geomType() == GeomType::Polygon && source->numPolygonRings() > 1) {
+            std::vector<uint32_t> ringStarts;
+            ringStarts.reserve(source->numPolygonRings());
+            for (uint32_t ringIndex = 0; ringIndex < source->numPolygonRings(); ++ringIndex) {
+                ringStarts.push_back(source->polygonRingStart(ringIndex));
+            }
+            copied->setPolygonRingStarts(ringStarts);
+        }
         break;
     }
     copied->setStage(source->stage());
@@ -195,6 +203,9 @@ model_ptr<GeometryCollection> copySelfContainedGeometryCollection(
     default:
         for (auto const& point : source.points_) {
             geometry->append(point);
+        }
+        if (source.geomType_ == GeomType::Polygon && source.polygonRingStarts_.size() > 1) {
+            geometry->setPolygonRingStarts(source.polygonRingStarts_);
         }
         break;
     }

@@ -85,8 +85,10 @@ public:
      *   + Added SIMFIL object/array SchemaId columns to ModelPool payloads.
      * - Version 1.7:
      *   + Added TileSearchResultLayer Message.
+     * - Version 1.8:
+     *   + Added explicit polygon ring metadata for hole-aware polygons.
      */
-    static constexpr Version CurrentProtocolVersion{1, 7, 0};
+    static constexpr Version CurrentProtocolVersion{1, 8, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

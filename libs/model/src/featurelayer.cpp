@@ -1604,6 +1604,8 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     featureLayer["geometry-source-data-references"] = geomSourceDataRefs_.byte_size();
     featureLayer["geometry-stages"] = geomStages_.byte_size();
     featureLayer["geometry-views"] = geomViews_.byte_size();
+    featureLayer["polygon-ring-start-refs"] = polygonRingStartRefs_.byte_size();
+    featureLayer["polygon-ring-starts"] = polygonRingStarts_.byte_size();
     featureLayer["point-buffers"] = pointBuffers_.byte_size();
     featureLayer["source-data-references"] = sourceDataReferences_.byte_size();
     featureLayer["glb-attachment-present"] = impl_->glbAttachment_.has_value();
@@ -2152,6 +2154,14 @@ ModelNode::Ptr TileFeatureLayer::clone(
                     newNode->append(pt);
                     return true;
                 });
+            if (resolved->geomType() == GeomType::Polygon && resolved->numPolygonRings() > 1) {
+                std::vector<uint32_t> ringStarts;
+                ringStarts.reserve(resolved->numPolygonRings());
+                for (uint32_t ringIndex = 0; ringIndex < resolved->numPolygonRings(); ++ringIndex) {
+                    ringStarts.push_back(resolved->polygonRingStart(ringIndex));
+                }
+                newNode->setPolygonRingStarts(ringStarts);
+            }
             break;
         }
         if (auto geometryStage = resolved->stage()) {

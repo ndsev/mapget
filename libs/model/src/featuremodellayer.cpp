@@ -83,6 +83,18 @@ void ensureGeometryStageCapacity(
     }
 }
 
+void ensurePolygonRingStartRefCapacity(
+    simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2>& refs,
+    simfil::ArrayIndex index)
+{
+    if (index == simfil::InvalidArrayIndex) {
+        raiseFmt("Invalid geometry buffer index {}.", index);
+    }
+    while (refs.size() <= static_cast<size_t>(index)) {
+        refs.emplace_back(simfil::InvalidArrayIndex);
+    }
+}
+
 uint32_t extraGeometryDataStorageIndex(simfil::ArrayIndex geometryIndex)
 {
     if (geometryIndex == simfil::InvalidArrayIndex) {
@@ -106,6 +118,16 @@ simfil::ModelNodeAddress geometrySourceRefsAt(
         return refs.at(index);
     }
     return {};
+}
+
+simfil::ArrayIndex polygonRingStartRefAt(
+    simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> const& refs,
+    uint32_t index)
+{
+    if (index < refs.size()) {
+        return refs.at(index);
+    }
+    return simfil::InvalidArrayIndex;
 }
 
 std::optional<uint8_t> geometryStageAt(
@@ -293,6 +315,101 @@ void TileFeatureModelLayerBase::setGeometrySourceDataReferences(
     auto const storageIndex = extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
     ensureGeometrySourceRefCapacity(geomSourceDataRefs_, storageIndex);
     geomSourceDataRefs_.at(storageIndex) = refsAddress;
+}
+
+uint32_t TileFeatureModelLayerBase::polygonRingCount(simfil::ModelNodeAddress address) const
+{
+    if (address.column() != ColumnId::PolygonGeometries) {
+        return 0;
+    }
+
+    auto const storageIndex = extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
+    auto const ringStarts = polygonRingStartRefAt(polygonRingStartRefs_, storageIndex);
+    if (ringStarts == simfil::InvalidArrayIndex) {
+        return pointBuffers_.size(static_cast<simfil::ArrayIndex>(address.index())) == 0 ? 0U : 1U;
+    }
+    return polygonRingStarts_.size(ringStarts);
+}
+
+uint32_t TileFeatureModelLayerBase::polygonRingStart(
+    simfil::ModelNodeAddress address,
+    uint32_t ringIndex) const
+{
+    if (address.column() != ColumnId::PolygonGeometries) {
+        raise("Polygon ring starts are only available for polygon geometries.");
+    }
+    auto const ringCount = polygonRingCount(address);
+    if (ringIndex >= ringCount) {
+        raiseFmt("Polygon ring index {} is out of range for {} rings.", ringIndex, ringCount);
+    }
+    auto const storageIndex = extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
+    auto const ringStarts = polygonRingStartRefAt(polygonRingStartRefs_, storageIndex);
+    if (ringStarts == simfil::InvalidArrayIndex) {
+        return 0;
+    }
+    auto const start = polygonRingStarts_.at(ringStarts, ringIndex);
+    if (!start) {
+        raiseFmt("Polygon ring start {} is missing.", ringIndex);
+    }
+    return *start;
+}
+
+uint32_t TileFeatureModelLayerBase::polygonRingEnd(
+    simfil::ModelNodeAddress address,
+    uint32_t ringIndex) const
+{
+    if (address.column() != ColumnId::PolygonGeometries) {
+        raise("Polygon ring ends are only available for polygon geometries.");
+    }
+    auto const ringCount = polygonRingCount(address);
+    if (ringIndex >= ringCount) {
+        raiseFmt("Polygon ring index {} is out of range for {} rings.", ringIndex, ringCount);
+    }
+    if (ringIndex + 1U < ringCount) {
+        return polygonRingStart(address, ringIndex + 1U);
+    }
+    return pointBuffers_.size(static_cast<simfil::ArrayIndex>(address.index()));
+}
+
+void TileFeatureModelLayerBase::setPolygonRingStarts(
+    simfil::ModelNodeAddress address,
+    std::span<uint32_t const> ringStarts)
+{
+    if (address.column() != ColumnId::PolygonGeometries) {
+        raise("Polygon ring starts can only be stored on polygon geometries.");
+    }
+
+    auto const pointCount = pointBuffers_.size(static_cast<simfil::ArrayIndex>(address.index()));
+    if (ringStarts.empty()) {
+        raise("Polygon ring starts must contain at least the outer ring start.");
+    }
+    if (ringStarts.front() != 0U) {
+        raise("Polygon ring starts must begin with vertex zero.");
+    }
+    for (size_t i = 0; i < ringStarts.size(); ++i) {
+        if (ringStarts[i] >= pointCount) {
+            raiseFmt(
+                "Polygon ring start {} is outside the {}-vertex polygon.",
+                ringStarts[i],
+                pointCount);
+        }
+        if (i > 0 && ringStarts[i] <= ringStarts[i - 1]) {
+            raise("Polygon ring starts must be strictly increasing.");
+        }
+    }
+
+    auto const storageIndex = extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
+    ensurePolygonRingStartRefCapacity(polygonRingStartRefs_, storageIndex);
+    if (ringStarts.size() <= 1) {
+        polygonRingStartRefs_.at(storageIndex) = simfil::InvalidArrayIndex;
+        return;
+    }
+
+    auto const ringStartArray = polygonRingStarts_.new_array(ringStarts.size(), true);
+    for (auto const start : ringStarts) {
+        polygonRingStarts_.emplace_back(ringStartArray, start);
+    }
+    polygonRingStartRefs_.at(storageIndex) = ringStartArray;
 }
 
 simfil::ModelNodeAddress TileFeatureModelLayerBase::appendFeatureId(FeatureIdData data)

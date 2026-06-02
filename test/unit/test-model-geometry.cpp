@@ -603,6 +603,39 @@ TEST_CASE("Attribute Validity", "[validity]") {
     });
 }
 
+TEST_CASE("Negative polygon validity preserves hole ring partitions", "[validity][polygon]")
+{
+    auto modelPool = makeTile();
+    modelPool->setGeometryAnchor({0.0, 0.0, 0.0});
+
+    auto geometryCollection = modelPool->newGeometryCollection();
+    auto polygon = geometryCollection->newGeometry(GeomType::Polygon, 10, true);
+    for (auto const& point : std::vector<Point>{
+        {0.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {4.0, 4.0, 0.0}, {0.0, 4.0, 0.0}, {0.0, 0.0, 0.0},
+        {1.0, 1.0, 0.0}, {1.0, 3.0, 0.0}, {3.0, 3.0, 0.0}, {3.0, 1.0, 0.0}, {1.0, 1.0, 0.0},
+    }) {
+        polygon->append(point);
+    }
+    std::vector<uint32_t> ringStarts{0, 5};
+    polygon->setPolygonRingStarts(ringStarts);
+
+    auto validities = modelPool->newValidityCollection();
+    validities->newGeometry(polygon, Validity::Direction::Negative);
+
+    auto validityNode = validities->at(0);
+    REQUIRE(validityNode);
+    auto validity = modelPool->resolve<Validity>(*validityNode);
+    REQUIRE(validity);
+
+    auto computed = validity->computeGeometry(geometryCollection);
+    REQUIRE(computed.geomType_ == GeomType::Polygon);
+    REQUIRE(computed.polygonRingStarts_ == std::vector<uint32_t>{0, 5});
+    REQUIRE(computed.points_ == std::vector<Point>{
+        {0.0, 0.0, 0.0}, {0.0, 4.0, 0.0}, {4.0, 4.0, 0.0}, {4.0, 0.0, 0.0}, {0.0, 0.0, 0.0},
+        {1.0, 1.0, 0.0}, {3.0, 1.0, 0.0}, {3.0, 3.0, 0.0}, {1.0, 3.0, 0.0}, {1.0, 1.0, 0.0},
+    });
+}
+
 TEST_CASE("Simple Validity Self Upgrade", "[validity]") {
     auto modelPool = makeTile();
     auto validities = modelPool->newValidityCollection();

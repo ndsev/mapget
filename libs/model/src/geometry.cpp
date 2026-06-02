@@ -682,6 +682,13 @@ uint64_t Geometry::getHash() const
         return result.value();
     }
     Hash result;
+    if (geomType() == GeomType::Polygon && !geomViewData_) {
+        auto const ringCount = numPolygonRings();
+        result.mix(ringCount);
+        for (uint32_t ringIndex = 0; ringIndex < ringCount; ++ringIndex) {
+            result.mix(polygonRingStart(ringIndex));
+        }
+    }
     forEachPoint([&result](Point const& p)
     {
         result.mix(p.x).mix(p.y).mix(p.z);
@@ -715,13 +722,20 @@ void Geometry::setStage(std::optional<uint32_t> geometryStage)
 
 SelfContainedGeometry Geometry::toSelfContained() const
 {
-    SelfContainedGeometry result{{}, geomType()};
+    SelfContainedGeometry result{{}, {}, geomType()};
     result.points_.reserve(numPoints());
     forEachPoint([&result](auto&& pt)
     {
         result.points_.emplace_back(pt);
         return true;
     });
+    if (geomType() == GeomType::Polygon) {
+        auto const ringCount = numPolygonRings();
+        result.polygonRingStarts_.reserve(ringCount);
+        for (uint32_t ringIndex = 0; ringIndex < ringCount; ++ringIndex) {
+            result.polygonRingStarts_.push_back(polygonRingStart(ringIndex));
+        }
+    }
     return result;
 }
 
@@ -1094,6 +1108,30 @@ Point Geometry::pointAt(size_t index) const
     return vertexBufferNode->pointAt(static_cast<int64_t>(index));
 }
 
+uint32_t Geometry::numPolygonRings() const
+{
+    if (geomType() != GeomType::Polygon || geomViewData_) {
+        return 0;
+    }
+    return model().polygonRingCount(addr_);
+}
+
+uint32_t Geometry::polygonRingStart(uint32_t ringIndex) const
+{
+    if (geomType() != GeomType::Polygon || geomViewData_) {
+        raise("Polygon ring starts are only available on concrete polygon geometries.");
+    }
+    return model().polygonRingStart(addr_, ringIndex);
+}
+
+void Geometry::setPolygonRingStarts(std::span<uint32_t const> ringStarts)
+{
+    if (geomType() != GeomType::Polygon || geomViewData_) {
+        raise("Polygon ring starts can only be set on concrete polygon geometries.");
+    }
+    model().setPolygonRingStarts(addr_, ringStarts);
+}
+
 double Geometry::length() const
 {
     if (geomType() == GeomType::GltfNodeIndex || geomType() == GeomType::AABB) {
@@ -1416,17 +1454,19 @@ ValueType PolygonNode::type() const
 
 ModelNode::Ptr PolygonNode::at(int64_t index) const
 {
-    // Index 0 is the outer ring, all following rings are holes
-    if (index == 0)
+    if (index >= 0 && index < size()) {
+        // Ring 0 is the outer ring; following rings are holes.
         return model().resolve(
-            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::LinearRing, addr_.index()});
+            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::LinearRing, addr_.index()},
+            index);
+    }
 
     throw std::out_of_range("PolygonNode: index out of bounds.");
 }
 
 uint32_t PolygonNode::size() const
 {
-    return 1;
+    return model().polygonRingCount(ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::PolygonGeometries, addr_.index()});
 }
 
 ModelNode::Ptr PolygonNode::get(const StringId&) const
@@ -1441,7 +1481,11 @@ StringId PolygonNode::keyAt(int64_t) const
 
 bool PolygonNode::iterate(IterCallback const& cb) const
 {
-    if (!cb(*at(0))) return false;
+    for (uint32_t i = 0; i < size(); ++i) {
+        if (!cb(*at(i))) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1528,11 +1572,26 @@ LinearRingNode::LinearRingNode(const ModelNode& base, simfil::detail::mp_key key
 LinearRingNode::LinearRingNode(const ModelNode& base, std::optional<size_t> length, simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(base, key)
 {
-    if (std::get_if<int64_t>(&data_))
-        offset_ = std::get<int64_t>(data_);
+    if (addr_.column() == TileFeatureModelLayerBase::ColumnId::LinearRing) {
+        if (std::get_if<int64_t>(&data_)) {
+            ringIndex_ = static_cast<uint32_t>(std::get<int64_t>(data_));
+        }
+        auto const polygonAddress = ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::PolygonGeometries, addr_.index()};
+        offset_ = model().polygonRingStart(polygonAddress, ringIndex_);
+        auto const end = model().polygonRingEnd(polygonAddress, ringIndex_);
+        size_ = end - offset_;
+        desiredOrientation_ = ringIndex_ == 0 ? Orientation::CCW : Orientation::CW;
+    }
+    else {
+        if (std::get_if<int64_t>(&data_)) {
+            offset_ = std::get<int64_t>(data_);
+        }
+    }
 
     auto buffer = vertexBuffer();
-    size_ = length.value_or(buffer->size() - offset_);
+    if (addr_.column() != TileFeatureModelLayerBase::ColumnId::LinearRing) {
+        size_ = length.value_or(buffer->size() - offset_);
+    }
 
     auto isClosed = [&]()
     {
@@ -1565,10 +1624,10 @@ LinearRingNode::LinearRingNode(const ModelNode& base, std::optional<size_t> leng
 
         auto area = 0.0;
         auto z = buffer->pointAt(0 + offset_).z;
-        const auto n = size_;
-        for (auto i = 0; i < n; ++i) {
+        auto const n = closed_ ? size_ - 1U : size_;
+        for (auto i = 0U; i < n; ++i) {
             const auto& a = buffer->pointAt(i + offset_);
-            const auto& b = buffer->pointAt((i + 1 + offset_) % n);
+            const auto& b = buffer->pointAt(((i + 1U) % n) + offset_);
             if (a.z != z)
                 return 0.0;
 
@@ -1596,10 +1655,18 @@ ModelNode::Ptr LinearRingNode::at(int64_t index) const
     if (!closed_ && index == size() - 1)
         return buffer->at(0 + offset_);
 
-    // If the ring is in clockwise order, reverse the index to
-    // conform to GeoJSON expecting CCW polygons (for outer rings) only.
-    if (orientation_ == Orientation::CW)
-        index = (size_ - index) % size_;
+    // GeoJSON/NDS expect outer rings to be CCW and hole rings to be CW. When
+    // the stored ring is already explicitly closed, reverse only the unique
+    // vertices and keep the final closing coordinate equal to the first one.
+    if (orientation_ != desiredOrientation_) {
+        auto const uniqueVertexCount = closed_ ? size_ - 1U : size_;
+        if (index == static_cast<int64_t>(uniqueVertexCount)) {
+            return buffer->at(offset_);
+        }
+        if (index > 0) {
+            index = static_cast<int64_t>(uniqueVertexCount) - index;
+        }
+    }
 
     return buffer->at(index + offset_);
 }
