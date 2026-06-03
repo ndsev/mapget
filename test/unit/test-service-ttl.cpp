@@ -93,6 +93,58 @@ public:
     using LayerTilesRequest::toJson;
 };
 
+class MutableInfoDataSource : public DataSource
+{
+public:
+    MutableInfoDataSource()
+    {
+        layerInfo_ = LayerInfo::fromJson(nlohmann::json{
+            {"layerId", "MutableLayer"},
+            {"type", "Features"},
+            {"featureTypes", nlohmann::json::array({
+                nlohmann::json{
+                    {"name", "Way"},
+                    {"uniqueIdCompositions", nlohmann::json::array({
+                        nlohmann::json::array({
+                            nlohmann::json{
+                                {"partId", "wayId"},
+                                {"description", "Synthetic way id."},
+                                {"datatype", "U32"},
+                            },
+                        }),
+                    })},
+                },
+            })},
+        });
+        info_.nodeId_ = "MutableInfoNode";
+        info_.mapId_ = "MutableMap";
+        info_.layers_.emplace("MutableLayer", layerInfo_);
+    }
+
+    DataSourceInfo info() override { return info_; }
+
+    void fill(TileFeatureLayer::Ptr const& tile) override
+    {
+        tile->newFeature("Way", {{"wayId", int64_t(1)}});
+    }
+
+    void fill(TileSourceDataLayer::Ptr const&) override
+    {
+        throw std::runtime_error("SourceDataLayer not supported in MutableInfoDataSource");
+    }
+
+    void mutateAdvertisedInfo()
+    {
+        layerInfo_->layerId_ = "MutatedLayer";
+        layerInfo_->featureTypes_.clear();
+        info_.layers_.clear();
+    }
+
+private:
+    std::shared_ptr<LayerInfo> layerInfo_;
+    DataSourceInfo info_;
+};
+
 TEST_CASE("Service TTL behavior", "[Service][TTL]")
 {
     auto cache = std::make_shared<MemCache>(1024);
@@ -180,6 +232,27 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         REQUIRE(tile->ttl().value() == datasourceTtl);
         REQUIRE(ds->fillCount() == 1);
     }
+}
+
+TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service][DataSourceInfo]")
+{
+    auto service = Service(std::make_shared<MemCache>(32), false);
+    auto dataSource = std::make_shared<MutableInfoDataSource>();
+    service.add(dataSource);
+
+    dataSource->mutateAdvertisedInfo();
+
+    auto firstSnapshot = service.info();
+    REQUIRE(firstSnapshot.size() == 1);
+    REQUIRE(firstSnapshot.front().layers_.size() == 1);
+    REQUIRE(firstSnapshot.front().layers_.at("MutableLayer")->layerId_ == "MutableLayer");
+    REQUIRE(firstSnapshot.front().layers_.at("MutableLayer")->featureTypes_.size() == 1);
+
+    firstSnapshot.front().layers_.at("MutableLayer")->layerId_ = "CallerMutation";
+
+    auto secondSnapshot = service.info();
+    REQUIRE(secondSnapshot.size() == 1);
+    REQUIRE(secondSnapshot.front().layers_.at("MutableLayer")->layerId_ == "MutableLayer");
 }
 
 TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]")

@@ -1,7 +1,10 @@
 #include "searchresultlayer.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <limits>
+#include <variant>
 
 #include <bitsery/adapter/buffer.h>
 #include <bitsery/adapter/stream.h>
@@ -102,6 +105,19 @@ nlohmann::json diagnosticsToJson(simfil::Diagnostics const& diagnostics)
     return result;
 }
 
+/** Clamp counters which exceed SIMFIL's signed integer scalar range. */
+int64_t traceCounterToInt64(uint64_t value)
+{
+    auto const maxSigned = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    if (value > maxSigned) {
+        // Procedural fields expose counters as SIMFIL int values, whose largest
+        // exact representation is int64_t. The serialized TraceData still keeps
+        // the full unsigned counter for JSON/binary consumers.
+        return std::numeric_limits<int64_t>::max();
+    }
+    return static_cast<int64_t>(value);
+}
+
 /** Serialize parsed diagnostics with the same binary layout as simfil::Diagnostics::write/read. */
 template<typename S>
 void readWriteDiagnostics(S& s, simfil::Diagnostics& data)
@@ -134,6 +150,7 @@ struct TileSearchResultLayer::Impl
     std::optional<uint32_t> stage_;
     std::vector<std::string> resultFields_;
     simfil::ModelColumn<SearchResult::Data, simfil::detail::ColumnPageSize / 2> searchResults_;
+    simfil::ModelColumn<SearchTrace::TraceData, simfil::detail::ColumnPageSize / 2> traces_;
     simfil::Diagnostics diagnostics_;
 
     template<typename S>
@@ -147,9 +164,81 @@ struct TileSearchResultLayer::Impl
             serializer.text1b(field, std::numeric_limits<uint32_t>::max());
         });
         s.object(searchResults_);
+        s.object(traces_);
         readWriteDiagnostics(s, diagnostics_);
     }
 };
+
+SearchTrace::SearchTrace(
+    TraceData* data,
+    simfil::ModelConstPtr pool,
+    simfil::ModelNodeAddress address,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<4, SearchTrace, TileSearchResultLayer>(std::move(pool), address, key),
+      data_(data)
+{
+    fields_.emplace_back(StringPool::NameStr, [](SearchTrace const& self) {
+        return self.model().resolve(self.data_->name_);
+    });
+    fields_.emplace_back(StringPool::CallsStr, [](SearchTrace const& self) {
+        return self.model().newValue(traceCounterToInt64(self.data_->calls_));
+    });
+    fields_.emplace_back(StringPool::TotalUsStr, [](SearchTrace const& self) {
+        return self.model().newValue(self.data_->totalUs_);
+    });
+    fields_.emplace_back(StringPool::ValuesStr, [](SearchTrace const& self) {
+        return self.values();
+    });
+}
+
+std::string SearchTrace::name() const
+{
+    auto nameNode = model().resolve(data_->name_);
+    if (!nameNode) {
+        return {};
+    }
+
+    auto value = nameNode->value();
+    if (auto stringValue = std::get_if<std::string>(&value)) {
+        return *stringValue;
+    }
+    if (auto stringView = std::get_if<std::string_view>(&value)) {
+        return std::string(*stringView);
+    }
+
+    // Corrupt or older payloads should remain inspectable instead of crashing
+    // if the trace name does not point at a string node.
+    return nameNode->toJson().dump();
+}
+
+uint64_t SearchTrace::calls() const
+{
+    return data_->calls_;
+}
+
+std::chrono::microseconds SearchTrace::totalUs() const
+{
+    return std::chrono::microseconds{data_->totalUs_};
+}
+
+model_ptr<Array> SearchTrace::values() const
+{
+    if (!data_->values_) {
+        return {};
+    }
+    return model().resolve<Array>(data_->values_);
+}
+
+nlohmann::json SearchTrace::toJson() const
+{
+    return nlohmann::json::object({
+        {"type", "SearchTrace"},
+        {"name", name()},
+        {"calls", calls()},
+        {"totalus", totalUs().count()},
+        {"values", arrayToJson(values())},
+    });
+}
 
 SearchResult::SearchResult(
     Data* data,
@@ -371,6 +460,70 @@ simfil::Diagnostics const& TileSearchResultLayer::diagnostics() const
     return impl_->diagnostics_;
 }
 
+simfil::ModelNode::Ptr TileSearchResultLayer::materializeValue(simfil::Value const& value)
+{
+    switch (value.type) {
+    case simfil::ValueType::Undef:
+    case simfil::ValueType::Null:
+        return resolve<simfil::ModelNode>(
+            simfil::ModelNodeAddress{simfil::Model::Null, 1},
+            simfil::ScalarValueType{});
+    case simfil::ValueType::Bool:
+        return newSmallValue(value.as<simfil::ValueType::Bool>());
+    case simfil::ValueType::Int:
+        return newValue(value.as<simfil::ValueType::Int>());
+    case simfil::ValueType::Float:
+        return newValue(value.as<simfil::ValueType::Float>());
+    case simfil::ValueType::String:
+        return newValue(value.as<simfil::ValueType::String>());
+    case simfil::ValueType::Bytes:
+        return newValue("blob");
+    case simfil::ValueType::TransientObject:
+    case simfil::ValueType::Object:
+        // Search result chunks must be self-contained. Cross-model structured
+        // values are therefore reduced to stable placeholders instead of
+        // stringifying potentially large nested data.
+        return newValue("object");
+    case simfil::ValueType::Array:
+        return newValue("list");
+    case simfil::ValueType::LAST_:
+        break;
+    }
+    return newValue(value.toString());
+}
+
+void TileSearchResultLayer::setTraces(std::map<std::string, simfil::Trace> traces)
+{
+    impl_->traces_.clear();
+    for (auto&& [name, trace] : traces) {
+        auto values = newArray(trace.values.size(), true);
+        for (auto const& value : trace.values) {
+            values->append(materializeValue(value));
+        }
+
+        auto nameNode = newValue(name);
+        impl_->traces_.emplace_back(SearchTrace::TraceData{
+            nameNode->addr(),
+            values->addr(),
+            static_cast<uint64_t>(trace.calls),
+            static_cast<int64_t>(trace.totalus.count()),
+        });
+    }
+}
+
+size_t TileSearchResultLayer::traceCount() const
+{
+    return impl_->traces_.size();
+}
+
+model_ptr<SearchTrace> TileSearchResultLayer::traceAt(size_t index) const
+{
+    if (index >= impl_->traces_.size()) {
+        return {};
+    }
+    return resolve<SearchTrace>(simfil::ModelNodeAddress{ColumnId::Traces, static_cast<uint32_t>(index)});
+}
+
 model_ptr<SearchResult> TileSearchResultLayer::newSearchResult(
     model_ptr<FeatureId> const& featureId,
     model_ptr<GeometryCollection> const& geometry,
@@ -559,6 +712,16 @@ nlohmann::json TileSearchResultLayer::toJson() const
     if (!diagnosticsJson.empty()) {
         result["diagnostics"] = std::move(diagnosticsJson);
     }
+    if (traceCount() > 0) {
+        auto tracesJson = nlohmann::json::array();
+        for (size_t i = 0; i < traceCount(); ++i) {
+            auto trace = traceAt(i);
+            if (trace) {
+                tracesJson.push_back(trace->toJson());
+            }
+        }
+        result["traces"] = std::move(tracesJson);
+    }
     for (size_t i = 0; i < size(); ++i) {
         auto searchResult = at(i);
         if (searchResult) {
@@ -597,6 +760,9 @@ tl::expected<void, simfil::Error> TileSearchResultLayer::resolve(simfil::ModelNo
     switch (n.addr().column()) {
     case ColumnId::SearchResults:
         cb(*resolve<SearchResult>(n));
+        return {};
+    case ColumnId::Traces:
+        cb(*resolve<SearchTrace>(n));
         return {};
     case ColumnId::FeatureIds:
     case ColumnId::ExternalFeatureIds:
@@ -669,6 +835,19 @@ model_ptr<SearchResult> resolveInternal(tag<SearchResult>, TileSearchResultLayer
     }
     return SearchResult(
         const_cast<SearchResult::Data*>(&model.impl_->searchResults_.at(node.addr().index())),
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
+}
+
+template<>
+model_ptr<SearchTrace> resolveInternal(tag<SearchTrace>, TileSearchResultLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileSearchResultLayer::ColumnId::Traces) {
+        raise("Cannot cast this node to a SearchTrace.");
+    }
+    return SearchTrace(
+        const_cast<SearchTrace::TraceData*>(&model.impl_->traces_.at(node.addr().index())),
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);

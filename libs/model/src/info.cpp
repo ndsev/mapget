@@ -7,6 +7,7 @@
 #include <random>
 #include <sstream>
 #include <charconv>
+#include <mutex>
 #include <regex>
 
 namespace mapget
@@ -30,6 +31,13 @@ std::optional<T> from_chars(std::string_view s, Args... args)
     if (result.ec != std::errc{} || result.ptr != end)
         return {};
     return number;
+}
+
+/** Serialize LayerInfo schema cache access because the cache is mutable and lazy. */
+std::mutex& schemaRegistryMutex()
+{
+    static std::mutex mutex;
+    return mutex;
 }
 
 }
@@ -486,6 +494,7 @@ std::shared_ptr<SchemaRegistry> LayerInfo::schemaRegistry() const
         return nullptr;
     }
 
+    std::lock_guard lock(schemaRegistryMutex());
     if (!schemaRegistry_) {
         schemaRegistry_ = SchemaRegistry::fromJson(featureModelSchema_);
     }

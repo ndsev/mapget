@@ -172,11 +172,11 @@ Important result fields:
 | `resultFields` | Copy of the requested `withFields` expressions. Indices align with every result's `values` array. |
 | `results[].featureId` | Dot-separated feature ID string for the matched source feature. |
 | `diagnostics` | Optional parsed SIMFIL diagnostics from `query` evaluation, serialized with the result layer and exported in JSONL mode. |
+| `traces` | Optional typed SIMFIL `trace()` aggregates collected while evaluating the search and field expressions. |
 | `results[].geometry` | Copied display geometry used for map styling/highlighting. For attribute-scope validity matches, this is the computed validity geometry when available. |
-| `results[].values` | Evaluated `withFields` values in order. |
+| `results[].values` | Evaluated `withFields` values in order. Binary/object/list values are represented as `blob`/`object`/`list` placeholder strings. |
 | `results[].match` | Present for attribute-scope matches and identifies the matched attribute/validity context. |
 | `info.sourceStageMask` | Present when staged source payloads were assembled before search evaluation. |
-| `info.traces` | SIMFIL `trace()` aggregates collected while evaluating the search and field expressions. |
 
 ### Search status objects
 

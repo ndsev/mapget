@@ -79,6 +79,43 @@ nlohmann::json makeSearchStatusJson(
     return status;
 }
 
+/** Create a detached LayerInfo copy without reading the lazy schema-registry cache. */
+std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
+{
+    auto result = std::make_shared<LayerInfo>();
+    result->layerId_ = info.layerId_;
+    result->type_ = info.type_;
+    result->featureTypes_ = info.featureTypes_;
+    result->zoomLevels_ = info.zoomLevels_;
+    result->coverage_ = info.coverage_;
+    result->stages_ = info.stages_;
+    result->stageLabels_ = info.stageLabels_;
+    result->highFidelityStage_ = info.highFidelityStage_;
+    result->canRead_ = info.canRead_;
+    result->canWrite_ = info.canWrite_;
+    result->version_ = info.version_;
+    result->featureModelSchema_ = info.featureModelSchema_;
+    return result;
+}
+
+/** Create a service-owned metadata snapshot, detached from datasource internals. */
+DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
+{
+    auto result = info;
+    result.layers_.clear();
+    result.layers_.reserve(info.layers_.size());
+    for (auto const& [layerId, layerInfo] : info.layers_) {
+        if (!layerInfo) {
+            raise(fmt::format(
+                "Datasource '{}' has null LayerInfo for layer '{}'.",
+                info.nodeId_,
+                layerId));
+        }
+        result.layers_.emplace(layerId, cloneLayerInfo(*layerInfo));
+    }
+    return result;
+}
+
 }  // namespace
 
 LayerTilesRequest::LayerTilesRequest(
@@ -191,6 +228,23 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stage
         return;
     }
 
+    const auto appendTileMajorStagedTiles = [&](std::optional<bool> priorityFilter) {
+        for (size_t bucketIndex = 0; bucketIndex < tileIdsByNextStage_.size(); ++bucketIndex) {
+            const auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
+            if (nextMissingStage >= normalizedStages) {
+                continue;
+            }
+            for (auto const& tileId : tileIdsByNextStage_[bucketIndex]) {
+                if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
+                    continue;
+                }
+                for (uint32_t stage = nextMissingStage; stage < normalizedStages; ++stage) {
+                    appendKey(MapTileKey(layerType, mapId_, layerId_, tileId, stage));
+                }
+            }
+        }
+    };
+
     const auto appendStagedTiles = [&](std::optional<bool> priorityFilter) {
         for (uint32_t stage = 0; stage < normalizedStages; ++stage) {
             // For all tiles in bucket 0, we need to enqueue N stages.
@@ -212,10 +266,24 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stage
     };
 
     if (priorityTileIds_.empty()) {
-        appendStagedTiles(std::nullopt);
+        if (preferCompleteStagedTiles_) {
+            // Search cannot emit a result until all stages of a tile are
+            // present. Tile-major ordering prevents retaining one partial
+            // stage for every requested tile in large searches.
+            appendTileMajorStagedTiles(std::nullopt);
+        } else {
+            appendStagedTiles(std::nullopt);
+        }
     } else {
-        appendStagedTiles(true);
-        appendStagedTiles(false);
+        if (preferCompleteStagedTiles_) {
+            // Keep foreground tiles first while still completing each tile
+            // before advancing to the next one.
+            appendTileMajorStagedTiles(true);
+            appendTileMajorStagedTiles(false);
+        } else {
+            appendStagedTiles(true);
+            appendStagedTiles(false);
+        }
     }
 
     status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
@@ -918,22 +986,26 @@ struct Service::Impl : public Service::Controller
 
     void addDataSource(DataSource::Ptr const& dataSource)
     {
+        if (!dataSource) {
+            raise("Tried to add a null data source.");
+        }
+
+        auto info = cloneDataSourceInfo(dataSource->info());
         std::unique_lock lock(dataSourcesMutex_);
 
-        if (dataSource->info().nodeId_.empty()) {
+        if (info.nodeId_.empty()) {
             // Unique node IDs are required for the string pool offsets.
             raise("Tried to create service worker for an unnamed node!");
         }
         for (auto& existingSource : dataSourceInfo_) {
-            if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
+            if (existingSource.second.nodeId_ == info.nodeId_) {
                 // Unique node IDs are required for the string pool offsets.
                 raise(
                     fmt::format("Data source with node ID '{}' already registered!",
-                                dataSource->info().nodeId_));
+                                info.nodeId_));
             }
         }
 
-        DataSourceInfo info = dataSource->info();
         dataSourceInfo_[dataSource] = info;
 
         // If the datasource is an add-on source, then it
@@ -1013,12 +1085,20 @@ struct Service::Impl : public Service::Controller
 
     std::vector<DataSourceInfo> getDataSourceInfos(std::optional<AuthHeaders> const& clientHeaders)
     {
+        std::vector<std::pair<DataSource::Ptr, DataSourceInfo>> dataSources;
+        {
+            std::shared_lock lock(dataSourcesMutex_);
+            dataSources.assign(dataSourceInfo_.begin(), dataSourceInfo_.end());
+        }
+
         std::vector<DataSourceInfo> infos;
-        std::shared_lock lock(dataSourcesMutex_);
-        infos.reserve(dataSourceInfo_.size());
-        for (const auto& [dataSource, info] : dataSourceInfo_) {
+        infos.reserve(dataSources.size());
+        for (const auto& [dataSource, info] : dataSources) {
             if (!clientHeaders || dataSource->isDataSourceAuthorized(*clientHeaders)) {
-                infos.push_back(info);
+                // Return detached LayerInfo snapshots so callers such as
+                // `/sources` can serialize without observing datasource-side
+                // metadata mutations or holding the registry lock.
+                infos.push_back(cloneDataSourceInfo(info));
             }
         }
         return infos;
@@ -1234,11 +1314,13 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
             request->priorityTileIds_.begin(),
             request->priorityTileIds_.end());
         if (stageCount > 1U) {
-            return std::make_shared<LayerTilesRequest>(
+            auto stagedRequest = std::make_shared<LayerTilesRequest>(
                 request->mapId_,
                 request->layerId_,
                 std::vector<std::vector<TileId>>{request->tileIds_},
                 priorityTileIds);
+            stagedRequest->preferCompleteStagedTiles_ = true;
+            return stagedRequest;
         }
         return std::make_shared<LayerTilesRequest>(
             request->mapId_,

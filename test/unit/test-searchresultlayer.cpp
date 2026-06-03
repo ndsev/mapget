@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -57,6 +59,7 @@ public:
         : info_(DataSourceInfo::fromJson(R"({
             "nodeId": "SearchStageNode",
             "mapId": "TestMap",
+            "maxParallelJobs": 1,
             "layers": {
                 "SearchableLayer": {
                     "type": "Features",
@@ -159,6 +162,31 @@ TEST_CASE("TileSearchResultLayer stores fixed result values and shared geometry"
     REQUIRE(json["results"][0]["values"] == nlohmann::json::array({"Main Street", 50}));
 }
 
+TEST_CASE("TileSearchResultLayer materializes non-scalar result values as placeholders", "[search-result-layer]")
+{
+    auto layer = makeSearchResultLayer();
+    layer->setResultFields({"blobValue", "objectValue", "listValue"});
+
+    auto featureId = layer->newFeatureId("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    auto geometry = layer->newGeometryCollection();
+    geometry->newGeometry(GeomType::Points)->append(Point(11.0, 48.0, 0.0));
+
+    auto listValue = layer->newArray(1, true);
+    listValue->append(layer->newValue(int64_t(1)));
+    std::vector<simfil::ModelNode::Ptr> values{
+        layer->materializeValue(simfil::Value::make(simfil::ByteArray{"AB"})),
+        layer->materializeValue(simfil::Value{
+            simfil::ValueType::Object,
+            simfil::model_ptr<simfil::ModelNode>(featureId)}),
+        layer->materializeValue(simfil::Value{
+            simfil::ValueType::Array,
+            simfil::model_ptr<simfil::ModelNode>(listValue)}),
+    };
+    layer->newSearchResult(featureId, geometry, values);
+
+    REQUIRE(layer->toJson()["results"][0]["values"] == nlohmann::json::array({"blob", "object", "list"}));
+}
+
 TEST_CASE("TileSearchResultLayer roundtrips through TileLayerStream", "[search-result-layer][stream]")
 {
     auto layer = makeSearchResultLayer();
@@ -170,6 +198,14 @@ TEST_CASE("TileSearchResultLayer roundtrips through TileLayerStream", "[search-r
     geometry->newGeometry(GeomType::Points)->append(Point(11.0, 48.0, 0.0));
     std::vector<simfil::ModelNode::Ptr> values{layer->newValue("Result Label")};
     layer->newSearchResult(featureId, geometry, values);
+    simfil::Trace trace;
+    trace.calls = 2;
+    trace.totalus = std::chrono::microseconds{17};
+    trace.values.push_back(simfil::Value::make(std::string("trace-value")));
+    trace.values.push_back(simfil::Value::make(int64_t(5)));
+    std::map<std::string, simfil::Trace> traces;
+    traces.emplace("debug-label", std::move(trace));
+    layer->setTraces(std::move(traces));
 
     std::string streamBytes;
     TileLayerStream::StringPoolOffsetMap offsets;
@@ -193,6 +229,15 @@ TEST_CASE("TileSearchResultLayer roundtrips through TileLayerStream", "[search-r
     REQUIRE(parsedResult->featureId()->toString() == "Road.7.42");
     REQUIRE(parsedResult->values()->size() == 1);
     REQUIRE(parsed->toJson()["results"][0]["values"] == nlohmann::json::array({"Result Label"}));
+    REQUIRE(parsed->traceCount() == 1);
+    auto parsedTrace = parsed->traceAt(0);
+    REQUIRE(parsedTrace);
+    REQUIRE(parsedTrace->name() == "debug-label");
+    REQUIRE(parsedTrace->calls() == 2);
+    REQUIRE(parsedTrace->totalUs().count() == 17);
+    REQUIRE(parsedTrace->values()->size() == 2);
+    REQUIRE(parsedTrace->toJson()["values"] == nlohmann::json::array({"trace-value", 5}));
+    REQUIRE(parsed->toJson()["traces"].size() == 1);
 }
 
 TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer-search]")
@@ -214,7 +259,7 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
         *source,
         FeatureLayerSearchRequest{
             .searchId_ = "unit-search",
-            .query_ = "typeId == 'Road'",
+            .query_ = "trace(typeId == 'Road', -1, 'match')",
             .scope_ = FeatureLayerSearchScope::Feature,
             .withFields_ = {"'display label'", "typeId", "searchOnlyMissingField", "1 +"},
         });
@@ -229,6 +274,15 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
     REQUIRE(source->strings()->highest() == sourceStringHighWatermark);
     REQUIRE(searchResult->layer_->resultFields() == std::vector<std::string>{"'display label'", "typeId", "searchOnlyMissingField", "1 +"});
     REQUIRE(searchResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({"display label", "Road", nullptr, nullptr}));
+    REQUIRE_FALSE(searchResult->layer_->info().contains("traces"));
+    REQUIRE(searchResult->layer_->traceCount() == 1);
+    auto trace = searchResult->layer_->traceAt(0);
+    REQUIRE(trace);
+    REQUIRE(trace->name() == "match");
+    REQUIRE(trace->calls() == 1);
+    REQUIRE(trace->values()->size() == 1);
+    REQUIRE(trace->values()->at(0)->toJson() == true);
+    REQUIRE(searchResult->layer_->toJson()["traces"][0]["name"] == "match");
 }
 
 TEST_CASE("Feature-layer search stores diagnostics on the result layer", "[feature-layer-search][search-result-layer]")
@@ -430,6 +484,35 @@ TEST_CASE("Service search loads staged payloads and evaluates in scheduled searc
     REQUIRE(requestedStages[0] == 0U);
     REQUIRE(requestedStages[1] == 1U);
     REQUIRE_FALSE(statuses.empty());
+}
+
+TEST_CASE("Service search requests staged source tiles in complete-tile order", "[feature-layer-search][Service]")
+{
+    auto cache = std::make_shared<MemCache>(32);
+    Service service(cache, false);
+    auto dataSource = std::make_shared<StagedSearchDataSource>();
+    service.add(dataSource);
+
+    auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
+        "TestMap",
+        "SearchableLayer",
+        std::vector<TileId>{TileId(0x1234), TileId(0x1235)},
+        FeatureLayerSearchRequest{
+            .searchId_ = "service-search-stage-order",
+            .query_ = "$name == 'speedLimit'",
+            .scope_ = FeatureLayerSearchScope::Attribute,
+        });
+
+    request->onSearchResult([](TileSearchResultLayer::Ptr) {});
+
+    REQUIRE(service.request(request));
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    // Large staged searches must not load stage 0 for every tile before any
+    // higher stage. Complete-tile ordering bounds the number of partial staged
+    // tiles retained by the search assembler.
+    REQUIRE(dataSource->requestedStages() == std::vector<uint32_t>{0U, 1U, 0U, 1U});
 }
 
 TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", "[feature-layer-search]")

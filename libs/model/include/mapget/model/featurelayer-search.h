@@ -52,7 +52,7 @@ struct FeatureLayerSearchResult
  * The returned TileSearchResultLayer stores copied feature ids, copied display
  * geometries, a fixed values array for each expression in request.withFields_,
  * and the parsed SIMFIL diagnostics collected while evaluating this chunk.
- * SIMFIL trace() aggregates are attached to layer->info()["traces"].
+ * SIMFIL trace() aggregates are stored as typed SearchTrace nodes.
  */
 tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResultLayer(
     TileFeatureLayer& sourceLayer,

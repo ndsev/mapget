@@ -161,6 +161,14 @@ private:
     // Resolved staged tile keys in scheduling order.
     std::vector<MapTileKey> resolvedTileKeys_;
 
+    /**
+     * Search needs complete staged tiles before it can evaluate a predicate.
+     * This internal scheduling hint keeps normal staged frontend requests
+     * stage-major, but lets search load all stages of one tile before moving
+     * on to the next tile.
+     */
+    bool preferCompleteStagedTiles_ = false;
+
     // Track which resolved tile keys still need to be scheduled/served.
     std::set<MapTileKey> tileKeysNotStarted_;
 

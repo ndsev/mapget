@@ -1,6 +1,8 @@
 #pragma once
 
+#include <chrono>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -10,12 +12,64 @@
 #include "featuremodellayer.h"
 #include "geometry.h"
 #include "simfil/diagnostics.h"
+#include "simfil/environment.h"
 #include "stringpool.h"
 
 namespace mapget
 {
 
 class TileSearchResultLayer;
+
+/**
+ * Typed SIMFIL trace aggregate captured while producing a search-result layer.
+ *
+ * Trace names and sampled values live in the layer's ModelPool string/value
+ * buffers, so adding traces does not mutate the datasource-owned StringPool.
+ */
+class SearchTrace : public simfil::ProceduralObject<4, SearchTrace, TileSearchResultLayer>
+{
+public:
+    friend class TileSearchResultLayer;
+
+    /** Compact serialized representation of one trace aggregate. */
+    struct TraceData
+    {
+        MODEL_COLUMN_TYPE(24);
+
+        simfil::ModelNodeAddress name_{};
+        simfil::ModelNodeAddress values_{};
+        uint64_t calls_ = 0;
+        int64_t totalUs_ = 0;
+    };
+
+    /** Return the human-readable trace name chosen by the SIMFIL expression. */
+    [[nodiscard]] std::string name() const;
+
+    /** Number of times this trace expression was evaluated in the result chunk. */
+    [[nodiscard]] uint64_t calls() const;
+
+    /** Total wall-clock time spent evaluating this trace expression. */
+    [[nodiscard]] std::chrono::microseconds totalUs() const;
+
+    /** Sampled trace values materialized into this layer's ModelPool. */
+    [[nodiscard]] model_ptr<Array> values() const;
+
+    /** Export this trace to JSON for tests and diagnostics. */
+    [[nodiscard]] nlohmann::json toJson() const override;
+
+public:
+    explicit SearchTrace(simfil::detail::mp_key key)
+        : simfil::ProceduralObject<4, SearchTrace, TileSearchResultLayer>(key) {}
+    SearchTrace(
+        TraceData* data,
+        simfil::ModelConstPtr pool,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+    SearchTrace() = delete;
+
+private:
+    TraceData* data_ = nullptr;
+};
 
 /**
  * Search result root node streamed by TileSearchResultLayer.
@@ -98,6 +152,7 @@ private:
 class TileSearchResultLayer : public TileFeatureModelLayerBase
 {
     friend class SearchResult;
+    friend class SearchTrace;
     template<typename Target>
     friend model_ptr<Target> resolveInternal(
         simfil::res::tag<Target>,
@@ -140,6 +195,24 @@ public:
 
     /** Return the parsed SIMFIL diagnostics collected while evaluating this result chunk. */
     [[nodiscard]] simfil::Diagnostics const& diagnostics() const;
+
+    /** Replace the typed SIMFIL trace aggregates collected while evaluating this result chunk. */
+    void setTraces(std::map<std::string, simfil::Trace> traces);
+
+    /** Number of typed trace aggregates stored on this result chunk. */
+    [[nodiscard]] size_t traceCount() const;
+
+    /** Resolve a trace aggregate by trace-column index. */
+    [[nodiscard]] model_ptr<SearchTrace> traceAt(size_t index) const;
+
+    /**
+     * Copy a SIMFIL evaluation value into this layer's ModelPool.
+     *
+     * Scalar values are preserved exactly; binary and structured cross-model
+     * values are represented by compact placeholder strings to keep result
+     * chunks self-contained.
+     */
+    [[nodiscard]] simfil::ModelNode::Ptr materializeValue(simfil::Value const& value);
 
     /** Add one result using nodes already owned by this layer. */
     model_ptr<SearchResult> newSearchResult(

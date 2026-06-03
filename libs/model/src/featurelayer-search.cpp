@@ -17,6 +17,12 @@ namespace mapget
 {
 namespace
 {
+/** Store overlay strings as owning values so SIMFIL evaluation never observes dangling string_views. */
+simfil::Value ownedStringValue(std::string_view value)
+{
+    return simfil::Value::make(std::string(value));
+}
+
 /** Clone a mapget string pool so search can evaluate without mutating datasource-owned state. */
 tl::expected<std::shared_ptr<StringPool>, simfil::Error> copyStringPool(TileFeatureLayer const& sourceLayer)
 {
@@ -85,36 +91,6 @@ tl::expected<std::unique_ptr<SearchEvaluator>, simfil::Error> makeSearchEvaluato
     auto env = makeEnvironment(*copiedStrings);
     installSchemaRegistry(*env, sourceLayer.schemaRegistry(), *copiedStrings);
     return std::make_unique<SearchEvaluator>(std::move(env));
-}
-
-/** Convert a SIMFIL value into a node owned by the search-result layer. */
-simfil::ModelNode::Ptr materializeResultValue(TileSearchResultLayer& layer, simfil::Value const& value)
-{
-    switch (value.type) {
-    case simfil::ValueType::Undef:
-    case simfil::ValueType::Null:
-        return layer.resolve<simfil::ModelNode>(
-            simfil::ModelNodeAddress{simfil::Model::Null, 1},
-            simfil::ScalarValueType{});
-    case simfil::ValueType::Bool:
-        return layer.newSmallValue(value.as<simfil::ValueType::Bool>());
-    case simfil::ValueType::Int:
-        return layer.newValue(value.as<simfil::ValueType::Int>());
-    case simfil::ValueType::Float:
-        return layer.newValue(value.as<simfil::ValueType::Float>());
-    case simfil::ValueType::String:
-        return layer.newValue(value.as<simfil::ValueType::String>());
-    case simfil::ValueType::Bytes:
-        return layer.newValue(value.as<simfil::ValueType::Bytes>());
-    case simfil::ValueType::TransientObject:
-    case simfil::ValueType::Object:
-    case simfil::ValueType::Array:
-        // Cross-model object cloning is intentionally conservative here. Most
-        // withFields expressions are scalar labels or style keys; structured
-        // expression results remain debuggable through their string rendering.
-        return layer.newValue(value.toString());
-    }
-    return layer.newValue(value.toString());
 }
 
 /** Copy one geometry node into the result layer's geometry storage. */
@@ -282,24 +258,6 @@ void mergeTraces(std::map<std::string, simfil::Trace>& merged, std::map<std::str
     }
 }
 
-/** Export trace aggregates as compact JSON metadata on the result layer. */
-nlohmann::json tracesToJson(std::map<std::string, simfil::Trace> const& traces)
-{
-    auto result = nlohmann::json::object();
-    for (auto const& [key, trace] : traces) {
-        auto values = nlohmann::json::array();
-        for (auto const& value : trace.values) {
-            values.push_back(value.toString());
-        }
-        result[key] = nlohmann::json::object({
-            {"calls", trace.calls},
-            {"totalus", trace.totalus.count()},
-            {"values", std::move(values)},
-        });
-    }
-    return result;
-}
-
 /** Evaluate withFields expressions in the same context as the match expression. */
 std::vector<simfil::ModelNode::Ptr> evaluateWithFields(
     TileFeatureLayer& sourceLayer,
@@ -322,16 +280,16 @@ std::vector<simfil::ModelNode::Ptr> evaluateWithFields(
                     MapTileKey(sourceLayer).toString(),
                     evalResult.error().message);
             }
-            values.push_back(materializeResultValue(resultLayer, simfil::Value::null()));
+            values.push_back(resultLayer.materializeValue(simfil::Value::null()));
             continue;
         }
         mergeTraces(traces, std::move(evalResult->traces));
         // Diagnostics are kept for the main search expression only:
         // simfil::Diagnostics::append requires one AST/index layout.
         if (evalResult->values.empty()) {
-            values.push_back(materializeResultValue(resultLayer, simfil::Value::null()));
+            values.push_back(resultLayer.materializeValue(simfil::Value::null()));
         } else {
-            values.push_back(materializeResultValue(resultLayer, evalResult->values.front()));
+            values.push_back(resultLayer.materializeValue(evalResult->values.front()));
         }
     }
     return values;
@@ -509,9 +467,9 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                     auto const thisAttributeIndex = attributeIndex++;
                     auto makeContext = [&](uint32_t validityIndex, uint32_t validityCount) {
                         auto context = simfil::model_ptr<simfil::OverlayNode>::make(simfil::Value::field(*attr));
-                        context->set(StringPool::OverlayNameStr, simfil::Value(attr->name()));
+                        context->set(StringPool::OverlayNameStr, ownedStringValue(attr->name()));
                         context->set(StringPool::OverlayFeatureStr, simfil::Value::field(*feature));
-                        context->set(StringPool::OverlayLayerStr, simfil::Value(layerName));
+                        context->set(StringPool::OverlayLayerStr, ownedStringValue(layerName));
                         context->set(StringPool::OverlayValidityIndexStr, simfil::Value(static_cast<int64_t>(validityIndex)));
                         context->set(StringPool::OverlayValidityCountStr, simfil::Value(static_cast<int64_t>(validityCount)));
                         return context;
@@ -558,7 +516,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
         }
     }
 
-    resultLayer->setInfo("traces", tracesToJson(mergedTraces));
+    resultLayer->setTraces(std::move(mergedTraces));
     resultLayer->setInfo("resultCount", resultLayer->size());
     resultLayer->setDiagnostics(mergedDiagnostics);
     return FeatureLayerSearchResult{std::move(resultLayer)};

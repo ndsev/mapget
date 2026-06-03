@@ -61,6 +61,8 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(OverlayLayerStr, "$layer");
     addStaticKey(OverlayValidityIndexStr, "$validityIndex");
     addStaticKey(OverlayValidityCountStr, "$validityCount");
+    addStaticKey(CallsStr, "calls");
+    addStaticKey(TotalUsStr, "totalus");
 }
 
 tl::expected<void, simfil::Error>

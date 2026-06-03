@@ -87,8 +87,10 @@ public:
      *   + Added TileSearchResultLayer Message.
      * - Version 1.8:
      *   + Added explicit polygon ring metadata for hole-aware polygons.
+     * - Version 1.9:
+     *   + Added typed SIMFIL trace aggregates to TileSearchResultLayer.
      */
-    static constexpr Version CurrentProtocolVersion{1, 8, 0};
+    static constexpr Version CurrentProtocolVersion{1, 9, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

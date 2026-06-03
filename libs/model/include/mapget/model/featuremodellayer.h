@@ -128,6 +128,7 @@ public:
         GeometryPointView,
         SimpleValidity,
         SearchResults,
+        Traces,
         SearchResultValues,
         FeatureGeometryCollectionView,
         FeatureGeometryArrayView,
