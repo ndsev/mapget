@@ -9,7 +9,18 @@
 namespace mapget
 {
 
-HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config) {}
+HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config)
+{
+    if (!config_.locationLookupEnabled) {
+        return;
+    }
+
+    auto locationDbPath = config_.locationDatabasePath.value_or(defaultLocationDatabasePath());
+    locationLookup_ = std::make_unique<SqliteLocationLookup>(locationDbPath);
+    if (!locationLookup_->available()) {
+        log().info("Location database unavailable at {}", locationDbPath.string());
+    }
+}
 
 void HttpService::Impl::tryMemoryTrim(ResponseType responseType) const
 {
@@ -36,4 +47,3 @@ void HttpService::Impl::tryMemoryTrim(ResponseType responseType) const
 }
 
 }  // namespace mapget
-

@@ -65,6 +65,13 @@ void HttpService::setup(drogon::HttpAppFramework& app)
         {drogon::Post});
 
     app.registerHandler(
+        "/location",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleLocationRequest(req, std::move(callback));
+        },
+        {drogon::Get});
+
+    app.registerHandler(
         "/config",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             if (req->method() == drogon::Get) {

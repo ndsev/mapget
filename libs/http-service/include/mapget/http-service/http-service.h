@@ -8,6 +8,9 @@
 #include <mutex>
 #include <utility>
 #include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <optional>
 
 namespace mapget {
 
@@ -17,6 +20,9 @@ namespace mapget {
 struct HttpServiceConfig {
     bool watchConfig = false;
     std::chrono::milliseconds defaultTtl{0};
+    bool locationLookupEnabled = true;
+    std::optional<std::filesystem::path> locationDatabasePath;
+    uint32_t locationResultMaxLimit = 50;
     
     /**
      * Memory trim intervals - control when to explicitly trim the allocator
@@ -43,7 +49,6 @@ struct HttpServiceConfig {
     uint64_t memoryTrimIntervalJson = 0;       // Default: disabled on other platforms  
 #endif
     
-    // Future configuration options can be added here
 };
 
 class HttpService : public HttpServer, public Service

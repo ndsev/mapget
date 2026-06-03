@@ -449,6 +449,9 @@ struct ServeCommand
     int64_t ttlSeconds_ = 0;
     uint64_t memoryTrimIntervalBinary_ = HttpServiceConfig{}.memoryTrimIntervalBinary;  // Use default from config
     uint64_t memoryTrimIntervalJson_ = HttpServiceConfig{}.memoryTrimIntervalJson;      // Use default from config
+    bool noLocationDb_ = false;
+    std::string locationDbPath_;
+    int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
     CLI::App& app_;
 
     explicit ServeCommand(CLI::App& app) : app_(app)
@@ -521,6 +524,19 @@ struct ServeCommand
             "(0=disabled, 1=after every request, N=after every N JSON requests). "
             "Only effective on platforms supporting allocator trimming (e.g., Linux).")
             ->default_val(memoryTrimIntervalJson_);
+        serveCmd->add_option(
+            "--location-db",
+            locationDbPath_,
+            "Path to the SQLite location database. Defaults to geonames-cities1000.sqlite next to the executable.");
+        serveCmd->add_option(
+            "--location-max-limit",
+            locationMaxLimit_,
+            "Maximum accepted /location result limit. Default 50.")
+            ->default_val(locationMaxLimit_);
+        serveCmd->add_flag(
+            "--no-location-db",
+            noLocationDb_,
+            "Disable the /location endpoint.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -528,6 +544,9 @@ struct ServeCommand
     {
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
+        }
+        if (locationMaxLimit_ < 1) {
+            raise("Location max limit must be at least 1.");
         }
         setPostConfigEndpointEnabled(allowPostConfigEndpoint_);
         setGetConfigEndpointEnabled(!noGetConfigEndpoint_);
@@ -566,6 +585,11 @@ struct ServeCommand
             std::chrono::seconds(ttlSeconds_));
         httpConfig.memoryTrimIntervalBinary = memoryTrimIntervalBinary_;
         httpConfig.memoryTrimIntervalJson = memoryTrimIntervalJson_;
+        httpConfig.locationLookupEnabled = !noLocationDb_;
+        httpConfig.locationResultMaxLimit = static_cast<uint32_t>(locationMaxLimit_);
+        if (!locationDbPath_.empty()) {
+            httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
+        }
         
         // Log memory trim configuration
         bool anyTrimEnabled = (memoryTrimIntervalBinary_ > 0) || (memoryTrimIntervalJson_ > 0);

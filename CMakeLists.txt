@@ -109,6 +109,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
   add_subdirectory(libs/service)
   add_subdirectory(libs/geojsonsource)
   add_subdirectory(libs/gridsource)
+  add_subdirectory(libs/location)
 endif()
 
 if (MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
