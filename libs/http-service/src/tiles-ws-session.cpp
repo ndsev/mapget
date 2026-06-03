@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -69,6 +70,8 @@ std::atomic<int64_t> gNextClientId{1};
 constexpr int64_t DEFAULT_PULL_WAIT_MS = 25000;
 constexpr int64_t MAX_PULL_WAIT_MS = 30000;
 constexpr int64_t MAX_PULL_BATCH_BYTES = 64 * 1024 * 1024;
+constexpr size_t MAX_QUEUED_OUTGOING_FRAMES = 4096;
+constexpr size_t MAX_QUEUED_OUTGOING_BYTES = 256 * 1024 * 1024;
 constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
 
@@ -137,10 +140,7 @@ public:
     {
         std::lock_guard lock(mutex_);
         int64_t pendingFrames = static_cast<int64_t>(outgoing_.size());
-        int64_t pendingBytes = 0;
-        for (auto const& frame : outgoing_) {
-            pendingBytes += static_cast<int64_t>(frame.bytes.size());
-        }
+        int64_t pendingBytes = static_cast<int64_t>(queuedOutgoingBytes_);
         return {pendingFrames, pendingBytes};
     }
 
@@ -482,6 +482,7 @@ public:
             searchRequestsToAbort = std::move(activeSearchRequests_);
             activeSearchRequests_.clear();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
+            outgoingCapacityChanged_.notify_all();
         }
 
         // Abort in-flight requests (best-effort).
@@ -951,6 +952,7 @@ private:
     /** Mark a frame as queued so request updates can avoid duplicate backend fetches. */
     void trackQueuedFrameLocked(const OutgoingFrame& frame)
     {
+        queuedOutgoingBytes_ += frame.bytes.size();
         if (frame.requestedTileKey) {
             incrementFrameRefCount(queuedTileFrameRefCount_, *frame.requestedTileKey);
         }
@@ -959,6 +961,8 @@ private:
     /** Remove a frame from queued bookkeeping once it is dequeued or dropped. */
     void untrackQueuedFrameLocked(const OutgoingFrame& frame)
     {
+        const auto frameBytes = frame.bytes.size();
+        queuedOutgoingBytes_ = frameBytes > queuedOutgoingBytes_ ? 0 : queuedOutgoingBytes_ - frameBytes;
         if (frame.requestedTileKey) {
             decrementFrameRefCount(queuedTileFrameRefCount_, *frame.requestedTileKey);
         }
@@ -974,6 +978,7 @@ private:
         auto frame = std::move(outgoing_.front());
         outgoing_.pop_front();
         untrackQueuedFrameLocked(frame);
+        outgoingCapacityChanged_.notify_all();
         if (frame.stringPoolCommit) {
             committedStringPoolOffsets_[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
         }
@@ -1195,6 +1200,25 @@ private:
         return lhs.priorityRank < rhs.priorityRank;
     }
 
+    /** Return true when another tile layer may be serialized without unbounded queue growth. */
+    [[nodiscard]] bool hasOutgoingCapacityLocked() const
+    {
+        // Always allow an empty queue to accept the next layer, even if that
+        // single layer is larger than the nominal byte cap.
+        return outgoing_.empty()
+            || (outgoing_.size() < MAX_QUEUED_OUTGOING_FRAMES
+                && queuedOutgoingBytes_ < MAX_QUEUED_OUTGOING_BYTES);
+    }
+
+    /** Block backend producer callbacks until `/tiles/next` drains queued frames. */
+    [[nodiscard]] bool waitForOutgoingCapacityLocked(std::unique_lock<std::mutex>& lock)
+    {
+        outgoingCapacityChanged_.wait(lock, [this] {
+            return cancelled_ || hasOutgoingCapacityLocked();
+        });
+        return !cancelled_;
+    }
+
     /** Drop queued tile data frames that no longer belong to the latest request set. */
     void filterOutgoingByDesiredLocked()
     {
@@ -1223,6 +1247,7 @@ private:
         if (droppedFrames > 0) {
             gTilesWsMetrics.totalDroppedFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
             gTilesWsMetrics.totalDroppedBytes.fetch_add(droppedBytes, std::memory_order_relaxed);
+            outgoingCapacityChanged_.notify_all();
         }
     }
 
@@ -1290,6 +1315,7 @@ private:
 
         gTilesWsMetrics.totalDroppedFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
         gTilesWsMetrics.totalDroppedBytes.fetch_add(droppedBytes, std::memory_order_relaxed);
+        outgoingCapacityChanged_.notify_all();
     }
 
     /** Internal cancel path used by destructor/connection tear-down (no status emission). */
@@ -1310,6 +1336,7 @@ private:
             searchRequestsToAbort = std::move(activeSearchRequests_);
             activeSearchRequests_.clear();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
+            outgoingCapacityChanged_.notify_all();
         }
 
         abortRequests(std::move(requestsToAbort));
@@ -1362,7 +1389,7 @@ private:
             std::vector<PullDispatch> pullDispatches;
 
             {
-                std::lock_guard lock(mutex_);
+                std::unique_lock lock(mutex_);
                 if (cancelled_)
                     return;
                 auto searchKey = searchRequestKey(layer);
@@ -1372,6 +1399,9 @@ private:
                     searchKey ? std::optional<std::string_view>(*searchKey) : std::nullopt);
                 // Late-arriving tile for an outdated request: drop before serialization work.
                 if (!requestedTileKey.has_value()) {
+                    return;
+                }
+                if (!waitForOutgoingCapacityLocked(lock)) {
                     return;
                 }
 
@@ -1497,8 +1527,8 @@ private:
         }
     }
 
-    /** Send a websocket control frame immediately (status/request-context/load-state). */
-    void sendControlMessage(TileLayerStream::MessageType type, std::string payload)
+    /** Send an already encoded control payload on Drogon's event loop. */
+    void sendControlMessageOnLoop(TileLayerStream::MessageType type, std::string payload)
     {
         auto conn = conn_.lock();
         if (!conn || conn->disconnected()) {
@@ -1514,6 +1544,17 @@ private:
             log().warn("WebSocket send failed: {}", e.what());
             cancelNoStatus();
         }
+    }
+
+    /** Queue websocket control frames so backend worker callbacks never send concurrently. */
+    void sendControlMessage(TileLayerStream::MessageType type, std::string payload)
+    {
+        drogon::app().getLoop()->queueInLoop(
+            [weak = weak_from_this(), type, payload = std::move(payload)]() mutable {
+                if (auto self = weak.lock()) {
+                    self->sendControlMessageOnLoop(type, std::move(payload));
+                }
+            });
     }
 
     /** Send a status frame describing the current request statuses. */
@@ -1622,10 +1663,12 @@ private:
     AuthHeaders authHeaders_;
 
     mutable std::mutex mutex_;
+    std::condition_variable outgoingCapacityChanged_;
     uint64_t nextPullWaiterId_ = 1;
     std::deque<uint64_t> pendingPullWaiterOrder_;
     std::unordered_map<uint64_t, PullWaiter> pendingPullWaiters_;
     std::deque<OutgoingFrame> outgoing_;
+    size_t queuedOutgoingBytes_ = 0;
     std::vector<RequestInfo> requestInfos_;
     std::vector<RequestStatus> requestStatuses_;
     std::vector<LayerTilesRequest::Ptr> activeRequests_;

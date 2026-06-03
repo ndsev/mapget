@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -115,6 +116,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     static constexpr auto binaryMimeType = "application/binary";
     static constexpr auto jsonlMimeType = "application/jsonl";
     static constexpr auto anyMimeType = "*/*";
+    static constexpr size_t maxPendingStreamBytes = 256 * 1024 * 1024;
 
     /** Construct one streaming response state object bound to the Drogon event loop. */
     explicit TilesStreamState(Impl const& impl, trantor::EventLoop* loop, TilesStreamEndpoint endpoint)
@@ -262,21 +264,41 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         drogon::ResponseStreamPtr stream;
         {
             std::lock_guard lock(mutex_);
-            if (responseEnded_.exchange(true))
+            if (responseEnded_.exchange(true)) {
+                pendingCapacityChanged_.notify_all();
                 return;
+            }
             stream = std::move(stream_);
             releaseBackendRequestsUnlocked();
+            pendingCapacityChanged_.notify_all();
         }
         if (stream)
             stream->close();
+    }
+
+    /** Return true if the HTTP response buffer can accept another serialized layer/status. */
+    [[nodiscard]] bool hasPendingCapacityUnlocked() const
+    {
+        // A single large tile/search-result layer must still make forward
+        // progress, so only block when there is already buffered data.
+        return pending_.empty() || pending_.size() < maxPendingStreamBytes;
+    }
+
+    /** Block producer callbacks until the event loop drains buffered response bytes. */
+    [[nodiscard]] bool waitForPendingCapacityUnlocked(std::unique_lock<std::mutex>& lock)
+    {
+        pendingCapacityChanged_.wait(lock, [this] {
+            return aborted_ || responseEnded_ || hasPendingCapacityUnlocked();
+        });
+        return !aborted_ && !responseEnded_;
     }
 
     /** Serialize one backend tile/search/source layer into the pending HTTP response buffer. */
     void addResult(TileLayer::Ptr const& result)
     {
         {
-            std::lock_guard lock(mutex_);
-            if (aborted_)
+            std::unique_lock lock(mutex_);
+            if (!waitForPendingCapacityUnlocked(lock))
                 return;
 
             log().debug("Response ready: {}", MapTileKey(*result).toString());
@@ -295,8 +317,8 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     void addStatus(nlohmann::json const& status)
     {
         {
-            std::lock_guard lock(mutex_);
-            if (aborted_)
+            std::unique_lock lock(mutex_);
+            if (!waitForPendingCapacityUnlocked(lock))
                 return;
             auto dumped = status.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore);
             if (responseType_ == binaryMimeType) {
@@ -372,6 +394,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                     size_t n = std::min(pending_.size(), maxChunk);
                     chunk.assign(pending_.data(), n);
                     pending_.erase(0, n);
+                    pendingCapacityChanged_.notify_all();
                 } else {
                     if (allDone_ && compressor_ && !compressionFinished_) {
                         // Completion must wait until zlib has emitted the gzip footer.
@@ -392,6 +415,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                     responseEnded_ = true;
                     streamToClose = std::move(stream_);
                     releaseBackendRequestsUnlocked();
+                    pendingCapacityChanged_.notify_all();
                 }
             }
 
@@ -430,6 +454,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     TilesStreamEndpoint endpoint_;
 
     std::mutex mutex_;
+    std::condition_variable pendingCapacityChanged_;
     uint64_t requestId_ = 0;
 
     std::string responseType_;
