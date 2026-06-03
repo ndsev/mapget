@@ -26,8 +26,9 @@ namespace
 {
 
 constexpr uint32_t kHardMaxLimit = 50;
-constexpr std::string_view kSourceName = "geonames-cities1000";
+constexpr std::string_view kSourceName = "geonames-cities5000";
 
+/** Trim leading and trailing ASCII whitespace before building an FTS query. */
 std::string trim(std::string_view value)
 {
     size_t begin = 0;
@@ -41,11 +42,13 @@ std::string trim(std::string_view value)
     return std::string(value.substr(begin, end - begin));
 }
 
+/** Return whether a byte can be kept unescaped in a SQLite FTS token. */
 bool isAsciiTokenChar(unsigned char c)
 {
     return std::isalnum(c) || c == '_';
 }
 
+/** Build a bounded prefix query from user text for the GeoNames FTS index. */
 std::string buildFtsPrefixQuery(std::string_view input)
 {
     std::vector<std::string> tokens;
@@ -79,6 +82,7 @@ std::string buildFtsPrefixQuery(std::string_view input)
     return query.str();
 }
 
+/** Resolve the directory that contains the current process executable. */
 std::filesystem::path executableDirectory()
 {
 #ifdef _WIN32
@@ -115,7 +119,7 @@ nlohmann::json LocationMatch::serialize() const
         {"lonLat", nlohmann::json::array({longitude, latitude})},
         {"aabb", nlohmann::json::array({
             nlohmann::json::array({longitude, latitude}),
-            nlohmann::json::array({0, 0})
+            nlohmann::json::array({extentLongitude, extentLatitude})
         })},
         {"source", source},
         {"countryCode", countryCode}
@@ -259,7 +263,7 @@ std::vector<LocationMatch> SqliteLocationLookup::search(std::string_view name, u
 
 std::filesystem::path defaultLocationDatabasePath()
 {
-    return executableDirectory() / "geonames-cities1000.sqlite";
+    return executableDirectory() / "geonames-cities5000.sqlite";
 }
 
 }  // namespace mapget

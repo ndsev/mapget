@@ -20,8 +20,11 @@ namespace mapget {
 struct HttpServiceConfig {
     bool watchConfig = false;
     std::chrono::milliseconds defaultTtl{0};
+    /** Enable the /location endpoint and initialize the configured lookup backend. */
     bool locationLookupEnabled = true;
+    /** Optional SQLite database path for /location; defaults to the bundled database next to the executable. */
     std::optional<std::filesystem::path> locationDatabasePath;
+    /** Server-side cap for accepted /location limit values. */
     uint32_t locationResultMaxLimit = 50;
     
     /**

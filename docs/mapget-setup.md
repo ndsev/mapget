@@ -66,7 +66,7 @@ mapget serve \
 
 `--webapp` is the single application document root, usually mounted at `/`. `--static-mount` is for additional static aliases and can be specified multiple times. Both options use `[<url-scope>:]<filesystem-path>` syntax; if the URL scope is omitted, the directory is mounted at `/`.
 
-Static mounts are generic HTTP serving functionality. Mapget does not interpret or validate the files beyond requiring the filesystem path to exist and be a directory. Higher-level applications such as MapViewer may use static mounts for their own assets, but application-specific configuration semantics live in those applications, not in mapget. Embedded applications that discover static roots after startup can call `mapget::ensureStaticMount()` instead of synthesizing command-line options.
+Static mounts are generic HTTP serving functionality. Mapget does not interpret or validate the files beyond requiring the filesystem path to exist and be a directory. Embedded applications may use static mounts for their own assets, but application-specific configuration semantics live in those applications, not in mapget. Embedded applications that discover static roots after startup can call `mapget::ensureStaticMount()` instead of synthesizing command-line options.
 
 ## Using the fetch client
 

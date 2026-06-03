@@ -15,6 +15,7 @@ namespace mapget
 namespace
 {
 
+/** Parse and clamp the public /location limit query parameter. */
 uint32_t parseLimit(std::string_view rawLimit, uint32_t fallback, uint32_t maxLimit)
 {
     if (rawLimit.empty()) {
@@ -31,6 +32,7 @@ uint32_t parseLimit(std::string_view rawLimit, uint32_t fallback, uint32_t maxLi
     return std::max<uint32_t>(1, std::min(parsed, maxLimit));
 }
 
+/** Create a JSON response with the status code expected by Drogon. */
 drogon::HttpResponsePtr jsonResponse(nlohmann::json const& body, drogon::HttpStatusCode statusCode)
 {
     auto resp = drogon::HttpResponse::newHttpResponse();

@@ -449,7 +449,7 @@ struct ServeCommand
     int64_t ttlSeconds_ = 0;
     uint64_t memoryTrimIntervalBinary_ = HttpServiceConfig{}.memoryTrimIntervalBinary;  // Use default from config
     uint64_t memoryTrimIntervalJson_ = HttpServiceConfig{}.memoryTrimIntervalJson;      // Use default from config
-    bool noLocationDb_ = false;
+    bool noLocation_ = false;
     std::string locationDbPath_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
     CLI::App& app_;
@@ -527,15 +527,15 @@ struct ServeCommand
         serveCmd->add_option(
             "--location-db",
             locationDbPath_,
-            "Path to the SQLite location database. Defaults to geonames-cities1000.sqlite next to the executable.");
+            "Path to the SQLite location database. Defaults to geonames-cities5000.sqlite next to the executable.");
         serveCmd->add_option(
             "--location-max-limit",
             locationMaxLimit_,
             "Maximum accepted /location result limit. Default 50.")
             ->default_val(locationMaxLimit_);
         serveCmd->add_flag(
-            "--no-location-db",
-            noLocationDb_,
+            "--no-location",
+            noLocation_,
             "Disable the /location endpoint.");
         serveCmd->callback([this]() { serve(); });
     }
@@ -585,7 +585,7 @@ struct ServeCommand
             std::chrono::seconds(ttlSeconds_));
         httpConfig.memoryTrimIntervalBinary = memoryTrimIntervalBinary_;
         httpConfig.memoryTrimIntervalJson = memoryTrimIntervalJson_;
-        httpConfig.locationLookupEnabled = !noLocationDb_;
+        httpConfig.locationLookupEnabled = !noLocation_;
         httpConfig.locationResultMaxLimit = static_cast<uint32_t>(locationMaxLimit_);
         if (!locationDbPath_.empty()) {
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);

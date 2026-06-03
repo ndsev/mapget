@@ -3,7 +3,7 @@
 Mapget uses a YAML configuration file to describe which datasources are available and, optionally, to persist HTTP‑related settings for data sources. This document explains the structure of that file, the supported datasource types and the most important environment variables.
 
 !!! note "Share configuration files between tools"
-    The same YAML configuration format is used by the standalone `mapget` server, embedded deployments such as the MapViewer, and configuration UIs consuming `/config`. This makes it practical to reuse the same configuration file across local testing setups and containerised deployments.
+    The same YAML configuration format is used by the standalone `mapget` server, embedded mapget deployments, and configuration UIs consuming `/config`. This makes it practical to reuse the same configuration file across local testing setups and containerised deployments.
 
 ## Configuration files and `--config`
 
@@ -24,7 +24,7 @@ For integration with configuration UIs there is an additional top‑level key:
 
 - `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents. It is exposed through `/config.model` only when the active datasource schema includes `http-settings`, typically via a deployment-specific `--config-schema` patch.
 
-Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, MapViewer registers an `erdblick` section for frontend defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file.
+Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, an embedding application may register a frontend settings section for its own UI defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file.
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
