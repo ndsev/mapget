@@ -111,16 +111,26 @@ std::filesystem::path executableDirectory()
 
 }  // namespace
 
+nlohmann::json LocationPoint::serialize() const
+{
+    return nlohmann::json::array({longitude, latitude});
+}
+
+nlohmann::json LocationAabb::serialize() const
+{
+    return nlohmann::json::array({
+        southWest.serialize(),
+        extent.serialize()
+    });
+}
+
 nlohmann::json LocationMatch::serialize() const
 {
     nlohmann::json result = {
         {"id", id},
         {"name", name},
-        {"lonLat", nlohmann::json::array({longitude, latitude})},
-        {"aabb", nlohmann::json::array({
-            nlohmann::json::array({longitude, latitude}),
-            nlohmann::json::array({extentLongitude, extentLatitude})
-        })},
+        {"lonLat", lonLat.serialize()},
+        {"aabb", aabb.serialize()},
         {"source", source},
         {"countryCode", countryCode}
     };
@@ -245,8 +255,9 @@ std::vector<LocationMatch> SqliteLocationLookup::search(std::string_view name, u
         auto nameValue = textColumn(2).empty() ? textColumn(1) : textColumn(2);
         auto countryCode = textColumn(6);
         match.name = countryCode.empty() ? nameValue : nameValue + ", " + countryCode;
-        match.latitude = sqlite3_column_double(stmt, 3);
-        match.longitude = sqlite3_column_double(stmt, 4);
+        match.lonLat.latitude = sqlite3_column_double(stmt, 3);
+        match.lonLat.longitude = sqlite3_column_double(stmt, 4);
+        match.aabb.southWest = match.lonLat;
         match.countryCode = std::move(countryCode);
         match.source = std::string(kSourceName);
         if (sqlite3_column_type(stmt, 7) != SQLITE_NULL) {

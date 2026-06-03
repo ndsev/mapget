@@ -14,6 +14,30 @@ struct sqlite3;
 namespace mapget
 {
 
+/** One WGS84 coordinate encoded as [longitude, latitude] in JSON. */
+struct LocationPoint
+{
+    /** WGS84 longitude. */
+    double longitude = 0;
+    /** WGS84 latitude. */
+    double latitude = 0;
+
+    /** Serialize to the public [longitude, latitude] array shape. */
+    nlohmann::json serialize() const;
+};
+
+/** One axis-aligned bounding box encoded as [[west, south], [extentLon, extentLat]]. */
+struct LocationAabb
+{
+    /** South-west corner of the bounding box. */
+    LocationPoint southWest;
+    /** Longitudinal/latitudinal extent; zero for point-only providers. */
+    LocationPoint extent;
+
+    /** Serialize to the public /location aabb array shape. */
+    nlohmann::json serialize() const;
+};
+
 /** One normalized place-name match returned by a location lookup backend. */
 struct LocationMatch
 {
@@ -21,14 +45,10 @@ struct LocationMatch
     std::string id;
     /** Display-ready English/ascii location name. */
     std::string name;
-    /** Authoritative WGS84 longitude used for map jumps. */
-    double longitude = 0;
-    /** Authoritative WGS84 latitude used for map jumps. */
-    double latitude = 0;
-    /** Longitude extent of the match bounding box; zero for point-only providers. */
-    double extentLongitude = 0;
-    /** Latitude extent of the match bounding box; zero for point-only providers. */
-    double extentLatitude = 0;
+    /** Authoritative WGS84 jump coordinate, serialized as lonLat. */
+    LocationPoint lonLat;
+    /** Bounding box for the match, serialized as aabb. */
+    LocationAabb aabb;
     /** Provider or database identifier that produced this match. */
     std::string source;
     /** ISO country code when the provider exposes one. */

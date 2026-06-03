@@ -211,8 +211,12 @@ TEST_CASE("GeoNames location lookup searches rows and ranks matches", "[Location
     REQUIRE(munichMatches.size() == 2);
     CHECK(munichMatches[0].id == "geonames:2867714");
     CHECK(munichMatches[0].name == "Munich, DE");
-    CHECK(std::abs(munichMatches[0].longitude - 11.57549) < 1e-8);
-    CHECK(std::abs(munichMatches[0].latitude - 48.13743) < 1e-8);
+    CHECK(std::abs(munichMatches[0].lonLat.longitude - 11.57549) < 1e-8);
+    CHECK(std::abs(munichMatches[0].lonLat.latitude - 48.13743) < 1e-8);
+    CHECK(std::abs(munichMatches[0].aabb.southWest.longitude - 11.57549) < 1e-8);
+    CHECK(std::abs(munichMatches[0].aabb.southWest.latitude - 48.13743) < 1e-8);
+    CHECK(munichMatches[0].aabb.extent.longitude == 0);
+    CHECK(munichMatches[0].aabb.extent.latitude == 0);
     REQUIRE(munichMatches[0].population.has_value());
     CHECK(*munichMatches[0].population == 1260391);
 
