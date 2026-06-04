@@ -39,6 +39,17 @@ install(DIRECTORY include/mapget/location
 if (MAPGET_BUNDLE_GEONAMES_LOCATION_DB)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+  if (TARGET sqlite3)
+    get_target_property(MAPGET_SQLITE3_SOURCE_DIR sqlite3 SOURCE_DIR)
+    if (EXISTS "${MAPGET_SQLITE3_SOURCE_DIR}/shell.c")
+      add_executable(mapget-sqlite-shell EXCLUDE_FROM_ALL
+        "${MAPGET_SQLITE3_SOURCE_DIR}/shell.c")
+      target_link_libraries(mapget-sqlite-shell
+        PRIVATE
+          SQLite::SQLite3)
+    endif()
+  endif()
+
   set(MAPGET_GEONAMES_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../data/geonames")
   set(MAPGET_GEONAMES_CITIES_TXT "${MAPGET_GEONAMES_DATA_DIR}/cities5000.txt")
   set(MAPGET_GEONAMES_README_TXT "${MAPGET_GEONAMES_DATA_DIR}/geonames-readme.txt")
@@ -47,13 +58,21 @@ if (MAPGET_BUNDLE_GEONAMES_LOCATION_DB)
   set(MAPGET_LOCATION_README "${MAPGET_DEPLOY_DIR}/geonames-readme.txt")
 
   if (EXISTS "${MAPGET_GEONAMES_CITIES_TXT}" AND EXISTS "${MAPGET_GEONAMES_README_TXT}")
+    set(MAPGET_GEONAMES_IMPORT_COMMAND
+      "${Python3_EXECUTABLE}" "${MAPGET_GEONAMES_IMPORT_SCRIPT}" "${MAPGET_GEONAMES_CITIES_TXT}" "${MAPGET_LOCATION_DB}")
+    set(MAPGET_GEONAMES_IMPORT_DEPENDS
+      "${MAPGET_GEONAMES_IMPORT_SCRIPT}"
+      "${MAPGET_GEONAMES_CITIES_TXT}")
+    if (TARGET mapget-sqlite-shell)
+      list(APPEND MAPGET_GEONAMES_IMPORT_COMMAND "$<TARGET_FILE:mapget-sqlite-shell>")
+      list(APPEND MAPGET_GEONAMES_IMPORT_DEPENDS mapget-sqlite-shell)
+    endif()
+
     add_custom_command(
       OUTPUT "${MAPGET_LOCATION_DB}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${MAPGET_DEPLOY_DIR}"
-      COMMAND "${Python3_EXECUTABLE}" "${MAPGET_GEONAMES_IMPORT_SCRIPT}" "${MAPGET_GEONAMES_CITIES_TXT}" "${MAPGET_LOCATION_DB}"
-      DEPENDS
-        "${MAPGET_GEONAMES_IMPORT_SCRIPT}"
-        "${MAPGET_GEONAMES_CITIES_TXT}"
+      COMMAND ${MAPGET_GEONAMES_IMPORT_COMMAND}
+      DEPENDS ${MAPGET_GEONAMES_IMPORT_DEPENDS}
       VERBATIM)
 
     add_custom_command(
