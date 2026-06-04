@@ -212,36 +212,38 @@ TEST_CASE("GeoNames location lookup searches rows and ranks matches", "[Location
         {2867543, "Munsingen", "Munsingen", "Münsingen", 48.41126, 9.49704, "PPL", "DE", 14000},
     });
 
-    mapget::SqliteLocationLookup lookup(dbPath);
-    REQUIRE(lookup.available());
+    {
+        mapget::SqliteLocationLookup lookup(dbPath);
+        REQUIRE(lookup.available());
 
-    auto munichMatches = lookup.search("munich", 10);
-    REQUIRE(munichMatches.size() == 2);
-    CHECK(munichMatches[0].id == "geonames:2867714");
-    CHECK(munichMatches[0].name == "Munich, DE");
-    CHECK(std::abs(munichMatches[0].lonLat.longitude - 11.57549) < 1e-8);
-    CHECK(std::abs(munichMatches[0].lonLat.latitude - 48.13743) < 1e-8);
-    CHECK(std::abs(munichMatches[0].aabb.southWest.longitude - 11.57549) < 1e-8);
-    CHECK(std::abs(munichMatches[0].aabb.southWest.latitude - 48.13743) < 1e-8);
-    CHECK(munichMatches[0].aabb.extent.longitude == 0);
-    CHECK(munichMatches[0].aabb.extent.latitude == 0);
-    REQUIRE(munichMatches[0].population.has_value());
-    CHECK(*munichMatches[0].population == 1260391);
+        auto munichMatches = lookup.search("munich", 10);
+        REQUIRE(munichMatches.size() == 2);
+        CHECK(munichMatches[0].id == "geonames:2867714");
+        CHECK(munichMatches[0].name == "Munich, DE");
+        CHECK(std::abs(munichMatches[0].lonLat.longitude - 11.57549) < 1e-8);
+        CHECK(std::abs(munichMatches[0].lonLat.latitude - 48.13743) < 1e-8);
+        CHECK(std::abs(munichMatches[0].aabb.southWest.longitude - 11.57549) < 1e-8);
+        CHECK(std::abs(munichMatches[0].aabb.southWest.latitude - 48.13743) < 1e-8);
+        CHECK(munichMatches[0].aabb.extent.longitude == 0);
+        CHECK(munichMatches[0].aabb.extent.latitude == 0);
+        REQUIRE(munichMatches[0].population.has_value());
+        CHECK(*munichMatches[0].population == 1260391);
 
-    auto alternateNameMatches = lookup.search("muen", 10);
-    REQUIRE_FALSE(alternateNameMatches.empty());
-    CHECK(alternateNameMatches[0].id == "geonames:2867714");
+        auto alternateNameMatches = lookup.search("muen", 10);
+        REQUIRE_FALSE(alternateNameMatches.empty());
+        CHECK(alternateNameMatches[0].id == "geonames:2867714");
 
-    auto limitedMatches = lookup.search("mun", 1);
-    REQUIRE(limitedMatches.size() == 1);
+        auto limitedMatches = lookup.search("mun", 1);
+        REQUIRE(limitedMatches.size() == 1);
 
-    auto serialized = munichMatches[0].serialize();
-    CHECK(std::abs(serialized["lonLat"][0].get<double>() - 11.57549) < 1e-8);
-    CHECK(std::abs(serialized["lonLat"][1].get<double>() - 48.13743) < 1e-8);
-    CHECK(std::abs(serialized["aabb"][0][0].get<double>() - 11.57549) < 1e-8);
-    CHECK(std::abs(serialized["aabb"][0][1].get<double>() - 48.13743) < 1e-8);
-    CHECK(serialized["aabb"][1][0] == 0);
-    CHECK(serialized["aabb"][1][1] == 0);
+        auto serialized = munichMatches[0].serialize();
+        CHECK(std::abs(serialized["lonLat"][0].get<double>() - 11.57549) < 1e-8);
+        CHECK(std::abs(serialized["lonLat"][1].get<double>() - 48.13743) < 1e-8);
+        CHECK(std::abs(serialized["aabb"][0][0].get<double>() - 11.57549) < 1e-8);
+        CHECK(std::abs(serialized["aabb"][0][1].get<double>() - 48.13743) < 1e-8);
+        CHECK(serialized["aabb"][1][0] == 0);
+        CHECK(serialized["aabb"][1][1] == 0);
+    }
 
     std::filesystem::remove_all(tempDir);
 }

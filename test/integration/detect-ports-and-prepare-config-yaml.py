@@ -91,6 +91,23 @@ def _patch_cache_dir(text: str, cache_path: str) -> str:
     )
 
 
+def _patch_no_location(text: str) -> str:
+    if re.search(r"(?m)^\s*no-location:\s*.*$", text):
+        return text
+    return re.sub(
+        r"(?m)^(\s*)serve:\s*$",
+        lambda match: f"{match.group(0)}\n{match.group(1)}    no-location: true",
+        text,
+        count=1,
+    )
+
+
+def _patch_empty_sources(text: str) -> str:
+    if re.search(r"(?m)^sources:\s*", text):
+        return text
+    return f"{text.rstrip()}\n\nsources: []\n"
+
+
 def _patch_sample_fetch_yaml(text: str, mapget_port: int) -> str:
     return re.sub(
         r"(?m)^(\s*server:\s*127\.0\.0\.1:)\d+(\s*)$",
@@ -134,9 +151,13 @@ def main() -> int:
         stale_cache_file.unlink(missing_ok=True)
     cache_path = str(cache_file.resolve())
     (out_dir / "sample-service.yaml").write_text(
-        _patch_cache_dir(
-            _patch_sample_service_yaml(sample_service, mapget_port, datasource_cpp_port, datasource_py_port),
-            cache_path,
+        _patch_empty_sources(
+            _patch_no_location(
+                _patch_cache_dir(
+                    _patch_sample_service_yaml(sample_service, mapget_port, datasource_cpp_port, datasource_py_port),
+                    cache_path,
+                )
+            )
         ),
         encoding="utf-8",
         newline="\n",
