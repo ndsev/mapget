@@ -105,6 +105,23 @@ Example REST search request:
 }
 ```
 
+The same request with `curl`:
+
+```bash
+curl -N \
+  -H "content-type: application/json" \
+  -H "accept: application/jsonl" \
+  -d '{
+    "query": "typeId == '\''Road'\''",
+    "scope": "feature",
+    "withFields": ["typeId"],
+    "requests": [
+      {"mapId": "Tropico", "layerId": "WayLayer", "tileIds": [1234, 5678]}
+    ]
+  }' \
+  http://127.0.0.1:8080/search
+```
+
 For `scope: "feature"`, the SIMFIL context is the feature itself. For `scope: "attribute"`, the context is an attribute object with a few overlay fields:
 
 | Field | Meaning |
@@ -116,6 +133,35 @@ For `scope: "feature"`, the SIMFIL context is the feature itself. For `scope: "a
 | `$validityCount` | Number of validity contexts for the matched attribute. |
 
 `withFields` expressions run in the same context as `query`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer. Attribute-scope results use the computed validity geometry for the matched validity when one is available; otherwise they fall back to the feature display geometry.
+
+Example attribute-scope request:
+
+```json
+{
+  "query": "$name == 'SPEED_LIMIT' and valueKph > 50",
+  "scope": "attribute",
+  "withFields": [
+    "$name",
+    "$layer",
+    "$feature.typeId",
+    "$validityIndex",
+    "$validityCount",
+    "valueKph",
+    "trace(valueKph, name=\"speed limits\")"
+  ],
+  "responseType": "jsonl",
+  "requests": [
+    {
+      "mapId": "Tropico",
+      "layerId": "WayLayer",
+      "tileIds": [1234, 5678],
+      "priorityTileIds": [1234]
+    }
+  ]
+}
+```
+
+Use `withFields` for values that clients need for labels, grouping, color categories, or compact export metadata. Use `trace()` when you want the result stream to carry aggregate diagnostics about values observed while evaluating the query.
 
 ### Interactive WebSocket Search
 
@@ -360,7 +406,7 @@ void main(int argc, char const *argv[])
 }
 ```
 
-Keep in mind, that you can also run a `mapget` service without any RPCs in your application. Check out [`examples/cpp/local-datasource`](examples/cpp/local-datasource/main.cpp) on how to do that.
+Keep in mind, that you can also run a `mapget` service without any RPCs in your application. Check out [`examples/cpp/local-datasource`](../examples/cpp/local-datasource/main.cpp) on how to do that.
 
 ## `/status` – service and cache statistics
 

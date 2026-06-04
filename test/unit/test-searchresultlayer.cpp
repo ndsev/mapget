@@ -40,6 +40,84 @@ std::shared_ptr<LayerInfo> makeSearchResultLayerInfo()
     })"_json);
 }
 
+std::shared_ptr<LayerInfo> makeSchemaBackedSearchResultLayerInfo()
+{
+    return LayerInfo::fromJson(R"({
+        "layerId": "SearchableLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Road",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                        {"partId": "roadId", "description": "Synthetic road id.", "datatype": "U64"}
+                    ]
+                ]
+            }
+        ],
+        "featureModelSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "oneOf": [
+                {"$ref": "#/$defs/RoadFeature"}
+            ],
+            "$defs": {
+                "RoadFeature": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Feature",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "typeId": {"const": "Road"},
+                        "properties": {"$ref": "#/$defs/RoadProperties"}
+                    }
+                },
+                "RoadProperties": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "FeatureProperties",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "layer": {"$ref": "#/$defs/RoadLayerMap"}
+                    }
+                },
+                "RoadLayerMap": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeLayerMap",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "rules": {"$ref": "#/$defs/RulesLayer"}
+                    }
+                },
+                "RulesLayer": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeContainer"
+                    },
+                    "properties": {
+                        "speedLimit": {"$ref": "#/$defs/SpeedLimitAttribute"}
+                    }
+                },
+                "SpeedLimitAttribute": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Attribute",
+                        "attributeTypeCode": "speedLimit",
+                        "attributeType": "synthetic.SpeedLimitAttribute"
+                    },
+                    "properties": {
+                        "limit": {"type": "number"}
+                    }
+                }
+            }
+        }
+    })"_json);
+}
+
 TileSearchResultLayer::Ptr makeSearchResultLayer()
 {
     auto layerInfo = makeSearchResultLayerInfo();
@@ -364,6 +442,46 @@ TEST_CASE("Attribute-scope search records deterministic match metadata", "[featu
     REQUIRE(json["match"]["validityIndex"] == 0);
     REQUIRE(json["match"]["validityCount"] == 1);
     REQUIRE(json["values"] == nlohmann::json::array({50, "Road", "rules", 0, 1}));
+}
+
+TEST_CASE("Attribute-scope search uses schema scalar shorthand", "[feature-layer-search]")
+{
+    auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
+    auto strings = std::make_shared<StringPool>("AttributeShorthandSearchSourceNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        "AttributeShorthandSearchSourceNode",
+        "TestMap",
+        layerInfo,
+        strings);
+    auto feature = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    feature->addLine({Point(11.0, 48.0, 0.0), Point(11.1, 48.1, 0.0)});
+    auto attr = feature->attributeLayers()->newLayer("rules")->newAttribute("speedLimit");
+    attr->addField("limit", source->newValue(int64_t(50)));
+
+    auto comparisonResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "attribute-shorthand-search",
+            .query_ = "speedLimit > 40",
+            .scope_ = FeatureLayerSearchScope::Attribute,
+            .withFields_ = {"limit"},
+        });
+
+    REQUIRE(comparisonResult.has_value());
+    REQUIRE(comparisonResult->layer_->size() == 1);
+    REQUIRE(comparisonResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({50}));
+
+    auto standaloneResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "attribute-type-code-search",
+            .query_ = "speedLimit",
+            .scope_ = FeatureLayerSearchScope::Attribute,
+        });
+
+    REQUIRE(standaloneResult.has_value());
+    REQUIRE(standaloneResult->layer_->size() == 1);
 }
 
 TEST_CASE("Attribute-scope search copies computed validity geometry", "[feature-layer-search]")

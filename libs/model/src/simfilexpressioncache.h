@@ -44,7 +44,7 @@ struct SimfilExpressionCache
     {
         std::string query;
         bool anyMode = true;
-        bool autoWildcard = true;
+        simfil::RewriteMode rewriteMode = simfil::RewriteMode::None;
         simfil::SchemaId rootSchema = simfil::NoSchemaId;
 
         auto operator<=>(CacheKey const&) const = default;
@@ -58,7 +58,10 @@ struct SimfilExpressionCache
         std::function<tl::expected<TileFeatureLayer::QueryResult, simfil::Error>(const simfil::AST&)> evalFun)
         -> tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
     {
-        auto key = CacheKey{std::string(query), anyMode, autoWildcard, rootSchema};
+        auto const rewriteMode = autoWildcard && rootSchema != simfil::NoSchemaId
+            ? simfil::RewriteMode::Schema
+            : simfil::RewriteMode::None;
+        auto key = CacheKey{std::string(query), anyMode, rewriteMode, rootSchema};
 
         std::shared_lock s(mtx_);
         auto iter = cache_.find(key);
@@ -74,7 +77,7 @@ struct SimfilExpressionCache
             query,
             simfil::CompileOptions{
                 .any = anyMode,
-                .autoWildcard = autoWildcard,
+                .rewriteMode = rewriteMode,
                 .rootSchema = rootSchema});
         if (!ast)
             return tl::unexpected<simfil::Error>(std::move(ast.error()));
@@ -109,7 +112,10 @@ struct SimfilExpressionCache
         bool autoWildcard,
         simfil::SchemaId rootSchema) -> tl::expected<std::reference_wrapper<const simfil::ASTPtr>, simfil::Error>
     {
-        auto key = CacheKey{std::string(query), anyMode, autoWildcard, rootSchema};
+        auto const rewriteMode = autoWildcard && rootSchema != simfil::NoSchemaId
+            ? simfil::RewriteMode::Schema
+            : simfil::RewriteMode::None;
+        auto key = CacheKey{std::string(query), anyMode, rewriteMode, rootSchema};
 
         std::shared_lock s(mtx_);
         auto iter = cache_.find(key);
@@ -125,7 +131,7 @@ struct SimfilExpressionCache
             query,
             simfil::CompileOptions{
                 .any = anyMode,
-                .autoWildcard = autoWildcard,
+                .rewriteMode = rewriteMode,
                 .rootSchema = rootSchema});
         if (!ast)
             return tl::unexpected<simfil::Error>(std::move(ast.error()));

@@ -717,6 +717,123 @@ struct SchemaRegistry::Impl
         }
         return fieldIt->second.empty() ? simfil::NoSchemaId : fieldIt->second.front();
     }
+
+    [[nodiscard]] std::optional<SchemaRegistry::NamedSchemaPath> firstScalarFieldPath(simfil::SchemaId id) const
+    {
+        std::vector<simfil::SchemaId> visited;
+        SchemaRegistry::NamedSchemaPath current;
+        return firstScalarFieldPath(id, visited, current);
+    }
+
+    [[nodiscard]] std::optional<SchemaRegistry::NamedSchemaPath> firstScalarFieldPath(
+        simfil::SchemaId id,
+        std::vector<simfil::SchemaId>& visited,
+        SchemaRegistry::NamedSchemaPath& current) const
+    {
+        if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
+            return std::nullopt;
+        }
+
+        auto const& schema = schemas_[id];
+        if (schema.kind_ == Kind::Value) {
+            return current;
+        }
+
+        visited.push_back(id);
+        if (schema.kind_ == Kind::Object) {
+            for (auto const& fieldName : schema.directFields_) {
+                current.push_back({simfil::SchemaPathSegment::Kind::Field, fieldName});
+                auto childIt = schema.childSchemas_.find(fieldName);
+                if (childIt == schema.childSchemas_.end() || childIt->second.empty()) {
+                    auto result = current;
+                    current.pop_back();
+                    visited.pop_back();
+                    return result;
+                }
+                for (auto child : childIt->second) {
+                    if (auto result = firstScalarFieldPath(child, visited, current)) {
+                        current.pop_back();
+                        visited.pop_back();
+                        return result;
+                    }
+                }
+                current.pop_back();
+            }
+        }
+        else {
+            for (auto child : schema.elementSchemas_) {
+                current.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, {}});
+                if (auto result = firstScalarFieldPath(child, visited, current)) {
+                    current.pop_back();
+                    visited.pop_back();
+                    return result;
+                }
+                current.pop_back();
+            }
+        }
+
+        visited.pop_back();
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::vector<SchemaRegistry::NamedSchemaPath> scalarFieldPathsForAttribute(
+        simfil::SchemaId rootSchema,
+        std::string_view attributeTypeCode) const
+    {
+        std::vector<SchemaRegistry::NamedSchemaPath> paths;
+        std::vector<simfil::SchemaId> visited;
+        SchemaRegistry::NamedSchemaPath current;
+        collectScalarFieldPathsForAttribute(rootSchema, attributeTypeCode, visited, current, paths);
+        std::ranges::sort(paths);
+        auto duplicates = std::ranges::unique(paths);
+        paths.erase(duplicates.begin(), duplicates.end());
+        return paths;
+    }
+
+    void collectScalarFieldPathsForAttribute(
+        simfil::SchemaId id,
+        std::string_view attributeTypeCode,
+        std::vector<simfil::SchemaId>& visited,
+        SchemaRegistry::NamedSchemaPath& current,
+        std::vector<SchemaRegistry::NamedSchemaPath>& paths) const
+    {
+        if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
+            return;
+        }
+
+        auto const& schema = schemas_[id];
+        if (schema.attributeTypeCode_ == attributeTypeCode) {
+            if (auto suffix = firstScalarFieldPath(id)) {
+                auto path = current;
+                path.insert(path.end(), suffix->begin(), suffix->end());
+                paths.push_back(std::move(path));
+            }
+            return;
+        }
+
+        visited.push_back(id);
+        if (schema.kind_ == Kind::Object) {
+            for (auto const& fieldName : schema.directFields_) {
+                auto childIt = schema.childSchemas_.find(fieldName);
+                if (childIt == schema.childSchemas_.end()) {
+                    continue;
+                }
+                current.push_back({simfil::SchemaPathSegment::Kind::Field, fieldName});
+                for (auto child : childIt->second) {
+                    collectScalarFieldPathsForAttribute(child, attributeTypeCode, visited, current, paths);
+                }
+                current.pop_back();
+            }
+        }
+        else if (schema.kind_ == Kind::Array) {
+            current.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, {}});
+            for (auto child : schema.elementSchemas_) {
+                collectScalarFieldPathsForAttribute(child, attributeTypeCode, visited, current, paths);
+            }
+            current.pop_back();
+        }
+        visited.pop_back();
+    }
 };
 
 namespace
@@ -1021,6 +1138,68 @@ public:
         return directEnumSymbols_;
     }
 
+    /** Return the overlay-name predicate for a matching attribute root. */
+    auto symbolEqualityPaths(
+        simfil::StringId symbolId,
+        const std::function<const simfil::Schema*(simfil::SchemaId)>&) const -> std::vector<simfil::SchemaPath> override
+    {
+        if (!registry_ || !strings_) {
+            return {};
+        }
+
+        auto symbolName = strings_->resolve(symbolId);
+        if (!symbolName || registry_->attributeTypeCode(id_) != *symbolName) {
+            return {};
+        }
+
+        auto nameId = std::const_pointer_cast<simfil::StringPool>(strings_)->get("$name");
+        if (nameId == simfil::StringPool::Empty) {
+            return {};
+        }
+        return {simfil::SchemaPath{{simfil::SchemaPathSegment::Kind::Field, nameId}}};
+    }
+
+    /** Return mapget attribute type-code scalar shorthand paths. */
+    auto scalarFieldPathsForSymbol(
+        simfil::StringId symbolId,
+        const std::function<const simfil::Schema*(simfil::SchemaId)>&) const -> std::vector<simfil::SchemaPath> override
+    {
+        if (!registry_ || !strings_) {
+            return {};
+        }
+
+        auto symbolName = strings_->resolve(symbolId);
+        if (!symbolName) {
+            return {};
+        }
+
+        auto namedPaths = registry_->scalarFieldPathsForAttribute(id_, *symbolName);
+        std::vector<simfil::SchemaPath> result;
+        result.reserve(namedPaths.size());
+        auto mutableStrings = std::const_pointer_cast<simfil::StringPool>(strings_);
+        for (auto const& namedPath : namedPaths) {
+            simfil::SchemaPath path;
+            path.reserve(namedPath.size());
+            bool complete = true;
+            for (auto const& segment : namedPath) {
+                if (segment.kind_ == simfil::SchemaPathSegment::Kind::ArrayElement) {
+                    path.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, 0});
+                    continue;
+                }
+                auto fieldId = mutableStrings->emplace(segment.field_);
+                if (!fieldId) {
+                    complete = false;
+                    break;
+                }
+                path.push_back({simfil::SchemaPathSegment::Kind::Field, *fieldId});
+            }
+            if (complete) {
+                result.push_back(std::move(path));
+            }
+        }
+        return result;
+    }
+
 private:
     /** Visit direct fields using ids from the completion/compile-local pool. */
     auto forEachDirectField(
@@ -1170,6 +1349,11 @@ std::span<const std::string> SchemaRegistry::directEnumSymbols(simfil::SchemaId 
     return impl_->directEnumSymbols(schemaId);
 }
 
+std::string_view SchemaRegistry::attributeTypeCode(simfil::SchemaId schemaId) const
+{
+    return impl_->attributeTypeCode(schemaId);
+}
+
 std::vector<std::string> SchemaRegistry::constantTypeNames(
     simfil::SchemaId schemaId,
     std::string_view symbolName) const
@@ -1300,6 +1484,13 @@ SchemaRegistry::PathOwner SchemaRegistry::ownerForPath(
     }
 
     return {};
+}
+
+std::vector<SchemaRegistry::NamedSchemaPath> SchemaRegistry::scalarFieldPathsForAttribute(
+    simfil::SchemaId rootSchema,
+    std::string_view attributeTypeCode) const
+{
+    return impl_->scalarFieldPathsForAttribute(rootSchema, attributeTypeCode);
 }
 
 void installSchemaRegistry(

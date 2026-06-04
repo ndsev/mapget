@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -62,6 +63,17 @@ public:
         AttributePathOwner attribute_;
     };
 
+    /** One path segment expressed before binding schema fields to a StringPool. */
+    struct NamedPathSegment
+    {
+        simfil::SchemaPathSegment::Kind kind_ = simfil::SchemaPathSegment::Kind::Field;
+        std::string field_;
+
+        auto operator<=>(NamedPathSegment const&) const = default;
+    };
+
+    using NamedSchemaPath = std::vector<NamedPathSegment>;
+
     /** Parse all supported schema branches and assign deterministic SchemaIds. */
     explicit SchemaRegistry(nlohmann::json const& schema);
 
@@ -94,6 +106,9 @@ public:
 
     /** Return enum-like string symbols declared directly by this schema node. */
     [[nodiscard]] std::span<const std::string> directEnumSymbols(simfil::SchemaId schemaId) const;
+
+    /** Return the mapget attribute type-code for an Attribute schema, if any. */
+    [[nodiscard]] std::string_view attributeTypeCode(simfil::SchemaId schemaId) const;
 
     /** Return enum/zserio type names attached to a constant-like completion candidate. */
     [[nodiscard]] std::vector<std::string> constantTypeNames(
@@ -130,6 +145,11 @@ public:
         std::string_view featureType,
         simfil::SchemaId rootSchema,
         std::span<const std::string> fieldPath) const;
+
+    /** Return scalar value paths addressed by an attribute type-code shorthand. */
+    [[nodiscard]] std::vector<NamedSchemaPath> scalarFieldPathsForAttribute(
+        simfil::SchemaId rootSchema,
+        std::string_view attributeTypeCode) const;
 
 private:
     std::shared_ptr<Impl> impl_;

@@ -373,14 +373,14 @@ TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mut
     REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
 }
 
-TEST_CASE("TileFeatureLayer auto-wildcard uses schema enum paths", "[DataSourceInfo]")
+TEST_CASE("TileFeatureLayer schema rewrites use enum paths", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
-    auto strings = std::make_shared<StringPool>("SchemaAutoWildcardNode");
+    auto strings = std::make_shared<StringPool>("SchemaRewriteNode");
     auto tile = std::make_shared<TileFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
-        "SchemaAutoWildcardNode",
-        "SchemaAutoWildcardMap",
+        "SchemaRewriteNode",
+        "SchemaRewriteMap",
         layerInfo,
         strings);
 

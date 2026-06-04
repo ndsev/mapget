@@ -89,6 +89,8 @@ Feature layers may attach `LayerInfo.featureModelSchema`, a JSON Schema document
 - Large repeated schema branches may be shared through ordinary local JSON Schema `$ref` entries under `definitions`; consumers must resolve local refs before interpreting mapget-specific annotations.
 - `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
 
+Search-facing consumers use the schema in several distinct ways. Completion uses direct and nested schema fields for query suggestions. Auto-scope uses referenced schema paths to decide whether a query belongs to feature scope or attribute scope. Schema-aware wildcard evaluation can skip branches that cannot contain a requested field. Result styling uses scalar field metadata, enum domains and numeric ranges to initialize labels, categories and gradients. None of these consumers replace the emitted feature data; the schema only describes and constrains it.
+
 ### Add‑on datasources
 
 Add‑on datasources are registered with `isAddOn` and must share the same `mapId` (and layer IDs) as the base datasource they extend. The service registers them without their own worker threads and evaluates them only while serving feature tiles from the base datasource:
@@ -418,7 +420,7 @@ The main message types are:
 
 On the receiving side, a tile stream reader validates the protocol version, updates or reuses string pools per datasource node and reconstructs tile layer objects as messages arrive. Clients that do not need the compact binary form can instead use `application/jsonl` and let the server handle the conversion to JSON at the cost of much higher bandwidth and CPU usage.
 
-Measurements in the [size comparison table](size-comparison/table.md) show that the binary tile format is roughly 25–50 % smaller than equivalent JSON/bson/msgpack encodings, which is why the model is optimised around the simfil binary representation:
+Measurements in the size comparison table below show that the binary tile format is roughly 25-50% smaller than equivalent JSON/bson/msgpack encodings, which is why the model is optimised around the simfil binary representation:
 
 --8<-- "size-comparison/table.md"
 

@@ -347,7 +347,9 @@ public:
      * @param query         Simfil query
      * @param node          Model root node to query
      * @param anyMode       Auto-wrap expression in `any(...)`
-     * @param autoWildcard  Auto expand constant expressions to `** == <expr>`
+     * @param autoWildcard  Deprecated compatibility flag. When a node schema is
+     *                      available, this enables schema-backed shorthand
+     *                      rewrites. Without schema metadata it has no effect.
      */
     struct QueryResult {
         // The list of values resulting from the query evaluation.

@@ -48,12 +48,19 @@ public:
         std::string_view query,
         simfil::ModelNode const& node,
         bool anyMode,
-        bool autoWildcard)
+        simfil::RewriteMode rewriteMode,
+        simfil::SchemaId rootSchema)
     {
-        auto key = std::make_tuple(std::string(query), anyMode, autoWildcard);
+        auto key = std::make_tuple(std::string(query), anyMode, rewriteMode, rootSchema);
         auto astIt = cache_.find(key);
         if (astIt == cache_.end()) {
-            auto ast = simfil::compile(*env_, query, anyMode, autoWildcard);
+            auto ast = simfil::compile(
+                *env_,
+                query,
+                simfil::CompileOptions{
+                    .any = anyMode,
+                    .rewriteMode = rewriteMode,
+                    .rootSchema = rootSchema});
             if (!ast) {
                 return tl::unexpected<simfil::Error>(std::move(ast.error()));
             }
@@ -78,7 +85,7 @@ public:
 
 private:
     std::unique_ptr<simfil::Environment> env_;
-    std::map<std::tuple<std::string, bool, bool>, simfil::ASTPtr> cache_;
+    std::map<std::tuple<std::string, bool, simfil::RewriteMode, simfil::SchemaId>, simfil::ASTPtr> cache_;
 };
 
 /** Build a search-local evaluator whose string IDs match the source layer. */
@@ -89,7 +96,7 @@ tl::expected<std::unique_ptr<SearchEvaluator>, simfil::Error> makeSearchEvaluato
         return tl::unexpected(copiedStrings.error());
     }
     auto env = makeEnvironment(*copiedStrings);
-    installSchemaRegistry(*env, sourceLayer.schemaRegistry(), *copiedStrings);
+    installCompletionSchemaRegistry(*env, sourceLayer.schemaRegistry(), *copiedStrings);
     return std::make_unique<SearchEvaluator>(std::move(env));
 }
 
@@ -271,7 +278,12 @@ std::vector<simfil::ModelNode::Ptr> evaluateWithFields(
     std::vector<simfil::ModelNode::Ptr> values;
     values.reserve(expressions.size());
     for (auto const& expression : expressions) {
-        auto evalResult = evaluator.evaluate(expression, context, false, false);
+        auto evalResult = evaluator.evaluate(
+            expression,
+            context,
+            false,
+            simfil::RewriteMode::None,
+            simfil::NoSchemaId);
         if (!evalResult) {
             if (reportedFieldFailures.insert(expression).second) {
                 log().warn(
@@ -423,10 +435,16 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
 
     auto evaluateCandidate = [&](model_ptr<Feature> const& feature,
                                  simfil::ModelNode const& context,
+                                 simfil::SchemaId contextSchema,
                                  std::optional<AttributeMatchInfo> const& attributeMatch)
         -> tl::expected<void, simfil::Error>
     {
-        auto evalResult = (*evaluator)->evaluate(request.query_, context, true, true);
+        auto evalResult = (*evaluator)->evaluate(
+            request.query_,
+            context,
+            true,
+            simfil::RewriteMode::Schema,
+            contextSchema);
         if (!evalResult) {
             return tl::unexpected(evalResult.error());
         }
@@ -449,7 +467,8 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
 
     if (request.scope_ == FeatureLayerSearchScope::Feature) {
         for (auto const& feature : searchLayer) {
-            if (auto result = evaluateCandidate(feature, *feature, std::nullopt); !result) {
+            auto const featureSchema = static_cast<simfil::ModelNode const&>(*feature).schema();
+            if (auto result = evaluateCandidate(feature, *feature, featureSchema, std::nullopt); !result) {
                 return tl::unexpected(result.error());
             }
         }
@@ -488,7 +507,8 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                                 validityIndex,
                                 count,
                                 validityNode ? attr->model().resolve<Validity>(validityNode) : model_ptr<Validity>{}};
-                            if (auto result = evaluateCandidate(feature, *context, match); !result) {
+                            auto const attrSchema = static_cast<simfil::ModelNode const&>(*attr).schema();
+                            if (auto result = evaluateCandidate(feature, *context, attrSchema, match); !result) {
                                 error = result.error();
                                 aborted = true;
                                 return false;
@@ -501,7 +521,8 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
                             0,
                             1,
                             {}};
-                        if (auto result = evaluateCandidate(feature, *context, match); !result) {
+                        auto const attrSchema = static_cast<simfil::ModelNode const&>(*attr).schema();
+                        if (auto result = evaluateCandidate(feature, *context, attrSchema, match); !result) {
                             error = result.error();
                             aborted = true;
                             return false;
