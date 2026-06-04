@@ -91,19 +91,37 @@ def _patch_cache_dir(text: str, cache_path: str) -> str:
     )
 
 
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    return "\n"
+
+
+def _has_yaml_key(line: str, key: str, allow_indent: bool) -> bool:
+    candidate = line.lstrip(" \t") if allow_indent else line
+    marker = f"{key}:"
+    if not candidate.startswith(marker):
+        return False
+    return len(candidate) == len(marker) or candidate[len(marker)].isspace()
+
+
 def _patch_no_location(text: str) -> str:
-    if re.search(r"(?m)^\s*no-location:\s*.*$", text):
+    if any(_has_yaml_key(line, "no-location", allow_indent=True) for line in text.splitlines()):
         return text
-    return re.sub(
-        r"(?m)^(\s*)serve:\s*$",
-        lambda match: f"{match.group(0)}\n{match.group(1)}    no-location: true",
-        text,
-        count=1,
-    )
+
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        stripped = content.lstrip(" \t")
+        if stripped == "serve:":
+            indent = content[:len(content) - len(stripped)]
+            lines.insert(index + 1, f"{indent}    no-location: true{_line_ending(line)}")
+            return "".join(lines)
+    return text
 
 
 def _patch_empty_sources(text: str) -> str:
-    if re.search(r"(?m)^sources:\s*", text):
+    if any(_has_yaml_key(line, "sources", allow_indent=False) for line in text.splitlines()):
         return text
     return f"{text.rstrip()}\n\nsources: []\n"
 
