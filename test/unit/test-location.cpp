@@ -120,7 +120,7 @@ void createTestLocationDatabase(std::filesystem::path const& dbPath, std::vector
               alternate_names,
               content='location',
               content_rowid='geoname_id',
-              tokenize='unicode61 remove_diacritics 2'
+              tokenize='unicode61 remove_diacritics 1'
             );
         )sql");
 
