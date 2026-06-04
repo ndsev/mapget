@@ -14,8 +14,16 @@
 #include <string_view>
 #include <vector>
 
+#include "fmt/format.h"
+
 namespace
 {
+
+class LocationTestDatabaseError : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
 
 /** One compact row for building the SQLite lookup fixture used by these tests. */
 struct TestLocationRow
@@ -36,16 +44,16 @@ std::filesystem::path makeTempDir()
 {
     static std::atomic<uint64_t> counter{0};
     auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    auto path = std::filesystem::temp_directory_path() /
-        ("mapget-location-test-" + std::to_string(now) + "-" + std::to_string(counter.fetch_add(1)));
+    auto path = std::filesystem::current_path() /
+        fmt::format("mapget-location-test-{}-{}", now, counter.fetch_add(1));
     std::filesystem::create_directories(path);
     return path;
 }
 
 /** Raise a test fixture failure with the current SQLite error text. */
-void raiseSqlite(sqlite3* db, std::string_view message)
+[[noreturn]] void raiseSqlite(sqlite3* db, std::string_view message)
 {
-    throw std::runtime_error(std::string(message) + ": " + sqlite3_errmsg(db));
+    throw LocationTestDatabaseError(fmt::format("{}: {}", message, sqlite3_errmsg(db)));
 }
 
 /** Execute schema and FTS maintenance SQL for the test database. */
@@ -56,7 +64,7 @@ void execSql(sqlite3* db, char const* sql)
     if (rc != SQLITE_OK) {
         std::string error = errMsg ? errMsg : sqlite3_errmsg(db);
         sqlite3_free(errMsg);
-        throw std::runtime_error(error);
+        throw LocationTestDatabaseError(error);
     }
 }
 
@@ -89,7 +97,7 @@ void createTestLocationDatabase(std::filesystem::path const& dbPath, std::vector
         if (db) {
             sqlite3_close(db);
         }
-        throw std::runtime_error("failed to open test location database: " + error);
+        throw LocationTestDatabaseError(fmt::format("failed to open test location database: {}", error));
     }
 
     sqlite3_stmt* insertStmt = nullptr;

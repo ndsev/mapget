@@ -13,12 +13,14 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
+#include <Windows.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
 
 #include "mapget/log.h"
+
+#include "fmt/format.h"
 
 namespace mapget
 {
@@ -87,8 +89,7 @@ std::filesystem::path executableDirectory()
 {
 #ifdef _WIN32
     std::wstring buffer(MAX_PATH, L'\0');
-    auto size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (size > 0) {
+    if (auto size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size())); size > 0) {
         buffer.resize(size);
         return std::filesystem::path(buffer).parent_path();
     }
@@ -251,10 +252,10 @@ std::vector<LocationMatch> SqliteLocationLookup::search(std::string_view name, u
             return text ? reinterpret_cast<char const*>(text) : "";
         };
         LocationMatch match;
-        match.id = "geonames:" + std::to_string(sqlite3_column_int64(stmt, 0));
+        match.id = fmt::format("geonames:{}", sqlite3_column_int64(stmt, 0));
         auto nameValue = textColumn(2).empty() ? textColumn(1) : textColumn(2);
         auto countryCode = textColumn(6);
-        match.name = countryCode.empty() ? nameValue : nameValue + ", " + countryCode;
+        match.name = countryCode.empty() ? nameValue : fmt::format("{}, {}", nameValue, countryCode);
         match.lonLat.latitude = sqlite3_column_double(stmt, 3);
         match.lonLat.longitude = sqlite3_column_double(stmt, 4);
         match.aabb.southWest = match.lonLat;
