@@ -108,8 +108,7 @@ nlohmann::json diagnosticsToJson(simfil::Diagnostics const& diagnostics)
 /** Clamp counters which exceed SIMFIL's signed integer scalar range. */
 int64_t traceCounterToInt64(uint64_t value)
 {
-    auto const maxSigned = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-    if (value > maxSigned) {
+    if (auto const maxSigned = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()); value > maxSigned) {
         // Procedural fields expose counters as SIMFIL int values, whose largest
         // exact representation is int64_t. The serialized TraceData still keeps
         // the full unsigned counter for JSON/binary consumers.

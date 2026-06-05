@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 #include "mapget/model/featurelayer-search.h"
@@ -20,6 +21,38 @@ using namespace mapget;
 
 namespace
 {
+
+class SearchResultTestDataSourceError : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
+DataSourceInfo makeStagedSearchDataSourceInfo()
+{
+    return DataSourceInfo::fromJson(R"({
+        "nodeId": "SearchStageNode",
+        "mapId": "TestMap",
+        "maxParallelJobs": 1,
+        "layers": {
+            "SearchableLayer": {
+                "type": "Features",
+                "stages": 2,
+                "stageLabels": ["base", "details"],
+                "highFidelityStage": 0,
+                "featureTypes": [
+                    {
+                        "name": "Road",
+                        "uniqueIdCompositions": [[
+                            {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                            {"partId": "roadId", "description": "Synthetic road id.", "datatype": "U64"}
+                        ]]
+                    }
+                ]
+            }
+        }
+    })"_json);
+}
 
 std::shared_ptr<LayerInfo> makeSearchResultLayerInfo()
 {
@@ -133,32 +166,6 @@ TileSearchResultLayer::Ptr makeSearchResultLayer()
 class StagedSearchDataSource : public DataSource
 {
 public:
-    StagedSearchDataSource()
-        : info_(DataSourceInfo::fromJson(R"({
-            "nodeId": "SearchStageNode",
-            "mapId": "TestMap",
-            "maxParallelJobs": 1,
-            "layers": {
-                "SearchableLayer": {
-                    "type": "Features",
-                    "stages": 2,
-                    "stageLabels": ["base", "details"],
-                    "highFidelityStage": 0,
-                    "featureTypes": [
-                        {
-                            "name": "Road",
-                            "uniqueIdCompositions": [[
-                                {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
-                                {"partId": "roadId", "description": "Synthetic road id.", "datatype": "U64"}
-                            ]]
-                        }
-                    ]
-                }
-            }
-        })"_json))
-    {
-    }
-
     DataSourceInfo info() override { return info_; }
 
     void fill(TileFeatureLayer::Ptr const& tile) override
@@ -182,7 +189,7 @@ public:
 
     void fill(TileSourceDataLayer::Ptr const&) override
     {
-        throw std::runtime_error("Source data is not used by this test datasource.");
+        throw SearchResultTestDataSourceError("Source data is not used by this test datasource.");
     }
 
     std::vector<uint32_t> requestedStages() const
@@ -192,7 +199,7 @@ public:
     }
 
 private:
-    DataSourceInfo info_;
+    DataSourceInfo info_ = makeStagedSearchDataSourceInfo();
     mutable std::mutex mutex_;
     std::vector<uint32_t> requestedStages_;
 };
@@ -282,7 +289,7 @@ TEST_CASE("TileSearchResultLayer roundtrips through TileLayerStream", "[search-r
     trace.values.push_back(simfil::Value::make(std::string("trace-value")));
     trace.values.push_back(simfil::Value::make(int64_t(5)));
     std::map<std::string, simfil::Trace> traces;
-    traces.emplace("debug-label", std::move(trace));
+    traces.try_emplace("debug-label", std::move(trace));
     layer->setTraces(std::move(traces));
 
     std::string streamBytes;
@@ -621,7 +628,9 @@ TEST_CASE("Service search requests staged source tiles in complete-tile order", 
             .scope_ = FeatureLayerSearchScope::Attribute,
         });
 
-    request->onSearchResult([](TileSearchResultLayer::Ptr) {});
+    request->onSearchResult([](TileSearchResultLayer::Ptr) {
+        // Intentionally ignored; this test only asserts staged datasource request ordering.
+    });
 
     REQUIRE(service.request(request));
     request->wait();

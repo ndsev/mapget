@@ -1,6 +1,7 @@
 #pragma once
 
 #include "http-service.h"
+#include "mapget/location/location.h"
 
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <fstream>
+#include <memory>
 
 namespace mapget
 {
@@ -31,6 +33,8 @@ struct HttpService::Impl
 {
     HttpService& self_;
     HttpServiceConfig config_;
+    /** Lookup backend used by GET /location when location search is enabled. */
+    std::unique_ptr<SqliteLocationLookup> locationLookup_;
     mutable std::atomic<uint64_t> binaryRequestCounter_{0};
     mutable std::atomic<uint64_t> jsonRequestCounter_{0};
 
@@ -68,6 +72,11 @@ struct HttpService::Impl
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
     void handleLocateRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
+
+    /** Handle GET /location by querying the configured location lookup backend. */
+    void handleLocationRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 

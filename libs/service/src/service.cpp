@@ -111,7 +111,7 @@ DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
                 info.nodeId_,
                 layerId));
         }
-        result.layers_.emplace(layerId, cloneLayerInfo(*layerInfo));
+        result.layers_.try_emplace(layerId, cloneLayerInfo(*layerInfo));
     }
     return result;
 }

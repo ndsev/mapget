@@ -7,49 +7,57 @@
 
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 
 using namespace mapget;
 using namespace std::chrono_literals;
 
+class UnsupportedSourceDataLayerError : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
+DataSourceInfo makeTestTtlDataSourceInfo()
+{
+    return DataSourceInfo::fromJson(R"(
+    {
+        "nodeId": "TtlTestNode",
+        "mapId": "Tropico",
+        "maxParallelJobs": 1,
+        "layers": {
+            "WayLayer": {
+                "featureTypes":
+                [
+                    {
+                        "name": "Way",
+                        "uniqueIdCompositions":
+                        [
+                            [
+                                {
+                                    "partId": "areaId",
+                                    "description": "String which identifies the map area.",
+                                    "datatype": "STR"
+                                },
+                                {
+                                    "partId": "wayId",
+                                    "description": "Globally Unique 32b integer.",
+                                    "datatype": "U32"
+                                }
+                            ]
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+    )"_json);
+}
+
 class TestTtlDataSource : public DataSource
 {
 public:
-    TestTtlDataSource()
-        : info_(DataSourceInfo::fromJson(R"(
-        {
-            "nodeId": "TtlTestNode",
-            "mapId": "Tropico",
-            "maxParallelJobs": 1,
-            "layers": {
-                "WayLayer": {
-                    "featureTypes":
-                    [
-                        {
-                            "name": "Way",
-                            "uniqueIdCompositions":
-                            [
-                                [
-                                    {
-                                        "partId": "areaId",
-                                        "description": "String which identifies the map area.",
-                                        "datatype": "STR"
-                                    },
-                                    {
-                                        "partId": "wayId",
-                                        "description": "Globally Unique 32b integer.",
-                                        "datatype": "U32"
-                                    }
-                                ]
-                            ]
-                        }
-                    ]
-                }
-            }
-        }
-        )"_json))
-    {}
-
     DataSourceInfo info() override
     {
         return info_;
@@ -67,7 +75,7 @@ public:
 
     void fill(TileSourceDataLayer::Ptr const&) override
     {
-        throw std::runtime_error("SourceDataLayer not supported in TestTtlDataSource");
+        throw UnsupportedSourceDataLayerError("SourceDataLayer not supported in TestTtlDataSource");
     }
 
     void setTileTtlOverride(std::optional<std::chrono::milliseconds> ttl)
@@ -81,7 +89,7 @@ public:
     }
 
 private:
-    DataSourceInfo info_;
+    DataSourceInfo info_ = makeTestTtlDataSourceInfo();
     std::atomic<int> fillCount_{0};
     std::optional<std::chrono::milliseconds> tileTtlOverride_;
 };
@@ -118,7 +126,7 @@ public:
         });
         info_.nodeId_ = "MutableInfoNode";
         info_.mapId_ = "MutableMap";
-        info_.layers_.emplace("MutableLayer", layerInfo_);
+        info_.layers_.try_emplace("MutableLayer", layerInfo_);
     }
 
     DataSourceInfo info() override { return info_; }
@@ -130,7 +138,7 @@ public:
 
     void fill(TileSourceDataLayer::Ptr const&) override
     {
-        throw std::runtime_error("SourceDataLayer not supported in MutableInfoDataSource");
+        throw UnsupportedSourceDataLayerError("SourceDataLayer not supported in MutableInfoDataSource");
     }
 
     void mutateAdvertisedInfo()

@@ -23,6 +23,41 @@ The binary format and the logical feature model are described in more detail in 
 
 Each item contains map ID, available layers and basic metadata. Each layer entry includes its type, `zoomLevels`, `coverage`, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`) and feature-type information. This endpoint is typically used by frontends to discover which maps and layers can be requested via `/tiles`.
 
+## `/location` – location lookup
+
+`GET /location` searches the configured location database for place-name matches. By default, mapget builds can generate a small SQLite database from GeoNames `cities5000` data at build time and place it next to the runtime binary as `geonames-cities5000.sqlite`.
+
+- **Method:** `GET`
+- **Query parameters:**
+  - `name` (required): place-name fragment. Empty or too-short names return an empty array.
+  - `limit` (optional): maximum number of returned matches. Defaults to `10` and is clamped by the server-side `--location-max-limit` setting.
+- **Response:** `application/json` array of location objects.
+- **Unavailable database:** `503 application/json` with `{"error":"location database unavailable"}`.
+
+Example:
+
+```http
+GET /location?name=munich&limit=10
+```
+
+```json
+[
+  {
+    "id": "geonames:2867714",
+    "name": "Munich, DE",
+    "lonLat": [11.57549, 48.13743],
+    "aabb": [[11.57549, 48.13743], [0, 0]],
+    "source": "geonames-cities5000",
+    "countryCode": "DE",
+    "population": 1260391
+  }
+]
+```
+
+`lonLat` is `[longitude, latitude]` in WGS84 and is the authoritative jump coordinate. `aabb` is encoded as `[[west, south], [extentLon, extentLat]]`; GeoNames `cities5000` contains point coordinates only, so the bundled database returns zero-extent boxes.
+
+The bundled GeoNames data is licensed under Creative Commons Attribution 4.0 and is provided without warranty. Keep `geonames-readme.txt` with redistributed runtime artifacts.
+
 ## `/tiles` – stream tiles (HTTP)
 
 `POST /tiles` streams tiles for one or more map–layer combinations.

@@ -10,6 +10,7 @@ add_library(mapget-http-service STATIC
   src/http-service-impl.cpp
   src/config-handler.cpp
   src/http-client.cpp
+  src/location-handler.cpp
   src/locate-handler.cpp
   src/sources-handler.cpp
   src/status-handler.cpp
@@ -41,6 +42,7 @@ target_link_libraries(mapget-http-service
     nlohmann_json_schema_validator
     mapget-service
     mapget-http-datasource
+    mapget-location
     gridsource
     geojsonsource
   PRIVATE
