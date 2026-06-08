@@ -1110,6 +1110,12 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
     auto overlayLayer2 = overlayFeature2->attributeLayers()->newLayer("overlayLayer2");
     auto overlayAttr2 = overlayLayer2->newAttribute("overlayAttr2");
     REQUIRE(overlayAttr2->addField("value", "overlay2").has_value());
+    auto relatedParent = overlayStage2->newObject();
+    REQUIRE(relatedParent->addField("name", "ACCESS").has_value());
+    REQUIRE(relatedParent->addField("target", overlayStage2->newFeatureId("Way", {{"wayId", 55}})).has_value());
+    auto relatedParents = overlayStage2->newArray();
+    relatedParents->append(relatedParent);
+    REQUIRE(overlayFeature2->attributes()->addField("relatedParents", relatedParents).has_value());
     overlayFeature2->addRelation("overlayRel2", overlayStage2->newFeatureId("Way", {{"wayId", 102}}));
 
     base->attachOverlay(overlayStage1);
@@ -1121,7 +1127,7 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
     SECTION("Typed access sees merged data")
     {
         REQUIRE(mergedFeature->geomOrNull()->numGeometries() == 3);
-        REQUIRE(mergedFeature->mergedAttributesOrNull()->size() == 3);
+        REQUIRE(mergedFeature->mergedAttributesOrNull()->size() == 4);
         REQUIRE(mergedFeature->evaluate("properties.plainA").value().toString() == "base");
         REQUIRE(mergedFeature->evaluate("properties.plainB").value().toString() == "overlay2");
         REQUIRE(mergedFeature->evaluate("properties.overrideA").value().toString() == "overlay2");
@@ -1163,6 +1169,24 @@ TEST_CASE("FeatureLayer Overlay Merged Views", "[test.featurelayer.overlay]")
         REQUIRE(layersJson.contains("baseLayer"));
         REQUIRE(layersJson.contains("overlayLayer1"));
         REQUIRE(layersJson.contains("overlayLayer2"));
+    }
+
+    SECTION("Merged basic attributes resolve overlay-owned feature references")
+    {
+        auto relatedParentsKey = strings->emplace("relatedParents").value();
+        auto targetKey = strings->emplace("target").value();
+
+        auto relatedParentsNode = mergedFeature->mergedAttributesOrNull()->get(relatedParentsKey);
+        REQUIRE(relatedParentsNode);
+        auto relatedParentNode = relatedParentsNode->at(0);
+        REQUIRE(relatedParentNode);
+        auto targetNode = relatedParentNode->get(targetKey);
+        REQUIRE(targetNode);
+
+        REQUIRE(targetNode->addr().column() == TileFeatureLayer::ColumnId::ExternalFeatureIds);
+        auto target = base->resolve<FeatureId>(*targetNode);
+        REQUIRE(target);
+        REQUIRE(target->toString() == "Way.55");
     }
 }
 

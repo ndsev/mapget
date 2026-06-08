@@ -202,6 +202,28 @@ Use `withFields` for values that clients need for labels, grouping, color catego
 
 WebSocket search remains part of the `/tiles` control channel because it supports replacing an ongoing logical search. The WebSocket request shape uses `searchId`, `searchQuery`, optional `searchScope`, optional `withFields`, and optional `refresh`. Reusing the same `searchId` updates the ongoing query in the client session.
 
+Example control-channel message:
+
+```json
+{
+  "requests": [
+    {
+      "mapId": "Tropico",
+      "layerId": "WayLayer",
+      "tileIds": [1234, 5678],
+      "priorityTileIds": [1234]
+    }
+  ],
+  "searchId": "speed-limit-search",
+  "searchQuery": "$name == 'SPEED_LIMIT' and valueKph > 50",
+  "searchScope": "attribute",
+  "withFields": ["$name", "$feature.typeId", "valueKph"],
+  "refresh": true
+}
+```
+
+Clients should treat `searchId` as the routing key for one interactive search session. Sending another message with the same `searchId` replaces the previous logical search on that connection; stale queued frames for the older request may be dropped before delivery. Status frames and `TileSearchResultLayer` frames carry search metadata so clients can ignore frames that no longer match their active request key.
+
 ### Search result JSONL shape
 
 In JSONL mode, search result chunks are emitted as `SearchResultCollection` objects. Search progress status objects may appear between result chunks.
@@ -290,6 +312,8 @@ Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`,
   - `LoadStateChange` exists in the protocol but is currently not emitted by the HTTP service.
 
 For search requests, `/tiles/next` returns normal stream frames plus `TileSearchResultLayer` frames. Clients should decode the binary message type and handle search-result layers separately from source `TileFeatureLayer` / `TileSourceDataLayer` frames.
+
+Interactive sessions use bounded outgoing queues. If a client stops polling `/tiles/next` while replacing searches quickly, the service favours current request frames and may discard stale search-result frames for superseded requests. This keeps interactive search responsive instead of forcing the client to drain obsolete result layers.
 
 Each entry in a status frame's `requests` array contains `index`, `mapId`, `layerId`, numeric `status`, and `statusText`. For `NoDataSource` statuses, servers may also include `noDataSourceReason`:
 

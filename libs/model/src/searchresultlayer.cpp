@@ -756,6 +756,12 @@ void TileSearchResultLayer::setGeometryAnchor(Point const& anchor)
 
 tl::expected<void, simfil::Error> TileSearchResultLayer::resolve(simfil::ModelNode const& n, ResolveFn const& cb) const
 {
+    // Merged/container views can surface child nodes from another model. Always
+    // let the owning model interpret its own column/index address.
+    if (auto owner = n.owningModel(); owner && owner.get() != this) {
+        return owner->resolve(n, cb);
+    }
+
     switch (n.addr().column()) {
     case ColumnId::SearchResults:
         cb(*resolve<SearchResult>(n));

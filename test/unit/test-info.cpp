@@ -124,6 +124,20 @@ bool hasCompletion(
     });
 }
 
+std::string namedSchemaPathString(SchemaRegistry::NamedSchemaPath const& path)
+{
+    std::string result;
+    for (auto const& segment : path) {
+        if (!result.empty()) {
+            result += ".";
+        }
+        result += segment.kind_ == simfil::SchemaPathSegment::Kind::ArrayElement
+            ? "[]"
+            : segment.field_;
+    }
+    return result;
+}
+
 } // namespace
 
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
@@ -402,6 +416,79 @@ TEST_CASE("TileFeatureLayer schema rewrites use enum paths", "[DataSourceInfo]")
     REQUIRE(unrelatedString->values.size() == 1);
     REQUIRE(unrelatedString->values.front().isa(simfil::ValueType::Bool));
     REQUIRE_FALSE(unrelatedString->values.front().as<simfil::ValueType::Bool>());
+}
+
+TEST_CASE("SchemaRegistry scalar attribute shorthand skips metadata fields", "[DataSourceInfo]")
+{
+    auto json = schemaAnnotatedLayerInfoJson();
+    auto& defs = json["featureModelSchema"]["$defs"];
+    defs["LimitsLayer"]["properties"]["priority"] = {{"$ref", "#/$defs/PriorityAttribute"}};
+    defs["PriorityAttribute"] = {
+        {"type", "object"},
+        {"x-mapget", {
+            {"metaType", "Attribute"},
+            {"attributeTypeCode", "priority"},
+            {"attributeType", "synthetic.PriorityAttributeType"}
+        }},
+        {"properties", {
+            {"_sourceData", {
+                {"type", "array"},
+                {"items", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"address", {{"type", "integer"}}}
+                    }}
+                }}
+            }},
+            {"conditions", {
+                {"type", "object"},
+                {"properties", {
+                    {"conditionValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"properties", {
+                {"type", "object"},
+                {"properties", {
+                    {"propertyValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"references", {
+                {"type", "object"},
+                {"properties", {
+                    {"referenceValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"validity", {
+                {"type", "object"},
+                {"properties", {
+                    {"validityValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"value", {{"type", "integer"}}}
+        }}
+    };
+
+    auto layerInfo = LayerInfo::fromJson(json);
+    auto registry = layerInfo->schemaRegistry();
+    REQUIRE(registry);
+
+    auto const featureSchema = registry->featureSchema("Carrier");
+    auto featurePaths = registry->scalarFieldPathsForAttribute(featureSchema, "priority");
+    std::vector<std::string> featurePathStrings;
+    featurePathStrings.reserve(featurePaths.size());
+    for (auto const& path : featurePaths) {
+        featurePathStrings.push_back(namedSchemaPathString(path));
+    }
+    REQUIRE(featurePathStrings == std::vector<std::string>{
+        "properties.layer.advisoryLimits.priority.value",
+        "properties.layer.limits.priority.value"});
+
+    auto const layerMapSchema = registry->attributeLayerMapSchema("Carrier");
+    auto const limitsSchema = registry->childSchema(layerMapSchema, "limits", simfil::Schema::Kind::Object);
+    auto const prioritySchema = registry->childSchema(limitsSchema, "priority", simfil::Schema::Kind::Object);
+    auto attributePaths = registry->scalarFieldPathsForAttribute(prioritySchema, "priority");
+    REQUIRE(attributePaths.size() == 1);
+    REQUIRE(namedSchemaPathString(attributePaths.front()) == "value");
 }
 
 TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataSourceInfo]")

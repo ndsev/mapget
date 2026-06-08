@@ -1242,6 +1242,12 @@ model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model
 
 tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveFn& cb) const
 {
+    // Merged views may return nodes copied from overlay tiles. Resolve those
+    // through their owner instead of interpreting overlay addresses locally.
+    if (auto owner = n.owningModel(); owner && owner.get() != this) {
+        return owner->resolve(n, cb);
+    }
+
     switch (n.addr().column())
     {
     case ColumnId::Features:

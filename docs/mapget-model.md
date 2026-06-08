@@ -84,7 +84,7 @@ Feature layers may attach `LayerInfo.featureModelSchema`, a JSON Schema document
 - `TileFeatureLayer::validateSchema()` validates every emitted feature against the layer's attached schema.
 - The schema is intended for validation and tooling: simfil wildcard pruning, search/autocomplete, value-aware coloring and generated user-facing feature-model documentation.
 - Datasources should keep `FeatureTypeInfo` as the source for feature ID compositions. `featureModelSchema` describes the full JSON shape and value domains, including converter-owned fields, relations, geometry/source-data extensions and attribute-layer containers.
-- Mapget-specific schema branches may carry `x-mapget.metaType` annotations such as `Feature`, `FeatureProperties`, `AttributeLayerMap`, `AttributeContainer` and `Attribute`. `SchemaRegistry` uses these annotations to map JSON Schema branches onto SIMFIL `SchemaId` values for feature, property and attribute-layer nodes.
+- Mapget-specific schema branches may carry an `x-mapget` object with `metaType` values such as `Feature`, `FeatureProperties`, `AttributeLayerMap`, `AttributeContainer` and `Attribute`. `SchemaRegistry` uses these annotations to map JSON Schema branches onto SIMFIL `SchemaId` values for feature, property and attribute-layer nodes.
 - Attribute entries that can render either as a single object or as an array carry `x-mapget-multimap: true` on their `oneOf` wrapper. This lets `SchemaRegistry` use the logical object branch for SIMFIL pruning without treating the multimap serialization shape as an arbitrary union.
 - Large repeated schema branches may be shared through ordinary local JSON Schema `$ref` entries under `definitions`; consumers must resolve local refs before interpreting mapget-specific annotations.
 - `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
@@ -283,6 +283,13 @@ classDiagram
     +complete(query, point, opts)
   }
 
+  class TileSearchResultLayer {
+    +vector~SearchResult~ results
+    +vector~string~ resultFields
+    +json diagnostics
+    +json traces
+  }
+
   class TileSourceDataLayer {
     +model_ptr~SourceDataCompoundNode~ newCompound(initialSize)
     +Environment& evaluationEnvironment()
@@ -366,9 +373,11 @@ classDiagram
   }
 
   TileLayer <|-- TileFeatureLayer
+  TileLayer <|-- TileSearchResultLayer
   TileLayer <|-- TileSourceDataLayer
 
   simfil_ModelPool <|-- TileFeatureLayer
+  simfil_ModelPool <|-- TileSearchResultLayer
   simfil_ModelPool <|-- TileSourceDataLayer
 
   simfil_ModelNode <|-- Feature
@@ -402,6 +411,14 @@ classDiagram
 
 From a simfil perspective, each of the model classes shown above is either a direct `simfil::ModelNode` derivative or a thin wrapper built on simfil’s node types. `TileFeatureLayer` and `TileSourceDataLayer` act as model pools: they own the storage for all nodes in a tile and provide the environment required to evaluate simfil expressions directly against tile content.
 
+## Search result layers
+
+`TileSearchResultLayer` is the stream/model layer used for server-side search results. It is transient and is emitted by `/search` or interactive WebSocket search; it is not a datasource-owned feature tile and is not stored in the normal tile cache.
+
+A search result layer keeps the source map, source layer and source tile metadata so clients can route the result back to the correct map context. Each result stores the matched feature ID, result geometry, and the values requested through `withFields`. Feature-scope results copy display geometry from the matched feature. Attribute-scope results prefer the computed validity geometry for the matched attribute/validity context and fall back to the owning feature display geometry when a validity geometry cannot be derived.
+
+Result layers also carry parsed Simfil diagnostics and typed `trace()` aggregates. Search UIs use those fields for diagnostics, value summaries, generated labels, color categories and numeric gradients.
+
 ## Binary tile streaming
 
 To minimise overhead for large responses, mapget uses a compact binary format for tile streaming. Note, that this format is about 5-10x times larger than raw NDS tiles, but more suitable for untyped feature-centric filtering, visualization, styling and inspection. The format is a sequence of messages with a simple header:
@@ -415,6 +432,7 @@ The main message types are:
 
 - String pool updates that carry field name dictionaries.
 - Feature tiles representing `TileFeatureLayer` instances.
+- Search-result tiles representing `TileSearchResultLayer` instances.
 - Source data tiles representing `TileSourceDataLayer` instances.
 - An explicit end‑of‑stream marker.
 

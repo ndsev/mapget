@@ -121,6 +121,16 @@ bool isValueSchema(nlohmann::json const& schema)
         || hasType(schema, "string");
 }
 
+/** Return whether a root-level Attribute field is metadata, not the shorthand value payload. */
+bool isAttributeScalarShorthandMetadataField(std::string_view fieldName)
+{
+    return fieldName == "_sourceData"
+        || fieldName == "conditions"
+        || fieldName == "properties"
+        || fieldName == "references"
+        || fieldName == "validity";
+}
+
 /** Collect string-valued const/enum entries from a JSON Schema branch. */
 std::vector<std::string> stringEnumSymbols(nlohmann::json const& schema)
 {
@@ -718,17 +728,21 @@ struct SchemaRegistry::Impl
         return fieldIt->second.empty() ? simfil::NoSchemaId : fieldIt->second.front();
     }
 
-    [[nodiscard]] std::optional<SchemaRegistry::NamedSchemaPath> firstScalarFieldPath(simfil::SchemaId id) const
+    [[nodiscard]] std::optional<SchemaRegistry::NamedSchemaPath> firstScalarFieldPath(
+        simfil::SchemaId id,
+        bool skipRootAttributeMetadataFields = false) const
     {
         std::vector<simfil::SchemaId> visited;
         SchemaRegistry::NamedSchemaPath current;
-        return firstScalarFieldPath(id, visited, current);
+        return firstScalarFieldPath(id, visited, current, skipRootAttributeMetadataFields, true);
     }
 
     [[nodiscard]] std::optional<SchemaRegistry::NamedSchemaPath> firstScalarFieldPath(
         simfil::SchemaId id,
         std::vector<simfil::SchemaId>& visited,
-        SchemaRegistry::NamedSchemaPath& current) const
+        SchemaRegistry::NamedSchemaPath& current,
+        bool skipRootAttributeMetadataFields,
+        bool isRoot) const
     {
         if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
             return std::nullopt;
@@ -742,6 +756,11 @@ struct SchemaRegistry::Impl
         visited.push_back(id);
         if (schema.kind_ == Kind::Object) {
             for (auto const& fieldName : schema.directFields_) {
+                if (isRoot
+                    && skipRootAttributeMetadataFields
+                    && isAttributeScalarShorthandMetadataField(fieldName)) {
+                    continue;
+                }
                 current.push_back({simfil::SchemaPathSegment::Kind::Field, fieldName});
                 auto childIt = schema.childSchemas_.find(fieldName);
                 if (childIt == schema.childSchemas_.end() || childIt->second.empty()) {
@@ -751,7 +770,12 @@ struct SchemaRegistry::Impl
                     return result;
                 }
                 for (auto child : childIt->second) {
-                    if (auto result = firstScalarFieldPath(child, visited, current)) {
+                    if (auto result = firstScalarFieldPath(
+                        child,
+                        visited,
+                        current,
+                        skipRootAttributeMetadataFields,
+                        false)) {
                         current.pop_back();
                         visited.pop_back();
                         return result;
@@ -763,7 +787,12 @@ struct SchemaRegistry::Impl
         else {
             for (auto child : schema.elementSchemas_) {
                 current.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, {}});
-                if (auto result = firstScalarFieldPath(child, visited, current)) {
+                if (auto result = firstScalarFieldPath(
+                    child,
+                    visited,
+                    current,
+                    skipRootAttributeMetadataFields,
+                    false)) {
                     current.pop_back();
                     visited.pop_back();
                     return result;
@@ -803,7 +832,7 @@ struct SchemaRegistry::Impl
 
         auto const& schema = schemas_[id];
         if (schema.attributeTypeCode_ == attributeTypeCode) {
-            if (auto suffix = firstScalarFieldPath(id)) {
+            if (auto suffix = firstScalarFieldPath(id, true)) {
                 auto path = current;
                 path.insert(path.end(), suffix->begin(), suffix->end());
                 paths.push_back(std::move(path));
