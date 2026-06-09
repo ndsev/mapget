@@ -1216,10 +1216,31 @@ std::vector<Point> Geometry::pointsFromPositionBound(const Point& start, const s
 
 std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<double> end) const
 {
+    if (numPoints() == 0) {
+        return {};
+    }
+    if (numPoints() == 1) {
+        return {pointAt(0)};
+    }
+
     // Make sure that end comes after start.
     if (end && *end < start) {
         std::swap(start, *end);
     }
+
+    // Datasource validity lengths may differ slightly from the display
+    // geometry length due to simplification or independent source measures.
+    // Clamp to the available rendered line instead of letting endpoint lookup
+    // fall through to the initial point, which would render a diagonal chord.
+    auto const lineLength = length();
+    if (lineLength <= 0.) {
+        return {pointAt(0)};
+    }
+    start = std::clamp(start, 0., lineLength);
+    if (end) {
+        *end = std::clamp(*end, 0., lineLength);
+    }
+
     int32_t innerIndexStart = 0, innerIndexEnd = 0;
     auto startPos = pointAt(innerIndexStart), endPos = pointAt(innerIndexEnd);
     double coveredLength = 0;

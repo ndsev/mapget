@@ -550,9 +550,11 @@ TEST_CASE("Attribute Validity", "[validity]") {
     validities->newRange(Validity::RelativeLengthOffset, .4, .8);
     validities
         ->newRange(Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent);
+    validities
+        ->newRange(Validity::MetricLengthOffset, metresAtEightyPercent, linestringGeom->length() + 1.);
     validities->newGeometry(linestringGeomNamed);
     auto json = validities->toJson();
-    REQUIRE(json.size() == 11);
+    REQUIRE(json.size() == 12);
 
     // Fill out the expectedGeometry vector.
     std::vector<std::vector<Point>> expectedGeometry = {
@@ -576,6 +578,8 @@ TEST_CASE("Attribute Validity", "[validity]") {
         {{0.39999238466117465,0.39999238466117465,0.0}, {0.5,0.5,0.0}, {0.7999961921855985,0.7999961921855985,0.0}},
         // Validity::MetricLengthOffset, metresAtFortyPercent, metresAtEightyPercent 💚
         {{0.39999238400870357,0.39999238400870357,0.0}, {0.5,0.5,0.0}, {0.7999961908806066,0.7999961908806066,0.0}},
+        // Validity::MetricLengthOffset, metresAtEightyPercent, length + 1m 💚
+        {{0.7999961908806066,0.7999961908806066,0.0}, {1.0,1.0,0.0}},
         // linestringGeomNamed 💚
         {{-0.0,-0.0,0.0}, {-0.5,-0.5,0.0}, {-1.0,-1.0,0.0}},
     };
