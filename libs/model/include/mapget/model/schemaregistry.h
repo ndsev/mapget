@@ -10,7 +10,9 @@
 #include <vector>
 
 #include <nlohmann/json_fwd.hpp>
+#include <tl/expected.hpp>
 
+#include "simfil/error.h"
 #include "simfil/model/schema.h"
 
 namespace mapget
@@ -73,6 +75,31 @@ public:
     };
 
     using NamedSchemaPath = std::vector<NamedPathSegment>;
+
+    /** User-facing scope request before schema normalization chooses concrete execution. */
+    enum class SearchQueryRequestedScope {
+        Feature,
+        Attribute,
+        Auto,
+    };
+
+    /** Concrete scope passed to search evaluation after normalization. */
+    enum class SearchQueryConcreteScope {
+        Feature,
+        Attribute,
+    };
+
+    /** Schema-backed query normalization result for one feature layer registry. */
+    struct SearchQueryNormalization
+    {
+        std::string originalQuery_;
+        std::string normalizedQuery_;
+        SearchQueryRequestedScope requestedScope_ = SearchQueryRequestedScope::Feature;
+        SearchQueryConcreteScope concreteScope_ = SearchQueryConcreteScope::Feature;
+        std::vector<AttributePathOwner> attributeScopes_;
+        std::vector<std::string> matchedFeatureTypes_;
+        std::string compiledAstDebug_;
+    };
 
     /** Parse all supported schema branches and assign deterministic SchemaIds. */
     explicit SchemaRegistry(nlohmann::json const& schema);
@@ -150,6 +177,25 @@ public:
     [[nodiscard]] std::vector<NamedSchemaPath> scalarFieldPathsForAttribute(
         simfil::SchemaId rootSchema,
         std::string_view attributeTypeCode) const;
+
+    /** Return all feature types represented by Feature schema roots in this registry. */
+    [[nodiscard]] std::vector<std::string> featureTypes() const;
+
+    /** Return all searchable attribute contexts represented by this layer registry. */
+    [[nodiscard]] std::vector<AttributePathOwner> attributeScopes() const;
+
+    /**
+     * Normalize a feature-search query for this layer's schema.
+     *
+     * This is the shared backend/frontend query post-processing entry point:
+     * it compiles the query through SIMFIL's schema rewrite engine, consumes
+     * AST-derived referencedSchemaPaths, chooses feature vs. attribute scope,
+     * and emits guarded attribute-root query branches when needed. It does not
+     * infer rewrites from broad source-token scans.
+     */
+    [[nodiscard]] tl::expected<SearchQueryNormalization, simfil::Error> normalizeSearchQuery(
+        std::string_view query,
+        SearchQueryRequestedScope requestedScope) const;
 
 private:
     std::shared_ptr<Impl> impl_;

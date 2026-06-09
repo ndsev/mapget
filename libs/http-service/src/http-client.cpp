@@ -122,7 +122,15 @@ void applyHeaders(drogon::HttpRequestPtr const& req, AuthHeaders const& headers)
 
 [[nodiscard]] std::string searchScopeToJsonValue(FeatureLayerSearchScope scope)
 {
-    return scope == FeatureLayerSearchScope::Attribute ? "attribute" : "feature";
+    switch (scope) {
+    case FeatureLayerSearchScope::Feature:
+        return "feature";
+    case FeatureLayerSearchScope::Attribute:
+        return "attribute";
+    case FeatureLayerSearchScope::Auto:
+        return "auto";
+    }
+    return "feature";
 }
 
 }  // namespace
@@ -336,6 +344,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
     auto body = json::object({
         {"query", request->search_.query_},
         {"scope", searchScopeToJsonValue(request->search_.scope_)},
+        {"rewrite", request->search_.rewriteQuery_},
         {"withFields", request->search_.withFields_},
         {"requests", json::array({std::move(requestJson)})},
         {"stringPoolOffsets", reader->stringPoolCache()->stringPoolOffsets()},

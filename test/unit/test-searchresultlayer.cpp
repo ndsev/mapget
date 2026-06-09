@@ -132,7 +132,8 @@ std::shared_ptr<LayerInfo> makeSchemaBackedSearchResultLayerInfo()
                         "metaType": "AttributeContainer"
                     },
                     "properties": {
-                        "speedLimit": {"$ref": "#/$defs/SpeedLimitAttribute"}
+                        "speedLimit": {"$ref": "#/$defs/SpeedLimitAttribute"},
+                        "warningSign": {"$ref": "#/$defs/WarningSignAttribute"}
                     }
                 },
                 "SpeedLimitAttribute": {
@@ -144,6 +145,134 @@ std::shared_ptr<LayerInfo> makeSchemaBackedSearchResultLayerInfo()
                     },
                     "properties": {
                         "limit": {"type": "number"}
+                    }
+                },
+                "WarningSignAttribute": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Attribute",
+                        "attributeTypeCode": "warningSign",
+                        "attributeType": "synthetic.WarningSignAttribute"
+                    },
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["SPEED_LIMIT", "SPEED_LIMIT_END"]}
+                    }
+                }
+            }
+        }
+    })"_json);
+}
+
+std::shared_ptr<LayerInfo> makeLiveLikeSchemaBackedSearchResultLayerInfo()
+{
+    return LayerInfo::fromJson(R"({
+        "layerId": "Road",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Road",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                        {"partId": "roadId", "description": "Synthetic road id.", "datatype": "U64"}
+                    ]
+                ]
+            }
+        ],
+        "featureModelSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "oneOf": [
+                {"$ref": "#/$defs/RoadFeature"}
+            ],
+            "$defs": {
+                "RoadFeature": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Feature",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "typeId": {"const": "Road"},
+                        "properties": {"$ref": "#/$defs/RoadProperties"}
+                    }
+                },
+                "RoadProperties": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "FeatureProperties",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "layer": {"$ref": "#/$defs/RoadLayerMap"}
+                    }
+                },
+                "RoadLayerMap": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeLayerMap",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "RoadRulesLayer": {"$ref": "#/$defs/RoadRulesLayer"}
+                    }
+                },
+                "RoadRulesLayer": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeContainer"
+                    },
+                    "properties": {
+                        "SPEED_LIMIT_METRIC": {"$ref": "#/$defs/SpeedLimitMetricAttribute"},
+                        "WARNING_SIGN": {"$ref": "#/$defs/WarningSignAttribute"},
+                        "MOVABLE_WARNING_SIGN": {"$ref": "#/$defs/MovableWarningSignAttribute"}
+                    }
+                },
+                "SpeedLimitMetricAttribute": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Attribute",
+                        "attributeTypeCode": "SPEED_LIMIT_METRIC",
+                        "attributeType": "nds.rules.SpeedLimitMetric"
+                    },
+                    "properties": {
+                        "attributeValue": {
+                            "type": "object",
+                            "properties": {
+                                "speedLimitKmh": {"type": "number"}
+                            }
+                        }
+                    }
+                },
+                "WarningSignAttribute": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Attribute",
+                        "attributeTypeCode": "WARNING_SIGN",
+                        "attributeType": "nds.rules.WarningSign"
+                    },
+                    "properties": {
+                        "attributeValue": {
+                            "type": "object",
+                            "properties": {
+                                "warningSign": {"type": "string", "enum": ["SPEED_LIMIT", "SPEED_LIMIT_END"]}
+                            }
+                        }
+                    }
+                },
+                "MovableWarningSignAttribute": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Attribute",
+                        "attributeTypeCode": "MOVABLE_WARNING_SIGN",
+                        "attributeType": "nds.rules.MovableWarningSign"
+                    },
+                    "properties": {
+                        "attributeValue": {
+                            "type": "object",
+                            "properties": {
+                                "movableWarningSign": {"type": "string", "enum": ["SPEED_LIMIT", "SPEED_LIMIT_END"]}
+                            }
+                        }
                     }
                 }
             }
@@ -489,6 +618,249 @@ TEST_CASE("Attribute-scope search uses schema scalar shorthand", "[feature-layer
 
     REQUIRE(standaloneResult.has_value());
     REQUIRE(standaloneResult->layer_->size() == 1);
+}
+
+TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[feature-layer-search]")
+{
+    auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
+    auto registry = layerInfo->schemaRegistry();
+    REQUIRE(registry);
+
+    auto normalized = registry->normalizeSearchQuery(
+        "properties.layer.rules.speedLimit.limit > 40",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(normalized.has_value());
+    INFO(normalized->normalizedQuery_);
+    REQUIRE(normalized->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalized->attributeScopes_.size() == 1);
+    REQUIRE(normalized->attributeScopes_.front().featureType_ == "Road");
+    REQUIRE(normalized->attributeScopes_.front().attributeLayerName_ == "rules");
+    REQUIRE(normalized->attributeScopes_.front().attributeName_ == "speedLimit");
+    REQUIRE(normalized->normalizedQuery_.find("$feature.typeId == \"Road\"") != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find("$layer == \"rules\"") != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find("$name == \"speedLimit\"") != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find("limit > 40") != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find("properties.layer.rules.speedLimit") == std::string::npos);
+
+    auto strings = std::make_shared<StringPool>("NormalizedAttributePathSearchNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        "NormalizedAttributePathSearchNode",
+        "TestMap",
+        layerInfo,
+        strings);
+    auto feature = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    feature->addLine({Point(11.0, 48.0, 0.0), Point(11.1, 48.1, 0.0)});
+    auto attr = feature->attributeLayers()->newLayer("rules")->newAttribute("speedLimit");
+    attr->addField("limit", source->newValue(int64_t(50)));
+
+    auto searchResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "normalized-attribute-path-search",
+            .query_ = "properties.layer.rules.speedLimit.limit > 40",
+            .scope_ = FeatureLayerSearchScope::Auto,
+            .rewriteQuery_ = true,
+            .withFields_ = {"limit"},
+        });
+
+    REQUIRE(searchResult.has_value());
+    REQUIRE(searchResult->layer_->size() == 1);
+    REQUIRE(searchResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({50}));
+    REQUIRE(searchResult->layer_->info()["searchScope"] == "attribute");
+    REQUIRE(searchResult->layer_->info()["normalizedSearchQuery"].get<std::string>().find("limit > 40") != std::string::npos);
+}
+
+TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[feature-layer-search]")
+{
+    auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
+    auto registry = layerInfo->schemaRegistry();
+    REQUIRE(registry);
+
+    auto typeCode = registry->normalizeSearchQuery(
+        "speedLimit",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(typeCode.has_value());
+    INFO(typeCode->normalizedQuery_);
+    REQUIRE(typeCode->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(typeCode->attributeScopes_.size() == 1);
+    REQUIRE(typeCode->normalizedQuery_.find("$feature.typeId == \"Road\"") != std::string::npos);
+    REQUIRE(typeCode->normalizedQuery_.find("$layer == \"rules\"") != std::string::npos);
+    REQUIRE(typeCode->normalizedQuery_.find("$name == \"speedLimit\"") != std::string::npos);
+    REQUIRE(typeCode->normalizedQuery_ == "$feature.typeId == \"Road\" and $layer == \"rules\" and $name == \"speedLimit\"");
+
+    auto scalarOperand = registry->normalizeSearchQuery(
+        "speedLimit > 40",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(scalarOperand.has_value());
+    INFO(scalarOperand->normalizedQuery_);
+    REQUIRE(scalarOperand->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(scalarOperand->normalizedQuery_.find("limit > 40") != std::string::npos);
+    REQUIRE(scalarOperand->normalizedQuery_.find("speedLimit > 40") == std::string::npos);
+
+    auto enumConstant = registry->normalizeSearchQuery(
+        "\"SPEED_LIMIT\"",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(enumConstant.has_value());
+    INFO(enumConstant->normalizedQuery_);
+    REQUIRE(enumConstant->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(enumConstant->attributeScopes_.size() == 1);
+    REQUIRE(enumConstant->attributeScopes_.front().attributeName_ == "warningSign");
+    REQUIRE(enumConstant->normalizedQuery_.find("kind == \"SPEED_LIMIT\"") != std::string::npos);
+
+    auto unquotedEnumConstant = registry->normalizeSearchQuery(
+        "SPEED_LIMIT_END",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(unquotedEnumConstant.has_value());
+    INFO(unquotedEnumConstant->normalizedQuery_);
+    REQUIRE(unquotedEnumConstant->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(unquotedEnumConstant->attributeScopes_.size() == 1);
+    REQUIRE(unquotedEnumConstant->attributeScopes_.front().attributeName_ == "warningSign");
+    REQUIRE(unquotedEnumConstant->normalizedQuery_.find("kind == \"SPEED_LIMIT_END\"") != std::string::npos);
+
+    auto strings = std::make_shared<StringPool>("NormalizedAttributeShorthandSearchNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        "NormalizedAttributeShorthandSearchNode",
+        "TestMap",
+        layerInfo,
+        strings);
+    auto feature = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    feature->addLine({Point(11.0, 48.0, 0.0), Point(11.1, 48.1, 0.0)});
+    auto attr = feature->attributeLayers()->newLayer("rules")->newAttribute("speedLimit");
+    attr->addField("limit", source->newValue(int64_t(50)));
+    auto warningSign = feature->attributeLayers()->newLayer("rules")->newAttribute("warningSign");
+    warningSign->addField("kind", source->newValue("SPEED_LIMIT"));
+
+    auto enumResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "normalized-enum-constant-search",
+            .query_ = "\"SPEED_LIMIT\"",
+            .scope_ = FeatureLayerSearchScope::Auto,
+            .rewriteQuery_ = true,
+            .withFields_ = {"kind"},
+        });
+
+    REQUIRE(enumResult.has_value());
+    REQUIRE(enumResult->layer_->size() == 1);
+    REQUIRE(enumResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({"SPEED_LIMIT"}));
+    REQUIRE(enumResult->layer_->info()["searchScope"] == "attribute");
+    REQUIRE(enumResult->layer_->info()["normalizedSearchQuery"].get<std::string>().find("kind == \"SPEED_LIMIT\"") != std::string::npos);
+}
+
+TEST_CASE("Search query normalization handles live-style attribute and enum expressions", "[feature-layer-search]")
+{
+    auto layerInfo = makeLiveLikeSchemaBackedSearchResultLayerInfo();
+    auto registry = layerInfo->schemaRegistry();
+    REQUIRE(registry);
+
+    auto speedComparison = registry->normalizeSearchQuery(
+        "SPEED_LIMIT_METRIC == 80",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(speedComparison.has_value());
+    INFO(speedComparison->normalizedQuery_);
+    REQUIRE(speedComparison->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(speedComparison->attributeScopes_.size() == 1);
+    REQUIRE(speedComparison->attributeScopes_.front().attributeName_ == "SPEED_LIMIT_METRIC");
+    REQUIRE(speedComparison->normalizedQuery_.find("$name == \"SPEED_LIMIT_METRIC\"") != std::string::npos);
+    REQUIRE(speedComparison->normalizedQuery_.find("attributeValue.speedLimitKmh == 80") != std::string::npos);
+
+    auto speedWildcard = registry->normalizeSearchQuery(
+        "**.speedLimitKmh > 80",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(speedWildcard.has_value());
+    INFO(speedWildcard->normalizedQuery_);
+    REQUIRE(speedWildcard->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(speedWildcard->attributeScopes_.size() == 1);
+    REQUIRE(speedWildcard->attributeScopes_.front().attributeName_ == "SPEED_LIMIT_METRIC");
+    REQUIRE(speedWildcard->normalizedQuery_.find("$name == \"SPEED_LIMIT_METRIC\"") != std::string::npos);
+    REQUIRE(speedWildcard->normalizedQuery_.find("**.attributeValue.speedLimitKmh > 80") != std::string::npos);
+
+    auto enumSymbol = registry->normalizeSearchQuery(
+        "SPEED_LIMIT_END",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(enumSymbol.has_value());
+    INFO(enumSymbol->normalizedQuery_);
+    REQUIRE(enumSymbol->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(enumSymbol->attributeScopes_.size() == 2);
+    REQUIRE(enumSymbol->normalizedQuery_.find("attributeValue.warningSign == \"SPEED_LIMIT_END\"") != std::string::npos);
+    REQUIRE(enumSymbol->normalizedQuery_.find("attributeValue.movableWarningSign == \"SPEED_LIMIT_END\"") != std::string::npos);
+
+    auto explicitWarningPath = registry->normalizeSearchQuery(
+        "**.WARNING_SIGN.attributeValue.warningSign == \"SPEED_LIMIT\"",
+        SchemaRegistry::SearchQueryRequestedScope::Auto);
+    REQUIRE(explicitWarningPath.has_value());
+    INFO(explicitWarningPath->normalizedQuery_);
+    REQUIRE(explicitWarningPath->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(explicitWarningPath->attributeScopes_.size() == 1);
+    REQUIRE(explicitWarningPath->attributeScopes_.front().attributeName_ == "WARNING_SIGN");
+    REQUIRE(explicitWarningPath->normalizedQuery_.find("$name == \"WARNING_SIGN\"") != std::string::npos);
+    REQUIRE(explicitWarningPath->normalizedQuery_.find("attributeValue.warningSign == \"SPEED_LIMIT\"") != std::string::npos);
+    REQUIRE(explicitWarningPath->normalizedQuery_.find("**.WARNING_SIGN") == std::string::npos);
+
+    auto strings = std::make_shared<StringPool>("LiveLikeNormalizedSearchNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId(0x1234),
+        "LiveLikeNormalizedSearchNode",
+        "TestMap",
+        layerInfo,
+        strings);
+    auto feature = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    feature->addLine({Point(11.0, 48.0, 0.0), Point(11.1, 48.1, 0.0)});
+    auto rules = feature->attributeLayers()->newLayer("RoadRulesLayer");
+    auto speedLimitValue = source->newObject();
+    REQUIRE(speedLimitValue->addField("speedLimitKmh", int64_t(80)).has_value());
+    REQUIRE(rules->newAttribute("SPEED_LIMIT_METRIC")
+                ->addField("attributeValue", speedLimitValue)
+                .has_value());
+    auto warningSignValue = source->newObject();
+    REQUIRE(warningSignValue->addField("warningSign", "SPEED_LIMIT").has_value());
+    REQUIRE(rules->newAttribute("WARNING_SIGN")
+                ->addField("attributeValue", warningSignValue)
+                .has_value());
+    auto movableWarningSignValue = source->newObject();
+    REQUIRE(movableWarningSignValue->addField("movableWarningSign", "SPEED_LIMIT_END").has_value());
+    REQUIRE(rules->newAttribute("MOVABLE_WARNING_SIGN")
+                ->addField("attributeValue", movableWarningSignValue)
+                .has_value());
+
+    auto runSearch = [&](std::string query, std::vector<std::string> withFields) {
+        return searchFeatureLayerAsResultLayer(
+            *source,
+            FeatureLayerSearchRequest{
+                .searchId_ = query,
+                .query_ = std::move(query),
+                .scope_ = FeatureLayerSearchScope::Auto,
+                .rewriteQuery_ = true,
+                .withFields_ = std::move(withFields),
+            });
+    };
+
+    auto speedComparisonResult = runSearch("SPEED_LIMIT_METRIC == 80", {"attributeValue.speedLimitKmh"});
+    REQUIRE(speedComparisonResult.has_value());
+    REQUIRE(speedComparisonResult->layer_->info()["searchScope"] == "attribute");
+    REQUIRE(speedComparisonResult->layer_->size() == 1);
+    REQUIRE(speedComparisonResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({80}));
+
+    auto speedWildcardResult = runSearch("**.speedLimitKmh > 80", {"attributeValue.speedLimitKmh"});
+    REQUIRE(speedWildcardResult.has_value());
+    REQUIRE(speedWildcardResult->layer_->info()["searchScope"] == "attribute");
+    REQUIRE(speedWildcardResult->layer_->size() == 0);
+
+    auto enumSymbolResult = runSearch("SPEED_LIMIT_END", {"attributeValue.movableWarningSign"});
+    REQUIRE(enumSymbolResult.has_value());
+    REQUIRE(enumSymbolResult->layer_->info()["searchScope"] == "attribute");
+    REQUIRE(enumSymbolResult->layer_->size() == 1);
+    REQUIRE(enumSymbolResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({"SPEED_LIMIT_END"}));
+
+    auto explicitWarningResult = runSearch(
+        "**.WARNING_SIGN.attributeValue.warningSign == \"SPEED_LIMIT\"",
+        {"attributeValue.warningSign"});
+    REQUIRE(explicitWarningResult.has_value());
+    REQUIRE(explicitWarningResult->layer_->info()["searchScope"] == "attribute");
+    REQUIRE(explicitWarningResult->layer_->size() == 1);
+    REQUIRE(explicitWarningResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({"SPEED_LIMIT"}));
 }
 
 TEST_CASE("Attribute-scope search copies computed validity geometry", "[feature-layer-search]")

@@ -17,6 +17,7 @@ enum class FeatureLayerSearchScope
 {
     Feature,
     Attribute,
+    Auto,
 };
 
 /** Request parameters for turning a TileFeatureLayer into a TileSearchResultLayer. */
@@ -30,6 +31,8 @@ struct FeatureLayerSearchRequest
     std::string query_;
     /** Selects whether the predicate runs once per feature or once per attribute validity. */
     FeatureLayerSearchScope scope_ = FeatureLayerSearchScope::Feature;
+    /** Run schema-backed query normalization before evaluating this search. */
+    bool rewriteQuery_ = false;
     /** SIMFIL expressions materialized into each SearchResult::values() row. */
     std::vector<std::string> withFields_;
     /** Optional client refresh counter for ordering updates of the same search id. */

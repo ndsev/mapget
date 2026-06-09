@@ -111,7 +111,8 @@ To cancel an in-flight HTTP stream, close the HTTP connection.
 - **Method:** `POST`
 - **Request body (JSON):**
   - `query`: string SIMFIL predicate evaluated on each candidate context.
-  - `scope` (optional): `"feature"` (default) evaluates once per feature. `"attribute"` evaluates once per attribute validity context.
+  - `scope` (optional): `"feature"` (default) evaluates once per feature. `"attribute"` evaluates once per attribute validity context. `"auto"` asks mapget to normalize the query through the layer schema and choose feature or attribute scope.
+  - `rewrite` (optional): boolean. When `true`, mapget normalizes the query before evaluation. `scope: "auto"` implies `rewrite: true`.
   - `withFields` (optional): array of SIMFIL expressions evaluated for every match. Values are stored in `SearchResult.values` in the same order.
   - `responseType` (optional): `"binary"`, `"jsonl"` or `"json"`. This overrides `Accept`; `"json"` is an alias for JSON Lines.
   - `requests`: array of source-layer requests with `mapId`, `layerId`, `tileIds`, and optional `priorityTileIds`.
@@ -166,6 +167,13 @@ For `scope: "feature"`, the SIMFIL context is the feature itself. For `scope: "a
 | `$layer` | Attribute-layer name. |
 | `$validityIndex` | Zero-based validity index being evaluated. |
 | `$validityCount` | Number of validity contexts for the matched attribute. |
+
+When rewrite is enabled, mapget uses `SchemaRegistry::normalizeSearchQuery` before tile evaluation. The normalizer compiles the query with SIMFIL schema rewrites, inspects AST-derived `referencedSchemaPaths`, and emits guarded attribute-root predicates when the query is proven to target attribute data. It performs these normalization steps:
+
+- Exact attribute type-code/name queries such as `WARNING_SIGN` become `$feature.typeId`/`$layer`/`$name` guards.
+- Feature-root attribute paths such as `properties.layer.rules.speedLimit.limit > 40` are rewritten to the attribute-root suffix, for example `limit > 40`, under the same guards.
+- Enum constants rewritten by SIMFIL to schema equality paths become guarded attribute-root comparisons, for example `attributeValue.warningSign == "SPEED_LIMIT"`.
+- Recursive wildcard expressions such as `**.speedLimitKmh` remain in SIMFIL's schema compile path so wildcard pruning still happens against the concrete root schema.
 
 `withFields` expressions run in the same context as `query`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer. Attribute-scope results use the computed validity geometry for the matched validity when one is available; otherwise they fall back to the feature display geometry.
 

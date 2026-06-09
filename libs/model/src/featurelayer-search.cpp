@@ -9,6 +9,7 @@
 
 #include "fmt/format.h"
 #include "mapget/log.h"
+#include "mapget/model/schemaregistry.h"
 #include "mapget/model/simfilutil.h"
 #include "simfil/overlay.h"
 #include "simfil/simfil.h"
@@ -98,6 +99,28 @@ tl::expected<std::unique_ptr<SearchEvaluator>, simfil::Error> makeSearchEvaluato
     auto env = makeEnvironment(*copiedStrings);
     installCompletionSchemaRegistry(*env, sourceLayer.schemaRegistry(), *copiedStrings);
     return std::make_unique<SearchEvaluator>(std::move(env));
+}
+
+/** Convert request scope to the schema-registry normalizer's requested-scope enum. */
+SchemaRegistry::SearchQueryRequestedScope requestedScopeForNormalization(FeatureLayerSearchScope scope)
+{
+    switch (scope) {
+    case FeatureLayerSearchScope::Feature:
+        return SchemaRegistry::SearchQueryRequestedScope::Feature;
+    case FeatureLayerSearchScope::Attribute:
+        return SchemaRegistry::SearchQueryRequestedScope::Attribute;
+    case FeatureLayerSearchScope::Auto:
+        return SchemaRegistry::SearchQueryRequestedScope::Auto;
+    }
+    return SchemaRegistry::SearchQueryRequestedScope::Feature;
+}
+
+/** Convert a normalized concrete scope back to the evaluator scope enum. */
+FeatureLayerSearchScope concreteSearchScope(SchemaRegistry::SearchQueryConcreteScope scope)
+{
+    return scope == SchemaRegistry::SearchQueryConcreteScope::Attribute
+        ? FeatureLayerSearchScope::Attribute
+        : FeatureLayerSearchScope::Feature;
 }
 
 /** Copy one geometry node into the result layer's geometry storage. */
@@ -392,6 +415,24 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
     TileFeatureLayer& sourceLayer,
     FeatureLayerSearchRequest const& request)
 {
+    auto effectiveRequest = request;
+    if (request.rewriteQuery_ || request.scope_ == FeatureLayerSearchScope::Auto) {
+        auto registry = sourceLayer.schemaRegistry();
+        if (registry) {
+            auto normalized = registry->normalizeSearchQuery(
+                request.query_,
+                requestedScopeForNormalization(request.scope_));
+            if (!normalized) {
+                return tl::unexpected(normalized.error());
+            }
+            effectiveRequest.query_ = std::move(normalized->normalizedQuery_);
+            effectiveRequest.scope_ = concreteSearchScope(normalized->concreteScope_);
+        }
+        else if (request.scope_ == FeatureLayerSearchScope::Auto) {
+            effectiveRequest.scope_ = FeatureLayerSearchScope::Feature;
+        }
+    }
+
     auto evaluator = makeSearchEvaluator(sourceLayer);
     if (!evaluator) {
         return tl::unexpected(evaluator.error());
@@ -411,7 +452,11 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
     if (!request.searchId_.empty()) {
         resultLayer->setInfo("searchId", request.searchId_);
     }
-    resultLayer->setInfo("searchScope", request.scope_ == FeatureLayerSearchScope::Attribute ? "attribute" : "feature");
+    resultLayer->setInfo("searchScope", effectiveRequest.scope_ == FeatureLayerSearchScope::Attribute ? "attribute" : "feature");
+    if (request.rewriteQuery_ || request.scope_ == FeatureLayerSearchScope::Auto) {
+        resultLayer->setInfo("originalSearchQuery", request.query_);
+        resultLayer->setInfo("normalizedSearchQuery", effectiveRequest.query_);
+    }
     resultLayer->setInfo("sourceNodeId", sourceLayer.nodeId());
     resultLayer->setInfo("sourceMapId", sourceLayer.mapId());
     resultLayer->setInfo("sourceLayerId", sourceLayer.layerInfo() ? sourceLayer.layerInfo()->layerId_ : std::string{});
@@ -440,7 +485,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
         -> tl::expected<void, simfil::Error>
     {
         auto evalResult = (*evaluator)->evaluate(
-            request.query_,
+            effectiveRequest.query_,
             context,
             true,
             simfil::RewriteMode::Schema,
@@ -457,7 +502,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
             searchLayer,
             **evaluator,
             *resultLayer,
-            request,
+            effectiveRequest,
             feature,
             context,
             attributeMatch,
@@ -465,7 +510,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
             reportedFieldFailures);
     };
 
-    if (request.scope_ == FeatureLayerSearchScope::Feature) {
+    if (effectiveRequest.scope_ == FeatureLayerSearchScope::Feature) {
         for (auto const& feature : searchLayer) {
             auto const featureSchema = static_cast<simfil::ModelNode const&>(*feature).schema();
             if (auto result = evaluateCandidate(feature, *feature, featureSchema, std::nullopt); !result) {

@@ -89,7 +89,7 @@ Feature layers may attach `LayerInfo.featureModelSchema`, a JSON Schema document
 - Large repeated schema branches may be shared through ordinary local JSON Schema `$ref` entries under `definitions`; consumers must resolve local refs before interpreting mapget-specific annotations.
 - `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
 
-Search-facing consumers use the schema in several distinct ways. Completion uses direct and nested schema fields for query suggestions. Auto-scope uses referenced schema paths to decide whether a query belongs to feature scope or attribute scope. Schema-aware wildcard evaluation can skip branches that cannot contain a requested field. Result styling uses scalar field metadata, enum domains and numeric ranges to initialize labels, categories and gradients. None of these consumers replace the emitted feature data; the schema only describes and constrains it.
+Search-facing consumers use the schema in several distinct ways. Completion uses direct and nested schema fields for query suggestions. `SchemaRegistry::normalizeSearchQuery` is the shared query post-processing entry point used by mapget and Erdblick: it compiles through SIMFIL's schema rewrite engine, inspects AST-derived referenced schema paths, chooses feature or attribute scope, and emits guarded attribute-root predicates where needed. Schema-aware wildcard evaluation can skip branches that cannot contain a requested field. Result styling uses scalar field metadata, enum domains and numeric ranges to initialize labels, categories and gradients. None of these consumers replace the emitted feature data; the schema only describes and constrains it.
 
 ### Add‑on datasources
 
@@ -418,6 +418,8 @@ From a simfil perspective, each of the model classes shown above is either a dir
 A search result layer keeps the source map, source layer and source tile metadata so clients can route the result back to the correct map context. Each result stores the matched feature ID, result geometry, and the values requested through `withFields`. Feature-scope results copy display geometry from the matched feature. Attribute-scope results prefer the computed validity geometry for the matched attribute/validity context and fall back to the owning feature display geometry when a validity geometry cannot be derived.
 
 Result layers also carry parsed Simfil diagnostics and typed `trace()` aggregates. Search UIs use those fields for diagnostics, value summaries, generated labels, color categories and numeric gradients.
+
+When search query normalization rewrites a request, `TileSearchResultLayer.info` includes both `originalSearchQuery` and `normalizedSearchQuery`. This makes REST clients and UI diagnostics able to distinguish the visible query from the guarded backend predicate.
 
 ## Binary tile streaming
 

@@ -13,12 +13,13 @@ namespace mapget::detail
 namespace
 {
 
-constexpr std::array<std::string_view, 5> SearchFieldNames = {
+constexpr std::array<std::string_view, 6> SearchFieldNames = {
     "searchId",
     "refresh",
     "searchQuery",
     "searchScope",
     "withFields",
+    "rewrite",
 };
 
 constexpr std::array<std::string_view, 4> LegacyOnlySearchFieldNames = {
@@ -28,10 +29,11 @@ constexpr std::array<std::string_view, 4> LegacyOnlySearchFieldNames = {
     "searchScope",
 };
 
-constexpr std::array<std::string_view, 3> RestSearchFieldNames = {
+constexpr std::array<std::string_view, 4> RestSearchFieldNames = {
     "query",
     "scope",
     "withFields",
+    "rewrite",
 };
 
 /** Detect whether a layer request/envelope uses any search-as-map fields. */
@@ -64,7 +66,15 @@ constexpr std::array<std::string_view, 3> RestSearchFieldNames = {
 /** Convert search scope into the stable text token used by request-key hashing. */
 [[nodiscard]] std::string searchScopeToString(FeatureLayerSearchScope scope)
 {
-    return scope == FeatureLayerSearchScope::Attribute ? "attribute" : "feature";
+    switch (scope) {
+    case FeatureLayerSearchScope::Feature:
+        return "feature";
+    case FeatureLayerSearchScope::Attribute:
+        return "attribute";
+    case FeatureLayerSearchScope::Auto:
+        return "auto";
+    }
+    return "feature";
 }
 
 /** Build a stable in-session key separating concurrent searches on the same source layer. */
@@ -78,6 +88,7 @@ constexpr std::array<std::string_view, 3> RestSearchFieldNames = {
     }
 
     fingerprint << searchScopeToString(search.scope_) << '\n';
+    fingerprint << (search.rewriteQuery_ ? "rewrite\n" : "plain\n");
     fingerprint << search.query_ << '\n';
     for (auto const& field : search.withFields_) {
         fingerprint << field << '\n';
@@ -85,7 +96,7 @@ constexpr std::array<std::string_view, 3> RestSearchFieldNames = {
     return search.searchId_ + ":" + std::to_string(std::hash<std::string>{}(fingerprint.str()));
 }
 
-/** Parse feature-vs-attribute search scope, defaulting to feature scope. */
+/** Parse search scope, defaulting to feature scope for backwards compatibility. */
 [[nodiscard]] FeatureLayerSearchScope parseSearchScopeField(
     const nlohmann::json& requestJson,
     std::string_view key)
@@ -97,7 +108,24 @@ constexpr std::array<std::string_view, 3> RestSearchFieldNames = {
     if (scope == "attribute") {
         return FeatureLayerSearchScope::Attribute;
     }
-    throw std::runtime_error(std::string(key) + " must be either 'feature' or 'attribute'");
+    if (scope == "auto") {
+        return FeatureLayerSearchScope::Auto;
+    }
+    throw std::runtime_error(std::string(key) + " must be 'feature', 'attribute', or 'auto'");
+}
+
+/** Parse optional schema rewrite flag from either search request shape. */
+void parseRewriteField(const nlohmann::json& requestJson, FeatureLayerSearchRequest& search)
+{
+    auto rewriteIt = requestJson.find("rewrite");
+    if (rewriteIt == requestJson.end()) {
+        search.rewriteQuery_ = search.scope_ == FeatureLayerSearchScope::Auto;
+        return;
+    }
+    if (!rewriteIt->is_boolean()) {
+        throw std::runtime_error("rewrite must be a boolean");
+    }
+    search.rewriteQuery_ = rewriteIt->get<bool>() || search.scope_ == FeatureLayerSearchScope::Auto;
 }
 
 /** Parse optional withFields expression array from either search request shape. */
@@ -156,6 +184,7 @@ void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json
     search.searchId_ = requestJson.at("searchId").get<std::string>();
     search.query_ = requestJson.at("searchQuery").get<std::string>();
     search.scope_ = parseSearchScopeField(requestJson, "searchScope");
+    parseRewriteField(requestJson, search);
 
     if (auto refreshIt = requestJson.find("refresh"); refreshIt != requestJson.end()) {
         if (!(refreshIt->is_number_integer() || refreshIt->is_number_unsigned())) {
@@ -253,6 +282,7 @@ FeatureLayerSearchRequest parseRestSearchEnvelopeJson(const nlohmann::json& enve
     FeatureLayerSearchRequest search;
     search.query_ = envelopeJson.at("query").get<std::string>();
     search.scope_ = parseSearchScopeField(envelopeJson, "scope");
+    parseRewriteField(envelopeJson, search);
     parseWithFields(envelopeJson, search);
     return search;
 }

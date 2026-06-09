@@ -207,6 +207,7 @@ void bindHttpClient(py::module_& m)
                    std::vector<uint64_t> tiles,
                    const std::string& query,
                    const std::string& scope,
+                   bool rewrite,
                    std::vector<std::string> withFields,
                    std::function<void(TileSearchResultLayer::Ptr)> onResult,
                    std::function<void(py::object)> onStatus)
@@ -219,9 +220,13 @@ void bindHttpClient(py::module_& m)
                     else if (scope == "attribute") {
                         search.scope_ = FeatureLayerSearchScope::Attribute;
                     }
-                    else {
-                        throw py::value_error("scope must be 'feature' or 'attribute'");
+                    else if (scope == "auto") {
+                        search.scope_ = FeatureLayerSearchScope::Auto;
                     }
+                    else {
+                        throw py::value_error("scope must be 'feature', 'attribute' or 'auto'");
+                    }
+                    search.rewriteQuery_ = rewrite || search.scope_ == FeatureLayerSearchScope::Auto;
                     search.withFields_ = std::move(withFields);
 
                     auto req = std::make_shared<PySearchRequest>(
@@ -242,6 +247,7 @@ void bindHttpClient(py::module_& m)
             py::arg("tiles"),
             py::arg("query"),
             py::arg("scope") = "feature",
+            py::arg("rewrite") = false,
             py::arg("with_fields") = std::vector<std::string>{},
             py::arg("on_result") = py::none(),
             py::arg("on_status") = py::none(),
@@ -254,7 +260,8 @@ void bindHttpClient(py::module_& m)
                 layer_id: The source feature layer id to search.
                 tiles: Source tile ids to search.
                 query: SIMFIL predicate.
-                scope: "feature" or "attribute".
+                scope: "feature", "attribute" or "auto".
+                rewrite: Normalize the query through the feature-model schema before evaluation. Auto scope implies rewrite.
                 with_fields: SIMFIL expressions stored in each result's values array.
                 on_result: Optional callback for each TileSearchResultLayer.
                 on_status: Optional callback for progress/status dictionaries.
