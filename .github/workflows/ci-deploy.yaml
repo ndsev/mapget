@@ -29,17 +29,38 @@ jobs:
       - name: Get version
         id: version
         run: |
-          VERSION=$(python -c "import setuptools_scm; print(setuptools_scm.get_version(local_scheme='no-local-version'))")
+          CMAKE_VERSION=$(python - <<'PY'
+          import re
+          from pathlib import Path
+
+          match = re.search(r'set\(MAPGET_VERSION\s+([0-9.]+)\)', Path('CMakeLists.txt').read_text())
+          if not match:
+              raise SystemExit('Could not find MAPGET_VERSION in CMakeLists.txt')
+          print(match.group(1))
+          PY
+          )
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$GITHUB_BASE_REF" == "main" && "$GITHUB_HEAD_REF" == release/* ]]; then
+            # Release PRs need installable intermediate wheels before the final
+            # release tag exists. Use the planned CMake version as the base so
+            # `release/2026.3.0` publishes `2026.3.0.devN`, not the SCM-inferred
+            # `2026.2.1.devN` from the previous release tag.
+            DEV_SERIAL=$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))
+            VERSION="${CMAKE_VERSION}.dev${DEV_SERIAL}"
+          else
+            VERSION=$(python -c "import setuptools_scm; print(setuptools_scm.get_version(local_scheme='no-local-version'))")
+          fi
           echo "Version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
   build-manylinux:
     needs: [determine-version]
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
-        arch: ["x86_64", "aarch64"]
-    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+        arch: ["x86_64"]
+    runs-on: ubuntu-latest
     container: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}-${{ matrix.arch }}:2025.1
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
@@ -47,7 +68,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+      - name: Init submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --recursive --depth=1
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Install libuuid
@@ -86,6 +111,63 @@ jobs:
         with:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest-${{ matrix.arch }}
           path: build/bin/wheel/*.whl
+
+  build-manylinux-aarch64:
+    needs: [determine-version]
+    if: |
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ubuntu-24.04-arm
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+      MANYLINUX_IMAGE: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}-aarch64:2025.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Init submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --recursive --depth=1
+      - name: Build aarch64 wheel in manylinux container
+        timeout-minutes: 60
+        run: |
+          docker pull "$MANYLINUX_IMAGE"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            -e MAPGET_VERSION="${{ needs.determine-version.outputs.version }}" \
+            "$MANYLINUX_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              yum -y install libuuid-devel
+              python3 -m venv venv && . ./venv/bin/activate
+              pip install -U setuptools wheel pip
+              rm -rf build
+              mkdir -p build && cd build
+              cmake .. -DCMAKE_BUILD_TYPE=Release \
+                -DMAPGET_ENABLE_TESTING=True \
+                -DMAPGET_BUILD_EXAMPLES=True \
+                -DMAPGET_WITH_WHEEL=True \
+                -DMAPGET_WITH_SERVICE=True \
+                -DMAPGET_WITH_HTTPLIB=True \
+                -DMAPGET_VERSION="$MAPGET_VERSION" \
+                -GNinja
+              cmake --build .
+              mv bin/wheel bin/wheel-auditme
+              auditwheel repair bin/wheel-auditme/mapget*.whl -w bin/wheel
+              ctest --verbose --no-tests=error
+            '
+      - name: Deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapget-py${{ matrix.python-version }}-ubuntu-latest-aarch64
+          path: build/bin/wheel/*.whl
+
   build:
     needs: [determine-version]
     runs-on: ${{ matrix.os }}
@@ -169,11 +251,11 @@ jobs:
           ctest -C Release --verbose --no-tests=error
 
   deploy:
-    needs: [determine-version, build-manylinux, build]
+    needs: [determine-version, build-manylinux, build-manylinux-aarch64, build]
     if: |
       (github.event_name == 'push' && 
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
-      (github.event_name == 'pull_request' && github.base_ref == 'main')
+      (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -226,7 +308,9 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.KE_PYPI_TOKEN }}
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "Uploading release PR development version ${{ steps.version.outputs.version }} to PyPI..."
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "Uploading development snapshot version ${{ steps.version.outputs.version }} to PyPI..."
           else
             echo "Uploading release version ${{ steps.version.outputs.version }} to PyPI..."

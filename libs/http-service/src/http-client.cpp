@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -117,6 +118,19 @@ void applyHeaders(drogon::HttpRequestPtr const& req, AuthHeaders const& headers)
     }
 
     return gunzip(body);
+}
+
+[[nodiscard]] std::string searchScopeToJsonValue(FeatureLayerSearchScope scope)
+{
+    switch (scope) {
+    case FeatureLayerSearchScope::Feature:
+        return "feature";
+    case FeatureLayerSearchScope::Attribute:
+        return "attribute";
+    case FeatureLayerSearchScope::Auto:
+        return "auto";
+    }
+    return "feature";
 }
 
 }  // namespace
@@ -256,6 +270,115 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
                 // HttpClient performs one fully-buffered request. If parsing did
                 // not resolve request status by now, no more bytes will arrive.
                 request->setStatus(RequestStatus::Aborted);
+            }
+        } else if (resp->statusCode() == drogon::k400BadRequest) {
+            request->setStatus(RequestStatus::NoDataSource);
+        } else if (resp->statusCode() == drogon::k403Forbidden) {
+            request->setStatus(RequestStatus::Unauthorized);
+        } else {
+            request->setStatus(RequestStatus::Aborted);
+        }
+    } else {
+        request->setStatus(RequestStatus::Aborted);
+    }
+
+    return request;
+}
+
+FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchTilesRequest::Ptr& request)
+{
+    if (request->isDone()) {
+        request->notifyStatus();
+        return request;
+    }
+
+    auto reader = std::make_unique<TileLayerStream::Reader>(
+        [this](auto&& mapId, auto&& layerId) { return impl_->resolve(mapId, layerId); },
+        [request](auto&& result) {
+            auto searchResult = std::dynamic_pointer_cast<TileSearchResultLayer>(result);
+            if (!searchResult) {
+                log().warn("HttpClient /search ignored non-search tile layer result");
+                return;
+            }
+            request->notifyResult(std::move(searchResult));
+        },
+        impl_->stringPoolProvider_,
+        [request](TileLayerStream::MessageType type, std::string_view payload) {
+            if (type != TileLayerStream::MessageType::Status || payload.empty()) {
+                return;
+            }
+            try {
+                auto status = nlohmann::json::parse(std::string(payload));
+                request->notifyProgress(status);
+                const auto state = status.value("state", std::string{});
+                if (state == "Failed" || state == "Aborted") {
+                    request->setStatus(RequestStatus::Aborted);
+                } else if (state == "Success") {
+                    request->setStatus(RequestStatus::Success);
+                }
+            }
+            catch (const std::exception& e) {
+                log().warn("HttpClient /search ignored invalid status payload: {}", e.what());
+            }
+        });
+
+    using namespace nlohmann;
+
+    auto tileIds = json::array();
+    for (auto const& tileId : request->tileIds_) {
+        tileIds.emplace_back(tileId.value_);
+    }
+    auto requestJson = json::object({
+        {"mapId", request->mapId_},
+        {"layerId", request->layerId_},
+        {"tileIds", std::move(tileIds)},
+    });
+    if (!request->priorityTileIds_.empty()) {
+        auto priorityTileIds = json::array();
+        for (auto const& tileId : request->priorityTileIds_) {
+            priorityTileIds.emplace_back(tileId.value_);
+        }
+        requestJson["priorityTileIds"] = std::move(priorityTileIds);
+    }
+
+    auto body = json::object({
+        {"query", request->search_.query_},
+        {"scope", searchScopeToJsonValue(request->search_.scope_)},
+        {"rewrite", request->search_.rewriteQuery_},
+        {"withFields", request->search_.withFields_},
+        {"requests", json::array({std::move(requestJson)})},
+        {"stringPoolOffsets", reader->stringPoolCache()->stringPoolOffsets()},
+    }).dump();
+
+    auto httpReq = drogon::HttpRequest::newHttpRequest();
+    httpReq->setMethod(drogon::Post);
+    httpReq->setPath("/search");
+    httpReq->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    httpReq->addHeader("Accept", "application/binary");
+    httpReq->setBody(std::move(body));
+    applyHeaders(httpReq, impl_->headers_);
+
+    auto [result, resp] = impl_->client_->sendRequest(httpReq);
+    if (result == drogon::ReqResult::Ok && resp) {
+        if (resp->statusCode() == drogon::k200OK) {
+            auto decodedBody = decodeResponseBody(resp);
+            if (!decodedBody) {
+                log().error("HttpClient /search decode failed");
+                request->setStatus(RequestStatus::Aborted);
+                return request;
+            }
+
+            try {
+                reader->read(*decodedBody);
+            }
+            catch (const std::exception& e) {
+                log().error("Failed to parse /search response: {}", e.what());
+                request->setStatus(RequestStatus::Aborted);
+                return request;
+            }
+
+            if (!request->isDone()) {
+                request->setStatus(RequestStatus::Success);
             }
         } else if (resp->statusCode() == drogon::k400BadRequest) {
             request->setStatus(RequestStatus::NoDataSource);

@@ -39,6 +39,7 @@ public:
     RelationArrayView() = delete;
 
 private:
+    [[nodiscard]] ExtensionPtr mergedExtension() const override;
     [[nodiscard]] uint32_t localMergedSize() const override;
     [[nodiscard]] simfil::ModelNode::Ptr localMergedAt(int64_t i) const override;
     bool localMergedIterate(simfil::ModelNode::IterCallback const& cb) const override;
@@ -84,6 +85,9 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     friend class TileFeatureLayer;
     friend class BoundFeature;
     friend class RelationArrayView;
+    friend class GeometryCollection;
+    friend class GeometryArrayView;
+    friend class AttributeLayerList;
 
 public:
     struct MergedBasicAttributesView;
@@ -215,6 +219,7 @@ protected:
      * Simfil Model-Node Functions
      */
     [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::SchemaId schema() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
     [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
@@ -309,6 +314,7 @@ public:
     struct MergedBasicAttributesView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
+        [[nodiscard]] simfil::SchemaId schema() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
         [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
@@ -336,6 +342,7 @@ protected:
     struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
+        [[nodiscard]] simfil::SchemaId schema() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
         [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;

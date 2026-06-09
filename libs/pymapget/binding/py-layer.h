@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/searchresultlayer.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/sourcedatalayer.h"
 
@@ -475,4 +476,13 @@ void bindTileLayer(py::module_& m)
             "Set the source-data address format.")
         .def("to_json", [](TileSourceDataLayer& self) { return self.toJson().dump(); },
             "Convert this source-data layer to JSON.");
+
+    py::class_<TileSearchResultLayer, TileLayer, TileSearchResultLayer::Ptr>(m, "TileSearchResultLayer")
+        .def("stage", [](TileSearchResultLayer const& self) { return self.stage(); },
+            "Get the source stage for single-stage search results, or None for assembled staged results.")
+        .def("result_fields", &TileSearchResultLayer::resultFields,
+            "Return the withFields expressions aligned to each result's values array.")
+        .def("to_json", [](TileSearchResultLayer& self) { return self.toJson().dump(); },
+            "Convert this search-result layer to JSON.")
+        .def("__len__", [](TileSearchResultLayer const& self) { return self.size(); });
 }

@@ -2,6 +2,7 @@
 #include "featureid.h"
 #include "featurelayer.h"
 #include "geometry.h"
+#include "mapget/log.h"
 #include "relation.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
@@ -24,6 +25,17 @@ model_ptr<Feature> resolveFeatureByRootIndex(TileFeatureLayer const& model, uint
     }
     return model.resolve<Feature>(**rootResult);
 }
+}
+
+RelationArrayView::ExtensionPtr RelationArrayView::mergedExtension() const
+{
+    auto overlay = model().overlay();
+    if (!overlay || addr().index() >= overlay->size()) {
+        return {};
+    }
+
+    return overlay->resolve<RelationArrayView>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, addr().index()});
 }
 
 uint32_t RelationArrayView::localMergedSize() const
@@ -129,57 +141,64 @@ model_ptr<GeometryCollection> Feature::geom()
         return result;
     }
     materializeGeometryCollection();
-    return const_cast<const Feature*>(this)->geomOrNull();
+    return model().resolve<GeometryCollection>(geometryNodeAddress());
 }
 
 model_ptr<GeometryCollection> Feature::geomOrNull() const
 {
-    model_ptr<GeometryCollection> local;
-    auto localGeomAddress = geometryNodeAddress();
-    if (localGeomAddress) {
-        local = model().resolve<GeometryCollection>(localGeomAddress);
-    }
-
+    auto const hasLocalGeometry = static_cast<bool>(geometryNodeAddress());
     auto extFeature = extension();
     auto ext = extFeature ? extFeature->geomOrNull() : model_ptr<GeometryCollection>{};
-    if (!local) {
+    if (!hasLocalGeometry) {
         return ext;
     }
-    local->setExtension(ext);
-    return local;
+    if (!ext) {
+        return model().resolve<GeometryCollection>(geometryNodeAddress());
+    }
+
+    return model_ptr<GeometryCollection>::make(
+        model_,
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureGeometryCollectionView, addr().index()});
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
 {
     if (!attributeLayerNodeAddress()) {
         auto result = model().newAttributeLayers();
+        if (auto schemaId = model().attributeLayerMapSchemaId(typeId());
+            schemaId != simfil::NoSchemaId) {
+            if (auto schemaResult = result->setObjectSchema(schemaId); !schemaResult) {
+                log().warn("Failed to set attribute-layer-list schema: {}", schemaResult.error().message);
+            }
+        }
         attributeLayerNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
     }
-    return attributeLayersOrNull();
+    return model().resolve<AttributeLayerList>(attributeLayerNodeAddress());
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayersOrNull() const
 {
-    model_ptr<AttributeLayerList> local;
-    if (auto localAddress = attributeLayerNodeAddress()) {
-        local = model().resolve<AttributeLayerList>(localAddress);
-    }
-
+    auto const hasLocalAttributeLayers = static_cast<bool>(attributeLayerNodeAddress());
     auto extFeature = extension();
     auto ext = extFeature ? extFeature->attributeLayersOrNull() : model_ptr<AttributeLayerList>{};
-    if (!local) {
+    if (!hasLocalAttributeLayers) {
         return ext;
     }
-    local->setExtension(ext);
-    return local;
+    if (!ext) {
+        return model().resolve<AttributeLayerList>(attributeLayerNodeAddress());
+    }
+
+    return model().resolve<AttributeLayerList>(
+        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureAttributeLayerListView, addr().index()});
 }
 
 model_ptr<Object> Feature::attributes()
 {
     if (!attributeNodeAddress()) {
         auto result = model().newObject(8);
+        model().applyObjectSchema(*result, model().featurePropertiesSchemaId(typeId()));
         attributeNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -208,6 +227,12 @@ model_ptr<Array> Feature::relations()
 {
     if (!relationNodeAddress()) {
         auto result = model().newArray(8);
+        model().applyArraySchema(
+            *result,
+            model().childSchemaId(
+                schema(),
+                StringPool::RelationsStr,
+                simfil::Schema::Kind::Array));
         relationNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -227,14 +252,13 @@ model_ptr<RelationArrayView> Feature::mergedRelationsOrNull() const
 {
     auto extFeature = extension();
     auto ext = extFeature ? extFeature->mergedRelationsOrNull() : model_ptr<RelationArrayView>{};
-    if (!relationNodeAddress() && !ext) {
-        return {};
+    if (!relationNodeAddress()) {
+        return ext;
     }
-    auto result = model_ptr<RelationArrayView>::make(
+
+    return model_ptr<RelationArrayView>::make(
         model_,
         simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, addr().index()});
-    result->setExtension(ext);
-    return result;
 }
 
 tl::expected<std::vector<simfil::Value>, simfil::Error>
@@ -266,6 +290,11 @@ tl::expected<simfil::Value, simfil::Error> Feature::evaluate(const std::string_v
 simfil::ValueType Feature::type() const
 {
     return simfil::ValueType::Object;
+}
+
+simfil::SchemaId Feature::schema() const
+{
+    return model().featureSchemaId(typeId());
 }
 
 simfil::ModelNode::Ptr Feature::at(int64_t i) const
@@ -884,6 +913,14 @@ simfil::ValueType Feature::MergedBasicAttributesView::type() const
     return simfil::ValueType::Object;
 }
 
+simfil::SchemaId Feature::MergedBasicAttributesView::schema() const
+{
+    if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
+        return model().featurePropertiesSchemaId(feature->typeId());
+    }
+    return simfil::NoSchemaId;
+}
+
 simfil::ModelNode::Ptr Feature::MergedBasicAttributesView::at(int64_t i) const
 {
     ensureMergedFieldsReady();
@@ -947,6 +984,14 @@ Feature::FeaturePropertyView::FeaturePropertyView(
 simfil::ValueType Feature::FeaturePropertyView::type() const
 {
     return simfil::ValueType::Object;
+}
+
+simfil::SchemaId Feature::FeaturePropertyView::schema() const
+{
+    if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
+        return model().featurePropertiesSchemaId(feature->typeId());
+    }
+    return simfil::NoSchemaId;
 }
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const

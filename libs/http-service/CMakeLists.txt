@@ -10,6 +10,7 @@ add_library(mapget-http-service STATIC
   src/http-service-impl.cpp
   src/config-handler.cpp
   src/http-client.cpp
+  src/location-handler.cpp
   src/locate-handler.cpp
   src/sources-handler.cpp
   src/status-handler.cpp
@@ -17,6 +18,14 @@ add_library(mapget-http-service STATIC
   src/tiles-request-json.cpp
   src/tiles-http-handler.cpp
   src/tiles-ws-controller.cpp
+  src/tiles-stream-encoding.h
+  src/tiles-stream-encoding.cpp
+  src/tiles-ws-request.h
+  src/tiles-ws-request.cpp
+  src/tiles-ws-session.h
+  src/tiles-ws-session.cpp
+  src/tiles-ws-status.h
+  src/tiles-ws-status.cpp
   src/cli.cpp)
 
 target_include_directories(mapget-http-service
@@ -33,6 +42,7 @@ target_link_libraries(mapget-http-service
     nlohmann_json_schema_validator
     mapget-service
     mapget-http-datasource
+    mapget-location
     gridsource
     geojsonsource
   PRIVATE

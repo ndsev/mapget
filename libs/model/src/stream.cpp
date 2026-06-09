@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "featurelayer.h"
+#include "searchresultlayer.h"
 #include "sourcedatalayer.h"
 
 namespace mapget
@@ -20,12 +21,14 @@ namespace mapget
 TileLayerStream::Reader::Reader(
     LayerInfoResolveFun layerInfoProvider,
     std::function<void(TileLayer::Ptr)> onParsedLayer,
-    std::shared_ptr<StringPoolCache> stringPoolProvider)
+    std::shared_ptr<StringPoolCache> stringPoolProvider,
+    std::function<void(MessageType, std::string_view)> onControlMessage)
     : layerInfoProvider_(std::move(layerInfoProvider)),
       stringPoolProvider_(
           stringPoolProvider ? std::move(stringPoolProvider) :
                                std::make_shared<TileLayerStream::StringPoolCache>()),
-      onParsedLayer_(std::move(onParsedLayer))
+      onParsedLayer_(std::move(onParsedLayer)),
+      onControlMessage_(std::move(onControlMessage))
 {
 }
 
@@ -96,6 +99,13 @@ bool TileLayerStream::Reader::continueReading()
         log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
         onParsedLayer_(layer);
     }
+    else if (nextValueType_ == MessageType::TileSearchResultLayer)
+    {
+        auto layer = std::make_shared<TileSearchResultLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
+            return stringPoolProvider_->getStringPool(nodeId);
+        });
+        onParsedLayer_(layer);
+    }
     else if (nextValueType_ == MessageType::TileSourceDataLayer)
     {
         auto layer = std::make_shared<TileSourceDataLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
@@ -113,6 +123,18 @@ bool TileLayerStream::Reader::continueReading()
         if (!result) {
             raise(result.error().message);
         }
+    }
+    else if (onControlMessage_
+             && (nextValueType_ == MessageType::Status
+                 || nextValueType_ == MessageType::LoadStateChange
+                 || nextValueType_ == MessageType::RequestContext
+                 || nextValueType_ == MessageType::EndOfStream))
+    {
+        onControlMessage_(
+            nextValueType_,
+            std::string_view(
+                reinterpret_cast<const char*>(payload.data()),
+                payload.size()));
     }
 
     currentPhase_ = Phase::ReadHeader;
@@ -216,6 +238,11 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
     log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
 
+    if (std::dynamic_pointer_cast<TileSearchResultLayer>(tileLayer)) {
+        sendMessage(std::move(bytes), MessageType::TileSearchResultLayer);
+        return;
+    }
+
     const auto layerType = tileLayer->layerInfo()->type_;
     const auto messageType = [&layerType]() {
         switch (layerType) {
@@ -266,6 +293,11 @@ void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::
     
     // Send with move semantics
     onMessage_(std::move(message), msgType);
+}
+
+void TileLayerStream::Writer::sendStatus(std::string statusJson)
+{
+    sendMessage(std::move(statusJson), MessageType::Status);
 }
 
 void TileLayerStream::Writer::sendEndOfStream()

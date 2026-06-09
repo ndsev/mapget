@@ -2,6 +2,7 @@
 
 #include "cache.h"
 #include "datasource.h"
+#include "mapget/model/featurelayer-search.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/layer.h"
 #include "memcache.h"
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <set>
 #include <vector>
+#include <atomic>
 
 namespace mapget
 {
@@ -159,6 +161,14 @@ private:
     // Resolved staged tile keys in scheduling order.
     std::vector<MapTileKey> resolvedTileKeys_;
 
+    /**
+     * Search needs complete staged tiles before it can evaluate a predicate.
+     * This internal scheduling hint keeps normal staged frontend requests
+     * stage-major, but lets search load all stages of one tile before moving
+     * on to the next tile.
+     */
+    bool preferCompleteStagedTiles_ = false;
+
     // Track which resolved tile keys still need to be scheduled/served.
     std::set<MapTileKey> tileKeysNotStarted_;
 
@@ -166,6 +176,99 @@ private:
     size_t resultCount_ = 0;
 
     // Mutex/condition variable for reading/setting request status.
+    std::mutex statusMutex_;
+    std::condition_variable statusConditionVariable_;
+    std::atomic<RequestStatus> status_ = RequestStatus::Open;
+};
+
+/**
+ * Client request for server-side search-as-map evaluation.
+ *
+ * The service loads the source feature tile stages through the normal tile
+ * scheduler/cache path, assembles a transient full tile where needed, then
+ * runs SIMFIL evaluation as a scheduled service job.
+ */
+class FeatureLayerSearchTilesRequest
+{
+    friend class Service;
+    friend class HttpClient;
+
+public:
+    using Ptr = std::shared_ptr<FeatureLayerSearchTilesRequest>;
+
+    /** Construct a search request over a set of source feature tile IDs. */
+    FeatureLayerSearchTilesRequest(
+        std::string mapId,
+        std::string layerId,
+        std::vector<TileId> tiles,
+        FeatureLayerSearchRequest search);
+
+    /** Construct a search request with foreground tile IDs prioritized for source loads. */
+    FeatureLayerSearchTilesRequest(
+        std::string mapId,
+        std::string layerId,
+        std::vector<TileId> tiles,
+        FeatureLayerSearchRequest search,
+        std::vector<TileId> const& priorityTileIds);
+
+    /** Get the current status of the search request. */
+    RequestStatus getStatus();
+
+    /** Wait for the request to reach a terminal state. */
+    void wait();
+
+    /** Check whether the request is done or still running. */
+    bool isDone();
+
+    /** Check whether the request has been cancelled by the owning transport. */
+    [[nodiscard]] bool isCancelled() const;
+
+    /** The source map id for this search. */
+    std::string mapId_;
+
+    /** The source layer id for this search. */
+    std::string layerId_;
+
+    /** Source tile IDs to search. */
+    std::vector<TileId> tileIds_;
+
+    /** Source tile IDs that should be scheduled first. */
+    std::set<TileId> priorityTileIds_;
+
+    /** Search predicate, result-field expressions, and result identity. */
+    FeatureLayerSearchRequest search_;
+
+    /** Callback for each emitted TileSearchResultLayer. */
+    template <class Fun>
+    FeatureLayerSearchTilesRequest& onSearchResult(Fun&& callback)
+    {
+        onSearchResult_ = std::forward<Fun>(callback);
+        return *this;
+    }
+
+    /** Callback for JSON status/progress updates. */
+    template <class Fun>
+    FeatureLayerSearchTilesRequest& onStatus(Fun&& callback)
+    {
+        onStatus_ = std::forward<Fun>(callback);
+        return *this;
+    }
+
+    /** Callback fired once the request reaches a terminal state. */
+    std::function<void(RequestStatus)> onDone_;
+
+protected:
+    virtual void notifyResult(TileSearchResultLayer::Ptr);
+    void notifyProgress(nlohmann::json const& status);
+    void setStatus(RequestStatus s);
+    void notifyStatus();
+    void cancel();
+
+private:
+    std::function<void(TileSearchResultLayer::Ptr)> onSearchResult_;
+    std::function<void(nlohmann::json const&)> onStatus_;
+    std::vector<LayerTilesRequest::Ptr> childRequests_;
+    std::atomic_bool cancelled_{false};
     std::mutex statusMutex_;
     std::condition_variable statusConditionVariable_;
     std::atomic<RequestStatus> status_ = RequestStatus::Open;
@@ -228,6 +331,17 @@ public:
     bool request(std::vector<LayerTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
+     * Request server-side feature search over source feature tiles.
+     *
+     * The returned binary chunks are TileSearchResultLayer instances produced
+     * via FeatureLayerSearchTilesRequest::onSearchResult.
+     */
+    bool request(FeatureLayerSearchTilesRequest::Ptr const& request, std::optional<AuthHeaders> const& clientHeaders = {});
+
+    /** Request multiple server-side searches. */
+    bool request(std::vector<FeatureLayerSearchTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
+
+    /**
      * Trigger queries to all connected data sources to check
      * for a feature matching the given typeId and idParts.
      * Returns the list of MapTileKeys received from data sources.
@@ -239,6 +353,9 @@ public:
      * the processing queue, and forcefully marked as done.
      */
     void abort(LayerTilesRequest::Ptr const& r);
+
+    /** Abort a server-side search request. */
+    void abort(FeatureLayerSearchTilesRequest::Ptr const& r);
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});

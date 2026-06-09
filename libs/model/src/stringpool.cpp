@@ -51,6 +51,18 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(FromConnectedEndStr, "fromConnectedEnd");
     addStaticKey(ToConnectedEndStr, "toConnectedEnd");
     addStaticKey(TransitionNumberStr, "transitionNumber");
+    addStaticKey(AttributeIndexStr, "attributeIndex");
+    addStaticKey(ValuesStr, "values");
+    addStaticKey(MatchStr, "match");
+    addStaticKey(ValidityIndexStr, "validityIndex");
+    addStaticKey(ValidityCountStr, "validityCount");
+    addStaticKey(OverlayNameStr, "$name");
+    addStaticKey(OverlayFeatureStr, "$feature");
+    addStaticKey(OverlayLayerStr, "$layer");
+    addStaticKey(OverlayValidityIndexStr, "$validityIndex");
+    addStaticKey(OverlayValidityCountStr, "$validityCount");
+    addStaticKey(CallsStr, "calls");
+    addStaticKey(TotalUsStr, "totalus");
 }
 
 tl::expected<void, simfil::Error>

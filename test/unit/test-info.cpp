@@ -1,10 +1,144 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
+#include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
+#include "mapget/model/simfilutil.h"
 #include "mapget/model/stream.h"
 #include "mapget/log.h"
 
 using namespace mapget;
+
+namespace
+{
+
+/** Minimal x-mapget annotated schema that exercises feature, property and attribute containers. */
+nlohmann::json schemaAnnotatedLayerInfoJson()
+{
+    return R"({
+        "layerId": "CarrierLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Carrier",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "carrierId",
+                            "description": "Synthetic carrier id.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ],
+        "featureModelSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "oneOf": [
+                {"$ref": "#/$defs/CarrierFeature"}
+            ],
+            "$defs": {
+                "CarrierFeature": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Feature",
+                        "featureType": "Carrier"
+                    },
+                    "properties": {
+                        "typeId": {"const": "Carrier"},
+                        "properties": {"$ref": "#/$defs/CarrierProperties"},
+                        "relations": {
+                            "type": "array",
+                            "items": {"$ref": "#/$defs/Relation"}
+                        }
+                    }
+                },
+                "CarrierProperties": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "FeatureProperties",
+                        "featureType": "Carrier"
+                    },
+                    "properties": {
+                        "displayName": {"type": "string"},
+                        "layer": {"$ref": "#/$defs/CarrierLayerMap"}
+                    }
+                },
+                "CarrierLayerMap": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeLayerMap",
+                        "featureType": "Carrier"
+                    },
+                    "properties": {
+                        "limits": {"$ref": "#/$defs/LimitsLayer"},
+                        "advisoryLimits": {"$ref": "#/$defs/LimitsLayer"}
+                    }
+                },
+                "LimitsLayer": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeContainer"
+                    },
+                    "properties": {
+                        "speed": {"$ref": "#/$defs/SpeedAttribute"}
+                    }
+                },
+                "SpeedAttribute": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Attribute",
+                        "attributeTypeCode": "speed",
+                        "attributeType": "synthetic.SpeedAttributeType"
+                    },
+                    "properties": {
+                        "unit": {
+                            "type": "string",
+                            "enum": ["km/h", "mph"],
+                            "x-mapget": {
+                                "zserioType": "synthetic.SpeedUnit"
+                            }
+                        },
+                        "value": {"type": "number"}
+                    }
+                },
+                "Relation": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string"}
+                    }
+                }
+            }
+        }
+    })"_json;
+}
+
+bool hasCompletion(
+    std::vector<simfil::CompletionCandidate> const& completions,
+    std::string_view text,
+    simfil::CompletionCandidate::Type type)
+{
+    return std::ranges::any_of(completions, [&](auto const& candidate) {
+        return candidate.text == text && candidate.type == type;
+    });
+}
+
+std::string namedSchemaPathString(SchemaRegistry::NamedSchemaPath const& path)
+{
+    std::string result;
+    for (auto const& segment : path) {
+        if (!result.empty()) {
+            result += ".";
+        }
+        result += segment.kind_ == simfil::SchemaPathSegment::Kind::ArrayElement
+            ? "[]"
+            : segment.field_;
+    }
+    return result;
+}
+
+} // namespace
 
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
 {
@@ -44,6 +178,453 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
 
     // Check that the two DataSourceInfo objects are equal.
     REQUIRE(j == j2);
+}
+
+TEST_CASE("LayerInfo roundtrips featureModelSchema", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Test way id.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ],
+        "featureModelSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "required": ["type", "typeId"],
+            "properties": {
+                "type": {"const": "Feature"},
+                "typeId": {"const": "Way"}
+            },
+            "additionalProperties": true
+        }
+    })"_json);
+
+    auto json = layerInfo->toJson();
+    REQUIRE(json.contains("featureModelSchema"));
+    REQUIRE(json["featureModelSchema"]["properties"]["typeId"]["const"] == "Way");
+    REQUIRE(LayerInfo::fromJson(json)->toJson() == json);
+}
+
+TEST_CASE("TileFeatureLayer validates emitted features against LayerInfo schema", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "wayId",
+                            "description": "Test way id.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ],
+        "featureModelSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "required": ["type", "typeId"],
+            "properties": {
+                "type": {"const": "Feature"},
+                "typeId": {"const": "Way"}
+            },
+            "additionalProperties": true
+        }
+    })"_json);
+
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SchemaTestNode",
+        "SchemaTestMap",
+        layerInfo,
+        std::make_shared<StringPool>("SchemaTestNode"));
+    tile->newFeature("Way", {{"wayId", 1}});
+
+    REQUIRE_NOTHROW(tile->validateSchema());
+
+    layerInfo->featureModelSchema_["properties"]["typeId"]["const"] = "Road";
+    REQUIRE_THROWS(tile->validateSchema());
+}
+
+TEST_CASE("LayerInfo builds SchemaRegistry from x-mapget annotations", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto registry = layerInfo->schemaRegistry();
+
+    REQUIRE(registry);
+
+    auto const* carrierSchema = registry->getSchema("Carrier");
+    REQUIRE(carrierSchema != nullptr);
+    REQUIRE(carrierSchema->id_ != simfil::NoSchemaId);
+    REQUIRE(registry->schemaId("Feature:Carrier") == carrierSchema->id_);
+
+    auto const propertiesId = registry->featurePropertiesSchema("Carrier");
+    auto const layerMapId = registry->attributeLayerMapSchema("Carrier");
+    REQUIRE(propertiesId != simfil::NoSchemaId);
+    REQUIRE(layerMapId != simfil::NoSchemaId);
+
+    auto const limitsId = registry->childSchema(
+        layerMapId,
+        "limits",
+        simfil::Schema::Kind::Object);
+    auto const speedId = registry->childSchema(
+        limitsId,
+        "speed",
+        simfil::Schema::Kind::Object);
+    REQUIRE(limitsId != simfil::NoSchemaId);
+    REQUIRE(speedId != simfil::NoSchemaId);
+
+    REQUIRE(registry->canHaveField(carrierSchema->id_, "properties"));
+    REQUIRE(registry->canHaveField(carrierSchema->id_, "value"));
+    REQUIRE_FALSE(registry->canHaveField(carrierSchema->id_, "notDeclaredBySchema"));
+
+    auto const typeIdId = registry->childSchema(
+        carrierSchema->id_,
+        "typeId",
+        simfil::Schema::Kind::Value);
+    auto const unitId = registry->childSchema(
+        speedId,
+        "unit",
+        simfil::Schema::Kind::Value);
+    REQUIRE(typeIdId != simfil::NoSchemaId);
+    REQUIRE(unitId != simfil::NoSchemaId);
+    REQUIRE(registry->kind(typeIdId) == simfil::Schema::Kind::Value);
+    REQUIRE(registry->kind(unitId) == simfil::Schema::Kind::Value);
+    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "Carrier"));
+    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "km/h"));
+    REQUIRE(registry->canHaveEnumSymbol(unitId, "mph"));
+    REQUIRE_FALSE(registry->canHaveEnumSymbol(carrierSchema->id_, "notAnEnum"));
+    REQUIRE(
+        registry->constantTypeNames(carrierSchema->id_, "km/h") ==
+        std::vector<std::string>{"synthetic.SpeedUnit"});
+    REQUIRE(
+        registry->constantTypeNames(carrierSchema->id_, "speed") ==
+        std::vector<std::string>{"synthetic.SpeedAttributeType"});
+
+    auto strings = std::make_shared<StringPool>("SchemaRegistryEnums");
+    auto carrierSymbol = strings->emplace("Carrier").value();
+    auto speedUnitSymbol = strings->emplace("km/h").value();
+    auto missingSymbol = strings->emplace("missing").value();
+    simfil::Environment env(strings);
+    installSchemaRegistry(env, registry, strings);
+    auto schema = env.querySchema(carrierSchema->id_);
+    REQUIRE(schema != nullptr);
+    REQUIRE(schema->canHaveEnumSymbol(carrierSymbol));
+    REQUIRE(schema->canHaveEnumSymbol(speedUnitSymbol));
+    REQUIRE_FALSE(schema->canHaveEnumSymbol(missingSymbol));
+}
+
+TEST_CASE("SchemaRegistry does not mutate datasource StringPool", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto strings = std::make_shared<StringPool>("SchemaRegistryReadonlyNode");
+    auto const highestBefore = strings->highest();
+    auto const sizeBefore = strings->size();
+
+    auto registry = layerInfo->schemaRegistry();
+    REQUIRE(registry);
+    REQUIRE(strings->highest() == highestBefore);
+    REQUIRE(strings->size() == sizeBefore);
+
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SchemaRegistryReadonlyNode",
+        "SchemaRegistryReadonlyMap",
+        layerInfo,
+        strings);
+    REQUIRE(tile->schemaRegistry());
+    REQUIRE(strings->highest() == highestBefore);
+    REQUIRE(strings->size() == sizeBefore);
+}
+
+TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mutating datasource strings", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto strings = std::make_shared<StringPool>("SchemaCompletionNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SchemaCompletionNode",
+        "SchemaCompletionMap",
+        layerInfo,
+        strings);
+
+    auto feature = tile->newFeature("Carrier", {{"carrierId", 7}});
+    auto layer = feature->attributeLayers()->newLayer("limits");
+    auto speed = layer->newAttribute("speed");
+
+    REQUIRE(strings->get("unit") == simfil::StringPool::Empty);
+    REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
+
+    simfil::CompletionOptions opts;
+    opts.showWildcardHints = false;
+
+    simfil::ModelNode::Ptr speedNode = speed;
+    auto fieldCompletions = tile->complete("u", 1, *speedNode, opts);
+    REQUIRE(fieldCompletions);
+    REQUIRE(hasCompletion(*fieldCompletions, "unit", simfil::CompletionCandidate::Type::FIELD));
+
+    auto enumCompletions = tile->complete("k", 1, *speedNode, opts);
+    REQUIRE(enumCompletions);
+    REQUIRE(hasCompletion(*enumCompletions, "\"km/h\"", simfil::CompletionCandidate::Type::CONSTANT));
+
+    REQUIRE(strings->get("unit") == simfil::StringPool::Empty);
+    REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
+}
+
+TEST_CASE("TileFeatureLayer schema rewrites use enum paths", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto strings = std::make_shared<StringPool>("SchemaRewriteNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SchemaRewriteNode",
+        "SchemaRewriteMap",
+        layerInfo,
+        strings);
+
+    auto feature = tile->newFeature("Carrier", {{"carrierId", 7}});
+    auto attrs = feature->attributes();
+    REQUIRE(attrs->addField("displayName", "km/h").has_value());
+    auto layer = feature->attributeLayers()->newLayer("limits");
+    auto speed = layer->newAttribute("speed");
+    REQUIRE(speed->addField("unit", "mph").has_value());
+
+    auto matchingEnum = tile->evaluate("mph", *feature, false, true);
+    REQUIRE(matchingEnum);
+    REQUIRE(matchingEnum->values.size() == 1);
+    REQUIRE(matchingEnum->values.front().isa(simfil::ValueType::Bool));
+    REQUIRE(matchingEnum->values.front().as<simfil::ValueType::Bool>());
+
+    auto unrelatedString = tile->evaluate(R"("km/h")", *feature, false, true);
+    REQUIRE(unrelatedString);
+    REQUIRE(unrelatedString->values.size() == 1);
+    REQUIRE(unrelatedString->values.front().isa(simfil::ValueType::Bool));
+    REQUIRE_FALSE(unrelatedString->values.front().as<simfil::ValueType::Bool>());
+}
+
+TEST_CASE("SchemaRegistry scalar attribute shorthand skips metadata fields", "[DataSourceInfo]")
+{
+    auto json = schemaAnnotatedLayerInfoJson();
+    auto& defs = json["featureModelSchema"]["$defs"];
+    defs["LimitsLayer"]["properties"]["priority"] = {{"$ref", "#/$defs/PriorityAttribute"}};
+    defs["PriorityAttribute"] = {
+        {"type", "object"},
+        {"x-mapget", {
+            {"metaType", "Attribute"},
+            {"attributeTypeCode", "priority"},
+            {"attributeType", "synthetic.PriorityAttributeType"}
+        }},
+        {"properties", {
+            {"_sourceData", {
+                {"type", "array"},
+                {"items", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"address", {{"type", "integer"}}}
+                    }}
+                }}
+            }},
+            {"conditions", {
+                {"type", "object"},
+                {"properties", {
+                    {"conditionValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"properties", {
+                {"type", "object"},
+                {"properties", {
+                    {"propertyValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"references", {
+                {"type", "object"},
+                {"properties", {
+                    {"referenceValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"validity", {
+                {"type", "object"},
+                {"properties", {
+                    {"validityValue", {{"type", "integer"}}}
+                }}
+            }},
+            {"value", {{"type", "integer"}}}
+        }}
+    };
+
+    auto layerInfo = LayerInfo::fromJson(json);
+    auto registry = layerInfo->schemaRegistry();
+    REQUIRE(registry);
+
+    auto const featureSchema = registry->featureSchema("Carrier");
+    auto featurePaths = registry->scalarFieldPathsForAttribute(featureSchema, "priority");
+    std::vector<std::string> featurePathStrings;
+    featurePathStrings.reserve(featurePaths.size());
+    for (auto const& path : featurePaths) {
+        featurePathStrings.push_back(namedSchemaPathString(path));
+    }
+    REQUIRE(featurePathStrings == std::vector<std::string>{
+        "properties.layer.advisoryLimits.priority.value",
+        "properties.layer.limits.priority.value"});
+
+    auto const layerMapSchema = registry->attributeLayerMapSchema("Carrier");
+    auto const limitsSchema = registry->childSchema(layerMapSchema, "limits", simfil::Schema::Kind::Object);
+    auto const prioritySchema = registry->childSchema(limitsSchema, "priority", simfil::Schema::Kind::Object);
+    auto attributePaths = registry->scalarFieldPathsForAttribute(prioritySchema, "priority");
+    REQUIRE(attributePaths.size() == 1);
+    REQUIRE(namedSchemaPathString(attributePaths.front()) == "value");
+}
+
+TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto registry = layerInfo->schemaRegistry();
+    REQUIRE(registry);
+
+    auto const featureSchema = registry->featureSchema("Carrier");
+    auto const typeIdPath = std::vector<std::string>{"typeId"};
+    auto const featureOwner = registry->ownerForPath(
+        "Carrier",
+        featureSchema,
+        typeIdPath);
+    REQUIRE(featureOwner.kind_ == SchemaRegistry::PathOwnerKind::Feature);
+
+    auto const displayNamePath = std::vector<std::string>{"properties", "displayName"};
+    auto const displayNameOwner = registry->ownerForPath(
+        "Carrier",
+        featureSchema,
+        displayNamePath);
+    REQUIRE(displayNameOwner.kind_ == SchemaRegistry::PathOwnerKind::Feature);
+
+    auto const layerMapPath = std::vector<std::string>{"properties", "layer"};
+    auto const layerMapOwner = registry->ownerForPath(
+        "Carrier",
+        featureSchema,
+        layerMapPath);
+    REQUIRE(layerMapOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+
+    auto const attributeLayerPath = std::vector<std::string>{"properties", "layer", "limits"};
+    auto const attributeLayerOwner = registry->ownerForPath(
+        "Carrier",
+        featureSchema,
+        attributeLayerPath);
+    REQUIRE(attributeLayerOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+
+    auto const speedUnitPath = std::vector<std::string>{"properties", "layer", "limits", "speed", "unit"};
+    auto const attributeOwner = registry->ownerForPath(
+        "Carrier",
+        featureSchema,
+        speedUnitPath);
+    REQUIRE(attributeOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(attributeOwner.attribute_.featureType_ == "Carrier");
+    REQUIRE(attributeOwner.attribute_.attributeLayerName_ == "limits");
+    REQUIRE(attributeOwner.attribute_.attributeName_ == "speed");
+    REQUIRE(attributeOwner.attribute_.attributeSchema_ != simfil::NoSchemaId);
+
+    auto const advisorySpeedUnitPath = std::vector<std::string>{"properties", "layer", "advisoryLimits", "speed", "unit"};
+    auto const advisoryAttributeOwner = registry->ownerForPath(
+        "Carrier",
+        featureSchema,
+        advisorySpeedUnitPath);
+    REQUIRE(advisoryAttributeOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(advisoryAttributeOwner.attribute_.attributeLayerName_ == "advisoryLimits");
+    REQUIRE(advisoryAttributeOwner.attribute_.attributeName_ == "speed");
+    REQUIRE(advisoryAttributeOwner.attribute_.attributeSchema_ != simfil::NoSchemaId);
+
+    auto const propertiesSchema = registry->featurePropertiesSchema("Carrier");
+    auto const propertiesRootAttributeOwner = registry->ownerForPath(
+        "Carrier",
+        propertiesSchema,
+        std::vector<std::string>{"layer", "limits", "speed", "value"});
+    REQUIRE(propertiesRootAttributeOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(propertiesRootAttributeOwner.attribute_.attributeLayerName_ == "limits");
+
+    auto const speedSchema = attributeOwner.attribute_.attributeSchema_;
+    auto const valuePath = std::vector<std::string>{"value"};
+    auto const attributeRootOwner = registry->ownerForPath(
+        "Carrier",
+        speedSchema,
+        valuePath);
+    REQUIRE(attributeRootOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(attributeRootOwner.attribute_.attributeName_ == "speed");
+
+    auto const invalidAttributeTailPath = std::vector<std::string>{"properties", "layer", "limits", "speed", "missing"};
+    auto const invalidAttributeTailOwner = registry->ownerForPath(
+        "Carrier",
+        featureSchema,
+        invalidAttributeTailPath);
+    REQUIRE(invalidAttributeTailOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+
+    auto const invalidAttributeRootPath = std::vector<std::string>{"missing"};
+    auto const invalidAttributeRootOwner = registry->ownerForPath(
+        "Carrier",
+        speedSchema,
+        invalidAttributeRootPath);
+    REQUIRE(invalidAttributeRootOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+}
+
+TEST_CASE("TileFeatureLayer exposes SchemaIds on feature-model nodes", "[DataSourceInfo]")
+{
+    auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "SchemaNode",
+        "SchemaMap",
+        layerInfo,
+        std::make_shared<StringPool>("SchemaNode"));
+    auto registry = tile->schemaRegistry();
+    REQUIRE(registry);
+
+    auto feature = tile->newFeature("Carrier", {{"carrierId", 7}});
+    auto attrs = feature->attributes();
+    REQUIRE(attrs->addField("displayName", "Carrier Seven").has_value());
+    auto layer = feature->attributeLayers()->newLayer("limits");
+    auto speed = layer->newAttribute("speed");
+    REQUIRE(speed->addField("value", double{80.0}).has_value());
+    REQUIRE(speed->addField("unit", "km/h").has_value());
+
+    simfil::ModelNode::Ptr featureNode = feature;
+    REQUIRE(featureNode->schema() == tile->getSchema("Carrier")->id_);
+    REQUIRE(attrs->schema() == registry->featurePropertiesSchema("Carrier"));
+
+    auto const layerMapId = registry->attributeLayerMapSchema("Carrier");
+    auto const limitsId = registry->childSchema(
+        layerMapId,
+        "limits",
+        simfil::Schema::Kind::Object);
+    auto const speedId = registry->childSchema(
+        limitsId,
+        "speed",
+        simfil::Schema::Kind::Object);
+    REQUIRE(feature->attributeLayers()->schema() == layerMapId);
+    REQUIRE(layer->schema() == limitsId);
+
+    simfil::ModelNode::Ptr speedNode = speed;
+    REQUIRE(speedNode->schema() == speedId);
+
+    auto propertiesNode = featureNode->get(StringPool::PropertiesStr);
+    REQUIRE(propertiesNode);
+    REQUIRE(propertiesNode->schema() == registry->featurePropertiesSchema("Carrier"));
+
+    auto layerNode = propertiesNode->get(StringPool::LayerStr);
+    REQUIRE(layerNode);
+    REQUIRE(layerNode->schema() == layerMapId);
 }
 
 TEST_CASE("InfoFromJson", "[DataSourceInfo]")

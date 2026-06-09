@@ -1,7 +1,7 @@
 ### Dependencies via CPM (converted from FetchContent)
 
 CPMAddPackage("gh:g-truc/glm#1.0.1")
-CPMAddPackage(
+    CPMAddPackage(
     URI "gh:fmtlib/fmt#11.1.4"
     OPTIONS "FMT_HEADER_ONLY OFF")
 CPMAddPackage(
@@ -9,6 +9,7 @@ CPMAddPackage(
     OPTIONS "SPDLOG_FMT_EXTERNAL ON")
 CPMAddPackage("gh:fraillt/bitsery@5.2.4")
 CPMAddPackage("gh:nlohmann/json@3.11.3")
+CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
 CPMAddPackage(
     URI "gh:TartanLlama/expected@1.1.0"
     OPTIONS
@@ -34,7 +35,10 @@ if (NOT "${_mapget_simfil_source_dir}" STREQUAL "")
             "SIMFIL_SHARED OFF")
 else()
     CPMAddPackage(
-        URI "gh:Klebert-Engineering/simfil@0.7.2"
+        NAME simfil
+        GITHUB_REPOSITORY Klebert-Engineering/simfil
+        GIT_TAG v1.0.0
+        GIT_SHALLOW FALSE
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
             "SIMFIL_SHARED OFF")
@@ -146,7 +150,6 @@ endif()
             "YAML_CPP_BUILD_TOOLS OFF"
             "YAML_CPP_BUILD_CONTRIB OFF")
     CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
-    CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
     CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 
 endif ()
@@ -157,7 +160,13 @@ endif()
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
     CPMAddPackage("gh:ndsev/sqlite-cmake@0.2.4")
-    add_sqlite(BACKEND PUBLIC)
+    add_sqlite(
+        BACKEND PUBLIC
+        ENABLE_JSON1 ON
+        ENABLE_FTS5 ON
+        ENABLE_RTREE ON
+        ENABLE_MATH ON
+        ENABLE_COLUMN_METADATA ON)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)

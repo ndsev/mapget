@@ -21,7 +21,7 @@ ModelNode::Ptr SourceDataReferenceCollection::at(int64_t index) const
         throw std::out_of_range("Index out of range");
 
     return model().resolve(
-        ModelNodeAddress{TileFeatureLayer::ColumnId::SourceDataReferences, static_cast<uint32_t>(offset_ + index)});
+        ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::SourceDataReferences, static_cast<uint32_t>(offset_ + index)});
 }
 
 uint32_t SourceDataReferenceCollection::size() const
@@ -50,7 +50,7 @@ SourceDataReferenceCollection::SourceDataReferenceCollection(uint32_t offset,
     ModelConstPtr pool,
     ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a, key),
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(pool, a, key),
       offset_(offset),
       size_(size)
 {}
@@ -132,7 +132,7 @@ SourceDataReferenceItem::SourceDataReferenceItem(const QualifiedSourceDataRefere
     const ModelConstPtr pool,
     const ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(pool, a, key),
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(pool, a, key),
       data_(data)
 {}
 

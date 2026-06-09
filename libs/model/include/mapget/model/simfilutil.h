@@ -5,9 +5,24 @@
 #include "simfilgeometry.h"
 
 #include "simfil/environment.h"
+#include "simfil/model/string-pool.h"
 
 namespace mapget
 {
+
+class SchemaRegistry;
+
+/** Attach a read-only SchemaRegistry lookup callback to an existing SIMFIL environment. */
+void installSchemaRegistry(
+    simfil::Environment& env,
+    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<simfil::StringPool const> strings);
+
+/** Attach a completion/compile-only SchemaRegistry callback which materializes schema strings locally. */
+void installCompletionSchemaRegistry(
+    simfil::Environment& env,
+    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<simfil::StringPool> strings);
 
 template <class... Args>
 std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)

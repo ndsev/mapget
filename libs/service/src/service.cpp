@@ -16,6 +16,7 @@
 #include <thread>
 #include <list>
 #include <chrono>
+#include <exception>
 #include <shared_mutex>
 #include <algorithm>
 #include <numeric>
@@ -55,6 +56,64 @@ bool isDataSourceDescriptorEnabled(YAML::Node const& descriptor)
     } catch (...) {
         return true;
     }
+}
+
+/** Build the common search-status payload, omitting interactive-only fields when absent. */
+nlohmann::json makeSearchStatusJson(
+    FeatureLayerSearchTilesRequest const& request,
+    std::string state)
+{
+    auto status = nlohmann::json::object({
+        {"type", "mapget.search.status"},
+        {"mapId", request.mapId_},
+        {"layerId", request.layerId_},
+        {"state", std::move(state)},
+    });
+    if (!request.search_.searchId_.empty()) {
+        status["searchId"] = request.search_.searchId_;
+        status["refresh"] = request.search_.refresh_.value_or(0);
+    }
+    if (!request.search_.requestKey_.empty()) {
+        status["requestKey"] = request.search_.requestKey_;
+    }
+    return status;
+}
+
+/** Create a detached LayerInfo copy without reading the lazy schema-registry cache. */
+std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
+{
+    auto result = std::make_shared<LayerInfo>();
+    result->layerId_ = info.layerId_;
+    result->type_ = info.type_;
+    result->featureTypes_ = info.featureTypes_;
+    result->zoomLevels_ = info.zoomLevels_;
+    result->coverage_ = info.coverage_;
+    result->stages_ = info.stages_;
+    result->stageLabels_ = info.stageLabels_;
+    result->highFidelityStage_ = info.highFidelityStage_;
+    result->canRead_ = info.canRead_;
+    result->canWrite_ = info.canWrite_;
+    result->version_ = info.version_;
+    result->featureModelSchema_ = info.featureModelSchema_;
+    return result;
+}
+
+/** Create a service-owned metadata snapshot, detached from datasource internals. */
+DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
+{
+    auto result = info;
+    result.layers_.clear();
+    result.layers_.reserve(info.layers_.size());
+    for (auto const& [layerId, layerInfo] : info.layers_) {
+        if (!layerInfo) {
+            raise(fmt::format(
+                "Datasource '{}' has null LayerInfo for layer '{}'.",
+                info.nodeId_,
+                layerId));
+        }
+        result.layers_.try_emplace(layerId, cloneLayerInfo(*layerInfo));
+    }
+    return result;
 }
 
 }  // namespace
@@ -169,6 +228,23 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stage
         return;
     }
 
+    const auto appendTileMajorStagedTiles = [&](std::optional<bool> priorityFilter) {
+        for (size_t bucketIndex = 0; bucketIndex < tileIdsByNextStage_.size(); ++bucketIndex) {
+            const auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
+            if (nextMissingStage >= normalizedStages) {
+                continue;
+            }
+            for (auto const& tileId : tileIdsByNextStage_[bucketIndex]) {
+                if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
+                    continue;
+                }
+                for (uint32_t stage = nextMissingStage; stage < normalizedStages; ++stage) {
+                    appendKey(MapTileKey(layerType, mapId_, layerId_, tileId, stage));
+                }
+            }
+        }
+    };
+
     const auto appendStagedTiles = [&](std::optional<bool> priorityFilter) {
         for (uint32_t stage = 0; stage < normalizedStages; ++stage) {
             // For all tiles in bucket 0, we need to enqueue N stages.
@@ -190,10 +266,24 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stage
     };
 
     if (priorityTileIds_.empty()) {
-        appendStagedTiles(std::nullopt);
+        if (preferCompleteStagedTiles_) {
+            // Search cannot emit a result until all stages of a tile are
+            // present. Tile-major ordering prevents retaining one partial
+            // stage for every requested tile in large searches.
+            appendTileMajorStagedTiles(std::nullopt);
+        } else {
+            appendStagedTiles(std::nullopt);
+        }
     } else {
-        appendStagedTiles(true);
-        appendStagedTiles(false);
+        if (preferCompleteStagedTiles_) {
+            // Keep foreground tiles first while still completing each tile
+            // before advancing to the next one.
+            appendTileMajorStagedTiles(true);
+            appendTileMajorStagedTiles(false);
+        } else {
+            appendStagedTiles(true);
+            appendStagedTiles(false);
+        }
     }
 
     status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
@@ -310,6 +400,112 @@ bool LayerTilesRequest::isDone()
     return status_ != RequestStatus::Open;
 }
 
+FeatureLayerSearchTilesRequest::FeatureLayerSearchTilesRequest(
+    std::string mapId,
+    std::string layerId,
+    std::vector<TileId> tiles,
+    FeatureLayerSearchRequest search)
+    : FeatureLayerSearchTilesRequest(
+          std::move(mapId),
+          std::move(layerId),
+          std::move(tiles),
+          std::move(search),
+          {})
+{
+}
+
+FeatureLayerSearchTilesRequest::FeatureLayerSearchTilesRequest(
+    std::string mapId,
+    std::string layerId,
+    std::vector<TileId> tiles,
+    FeatureLayerSearchRequest search,
+    std::vector<TileId> const& priorityTileIds)
+    : mapId_(std::move(mapId)),
+      layerId_(std::move(layerId)),
+      tileIds_(std::move(tiles)),
+      priorityTileIds_({priorityTileIds.begin(), priorityTileIds.end()}),
+      search_(std::move(search))
+{
+    std::set<TileId> seenTileIds;
+    std::vector<TileId> uniqueTileIds;
+    uniqueTileIds.reserve(tileIds_.size());
+    for (auto const& tileId : tileIds_) {
+        if (seenTileIds.insert(tileId).second) {
+            uniqueTileIds.push_back(tileId);
+        }
+    }
+    tileIds_.swap(uniqueTileIds);
+    if (tileIds_.empty()) {
+        status_ = RequestStatus::Success;
+    }
+}
+
+RequestStatus FeatureLayerSearchTilesRequest::getStatus()
+{
+    return status_;
+}
+
+bool FeatureLayerSearchTilesRequest::isDone()
+{
+    return status_ != RequestStatus::Open;
+}
+
+bool FeatureLayerSearchTilesRequest::isCancelled() const
+{
+    return cancelled_;
+}
+
+void FeatureLayerSearchTilesRequest::wait()
+{
+    std::unique_lock doneLock(statusMutex_);
+    if (!isDone()) {
+        statusConditionVariable_.wait(doneLock, [this] { return isDone(); });
+    }
+}
+
+void FeatureLayerSearchTilesRequest::notifyResult(TileSearchResultLayer::Ptr result)
+{
+    if (cancelled_ || isDone()) {
+        return;
+    }
+    if (onSearchResult_) {
+        onSearchResult_(std::move(result));
+    }
+}
+
+void FeatureLayerSearchTilesRequest::notifyProgress(nlohmann::json const& status)
+{
+    if (cancelled_) {
+        return;
+    }
+    if (onStatus_) {
+        onStatus_(status);
+    }
+}
+
+void FeatureLayerSearchTilesRequest::setStatus(RequestStatus s)
+{
+    auto const previous = status_.exchange(s);
+    if (previous != RequestStatus::Open) {
+        return;
+    }
+    notifyStatus();
+}
+
+void FeatureLayerSearchTilesRequest::notifyStatus()
+{
+    if (isDone() && onDone_) {
+        onDone_(status_);
+    }
+    statusConditionVariable_.notify_all();
+}
+
+void FeatureLayerSearchTilesRequest::cancel()
+{
+    cancelled_ = true;
+    setStatus(RequestStatus::Aborted);
+}
+
 struct Service::Controller
 {
     virtual ~Controller() = default;
@@ -319,12 +515,21 @@ struct Service::Controller
         std::vector<LayerTilesRequest::Ptr> waitingRequests;
         std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
         TileLayer::LoadState loadStatus = TileLayer::LoadState::LoadingQueued;
+        std::function<void()> searchWork;
+    };
+
+    struct SearchEvalWork {
+        DataSourceInfo dataSourceInfo;
+        std::weak_ptr<FeatureLayerSearchTilesRequest> owner;
+        std::function<void()> work;
+        std::function<void()> discard;
     };
 
     std::map<MapTileKey, std::shared_ptr<Job>> jobsInProgress_;    // Jobs currently in progress + interested requests
     Cache::Ptr cache_;                       // The cache for the service
     std::optional<std::chrono::milliseconds> defaultTtl_; // Default TTL applied when datasource does not override
     std::list<LayerTilesRequest::Ptr> requests_;       // List of requests currently being processed
+    std::list<SearchEvalWork> searchEvalJobs_; // Derived search jobs scheduled after source stages are loaded.
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
 
@@ -408,7 +613,8 @@ struct Service::Controller
 
     [[nodiscard]] std::shared_ptr<Job> dispatchCandidate(
         Candidate const& candidate,
-        DataSourceInfo const& info)
+        DataSourceInfo const& info,
+        std::unique_lock<std::mutex>& lock)
     {
         // Commit this candidate as "consumed" for the request before dispatching it.
         // The tile is then either satisfied immediately (cache/in-progress) or started.
@@ -423,7 +629,11 @@ struct Service::Controller
         auto cachedResult = cache_->getTileLayer(candidate.tileKey_, info);
         if (cachedResult.tile) {
             log().debug("Serving cached tile: {}", candidate.tileKey_.toString());
+            // Cached-result callbacks may do non-trivial derived work; never run
+            // them while the scheduler mutex is held.
+            lock.unlock();
             request->notifyResult(cachedResult.tile);
+            lock.lock();
             return nullptr;
         }
 
@@ -444,6 +654,69 @@ struct Service::Controller
         return startedJob;
     }
 
+    [[nodiscard]] std::shared_ptr<Job> nextSearchEvalJob(DataSourceInfo const& info)
+    {
+        for (auto it = searchEvalJobs_.begin(); it != searchEvalJobs_.end(); ++it) {
+            if (it->dataSourceInfo.nodeId_ != info.nodeId_) {
+                continue;
+            }
+            if (auto owner = it->owner.lock(); !owner || owner->isDone()) {
+                // The owning request already reached a terminal state; dropping
+                // the closure releases any staged tiles it captured.
+                it = searchEvalJobs_.erase(it);
+                continue;
+            }
+            auto work = std::move(it->work);
+            searchEvalJobs_.erase(it);
+            auto job = std::make_shared<Job>();
+            job->searchWork = std::move(work);
+            return job;
+        }
+        return {};
+    }
+
+    void enqueueSearchEvalJob(
+        DataSourceInfo dataSourceInfo,
+        FeatureLayerSearchTilesRequest::Ptr const& owner,
+        std::function<void()> work,
+        std::function<void()> discard)
+    {
+        if (!work) {
+            return;
+        }
+        {
+            std::unique_lock lock(jobsMutex_);
+            searchEvalJobs_.push_back(SearchEvalWork{
+                std::move(dataSourceInfo),
+                owner,
+                std::move(work),
+                std::move(discard)});
+        }
+        jobsAvailable_.notify_all();
+    }
+
+    void abortSearchEvalJobs(FeatureLayerSearchTilesRequest::Ptr const& request)
+    {
+        std::vector<std::function<void()>> discarded;
+        {
+            std::unique_lock lock(jobsMutex_);
+            for (auto it = searchEvalJobs_.begin(); it != searchEvalJobs_.end();) {
+                if (it->owner.lock() != request) {
+                    ++it;
+                    continue;
+                }
+                if (it->discard) {
+                    discarded.push_back(std::move(it->discard));
+                }
+                it = searchEvalJobs_.erase(it);
+            }
+        }
+        for (auto& discard : discarded) {
+            discard();
+        }
+        jobsAvailable_.notify_all();
+    }
+
     void removeCompletedRequests()
     {
         requests_.remove_if([](auto const& request) {
@@ -459,13 +732,17 @@ struct Service::Controller
         //  between sweeps to allow external updates.
 
         while (true) {
+            if (auto searchJob = nextSearchEvalJob(i)) {
+                return searchJob;
+            }
+
             // 1) Pick the next pending tile from the first matching request.
             auto candidate = nextCandidateInRequestOrder(i);
             if (!candidate)
                 break;
 
             // 2) Dispatch that tile: cache hit, join running job, or start backend work.
-            if (auto dispatchResult = dispatchCandidate(*candidate, i)) {
+            if (auto dispatchResult = dispatchCandidate(*candidate, i, lock)) {
                 removeCompletedRequests();
                 return dispatchResult;
             }
@@ -534,6 +811,12 @@ struct Service::Worker
 
         try
         {
+            if (job.searchWork) {
+                job.searchWork();
+                controller_.jobsAvailable_.notify_all();
+                return true;
+            }
+
             if (job.cacheExpiredAt) {
                 dataSource_->onCacheExpired(job.tileKey, *job.cacheExpiredAt);
             }
@@ -597,9 +880,13 @@ struct Service::Worker
             controller_.jobsAvailable_.notify_all();
         }
         catch (std::exception& e) {
-            log().error("Could not load tile {}: {}",
-                job.tileKey.toString(),
-                e.what());
+            if (job.searchWork) {
+                log().error("Could not evaluate search job: {}", e.what());
+            } else {
+                log().error("Could not load tile {}: {}",
+                    job.tileKey.toString(),
+                    e.what());
+            }
         }
 
         return true;
@@ -699,22 +986,26 @@ struct Service::Impl : public Service::Controller
 
     void addDataSource(DataSource::Ptr const& dataSource)
     {
+        if (!dataSource) {
+            raise("Tried to add a null data source.");
+        }
+
+        auto info = cloneDataSourceInfo(dataSource->info());
         std::unique_lock lock(dataSourcesMutex_);
 
-        if (dataSource->info().nodeId_.empty()) {
+        if (info.nodeId_.empty()) {
             // Unique node IDs are required for the string pool offsets.
             raise("Tried to create service worker for an unnamed node!");
         }
         for (auto& existingSource : dataSourceInfo_) {
-            if (existingSource.second.nodeId_ == dataSource->info().nodeId_) {
+            if (existingSource.second.nodeId_ == info.nodeId_) {
                 // Unique node IDs are required for the string pool offsets.
                 raise(
                     fmt::format("Data source with node ID '{}' already registered!",
-                                dataSource->info().nodeId_));
+                                info.nodeId_));
             }
         }
 
-        DataSourceInfo info = dataSource->info();
         dataSourceInfo_[dataSource] = info;
 
         // If the datasource is an add-on source, then it
@@ -794,12 +1085,20 @@ struct Service::Impl : public Service::Controller
 
     std::vector<DataSourceInfo> getDataSourceInfos(std::optional<AuthHeaders> const& clientHeaders)
     {
+        std::vector<std::pair<DataSource::Ptr, DataSourceInfo>> dataSources;
+        {
+            std::shared_lock lock(dataSourcesMutex_);
+            dataSources.assign(dataSourceInfo_.begin(), dataSourceInfo_.end());
+        }
+
         std::vector<DataSourceInfo> infos;
-        std::shared_lock lock(dataSourcesMutex_);
-        infos.reserve(dataSourceInfo_.size());
-        for (const auto& [dataSource, info] : dataSourceInfo_) {
+        infos.reserve(dataSources.size());
+        for (const auto& [dataSource, info] : dataSources) {
             if (!clientHeaders || dataSource->isDataSourceAuthorized(*clientHeaders)) {
-                infos.push_back(info);
+                // Return detached LayerInfo snapshots so callers such as
+                // `/sources` can serialize without observing datasource-side
+                // metadata mutations or holding the registry lock.
+                infos.push_back(cloneDataSourceInfo(info));
             }
         }
         return infos;
@@ -967,6 +1266,336 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> const& requests, std::
     return dataSourcesAvailable;
 }
 
+bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::optional<AuthHeaders> const& clientHeaders)
+{
+    if (!request) {
+        raise("Attempt to request a null FeatureLayerSearchTilesRequest.");
+    }
+    if (request->isDone()) {
+        request->notifyStatus();
+        return true;
+    }
+
+    auto context = resolveLayerRequest(request->mapId_, request->layerId_, clientHeaders);
+    if (context.status_ != RequestStatus::Success) {
+        request->setStatus(context.status_);
+        return false;
+    }
+    if (context.layerType_ != LayerType::Features) {
+        request->setStatus(RequestStatus::NoDataSource);
+        return false;
+    }
+
+    std::optional<DataSourceInfo> sourceInfo;
+    {
+        std::shared_lock lock(impl_->dataSourcesMutex_);
+        for (auto const& [dataSource, info] : impl_->dataSourceInfo_) {
+            if (info.isAddOn_ || info.mapId_ != request->mapId_) {
+                continue;
+            }
+            if (info.layers_.find(request->layerId_) == info.layers_.end()) {
+                continue;
+            }
+            if (clientHeaders && !dataSource->isDataSourceAuthorized(*clientHeaders)) {
+                continue;
+            }
+            sourceInfo = info;
+            break;
+        }
+    }
+    if (!sourceInfo) {
+        request->setStatus(RequestStatus::NoDataSource);
+        return false;
+    }
+
+    auto stageCount = std::max<uint32_t>(1U, context.stages_);
+    auto childRequest = [&]() -> LayerTilesRequest::Ptr {
+        std::vector<TileId> priorityTileIds(
+            request->priorityTileIds_.begin(),
+            request->priorityTileIds_.end());
+        if (stageCount > 1U) {
+            auto stagedRequest = std::make_shared<LayerTilesRequest>(
+                request->mapId_,
+                request->layerId_,
+                std::vector<std::vector<TileId>>{request->tileIds_},
+                priorityTileIds);
+            stagedRequest->preferCompleteStagedTiles_ = true;
+            return stagedRequest;
+        }
+        return std::make_shared<LayerTilesRequest>(
+            request->mapId_,
+            request->layerId_,
+            request->tileIds_,
+            priorityTileIds);
+    }();
+    request->childRequests_.push_back(childRequest);
+
+    struct SearchExecutionState : std::enable_shared_from_this<SearchExecutionState>
+    {
+        Service::Impl* impl = nullptr;
+        FeatureLayerSearchTilesRequest::Ptr request;
+        DataSourceInfo sourceInfo;
+        uint32_t stageCount = 1;
+        size_t expectedTiles = 0;
+
+        std::mutex mutex;
+        std::map<TileId, std::map<uint32_t, TileFeatureLayer::Ptr>> stagesByTile;
+        size_t loadedStages = 0;
+        size_t searchedTiles = 0;
+        size_t matches = 0;
+        size_t chunksEmitted = 0;
+        size_t pendingEvalJobs = 0;
+        bool childDone = false;
+        bool terminal = false;
+
+        [[nodiscard]] nlohmann::json progress(std::string state) const
+        {
+            auto status = makeSearchStatusJson(*request, std::move(state));
+            status["tilesQueued"] = expectedTiles;
+            status["tilesLoaded"] = loadedStages;
+            status["tilesSearched"] = searchedTiles;
+            status["matches"] = matches;
+            status["chunksEmitted"] = chunksEmitted;
+            return status;
+        }
+
+        void emitProgress(std::string state)
+        {
+            request->notifyProgress(progress(std::move(state)));
+        }
+
+        void releaseChildRequests()
+        {
+            request->childRequests_.clear();
+        }
+
+        void abortChildRequests()
+        {
+            auto children = request->childRequests_;
+            for (auto const& child : children) {
+                if (child && !child->isDone()) {
+                    impl->abortRequest(child);
+                }
+            }
+            releaseChildRequests();
+        }
+
+        void finishIfComplete()
+        {
+            RequestStatus finalStatus = RequestStatus::Open;
+            {
+                std::lock_guard lock(mutex);
+                if (terminal || !childDone || pendingEvalJobs != 0 || searchedTiles < expectedTiles) {
+                    return;
+                }
+                terminal = true;
+                finalStatus = request->isCancelled() ? RequestStatus::Aborted : RequestStatus::Success;
+            }
+            releaseChildRequests();
+            emitProgress(finalStatus == RequestStatus::Success ? "Success" : "Aborted");
+            request->setStatus(finalStatus);
+        }
+
+        void fail(simfil::Error const& error)
+        {
+            {
+                std::lock_guard lock(mutex);
+                if (terminal) {
+                    return;
+                }
+                terminal = true;
+            }
+            log().error(
+                "Search {} failed for {}::{}: {}",
+                request->search_.searchId_,
+                request->mapId_,
+                request->layerId_,
+                error.message);
+            auto status = makeSearchStatusJson(*request, "Failed");
+            status["error"] = error.message;
+            request->notifyProgress(status);
+            abortChildRequests();
+            request->setStatus(RequestStatus::Aborted);
+        }
+
+        void collect(TileFeatureLayer::Ptr layer)
+        {
+            if (!layer || request->isCancelled()) {
+                return;
+            }
+
+            std::vector<TileFeatureLayer::Ptr> readyStages;
+            {
+                std::lock_guard lock(mutex);
+                if (terminal) {
+                    return;
+                }
+                auto stage = stageCount > 1U ? layer->stage().value_or(0U) : 0U;
+                auto& tileStages = stagesByTile[layer->tileId()];
+                if (tileStages.emplace(stage, layer).second) {
+                    ++loadedStages;
+                }
+                if (tileStages.size() != stageCount) {
+                    return;
+                }
+                readyStages.reserve(tileStages.size());
+                for (auto const& [_, stageLayer] : tileStages) {
+                    readyStages.push_back(stageLayer);
+                }
+                // The eval job now owns the ready stage pointers. Keeping them
+                // here would retain every searched source tile until request end.
+                stagesByTile.erase(layer->tileId());
+                ++pendingEvalJobs;
+            }
+
+            emitProgress("TileLoaded");
+            auto self = shared_from_this();
+            impl->enqueueSearchEvalJob(
+                sourceInfo,
+                request,
+                [self, readyStages = std::move(readyStages)]() mutable {
+                    self->evaluate(std::move(readyStages));
+                },
+                [self]() {
+                    self->markEvalDone(0, false);
+                });
+        }
+
+        void evaluate(std::vector<TileFeatureLayer::Ptr> readyStages)
+        {
+            try {
+                if (request->isCancelled()) {
+                    markEvalDone(0, false);
+                    return;
+                }
+
+                auto searchRequest = request->search_;
+                searchRequest.sourceStageMask_.clear();
+                searchRequest.sourceStageMask_.reserve(readyStages.size());
+                for (auto const& stageLayer : readyStages) {
+                    if (stageLayer) {
+                        searchRequest.sourceStageMask_.push_back(
+                            stageCount > 1U ? stageLayer->stage().value_or(0U) : UnspecifiedStage);
+                    }
+                }
+
+                TileFeatureLayer::Ptr searchSource;
+                if (readyStages.size() == 1) {
+                    searchSource = readyStages.front();
+                } else {
+                    auto assembled = assembleFeatureLayerStages(readyStages);
+                    if (!assembled) {
+                        fail(assembled.error());
+                        markEvalDone(0, false);
+                        return;
+                    }
+                    searchSource = *assembled;
+                }
+
+                auto searchResult = searchFeatureLayerAsResultLayer(*searchSource, searchRequest);
+                if (!searchResult) {
+                    fail(searchResult.error());
+                    markEvalDone(0, false);
+                    return;
+                }
+
+                auto resultCount = searchResult->layer_ ? searchResult->layer_->size() : 0;
+                if (searchResult->layer_) {
+                    request->notifyResult(std::move(searchResult->layer_));
+                }
+                markEvalDone(resultCount, true);
+            } catch (std::exception const& exception) {
+                auto const sourceTileId = readyStages.empty() || !readyStages.front()
+                    ? TileId{}
+                    : readyStages.front()->tileId();
+                fail(simfil::Error{
+                    simfil::Error::InternalError,
+                    fmt::format(
+                        "Search evaluation failed for {}::{} tile {:x}: {}",
+                        request->mapId_,
+                        request->layerId_,
+                        sourceTileId.value_,
+                        exception.what())});
+                markEvalDone(0, false);
+            }
+        }
+
+        void markEvalDone(size_t resultCount, bool emittedChunk)
+        {
+            {
+                std::lock_guard lock(mutex);
+                if (pendingEvalJobs > 0) {
+                    --pendingEvalJobs;
+                }
+                if (terminal) {
+                    return;
+                }
+                ++searchedTiles;
+                matches += resultCount;
+                if (emittedChunk) {
+                    ++chunksEmitted;
+                }
+            }
+            emitProgress("TileSearched");
+            finishIfComplete();
+        }
+
+        void childFinished(RequestStatus status)
+        {
+            if (status != RequestStatus::Success) {
+                {
+                    std::lock_guard lock(mutex);
+                    terminal = true;
+                    stagesByTile.clear();
+                }
+                releaseChildRequests();
+                request->setStatus(status);
+                return;
+            }
+            {
+                std::lock_guard lock(mutex);
+                childDone = true;
+            }
+            finishIfComplete();
+        }
+    };
+
+    auto state = std::make_shared<SearchExecutionState>();
+    state->impl = impl_.get();
+    state->request = request;
+    state->sourceInfo = *sourceInfo;
+    state->stageCount = stageCount > 1U ? stageCount : 1U;
+    state->expectedTiles = request->tileIds_.size();
+
+    childRequest->onFeatureLayer([state](TileFeatureLayer::Ptr layer) {
+        state->collect(std::move(layer));
+    });
+    childRequest->onDone_ = [state](RequestStatus status) {
+        state->childFinished(status);
+    };
+
+    auto status = makeSearchStatusJson(*request, "Open");
+    status["tilesQueued"] = request->tileIds_.size();
+    status["tilesLoaded"] = 0;
+    status["tilesSearched"] = 0;
+    status["matches"] = 0;
+    status["chunksEmitted"] = 0;
+    request->notifyProgress(status);
+
+    return this->request(std::vector<LayerTilesRequest::Ptr>{childRequest}, clientHeaders);
+}
+
+bool Service::request(
+    std::vector<FeatureLayerSearchTilesRequest::Ptr> const& requests,
+    std::optional<AuthHeaders> const& clientHeaders)
+{
+    bool allAccepted = true;
+    for (auto const& request : requests) {
+        allAccepted = this->request(request, clientHeaders) && allAccepted;
+    }
+    return allAccepted;
+}
+
 std::vector<LocateResponse> Service::locate(LocateRequest const& req)
 {
     std::vector<LocateResponse> results;
@@ -987,6 +1616,22 @@ std::vector<LocateResponse> Service::locate(LocateRequest const& req)
 void Service::abort(const LayerTilesRequest::Ptr& r)
 {
     impl_->abortRequest(r);
+}
+
+void Service::abort(const FeatureLayerSearchTilesRequest::Ptr& r)
+{
+    if (!r || r->isDone()) {
+        return;
+    }
+    r->cancel();
+    impl_->abortSearchEvalJobs(r);
+    auto childRequests = r->childRequests_;
+    for (auto const& child : childRequests) {
+        if (child && !child->isDone()) {
+            impl_->abortRequest(child);
+        }
+    }
+    r->childRequests_.clear();
 }
 
 std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clientHeaders)

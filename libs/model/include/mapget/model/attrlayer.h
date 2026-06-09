@@ -8,6 +8,7 @@ namespace mapget
 {
 
 class AttributeLayerList;
+class Feature;
 
 /**
  * Represents a collection of Attributes which are semantically related.
@@ -108,6 +109,12 @@ public:
                        simfil::detail::mp_key key);
     AttributeLayerList() = delete;
 
+    /** Return the object schema assigned to the layer-name map. */
+    [[nodiscard]] simfil::SchemaId schema() const override;
+
+    /** Assign the object schema for the layer-name map stored by this view. */
+    tl::expected<void, simfil::Error> setObjectSchema(simfil::SchemaId schemaId);
+
     [[nodiscard]] simfil::ValueType type() const override;
     [[nodiscard]] simfil::ModelNode::Ptr at(int64_t i) const override;
     [[nodiscard]] uint32_t size() const override;
@@ -117,6 +124,10 @@ public:
 
 private:
     [[nodiscard]] simfil::model_ptr<simfil::Object> localObject() const;
+    [[nodiscard]] simfil::model_ptr<AttributeLayerList> localConcreteList() const;
+    [[nodiscard]] bool isFeatureScopedView() const;
+    [[nodiscard]] model_ptr<Feature> featureScopedFeature() const;
+    [[nodiscard]] ExtensionPtr mergedExtension() const override;
     [[nodiscard]] uint32_t localMergedSize() const override;
     [[nodiscard]] simfil::ModelNode::Ptr localMergedAt(int64_t i) const override;
     bool localMergedIterate(simfil::ModelNode::IterCallback const& cb) const override;

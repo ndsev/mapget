@@ -70,12 +70,18 @@ public:
         return client_->sendRequest(req);
     }
 
-    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> postJson(std::string path, std::string body)
+    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> postJson(
+        std::string path,
+        std::string body,
+        std::vector<std::pair<std::string, std::string>> headers = {})
     {
         auto req = drogon::HttpRequest::newHttpRequest();
         req->setMethod(drogon::Post);
         req->setPath(std::move(path));
         req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        for (auto const& [key, value] : headers) {
+            req->addHeader(key, value);
+        }
         req->setBody(std::move(body));
         return client_->sendRequest(req);
     }
@@ -570,6 +576,91 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
             REQUIRE(receivedTileCount == 3);
             REQUIRE(request->getStatus() == RequestStatus::Success);
+        }
+
+        // Search through the dedicated REST endpoint and C++ client helper.
+        {
+            SyncHttpClient serviceClient("127.0.0.1", service.port());
+            auto searchBody = nlohmann::json::object({
+                {"query", "typeId == 'Way'"},
+                {"scope", "feature"},
+                {"withFields", nlohmann::json::array({"typeId"})},
+                {"responseType", "jsonl"},
+                {"requests", nlohmann::json::array({nlohmann::json::object({
+                    {"mapId", "Tropico"},
+                    {"layerId", "WayLayer"},
+                    {"tileIds", nlohmann::json::array({1234})},
+                })})},
+            }).dump();
+
+            auto [result, resp] = serviceClient.postJson("/search", searchBody);
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(resp != nullptr);
+            REQUIRE(resp->statusCode() == drogon::k200OK);
+
+            bool sawResultLayer = false;
+            std::istringstream lines(std::string(resp->body()));
+            std::string line;
+            while (std::getline(lines, line)) {
+                if (line.empty()) {
+                    continue;
+                }
+                auto parsed = nlohmann::json::parse(line);
+                if (parsed.value("type", "") != "SearchResultCollection") {
+                    continue;
+                }
+                sawResultLayer = true;
+                REQUIRE(parsed["results"].size() == 1);
+                REQUIRE(parsed["resultFields"] == nlohmann::json::array({"typeId"}));
+                REQUIRE(parsed["info"].contains("searchId") == false);
+            }
+            REQUIRE(sawResultLayer);
+
+            HttpClient client("127.0.0.1", service.port());
+            FeatureLayerSearchRequest search;
+            search.query_ = "typeId == 'Way'";
+            search.withFields_ = {"typeId"};
+
+            auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
+                "Tropico",
+                "WayLayer",
+                std::vector<TileId>{TileId(1234)},
+                std::move(search));
+            size_t resultCount = 0;
+            size_t statusCount = 0;
+            request->onSearchResult([&](TileSearchResultLayer::Ptr layer) {
+                resultCount += layer->size();
+                REQUIRE(layer->info().contains("searchId") == false);
+            });
+            request->onStatus([&](nlohmann::json const&) {
+                ++statusCount;
+            });
+
+            client.search(request)->wait();
+            REQUIRE(request->getStatus() == RequestStatus::Success);
+            REQUIRE(resultCount == 1);
+            REQUIRE(statusCount > 0);
+        }
+
+        // POST /tiles no longer accepts search fields; REST clients must use /search.
+        {
+            SyncHttpClient serviceClient("127.0.0.1", service.port());
+            auto [result, resp] = serviceClient.postJson(
+                "/tiles",
+                nlohmann::json::object({
+                    {"searchId", "legacy-rest-search"},
+                    {"searchQuery", "typeId == 'Way'"},
+                    {"requests", nlohmann::json::array({nlohmann::json::object({
+                        {"mapId", "Tropico"},
+                        {"layerId", "WayLayer"},
+                        {"tileIds", nlohmann::json::array({1234})},
+                    })})},
+                }).dump());
+
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(resp != nullptr);
+            REQUIRE(resp->statusCode() == drogon::k400BadRequest);
+            REQUIRE(std::string(resp->body()).find("POST /search") != std::string::npos);
         }
 
         // Trigger 400 responses

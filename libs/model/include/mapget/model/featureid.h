@@ -1,20 +1,13 @@
 #pragma once
 
 #include "simfil/model/nodes.h"
+#include "featureid-data.h"
+#include "featuremodellayer.h"
 #include "info.h"
 #include <vector>
 
 namespace mapget
 {
-
-class TileFeatureLayer;
-using FeatureLayerConstPtr = std::shared_ptr<TileFeatureLayer const>;
-
-template<typename T>
-using model_ptr = simfil::model_ptr<T>;
-
-using Object = simfil::Object;
-using Array = simfil::Array;
 
 /**
  * Canonical feature identifier tied to a layer's configured id compositions.
@@ -22,9 +15,11 @@ using Array = simfil::Array;
  * The string form is dot-separated and may elide a shared tile prefix when the
  * backing storage uses `useCommonTilePrefix_`.
  */
-class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
 {
+    friend class TileFeatureModelLayerBase;
     friend class TileFeatureLayer;
+    friend class TileSearchResultLayer;
     friend class Feature;
     friend class Relation;
     friend class bitsery::Access;
@@ -49,15 +44,7 @@ public:
     [[nodiscard]] KeyValueViewPairs keyValuePairs() const;
 
     /** Compact serialized representation of a feature id node. */
-    struct Data {
-        MODEL_COLUMN_TYPE(12);
-
-        bool useCommonTilePrefix_ = false;
-        uint8_t idCompositionIndex_ = 0;
-        simfil::StringId typeId_ = 0;
-        simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
-        simfil::StringId extMapId_ = simfil::StringPool::Empty;
-    };
+    using Data = FeatureIdData;
 
 protected:
     /**
@@ -73,7 +60,7 @@ protected:
 
 public:
     explicit FeatureId(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
     FeatureId(Data& data,
               simfil::ModelConstPtr l,
               simfil::ModelNodeAddress a,

@@ -91,6 +91,41 @@ def _patch_cache_dir(text: str, cache_path: str) -> str:
     )
 
 
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    return "\n"
+
+
+def _has_yaml_key(line: str, key: str, allow_indent: bool) -> bool:
+    candidate = line.lstrip(" \t") if allow_indent else line
+    marker = f"{key}:"
+    if not candidate.startswith(marker):
+        return False
+    return len(candidate) == len(marker) or candidate[len(marker)].isspace()
+
+
+def _patch_no_location(text: str) -> str:
+    if any(_has_yaml_key(line, "no-location", allow_indent=True) for line in text.splitlines()):
+        return text
+
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        stripped = content.lstrip(" \t")
+        if stripped == "serve:":
+            indent = content[:len(content) - len(stripped)]
+            lines.insert(index + 1, f"{indent}    no-location: true{_line_ending(line)}")
+            return "".join(lines)
+    return text
+
+
+def _patch_empty_sources(text: str) -> str:
+    if any(_has_yaml_key(line, "sources", allow_indent=False) for line in text.splitlines()):
+        return text
+    return f"{text.rstrip()}\n\nsources: []\n"
+
+
 def _patch_sample_fetch_yaml(text: str, mapget_port: int) -> str:
     return re.sub(
         r"(?m)^(\s*server:\s*127\.0\.0\.1:)\d+(\s*)$",
@@ -134,9 +169,13 @@ def main() -> int:
         stale_cache_file.unlink(missing_ok=True)
     cache_path = str(cache_file.resolve())
     (out_dir / "sample-service.yaml").write_text(
-        _patch_cache_dir(
-            _patch_sample_service_yaml(sample_service, mapget_port, datasource_cpp_port, datasource_py_port),
-            cache_path,
+        _patch_empty_sources(
+            _patch_no_location(
+                _patch_cache_dir(
+                    _patch_sample_service_yaml(sample_service, mapget_port, datasource_cpp_port, datasource_py_port),
+                    cache_path,
+                )
+            )
         ),
         encoding="utf-8",
         newline="\n",

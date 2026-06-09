@@ -4,8 +4,10 @@ add_executable(test.mapget
   test-main.cpp
   test-model.cpp
   test-model-geometry.cpp
+  test-searchresultlayer.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-location.cpp
   test-http-datasource.cpp
   test-cache.cpp
   test-service-ttl.cpp
@@ -27,6 +29,7 @@ target_link_libraries(test.mapget
     mapget-model
     mapget-http-datasource
     mapget-http-service
+    mapget-location
     geojsonsource
     Catch2::Catch2)
 

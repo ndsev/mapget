@@ -31,6 +31,14 @@ public:
      */
     LayerTilesRequest::Ptr request(LayerTilesRequest::Ptr const& request);
 
+    /**
+     * Post a one-shot server-side feature search request.
+     *
+     * Results are decoded from the `/search` binary stream and delivered via
+     * FeatureLayerSearchTilesRequest::onSearchResult.
+     */
+    FeatureLayerSearchTilesRequest::Ptr search(FeatureLayerSearchTilesRequest::Ptr const& request);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

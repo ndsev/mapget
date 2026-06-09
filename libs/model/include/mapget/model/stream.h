@@ -48,6 +48,10 @@ public:
          * Payload: UTF-8 JSON bytes (not null-terminated).
          */
         RequestContext = 6,
+        /**
+         * Binary TileSearchResultLayer payload for server-side search-as-map streams.
+         */
+        TileSearchResultLayer = 7,
         EndOfStream = 128
     };
 
@@ -77,8 +81,16 @@ public:
      *   + Added point-buffer-backed GLTF node-index geometry storage.
      * - Version 1.5:
      *   + Replaced generic tile attachments with one optional tile-level GLB attachment.
+     * - Version 1.6:
+     *   + Added SIMFIL object/array SchemaId columns to ModelPool payloads.
+     * - Version 1.7:
+     *   + Added TileSearchResultLayer Message.
+     * - Version 1.8:
+     *   + Added explicit polygon ring metadata for hole-aware polygons.
+     * - Version 1.9:
+     *   + Added typed SIMFIL trace aggregates to TileSearchResultLayer.
      */
-    static constexpr Version CurrentProtocolVersion{1, 5, 0};
+    static constexpr Version CurrentProtocolVersion{1, 9, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -95,7 +107,8 @@ public:
         Reader(
             LayerInfoResolveFun layerInfoProvider,
             std::function<void(TileLayer::Ptr)> onParsedLayer,
-            std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr);
+            std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr,
+            std::function<void(MessageType, std::string_view)> onControlMessage = {});
 
         /**
          * Add some bytes to parse. The next object will be parsed once
@@ -138,6 +151,7 @@ public:
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(TileLayer::Ptr)> onParsedLayer_;
+        std::function<void(MessageType, std::string_view)> onControlMessage_;
     };
 
     /**
@@ -164,6 +178,9 @@ public:
 
         /** Serialize a tile layer and the required part of a StringPool. */
         void write(TileLayer::Ptr const& tileLayer);
+
+        /** Send a JSON status message through the binary stream. */
+        void sendStatus(std::string statusJson);
 
         /** Send an EndOfStream message. */
         void sendEndOfStream();

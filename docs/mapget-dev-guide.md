@@ -230,13 +230,105 @@ For interactive clients, tile streaming uses WebSocket `GET /tiles` as a control
 For `/tiles`, the HTTP layer:
 
 - parses the JSON body to extract `requests` (`tileIds` or stage-aware `tileIdsByNextStage`), optional `priorityTileIds`, and optional `stringPoolOffsets`,
+- rejects search fields because REST search now belongs to `/search`,
 - constructs one `LayerTilesRequest` per map–layer combination,
-- attaches callbacks that feed results into a shared `HttpTilesRequestState`, and
+- attaches callbacks that feed results into a shared streaming state, and
 - sends out each tile as soon as it is produced by the service.
 
 In JSONL mode the response is a sequence of newline‑separated JSON objects. In binary mode the HTTP layer uses `TileLayerStream::Writer` to serialize string pool updates and tile blobs. Binary responses can optionally be compressed using gzip if the client sends `Accept-Encoding: gzip`.
 
 WebSocket `/tiles` uses the same request JSON shape but serves only as the control plane: it emits `RequestContext` and `Status` VTLV frames, while `/tiles/next` performs the long-poll delivery of one or more binary tile frames (optionally batched up to `maxBytes`).
+
+Server-side search-as-map uses the same backend execution path for two transport shapes. REST clients call `POST /search` with the simplified `query`, `scope`, `withFields` and `requests` envelope. Interactive WebSocket clients still send `searchId`, `searchQuery`, `searchScope`, `withFields` and `refresh` through the `/tiles` control channel so replacement/update semantics remain explicit. Search requests must use plain `tileIds`; the service loads all advertised source feature tile stages through the regular tile scheduler/cache path, assembles staged payloads when needed, runs the SIMFIL search job on the worker pool, and emits `TileSearchResultLayer` chunks. Search progress is sent as binary `Status` frames or JSONL objects with `type: "mapget.search.status"`.
+
+### Search-as-map architecture
+
+The search-as-map implementation deliberately reuses the existing tile streaming pipeline instead of introducing a parallel search transport. The main pieces are:
+
+- `tiles-request-json.*` owns both search request parsers: simplified REST `/search` fields and interactive WebSocket search fields.
+- `tiles-http-handler.cpp` rejects search fields on `POST /tiles`, turns `POST /search` payloads into `FeatureLayerSearchTilesRequest` objects, and streams `TileSearchResultLayer` chunks or progress status objects with the same JSONL/binary response machinery as normal tiles.
+- `tiles-ws-session.cpp` turns interactive WebSocket search requests into `FeatureLayerSearchTilesRequest` objects, tracks search-specific outgoing queue keys, and sends result chunks as `TileSearchResultLayer` VTLV frames through `/tiles/next`.
+- `Service::request(FeatureLayerSearchTilesRequest)` validates datasource access, creates a child `LayerTilesRequest` for the source feature payloads, waits until every required stage for a tile is available, and schedules the SIMFIL evaluation job.
+- `searchFeatureLayerAsResultLayer(...)` evaluates the predicate and `withFields` expressions, copies the matched feature id and display geometry into a transient `TileSearchResultLayer`, and attaches progress/result metadata, typed trace aggregates, plus parsed SIMFIL diagnostics.
+
+The result layer is transient: source feature tiles can still come from or be written to the normal tile cache, but search-result chunks are not stored as cache entries. Result layers reuse the source tile node id and string-pool namespace so regular stream string-pool handling still applies. Arbitrary strings produced by `withFields` expressions live in the result layer's model string buffer rather than mutating datasource-owned string pools.
+
+```mermaid
+flowchart LR
+  Client[Client]
+  Transport[HTTP /search<br/>or WS /tiles]
+  Parser[tiles-request-json<br/>search fields]
+  SearchReq[FeatureLayerSearchTilesRequest]
+  Service[Service]
+  ChildReq[LayerTilesRequest<br/>source tile stages]
+  Cache[Tile cache]
+  Ds[DataSource]
+  Eval[Search eval job<br/>SIMFIL]
+  Result[TileSearchResultLayer]
+
+  Client --> Transport
+  Transport --> Parser
+  Parser --> SearchReq
+  SearchReq --> Service
+  Service --> ChildReq
+  ChildReq --> Cache
+  ChildReq --> Ds
+  Cache --> Service
+  Ds --> Service
+  Service --> Eval
+  Eval --> Result
+  Result --> Transport
+  Transport --> Client
+```
+
+The end-to-end search path is:
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Transport as HTTP /search or WS /tiles
+  participant Service
+  participant Child as Child LayerTilesRequest
+  participant Worker as Tile Worker
+  participant Cache
+  participant Ds as DataSource
+  participant Search as Search Eval Job
+
+  Client->>Transport: request JSON<br/>query/searchQuery + tileIds
+  Transport->>Service: request(FeatureLayerSearchTilesRequest)
+  Service->>Service: resolveLayerRequest + auth/layer validation
+  Service->>Child: create source tile request<br/>all stages when layer is staged
+  Service-->>Transport: Status(Open)
+  Service->>Worker: schedule child tile jobs
+  loop each source tile/stage
+    Worker->>Cache: getTileLayer(MapTileKey)
+    alt cache hit
+      Cache-->>Worker: TileFeatureLayer
+    else cache miss
+      Worker->>Ds: get(MapTileKey)
+      Ds-->>Worker: TileFeatureLayer
+      Worker->>Cache: putTileLayer(TileFeatureLayer)
+    end
+    Worker-->>Service: child onFeatureLayer(stage)
+    Service-->>Transport: Search Status(TileLoaded)
+  end
+  Service->>Search: enqueue once all stages for a tile are ready
+  Search->>Search: assemble staged payloads if needed
+  Search->>Search: evaluate query + withFields
+  Search-->>Transport: TileSearchResultLayer
+  Search-->>Transport: Search Status(TileSearched)
+  Search-->>Service: eval complete
+  Service-->>Transport: Search Status(Success/Aborted/Failed)
+  Transport-->>Client: JSONL objects or VTLV frames
+```
+
+Important lifecycle details:
+
+- The child `LayerTilesRequest` uses the same scheduler, authorization, cache lookup and datasource fetch path as normal tile requests.
+- For staged layers, search requests intentionally load all advertised stages for each requested tile before evaluation. This is why search requests reject `tileIdsByNextStage`: search semantics are "search the full tile" rather than "search the currently visible stage".
+- The service emits progress after source stages are loaded and after each tile has been searched. Transports forward these objects as status updates.
+- WebSocket sessions derive a search request key from `searchId`, scope, query and `withFields`. This key separates queued search results from normal tile frames for the same source tile and lets replacement requests drop stale frames.
+- Closing an HTTP stream, sending a replacement WebSocket request, or closing the WebSocket cancels outstanding child tile requests and pending search work on a best-effort basis.
 
 The WebSocket path also keeps queue-level priority metadata:
 

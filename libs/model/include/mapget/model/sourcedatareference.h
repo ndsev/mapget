@@ -4,6 +4,7 @@
 #include <string_view>
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
+#include "featuremodellayer.h"
 #include "sourceinfo.h"
 
 using simfil::ValueType;
@@ -19,20 +20,13 @@ namespace mapget
 class TileFeatureLayer;
 class SourceDataReferenceItem;
 
-struct QualifiedSourceDataReference {
-    MODEL_COLUMN_TYPE(12);
-
-    SourceDataAddress address_;
-    StringId layerId_;
-    StringId qualifier_;
-};
-
 /**
  * Proxy node that represents an array of Qualifier-String + SourceDataReference tuples.
  */
-class SourceDataReferenceCollection final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class SourceDataReferenceCollection final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
 {
 public:
+    friend class TileFeatureModelLayerBase;
     friend class TileFeatureLayer;
 
     ValueType type() const override;
@@ -48,7 +42,7 @@ public:
 
 public:
     explicit SourceDataReferenceCollection(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
     SourceDataReferenceCollection(uint32_t offset,
                                   uint32_t size,
                                   ModelConstPtr pool,
@@ -64,10 +58,11 @@ private:
 /**
  * Object holding a tuple of a qualifier string + a source data address.
  */
-class SourceDataReferenceItem final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class SourceDataReferenceItem final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
 {
 public:
     friend class SourceDataReferenceCollection;
+    friend class TileFeatureModelLayerBase;
     friend class TileFeatureLayer;
 
     ValueType type() const override;
@@ -86,7 +81,7 @@ public:
 
 public:
     explicit SourceDataReferenceItem(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
     SourceDataReferenceItem(const QualifiedSourceDataReference* data,
                             ModelConstPtr pool,
                             ModelNodeAddress a,

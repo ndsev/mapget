@@ -90,6 +90,37 @@ private:
     std::mutex bufferMutex_;
     std::condition_variable bufferSignal_;
 };
+
+class PySearchRequest : public FeatureLayerSearchTilesRequest
+{
+public:
+    using FeatureLayerSearchTilesRequest::FeatureLayerSearchTilesRequest;
+
+    void notifyResult(TileSearchResultLayer::Ptr result) override {
+        std::unique_lock lock(bufferMutex_);
+        buffer_.push(result);
+        bufferSignal_.notify_one();
+        FeatureLayerSearchTilesRequest::notifyResult(std::move(result));
+    }
+
+    TileSearchResultLayer::Ptr next() {
+        std::unique_lock lock(bufferMutex_);
+        bufferSignal_.wait(lock, [this](){ return !buffer_.empty() ||
+                                 this->getStatus() != RequestStatus::Open; });
+        if (buffer_.empty()) {
+            throw py::stop_iteration();
+        } else {
+            auto result = buffer_.front();
+            buffer_.pop();
+            return result;
+        }
+    }
+
+private:
+    std::queue<TileSearchResultLayer::Ptr> buffer_;
+    std::mutex bufferMutex_;
+    std::condition_variable bufferSignal_;
+};
 }
 
 void bindHttpClient(py::module_& m)
@@ -162,6 +193,89 @@ void bindHttpClient(py::module_& m)
             This function blocks until all results have been processed.
         )pbdoc", py::call_guard<py::gil_scoped_release>());
 
+    py::class_<PySearchRequest, std::shared_ptr<PySearchRequest>>(m, "SearchRequest", R"pbdoc(
+        Client request for server-side search-as-map evaluation.
+
+        SearchRequest posts a simplified REST /search request. Results are
+        TileSearchResultLayer objects and can be consumed with a callback or by
+        iterating over the request object returned by Client.search().
+    )pbdoc")
+        .def(
+            py::init(
+                [](const std::string& mapId,
+                   const std::string& layerId,
+                   std::vector<uint64_t> tiles,
+                   const std::string& query,
+                   const std::string& scope,
+                   bool rewrite,
+                   std::vector<std::string> withFields,
+                   std::function<void(TileSearchResultLayer::Ptr)> onResult,
+                   std::function<void(py::object)> onStatus)
+                {
+                    FeatureLayerSearchRequest search;
+                    search.query_ = query;
+                    if (scope == "feature") {
+                        search.scope_ = FeatureLayerSearchScope::Feature;
+                    }
+                    else if (scope == "attribute") {
+                        search.scope_ = FeatureLayerSearchScope::Attribute;
+                    }
+                    else if (scope == "auto") {
+                        search.scope_ = FeatureLayerSearchScope::Auto;
+                    }
+                    else {
+                        throw py::value_error("scope must be 'feature', 'attribute' or 'auto'");
+                    }
+                    search.rewriteQuery_ = rewrite || search.scope_ == FeatureLayerSearchScope::Auto;
+                    search.withFields_ = std::move(withFields);
+
+                    auto req = std::make_shared<PySearchRequest>(
+                        mapId,
+                        layerId,
+                        std::vector<TileId>(tiles.begin(), tiles.end()),
+                        std::move(search));
+                    req->onSearchResult(std::move(onResult));
+                    if (onStatus) {
+                        req->onStatus([callback = std::move(onStatus)](nlohmann::json const& status) {
+                            callback(json_to_py_value(status));
+                        });
+                    }
+                    return req;
+                }),
+            py::arg("map_id"),
+            py::arg("layer_id"),
+            py::arg("tiles"),
+            py::arg("query"),
+            py::arg("scope") = "feature",
+            py::arg("rewrite") = false,
+            py::arg("with_fields") = std::vector<std::string>{},
+            py::arg("on_result") = py::none(),
+            py::arg("on_status") = py::none(),
+            py::call_guard<py::gil_scoped_acquire>(),
+            R"pbdoc(
+            Construct a SearchRequest.
+
+            Args:
+                map_id: The source map id to search.
+                layer_id: The source feature layer id to search.
+                tiles: Source tile ids to search.
+                query: SIMFIL predicate.
+                scope: "feature", "attribute" or "auto".
+                rewrite: Normalize the query through the feature-model schema before evaluation. Auto scope implies rewrite.
+                with_fields: SIMFIL expressions stored in each result's values array.
+                on_result: Optional callback for each TileSearchResultLayer.
+                on_status: Optional callback for progress/status dictionaries.
+        )pbdoc")
+        .def("__iter__", [](PySearchRequest &r) { return &r; }, R"pbdoc(
+            Return the iterator object (self).
+        )pbdoc")
+        .def("__next__", &PySearchRequest::next, R"pbdoc(
+            Get the next available search-result layer.
+        )pbdoc", py::call_guard<py::gil_scoped_release>())
+        .def("wait", &PySearchRequest::wait, R"pbdoc(
+            Wait for the search request to be done.
+        )pbdoc", py::call_guard<py::gil_scoped_release>());
+
     py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client")
         .def(py::init<const std::string&, uint16_t>(),
              R"pbdoc(
@@ -186,6 +300,17 @@ void bindHttpClient(py::module_& m)
             },
             R"pbdoc(
                 Post a Request for a number of tiles from a particular map layer.
+                Returns the request object which was put in.
+            )pbdoc",
+            py::arg("request"))
+        .def(
+            "search",
+            [](HttpClient& self, std::shared_ptr<PySearchRequest> request) {
+                self.search(request);
+                return std::move(request);
+            },
+            R"pbdoc(
+                Post a SearchRequest to the REST /search endpoint.
                 Returns the request object which was put in.
             )pbdoc",
             py::arg("request"));

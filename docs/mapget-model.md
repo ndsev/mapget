@@ -41,6 +41,7 @@ classDiagram
     +bool canWrite
     +Version version
     +vector<FeatureTypeInfo> featureTypes
+    +json featureModelSchema
   }
 
   class FeatureTypeInfo {
@@ -68,11 +69,27 @@ classDiagram
 ```
 
 - **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
-- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), advertised zoom levels, coverage rectangles, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`), read/write flags and the semantic version. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
+- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), advertised zoom levels, coverage rectangles, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`), read/write flags, semantic version and optional `featureModelSchema`. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
 - **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
 
 When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` and uses it to validate feature IDs and field layouts. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
+
+### Feature Model Schema
+
+Feature layers may attach `LayerInfo.featureModelSchema`, a JSON Schema document that validates one emitted GeoJSON-style feature object from that layer.
+
+- The schema is optional; datasources can adopt it layer by layer.
+- The schema is serialized through `/sources` with the rest of `LayerInfo`.
+- `TileFeatureLayer::validateSchema()` validates every emitted feature against the layer's attached schema.
+- The schema is intended for validation and tooling: simfil wildcard pruning, search/autocomplete, value-aware coloring and generated user-facing feature-model documentation.
+- Datasources should keep `FeatureTypeInfo` as the source for feature ID compositions. `featureModelSchema` describes the full JSON shape and value domains, including converter-owned fields, relations, geometry/source-data extensions and attribute-layer containers.
+- Mapget-specific schema branches may carry an `x-mapget` object with `metaType` values such as `Feature`, `FeatureProperties`, `AttributeLayerMap`, `AttributeContainer` and `Attribute`. `SchemaRegistry` uses these annotations to map JSON Schema branches onto SIMFIL `SchemaId` values for feature, property and attribute-layer nodes.
+- Attribute entries that can render either as a single object or as an array carry `x-mapget-multimap: true` on their `oneOf` wrapper. This lets `SchemaRegistry` use the logical object branch for SIMFIL pruning without treating the multimap serialization shape as an arbitrary union.
+- Large repeated schema branches may be shared through ordinary local JSON Schema `$ref` entries under `definitions`; consumers must resolve local refs before interpreting mapget-specific annotations.
+- `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
+
+Search-facing consumers use the schema in several distinct ways. Completion uses direct and nested schema fields for query suggestions. `SchemaRegistry::normalizeSearchQuery` is the shared query post-processing entry point used by mapget and Erdblick: it compiles through SIMFIL's schema rewrite engine, inspects AST-derived referenced schema paths, chooses feature or attribute scope, and emits guarded attribute-root predicates where needed. Schema-aware wildcard evaluation can skip branches that cannot contain a requested field. Result styling uses scalar field metadata, enum domains and numeric ranges to initialize labels, categories and gradients. None of these consumers replace the emitted feature data; the schema only describes and constrains it.
 
 ### Add‑on datasources
 
@@ -266,6 +283,13 @@ classDiagram
     +complete(query, point, opts)
   }
 
+  class TileSearchResultLayer {
+    +vector~SearchResult~ results
+    +vector~string~ resultFields
+    +json diagnostics
+    +json traces
+  }
+
   class TileSourceDataLayer {
     +model_ptr~SourceDataCompoundNode~ newCompound(initialSize)
     +Environment& evaluationEnvironment()
@@ -349,9 +373,11 @@ classDiagram
   }
 
   TileLayer <|-- TileFeatureLayer
+  TileLayer <|-- TileSearchResultLayer
   TileLayer <|-- TileSourceDataLayer
 
   simfil_ModelPool <|-- TileFeatureLayer
+  simfil_ModelPool <|-- TileSearchResultLayer
   simfil_ModelPool <|-- TileSourceDataLayer
 
   simfil_ModelNode <|-- Feature
@@ -385,6 +411,16 @@ classDiagram
 
 From a simfil perspective, each of the model classes shown above is either a direct `simfil::ModelNode` derivative or a thin wrapper built on simfil’s node types. `TileFeatureLayer` and `TileSourceDataLayer` act as model pools: they own the storage for all nodes in a tile and provide the environment required to evaluate simfil expressions directly against tile content.
 
+## Search result layers
+
+`TileSearchResultLayer` is the stream/model layer used for server-side search results. It is transient and is emitted by `/search` or interactive WebSocket search; it is not a datasource-owned feature tile and is not stored in the normal tile cache.
+
+A search result layer keeps the source map, source layer and source tile metadata so clients can route the result back to the correct map context. Each result stores the matched feature ID, result geometry, and the values requested through `withFields`. Feature-scope results copy display geometry from the matched feature. Attribute-scope results prefer the computed validity geometry for the matched attribute/validity context and fall back to the owning feature display geometry when a validity geometry cannot be derived.
+
+Result layers also carry parsed Simfil diagnostics and typed `trace()` aggregates. Search UIs use those fields for diagnostics, value summaries, generated labels, color categories and numeric gradients.
+
+When search query normalization rewrites a request, `TileSearchResultLayer.info` includes both `originalSearchQuery` and `normalizedSearchQuery`. This makes REST clients and UI diagnostics able to distinguish the visible query from the guarded backend predicate.
+
 ## Binary tile streaming
 
 To minimise overhead for large responses, mapget uses a compact binary format for tile streaming. Note, that this format is about 5-10x times larger than raw NDS tiles, but more suitable for untyped feature-centric filtering, visualization, styling and inspection. The format is a sequence of messages with a simple header:
@@ -398,12 +434,13 @@ The main message types are:
 
 - String pool updates that carry field name dictionaries.
 - Feature tiles representing `TileFeatureLayer` instances.
+- Search-result tiles representing `TileSearchResultLayer` instances.
 - Source data tiles representing `TileSourceDataLayer` instances.
 - An explicit end‑of‑stream marker.
 
 On the receiving side, a tile stream reader validates the protocol version, updates or reuses string pools per datasource node and reconstructs tile layer objects as messages arrive. Clients that do not need the compact binary form can instead use `application/jsonl` and let the server handle the conversion to JSON at the cost of much higher bandwidth and CPU usage.
 
-Measurements in the [size comparison table](size-comparison/table.md) show that the binary tile format is roughly 25–50 % smaller than equivalent JSON/bson/msgpack encodings, which is why the model is optimised around the simfil binary representation:
+Measurements in the size comparison table below show that the binary tile format is roughly 25-50% smaller than equivalent JSON/bson/msgpack encodings, which is why the model is optimised around the simfil binary representation:
 
 --8<-- "size-comparison/table.md"
 

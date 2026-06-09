@@ -163,11 +163,39 @@ SelfContainedGeometry applyDirectionToGeometry(
     Validity::Direction direction)
 {
     if (direction == Validity::Negative && geometry.points_.size() > 1) {
+        if (geometry.geomType_ == GeomType::Polygon && geometry.polygonRingStarts_.size() > 1) {
+            // Keep hole metadata meaningful: direction may reverse traversal,
+            // but it must not flatten the outer/hole ring partition.
+            for (size_t ringIndex = 0; ringIndex < geometry.polygonRingStarts_.size(); ++ringIndex) {
+                auto const ringStart = geometry.polygonRingStarts_[ringIndex];
+                auto const ringEnd = ringIndex + 1U < geometry.polygonRingStarts_.size()
+                    ? geometry.polygonRingStarts_[ringIndex + 1U]
+                    : static_cast<uint32_t>(geometry.points_.size());
+                if (ringStart >= ringEnd || ringEnd > geometry.points_.size()) {
+                    return geometry;
+                }
+                std::reverse(
+                    geometry.points_.begin() + static_cast<std::ptrdiff_t>(ringStart),
+                    geometry.points_.begin() + static_cast<std::ptrdiff_t>(ringEnd));
+            }
+            return geometry;
+        }
         // Negative direction reuses the same geometric support but traverses it
         // against the feature digitization order.
         std::reverse(geometry.points_.begin(), geometry.points_.end());
     }
     return geometry;
+}
+
+/** Preserve point-vs-range validity semantics after offset resolution. */
+GeomType geomTypeForOffsetValidity(
+    Validity::GeometryDescriptionType descriptionType,
+    std::vector<Point> const& points)
+{
+    if (descriptionType == Validity::OffsetPointValidity) {
+        return GeomType::Points;
+    }
+    return points.size() > 1 ? GeomType::Line : GeomType::Points;
 }
 
 /** Map a stored geometry stage back to the optional exported `geometryName`. */
@@ -703,7 +731,7 @@ SelfContainedGeometry Validity::computeGeometry(
             }
         }
         appendIfNotDuplicate(toSegment->outer_);
-        return {points, points.size() > 1 ? GeomType::Line : GeomType::Points};
+        return {points, {}, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
     // If this validity references some feature directly,
@@ -767,7 +795,7 @@ SelfContainedGeometry Validity::computeGeometry(
     // Handle GeoPosOffset (a range of the geometry line, bound by two positions).
     if (offsetType == GeoPosOffset) {
         auto points = geometry->pointsFromPositionBound(startPoint, endPoint);
-        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
+        return applyDirectionToGeometry({points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
     }
 
     // Handle BufferOffset (a range of the geometry bound by two indices).
@@ -800,7 +828,7 @@ SelfContainedGeometry Validity::computeGeometry(
         for (auto pointIndex = startPointIndex; pointIndex <= endPointIndex; ++pointIndex) {
             points.emplace_back(geometry->pointAt(pointIndex));
         }
-        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
+        return applyDirectionToGeometry({points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
     }
 
     // Handle RelativeLengthOffset (a percentage range of the geometry).
@@ -816,7 +844,7 @@ SelfContainedGeometry Validity::computeGeometry(
     // Handle MetricLengthOffset (a length range of the geometry in meters).
     if (offsetType == MetricLengthOffset || offsetType == RelativeLengthOffset) {
         auto points = geometry->pointsFromLengthBound(startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
-        return applyDirectionToGeometry({points, points.size() > 1 ? GeomType::Line : GeomType::Points}, direction());
+        return applyDirectionToGeometry({points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
     }
 
     if (error) {
@@ -825,10 +853,15 @@ SelfContainedGeometry Validity::computeGeometry(
     return {};
 }
 
+TileFeatureLayer& MultiValidity::featureLayer()
+{
+    return static_cast<TileFeatureLayer&>(model());
+}
+
 model_ptr<Validity>
 MultiValidity::newPoint(Point pos, std::optional<uint32_t> geometryStage, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetPoint(pos);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -842,7 +875,7 @@ model_ptr<Validity> MultiValidity::newRange(
     std::optional<uint32_t> geometryStage,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetRange(start, end);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -856,7 +889,7 @@ model_ptr<Validity> MultiValidity::newPoint(
     std::optional<uint32_t> geometryStage,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetPoint(offsetType, pos);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -880,7 +913,7 @@ model_ptr<Validity> MultiValidity::newRange(
     std::optional<uint32_t> geometryStage,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setOffsetRange(offsetType, start, end);
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
@@ -906,7 +939,7 @@ model_ptr<Validity> MultiValidity::newRange(
 model_ptr<Validity>
 MultiValidity::newGeometry(model_ptr<Geometry> geom, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setSimpleGeometry(geom);
     result->setDirection(direction);
     append(result);
@@ -916,7 +949,7 @@ MultiValidity::newGeometry(model_ptr<Geometry> geom, Validity::Direction directi
 model_ptr<Validity>
 MultiValidity::newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setFeatureId(featureId);
     result->setDirection(direction);
     append(result);
@@ -926,7 +959,7 @@ MultiValidity::newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Dir
 model_ptr<Validity>
 MultiValidity::newGeomStage(uint32_t geometryStage, Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setGeometryStage(geometryStage);
     result->setDirection(direction);
     append(result);
@@ -941,7 +974,7 @@ model_ptr<Validity> MultiValidity::newFeatureTransition(
     uint32_t transitionNumber,
     Validity::Direction direction)
 {
-    auto result = model().newValidity();
+    auto result = featureLayer().newValidity();
     result->setFeatureTransition(
         fromFeature,
         fromConnectedEnd,
@@ -965,7 +998,7 @@ model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
         TileFeatureLayer::ColumnId::SimpleValidity,
         static_cast<uint32_t>(direction)};
     appendInternal(model_ptr<simfil::ModelNode>::make(model_, simpleAddr));
-    return model().resolve<Validity>(
+    return featureLayer().resolve<Validity>(
         simpleAddr,
         encodeSimpleValidityOwner(members_, elementIndex));
 }
@@ -1007,6 +1040,24 @@ bool MultiValidity::iterate(ModelNode::IterCallback const& cb) const
         }
     }
     return true;
+}
+
+template<>
+model_ptr<MultiValidity> resolveInternal(
+    simfil::res::tag<MultiValidity>,
+    TileFeatureModelLayerBase const& model,
+    ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureModelLayerBase::ColumnId::ValidityCollections) {
+        raise("Cannot cast this node to a ValidityCollection.");
+    }
+    if (dynamic_cast<TileFeatureLayer const*>(&model) == nullptr) {
+        raise("Validity collections are only supported by TileFeatureLayer.");
+    }
+    return MultiValidity(
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
 }
 
 }

@@ -24,6 +24,8 @@
 #include <bitsery/traits/string.h>
 #include <bitsery/traits/vector.h>
 
+#include <nlohmann/json-schema.hpp>
+
 #include "simfil/environment.h"
 #include "simfil/model/arena.h"
 #include "simfil/model/bitsery-traits.h"
@@ -242,16 +244,9 @@ struct TileFeatureLayer::Impl {
     simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> complexFeatureDataRefs_;
     simfil::ModelColumn<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
     simfil::ModelColumn<Validity::Data, simfil::detail::ColumnPageSize> validities_;
-    simfil::ModelColumn<FeatureId::Data, simfil::detail::ColumnPageSize / 2> featureIds_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
     simfil::ModelColumn<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
-    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> geomSourceDataRefs_;
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> geomStages_;
-    simfil::ModelColumn<Geometry::ViewData, simfil::detail::ColumnPageSize / 2> geomViews_;
-    simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
-    Geometry::Storage pointBuffers_;
-    std::unordered_map<uint32_t, std::pair<TileFeatureLayer const*, ModelNodeAddress>> mergedArrayExtensions_;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -268,8 +263,27 @@ struct TileFeatureLayer::Impl {
         std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
     }
 
-    // Simfil compiled expression cache and environment
+    // SIMFIL schema registry and compiled expression cache.
+    std::shared_ptr<SchemaRegistry> schemaRegistry_;
     SimfilExpressionCache expressionCache_;
+
+    static std::unique_ptr<simfil::Environment> makeSchemaAwareEnvironment(
+        std::shared_ptr<simfil::StringPool> stringPool,
+        std::shared_ptr<SchemaRegistry const> schemaRegistry)
+    {
+        auto env = makeEnvironment(stringPool);
+        installSchemaRegistry(*env, std::move(schemaRegistry), std::move(stringPool));
+        return env;
+    }
+
+    static std::unique_ptr<simfil::Environment> makeSchemaAwareCompletionEnvironment(
+        std::shared_ptr<simfil::StringPool> stringPool,
+        std::shared_ptr<SchemaRegistry const> schemaRegistry)
+    {
+        auto env = makeEnvironment(stringPool);
+        installCompletionSchemaRegistry(*env, std::move(schemaRegistry), std::move(stringPool));
+        return env;
+    }
 
     // (De-)Serialization
     template<typename S>
@@ -283,22 +297,24 @@ struct TileFeatureLayer::Impl {
         s.object(complexFeatureDataRefs_);
         s.object(attributes_);
         s.object(validities_);
-        s.object(featureIds_);
         s.object(attrLayers_);
         s.object(attrLayerLists_);
         s.object(featureIdPrefix_);
         s.object(relations_);
         sortFeatureHashIndex();
         s.object(featureHashIndex_);
-        s.object(geomSourceDataRefs_);
-        s.object(geomViews_);
-        s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
-        s.object(sourceDataReferences_);
-        s.object(geomStages_);
     }
 
-    explicit Impl(std::shared_ptr<simfil::StringPool> stringPool)
-        : expressionCache_(makeEnvironment(std::move(stringPool)))
+    Impl(
+        std::shared_ptr<simfil::StringPool> stringPool,
+        std::shared_ptr<LayerInfo> const& layerInfo)
+        : schemaRegistry_(layerInfo ? layerInfo->schemaRegistry() : nullptr),
+          expressionCache_(
+              makeSchemaAwareEnvironment(std::move(stringPool), schemaRegistry_),
+              [this]() {
+                  auto compileStrings = std::make_shared<simfil::StringPool>(*expressionCache_.environment().strings());
+                  return makeSchemaAwareCompletionEnvironment(std::move(compileStrings), schemaRegistry_);
+              })
     {
     }
 
@@ -319,9 +335,8 @@ TileFeatureLayer::TileFeatureLayer(
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& strings) :
-    ModelPool(strings),
-    impl_(std::make_unique<Impl>(strings)),
-    TileLayer(tileId, nodeId, mapId, layerInfo)
+    TileFeatureModelLayerBase(tileId, nodeId, mapId, layerInfo, strings),
+    impl_(std::make_unique<Impl>(strings, layerInfo))
 {
     impl_->geometryAnchor_ = tileId.center();
 }
@@ -331,9 +346,8 @@ TileFeatureLayer::TileFeatureLayer(
     LayerInfoResolveFun const& layerInfoResolveFun,
     StringPoolResolveFun const& stringPoolGetter
 ) :
-    TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
-    ModelPool(stringPoolGetter(nodeId_)),
-    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
+    TileFeatureModelLayerBase(input, layerInfoResolveFun, stringPoolGetter, &deserializationOffsetBytes_),
+    impl_(std::make_unique<Impl>(strings(), layerInfo_))
 {
     impl_->geometryAnchor_ = tileId_.center();
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
@@ -345,6 +359,7 @@ TileFeatureLayer::TileFeatureLayer(
         input.end()));
     s.ext4b(stage_, bitsery::ext::StdOptional{});
     impl_->readWrite(s);
+    readWriteCommonColumns(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raise(fmt::format(
             "Failed to read TileFeatureLayer: Error {}",
@@ -484,6 +499,9 @@ void TileFeatureLayer::attachOverlay(TileFeatureLayer::Ptr const& overlay)
     if (!overlay) {
         return;
     }
+    if (overlay.get() == this) {
+        raise("Cannot attach a feature layer as its own overlay.");
+    }
 
     if (overlay->size() < size()) {
         raiseFmt(
@@ -492,52 +510,34 @@ void TileFeatureLayer::attachOverlay(TileFeatureLayer::Ptr const& overlay)
             size());
     }
 
-    if (overlay_) {
-        overlay_->attachOverlay(overlay);
-        return;
+    // Search may assemble the same cached stage stack repeatedly. Treat an
+    // already-attached overlay as a no-op so the chain cannot grow unbounded.
+    for (auto cursor = this->overlay(); cursor; cursor = cursor->overlay()) {
+        if (cursor == overlay) {
+            return;
+        }
     }
 
-    overlay_ = overlay;
+    TileFeatureLayer::Ptr currentOverlay;
+    {
+        std::lock_guard lock(overlayMutex_);
+        if (!overlay_) {
+            overlay_ = overlay;
+            return;
+        }
+        currentOverlay = overlay_;
+    }
+
+    if (currentOverlay == overlay) {
+        return;
+    }
+    currentOverlay->attachOverlay(overlay);
 }
 
 TileFeatureLayer::Ptr TileFeatureLayer::overlay() const
 {
+    std::lock_guard lock(overlayMutex_);
     return overlay_;
-}
-
-void TileFeatureLayer::setMergedArrayExtension(
-    ModelNodeAddress baseAddress,
-    TileFeatureLayer const* extensionModel,
-    ModelNodeAddress extensionAddress)
-{
-    if (!baseAddress || !extensionModel || !extensionAddress) {
-        clearMergedArrayExtension(baseAddress);
-        return;
-    }
-    impl_->mergedArrayExtensions_[baseAddress.value_] = {
-        extensionModel,
-        extensionAddress};
-}
-
-void TileFeatureLayer::clearMergedArrayExtension(ModelNodeAddress baseAddress)
-{
-    if (!baseAddress) {
-        return;
-    }
-    impl_->mergedArrayExtensions_.erase(baseAddress.value_);
-}
-
-std::optional<std::pair<TileFeatureLayer const*, ModelNodeAddress>>
-TileFeatureLayer::mergedArrayExtension(ModelNodeAddress baseAddress) const
-{
-    if (!baseAddress) {
-        return {};
-    }
-    auto it = impl_->mergedArrayExtensions_.find(baseAddress.value_);
-    if (it == impl_->mergedArrayExtensions_.end()) {
-        return {};
-    }
-    return it->second;
 }
 
 namespace
@@ -795,7 +795,7 @@ TileFeatureLayer::newFeatureId(
             idPartsToString(featureIdParts)));
     }
 
-    auto featureIdIndex = impl_->featureIds_.size();
+    auto featureIdIndex = featureIds_.size();
     auto typeIdStringId = strings()->emplace(typeId);
     if (!typeIdStringId)
         raise(typeIdStringId.error().message);
@@ -812,7 +812,7 @@ TileFeatureLayer::newFeatureId(
         // Local references omit the redundant map payload so legacy JSON stays compact.
         externalMapIdStringId = *storedMapId;
     }
-    impl_->featureIds_.emplace_back(FeatureId::Data{
+    featureIds_.emplace_back(FeatureId::Data{
         false,
         idCompositionIndex,
         *typeIdStringId,
@@ -820,7 +820,7 @@ TileFeatureLayer::newFeatureId(
         externalMapIdStringId,
     });
     return FeatureId(
-        impl_->featureIds_.back(),
+        featureIds_.back(),
         shared_from_this(),
         {ColumnId::ExternalFeatureIds, static_cast<uint32_t>(featureIdIndex)},
         mpKey_);
@@ -936,32 +936,32 @@ model_ptr<Geometry> TileFeatureLayer::newGeometry(
 
     switch (geomType) {
     case GeomType::Points: {
-        auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
         return makeGeometry(ColumnId::PointGeometries, vertexArray);
     }
     case GeomType::Line:
     {
-        auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
         return makeGeometry(ColumnId::LineGeometries, vertexArray);
     }
     case GeomType::Polygon:
     {
-        auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
         return makeGeometry(ColumnId::PolygonGeometries, vertexArray);
     }
     case GeomType::Mesh:
     {
-        auto const vertexArray = impl_->pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
         return makeGeometry(ColumnId::MeshGeometries, vertexArray);
     }
     case GeomType::AABB:
     {
-        auto const vertexArray = impl_->pointBuffers_.new_array(2, true);
+        auto const vertexArray = pointBuffers_.new_array(2, true);
         return makeGeometry(ColumnId::AabbGeometries, vertexArray);
     }
     case GeomType::GltfNodeIndex:
     {
-        auto const vertexArray = impl_->pointBuffers_.new_array(3, true);
+        auto const vertexArray = pointBuffers_.new_array(3, true);
         return makeGeometry(ColumnId::GltfNodeIndexGeometries, vertexArray);
     }
     }
@@ -982,17 +982,17 @@ model_ptr<Geometry> TileFeatureLayer::newGeometryView(
     if (base->geomType() == GeomType::AABB || base->geomType() == GeomType::GltfNodeIndex) {
         raise("Geometry views cannot reference AABB or GltfNodeIndex geometries.");
     }
-    impl_->geomViews_.emplace_back(geomType, offset, size, base->addr());
+    geomViews_.emplace_back(geomType, offset, size, base->addr());
     return Geometry(
-        &impl_->geomViews_.back(),
+        &geomViews_.back(),
         shared_from_this(),
-        {ColumnId::GeometryViews, (uint32_t)impl_->geomViews_.size() - 1},
+        {ColumnId::GeometryViews, (uint32_t)geomViews_.size() - 1},
         mpKey_);
 }
 
 model_ptr<SourceDataReferenceCollection> TileFeatureLayer::newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list)
 {
-    auto& arena = impl_->sourceDataReferences_;
+    auto& arena = sourceDataReferences_;
     const auto index = arena.size();
     const auto size = list.size();
 
@@ -1069,10 +1069,13 @@ model_ptr<AttributeLayer> resolveInternal(tag<AttributeLayer>, TileFeatureLayer 
 template<>
 model_ptr<AttributeLayerList> resolveInternal(tag<AttributeLayerList>, TileFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttributeLayerLists)
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttributeLayerLists &&
+        node.addr().column() != TileFeatureLayer::ColumnId::FeatureAttributeLayerListView)
         raise("Cannot cast this node to an AttributeLayerList.");
     return AttributeLayerList(
-        model.impl_->attrLayerLists_[node.addr().index()],
+        node.addr().column() == TileFeatureLayer::ColumnId::AttributeLayerLists
+            ? model.impl_->attrLayerLists_[node.addr().index()]
+            : simfil::InvalidArrayIndex,
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
@@ -1105,9 +1108,10 @@ model_ptr<Feature> resolveInternal(tag<Feature>, TileFeatureLayer const& model, 
         node.addr(),
         model.mpKey_);
 
-    if (model.overlay_ && node.addr().index() < model.overlay_->size()) {
+    auto overlay = model.overlay();
+    if (overlay && node.addr().index() < overlay->size()) {
         result->setExtensionAddress(
-            model.overlay_.get(),
+            overlay.get(),
             ModelNodeAddress{
                 TileFeatureLayer::ColumnId::Features,
                 static_cast<uint32_t>(node.addr().index())});
@@ -1125,22 +1129,21 @@ model_ptr<RelationArrayView> resolveInternal(tag<RelationArrayView>, TileFeature
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
-
-    if (model.overlay_ && node.addr().index() < model.overlay_->size()) {
-        result.setExtension(model.overlay_->resolve<RelationArrayView>(
-            ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, node.addr().index()}));
-    } else {
-        result.setExtension({});
-    }
     return result;
 }
 
-template<>
-model_ptr<FeatureId> resolveInternal(tag<FeatureId>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::FeatureIds: {
-        auto const& featureData = model.impl_->features_[node.addr().index()];
+        auto const featureIndex = node.addr().index();
+        if (featureIndex >= impl_->features_.size()) {
+            raiseFmt(
+                "Cannot cast FeatureIds node {} to a FeatureId: feature index out of range ({} features).",
+                featureIndex,
+                impl_->features_.size());
+        }
+        auto const& featureData = impl_->features_.at(featureIndex);
         return FeatureId(
             FeatureId::Data{
                 true,
@@ -1148,16 +1151,24 @@ model_ptr<FeatureId> resolveInternal(tag<FeatureId>, TileFeatureLayer const& mod
                 featureData.typeIdAndLod_.typeId_,
                 featureData.idPartValues_,
                 simfil::StringPool::Empty},
-            model.shared_from_this(),
+            shared_from_this(),
             node.addr(),
-            model.mpKey_);
+            mpKey_);
     }
-    case TileFeatureLayer::ColumnId::ExternalFeatureIds:
+    case TileFeatureLayer::ColumnId::ExternalFeatureIds: {
+        auto const featureIdIndex = node.addr().index();
+        if (featureIdIndex >= featureIds_.size()) {
+            raiseFmt(
+                "Cannot cast ExternalFeatureIds node {} to a FeatureId: external feature-id index out of range ({} feature ids).",
+                featureIdIndex,
+                featureIds_.size());
+        }
         return FeatureId(
-            model.impl_->featureIds_[node.addr().index()],
-            model.shared_from_this(),
+            featureIds_.at(featureIdIndex),
+            shared_from_this(),
             node.addr(),
-            model.mpKey_);
+            mpKey_);
+    }
     default:
         raise("Cannot cast this node to a FeatureId.");
     }
@@ -1175,202 +1186,41 @@ model_ptr<Relation> resolveInternal(tag<Relation>, TileFeatureLayer const& model
         model.mpKey_);
 }
 
-template<>
-model_ptr<PointNode> resolveInternal(tag<PointNode>, TileFeatureLayer const& model, ModelNode const& node)
+model_ptr<PointNode> TileFeatureLayer::resolvePointNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
     case TileFeatureLayer::ColumnId::Points:
         return PointNode(
             node,
             static_cast<simfil::ArrayIndex>(node.addr().index()),
-            model.mpKey_);
+            mpKey_);
     case TileFeatureLayer::ColumnId::ValidityPoints:
-        return PointNode(node, &model.impl_->validities_.at(node.addr().index()), model.mpKey_);
+        return PointNode(node, &impl_->validities_.at(node.addr().index()), mpKey_);
     case TileFeatureLayer::ColumnId::GeometryPointView:
-        return PointNode(node, model.mpKey_);
+        return PointNode(node, mpKey_);
     default:
         raise("Cannot cast this node to a Point.");
     }
 }
 
 template<>
-model_ptr<PointBufferNode> resolveInternal(tag<PointBufferNode>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (auto existing = dynamic_cast<PointBufferNode const*>(&node)) {
-        return PointBufferNode(
-            model.shared_from_this(),
-            existing->baseGeometryAddress(),
-            model.mpKey_);
-    }
-    switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::PointBuffers:
-        return PointBufferNode(
-            model.shared_from_this(),
-            ModelNodeAddress{
-                TileFeatureLayer::ColumnId::PointGeometries,
-                node.addr().index()},
-            model.mpKey_);
-    case TileFeatureLayer::ColumnId::PointBuffersView:
-        return PointBufferNode(
-            model.shared_from_this(),
-            ModelNodeAddress{TileFeatureLayer::ColumnId::GeometryViews, node.addr().index()},
-            model.mpKey_);
-    default:
-        raise("Cannot cast this node to a PointBuffer.");
-    }
-}
-
-template<>
-model_ptr<Geometry> resolveInternal(tag<Geometry>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::PointGeometries:
-    case TileFeatureLayer::ColumnId::LineGeometries:
-    case TileFeatureLayer::ColumnId::PolygonGeometries:
-    case TileFeatureLayer::ColumnId::MeshGeometries:
-    case TileFeatureLayer::ColumnId::AabbGeometries:
-    case TileFeatureLayer::ColumnId::GltfNodeIndexGeometries:
-    {
-        return Geometry(
-            model.shared_from_this(),
-            node.addr(),
-            model.mpKey_);
-    }
-    case TileFeatureLayer::ColumnId::GeometryViews: {
-        auto* geomData = &model.impl_->geomViews_.at(node.addr().index());
-        using MutableGeomData =
-            std::remove_const_t<std::remove_reference_t<decltype(*geomData)>>;
-        return Geometry(
-            const_cast<MutableGeomData*>(geomData), // FIXME: const_cast?!
-            model.shared_from_this(),
-            node.addr(),
-            model.mpKey_);
-    }
-    default:
-        raise("Cannot cast this node to a Geometry.");
-    }
-}
-
-template<>
-model_ptr<GeometryCollection> resolveInternal(tag<GeometryCollection>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryCollections &&
-        !isBaseGeometryColumn(node.addr().column()) &&
-        node.addr().column() != TileFeatureLayer::ColumnId::GeometryViews) {
-        raise("Cannot cast this node to a GeometryCollection.");
-    }
-    return GeometryCollection(
-        model.shared_from_this(), node.addr(), model.mpKey_);
-}
-
-template<>
-model_ptr<GeometryArrayView> resolveInternal(tag<GeometryArrayView>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryArrayView)
-        raise("Cannot cast this node to a GeometryArrayView.");
-    return GeometryArrayView(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
-}
-
-template<>
-model_ptr<BoundsInfoNode> resolveInternal(tag<BoundsInfoNode>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryBoundsInfoView) {
-        raise("Cannot cast this node to BoundsInfo.");
-    }
-    return BoundsInfoNode(node, model.mpKey_);
-}
-
-template<>
-model_ptr<BoundsPolygonCoordinatesNode> resolveInternal(
-    tag<BoundsPolygonCoordinatesNode>,
-    TileFeatureLayer const& model,
-    ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryBoundsPolygonCoordinatesView) {
-        raise("Cannot cast this node to BoundsPolygonCoordinates.");
-    }
-    return BoundsPolygonCoordinatesNode(node, model.mpKey_);
-}
-
-template<>
-model_ptr<BoundsRingNode> resolveInternal(tag<BoundsRingNode>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::GeometryBoundsRingView) {
-        raise("Cannot cast this node to BoundsRing.");
-    }
-    return BoundsRingNode(node, model.mpKey_);
-}
-
-template<>
-model_ptr<MeshNode> resolveInternal(tag<MeshNode>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    return MeshNode(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
-}
-
-template<>
-model_ptr<MeshTriangleCollectionNode> resolveInternal(tag<MeshTriangleCollectionNode>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    return MeshTriangleCollectionNode(node, model.mpKey_);
-}
-
-template<>
-model_ptr<LinearRingNode> resolveInternal(tag<LinearRingNode>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::LinearRing:
-        return LinearRingNode(node, model.mpKey_);
-    case TileFeatureLayer::ColumnId::MeshTriangleLinearRing:
-        return LinearRingNode(node, 3, model.mpKey_);
-    default:
-        raise("Cannot cast this node to a LinearRing.");
-    }
-}
-
-template<>
-model_ptr<PolygonNode> resolveInternal(tag<PolygonNode>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    return PolygonNode(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
-}
-
-template<>
-model_ptr<SourceDataReferenceCollection> resolveInternal(tag<SourceDataReferenceCollection>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::SourceDataReferenceCollections)
-        raise("Cannot cast this node to an SourceDataReferenceCollection.");
-
-    auto [index, size] = modelAddressToSourceDataAddressList(node.addr().index());
-    return SourceDataReferenceCollection(index, size, model.shared_from_this(), node.addr(), model.mpKey_);
-}
-
-template<>
-model_ptr<SourceDataReferenceItem> resolveInternal(tag<SourceDataReferenceItem>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::SourceDataReferences)
-        raise("Cannot cast this node to an SourceDataReferenceItem.");
-
-    const auto* data = &model.impl_->sourceDataReferences_.at(node.addr().index());
-    return SourceDataReferenceItem(data, model.shared_from_this(), node.addr(), model.mpKey_);
-}
-
-template<>
 model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model, ModelNode const& node)
 {
     switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::Validities:
+    case TileFeatureLayer::ColumnId::Validities: {
+        auto const validityIndex = node.addr().index();
+        if (validityIndex >= model.impl_->validities_.size()) {
+            raiseFmt(
+                "Cannot cast Validities node {} to a Validity: validity index out of range ({} validities).",
+                validityIndex,
+                model.impl_->validities_.size());
+        }
         return Validity(
-            &model.impl_->validities_[node.addr().index()],
+            &model.impl_->validities_.at(validityIndex),
             model.shared_from_this(),
             node.addr(),
             model.mpKey_);
+    }
     case TileFeatureLayer::ColumnId::SimpleValidity: {
         auto const direction = static_cast<Validity::Direction>(node.addr().index());
         if (direction < Validity::Empty || direction > Validity::None) {
@@ -1390,19 +1240,14 @@ model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model
     }
 }
 
-template<>
-model_ptr<MultiValidity> resolveInternal(tag<MultiValidity>, TileFeatureLayer const& model, ModelNode const& node)
-{
-    if (node.addr().column() != TileFeatureLayer::ColumnId::ValidityCollections)
-        raise("Cannot cast this node to a ValidityCollection.");
-    return MultiValidity(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
-}
-
 tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveFn& cb) const
 {
+    // Merged views may return nodes copied from overlay tiles. Resolve those
+    // through their owner instead of interpreting overlay addresses locally.
+    if (auto owner = n.owningModel(); owner && owner.get() != this) {
+        return owner->resolve(n, cb);
+    }
+
     switch (n.addr().column())
     {
     case ColumnId::Features:
@@ -1419,6 +1264,15 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
     }
     case ColumnId::FeatureRelationsView:
         cb(*resolve<RelationArrayView>(n));
+        return {};
+    case ColumnId::FeatureGeometryCollectionView:
+        cb(*resolve<GeometryCollection>(n));
+        return {};
+    case ColumnId::FeatureGeometryArrayView:
+        cb(*resolve<GeometryArrayView>(n));
+        return {};
+    case ColumnId::FeatureAttributeLayerListView:
+        cb(*resolve<AttributeLayerList>(n));
         return {};
     case ColumnId::FeatureIds:
     case ColumnId::ExternalFeatureIds:
@@ -1525,13 +1379,19 @@ TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildca
 tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
 TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode)
 {
-    return impl_->expressionCache_.diagnostics(query, diag, anyMode);
+    auto rootResult = root(0);
+    auto rootSchema = rootResult && *rootResult
+        ? (*rootResult)->schema()
+        : simfil::NoSchemaId;
+    return impl_->expressionCache_.diagnostics(query, diag, anyMode, rootSchema);
 }
 
 tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
 TileFeatureLayer::complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts)
 {
-    return impl_->expressionCache_.completions(query, point, node, opts);
+    auto completionStrings = std::make_shared<simfil::StringPool>(*strings());
+    auto completionEnv = Impl::makeSchemaAwareCompletionEnvironment(std::move(completionStrings), impl_->schemaRegistry_);
+    return simfil::complete(*completionEnv, query, point, node, opts);
 }
 
 void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
@@ -1588,6 +1448,7 @@ tl::expected<void, simfil::Error> TileFeatureLayer::write(std::ostream& outputSt
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     s.ext4b(stage_, bitsery::ext::StdOptional{});
     impl_->readWrite(s);
+    readWriteCommonColumns(s);
     return ModelPool::write(outputStream);
 }
 
@@ -1635,6 +1496,101 @@ nlohmann::json TileFeatureLayer::toJson() const
     return result;
 }
 
+void TileFeatureLayer::validateSchema() const
+{
+    if (!layerInfo_ || layerInfo_->featureModelSchema_.is_null()) {
+        raise("TileFeatureLayer::validateSchema: layer has no featureModelSchema.");
+    }
+
+    nlohmann::json_schema::json_validator validator;
+    validator.set_root_schema(layerInfo_->featureModelSchema_);
+    for (auto const& feature : *this) {
+        validator.validate(feature->toJson());
+    }
+}
+
+std::shared_ptr<SchemaRegistry const> TileFeatureLayer::schemaRegistry() const
+{
+    return impl_->schemaRegistry_;
+}
+
+SchemaRegistry::Entry const* TileFeatureLayer::getSchema(std::string_view typeName) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->getSchema(typeName) : nullptr;
+}
+
+simfil::SchemaId TileFeatureLayer::featureSchemaId(std::string_view featureType) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->featureSchema(featureType) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::featurePropertiesSchemaId(std::string_view featureType) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->featurePropertiesSchema(featureType) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::attributeLayerMapSchemaId(std::string_view featureType) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->attributeLayerMapSchema(featureType) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::schemaIdForKey(std::string_view key) const
+{
+    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->schemaId(key) : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::childSchemaId(
+    simfil::SchemaId parent,
+    std::string_view fieldName,
+    std::optional<simfil::Schema::Kind> preferredKind) const
+{
+    return impl_->schemaRegistry_
+        ? impl_->schemaRegistry_->childSchema(parent, fieldName, preferredKind)
+        : simfil::NoSchemaId;
+}
+
+simfil::SchemaId TileFeatureLayer::childSchemaId(
+    simfil::SchemaId parent,
+    simfil::StringId field,
+    std::optional<simfil::Schema::Kind> preferredKind) const
+{
+    if (!impl_->schemaRegistry_) {
+        return simfil::NoSchemaId;
+    }
+    auto fieldName = strings()->resolve(field);
+    return fieldName
+        ? impl_->schemaRegistry_->childSchema(parent, *fieldName, preferredKind)
+        : simfil::NoSchemaId;
+}
+
+void TileFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId) const
+{
+    if (schemaId == simfil::NoSchemaId) {
+        return;
+    }
+    auto const current = object.schema();
+    auto const target = current == simfil::NoSchemaId || current == schemaId
+        ? schemaId
+        : simfil::NoSchemaId;
+    if (auto result = object.setSchema(target); !result) {
+        log().warn("Failed to set object schema: {}", result.error().message);
+    }
+}
+
+void TileFeatureLayer::applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const
+{
+    if (schemaId == simfil::NoSchemaId) {
+        return;
+    }
+    auto const current = array.schema();
+    auto const target = current == simfil::NoSchemaId || current == schemaId
+        ? schemaId
+        : simfil::NoSchemaId;
+    if (auto result = array.setSchema(target); !result) {
+        log().warn("Failed to set array schema: {}", result.error().message);
+    }
+}
+
 nlohmann::json TileFeatureLayer::serializationSizeStats() const
 {
     auto featureLayer = nlohmann::json::object();
@@ -1644,18 +1600,20 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     featureLayer["feature-complex-data-refs"] = impl_->complexFeatureDataRefs_.byte_size();
     featureLayer["attributes"] = impl_->attributes_.byte_size();
     featureLayer["validities"] = impl_->validities_.byte_size();
-    featureLayer["feature-ids"] = impl_->featureIds_.byte_size();
+    featureLayer["feature-ids"] = featureIds_.byte_size();
     featureLayer["attribute-layers"] = impl_->attrLayers_.byte_size();
     featureLayer["attribute-layer-lists"] = impl_->attrLayerLists_.byte_size();
     featureLayer["relations"] = impl_->relations_.byte_size();
     featureLayer["feature-hash-index"] = impl_->featureHashIndex_.byte_size();
     featureLayer["point-geometries"] = 0;
-    featureLayer["geometries"] = impl_->geomViews_.byte_size();
-    featureLayer["geometry-source-data-references"] = impl_->geomSourceDataRefs_.byte_size();
-    featureLayer["geometry-stages"] = impl_->geomStages_.byte_size();
-    featureLayer["geometry-views"] = impl_->geomViews_.byte_size();
-    featureLayer["point-buffers"] = impl_->pointBuffers_.byte_size();
-    featureLayer["source-data-references"] = impl_->sourceDataReferences_.byte_size();
+    featureLayer["geometries"] = geomViews_.byte_size();
+    featureLayer["geometry-source-data-references"] = geomSourceDataRefs_.byte_size();
+    featureLayer["geometry-stages"] = geomStages_.byte_size();
+    featureLayer["geometry-views"] = geomViews_.byte_size();
+    featureLayer["polygon-ring-start-refs"] = polygonRingStartRefs_.byte_size();
+    featureLayer["polygon-ring-starts"] = polygonRingStarts_.byte_size();
+    featureLayer["point-buffers"] = pointBuffers_.byte_size();
+    featureLayer["source-data-references"] = sourceDataReferences_.byte_size();
     featureLayer["glb-attachment-present"] = impl_->glbAttachment_.has_value();
     featureLayer["glb-attachment-name"] =
         impl_->glbAttachment_ ? impl_->glbAttachment_->name_.size() : 0;
@@ -1673,7 +1631,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         });
     };
 
-    auto pointBufferSingletonStats = impl_->pointBuffers_.singleton_stats();
+    auto pointBufferSingletonStats = pointBuffers_.singleton_stats();
     auto objectMemberSingletonStats = objectMemberStorage().singleton_stats();
     auto arrayMemberSingletonStats = arrayMemberStorage().singleton_stats();
     auto arrayArenaSingletons = nlohmann::json::object({
@@ -1796,7 +1754,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         }
 
         auto geometryType = geometryAddress.column() == ColumnId::GeometryViews
-            ? impl_->geomViews_.at(geometryAddress.index()).type_
+            ? geomViews_.at(geometryAddress.index()).type_
             : geometryTypeForColumn(geometryAddress.column());
         auto typeKey = geometryTypeKey(geometryType);
 
@@ -1997,7 +1955,7 @@ size_t TileFeatureLayer::size() const
 
 uint64_t TileFeatureLayer::numVertices() const
 {
-    return static_cast<uint64_t>(impl_->pointBuffers_.byte_size() / sizeof(glm::vec3));
+    return static_cast<uint64_t>(pointBuffers_.byte_size() / sizeof(glm::vec3));
 }
 
 model_ptr<Feature> TileFeatureLayer::at(size_t i) const
@@ -2078,7 +2036,7 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     auto oldDict = strings();
     // Reset simfil environment and clear expression cache
-    impl_->expressionCache_.reset(makeEnvironment(newDict));
+    impl_->expressionCache_.reset(Impl::makeSchemaAwareEnvironment(newDict, impl_->schemaRegistry_));
     if (auto res = ModelPool::setStrings(newDict); !res)
         return tl::unexpected<simfil::Error>(std::move(res.error()));
 
@@ -2094,7 +2052,7 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
                 return tl::unexpected<simfil::Error>(res.error());
         }
     }
-    for (auto& fid : impl_->featureIds_) {
+    for (auto& fid : featureIds_) {
         if (auto resolvedName = oldDict->resolve(fid.typeId_)) {
             if (auto res = newDict->emplace(*resolvedName))
                 fid.typeId_ = *res;
@@ -2163,7 +2121,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
-    case ColumnId::GeometryArrayView: {
+    case ColumnId::GeometryArrayView:
+    case ColumnId::FeatureGeometryArrayView: {
         auto resolved = otherLayer->resolve<GeometryArrayView>(*otherNode);
         auto newNode = newArray(resolved->size(), true);
         newCacheNode = newNode;
@@ -2201,6 +2160,14 @@ ModelNode::Ptr TileFeatureLayer::clone(
                     newNode->append(pt);
                     return true;
                 });
+            if (resolved->geomType() == GeomType::Polygon && resolved->numPolygonRings() > 1) {
+                std::vector<uint32_t> ringStarts;
+                ringStarts.reserve(resolved->numPolygonRings());
+                for (uint32_t ringIndex = 0; ringIndex < resolved->numPolygonRings(); ++ringIndex) {
+                    ringStarts.push_back(resolved->polygonRingStart(ringIndex));
+                }
+                newNode->setPolygonRingStarts(ringStarts);
+            }
             break;
         }
         if (auto geometryStage = resolved->stage()) {
@@ -2211,7 +2178,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
-    case ColumnId::GeometryCollections: {
+    case ColumnId::GeometryCollections:
+    case ColumnId::FeatureGeometryCollectionView: {
         auto resolved = otherLayer->resolve<GeometryCollection>(*otherNode);
         auto newNode = newGeometryCollection(resolved->numGeometries(), true);
         newCacheNode = newNode;
@@ -2363,7 +2331,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
         }
         break;
     }
-    case ColumnId::AttributeLayerLists: {
+    case ColumnId::AttributeLayerLists:
+    case ColumnId::FeatureAttributeLayerListView: {
         auto resolved = otherLayer->resolve<AttributeLayerList>(*otherNode);
         auto newNode = newAttributeLayers(resolved->size(), true);
         newCacheNode = newNode;
@@ -2394,8 +2363,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
     case ColumnId::SourceDataReferenceCollections: {
         auto resolved = otherLayer->resolve<SourceDataReferenceCollection>(*otherNode);
         auto items = std::vector<QualifiedSourceDataReference>(
-            otherLayer->impl_->sourceDataReferences_.begin() + resolved->offset_,
-            otherLayer->impl_->sourceDataReferences_.begin() + resolved->offset_ + resolved->size_);
+            otherLayer->sourceDataReferences_.begin() + resolved->offset_,
+            otherLayer->sourceDataReferences_.begin() + resolved->offset_ + resolved->size_);
         newCacheNode = newSourceDataReferenceCollection({items.begin(), items.end()});
         break;
     }
@@ -2493,19 +2462,6 @@ void TileFeatureLayer::clone(
     }
 }
 
-Geometry::Storage& TileFeatureLayer::vertexBufferStorage()
-{
-    return impl_->pointBuffers_;
-}
-
-Geometry::ViewData const* TileFeatureLayer::geometryViewData(simfil::ModelNodeAddress address) const
-{
-    if (address.column() != ColumnId::GeometryViews) {
-        return nullptr;
-    }
-    return &impl_->geomViews_.at(address.index());
-}
-
 std::optional<uint8_t> TileFeatureLayer::geometryStage(simfil::ModelNodeAddress address) const
 {
     switch (address.column()) {
@@ -2516,7 +2472,7 @@ std::optional<uint8_t> TileFeatureLayer::geometryStage(simfil::ModelNodeAddress 
     case ColumnId::AabbGeometries:
     case ColumnId::GltfNodeIndexGeometries: {
         auto const compactIndex = extraGeometryDataStorageIndex(address.index());
-        if (auto storedStage = geometryStageAt(impl_->geomStages_, compactIndex)) {
+        if (auto storedStage = geometryStageAt(geomStages_, compactIndex)) {
             return storedStage;
         }
         auto fallbackStage = stage_.value_or(layerInfo_ ? layerInfo_->highFidelityStage_ : 0U);
@@ -2526,75 +2482,9 @@ std::optional<uint8_t> TileFeatureLayer::geometryStage(simfil::ModelNodeAddress 
         return static_cast<uint8_t>(fallbackStage);
     }
     case ColumnId::GeometryViews:
-        return geometryStage(impl_->geomViews_.at(address.index()).baseGeometry_);
+        return geometryStage(geomViews_.at(address.index()).baseGeometry_);
     default:
         return std::nullopt;
-    }
-}
-
-void TileFeatureLayer::setGeometryStage(
-    simfil::ModelNodeAddress address,
-    std::optional<uint8_t> stage)
-{
-    switch (address.column()) {
-    case ColumnId::PointGeometries:
-    case ColumnId::LineGeometries:
-    case ColumnId::PolygonGeometries:
-    case ColumnId::MeshGeometries:
-    case ColumnId::AabbGeometries:
-    case ColumnId::GltfNodeIndexGeometries: {
-        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
-        ensureGeometryStageCapacity(impl_->geomStages_, compactIndex);
-        impl_->geomStages_.at(compactIndex) = stage.value_or(InvalidGeometryStage);
-        break;
-    }
-    case ColumnId::GeometryViews:
-        break;
-    default:
-        break;
-    }
-}
-
-simfil::ModelNodeAddress TileFeatureLayer::geometrySourceDataReferences(simfil::ModelNodeAddress address) const
-{
-    switch (address.column()) {
-    case ColumnId::PointGeometries:
-    case ColumnId::LineGeometries:
-    case ColumnId::PolygonGeometries:
-    case ColumnId::MeshGeometries:
-    case ColumnId::AabbGeometries:
-    case ColumnId::GltfNodeIndexGeometries: {
-        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
-        return geometrySourceRefsAt(impl_->geomSourceDataRefs_, compactIndex);
-    }
-    case ColumnId::GeometryViews:
-        return impl_->geomViews_.at(address.index()).sourceDataReferences_;
-    default:
-        return {};
-    }
-}
-
-void TileFeatureLayer::setGeometrySourceDataReferences(
-    simfil::ModelNodeAddress address,
-    simfil::ModelNodeAddress refsAddress)
-{
-    switch (address.column()) {
-    case ColumnId::PointGeometries:
-    case ColumnId::LineGeometries:
-    case ColumnId::PolygonGeometries:
-    case ColumnId::MeshGeometries:
-    case ColumnId::AabbGeometries:
-    case ColumnId::GltfNodeIndexGeometries: {
-        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
-        ensureGeometrySourceRefCapacity(impl_->geomSourceDataRefs_, compactIndex);
-        impl_->geomSourceDataRefs_.at(compactIndex) = refsAddress;
-        break;
-    }
-    case ColumnId::GeometryViews:
-        impl_->geomViews_.at(address.index()).sourceDataReferences_ = refsAddress;
-        break;
-    default:
-        break;
     }
 }
 

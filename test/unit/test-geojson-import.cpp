@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -331,6 +332,82 @@ TEST_CASE("TileFeatureLayer best-effort GeoJSON import shares the same pipeline"
     REQUIRE(
         output["features"][0]["properties"]["layer"]["restrictions"]["turn"]["validity"]["direction"] ==
         "POSITIVE");
+}
+
+TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonImport][Polygon]")
+{
+    auto layerInfo = makeGenericLayerInfo();
+    auto tile = makeTile(37392110387213ULL, layerInfo, "PolygonHoleNode");
+
+    auto input = R"json(
+    {
+      "type": "FeatureCollection",
+      "geometryAnchor": [0.0, 0.0, 0.0],
+      "features": [
+        {
+          "type": "Feature",
+          "id": "AnyFeature.37392110387213.0",
+          "typeId": "AnyFeature",
+          "tileId": 37392110387213,
+          "featureIndex": 0,
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+              [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 0.0]],
+              [[1.0, 1.0, 0.0], [1.0, 3.0, 0.0], [3.0, 3.0, 0.0], [3.0, 1.0, 0.0], [1.0, 1.0, 0.0]]
+            ]
+          },
+          "properties": {}
+        }
+      ]
+    })json"_json;
+
+    REQUIRE_NOTHROW(tile->fromJson(
+        input,
+        GeoJsonImportOptions{
+            .strict_ = true,
+            .fallbackFeatureType_ = "AnyFeature",
+            .objectPropertiesAsAttributeLayers_ = true,
+        }));
+
+    auto feature = tile->find("AnyFeature.37392110387213.0");
+    REQUIRE(feature);
+    auto geometry = feature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::Polygon, 0);
+    REQUIRE(geometry);
+    REQUIRE(geometry->numPolygonRings() == 2);
+    REQUIRE(geometry->polygonRingStart(0) == 0);
+    REQUIRE(geometry->polygonRingStart(1) == 5);
+
+    auto output = tile->toJson();
+    auto const& coordinates = output["features"][0]["geometry"]["coordinates"];
+    REQUIRE(coordinates.size() == 2);
+    REQUIRE(coordinates[0].size() == 5);
+    REQUIRE(coordinates[1].size() == 5);
+    REQUIRE(coordinates == input["features"][0]["geometry"]["coordinates"]);
+
+    std::stringstream tileBytes;
+    tile->write(tileBytes);
+    auto const serializedTile = tileBytes.str();
+    auto roundtrippedTile = std::make_shared<TileFeatureLayer>(
+        std::vector<uint8_t>(serializedTile.begin(), serializedTile.end()),
+        [&](auto&& mapId, auto&& layerId) {
+            REQUIRE(mapId == "GeoJsonImportMap");
+            REQUIRE(layerId == "GeoJsonAny");
+            return layerInfo;
+        },
+        [&](auto&& nodeId) {
+            REQUIRE(nodeId == "PolygonHoleNode");
+            return tile->strings();
+        });
+
+    auto roundtrippedFeature = roundtrippedTile->find("AnyFeature.37392110387213.0");
+    REQUIRE(roundtrippedFeature);
+    auto roundtrippedGeometry = roundtrippedFeature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::Polygon, 0);
+    REQUIRE(roundtrippedGeometry);
+    REQUIRE(roundtrippedGeometry->numPolygonRings() == 2);
+    REQUIRE(roundtrippedGeometry->polygonRingStart(0) == 0);
+    REQUIRE(roundtrippedGeometry->polygonRingStart(1) == 5);
+    REQUIRE(roundtrippedTile->toJson()["features"][0]["geometry"]["coordinates"] == coordinates);
 }
 
 TEST_CASE("Large sanitized GeoJSON fixture roundtrips", "[GeoJsonImport][Fixture]")

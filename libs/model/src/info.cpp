@@ -1,11 +1,13 @@
 #include "info.h"
 #include "stream.h"
 #include "mapget/log.h"
+#include "schemaregistry.h"
 
 #include <tuple>
 #include <random>
 #include <sstream>
 #include <charconv>
+#include <mutex>
 #include <regex>
 
 namespace mapget
@@ -29,6 +31,13 @@ std::optional<T> from_chars(std::string_view s, Args... args)
     if (result.ec != std::errc{} || result.ptr != end)
         return {};
     return number;
+}
+
+/** Serialize LayerInfo schema cache access because the cache is mutable and lazy. */
+std::mutex& schemaRegistryMutex()
+{
+    static std::mutex mutex;
+    return mutex;
 }
 
 }
@@ -425,18 +434,20 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         // High-fidelity stage is clamped into the configured stage range so
         // downstream geometry-name lookups never index past the metadata.
 
-        return std::make_shared<LayerInfo>(LayerInfo{
-            j.value("layerId", layerId),
-            type,
-            featureTypes,
-            j.value("zoomLevels", std::vector<int>()),
-            coverages,
-            stages,
-            stageLabels,
-            highFidelityStage,
-            j.value("canRead", true),
-            j.value("canWrite", false),
-            Version::fromJson(j.value("version", Version().toJson()))});
+        auto result = std::make_shared<LayerInfo>();
+        result->layerId_ = j.value("layerId", layerId);
+        result->type_ = type;
+        result->featureTypes_ = std::move(featureTypes);
+        result->zoomLevels_ = j.value("zoomLevels", std::vector<int>());
+        result->coverage_ = std::move(coverages);
+        result->stages_ = stages;
+        result->stageLabels_ = std::move(stageLabels);
+        result->highFidelityStage_ = highFidelityStage;
+        result->canRead_ = j.value("canRead", true);
+        result->canWrite_ = j.value("canWrite", false);
+        result->version_ = Version::fromJson(j.value("version", Version().toJson()));
+        result->featureModelSchema_ = j.value("featureModelSchema", nlohmann::json{});
+        return result;
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "LayerInfo");
@@ -457,7 +468,7 @@ nlohmann::json LayerInfo::toJson() const
         coverages.push_back(item.toJson());
     }
 
-    return nlohmann::json{
+    auto result = nlohmann::json{
         {"layerId", layerId_},
         {"type", type_},
         {"featureTypes", featureTypes},
@@ -469,6 +480,25 @@ nlohmann::json LayerInfo::toJson() const
         {"canRead", canRead_},
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};
+
+    if (!featureModelSchema_.is_null()) {
+        result["featureModelSchema"] = featureModelSchema_;
+    }
+
+    return result;
+}
+
+std::shared_ptr<SchemaRegistry> LayerInfo::schemaRegistry() const
+{
+    if (featureModelSchema_.is_null()) {
+        return nullptr;
+    }
+
+    std::lock_guard lock(schemaRegistryMutex());
+    if (!schemaRegistry_) {
+        schemaRegistry_ = SchemaRegistry::fromJson(featureModelSchema_);
+    }
+    return schemaRegistry_;
 }
 
 FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const

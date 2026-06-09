@@ -127,6 +127,12 @@ model_ptr<SourceDataCompoundNode> resolveInternal(tag<SourceDataCompoundNode>, T
 
 tl::expected<void, simfil::Error> TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
 {
+    // Merged/container views can surface child nodes from another model. Always
+    // let the owning model interpret its own column/index address.
+    if (auto owner = n.owningModel(); owner && owner.get() != this) {
+        return owner->resolve(n, cb);
+    }
+
     if (n.addr().column() == Compound) {
         cb(*resolve<SourceDataCompoundNode>(n));
         return {};
