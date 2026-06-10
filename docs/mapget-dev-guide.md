@@ -413,7 +413,7 @@ When the release is published, GitHub Actions will automatically:
 - Use `setuptools_scm` to determine the version from the git tag
 - Pass this version to CMake during the build process (overriding the default in CMakeLists.txt)
 - Validate that the git tag matches the CMakeLists.txt version (release will fail if they don't match)
-- Build wheels for all supported platforms (Linux x86_64/aarch64, macOS Intel/ARM, Windows) and Python versions (3.10-3.13)
+- Build wheels for all supported platforms (Linux x86_64/aarch64, macOS Intel/ARM, Windows) and Python versions (3.10-3.14)
 - Upload the official release to PyPI
 
 ### Development Snapshots
