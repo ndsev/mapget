@@ -62,11 +62,16 @@ public:
             loopThread_->getLoop());
     }
 
-    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> get(std::string path)
+    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> get(
+        std::string path,
+        std::vector<std::pair<std::string, std::string>> headers = {})
     {
         auto req = drogon::HttpRequest::newHttpRequest();
         req->setMethod(drogon::Get);
         req->setPath(std::move(path));
+        for (auto const& [key, value] : headers) {
+            req->addHeader(key, value);
+        }
         return client_->sendRequest(req);
     }
 
@@ -130,7 +135,7 @@ public:
     {
         auto connectReq = drogon::HttpRequest::newHttpRequest();
         connectReq->setMethod(drogon::Get);
-        connectReq->setPath("/tiles");
+        connectReq->setPath("/interactive");
         if (sendAuthHeader) {
             connectReq->addHeader("X-USER-ROLE", "Tropico-Viewer");
         }
@@ -181,7 +186,7 @@ public:
             if (clientId > 0) {
                 const auto waitMs = std::clamp<int64_t>(remainingMs, 1, 1000);
                 const auto [result, resp] = pullClient_.get(fmt::format(
-                    "/tiles/next?clientId={}&waitMs={}&maxBytes={}",
+                    "/interactive/payload?clientId={}&waitMs={}&maxBytes={}",
                     clientId,
                     waitMs,
                     64 * 1024 * 1024));
@@ -209,7 +214,7 @@ public:
                     return true;
                 }
                 else {
-                    setError(fmt::format("Unexpected /tiles/next response status: {}", static_cast<int>(resp->statusCode())));
+                    setError(fmt::format("Unexpected /interactive/payload response status: {}", static_cast<int>(resp->statusCode())));
                     return true;
                 }
 
@@ -555,6 +560,39 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         auto& service = test::httpService();
         auto remoteDataSource = std::make_shared<RemoteDataSource>("127.0.0.1", dsProc.port());
         service.add(remoteDataSource);
+
+        // `/sources` keeps the legacy array body while exposing catalog metadata.
+        {
+            SyncHttpClient serviceClient("127.0.0.1", service.port());
+            auto [result, resp] = serviceClient.get("/sources");
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(resp != nullptr);
+            REQUIRE(resp->statusCode() == drogon::k200OK);
+            REQUIRE_FALSE(resp->getHeader("X-Mapget-Sources-Revision").empty());
+            REQUIRE(resp->getHeader("X-Mapget-Sources-Config-Status") == "ok");
+
+            auto sources = nlohmann::json::parse(std::string(resp->body()));
+            REQUIRE(sources.is_array());
+            REQUIRE_FALSE(sources.empty());
+            auto const& source = sources.front();
+            REQUIRE(source.value("status", "") == "ready");
+            REQUIRE(source.contains("sourceId"));
+            REQUIRE(source.contains("configIndex"));
+
+            auto etag = resp->getHeader("ETag");
+            REQUIRE_FALSE(etag.empty());
+            auto [notModifiedResult, notModifiedResp] = serviceClient.get(
+                "/sources",
+                {{"If-None-Match", etag}});
+            REQUIRE(notModifiedResult == drogon::ReqResult::Ok);
+            REQUIRE(notModifiedResp != nullptr);
+            REQUIRE(notModifiedResp->statusCode() == drogon::k304NotModified);
+
+            auto [nonBlockingResult, nonBlockingResp] = serviceClient.get("/sources?blocking=false");
+            REQUIRE(nonBlockingResult == drogon::ReqResult::Ok);
+            REQUIRE(nonBlockingResp != nullptr);
+            REQUIRE(nonBlockingResp->statusCode() == drogon::k200OK);
+        }
 
         auto countReceivedTiles = [](auto& client, auto mapId, auto layerId, auto tiles) {
             auto tileCount = 0;

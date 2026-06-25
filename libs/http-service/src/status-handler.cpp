@@ -106,9 +106,9 @@ th { background: #f1f5f9; }
             <tbody></tbody>
         </table>
         <div class="muted" style="margin-top:8px">
-            `pending-controller-*` covers tile frames currently queued for `/tiles/next` pulls.
+            `pending-controller-*` covers tile frames currently queued for `/interactive/payload` pulls.
             `pending-pull-requests` counts currently blocked long-poll pull requests.
-            `total-forwarded-*` counts tile frames/bytes already served through `/tiles/next`.
+            `total-forwarded-*` counts tile frames/bytes already served through `/interactive/payload`.
         </div>
     </div>
 

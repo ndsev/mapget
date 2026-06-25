@@ -194,8 +194,8 @@ For interactive clients, the transport is split into a control channel and a pul
 ```mermaid
 sequenceDiagram
   participant Client
-  participant Ws as WebSocket /tiles
-  participant Http as /tiles/next
+  participant Ws as WebSocket /interactive
+  participant Http as /interactive/payload
   participant Service as Service
   participant Worker as Service Worker
 
@@ -204,7 +204,7 @@ sequenceDiagram
   Ws-->>Client: RequestContext(requestId, clientId)
   Ws-->>Client: Status(requests, allDone=false)
   loop while more frames are needed
-    Client->>Http: GET /tiles/next?clientId=...&maxBytes=...
+    Client->>Http: GET /interactive/payload?clientId=...&maxBytes=...
     Http->>Ws: pop queued VTLV frame batch
     Worker-->>Ws: enqueue StringPool / TileLayer frames
     Http-->>Client: binary VTLV batch
@@ -212,13 +212,15 @@ sequenceDiagram
   Ws-->>Client: Status(allDone=true)
 ```
 
-For interactive clients, tile streaming uses WebSocket `GET /tiles` as a control channel. Clients send request updates there, receive `RequestContext` / `Status` control frames back, and pull the actual binary tile frames via `/tiles/next`. Sending a new request message replaces the current in-flight request on that connection.
+For interactive clients, tile streaming uses WebSocket `GET /interactive` as a control channel. Clients send request updates there, receive `RequestContext` / `Status` control frames back, and pull the actual binary tile frames via `/interactive/payload`. Sending a new request message replaces the current in-flight request on that connection.
+
+Datasource startup is exposed through the service-owned source catalog. Config-created datasource constructors receive `DataSourceInitContext`, allowing them to publish human-readable loading text through `setStatusMessage`, optional `0..100` progress through `setProgress`, and to stop early when `isCancelled` becomes true after config reload or shutdown. The default `/sources` request waits until the current reload has no initializing datasource rows, preserving legacy startup semantics; `/sources?blocking=false` returns the immediate catalog snapshot. Status/progress updates increment the `/sources` revision and are also forwarded as lightweight `mapget.sources.changed` WebSocket frames with an embedded per-source delta, so interactive clients can update loading indicators without reloading heavy layer/schema metadata.
 
 ## HTTP service internals
 
 `mapget::HttpService` binds the core service to an HTTP server implementation. Its responsibilities are:
 
-- map HTTP/WebSocket endpoints to service calls (`/sources`, `/tiles`, `/tiles/next`, `/status`, `/status-data`, `/locate`, `/config`),
+- map HTTP/WebSocket endpoints to service calls (`/sources`, `/tiles`, `/interactive`, `/interactive/payload`, `/status`, `/status-data`, `/locate`, `/config`),
 - parse JSON requests and build `LayerTilesRequest` objects,
 - serialize tile responses as JSONL or binary streams,
 - mount static filesystem roots configured through `--webapp` and `--static-mount`,
@@ -237,9 +239,9 @@ For `/tiles`, the HTTP layer:
 
 In JSONL mode the response is a sequence of newline‑separated JSON objects. In binary mode the HTTP layer uses `TileLayerStream::Writer` to serialize string pool updates and tile blobs. Binary responses can optionally be compressed using gzip if the client sends `Accept-Encoding: gzip`.
 
-WebSocket `/tiles` uses the same request JSON shape but serves only as the control plane: it emits `RequestContext` and `Status` VTLV frames, while `/tiles/next` performs the long-poll delivery of one or more binary tile frames (optionally batched up to `maxBytes`).
+WebSocket `/interactive` uses the same request JSON shape but serves only as the control plane: it emits `RequestContext` and `Status` VTLV frames, while `/interactive/payload` performs the long-poll delivery of one or more binary tile frames (optionally batched up to `maxBytes`).
 
-Server-side search-as-map uses the same backend execution path for two transport shapes. REST clients call `POST /search` with the simplified `query`, `scope`, `withFields` and `requests` envelope. Interactive WebSocket clients still send `searchId`, `searchQuery`, `searchScope`, `withFields` and `refresh` through the `/tiles` control channel so replacement/update semantics remain explicit. Search requests must use plain `tileIds`; the service loads all advertised source feature tile stages through the regular tile scheduler/cache path, assembles staged payloads when needed, runs the SIMFIL search job on the worker pool, and emits `TileSearchResultLayer` chunks. Search progress is sent as binary `Status` frames or JSONL objects with `type: "mapget.search.status"`.
+Server-side search-as-map uses the same backend execution path for two transport shapes. REST clients call `POST /search` with the simplified `query`, `scope`, `withFields` and `requests` envelope. Interactive WebSocket clients still send `searchId`, `searchQuery`, `searchScope`, `withFields` and `refresh` through the `/interactive` control channel so replacement/update semantics remain explicit. Search requests must use plain `tileIds`; the service loads all advertised source feature tile stages through the regular tile scheduler/cache path, assembles staged payloads when needed, runs the SIMFIL search job on the worker pool, and emits `TileSearchResultLayer` chunks. Search progress is sent as binary `Status` frames or JSONL objects with `type: "mapget.search.status"`.
 
 ### Search-as-map architecture
 
@@ -247,7 +249,7 @@ The search-as-map implementation deliberately reuses the existing tile streaming
 
 - `tiles-request-json.*` owns both search request parsers: simplified REST `/search` fields and interactive WebSocket search fields.
 - `tiles-http-handler.cpp` rejects search fields on `POST /tiles`, turns `POST /search` payloads into `FeatureLayerSearchTilesRequest` objects, and streams `TileSearchResultLayer` chunks or progress status objects with the same JSONL/binary response machinery as normal tiles.
-- `tiles-ws-session.cpp` turns interactive WebSocket search requests into `FeatureLayerSearchTilesRequest` objects, tracks search-specific outgoing queue keys, and sends result chunks as `TileSearchResultLayer` VTLV frames through `/tiles/next`.
+- `tiles-ws-session.cpp` turns interactive WebSocket search requests into `FeatureLayerSearchTilesRequest` objects, tracks search-specific outgoing queue keys, and sends result chunks as `TileSearchResultLayer` VTLV frames through `/interactive/payload`.
 - `Service::request(FeatureLayerSearchTilesRequest)` validates datasource access, creates a child `LayerTilesRequest` for the source feature payloads, waits until every required stage for a tile is available, and schedules the SIMFIL evaluation job.
 - `searchFeatureLayerAsResultLayer(...)` evaluates the predicate and `withFields` expressions, copies the matched feature id and display geometry into a transient `TileSearchResultLayer`, and attaches progress/result metadata, typed trace aggregates, plus parsed SIMFIL diagnostics.
 
@@ -256,7 +258,7 @@ The result layer is transient: source feature tiles can still come from or be wr
 ```mermaid
 flowchart LR
   Client[Client]
-  Transport[HTTP /search<br/>or WS /tiles]
+  Transport[HTTP /search<br/>or WS /interactive]
   Parser[tiles-request-json<br/>search fields]
   SearchReq[FeatureLayerSearchTilesRequest]
   Service[Service]
@@ -286,7 +288,7 @@ The end-to-end search path is:
 ```mermaid
 sequenceDiagram
   participant Client
-  participant Transport as HTTP /search or WS /tiles
+  participant Transport as HTTP /search or WS /interactive
   participant Service
   participant Child as Child LayerTilesRequest
   participant Worker as Tile Worker
@@ -361,7 +363,7 @@ String pools are streamed incrementally. The server keeps a `StringPoolOffsetMap
 
 - If the client has never seen this node, the writer serialises the full string pool and prepends a `StringPool` message before the first tile message.
 - If new strings were added since the last request, the writer serialises only the suffix `[oldHighest+1, highest]` and sends this as a `StringPool` update before the tile.
-- Clients attach their current offsets as part of the `/tiles` request; the `TileLayerStream::Reader` merges incoming string pool chunks into a `StringPoolCache` so that subsequent tile messages can reference strings by ID without repeating them.
+- Clients attach their current offsets as part of tile-stream requests; the `TileLayerStream::Reader` merges incoming string pool chunks into a `StringPoolCache` so that subsequent tile messages can reference strings by ID without repeating them.
 
 For persistent caches the writer can be configured with `differentialStringUpdates=false` so that complete string pools are written to disk; for HTTP streaming it is normally enabled to minimise bandwidth.
 

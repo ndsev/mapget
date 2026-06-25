@@ -26,7 +26,7 @@ AuthHeaders tilesWsAuthHeadersFromRequest(const drogon::HttpRequestPtr& req);
 /** Encode a payload with the TileLayerStream frame header. */
 std::string tilesWsEncodeStreamMessage(TileLayerStream::MessageType type, std::string_view payload);
 
-/** Create one websocket session for an accepted `/tiles` connection. */
+/** Create one websocket session for an accepted `/interactive` connection. */
 std::shared_ptr<TilesWsSession> tilesWsCreateSession(
     HttpService& service,
     std::weak_ptr<drogon::WebSocketConnection> conn,
@@ -35,10 +35,10 @@ std::shared_ptr<TilesWsSession> tilesWsCreateSession(
 /** Register one session in the status-data weak list. */
 void tilesWsRegisterForMetrics(const std::shared_ptr<TilesWsSession>& session);
 
-/** Register one session for `/tiles/next?clientId=...` lookups. */
+/** Register one session for `/interactive/payload?clientId=...` lookups. */
 void tilesWsRegisterSession(const std::shared_ptr<TilesWsSession>& session);
 
-/** Remove one session from `/tiles/next?clientId=...` lookups. */
+/** Remove one session from `/interactive/payload?clientId=...` lookups. */
 void tilesWsUnregisterSession(int64_t clientId);
 
 /** Return the numeric client id assigned to a session. */

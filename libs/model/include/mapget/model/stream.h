@@ -52,6 +52,12 @@ public:
          * Binary TileSearchResultLayer payload for server-side search-as-map streams.
          */
         TileSearchResultLayer = 7,
+        /**
+         * JSON-encoded datasource catalog invalidation for interactive streams.
+         *
+         * Payload: UTF-8 JSON bytes (not null-terminated).
+         */
+        SourceCatalogChange = 8,
         EndOfStream = 128
     };
 
@@ -89,6 +95,7 @@ public:
      *   + Added explicit polygon ring metadata for hole-aware polygons.
      * - Version 1.9:
      *   + Added typed SIMFIL trace aggregates to TileSearchResultLayer.
+     *   + Added SourceCatalogChange control messages.
      */
     static constexpr Version CurrentProtocolVersion{1, 9, 0};
 

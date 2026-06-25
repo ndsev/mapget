@@ -1,6 +1,6 @@
 # HTTP / WebSocket API Guide
 
-Mapget exposes a small HTTP + WebSocket API that lets clients discover datasources, stream tiles, locate features by ID and inspect or update the running configuration. Interactive tile streaming now uses a WebSocket control channel plus `/tiles/next` pull requests for the binary tile data. This guide describes the endpoints and their request and response formats.
+Mapget exposes a small HTTP + WebSocket API that lets clients discover datasources, stream tiles, locate features by ID and inspect or update the running configuration. Interactive tile streaming uses the `/interactive` WebSocket control channel plus `/interactive/payload` pull requests for the binary tile data. This guide describes the endpoints and their request and response formats.
 
 ## Base URL and formats
 
@@ -15,13 +15,33 @@ The binary format and the logical feature model are described in more detail in 
 
 ## `/sources` – list datasources
 
-`GET /sources` returns a JSON array describing all datasources currently attached to the service.
+`GET /sources` returns a backward-compatible JSON array describing the datasource catalog.
 
 - **Method:** `GET`
+- **Query parameters:** optional `blocking=false` returns immediately while a datasource reload is still in progress.
 - **Request body:** none
 - **Response:** `application/json` array of datasource descriptors
 
-Each item contains map ID, available layers and basic metadata. Each layer entry includes its type, `zoomLevels`, `coverage`, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`) and feature-type information. This endpoint is typically used by frontends to discover which maps and layers can be requested via `/tiles`.
+By default, `/sources` preserves legacy behavior and waits until the current config-backed datasource reload has completed before returning. Clients that want live startup indicators should call `/sources?blocking=false`; that form returns immediately and may include initializing entries. Ready datasources are serialized as normal `DataSourceInfo` objects plus catalog metadata. Initializing or failed config entries are serialized as placeholder `DataSourceInfo`-compatible objects with empty `layers`, `maxParallelJobs: 0`, and catalog metadata. This keeps old array-shape clients working while allowing frontends to show per-datasource startup state.
+
+Each item includes:
+
+- `status`: `initializing`, `ready` or `failed`.
+- `statusMessage`: human-readable progress or failure text.
+- `progress`: optional datasource-constructor progress percentage in the range `0..100`.
+- `sourceId`: stable source identity from config `id`/`sourceId`, or generated as `config:<index>`.
+- `configIndex`: order in `mapviewer.yaml`.
+- `type`: datasource type from config.
+- `configuredMapId` when known before construction.
+
+Ready entries also contain map ID, available layers and basic metadata. Each layer entry includes its type, `zoomLevels`, `coverage`, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`) and feature-type information. This endpoint is typically used by frontends to discover which maps and layers can be requested via `POST /tiles` or `/interactive`.
+
+Response headers:
+
+- `X-Mapget-Sources-Revision`: monotonic datasource-catalog revision.
+- `ETag`: `"sources-<revision>"`; clients may send `If-None-Match` and receive `304 Not Modified`.
+- `X-Mapget-Sources-Config-Status`: `ok` or `error`.
+- `X-Mapget-Sources-Config-Message`: config parse/validation error text when present.
 
 ## `/location` – location lookup
 
@@ -208,7 +228,7 @@ Use `withFields` for values that clients need for labels, grouping, color catego
 
 ### Interactive WebSocket Search
 
-WebSocket search remains part of the `/tiles` control channel because it supports replacing an ongoing logical search. The WebSocket request shape uses `searchId`, `searchQuery`, optional `searchScope`, optional `withFields`, and optional `refresh`. Reusing the same `searchId` updates the ongoing query in the client session.
+WebSocket search remains part of the `/interactive` control channel because it supports replacing an ongoing logical search. The WebSocket request shape uses `searchId`, `searchQuery`, optional `searchScope`, optional `withFields`, and optional `refresh`. Reusing the same `searchId` updates the ongoing query in the client session.
 
 Example control-channel message:
 
@@ -307,21 +327,22 @@ Search status frames/JSONL lines have `type: "mapget.search.status"` and describ
 
 Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`, `Aborted` and `Failed`. Failed statuses also include an `error` string. WebSocket status objects also include `searchId`, `requestKey`, and optional `refresh`.
 
-## `/tiles` – interactive control channel (WebSocket)
+## `/interactive` – interactive control channel (WebSocket)
 
-`GET /tiles` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/tiles/next`.
+`GET /interactive` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/interactive/payload`.
 
-- **Connect:** `ws://<host>:<port>/tiles`
+- **Connect:** `ws://<host>:<port>/interactive`
 - **Client → Server:** send one *text* message containing tile `requests`, optional `stringPoolOffsets`, and optional interactive search fields (`searchId`, `searchQuery`, `searchScope`, `withFields`, `refresh`).
   - `stringPoolOffsets` is optional; the server remembers the latest offsets per WebSocket connection. Clients may re-send it to reset/resync offsets.
 - **Server → Client:** sends *binary* WebSocket messages carrying VTLV control frames.
-  - `RequestContext` frames contain a UTF-8 JSON payload with `requestId` and `clientId`. The `clientId` is then used for `/tiles/next`.
+  - `RequestContext` frames contain a UTF-8 JSON payload with `requestId`, `clientId` and `sourcesRevision`. The `clientId` is then used for `/interactive/payload`.
   - `Status` frames contain UTF-8 JSON describing per-request `RequestStatus` transitions, search progress updates, and human-readable messages. The final regular tile status frame has `"allDone": true`.
+  - `SourceCatalogChange` frames contain `{"type":"mapget.sources.changed","revision":<number>,"reason":<string>}`. Status-message and progress changes also include a `source` object with `sourceId`, `configIndex`, `type`, `status`, `statusMessage`, `progress`, `addOn` and optional `configuredMapId`, allowing clients to update loading UI without refetching `/sources`. Generic reload/add/remove changes omit `source` and tell clients to refetch `/sources`.
   - `LoadStateChange` exists in the protocol but is currently not emitted by the HTTP service.
 
-For search requests, `/tiles/next` returns normal stream frames plus `TileSearchResultLayer` frames. Clients should decode the binary message type and handle search-result layers separately from source `TileFeatureLayer` / `TileSourceDataLayer` frames.
+For search requests, `/interactive/payload` returns normal stream frames plus `TileSearchResultLayer` frames. Clients should decode the binary message type and handle search-result layers separately from source `TileFeatureLayer` / `TileSourceDataLayer` frames.
 
-Interactive sessions use bounded outgoing queues. If a client stops polling `/tiles/next` while replacing searches quickly, the service favours current request frames and may discard stale search-result frames for superseded requests. This keeps interactive search responsive instead of forcing the client to drain obsolete result layers.
+Interactive sessions use bounded outgoing queues. If a client stops polling `/interactive/payload` while replacing searches quickly, the service favours current request frames and may discard stale search-result frames for superseded requests. This keeps interactive search responsive instead of forcing the client to drain obsolete result layers.
 
 Each entry in a status frame's `requests` array contains `index`, `mapId`, `layerId`, numeric `status`, and `statusText`. For `NoDataSource` statuses, servers may also include `noDataSourceReason`:
 
@@ -333,9 +354,9 @@ Each entry in a status frame's `requests` array contains `index`, `mapId`, `laye
 
 To cancel, either send a new request message on the same connection (which replaces the current one) or close the WebSocket connection.
 
-## `/tiles/next` – pull binary tile frames
+## `/interactive/payload` – pull binary tile frames
 
-`GET /tiles/next` (also accepts `POST`) returns the next available binary tile frame batch for an active interactive `/tiles` session.
+`GET /interactive/payload` (also accepts `POST`) returns the next available binary tile frame batch for an active `/interactive` session.
 
 - **Method:** `GET` or `POST`
 - **Query parameters:**
@@ -500,7 +521,7 @@ The response contains:
 - `timestampMs`
 - `service`: service statistics, datasource info, cache occupancy, datasource-config counts, and optional tile-size-distribution data
 - `cache`: cache hit/miss counters and cache sizes
-- `tilesWebsocket`: control-channel metrics such as active sessions, pending queued frames for `/tiles/next`, blocked pull requests, and total forwarded bytes / frames
+- `tilesWebsocket`: control-channel metrics such as active sessions, pending queued frames for `/interactive/payload`, blocked pull requests, and total forwarded bytes / frames
 
 `service.datasource-config` reports datasource YAML load diagnostics:
 

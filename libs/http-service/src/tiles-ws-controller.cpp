@@ -126,7 +126,7 @@ public:
     }
 
     WS_PATH_LIST_BEGIN
-    WS_PATH_ADD("/tiles", drogon::Get);
+    WS_PATH_ADD("/interactive", drogon::Get);
     WS_PATH_LIST_END
 
 private:
@@ -140,7 +140,7 @@ void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService
 {
     app.registerController(std::make_shared<TilesWebSocketController>(service));
     app.registerHandler(
-        "/tiles/next",
+        "/interactive/payload",
         [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             tilesWsHandleNextRequest(req, std::move(callback));
         },

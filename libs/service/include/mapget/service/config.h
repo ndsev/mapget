@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -26,6 +27,39 @@ struct DataSourceConfigStats {
     size_t constructionFailed = 0;
 };
 
+/** Progress/cancellation hooks passed to config-created datasource constructors. */
+struct DataSourceInitContext {
+    /** Report human-readable constructor progress without requiring a ready DataSource instance. */
+    std::function<void(std::string)> setStatusMessage;
+
+    /** Report optional constructor progress as a percentage in the inclusive range 0..100. */
+    std::function<void(std::optional<float>)> setProgress;
+
+    /** Allow long-running constructors to stop work after config reloads or service shutdown. */
+    std::function<bool()> isCancelled;
+};
+
+/** Cheap, config-derived datasource facts available before construction starts. */
+struct DataSourceDescriptor {
+    /** Stable identity for frontend diffing and async completion lookup. */
+    std::string sourceId;
+
+    /** Preserves `mapviewer.yaml` order and gives clear diagnostics for config-entry failures. */
+    uint32_t configIndex = 0;
+
+    /** Needed for placeholder UI and error messages before a `DataSource` exists. */
+    std::string type;
+
+    /** Best-known map identity before construction; runtime `mapId` still comes from ready DataSourceInfo. */
+    std::optional<std::string> configuredMapId;
+
+    /** Prevents initializing/failed add-on sources from being shown as standalone maps. */
+    bool addOn = false;
+
+    /** Preserves current `/sources` authorization behavior before a ready DataSource exists. */
+    std::unordered_map<std::string, std::regex> authHeaderAlternatives;
+};
+
 
     /**
  * Singleton class that watches a particular YAML config file path.
@@ -42,6 +76,12 @@ class DataSourceConfigService
 public:
     using PublicConfigSectionSerializer =
         std::function<nlohmann::json(YAML::Node const& fullConfig)>;
+    using DataSourceConstructor =
+        std::function<DataSource::Ptr(YAML::Node const& arguments, DataSourceInitContext& initContext)>;
+    using LegacyDataSourceConstructor =
+        std::function<DataSource::Ptr(YAML::Node const& arguments)>;
+    using DataSourceDescribeFn =
+        std::function<DataSourceDescriptor(YAML::Node const& descriptor, uint32_t configIndex)>;
 
     /**
      * Gets the singleton instance of the DataSourceConfig class.
@@ -109,6 +149,16 @@ public:
     DataSource::Ptr makeDataSource(YAML::Node const& descriptor);
 
     /**
+     * Instantiates a data source with progress/cancellation hooks for statusful startup.
+     */
+    DataSource::Ptr makeDataSource(YAML::Node const& descriptor, DataSourceInitContext& initContext);
+
+    /**
+     * Extract cheap, non-networked catalog metadata from a datasource config entry.
+     */
+    [[nodiscard]] DataSourceDescriptor describeDataSource(YAML::Node const& descriptor, uint32_t configIndex) const;
+
+    /**
      * Registers a constructor for a given data source type.
      * @param typeName The name of the data source type.
      * @param constructor The constructor function to call for this data source type.
@@ -116,8 +166,18 @@ public:
      */
     void registerDataSourceType(
         std::string const& typeName,
-        std::function<DataSource::Ptr(YAML::Node const& arguments)> constructor,
-        nlohmann::json schema = {});
+        LegacyDataSourceConstructor constructor,
+        nlohmann::json schema = {},
+        DataSourceDescribeFn describe = {});
+
+    /**
+     * Registers a constructor that can report startup progress and observe cancellation.
+     */
+    void registerDataSourceType(
+        std::string const& typeName,
+        DataSourceConstructor constructor,
+        nlohmann::json schema = {},
+        DataSourceDescribeFn describe = {});
 
     /** Get (and lazily build) JSON schema that describes registered datasource types. */
     [[nodiscard]] nlohmann::json getDataSourceConfigSchema() const;
@@ -196,8 +256,9 @@ private:
     std::map<uint32_t, SubscriptionCallbacks> subscriptions_;
 
     struct DataSourceRegistration {
-        std::function<DataSource::Ptr(YAML::Node const&)> constructor_;
+        DataSourceConstructor constructor_;
         nlohmann::json schema_;
+        DataSourceDescribeFn describe_;
     };
 
     // Map of data source type names to their respective constructor functions.

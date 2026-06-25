@@ -46,6 +46,59 @@ nlohmann::json enabledSchema()
     };
 }
 
+void reportInitStatus(DataSourceInitContext& initContext, std::string message)
+{
+    if (initContext.setStatusMessage) {
+        initContext.setStatusMessage(std::move(message));
+    }
+}
+
+[[nodiscard]] bool initCancelled(DataSourceInitContext const& initContext)
+{
+    return initContext.isCancelled && initContext.isCancelled();
+}
+
+[[nodiscard]] std::optional<std::string> scalarString(YAML::Node const& node, std::string const& key)
+{
+    if (auto value = node[key]; value && value.IsScalar()) {
+        try {
+            return value.as<std::string>();
+        }
+        catch (std::exception const&) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::unordered_map<std::string, std::regex> parseAuthHeaderAlternatives(YAML::Node const& descriptor)
+{
+    std::unordered_map<std::string, std::regex> result;
+    for (auto authOption : descriptor["auth-header"]) {
+        auto key = authOption.first.as<std::string>();
+        auto value = authOption.second.as<std::string>();
+        std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        result.emplace(std::move(key), std::regex(value));
+    }
+    return result;
+}
+
+void applyGenericDataSourceOptions(DataSource& dataSource, YAML::Node const& descriptor)
+{
+    if (auto ttlNode = descriptor["ttl"]) {
+        auto ttlSeconds = ttlNode.as<int64_t>();
+        if (ttlSeconds < 0) {
+            throw std::runtime_error("`ttl` must be non-negative.");
+        }
+        dataSource.setTtl(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::seconds(ttlSeconds)));
+    }
+
+    for (auto const& [key, value] : parseAuthHeaderAlternatives(descriptor)) {
+        dataSource.requireAuthHeaderRegexMatchOption(key, value);
+    }
+}
+
 } // namespace
 
 DataSourceConfigService& DataSourceConfigService::get()
@@ -185,6 +238,12 @@ void DataSourceConfigService::loadConfig()
 
 DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descriptor)
 {
+    DataSourceInitContext initContext;
+    return makeDataSource(descriptor, initContext);
+}
+
+DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descriptor, DataSourceInitContext& initContext)
+{
     try {
         if (auto enabledNode = descriptor["enabled"];
             enabledNode.IsDefined() && !enabledNode.as<bool>(true))
@@ -193,59 +252,167 @@ DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descri
         }
     }
     catch (std::exception const& e) {
-        log().error("Invalid datasource `enabled` value: {}", e.what());
+        auto message = fmt::format("Invalid datasource `enabled` value: {}", e.what());
+        log().error("{}", message);
+        reportInitStatus(initContext, std::move(message));
         return nullptr;
     }
 
     if (auto typeNode = descriptor["type"]) {
-        std::lock_guard memberAccessLock(memberAccessMutex_);
         auto type = typeNode.as<std::string>();
-        auto it = constructors_.find(type);
-        if (it != constructors_.end()) {
-            try {
-                if (auto result = it->second.constructor_(descriptor)) {
-                    if (auto ttlNode = descriptor["ttl"]) {
-                        auto ttlSeconds = ttlNode.as<int64_t>();
-                        if (ttlSeconds < 0) {
-                            throw std::runtime_error("`ttl` must be non-negative.");
-                        }
-                        result->setTtl(std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::seconds(ttlSeconds)));
-                    }
-                    // Iterate over YAML key-value pairs.
-                    for (auto authOption : descriptor["auth-header"]) {
-                        auto key = authOption.first.as<std::string>();
-                        auto value = authOption.second.as<std::string>();
-                        result->requireAuthHeaderRegexMatchOption(key, std::regex(value));
-                    }
-                    return result;
-                }
-                log().error("Datasource constructor for type {} returned NULL.", type);
-                return nullptr;
-            }
-            catch (std::exception const& e) {
-                log().error("Exception while making `{}` datasource: {}", type, e.what());
-                return nullptr;
+        DataSourceConstructor constructor;
+        {
+            std::lock_guard memberAccessLock(memberAccessMutex_);
+            auto it = constructors_.find(type);
+            if (it != constructors_.end()) {
+                constructor = it->second.constructor_;
             }
         }
-        log().error("No constructor is registered for datasource type: {}", type);
-        return nullptr;
+
+        if (!constructor) {
+            auto message = fmt::format("No constructor is registered for datasource type: {}", type);
+            log().error("{}", message);
+            reportInitStatus(initContext, std::move(message));
+            return nullptr;
+        }
+
+        try {
+            if (initCancelled(initContext)) {
+                reportInitStatus(initContext, "Datasource construction was cancelled.");
+                return nullptr;
+            }
+            if (auto result = constructor(descriptor, initContext)) {
+                if (initCancelled(initContext)) {
+                    reportInitStatus(initContext, "Datasource construction was cancelled.");
+                    return nullptr;
+                }
+                applyGenericDataSourceOptions(*result, descriptor);
+                return result;
+            }
+            if (initCancelled(initContext)) {
+                reportInitStatus(initContext, "Datasource construction was cancelled.");
+                return nullptr;
+            }
+            auto message = fmt::format("Datasource constructor for type {} returned NULL.", type);
+            log().error("{}", message);
+            return nullptr;
+        }
+        catch (std::exception const& e) {
+            auto message = fmt::format("Exception while making `{}` datasource: {}", type, e.what());
+            log().error("{}", message);
+            reportInitStatus(initContext, std::move(message));
+            return nullptr;
+        }
     }
-    log().error("A YAML datasource descriptor is missing the `type` key!");
+    auto message = std::string("A YAML datasource descriptor is missing the `type` key!");
+    log().error("{}", message);
+    reportInitStatus(initContext, std::move(message));
     return nullptr;
+}
+
+DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node const& descriptor, uint32_t configIndex) const
+{
+    DataSourceDescriptor result;
+    result.configIndex = configIndex;
+    result.type = scalarString(descriptor, "type").value_or("");
+    result.sourceId = scalarString(descriptor, "id").value_or("");
+    if (result.sourceId.empty()) {
+        result.sourceId = scalarString(descriptor, "sourceId").value_or(fmt::format("config:{}", configIndex));
+    }
+    result.configuredMapId = scalarString(descriptor, "mapId");
+    if (!result.configuredMapId) {
+        result.configuredMapId = scalarString(descriptor, "configuredMapId");
+    }
+
+    try {
+        result.addOn = descriptor["addOn"].as<bool>(false);
+    }
+    catch (std::exception const&) {
+        result.addOn = false;
+    }
+
+    try {
+        result.authHeaderAlternatives = parseAuthHeaderAlternatives(descriptor);
+    }
+    catch (std::exception const& e) {
+        log().warn(
+            "Could not parse auth-header options for datasource config index {}: {}",
+            configIndex,
+            e.what());
+    }
+
+    DataSourceDescribeFn describe;
+    {
+        std::lock_guard memberAccessLock(memberAccessMutex_);
+        auto it = constructors_.find(result.type);
+        if (it != constructors_.end()) {
+            describe = it->second.describe_;
+        }
+    }
+
+    if (describe) {
+        DataSourceDescriptor described;
+        try {
+            described = describe(descriptor, configIndex);
+        }
+        catch (std::exception const& e) {
+            log().warn(
+                "Datasource descriptor callback for type {} at index {} failed: {}",
+                result.type,
+                configIndex,
+                e.what());
+            return result;
+        }
+        if (described.sourceId.empty()) {
+            described.sourceId = result.sourceId;
+        }
+        if (described.type.empty()) {
+            described.type = result.type;
+        }
+        described.configIndex = configIndex;
+        if (!described.configuredMapId) {
+            described.configuredMapId = result.configuredMapId;
+        }
+        if (described.authHeaderAlternatives.empty()) {
+            described.authHeaderAlternatives = std::move(result.authHeaderAlternatives);
+        }
+        return described;
+    }
+
+    return result;
 }
 
 void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
-    std::function<DataSource::Ptr(YAML::Node const&)> constructor,
-    nlohmann::json schema)
+    LegacyDataSourceConstructor constructor,
+    nlohmann::json schema,
+    DataSourceDescribeFn describe)
+{
+    if (!constructor) {
+        log().warn("Refusing to register NULL constructor for datasource type {}", typeName);
+        return;
+    }
+    registerDataSourceType(
+        typeName,
+        [constructor = std::move(constructor)](YAML::Node const& node, DataSourceInitContext&) {
+            return constructor(node);
+        },
+        std::move(schema),
+        std::move(describe));
+}
+
+void DataSourceConfigService::registerDataSourceType(
+    std::string const& typeName,
+    DataSourceConstructor constructor,
+    nlohmann::json schema,
+    DataSourceDescribeFn describe)
 {
     if (!constructor) {
         log().warn("Refusing to register NULL constructor for datasource type {}", typeName);
         return;
     }
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    constructors_[typeName] = {std::move(constructor), std::move(schema)};
+    constructors_[typeName] = {std::move(constructor), std::move(schema), std::move(describe)};
     schema_.reset();
     validator_.reset();
     log().info("Registered data source type {}.", typeName);

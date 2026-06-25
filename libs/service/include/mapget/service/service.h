@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cache.h"
+#include "config.h"
 #include "datasource.h"
 #include "mapget/model/featurelayer-search.h"
 #include "mapget/model/sourcedatalayer.h"
@@ -9,6 +10,7 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <chrono>
 #include <set>
@@ -33,6 +35,82 @@ enum class NoDataSourceReason {
     DatasourceInitializationFailed = 0x3,
     MissingMapOrLayer = 0x4,
     NoConfig = 0x5,
+};
+
+/** Lifecycle state for one config-backed datasource catalog row. */
+enum class DataSourceCatalogStatus {
+    /** Construction is running or waiting for a construction slot. */
+    Initializing,
+    /** Construction succeeded and `info`/`dataSource` are usable. */
+    Ready,
+    /** Construction failed; `statusMessage` contains diagnostics. */
+    Failed
+};
+
+/** Service-owned datasource catalog row used by `/sources` and interactive invalidation. */
+struct DataSourceCatalogEntry {
+    /** Cheap static config facts available before construction. */
+    DataSourceDescriptor descriptor;
+
+    /** Current lifecycle state serialized through `/sources`. */
+    DataSourceCatalogStatus status = DataSourceCatalogStatus::Initializing;
+
+    /** Human-readable progress/failure detail for UI and diagnostics. */
+    std::string statusMessage;
+
+    /** Optional constructor progress percentage in the inclusive range 0..100. */
+    std::optional<float> progress;
+
+    /** Ready datasource instance; needed for worker registration and config reload/removal. */
+    DataSource::Ptr dataSource;
+
+    /** Frozen ready metadata for ordered `/sources` serialization without repeated `info()` calls. */
+    std::optional<DataSourceInfo> info;
+};
+
+/** Lightweight per-source delta embedded into interactive catalog-change messages. */
+struct DataSourceCatalogSourceUpdate {
+    /** Cheap static config facts used by clients for row lookup and by the server for auth filtering. */
+    DataSourceDescriptor descriptor;
+
+    /** Current lifecycle state after the change. */
+    DataSourceCatalogStatus status = DataSourceCatalogStatus::Initializing;
+
+    /** Current human-readable progress/failure detail; empty clears the previous UI text. */
+    std::string statusMessage;
+
+    /** Current optional progress percentage; null clears the previous UI progress value. */
+    std::optional<float> progress;
+
+    /** Ready datasource instance used only for auth filtering; it is never serialized. */
+    DataSource::Ptr dataSource;
+};
+
+/** Ordered datasource catalog snapshot for one authorized caller. */
+struct DataSourceCatalogSnapshot {
+    /** Monotonic catalog revision used for ETag generation and WebSocket invalidation. */
+    uint64_t revision = 0;
+
+    /** Global config status (`ok` or `error`) because parse failures are not tied to one source row. */
+    std::string configStatus = "ok";
+
+    /** Human-readable config parse/validation error; empty when `configStatus == "ok"`. */
+    std::string configStatusMessage;
+
+    /** Ordered catalog entries visible to the authorized caller. */
+    std::vector<DataSourceCatalogEntry> sources;
+};
+
+/** Lightweight notification emitted whenever the datasource catalog changes. */
+struct DataSourceCatalogChange {
+    /** Revision after the change was applied. */
+    uint64_t revision = 0;
+
+    /** Coarse reason string for clients that want to debounce or classify reloads. */
+    std::string reason;
+
+    /** Optional per-source status delta, omitted for full reload/add/remove invalidations. */
+    std::optional<DataSourceCatalogSourceUpdate> sourceUpdate;
 };
 
 struct LayerRequestContext {
@@ -283,6 +361,25 @@ private:
 class Service
 {
 public:
+    using DataSourceCatalogCallback = std::function<void(DataSourceCatalogChange const&)>;
+
+    class DataSourceCatalogSubscription
+    {
+    public:
+        ~DataSourceCatalogSubscription();
+        DataSourceCatalogSubscription(DataSourceCatalogSubscription const&) = delete;
+        DataSourceCatalogSubscription& operator=(DataSourceCatalogSubscription const&) = delete;
+        DataSourceCatalogSubscription(DataSourceCatalogSubscription&&) noexcept;
+        DataSourceCatalogSubscription& operator=(DataSourceCatalogSubscription&&) noexcept;
+
+    private:
+        DataSourceCatalogSubscription(Service* service, uint64_t id);
+        Service* service_ = nullptr;
+        uint64_t id_ = 0;
+
+        friend class Service;
+    };
+
     /**
      * Construct a service with a shared Cache instance. Note: The Cache must not
      * be null. For a simple default cache implementation, you can use the
@@ -359,6 +456,26 @@ public:
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
+
+    /**
+     * Ordered datasource catalog including initializing/failed config entries.
+     * Set `waitUntilReloadDone` when serving legacy callers that expect `/sources`
+     * to block until the current config-backed datasource reload has completed.
+     */
+    [[nodiscard]] DataSourceCatalogSnapshot sourceCatalog(
+        std::optional<AuthHeaders> const& clientHeaders = {},
+        bool waitUntilReloadDone = false) const;
+
+    /** Current datasource catalog revision without cloning catalog metadata. */
+    [[nodiscard]] uint64_t sourceCatalogRevision() const;
+
+    /** True if an interactive client may receive the optional source delta in this catalog change. */
+    [[nodiscard]] bool isSourceCatalogChangeVisible(
+        DataSourceCatalogChange const& change,
+        std::optional<AuthHeaders> const& clientHeaders = {}) const;
+
+    /** Subscribe to datasource catalog changes such as config reloads or startup status transitions. */
+    [[nodiscard]] DataSourceCatalogSubscription subscribeToSourceCatalogChanges(DataSourceCatalogCallback callback);
 
     /**
      * Checks if any DataSource can serve the requested map+layer combination,
