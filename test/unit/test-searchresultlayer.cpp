@@ -623,15 +623,15 @@ TEST_CASE("Attribute-scope search uses schema scalar shorthand", "[feature-layer
 TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[feature-layer-search]")
 {
     auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto normalized = registry->normalizeSearchQuery(
         "properties.layer.rules.speedLimit.limit > 40",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(normalized.has_value());
     INFO(normalized->normalizedQuery_);
-    REQUIRE(normalized->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(normalized->attributeScopes_.size() == 1);
     REQUIRE(normalized->attributeScopes_.front().featureType_ == "Road");
     REQUIRE(normalized->attributeScopes_.front().attributeLayerName_ == "rules");
@@ -674,15 +674,15 @@ TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[
 TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[feature-layer-search]")
 {
     auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto typeCode = registry->normalizeSearchQuery(
         "speedLimit",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(typeCode.has_value());
     INFO(typeCode->normalizedQuery_);
-    REQUIRE(typeCode->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(typeCode->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(typeCode->attributeScopes_.size() == 1);
     REQUIRE(typeCode->normalizedQuery_.find("$feature.typeId == \"Road\"") != std::string::npos);
     REQUIRE(typeCode->normalizedQuery_.find("$layer == \"rules\"") != std::string::npos);
@@ -691,29 +691,29 @@ TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[
 
     auto scalarOperand = registry->normalizeSearchQuery(
         "speedLimit > 40",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(scalarOperand.has_value());
     INFO(scalarOperand->normalizedQuery_);
-    REQUIRE(scalarOperand->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(scalarOperand->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(scalarOperand->normalizedQuery_.find("limit > 40") != std::string::npos);
     REQUIRE(scalarOperand->normalizedQuery_.find("speedLimit > 40") == std::string::npos);
 
     auto enumConstant = registry->normalizeSearchQuery(
         "\"SPEED_LIMIT\"",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(enumConstant.has_value());
     INFO(enumConstant->normalizedQuery_);
-    REQUIRE(enumConstant->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(enumConstant->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(enumConstant->attributeScopes_.size() == 1);
     REQUIRE(enumConstant->attributeScopes_.front().attributeName_ == "warningSign");
     REQUIRE(enumConstant->normalizedQuery_.find("kind == \"SPEED_LIMIT\"") != std::string::npos);
 
     auto unquotedEnumConstant = registry->normalizeSearchQuery(
         "SPEED_LIMIT_END",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(unquotedEnumConstant.has_value());
     INFO(unquotedEnumConstant->normalizedQuery_);
-    REQUIRE(unquotedEnumConstant->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(unquotedEnumConstant->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(unquotedEnumConstant->attributeScopes_.size() == 1);
     REQUIRE(unquotedEnumConstant->attributeScopes_.front().attributeName_ == "warningSign");
     REQUIRE(unquotedEnumConstant->normalizedQuery_.find("kind == \"SPEED_LIMIT_END\"") != std::string::npos);
@@ -752,15 +752,15 @@ TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[
 TEST_CASE("Search query normalization handles live-style attribute and enum expressions", "[feature-layer-search]")
 {
     auto layerInfo = makeLiveLikeSchemaBackedSearchResultLayerInfo();
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto speedComparison = registry->normalizeSearchQuery(
         "SPEED_LIMIT_METRIC == 80",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(speedComparison.has_value());
     INFO(speedComparison->normalizedQuery_);
-    REQUIRE(speedComparison->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(speedComparison->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(speedComparison->attributeScopes_.size() == 1);
     REQUIRE(speedComparison->attributeScopes_.front().attributeName_ == "SPEED_LIMIT_METRIC");
     REQUIRE(speedComparison->normalizedQuery_.find("$name == \"SPEED_LIMIT_METRIC\"") != std::string::npos);
@@ -768,10 +768,10 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
 
     auto speedWildcard = registry->normalizeSearchQuery(
         "**.speedLimitKmh > 80",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(speedWildcard.has_value());
     INFO(speedWildcard->normalizedQuery_);
-    REQUIRE(speedWildcard->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(speedWildcard->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(speedWildcard->attributeScopes_.size() == 1);
     REQUIRE(speedWildcard->attributeScopes_.front().attributeName_ == "SPEED_LIMIT_METRIC");
     REQUIRE(speedWildcard->normalizedQuery_.find("$name == \"SPEED_LIMIT_METRIC\"") != std::string::npos);
@@ -779,20 +779,20 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
 
     auto enumSymbol = registry->normalizeSearchQuery(
         "SPEED_LIMIT_END",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(enumSymbol.has_value());
     INFO(enumSymbol->normalizedQuery_);
-    REQUIRE(enumSymbol->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(enumSymbol->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(enumSymbol->attributeScopes_.size() == 2);
     REQUIRE(enumSymbol->normalizedQuery_.find("attributeValue.warningSign == \"SPEED_LIMIT_END\"") != std::string::npos);
     REQUIRE(enumSymbol->normalizedQuery_.find("attributeValue.movableWarningSign == \"SPEED_LIMIT_END\"") != std::string::npos);
 
     auto explicitWarningPath = registry->normalizeSearchQuery(
         "**.WARNING_SIGN.attributeValue.warningSign == \"SPEED_LIMIT\"",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(explicitWarningPath.has_value());
     INFO(explicitWarningPath->normalizedQuery_);
-    REQUIRE(explicitWarningPath->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(explicitWarningPath->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(explicitWarningPath->attributeScopes_.size() == 1);
     REQUIRE(explicitWarningPath->attributeScopes_.front().attributeName_ == "WARNING_SIGN");
     REQUIRE(explicitWarningPath->normalizedQuery_.find("$name == \"WARNING_SIGN\"") != std::string::npos);

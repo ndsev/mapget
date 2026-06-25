@@ -9,7 +9,7 @@
 
 #include "fmt/format.h"
 #include "mapget/log.h"
-#include "mapget/model/schemaregistry.h"
+#include "mapget/model/layerschema.h"
 #include "mapget/model/simfilutil.h"
 #include "simfil/overlay.h"
 #include "simfil/simfil.h"
@@ -97,28 +97,28 @@ tl::expected<std::unique_ptr<SearchEvaluator>, simfil::Error> makeSearchEvaluato
         return tl::unexpected(copiedStrings.error());
     }
     auto env = makeEnvironment(*copiedStrings);
-    installCompletionSchemaRegistry(*env, sourceLayer.schemaRegistry(), *copiedStrings);
+    installCompletionLayerSchema(*env, sourceLayer.layerSchema(), *copiedStrings);
     return std::make_unique<SearchEvaluator>(std::move(env));
 }
 
-/** Convert request scope to the schema-registry normalizer's requested-scope enum. */
-SchemaRegistry::SearchQueryRequestedScope requestedScopeForNormalization(FeatureLayerSearchScope scope)
+/** Convert request scope to the layer-schema normalizer's requested-scope enum. */
+LayerSchema::SearchQueryRequestedScope requestedScopeForNormalization(FeatureLayerSearchScope scope)
 {
     switch (scope) {
     case FeatureLayerSearchScope::Feature:
-        return SchemaRegistry::SearchQueryRequestedScope::Feature;
+        return LayerSchema::SearchQueryRequestedScope::Feature;
     case FeatureLayerSearchScope::Attribute:
-        return SchemaRegistry::SearchQueryRequestedScope::Attribute;
+        return LayerSchema::SearchQueryRequestedScope::Attribute;
     case FeatureLayerSearchScope::Auto:
-        return SchemaRegistry::SearchQueryRequestedScope::Auto;
+        return LayerSchema::SearchQueryRequestedScope::Auto;
     }
-    return SchemaRegistry::SearchQueryRequestedScope::Feature;
+    return LayerSchema::SearchQueryRequestedScope::Feature;
 }
 
 /** Convert a normalized concrete scope back to the evaluator scope enum. */
-FeatureLayerSearchScope concreteSearchScope(SchemaRegistry::SearchQueryConcreteScope scope)
+FeatureLayerSearchScope concreteSearchScope(LayerSchema::SearchQueryConcreteScope scope)
 {
-    return scope == SchemaRegistry::SearchQueryConcreteScope::Attribute
+    return scope == LayerSchema::SearchQueryConcreteScope::Attribute
         ? FeatureLayerSearchScope::Attribute
         : FeatureLayerSearchScope::Feature;
 }
@@ -417,7 +417,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
 {
     auto effectiveRequest = request;
     if (request.rewriteQuery_ || request.scope_ == FeatureLayerSearchScope::Auto) {
-        auto registry = sourceLayer.schemaRegistry();
+        auto registry = sourceLayer.layerSchema();
         if (registry) {
             auto normalized = registry->normalizeSearchQuery(
                 request.query_,

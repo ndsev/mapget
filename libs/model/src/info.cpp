@@ -1,13 +1,12 @@
 #include "info.h"
 #include "stream.h"
 #include "mapget/log.h"
-#include "schemaregistry.h"
+#include "layerschema.h"
 
 #include <tuple>
 #include <random>
 #include <sstream>
 #include <charconv>
-#include <mutex>
 #include <cctype>
 #include <regex>
 
@@ -71,13 +70,6 @@ std::optional<T> from_chars(std::string_view s, Args... args)
         return fmt::format("'{}'", ch);
     }
     return fmt::format("'\\x{:02X}'", uch);
-}
-
-/** Serialize LayerInfo schema cache access because the cache is mutable and lazy. */
-std::mutex& schemaRegistryMutex()
-{
-    static std::mutex mutex;
-    return mutex;
 }
 
 }
@@ -544,7 +536,9 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         result->canRead_ = j.value("canRead", true);
         result->canWrite_ = j.value("canWrite", false);
         result->version_ = Version::fromJson(j.value("version", Version().toJson()));
-        result->featureModelSchema_ = j.value("featureModelSchema", nlohmann::json{});
+        if (auto schemaIt = j.find("featureModelSchema"); schemaIt != j.end()) {
+            result->featureModelSchema_ = LayerSchema::fromJsonSchema(*schemaIt);
+        }
         result->validateIdentifiers();
         return result;
     }
@@ -580,24 +574,16 @@ nlohmann::json LayerInfo::toJson() const
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};
 
-    if (!featureModelSchema_.is_null()) {
-        result["featureModelSchema"] = featureModelSchema_;
+    if (featureModelSchema_) {
+        result["featureModelSchema"] = featureModelSchema_->toJsonSchema();
     }
 
     return result;
 }
 
-std::shared_ptr<SchemaRegistry> LayerInfo::schemaRegistry() const
+std::shared_ptr<LayerSchema const> LayerInfo::layerSchema() const
 {
-    if (featureModelSchema_.is_null()) {
-        return nullptr;
-    }
-
-    std::lock_guard lock(schemaRegistryMutex());
-    if (!schemaRegistry_) {
-        schemaRegistry_ = SchemaRegistry::fromJson(featureModelSchema_);
-    }
-    return schemaRegistry_;
+    return featureModelSchema_;
 }
 
 void LayerInfo::validateIdentifiers() const

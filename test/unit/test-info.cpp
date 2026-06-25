@@ -124,7 +124,7 @@ bool hasCompletion(
     });
 }
 
-std::string namedSchemaPathString(SchemaRegistry::NamedSchemaPath const& path)
+std::string namedSchemaPathString(LayerSchema::NamedSchemaPath const& path)
 {
     std::string result;
     for (auto const& segment : path) {
@@ -334,14 +334,16 @@ TEST_CASE("TileFeatureLayer validates emitted features against LayerInfo schema"
 
     REQUIRE_NOTHROW(tile->validateSchema());
 
-    layerInfo->featureModelSchema_["properties"]["typeId"]["const"] = "Road";
+    auto invalidSchema = layerInfo->featureModelSchema_->toJsonSchema();
+    invalidSchema["properties"]["typeId"]["const"] = "Road";
+    layerInfo->featureModelSchema_ = LayerSchema::fromJsonSchema(invalidSchema);
     REQUIRE_THROWS(tile->validateSchema());
 }
 
-TEST_CASE("LayerInfo builds SchemaRegistry from x-mapget annotations", "[DataSourceInfo]")
+TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
 
     REQUIRE(registry);
 
@@ -393,12 +395,12 @@ TEST_CASE("LayerInfo builds SchemaRegistry from x-mapget annotations", "[DataSou
         registry->constantTypeNames(carrierSchema->id_, "speed") ==
         std::vector<std::string>{"synthetic.SpeedAttributeType"});
 
-    auto strings = std::make_shared<StringPool>("SchemaRegistryEnums");
+    auto strings = std::make_shared<StringPool>("LayerSchemaEnums");
     auto carrierSymbol = strings->emplace("Carrier").value();
     auto speedUnitSymbol = strings->emplace("km/h").value();
     auto missingSymbol = strings->emplace("missing").value();
     simfil::Environment env(strings);
-    installSchemaRegistry(env, registry, strings);
+    installLayerSchema(env, registry, strings);
     auto schema = env.querySchema(carrierSchema->id_);
     REQUIRE(schema != nullptr);
     REQUIRE(schema->canHaveEnumSymbol(carrierSymbol));
@@ -406,27 +408,100 @@ TEST_CASE("LayerInfo builds SchemaRegistry from x-mapget annotations", "[DataSou
     REQUIRE_FALSE(schema->canHaveEnumSymbol(missingSymbol));
 }
 
-TEST_CASE("SchemaRegistry does not mutate datasource StringPool", "[DataSourceInfo]")
+TEST_CASE("LayerSchema does not mutate datasource StringPool", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
-    auto strings = std::make_shared<StringPool>("SchemaRegistryReadonlyNode");
+    auto strings = std::make_shared<StringPool>("LayerSchemaReadonlyNode");
     auto const highestBefore = strings->highest();
     auto const sizeBefore = strings->size();
 
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
     REQUIRE(strings->highest() == highestBefore);
     REQUIRE(strings->size() == sizeBefore);
 
     auto tile = std::make_shared<TileFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
-        "SchemaRegistryReadonlyNode",
-        "SchemaRegistryReadonlyMap",
+        "LayerSchemaReadonlyNode",
+        "LayerSchemaReadonlyMap",
         layerInfo,
         strings);
-    REQUIRE(tile->schemaRegistry());
+    REQUIRE(tile->layerSchema());
     REQUIRE(strings->highest() == highestBefore);
     REQUIRE(strings->size() == sizeBefore);
+}
+
+TEST_CASE("LayerSchema direct construction supports detached snapshots and escaped field paths", "[DataSourceInfo]")
+{
+    auto schema = std::make_shared<LayerSchema>();
+    auto const featureSchema = schema->addSchema(
+        simfil::Schema::Kind::Object,
+        LayerSchema::featureKey("Road"),
+        "Feature");
+    auto const propertiesSchema = schema->addSchema(
+        simfil::Schema::Kind::Object,
+        LayerSchema::featurePropertiesKey("Road"),
+        "FeatureProperties");
+    auto const layerMapSchema = schema->addSchema(
+        simfil::Schema::Kind::Object,
+        LayerSchema::attributeLayerMapKey("Road"),
+        "AttributeLayerMap");
+    auto const rulesSchema = schema->addSchema(
+        simfil::Schema::Kind::Object,
+        LayerSchema::attributeContainerKey("Road", "rules"),
+        "AttributeContainer");
+    auto const speedSchema = schema->addSchema(
+        simfil::Schema::Kind::Object,
+        LayerSchema::attributeKey("Road", "rules", "speed.limit"),
+        "Attribute");
+    auto const valueSchema = schema->addSchema(
+        simfil::Schema::Kind::Value,
+        "Road.rules.speed-limit.value");
+
+    schema->addFieldSchema(featureSchema, "properties", propertiesSchema);
+    schema->addFieldSchema(propertiesSchema, "layer", layerMapSchema);
+    schema->addFieldSchema(layerMapSchema, "rules", rulesSchema);
+    schema->addFieldSchema(rulesSchema, "speed.limit", speedSchema);
+    schema->addFieldSchema(speedSchema, "value.with.dot", valueSchema);
+    schema->setAttributeMetadata(
+        speedSchema,
+        LayerSchema::AttributePathOwner{"Road", "rules", "speed.limit", speedSchema},
+        "synthetic.SpeedAttribute");
+    schema->setZserioType(valueSchema, "synthetic.SpeedValue");
+    schema->addEnumSymbol(valueSchema, "FAST");
+    schema->finalize();
+
+    auto schemaEmitterCalls = 0;
+    auto transportSchema = nlohmann::json{{"type", "object"}, {"x-test", "direct"}};
+    schema->setJsonSchemaEmitter([&] {
+        ++schemaEmitterCalls;
+        return transportSchema;
+    });
+
+    REQUIRE(schema->featureTypes() == std::vector<std::string>{"Road"});
+    REQUIRE(schema->canHaveField(featureSchema, "value.with.dot"));
+    REQUIRE(schema->constantTypeNames(speedSchema, "speed.limit") ==
+            std::vector<std::string>{"synthetic.SpeedAttribute"});
+
+    auto scopes = schema->attributeScopes();
+    REQUIRE(scopes.size() == 1);
+    REQUIRE(scopes.front().featureType_ == "Road");
+    REQUIRE(scopes.front().attributeLayerName_ == "rules");
+    REQUIRE(scopes.front().attributeName_ == "speed.limit");
+
+    auto normalized = schema->normalizeSearchQuery(
+        R"(properties.layer.rules["speed.limit"]["value.with.dot"] == 42)",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(normalized.has_value());
+    REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalized->normalizedQuery_.find(R"(["value.with.dot"] == 42)") != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find(R"(.["value.with.dot"])") == std::string::npos);
+
+    auto detached = schema->detachedCopy();
+    REQUIRE(schemaEmitterCalls == 1);
+    REQUIRE(detached->featureTypes() == std::vector<std::string>{"Road"});
+    REQUIRE(detached->toJsonSchema() == transportSchema);
+    REQUIRE(schemaEmitterCalls == 1);
 }
 
 TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mutating datasource strings", "[DataSourceInfo]")
@@ -494,7 +569,7 @@ TEST_CASE("TileFeatureLayer schema rewrites use enum paths", "[DataSourceInfo]")
     REQUIRE_FALSE(unrelatedString->values.front().as<simfil::ValueType::Bool>());
 }
 
-TEST_CASE("SchemaRegistry scalar attribute shorthand skips metadata fields", "[DataSourceInfo]")
+TEST_CASE("LayerSchema scalar attribute shorthand skips metadata fields", "[DataSourceInfo]")
 {
     auto json = schemaAnnotatedLayerInfoJson();
     auto& defs = json["featureModelSchema"]["$defs"];
@@ -545,7 +620,7 @@ TEST_CASE("SchemaRegistry scalar attribute shorthand skips metadata fields", "[D
     };
 
     auto layerInfo = LayerInfo::fromJson(json);
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto const featureSchema = registry->featureSchema("Carrier");
@@ -567,10 +642,10 @@ TEST_CASE("SchemaRegistry scalar attribute shorthand skips metadata fields", "[D
     REQUIRE(namedSchemaPathString(attributePaths.front()) == "value");
 }
 
-TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataSourceInfo]")
+TEST_CASE("LayerSchema classifies feature and attribute path owners", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto const featureSchema = registry->featureSchema("Carrier");
@@ -579,35 +654,35 @@ TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataS
         "Carrier",
         featureSchema,
         typeIdPath);
-    REQUIRE(featureOwner.kind_ == SchemaRegistry::PathOwnerKind::Feature);
+    REQUIRE(featureOwner.kind_ == LayerSchema::PathOwnerKind::Feature);
 
     auto const displayNamePath = std::vector<std::string>{"properties", "displayName"};
     auto const displayNameOwner = registry->ownerForPath(
         "Carrier",
         featureSchema,
         displayNamePath);
-    REQUIRE(displayNameOwner.kind_ == SchemaRegistry::PathOwnerKind::Feature);
+    REQUIRE(displayNameOwner.kind_ == LayerSchema::PathOwnerKind::Feature);
 
     auto const layerMapPath = std::vector<std::string>{"properties", "layer"};
     auto const layerMapOwner = registry->ownerForPath(
         "Carrier",
         featureSchema,
         layerMapPath);
-    REQUIRE(layerMapOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+    REQUIRE(layerMapOwner.kind_ == LayerSchema::PathOwnerKind::Unknown);
 
     auto const attributeLayerPath = std::vector<std::string>{"properties", "layer", "limits"};
     auto const attributeLayerOwner = registry->ownerForPath(
         "Carrier",
         featureSchema,
         attributeLayerPath);
-    REQUIRE(attributeLayerOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+    REQUIRE(attributeLayerOwner.kind_ == LayerSchema::PathOwnerKind::Unknown);
 
     auto const speedUnitPath = std::vector<std::string>{"properties", "layer", "limits", "speed", "unit"};
     auto const attributeOwner = registry->ownerForPath(
         "Carrier",
         featureSchema,
         speedUnitPath);
-    REQUIRE(attributeOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(attributeOwner.kind_ == LayerSchema::PathOwnerKind::Attribute);
     REQUIRE(attributeOwner.attribute_.featureType_ == "Carrier");
     REQUIRE(attributeOwner.attribute_.attributeLayerName_ == "limits");
     REQUIRE(attributeOwner.attribute_.attributeName_ == "speed");
@@ -618,7 +693,7 @@ TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataS
         "Carrier",
         featureSchema,
         advisorySpeedUnitPath);
-    REQUIRE(advisoryAttributeOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(advisoryAttributeOwner.kind_ == LayerSchema::PathOwnerKind::Attribute);
     REQUIRE(advisoryAttributeOwner.attribute_.attributeLayerName_ == "advisoryLimits");
     REQUIRE(advisoryAttributeOwner.attribute_.attributeName_ == "speed");
     REQUIRE(advisoryAttributeOwner.attribute_.attributeSchema_ != simfil::NoSchemaId);
@@ -628,7 +703,7 @@ TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataS
         "Carrier",
         propertiesSchema,
         std::vector<std::string>{"layer", "limits", "speed", "value"});
-    REQUIRE(propertiesRootAttributeOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(propertiesRootAttributeOwner.kind_ == LayerSchema::PathOwnerKind::Attribute);
     REQUIRE(propertiesRootAttributeOwner.attribute_.attributeLayerName_ == "limits");
 
     auto const speedSchema = attributeOwner.attribute_.attributeSchema_;
@@ -637,7 +712,7 @@ TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataS
         "Carrier",
         speedSchema,
         valuePath);
-    REQUIRE(attributeRootOwner.kind_ == SchemaRegistry::PathOwnerKind::Attribute);
+    REQUIRE(attributeRootOwner.kind_ == LayerSchema::PathOwnerKind::Attribute);
     REQUIRE(attributeRootOwner.attribute_.attributeName_ == "speed");
 
     auto const invalidAttributeTailPath = std::vector<std::string>{"properties", "layer", "limits", "speed", "missing"};
@@ -645,14 +720,14 @@ TEST_CASE("SchemaRegistry classifies feature and attribute path owners", "[DataS
         "Carrier",
         featureSchema,
         invalidAttributeTailPath);
-    REQUIRE(invalidAttributeTailOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+    REQUIRE(invalidAttributeTailOwner.kind_ == LayerSchema::PathOwnerKind::Unknown);
 
     auto const invalidAttributeRootPath = std::vector<std::string>{"missing"};
     auto const invalidAttributeRootOwner = registry->ownerForPath(
         "Carrier",
         speedSchema,
         invalidAttributeRootPath);
-    REQUIRE(invalidAttributeRootOwner.kind_ == SchemaRegistry::PathOwnerKind::Unknown);
+    REQUIRE(invalidAttributeRootOwner.kind_ == LayerSchema::PathOwnerKind::Unknown);
 }
 
 TEST_CASE("TileFeatureLayer exposes SchemaIds on feature-model nodes", "[DataSourceInfo]")
@@ -664,7 +739,7 @@ TEST_CASE("TileFeatureLayer exposes SchemaIds on feature-model nodes", "[DataSou
         "SchemaMap",
         layerInfo,
         std::make_shared<StringPool>("SchemaNode"));
-    auto registry = tile->schemaRegistry();
+    auto registry = tile->layerSchema();
     REQUIRE(registry);
 
     auto feature = tile->newFeature("Carrier", {{"carrierId", 7}});

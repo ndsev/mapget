@@ -188,7 +188,7 @@ For `scope: "feature"`, the SIMFIL context is the feature itself. For `scope: "a
 | `$validityIndex` | Zero-based validity index being evaluated. |
 | `$validityCount` | Number of validity contexts for the matched attribute. |
 
-When rewrite is enabled, mapget uses `SchemaRegistry::normalizeSearchQuery` before tile evaluation. The normalizer compiles the query with SIMFIL schema rewrites, inspects AST-derived `referencedSchemaPaths`, and emits guarded attribute-root predicates when the query is proven to target attribute data. It performs these normalization steps:
+When rewrite is enabled, mapget uses `LayerSchema::normalizeSearchQuery` before tile evaluation. The normalizer compiles the query with SIMFIL schema rewrites, inspects AST-derived `referencedSchemaPaths`, and emits guarded attribute-root predicates when the query is proven to target attribute data. It performs these normalization steps:
 
 - Exact attribute type-code/name queries such as `WARNING_SIGN` become `$feature.typeId`/`$layer`/`$name` guards.
 - Feature-root attribute paths such as `properties.layer.rules.speedLimit.limit > 40` are rewritten to the attribute-root suffix, for example `limit > 40`, under the same guards.

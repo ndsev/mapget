@@ -1,4 +1,4 @@
-#include "mapget/model/schemaregistry.h"
+#include "mapget/model/layerschema.h"
 #include "mapget/model/simfilutil.h"
 #include "mapget/model/stringpool.h"
 
@@ -252,7 +252,7 @@ std::string annotatedKey(
 nlohmann::json const& resolveLocalRef(nlohmann::json const& root, std::string const& ref)
 {
     if (ref.empty() || ref.front() != '#') {
-        throw std::runtime_error("SchemaRegistry only supports local JSON Schema references.");
+        throw std::runtime_error("LayerSchema only supports local JSON Schema references.");
     }
     auto pointer = ref.substr(1);
     return root.at(nlohmann::json::json_pointer(pointer));
@@ -262,7 +262,7 @@ nlohmann::json const& resolveLocalRef(nlohmann::json const& root, std::string co
 std::string refToPointer(std::string const& ref)
 {
     if (ref.empty() || ref.front() != '#') {
-        throw std::runtime_error("SchemaRegistry only supports local JSON Schema references.");
+        throw std::runtime_error("LayerSchema only supports local JSON Schema references.");
     }
     return ref.size() == 1 ? "#" : ref.substr(1);
 }
@@ -322,7 +322,7 @@ bool isIdentifier(std::string_view value)
 }
 
 /** Attribute guard that is valid from an attribute-root overlay context. */
-std::string attributeScopeGuard(SchemaRegistry::AttributePathOwner const& scope)
+std::string attributeScopeGuard(LayerSchema::AttributePathOwner const& scope)
 {
     return fmt::format(
         "$feature.typeId == {} and $layer == {} and $name == {}",
@@ -353,7 +353,7 @@ std::string joinOr(std::vector<std::string> branches)
 /** One AST-derived schema path reference owned by an attribute branch. */
 struct AttributeQueryReference
 {
-    SchemaRegistry::AttributePathOwner owner;
+    LayerSchema::AttributePathOwner owner;
     std::vector<std::string> fieldPath;
     simfil::SourceLocation location;
     bool viaWildcard = false;
@@ -389,15 +389,15 @@ std::optional<std::vector<std::string>> schemaPathFieldNames(
 }
 
 /** Stable identity for one layer-local attribute owner. */
-std::string attributeOwnerKey(SchemaRegistry::AttributePathOwner const& owner)
+std::string attributeOwnerKey(LayerSchema::AttributePathOwner const& owner)
 {
     return owner.featureType_ + "\n" + owner.attributeLayerName_ + "\n" + owner.attributeName_;
 }
 
 /** Return whether two attribute owner records address the same layer-local attribute context. */
 bool sameAttributeOwner(
-    SchemaRegistry::AttributePathOwner const& lhs,
-    SchemaRegistry::AttributePathOwner const& rhs)
+    LayerSchema::AttributePathOwner const& lhs,
+    LayerSchema::AttributePathOwner const& rhs)
 {
     return lhs.featureType_ == rhs.featureType_
         && lhs.attributeLayerName_ == rhs.attributeLayerName_
@@ -407,7 +407,7 @@ bool sameAttributeOwner(
 /** Return the attribute-root suffix of a feature-root path owned by the supplied attribute. */
 std::optional<std::string> attributeRootPathForFeaturePath(
     std::vector<std::string> const& fieldPath,
-    SchemaRegistry::AttributePathOwner const& owner)
+    LayerSchema::AttributePathOwner const& owner)
 {
     auto attrIt = std::ranges::find(fieldPath, owner.attributeName_);
     if (attrIt == fieldPath.end()) {
@@ -420,10 +420,10 @@ std::optional<std::string> attributeRootPathForFeaturePath(
 
     std::string result;
     for (auto it = suffixBegin; it != fieldPath.end(); ++it) {
-        if (!result.empty()) {
-            result += ".";
-        }
         if (isIdentifier(*it)) {
+            if (!result.empty()) {
+                result += ".";
+            }
             result += *it;
         }
         else {
@@ -474,11 +474,11 @@ bool sourceRangeCoversWholeQuery(std::string const& query, simfil::SourceLocatio
 }
 
 /** Return all attribute contexts whose mapget type-code matches one exact AST symbol. */
-std::vector<SchemaRegistry::AttributePathOwner> attributeScopesForStandaloneSymbol(
-    SchemaRegistry const& registry,
+std::vector<LayerSchema::AttributePathOwner> attributeScopesForStandaloneSymbol(
+    LayerSchema const& registry,
     std::string_view symbol)
 {
-    std::vector<SchemaRegistry::AttributePathOwner> result;
+    std::vector<LayerSchema::AttributePathOwner> result;
     std::set<std::string> seenScopes;
     for (auto const& scope : registry.attributeScopes()) {
         auto const typeCode = registry.attributeTypeCode(scope.attributeSchema_);
@@ -494,14 +494,14 @@ std::vector<SchemaRegistry::AttributePathOwner> attributeScopesForStandaloneSymb
 
 /** Compile once with the real feature root and classify exact schema references by owner. */
 tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
-    SchemaRegistry const& registry,
+    LayerSchema const& registry,
     std::string_view query,
     std::string_view featureType)
 {
     auto strings = std::make_shared<StringPool>("SearchQueryNormalization");
     auto env = makeEnvironment(strings);
-    auto registryPtr = std::shared_ptr<SchemaRegistry const>(&registry, [](SchemaRegistry const*) {});
-    installCompletionSchemaRegistry(*env, std::move(registryPtr), strings);
+    auto registryPtr = std::shared_ptr<LayerSchema const>(&registry, [](LayerSchema const*) {});
+    installCompletionLayerSchema(*env, std::move(registryPtr), strings);
 
     auto const featureSchemaId = registry.featureSchema(featureType);
     auto ast = simfil::compile(
@@ -533,11 +533,11 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
             continue;
         }
         auto owner = registry.ownerForPath(featureType, featureSchemaId, *fieldPath);
-        if (owner.kind_ == SchemaRegistry::PathOwnerKind::Feature) {
+        if (owner.kind_ == LayerSchema::PathOwnerKind::Feature) {
             result.hasFeatureOwnedReference = true;
             continue;
         }
-        if (owner.kind_ != SchemaRegistry::PathOwnerKind::Attribute) {
+        if (owner.kind_ != LayerSchema::PathOwnerKind::Attribute) {
             result.hasDynamicReference = true;
             continue;
         }
@@ -562,7 +562,7 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
 
 } // namespace
 
-struct SchemaRegistry::Impl
+struct LayerSchema::Impl
 {
     /** Logical object/array/value schema independent of any StringPool numbering. */
     struct LogicalSchema
@@ -616,7 +616,7 @@ struct SchemaRegistry::Impl
     simfil::SchemaId allocate(Kind kind, std::string key, std::string pointer, std::string metaType)
     {
         if (schemas_.size() > simfil::MaxSchemaId) {
-            throw std::runtime_error("SchemaRegistry exhausted the uint16 SchemaId domain.");
+            throw std::runtime_error("LayerSchema exhausted the uint16 SchemaId domain.");
         }
 
         auto id = static_cast<simfil::SchemaId>(schemas_.size());
@@ -806,6 +806,11 @@ struct SchemaRegistry::Impl
 
     void finalizeAll()
     {
+        for (auto& schema : schemas_) {
+            schema.flatFields_.clear();
+            schema.flatEnumSymbols_.clear();
+            schema.finalized_ = false;
+        }
         for (size_t id = 1; id < schemas_.size(); ++id) {
             finalize(static_cast<simfil::SchemaId>(id));
         }
@@ -1010,19 +1015,19 @@ struct SchemaRegistry::Impl
         return fieldIt->second.empty() ? simfil::NoSchemaId : fieldIt->second.front();
     }
 
-    [[nodiscard]] std::optional<SchemaRegistry::NamedSchemaPath> firstScalarFieldPath(
+    [[nodiscard]] std::optional<LayerSchema::NamedSchemaPath> firstScalarFieldPath(
         simfil::SchemaId id,
         bool skipRootAttributeMetadataFields = false) const
     {
         std::vector<simfil::SchemaId> visited;
-        SchemaRegistry::NamedSchemaPath current;
+        LayerSchema::NamedSchemaPath current;
         return firstScalarFieldPath(id, visited, current, skipRootAttributeMetadataFields, true);
     }
 
-    [[nodiscard]] std::optional<SchemaRegistry::NamedSchemaPath> firstScalarFieldPath(
+    [[nodiscard]] std::optional<LayerSchema::NamedSchemaPath> firstScalarFieldPath(
         simfil::SchemaId id,
         std::vector<simfil::SchemaId>& visited,
-        SchemaRegistry::NamedSchemaPath& current,
+        LayerSchema::NamedSchemaPath& current,
         bool skipRootAttributeMetadataFields,
         bool isRoot) const
     {
@@ -1087,13 +1092,13 @@ struct SchemaRegistry::Impl
         return std::nullopt;
     }
 
-    [[nodiscard]] std::vector<SchemaRegistry::NamedSchemaPath> scalarFieldPathsForAttribute(
+    [[nodiscard]] std::vector<LayerSchema::NamedSchemaPath> scalarFieldPathsForAttribute(
         simfil::SchemaId rootSchema,
         std::string_view attributeTypeCode) const
     {
-        std::vector<SchemaRegistry::NamedSchemaPath> paths;
+        std::vector<LayerSchema::NamedSchemaPath> paths;
         std::vector<simfil::SchemaId> visited;
-        SchemaRegistry::NamedSchemaPath current;
+        LayerSchema::NamedSchemaPath current;
         collectScalarFieldPathsForAttribute(rootSchema, attributeTypeCode, visited, current, paths);
         std::ranges::sort(paths);
         auto duplicates = std::ranges::unique(paths);
@@ -1105,8 +1110,8 @@ struct SchemaRegistry::Impl
         simfil::SchemaId id,
         std::string_view attributeTypeCode,
         std::vector<simfil::SchemaId>& visited,
-        SchemaRegistry::NamedSchemaPath& current,
-        std::vector<SchemaRegistry::NamedSchemaPath>& paths) const
+        LayerSchema::NamedSchemaPath& current,
+        std::vector<LayerSchema::NamedSchemaPath>& paths) const
     {
         if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
             return;
@@ -1150,11 +1155,11 @@ struct SchemaRegistry::Impl
 namespace
 {
 
-/** Recursive JSON Schema compiler used by SchemaRegistry construction. */
-class RegistryBuilder
+/** Recursive JSON Schema compiler used by LayerSchema construction. */
+class LayerSchemaCompiler
 {
 public:
-    RegistryBuilder(SchemaRegistry::Impl& registry, nlohmann::json const& root)
+    LayerSchemaCompiler(LayerSchema::Impl& registry, nlohmann::json const& root)
         : registry_(registry), root_(root)
     {
     }
@@ -1377,7 +1382,7 @@ private:
         return id;
     }
 
-    SchemaRegistry::Impl& registry_;
+    LayerSchema::Impl& registry_;
     nlohmann::json const& root_;
     std::map<std::string, simfil::SchemaId> memo_;
 };
@@ -1387,7 +1392,7 @@ class BoundSchema final : public simfil::Schema
 {
 public:
     BoundSchema(
-        std::shared_ptr<SchemaRegistry const> registry,
+        std::shared_ptr<LayerSchema const> registry,
         std::shared_ptr<simfil::StringPool const> strings,
         simfil::SchemaId id,
         bool materializeSchemaStrings = false)
@@ -1573,7 +1578,7 @@ private:
     {
     }
 
-    std::shared_ptr<SchemaRegistry const> registry_;
+    std::shared_ptr<LayerSchema const> registry_;
     std::shared_ptr<simfil::StringPool const> strings_;
     simfil::SchemaId id_ = simfil::NoSchemaId;
     std::vector<simfil::StringId> directFields_;
@@ -1584,29 +1589,160 @@ private:
 
 } // namespace
 
-void installSchemaRegistryImpl(
+void installLayerSchemaImpl(
     simfil::Environment& env,
-    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<LayerSchema const> registry,
     std::shared_ptr<simfil::StringPool const> strings,
     bool materializeSchemaStrings);
 
-SchemaRegistry::SchemaRegistry(nlohmann::json const& schema)
+LayerSchema::LayerSchema()
     : impl_(std::make_shared<Impl>())
 {
-    if (!schema.is_null()) {
-        RegistryBuilder(*impl_, schema).buildAll();
+}
+
+LayerSchema::LayerSchema(nlohmann::json schema)
+    : transportJsonSchema_(std::move(schema)),
+      impl_(std::make_shared<Impl>())
+{
+    if (!transportJsonSchema_.is_null()) {
+        LayerSchemaCompiler(*impl_, transportJsonSchema_).buildAll();
     }
 }
 
-std::shared_ptr<SchemaRegistry> SchemaRegistry::fromJson(nlohmann::json const& schema)
+std::shared_ptr<LayerSchema> LayerSchema::fromJsonSchema(nlohmann::json schema)
 {
     if (schema.is_null()) {
         return nullptr;
     }
-    return std::make_shared<SchemaRegistry>(schema);
+    return std::shared_ptr<LayerSchema>(new LayerSchema(std::move(schema)));
 }
 
-SchemaRegistry::Entry const* SchemaRegistry::getSchema(std::string_view keyOrFeatureType) const
+nlohmann::json LayerSchema::toJsonSchema() const
+{
+    std::lock_guard lock(transportJsonSchemaMutex_);
+    if (transportJsonSchema_.is_null() && transportJsonSchemaEmitter_) {
+        transportJsonSchema_ = transportJsonSchemaEmitter_();
+    }
+    return transportJsonSchema_;
+}
+
+std::shared_ptr<LayerSchema const> LayerSchema::detachedCopy() const
+{
+    auto result = std::shared_ptr<LayerSchema>(new LayerSchema());
+    result->transportJsonSchema_ = toJsonSchema();
+    result->impl_ = std::make_shared<Impl>(*impl_);
+    return result;
+}
+
+void LayerSchema::setJsonSchemaEmitter(JsonSchemaEmitter emitter)
+{
+    std::lock_guard lock(transportJsonSchemaMutex_);
+    transportJsonSchemaEmitter_ = std::move(emitter);
+    transportJsonSchema_ = nullptr;
+}
+
+simfil::SchemaId LayerSchema::addSchema(
+    simfil::Schema::Kind kind,
+    std::string key,
+    std::string metaType,
+    std::string jsonPointer)
+{
+    if (jsonPointer.empty()) {
+        jsonPointer = "#/direct/" + std::to_string(impl_->schemas_.size());
+    }
+    return impl_->allocate(kind, std::move(key), std::move(jsonPointer), std::move(metaType));
+}
+
+void LayerSchema::registerSchemaKey(std::string key, simfil::SchemaId id)
+{
+    impl_->registerKey(key, id);
+}
+
+void LayerSchema::addFieldSchema(simfil::SchemaId parent, std::string fieldName, simfil::SchemaId child)
+{
+    impl_->addDirectField(parent, fieldName);
+    if (child != simfil::NoSchemaId) {
+        impl_->addChild(parent, fieldName, child);
+    }
+}
+
+void LayerSchema::addElementSchema(simfil::SchemaId parent, simfil::SchemaId child)
+{
+    impl_->addElementSchema(parent, child);
+}
+
+void LayerSchema::addEnumSymbol(simfil::SchemaId schemaId, std::string symbolName)
+{
+    impl_->addEnumSymbol(schemaId, symbolName);
+}
+
+void LayerSchema::addEnumSymbols(simfil::SchemaId schemaId, std::span<const std::string> symbolNames)
+{
+    impl_->addEnumSymbols(schemaId, symbolNames);
+}
+
+void LayerSchema::setZserioType(simfil::SchemaId schemaId, std::string zserioType)
+{
+    if (impl_->valid(schemaId)) {
+        impl_->schemas_[schemaId].zserioType_ = std::move(zserioType);
+    }
+}
+
+void LayerSchema::setAttributeMetadata(
+    simfil::SchemaId schemaId,
+    AttributePathOwner owner,
+    std::string attributeType,
+    std::string zserioType)
+{
+    if (!impl_->valid(schemaId)) {
+        return;
+    }
+
+    impl_->schemas_[schemaId].attributeTypeCode_ = owner.attributeName_;
+    impl_->schemas_[schemaId].attributeType_ = std::move(attributeType);
+    if (!zserioType.empty()) {
+        impl_->schemas_[schemaId].zserioType_ = std::move(zserioType);
+    }
+    impl_->registerAttributeOwner(schemaId, std::move(owner));
+}
+
+void LayerSchema::finalize()
+{
+    impl_->finalizeAll();
+}
+
+std::string LayerSchema::featureKey(std::string_view featureType)
+{
+    return "Feature:" + std::string(featureType);
+}
+
+std::string LayerSchema::featurePropertiesKey(std::string_view featureType)
+{
+    return "FeatureProperties:" + std::string(featureType);
+}
+
+std::string LayerSchema::attributeLayerMapKey(std::string_view featureType)
+{
+    return "AttributeLayerMap:" + std::string(featureType);
+}
+
+std::string LayerSchema::attributeContainerKey(
+    std::string_view featureType,
+    std::string_view attributeLayerName)
+{
+    return "AttributeContainer:" + std::string(featureType) + ":" + std::string(attributeLayerName);
+}
+
+std::string LayerSchema::attributeKey(
+    std::string_view featureType,
+    std::string_view attributeLayerName,
+    std::string_view attributeTypeCode)
+{
+    return "Attribute:" + std::string(featureType) + ":" + std::string(attributeLayerName) + ":" +
+           std::string(attributeTypeCode);
+}
+
+LayerSchema::Entry const* LayerSchema::getSchema(std::string_view keyOrFeatureType) const
 {
     auto exact = impl_->idsByKey_.find(keyOrFeatureType);
     auto id = exact == impl_->idsByKey_.end() ? featureSchema(keyOrFeatureType) : exact->second;
@@ -1616,7 +1752,7 @@ SchemaRegistry::Entry const* SchemaRegistry::getSchema(std::string_view keyOrFea
     return &impl_->entriesById_[id];
 }
 
-simfil::SchemaId SchemaRegistry::schemaId(std::string_view key) const
+simfil::SchemaId LayerSchema::schemaId(std::string_view key) const
 {
     auto it = impl_->idsByKey_.find(key);
     if (it == impl_->idsByKey_.end()) {
@@ -1625,83 +1761,83 @@ simfil::SchemaId SchemaRegistry::schemaId(std::string_view key) const
     return it->second;
 }
 
-simfil::Schema::Kind SchemaRegistry::kind(simfil::SchemaId schemaId) const
+simfil::Schema::Kind LayerSchema::kind(simfil::SchemaId schemaId) const
 {
     return impl_->kind(schemaId);
 }
 
-bool SchemaRegistry::canHaveField(simfil::SchemaId schemaId, std::string_view fieldName) const
+bool LayerSchema::canHaveField(simfil::SchemaId schemaId, std::string_view fieldName) const
 {
     return impl_->canHaveField(schemaId, fieldName);
 }
 
-bool SchemaRegistry::canHaveEnumSymbol(simfil::SchemaId schemaId, std::string_view symbolName) const
+bool LayerSchema::canHaveEnumSymbol(simfil::SchemaId schemaId, std::string_view symbolName) const
 {
     return impl_->canHaveEnumSymbol(schemaId, symbolName);
 }
 
-std::span<const std::string> SchemaRegistry::directFields(simfil::SchemaId schemaId) const
+std::span<const std::string> LayerSchema::directFields(simfil::SchemaId schemaId) const
 {
     return impl_->directFields(schemaId);
 }
 
-std::span<const std::string> SchemaRegistry::nestedFields(simfil::SchemaId schemaId) const
+std::span<const std::string> LayerSchema::nestedFields(simfil::SchemaId schemaId) const
 {
     return impl_->nestedFields(schemaId);
 }
 
-std::span<const std::string> SchemaRegistry::nestedEnumSymbols(simfil::SchemaId schemaId) const
+std::span<const std::string> LayerSchema::nestedEnumSymbols(simfil::SchemaId schemaId) const
 {
     return impl_->nestedEnumSymbols(schemaId);
 }
 
-std::span<const std::string> SchemaRegistry::directEnumSymbols(simfil::SchemaId schemaId) const
+std::span<const std::string> LayerSchema::directEnumSymbols(simfil::SchemaId schemaId) const
 {
     return impl_->directEnumSymbols(schemaId);
 }
 
-std::string_view SchemaRegistry::attributeTypeCode(simfil::SchemaId schemaId) const
+std::string_view LayerSchema::attributeTypeCode(simfil::SchemaId schemaId) const
 {
     return impl_->attributeTypeCode(schemaId);
 }
 
-std::vector<std::string> SchemaRegistry::constantTypeNames(
+std::vector<std::string> LayerSchema::constantTypeNames(
     simfil::SchemaId schemaId,
     std::string_view symbolName) const
 {
     return impl_->constantTypeNames(schemaId, symbolName);
 }
 
-void SchemaRegistry::forEachDirectField(
+void LayerSchema::forEachDirectField(
     simfil::SchemaId schemaId,
     const std::function<void(std::string_view, std::span<const simfil::SchemaId>)>& fn) const
 {
     impl_->forEachDirectField(schemaId, fn);
 }
 
-void SchemaRegistry::forEachElementSchema(
+void LayerSchema::forEachElementSchema(
     simfil::SchemaId schemaId,
     const std::function<void(simfil::SchemaId)>& fn) const
 {
     impl_->forEachElementSchema(schemaId, fn);
 }
 
-simfil::SchemaId SchemaRegistry::featureSchema(std::string_view featureType) const
+simfil::SchemaId LayerSchema::featureSchema(std::string_view featureType) const
 {
     return schemaId(featureKey(featureType));
 }
 
-simfil::SchemaId SchemaRegistry::featurePropertiesSchema(std::string_view featureType) const
+simfil::SchemaId LayerSchema::featurePropertiesSchema(std::string_view featureType) const
 {
     return schemaId(featurePropertiesKey(featureType));
 }
 
-simfil::SchemaId SchemaRegistry::attributeLayerMapSchema(std::string_view featureType) const
+simfil::SchemaId LayerSchema::attributeLayerMapSchema(std::string_view featureType) const
 {
     return schemaId(attributeLayerMapKey(featureType));
 }
 
-simfil::SchemaId SchemaRegistry::childSchema(
+simfil::SchemaId LayerSchema::childSchema(
     simfil::SchemaId parent,
     std::string_view fieldName,
     std::optional<simfil::Schema::Kind> preferredKind) const
@@ -1709,7 +1845,7 @@ simfil::SchemaId SchemaRegistry::childSchema(
     return impl_->childSchema(parent, fieldName, preferredKind);
 }
 
-SchemaRegistry::PathOwner SchemaRegistry::ownerForPath(
+LayerSchema::PathOwner LayerSchema::ownerForPath(
     std::string_view featureType,
     simfil::SchemaId rootSchema,
     std::span<const std::string> fieldPath) const
@@ -1797,14 +1933,14 @@ SchemaRegistry::PathOwner SchemaRegistry::ownerForPath(
     return {};
 }
 
-std::vector<SchemaRegistry::NamedSchemaPath> SchemaRegistry::scalarFieldPathsForAttribute(
+std::vector<LayerSchema::NamedSchemaPath> LayerSchema::scalarFieldPathsForAttribute(
     simfil::SchemaId rootSchema,
     std::string_view attributeTypeCode) const
 {
     return impl_->scalarFieldPathsForAttribute(rootSchema, attributeTypeCode);
 }
 
-std::vector<std::string> SchemaRegistry::featureTypes() const
+std::vector<std::string> LayerSchema::featureTypes() const
 {
     std::vector<std::string> result;
     for (auto const& entry : impl_->entriesById_) {
@@ -1819,7 +1955,7 @@ std::vector<std::string> SchemaRegistry::featureTypes() const
     return result;
 }
 
-std::vector<SchemaRegistry::AttributePathOwner> SchemaRegistry::attributeScopes() const
+std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeScopes() const
 {
     std::vector<AttributePathOwner> result;
     std::set<std::tuple<std::string, std::string, std::string>> seen;
@@ -1840,7 +1976,7 @@ std::vector<SchemaRegistry::AttributePathOwner> SchemaRegistry::attributeScopes(
     return result;
 }
 
-tl::expected<SchemaRegistry::SearchQueryNormalization, simfil::Error> SchemaRegistry::normalizeSearchQuery(
+tl::expected<LayerSchema::SearchQueryNormalization, simfil::Error> LayerSchema::normalizeSearchQuery(
     std::string_view query,
     SearchQueryRequestedScope requestedScope) const
 {
@@ -2014,25 +2150,25 @@ tl::expected<SchemaRegistry::SearchQueryNormalization, simfil::Error> SchemaRegi
     return result;
 }
 
-void installSchemaRegistry(
+void installLayerSchema(
     simfil::Environment& env,
-    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<LayerSchema const> registry,
     std::shared_ptr<simfil::StringPool const> strings)
 {
-    installSchemaRegistryImpl(env, std::move(registry), std::move(strings), false);
+    installLayerSchemaImpl(env, std::move(registry), std::move(strings), false);
 }
 
-void installCompletionSchemaRegistry(
+void installCompletionLayerSchema(
     simfil::Environment& env,
-    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<LayerSchema const> registry,
     std::shared_ptr<simfil::StringPool> strings)
 {
-    installSchemaRegistryImpl(env, std::move(registry), std::move(strings), true);
+    installLayerSchemaImpl(env, std::move(registry), std::move(strings), true);
 }
 
-void installSchemaRegistryImpl(
+void installLayerSchemaImpl(
     simfil::Environment& env,
-    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<LayerSchema const> registry,
     std::shared_ptr<simfil::StringPool const> strings,
     bool materializeSchemaStrings)
 {

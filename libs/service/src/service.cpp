@@ -121,7 +121,7 @@ nlohmann::json makeSearchStatusJson(
     return status;
 }
 
-/** Create a detached LayerInfo copy without reading the lazy schema-registry cache. */
+/** Create a detached LayerInfo copy without retaining datasource-owned schema emitters. */
 std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
 {
     auto result = std::make_shared<LayerInfo>();
@@ -136,7 +136,9 @@ std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
     result->canRead_ = info.canRead_;
     result->canWrite_ = info.canWrite_;
     result->version_ = info.version_;
-    result->featureModelSchema_ = info.featureModelSchema_;
+    result->featureModelSchema_ = info.featureModelSchema_
+        ? info.featureModelSchema_->detachedCopy()
+        : nullptr;
     return result;
 }
 

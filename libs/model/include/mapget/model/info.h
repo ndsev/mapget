@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 #include "sfl/small_vector.hpp"
 #include <variant>
@@ -13,7 +14,7 @@
 namespace mapget
 {
 
-class SchemaRegistry;
+class LayerSchema;
 
 /**
  * The KeyValue(View)Pairs type is a vector of pairs, where each pair
@@ -355,17 +356,15 @@ struct LayerInfo
     /** Version of the map layer. */
     Version version_;
 
-    /** JSON Schema describing one emitted feature object for this layer. */
-    nlohmann::json featureModelSchema_;
+    /** Typed feature-model schema describing one emitted feature object for this layer. */
+    std::shared_ptr<LayerSchema const> featureModelSchema_;
 
     /**
-     * Return the parsed schema registry for this layer.
-     * SchemaIds are assigned by JSON Schema traversal and are independent of
+     * Return the typed feature-model schema for this layer.
+     * SchemaIds are assigned during schema construction and are independent of
      * datasource-owned StringPool state.
      */
-    [[nodiscard]] std::shared_ptr<SchemaRegistry> schemaRegistry() const;
-
-    mutable std::shared_ptr<SchemaRegistry> schemaRegistry_;
+    [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
 
     /**
      * Return the index of the first unique ID composition that matches this feature ID.

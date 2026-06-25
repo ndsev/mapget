@@ -19,7 +19,7 @@
 #include "layer.h"
 #include "sourceinfo.h"
 #include "geojson-import.h"
-#include "schemaregistry.h"
+#include "layerschema.h"
 #include "featuremodellayer.h"
 #include "feature.h"
 #include "attrlayer.h"
@@ -272,11 +272,11 @@ public:
     /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo. */
     void validateSchema() const;
 
-    /** Return the schema registry attached through this tile's LayerInfo, if available. */
-    [[nodiscard]] std::shared_ptr<SchemaRegistry const> schemaRegistry() const;
+    /** Return the layer schema attached through this tile's LayerInfo, if available. */
+    [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
 
-    /** Return a schema entry by registry key, or by feature type name as a convenience. */
-    [[nodiscard]] SchemaRegistry::Entry const* getSchema(std::string_view typeName) const;
+    /** Return a schema entry by schema key, or by feature type name as a convenience. */
+    [[nodiscard]] LayerSchema::Entry const* getSchema(std::string_view typeName) const;
 
     /** Import a mapget-flavoured or best-effort GeoJSON feature collection into this tile. */
     void fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options = {});

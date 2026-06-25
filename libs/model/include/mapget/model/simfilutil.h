@@ -10,18 +10,18 @@
 namespace mapget
 {
 
-class SchemaRegistry;
+class LayerSchema;
 
-/** Attach a read-only SchemaRegistry lookup callback to an existing SIMFIL environment. */
-void installSchemaRegistry(
+/** Attach a read-only LayerSchema lookup callback to an existing SIMFIL environment. */
+void installLayerSchema(
     simfil::Environment& env,
-    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<LayerSchema const> registry,
     std::shared_ptr<simfil::StringPool const> strings);
 
-/** Attach a completion/compile-only SchemaRegistry callback which materializes schema strings locally. */
-void installCompletionSchemaRegistry(
+/** Attach a completion/compile-only LayerSchema callback which materializes schema strings locally. */
+void installCompletionLayerSchema(
     simfil::Environment& env,
-    std::shared_ptr<SchemaRegistry const> registry,
+    std::shared_ptr<LayerSchema const> registry,
     std::shared_ptr<simfil::StringPool> strings);
 
 template <class... Args>
