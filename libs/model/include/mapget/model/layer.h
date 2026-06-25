@@ -69,8 +69,8 @@ struct MapTileKey
     /** Convert the key to a string. The string will be in the form of
      *  "(0):(1):(2):(3):(4)", with
      *   (0) being the layer type enum name,
-     *   (1) being the map id,
-     *   (2) being the layer id,
+     *   (1) being the percent-escaped map id,
+     *   (2) being the percent-escaped layer id,
      *   (3) being the hexadecimal tile id,
      *   (4) being the decimal stage index.
      */

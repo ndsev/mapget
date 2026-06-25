@@ -8,12 +8,15 @@
 #include <sstream>
 #include <charconv>
 #include <mutex>
+#include <cctype>
 #include <regex>
 
 namespace mapget
 {
 
 namespace {
+
+constexpr std::string_view kProtocolReservedIdentifierChars = ":/,~";
 
 /** Standardize missing-field errors across model metadata JSON parsers. */
 auto missing_field(std::string const& error, std::string const& context) {
@@ -31,6 +34,43 @@ std::optional<T> from_chars(std::string_view s, Args... args)
     if (result.ec != std::errc{} || result.ptr != end)
         return {};
     return number;
+}
+
+/** Check whether a character can participate in a percent escape. */
+[[nodiscard]] bool isHexDigit(char ch)
+{
+    return std::isdigit(static_cast<unsigned char>(ch)) ||
+           (ch >= 'a' && ch <= 'f') ||
+           (ch >= 'A' && ch <= 'F');
+}
+
+/** Decode one hexadecimal digit used by identifier escaping. */
+[[nodiscard]] uint8_t hexValue(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return static_cast<uint8_t>(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return static_cast<uint8_t>(10 + (ch - 'a'));
+    }
+    return static_cast<uint8_t>(10 + (ch - 'A'));
+}
+
+/** Return true when a character has structural meaning in a flattened identifier. */
+[[nodiscard]] bool isReservedIdentifierCharacter(char ch, std::string_view extraReserved)
+{
+    return kProtocolReservedIdentifierChars.find(ch) != std::string_view::npos ||
+           extraReserved.find(ch) != std::string_view::npos;
+}
+
+/** Render a character for validation diagnostics without losing control characters. */
+[[nodiscard]] std::string printableCharacter(char ch)
+{
+    auto const uch = static_cast<unsigned char>(ch);
+    if (std::isprint(uch)) {
+        return fmt::format("'{}'", ch);
+    }
+    return fmt::format("'\\x{:02X}'", uch);
 }
 
 /** Serialize LayerInfo schema cache access because the cache is mutable and lazy. */
@@ -82,6 +122,60 @@ std::string generateNodeHexUuid()
     return ss.str();
 }
 
+std::string escapeIdentifierComponent(std::string_view input, std::string_view extraReserved)
+{
+    std::string result;
+    result.reserve(input.size());
+    for (char ch : input) {
+        auto const uch = static_cast<unsigned char>(ch);
+        if (ch == '%' || isReservedIdentifierCharacter(ch, extraReserved)) {
+            // Percent escaping keeps delimiter-separated protocol strings
+            // reversible without changing the underlying metadata value.
+            fmt::format_to(std::back_inserter(result), FMT_STRING("%{:02X}"), uch);
+        }
+        else {
+            result.push_back(ch);
+        }
+    }
+    return result;
+}
+
+bool unescapeIdentifierComponent(std::string_view input, std::string& output, std::string* error)
+{
+    output.clear();
+    output.reserve(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        char const ch = input[i];
+        if (ch != '%') {
+            output.push_back(ch);
+            continue;
+        }
+        if (i + 2 >= input.size() || !isHexDigit(input[i + 1]) || !isHexDigit(input[i + 2])) {
+            if (error) {
+                *error = fmt::format("Malformed percent escape in identifier component '{}'.", input);
+            }
+            return false;
+        }
+        auto const decoded = static_cast<char>((hexValue(input[i + 1]) << 4U) | hexValue(input[i + 2]));
+        output.push_back(decoded);
+        i += 2;
+    }
+    return true;
+}
+
+void validateIdentifierName(std::string_view kind, std::string_view value, std::string_view extraReserved)
+{
+    for (char ch : value) {
+        if (isReservedIdentifierCharacter(ch, extraReserved)) {
+            raise(fmt::format(
+                "Invalid {} '{}': reserved character {} is not allowed.",
+                kind,
+                value,
+                printableCharacter(ch)));
+        }
+    }
+}
+
 bool Version::isCompatible(const Version& other) const
 {
     return other.major_ == major_ && other.minor_ == minor_;
@@ -127,8 +221,10 @@ nlohmann::json Version::toJson() const
 IdPart IdPart::fromJson(const nlohmann::json& j)
 {
     try {
+        auto idPart = j.at("partId").get<std::string>();
+        validateIdentifierName("id-part label", idPart, ".");
         return {
-            j.at("partId").get<std::string>(),
+            std::move(idPart),
             j.value("description", ""),
             j.value("datatype", IdPartDataType::I64),
             j.value("isSynthetic", false),
@@ -339,7 +435,9 @@ FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
             idCompositions.push_back(idParts);
         }
 
-        return {j.at("name").get<std::string>(), idCompositions};
+        auto name = j.at("name").get<std::string>();
+        validateIdentifierName("feature type name", name, ".");
+        return {std::move(name), idCompositions};
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "FeatureTypeInfo");
@@ -447,6 +545,7 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         result->canWrite_ = j.value("canWrite", false);
         result->version_ = Version::fromJson(j.value("version", Version().toJson()));
         result->featureModelSchema_ = j.value("featureModelSchema", nlohmann::json{});
+        result->validateIdentifiers();
         return result;
     }
     catch (nlohmann::json::out_of_range const& e) {
@@ -499,6 +598,19 @@ std::shared_ptr<SchemaRegistry> LayerInfo::schemaRegistry() const
         schemaRegistry_ = SchemaRegistry::fromJson(featureModelSchema_);
     }
     return schemaRegistry_;
+}
+
+void LayerInfo::validateIdentifiers() const
+{
+    validateIdentifierName("layer id", layerId_);
+    for (auto const& featureType : featureTypes_) {
+        validateIdentifierName("feature type name", featureType.name_, ".");
+        for (auto const& composition : featureType.uniqueIdCompositions_) {
+            for (auto const& idPart : composition) {
+                validateIdentifierName("id-part label", idPart.idPartLabel_, ".");
+            }
+        }
+    }
 }
 
 FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const
@@ -573,6 +685,7 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
     try {
         std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
         for (auto& item : j.at("layers").items()) {
+            validateIdentifierName("layer id", item.key());
             layers[item.key()] = LayerInfo::fromJson(item.value(), item.key());
         }
 
@@ -584,7 +697,7 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             // sources, so synthesize one to keep string-pool ownership valid.
             nodeId = generateNodeHexUuid();
 
-        return {
+        auto result = DataSourceInfo{
             nodeId,
             j.at("mapId").get<std::string>(),
             layers,
@@ -592,8 +705,9 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             j.value("addOn", false),
             j.value("extraJsonAttachment", nlohmann::json::object()),
             Version::fromJson(
-                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))
-        };
+                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))};
+        result.validateIdentifiers();
+        return result;
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "DataSourceInfo");
@@ -615,6 +729,17 @@ nlohmann::json DataSourceInfo::toJson() const
         {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
         {"protocolVersion", protocolVersion_.toJson()}};
+}
+
+void DataSourceInfo::validateIdentifiers() const
+{
+    validateIdentifierName("map id", mapId_);
+    for (auto const& [layerId, layerInfo] : layers_) {
+        validateIdentifierName("layer id", layerId);
+        if (layerInfo) {
+            layerInfo->validateIdentifiers();
+        }
+    }
 }
 
 KeyValueViewPairs castToKeyValueView(const KeyValuePairs& kvp)

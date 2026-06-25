@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <memory>
 #include <optional>
@@ -49,6 +50,38 @@ std::string mapNameFromUri(const std::string& uri);
 
 /** Generate a UUID which may be used as the node id. */
 std::string generateNodeHexUuid();
+
+/**
+ * Percent-escape one identifier component before embedding it into a
+ * delimiter-separated protocol string.
+ *
+ * This is intended for reversible string forms such as MapTileKey and
+ * FeatureId, not for mutating model metadata names.
+ */
+std::string escapeIdentifierComponent(std::string_view input, std::string_view extraReserved = {});
+
+/**
+ * Reverse escapeIdentifierComponent().
+ *
+ * Returns false and writes an explanatory message when the input contains a
+ * malformed percent escape.
+ */
+bool unescapeIdentifierComponent(
+    std::string_view input,
+    std::string& output,
+    std::string* error = nullptr);
+
+/**
+ * Reject protocol-reserved characters in metadata identifiers that are stored
+ * and queried in their raw form.
+ *
+ * Use extraReserved for context-specific delimiters such as the dot in
+ * feature-id type names.
+ */
+void validateIdentifierName(
+    std::string_view kind,
+    std::string_view value,
+    std::string_view extraReserved = {});
 
 /** Convert KeyValuePairs to KeyValuePairsView. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
@@ -284,6 +317,9 @@ struct LayerInfo
     /** Utility function to get some feature type info by name. */
     FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true) const;
 
+    /** Validate raw metadata identifiers that cannot be safely auto-escaped. */
+    void validateIdentifiers() const;
+
     /** List of zoom levels */
     std::vector<int> zoomLevels_;
 
@@ -392,6 +428,9 @@ struct DataSourceInfo
 
     /** Get the layer, or a runtime error, if no such layer exists. */
     [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId, bool throwIfMissing=true) const;
+
+    /** Validate raw metadata identifiers that cannot be safely auto-escaped. */
+    void validateIdentifiers() const;
 
     /**
      * Deserializes a DataSourceInfo object from JSON.

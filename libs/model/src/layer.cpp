@@ -10,9 +10,9 @@
 #include "simfil/model/bitsery-traits.h"
 
 #include <istream>
-#include <ranges>
 #include <string_view>
 #include <charconv>
+#include <vector>
 
 #include "nlohmann/json.hpp"
 
@@ -21,29 +21,44 @@ namespace mapget
 
 MapTileKey::MapTileKey(const std::string& str)
 {
-    // This will get simpler with C++ 23. Then we can just use ranges::to<std::vector>,
-    // and also the verbose conversion from a char range to a string_view
-    // will not be necessary anymore.
-    using namespace std::ranges;
-    auto parts = str | views::split(':');
-    auto partsVec = std::vector<decltype(*parts.begin())>(parts.begin(), parts.end());
+    std::vector<std::string_view> parts;
+    size_t start = 0;
+    for (size_t i = 0; i <= str.size(); ++i) {
+        if (i == str.size() || str[i] == ':') {
+            parts.push_back(std::string_view(str).substr(start, i - start));
+            start = i + 1;
+        }
+    }
 
-    if (partsVec.size() < 4)
+    if (parts.size() < 4)
         raise(fmt::format("Invalid cache tile id: {}", str));
-    layer_ = nlohmann::json(std::string_view(&*partsVec[0].begin(), distance(partsVec[0]))).get<LayerType>();
-    mapId_ = std::string_view(&*partsVec[1].begin(), distance(partsVec[1]));
-    layerId_ = std::string_view(&*partsVec[2].begin(), distance(partsVec[2]));
-    std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
-    if (partsVec.size() >= 5) {
+
+    layer_ = nlohmann::json(std::string(parts[0])).get<LayerType>();
+
+    std::string error;
+    if (!unescapeIdentifierComponent(parts[1], mapId_, &error) ||
+        !unescapeIdentifierComponent(parts[2], layerId_, &error)) {
+        raise(fmt::format("Invalid cache tile id '{}': {}", str, error));
+    }
+
+    auto parseTileResult = std::from_chars(
+        parts[3].data(),
+        parts[3].data() + parts[3].size(),
+        tileId_.value_,
+        16);
+    if (parseTileResult.ec != std::errc() ||
+        parseTileResult.ptr != parts[3].data() + parts[3].size()) {
+        raise(fmt::format("Invalid cache tile id: {}", str));
+    }
+
+    if (parts.size() >= 5) {
         uint32_t parsedStage = 0;
-        auto* stageBegin = &*partsVec[4].begin();
-        auto* stageEnd = stageBegin + distance(partsVec[4]);
         auto parseResult = std::from_chars(
-            stageBegin,
-            stageEnd,
+            parts[4].data(),
+            parts[4].data() + parts[4].size(),
             parsedStage,
             10);
-        if (parseResult.ec == std::errc() && parseResult.ptr == stageEnd) {
+        if (parseResult.ec == std::errc() && parseResult.ptr == parts[4].data() + parts[4].size()) {
             stage_ = parsedStage;
         }
     }
@@ -67,8 +82,8 @@ std::string MapTileKey::toString() const
     return fmt::format(
         "{}:{}:{}:{:0x}:{}",
         nlohmann::json(layer_).get<std::string>(),
-        mapId_,
-        layerId_,
+        escapeIdentifierComponent(mapId_),
+        escapeIdentifierComponent(layerId_),
         tileId_.value_,
         stage_);
 }

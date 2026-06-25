@@ -143,6 +143,8 @@ std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
 /** Create a service-owned metadata snapshot, detached from datasource internals. */
 DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
 {
+    info.validateIdentifiers();
+
     auto result = info;
     result.layers_.clear();
     result.layers_.reserve(info.layers_.size());

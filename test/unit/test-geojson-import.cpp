@@ -145,21 +145,21 @@ TEST_CASE("Feature ID strings roundtrip escaped string parts", "[FeatureId][GeoJ
 
     ParsedFeatureId parsed;
     std::string error;
-    REQUIRE(parseFeatureIdString("Road.77.DE%2EBY%25.7", *layerInfo, parsed, &error));
+    REQUIRE(parseFeatureIdString("Road.77.DE%2EBY%25%3A%2F%2C%7E.7", *layerInfo, parsed, &error));
     REQUIRE(parsed.typeId_ == "Road");
     REQUIRE(parsed.keyValuePairs_.size() == 3);
     REQUIRE(parsed.keyValuePairs_[0].first == "tileId");
     REQUIRE(std::get<int64_t>(parsed.keyValuePairs_[0].second) == 77);
     REQUIRE(parsed.keyValuePairs_[1].first == "regionId");
-    REQUIRE(std::get<std::string>(parsed.keyValuePairs_[1].second) == "DE.BY%");
+    REQUIRE(std::get<std::string>(parsed.keyValuePairs_[1].second) == "DE.BY%:/,~");
     REQUIRE(parsed.keyValuePairs_[2].first == "roadId");
     REQUIRE(std::get<int64_t>(parsed.keyValuePairs_[2].second) == 7);
 
     auto tile = makeTile(77, layerInfo, "FeatureIdNode");
-    tile->setIdPrefix({{"tileId", static_cast<int64_t>(77)}, {"regionId", "DE.BY%"}});
+    tile->setIdPrefix({{"tileId", static_cast<int64_t>(77)}, {"regionId", "DE.BY%:/,~"}});
     auto feature = tile->newFeature("Road", {{"roadId", 7}});
-    REQUIRE(feature->id()->toString() == "Road.77.DE%2EBY%25.7");
-    REQUIRE(tile->find("Road.77.DE%2EBY%25.7"));
+    REQUIRE(feature->id()->toString() == "Road.77.DE%2EBY%25%3A%2F%2C%7E.7");
+    REQUIRE(tile->find("Road.77.DE%2EBY%25%3A%2F%2C%7E.7"));
 }
 
 TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[GeoJsonImport]")

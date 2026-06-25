@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <cctype>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -154,72 +153,10 @@ void appendTypedKeyValue(
         valueNode->value());
 }
 
-/** Check whether a character can participate in a percent escape. */
-[[nodiscard]] bool isHexDigit(char ch)
-{
-    return std::isdigit(static_cast<unsigned char>(ch)) ||
-           (ch >= 'a' && ch <= 'f') ||
-           (ch >= 'A' && ch <= 'F');
-}
-
-/** Decode one hexadecimal digit used by feature-id escaping. */
-[[nodiscard]] uint8_t hexValue(char ch)
-{
-    if (ch >= '0' && ch <= '9') {
-        return static_cast<uint8_t>(ch - '0');
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return static_cast<uint8_t>(10 + (ch - 'a'));
-    }
-    return static_cast<uint8_t>(10 + (ch - 'A'));
-}
-
 /** Escape separators and escape markers inside string-valued id parts. */
 [[nodiscard]] std::string escapeFeatureIdPart(std::string_view input)
 {
-    std::string result;
-    result.reserve(input.size());
-    for (char ch : input) {
-        if (ch == '.') {
-            // Dots delimit id parts in the canonical string form.
-            result.append("%2E");
-        }
-        else if (ch == '%') {
-            // Existing escape markers must be preserved literally.
-            result.append("%25");
-        }
-        else {
-            result.push_back(ch);
-        }
-    }
-    return result;
-}
-
-/** Reverse percent escaping for a single canonical feature-id token. */
-[[nodiscard]] bool unescapeFeatureIdPart(
-    std::string_view input,
-    std::string& output,
-    std::string* error)
-{
-    output.clear();
-    output.reserve(input.size());
-    for (size_t i = 0; i < input.size(); ++i) {
-        char const ch = input[i];
-        if (ch != '%') {
-            output.push_back(ch);
-            continue;
-        }
-        if (i + 2 >= input.size() || !isHexDigit(input[i + 1]) || !isHexDigit(input[i + 2])) {
-            if (error) {
-                *error = fmt::format("Malformed percent escape in feature id token '{}'.", input);
-            }
-            return false;
-        }
-        auto const decoded = static_cast<char>((hexValue(input[i + 1]) << 4U) | hexValue(input[i + 2]));
-        output.push_back(decoded);
-        i += 2;
-    }
-    return true;
+    return escapeIdentifierComponent(input, ".");
 }
 
 /** Split a canonical feature-id string into type and id-part tokens. */
@@ -280,7 +217,7 @@ struct CompositionParseState
     }
 
     std::string decoded;
-    if (!unescapeFeatureIdPart(tokens[tokenIndex], decoded, error)) {
+    if (!unescapeIdentifierComponent(tokens[tokenIndex], decoded, error)) {
         return false;
     }
 

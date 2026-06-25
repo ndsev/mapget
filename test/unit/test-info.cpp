@@ -180,6 +180,82 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
     REQUIRE(j == j2);
 }
 
+TEST_CASE("MapTileKey percent-escapes map and layer identifier components", "[DataSourceInfo]")
+{
+    MapTileKey key(
+        LayerType::Features,
+        "Map.A:B/C,D~%",
+        "Layer:X/Y,Z~%",
+        TileId(0xabc),
+        2);
+
+    auto const encoded = key.toString();
+    REQUIRE(encoded == "Features:Map.A%3AB%2FC%2CD%7E%25:Layer%3AX%2FY%2CZ%7E%25:abc:2");
+
+    auto const parsed = MapTileKey(encoded);
+    REQUIRE(parsed.layer_ == key.layer_);
+    REQUIRE(parsed.mapId_ == key.mapId_);
+    REQUIRE(parsed.layerId_ == key.layerId_);
+    REQUIRE(parsed.tileId_ == key.tileId_);
+    REQUIRE(parsed.stage_ == key.stage_);
+}
+
+TEST_CASE("DataSourceInfo rejects reserved characters in raw metadata identifiers", "[DataSourceInfo]")
+{
+    auto valid = R"({
+        "nodeId": "ReservedNamesNode",
+        "mapId": "ValidMap",
+        "layers": {
+            "ValidLayer": {
+                "layerId": "ValidLayer",
+                "type": "Features",
+                "featureTypes": [
+                    {
+                        "name": "Road",
+                        "uniqueIdCompositions": [
+                            [
+                                {"partId": "roadId", "datatype": "U32"}
+                            ]
+                        ]
+                    }
+                ]
+            }
+        }
+    })"_json;
+
+    REQUIRE_NOTHROW(DataSourceInfo::fromJson(valid));
+
+    SECTION("map ids are raw datasource identifiers")
+    {
+        auto invalid = valid;
+        invalid["mapId"] = "Invalid:Map";
+        REQUIRE_THROWS(DataSourceInfo::fromJson(invalid));
+    }
+
+    SECTION("layer ids are raw datasource identifiers")
+    {
+        auto invalid = valid;
+        invalid["layers"] = nlohmann::json::object({
+            {"Invalid/Layer", valid["layers"]["ValidLayer"]}
+        });
+        REQUIRE_THROWS(DataSourceInfo::fromJson(invalid));
+    }
+
+    SECTION("feature type names delimit feature-id strings")
+    {
+        auto invalid = valid;
+        invalid["layers"]["ValidLayer"]["featureTypes"][0]["name"] = "Road.Type";
+        REQUIRE_THROWS(DataSourceInfo::fromJson(invalid));
+    }
+
+    SECTION("id-part labels are raw field-like identifiers")
+    {
+        auto invalid = valid;
+        invalid["layers"]["ValidLayer"]["featureTypes"][0]["uniqueIdCompositions"][0][0]["partId"] = "road/id";
+        REQUIRE_THROWS(DataSourceInfo::fromJson(invalid));
+    }
+}
+
 TEST_CASE("LayerInfo roundtrips featureModelSchema", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(R"({
