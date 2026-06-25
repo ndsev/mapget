@@ -50,14 +50,24 @@ void bindDataSourceServer(py::module_& m)
     using namespace mapget;
     using namespace simfil;
 
-    py::enum_<LayerType>(m, "LayerType")
+    py::enum_<LayerType>(m, "LayerType", R"pbdoc(
+        Mapget layer category.
+
+        Feature and source-data layers are currently the primary layer types
+        exposed through the Python tile-building API.
+    )pbdoc")
         .value("FEATURES", LayerType::Features)
         .value("HEIGHTMAP", LayerType::Heightmap)
         .value("ORTHO_IMAGE", LayerType::OrthoImage)
         .value("GLTF", LayerType::GLTF)
         .value("SOURCE_DATA", LayerType::SourceData);
 
-    py::class_<MapTileKey>(m, "MapTileKey")
+    py::class_<MapTileKey>(m, "MapTileKey", R"pbdoc(
+        Fully qualified tile address used by datasource, cache and locate APIs.
+
+        A key contains the layer type, map id, layer id, numeric mapget tile id,
+        and optional staged-loading index.
+    )pbdoc")
         .def(py::init<>(), "Construct an empty map tile key.")
         .def(py::init<std::string const&>(), py::arg("value"), "Parse a map tile key from its string form.")
         .def(py::init<LayerType, std::string, std::string, TileId, uint32_t>(),
@@ -67,15 +77,19 @@ void bindDataSourceServer(py::module_& m)
             py::arg("tile_id"),
             py::arg("stage") = 0,
             "Construct a map tile key from individual components.")
-        .def_readwrite("layer_type", &MapTileKey::layer_)
-        .def_readwrite("map_id", &MapTileKey::mapId_)
-        .def_readwrite("layer_id", &MapTileKey::layerId_)
-        .def_readwrite("tile_id", &MapTileKey::tileId_)
-        .def_readwrite("stage", &MapTileKey::stage_)
+        .def_readwrite("layer_type", &MapTileKey::layer_, "Layer category addressed by this key.")
+        .def_readwrite("map_id", &MapTileKey::mapId_, "Map identifier addressed by this key.")
+        .def_readwrite("layer_id", &MapTileKey::layerId_, "Layer identifier addressed by this key.")
+        .def_readwrite("tile_id", &MapTileKey::tileId_, "Numeric mapget tile id addressed by this key.")
+        .def_readwrite("stage", &MapTileKey::stage_, "Staged-loading index addressed by this key.")
         .def("to_string", &MapTileKey::toString, "Convert this key to its stable string form.")
         .def("__str__", &MapTileKey::toString);
 
-    py::class_<LocateRequest>(m, "LocateRequest")
+    py::class_<LocateRequest>(m, "LocateRequest", R"pbdoc(
+        Request asking a datasource to locate a feature id in map tiles.
+
+        Datasources may resolve secondary ids to primary ids in their responses.
+    )pbdoc")
         .def(py::init([](std::string mapId, std::string typeId, KeyValuePairVec const& featureIdParts) {
                 return LocateRequest(std::move(mapId), std::move(typeId), castToKeyValue(castToKeyValueView(featureIdParts)));
             }),
@@ -90,8 +104,8 @@ void bindDataSourceServer(py::module_& m)
             }),
             py::arg("dict"),
             "Construct a locate request from a Python dictionary.")
-        .def_readwrite("map_id", &LocateRequest::mapId_)
-        .def_readwrite("type_id", &LocateRequest::typeId_)
+        .def_readwrite("map_id", &LocateRequest::mapId_, "Map in which the feature should be located.")
+        .def_readwrite("type_id", &LocateRequest::typeId_, "Feature type id to locate.")
         .def_property("feature_id_parts",
             [](LocateRequest const& self) {
                 KeyValuePairVec result;
@@ -106,7 +120,8 @@ void bindDataSourceServer(py::module_& m)
             },
             [](LocateRequest& self, KeyValuePairVec const& parts) {
                 self.setFeatureId(castToKeyValueView(parts));
-            })
+            },
+            "Feature-id parts as `(part_id, value)` pairs.")
         .def("set_feature_id", [](LocateRequest& self, KeyValuePairVec const& parts) {
                 self.setFeatureId(castToKeyValueView(parts));
             },
@@ -125,7 +140,12 @@ void bindDataSourceServer(py::module_& m)
         .def("to_json", [](LocateRequest const& self) { return self.serialize().dump(); },
             "Serialize the request to a JSON string.");
 
-    py::class_<LocateResponse, LocateRequest>(m, "LocateResponse")
+    py::class_<LocateResponse, LocateRequest>(m, "LocateResponse", R"pbdoc(
+        Datasource response to a `LocateRequest`.
+
+        Inherits the resolved feature id fields and adds the tile key where the
+        feature may be found.
+    )pbdoc")
         .def(py::init<LocateRequest const&>(),
             py::arg("request"),
             "Construct a response initialized from a request.")
@@ -136,7 +156,7 @@ void bindDataSourceServer(py::module_& m)
             }),
             py::arg("dict"),
             "Construct a locate response from a Python dictionary.")
-        .def_readwrite("tile_key", &LocateResponse::tileKey_)
+        .def_readwrite("tile_key", &LocateResponse::tileKey_, "Tile key that may contain the located feature.")
         .def("to_dict", [](LocateResponse const& self) {
                 return datasourceJsonToPython(self.serialize());
             },
@@ -144,7 +164,13 @@ void bindDataSourceServer(py::module_& m)
         .def("to_json", [](LocateResponse const& self) { return self.serialize().dump(); },
             "Serialize the response to a JSON string.");
 
-    py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer")
+    py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer", R"pbdoc(
+        Small HTTP datasource server implemented from Python callbacks.
+
+        Construct it with a `DataSourceInfo` dictionary, attach tile/locate
+        callbacks, then call `go()` so a mapget service can connect through
+        `RemoteDataSource`.
+    )pbdoc")
         .def(
             py::init(
                 [](py::dict const& dict)

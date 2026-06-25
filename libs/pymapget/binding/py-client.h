@@ -276,13 +276,32 @@ void bindHttpClient(py::module_& m)
             Wait for the search request to be done.
         )pbdoc", py::call_guard<py::gil_scoped_release>());
 
-    py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client")
-        .def(py::init<const std::string&, uint16_t>(),
+    py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client", R"pbdoc(
+        Synchronous HTTP client for a running mapget service.
+
+        The client fetches `/sources` once during construction, keeps the
+        resulting layer metadata for request decoding, and can submit tile and
+        server-side search requests.
+    )pbdoc")
+        .def(py::init<const std::string&, uint16_t, AuthHeaders, bool>(),
              R"pbdoc(
-                Connect to a running mapget HTTP service. Immediately calls the /sources
-                endpoint, and caches the result for the lifetime of this object.
+                Connect to a running mapget HTTP service.
+
+                The constructor immediately calls `/sources` and caches the
+                ready datasource metadata for the lifetime of this object.
+
+                Args:
+                    host: Hostname or IP address of the mapget HTTP service.
+                    port: TCP port of the mapget HTTP service.
+                    headers: Optional HTTP headers sent with `/sources`,
+                        `/tiles`, and `/search` requests. Use this for auth.
+                    enable_compression: Request gzip responses unless the
+                        headers already contain an `Accept-Encoding` override.
             )pbdoc",
-             py::arg("host"), py::arg("port"))
+             py::arg("host"),
+             py::arg("port"),
+             py::arg("headers") = AuthHeaders{},
+             py::arg("enable_compression") = true)
         .def("sources", [](HttpClient& self){
                 auto jsonArray = nlohmann::json::array();
                 for (auto const& dsInfo : self.sources())

@@ -15,7 +15,13 @@ void bindHttpService(py::module_& m)
     using mapget::HttpService;
     using mapget::RemoteDataSource;
 
-    py::class_<HttpService>(m, "Service")
+    py::class_<HttpService>(m, "Service", R"pbdoc(
+        Embedded mapget HTTP service.
+
+        Use this class to host local or remote datasources from Python. It
+        exposes the same HTTP API as the `mapget serve` command once `go()` has
+        started the server thread.
+    )pbdoc")
         .def(py::init<>(), R"pbdoc(
             Construct a Service with a default Cache instance.
         )pbdoc")
