@@ -17,6 +17,18 @@ namespace {
 
 constexpr std::string_view kProtocolReservedIdentifierChars = ":/,~";
 
+/** Returns whether a metadata version was left at its legacy aggregate default. */
+[[nodiscard]] bool isDefaultVersion(Version const& version)
+{
+    return version.major_ == 0 && version.minor_ == 0 && version.patch_ == 0;
+}
+
+/** Stamps local in-process datasources with the current stream protocol when they did not set one. */
+[[nodiscard]] Version effectiveDataSourceProtocolVersion(Version const& version)
+{
+    return isDefaultVersion(version) ? TileLayerStream::CurrentProtocolVersion : version;
+}
+
 /** Standardize missing-field errors across model metadata JSON parsers. */
 auto missing_field(std::string const& error, std::string const& context) {
     return std::runtime_error(
@@ -714,7 +726,7 @@ nlohmann::json DataSourceInfo::toJson() const
         {"maxParallelJobs", maxParallelJobs_},
         {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
-        {"protocolVersion", protocolVersion_.toJson()}};
+        {"protocolVersion", effectiveDataSourceProtocolVersion(protocolVersion_).toJson()}};
 }
 
 void DataSourceInfo::validateIdentifiers() const

@@ -8,6 +8,7 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
 #include "mapget/model/layer.h"
+#include "mapget/model/stream.h"
 
 #include <memory>
 #include <optional>
@@ -148,6 +149,9 @@ DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
     info.validateIdentifiers();
 
     auto result = info;
+    if (result.protocolVersion_ == Version{}) {
+        result.protocolVersion_ = TileLayerStream::CurrentProtocolVersion;
+    }
     result.layers_.clear();
     result.layers_.reserve(info.layers_.size());
     for (auto const& [layerId, layerInfo] : info.layers_) {

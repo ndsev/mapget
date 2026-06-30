@@ -178,6 +178,12 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
 
     // Check that the two DataSourceInfo objects are equal.
     REQUIRE(j == j2);
+
+    SECTION("default datasource protocol is serialized as current stream protocol")
+    {
+        info.protocolVersion_ = Version{};
+        REQUIRE(info.toJson().at("protocolVersion") == TileLayerStream::CurrentProtocolVersion.toJson());
+    }
 }
 
 TEST_CASE("MapTileKey percent-escapes map and layer identifier components", "[DataSourceInfo]")
