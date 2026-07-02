@@ -1,7 +1,38 @@
 ### Dependencies via CPM (converted from FetchContent)
 
 CPMAddPackage("gh:g-truc/glm#1.0.1")
+set(MAPGET_NDSMATH_SOURCE_DIR "" CACHE PATH
+    "Local ndslive-math source directory to use instead of fetching from Git.")
+set(_mapget_ndsmath_source_dir "${MAPGET_NDSMATH_SOURCE_DIR}")
+if ("${_mapget_ndsmath_source_dir}" STREQUAL ""
+    AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/../../ndslive-math/cpp/CMakeLists.txt")
+    set(_mapget_ndsmath_source_dir "${CMAKE_CURRENT_LIST_DIR}/../../ndslive-math/cpp")
+endif()
+
+if (NOT "${_mapget_ndsmath_source_dir}" STREQUAL "")
+    message(STATUS "Using local ndsmath from ${_mapget_ndsmath_source_dir}")
     CPMAddPackage(
+        NAME ndsmath
+        SOURCE_DIR "${_mapget_ndsmath_source_dir}"
+        OPTIONS
+            "NDSMATH_BUILD_TESTS OFF"
+            "NDSMATH_INSTALL OFF")
+else()
+    CPMAddPackage(
+        NAME ndsmath
+        GITHUB_REPOSITORY ndsev/ndslive-math
+        GIT_TAG geometry-cross-language
+        GIT_SHALLOW FALSE
+        OPTIONS
+            "NDSMATH_BUILD_TESTS OFF"
+            "NDSMATH_INSTALL OFF")
+endif()
+
+if (TARGET ndsmath AND NOT TARGET ndsmath::ndsmath)
+    add_library(ndsmath::ndsmath ALIAS ndsmath)
+endif()
+
+CPMAddPackage(
     URI "gh:fmtlib/fmt#11.1.4"
     OPTIONS "FMT_HEADER_ONLY OFF")
 CPMAddPackage(

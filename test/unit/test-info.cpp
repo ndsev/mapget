@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <string>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
@@ -152,7 +153,9 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
         LayerType::Features,
         std::vector<FeatureTypeInfo>(),
         std::vector<int>{0, 1, 2},
-        std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
+        std::vector<Coverage>{
+            {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
+            {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}},
         1,
         std::vector<std::string>{"Complete"},
         0,
@@ -192,11 +195,11 @@ TEST_CASE("MapTileKey percent-escapes map and layer identifier components", "[Da
         LayerType::Features,
         "Map.A:B/C,D~%",
         "Layer:X/Y,Z~%",
-        TileId(0xabc),
+        TileId::fromTileXY(1, 0, 1),
         2);
 
     auto const encoded = key.toString();
-    REQUIRE(encoded == "Features:Map.A%3AB%2FC%2CD%7E%25:Layer%3AX%2FY%2CZ%7E%25:abc:2");
+    REQUIRE(encoded == "Features:Map.A%3AB%2FC%2CD%7E%25:Layer%3AX%2FY%2CZ%7E%25:131073:2");
 
     auto const parsed = MapTileKey(encoded);
     REQUIRE(parsed.layer_ == key.layer_);
@@ -206,7 +209,20 @@ TEST_CASE("MapTileKey percent-escapes map and layer identifier components", "[Da
     REQUIRE(parsed.stage_ == key.stage_);
 }
 
-TEST_CASE("DataSourceInfo rejects reserved characters in raw metadata identifiers", "[DataSourceInfo]")
+TEST_CASE("MapTileKey accepts removed mapget tile-id layout", "[DataSourceInfo]")
+{
+    auto const legacyTileId = (int64_t{1} << 32) | int64_t{1};
+    auto const parsed = MapTileKey("Features:Map:Layer:" + std::to_string(legacyTileId) + ":0");
+    REQUIRE(parsed.tileId_ == TileId::fromTileXY(1, 0, 1));
+}
+
+TEST_CASE("MapTileKey keeps SourceData tile zero as metadata sentinel", "[DataSourceInfo]")
+{
+    auto const parsed = MapTileKey("SourceData:Map:Layer:0:0");
+    REQUIRE(parsed.tileId_.value() == 0);
+}
+
+TEST_CASE("DataSourceInfo validates reserved characters in raw metadata identifiers", "[DataSourceInfo]")
 {
     auto valid = R"({
         "nodeId": "ReservedNamesNode",
@@ -231,7 +247,14 @@ TEST_CASE("DataSourceInfo rejects reserved characters in raw metadata identifier
 
     REQUIRE_NOTHROW(DataSourceInfo::fromJson(valid));
 
-    SECTION("map ids are raw datasource identifiers")
+    SECTION("map ids may use slashes as UI grouping separators")
+    {
+        auto grouped = valid;
+        grouped["mapId"] = "Group/Subgroup/ValidMap";
+        REQUIRE_NOTHROW(DataSourceInfo::fromJson(grouped));
+    }
+
+    SECTION("map ids still reject non-path protocol delimiters")
     {
         auto invalid = valid;
         invalid["mapId"] = "Invalid:Map";

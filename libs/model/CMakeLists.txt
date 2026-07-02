@@ -45,7 +45,6 @@ add_library(mapget-model STATIC
   src/feature.cpp
   src/attr.cpp
   src/attrlayer.cpp
-  src/tileid.cpp
   src/featureid.cpp
   src/relation.cpp
   src/stream.cpp
@@ -70,6 +69,7 @@ target_link_libraries(mapget-model
   PUBLIC
     glm::glm
     mapget-log
+    ndsmath::ndsmath
     sfl::sfl
     Bitsery::bitsery
     simfil::simfil

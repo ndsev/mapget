@@ -280,12 +280,23 @@ std::shared_ptr<LayerInfo> makeLiveLikeSchemaBackedSearchResultLayerInfo()
     })"_json);
 }
 
+
+TileId primarySearchTileId()
+{
+    return TileId::fromTileXY(1, 0, 1);
+}
+
+TileId secondarySearchTileId()
+{
+    return TileId::fromTileXY(2, 0, 1);
+}
+
 TileSearchResultLayer::Ptr makeSearchResultLayer()
 {
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("SearchResultSourceNode");
     return std::make_shared<TileSearchResultLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         strings->nodeId_,
         "TestMap",
         layerInfo,
@@ -306,7 +317,7 @@ public:
 
         auto feature = tile->newFeature(
             "Road",
-            {{"tileId", static_cast<int64_t>(tile->tileId().value_)}, {"roadId", int64_t(42)}});
+            {{"tileId", static_cast<int64_t>(tile->tileId().value())}, {"roadId", int64_t(42)}});
         if (tile->stage().value_or(0U) == 0U) {
             feature->addLine({Point(11.0, 48.0, 0.0), Point(11.1, 48.1, 0.0)});
             return;
@@ -459,7 +470,7 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("SearchSourceNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "SearchSourceNode",
         "TestMap",
         layerInfo,
@@ -504,7 +515,7 @@ TEST_CASE("Feature-layer search stores diagnostics on the result layer", "[featu
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("SearchDiagnosticsNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "SearchDiagnosticsNode",
         "TestMap",
         layerInfo,
@@ -548,7 +559,7 @@ TEST_CASE("Attribute-scope search records deterministic match metadata", "[featu
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("AttributeSearchSourceNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "AttributeSearchSourceNode",
         "TestMap",
         layerInfo,
@@ -585,7 +596,7 @@ TEST_CASE("Attribute-scope search uses schema scalar shorthand", "[feature-layer
     auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("AttributeShorthandSearchSourceNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "AttributeShorthandSearchSourceNode",
         "TestMap",
         layerInfo,
@@ -644,7 +655,7 @@ TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[
 
     auto strings = std::make_shared<StringPool>("NormalizedAttributePathSearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "NormalizedAttributePathSearchNode",
         "TestMap",
         layerInfo,
@@ -720,7 +731,7 @@ TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[
 
     auto strings = std::make_shared<StringPool>("NormalizedAttributeShorthandSearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "NormalizedAttributeShorthandSearchNode",
         "TestMap",
         layerInfo,
@@ -801,7 +812,7 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
 
     auto strings = std::make_shared<StringPool>("LiveLikeNormalizedSearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "LiveLikeNormalizedSearchNode",
         "TestMap",
         layerInfo,
@@ -868,7 +879,7 @@ TEST_CASE("Attribute-scope search copies computed validity geometry", "[feature-
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("ValidityGeometrySearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "ValidityGeometrySearchNode",
         "TestMap",
         layerInfo,
@@ -904,7 +915,7 @@ TEST_CASE("Attribute-scope search preserves offset point validity geometry type"
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("PointValidityGeometrySearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "PointValidityGeometrySearchNode",
         "TestMap",
         layerInfo,
@@ -944,7 +955,7 @@ TEST_CASE("Service search loads staged payloads and evaluates in scheduled searc
     auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
         "TestMap",
         "SearchableLayer",
-        std::vector<TileId>{TileId(0x1234)},
+        std::vector<TileId>{primarySearchTileId()},
         FeatureLayerSearchRequest{
             .searchId_ = "service-search",
             .requestKey_ = "service-search:1",
@@ -993,7 +1004,7 @@ TEST_CASE("Service search requests staged source tiles in complete-tile order", 
     auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
         "TestMap",
         "SearchableLayer",
-        std::vector<TileId>{TileId(0x1234), TileId(0x1235)},
+        std::vector<TileId>{primarySearchTileId(), secondarySearchTileId()},
         FeatureLayerSearchRequest{
             .searchId_ = "service-search-stage-order",
             .query_ = "$name == 'speedLimit'",
@@ -1019,7 +1030,7 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("RepeatedSearchStageNode");
     auto base = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         strings->nodeId_,
         "TestMap",
         layerInfo,
@@ -1029,7 +1040,7 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
     baseFeature->addLine({Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0), Point(2.0, 0.0, 0.0)});
 
     auto overlay = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         strings->nodeId_,
         "TestMap",
         layerInfo,
@@ -1091,7 +1102,7 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     nlohmann::json request = {
         {"mapId", "TestMap"},
         {"layerId", "RoadLayer"},
-        {"tileIds", {1, 2}},
+        {"tileIds", {primarySearchTileId().value(), secondarySearchTileId().value()}},
     };
 
     detail::inheritSearchFields(request, envelope);
@@ -1105,7 +1116,7 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     REQUIRE_FALSE(parsed.searchRequest->requestKey_.empty());
 
     request.erase("tileIds");
-    request["tileIdsByNextStage"] = nlohmann::json::array({nlohmann::json::array({1, 2})});
+    request["tileIdsByNextStage"] = nlohmann::json::array({nlohmann::json::array({primarySearchTileId().value(), secondarySearchTileId().value()})});
     try {
         (void)detail::parseLayerTilesRequestJson(request);
         FAIL("search requests must reject tileIdsByNextStage");
@@ -1124,7 +1135,7 @@ TEST_CASE("REST search parser keeps one-shot search fields on envelope", "[featu
     nlohmann::json request = {
         {"mapId", "TestMap"},
         {"layerId", "RoadLayer"},
-        {"tileIds", {1, 2}},
+        {"tileIds", {primarySearchTileId().value(), secondarySearchTileId().value()}},
     };
 
     auto search = detail::parseRestSearchEnvelopeJson(envelope);
@@ -1135,7 +1146,7 @@ TEST_CASE("REST search parser keeps one-shot search fields on envelope", "[featu
     REQUIRE(parsed.searchRequest->requestKey_.empty());
     REQUIRE(parsed.searchRequest->scope_ == FeatureLayerSearchScope::Attribute);
     REQUIRE(parsed.searchRequest->withFields_ == std::vector<std::string>{"$feature.typeId", "$name"});
-    REQUIRE(detail::collectSearchTileIds(parsed) == std::vector<TileId>{TileId(1), TileId(2)});
+    REQUIRE(detail::collectSearchTileIds(parsed) == std::vector<TileId>{primarySearchTileId(), secondarySearchTileId()});
 
     envelope["searchId"] = "interactive-only";
     try {

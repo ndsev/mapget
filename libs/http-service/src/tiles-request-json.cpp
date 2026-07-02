@@ -162,7 +162,7 @@ void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json
     std::vector<TileId> tileIds;
     tileIds.reserve(tileIdsJson.size());
     for (auto const& tileIdJson : tileIdsJson) {
-        tileIds.emplace_back(tileIdJson.get<uint64_t>());
+        tileIds.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
     }
     result.tileIdsByNextStage.push_back(std::move(tileIds));
 }
@@ -236,7 +236,7 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
         }
         result.priorityTileIds.reserve(priorityIt->size());
         for (auto const& tileIdJson : *priorityIt) {
-            result.priorityTileIds.emplace_back(tileIdJson.get<uint64_t>());
+            result.priorityTileIds.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
         }
     }
 
@@ -259,7 +259,7 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
             std::vector<TileId> bucket;
             bucket.reserve(bucketJson.size());
             for (auto const& tileIdJson : bucketJson) {
-                bucket.emplace_back(tileIdJson.get<uint64_t>());
+                bucket.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
             }
             result.tileIdsByNextStage.push_back(std::move(bucket));
         }
@@ -308,7 +308,7 @@ ParsedLayerTilesRequest parseRestSearchLayerRequestJson(
         }
         result.priorityTileIds.reserve(priorityIt->size());
         for (auto const& tileIdJson : *priorityIt) {
-            result.priorityTileIds.emplace_back(tileIdJson.get<uint64_t>());
+            result.priorityTileIds.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
         }
     }
 

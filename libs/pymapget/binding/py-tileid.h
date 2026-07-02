@@ -1,10 +1,66 @@
 #pragma once
 
+#include "mapget/model/point.h"
 #include "mapget/model/tileid.h"
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+
+#include <cstdint>
+#include <limits>
+
+namespace pybind11::detail
+{
+
+template <>
+struct type_caster<ndsmath::PackedTileId>
+{
+public:
+    PYBIND11_TYPE_CASTER(ndsmath::PackedTileId, const_name("ndslive.math.PackedTileId"));
+
+    bool load(handle src, bool)
+    {
+        if (!src || src.is_none())
+            return false;
+
+        try {
+            auto const obj = pybind11::reinterpret_borrow<pybind11::object>(src);
+            auto const packedTileIdClass = pybind11::module_::import("ndslive.math").attr("PackedTileId");
+            if (!pybind11::isinstance(obj, packedTileIdClass))
+                return false;
+
+            auto const rawValue = obj.attr("value").cast<int64_t>();
+            if (rawValue < std::numeric_limits<int32_t>::min() ||
+                rawValue > std::numeric_limits<int32_t>::max())
+                return false;
+
+            value = ndsmath::PackedTileId::fromValue(static_cast<int32_t>(rawValue));
+            return true;
+        }
+        catch (pybind11::error_already_set const& e) {
+            if (e.matches(PyExc_ImportError) || e.matches(PyExc_AttributeError) ||
+                e.matches(PyExc_TypeError) || e.matches(PyExc_ValueError)) {
+                return false;
+            }
+            throw;
+        }
+        catch (std::exception const&) {
+            return false;
+        }
+    }
+
+    static handle cast(ndsmath::PackedTileId const& src, return_value_policy, handle)
+    {
+        if (!src.isValid())
+            return pybind11::none().release();
+
+        auto const packedTileIdClass = pybind11::module_::import("ndslive.math").attr("PackedTileId");
+        return packedTileIdClass.attr("from_value")(src.value()).release();
+    }
+};
+
+}  // namespace pybind11::detail
 
 void bindTileId(py::module_& m)
 {
@@ -38,69 +94,7 @@ void bindTileId(py::module_& m)
             Convert the Point to a string representation.
             )pbdoc");
 
-    py::class_<TileId>(m, "TileId", R"pbdoc(
-            The TileId struct represents a tile identifier for a specific map tile.
-            It includes an x (column), y (row), and z (zoom level) components.
-            )pbdoc")
-        .def(
-            py::init<uint16_t, uint16_t, uint16_t>(),
-            R"pbdoc(
-            Constructor to initialize TileId with x, y, and z values.
-            )pbdoc",
-            py::arg("x"),
-            py::arg("y"),
-            py::arg("z"))
-        .def(
-            py::init<uint64_t>(),
-            R"pbdoc(
-            Constructor to initialize TileId with a value in 0x00xxyyzz format.
-            )pbdoc",
-            py::arg("value"))
-        .def_static(
-            "from_wgs84",
-            &TileId::fromWgs84,
-            R"pbdoc(
-            Create a TileId from WGS84 longitude, latitude, and zoom level.
-            )pbdoc",
-            py::arg("longitude"),
-            py::arg("latitude"),
-            py::arg("zoom_level"))
-        .def("center", &TileId::center, R"pbdoc(
-            Get the center of the tile in WGS84 coordinates.
-            )pbdoc")
-        .def("sw", &TileId::sw, R"pbdoc(
-            Get the south-west (minimum) corner of the tile in WGS84 coordinates.
-            )pbdoc")
-        .def("ne", &TileId::ne, R"pbdoc(
-            Get the north-east (maximum) corner of the tile in WGS84 coordinates.
-            )pbdoc")
-        .def("size", &TileId::size, R"pbdoc(
-            Get the size of the tile in WGS84 coordinates.
-            )pbdoc")
-        .def("x", &TileId::x, R"pbdoc(
-            Get the x (column) component of the TileId.
-            )pbdoc")
-        .def("y", &TileId::y, R"pbdoc(
-            Get the y (row) component of the TileId.
-            )pbdoc")
-        .def("z", &TileId::z, R"pbdoc(
-            Get the z (zoom level) component of the TileId.
-            )pbdoc")
-        .def(
-            "__eq__",
-            &TileId::operator==,
-            R"pbdoc(
-            Operator overload for equality comparison with another TileId.
-            )pbdoc",
-            py::arg("other"))
-        .def(
-            "__lt__",
-            &TileId::operator<,
-            R"pbdoc(
-            Operator overload for less than comparison with another TileId.
-            )pbdoc",
-            py::arg("other"))
-        .def_readwrite("value", &TileId::value_, R"pbdoc(
-            The value representing the TileId, in 0x00xxyyzz format.
-            )pbdoc");
+    auto const packedTileIdClass = py::module_::import("ndslive.math").attr("PackedTileId");
+    m.attr("TileId") = packedTileIdClass;
+    m.attr("PackedTileId") = packedTileIdClass;
 }

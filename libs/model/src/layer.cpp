@@ -12,12 +12,56 @@
 #include <istream>
 #include <string_view>
 #include <charconv>
+#include <limits>
 #include <vector>
 
 #include "nlohmann/json.hpp"
 
 namespace mapget
 {
+
+namespace
+{
+
+/** Parse packed tile IDs first, then accept the removed mapget layout for stale keys. */
+TileId parseTileIdComponent(std::string_view component, std::string const& fullKey, LayerType layer)
+{
+    int64_t parsedTileId = 0;
+    auto parseTileResult = std::from_chars(
+        component.data(),
+        component.data() + component.size(),
+        parsedTileId,
+        10);
+    if (parseTileResult.ec != std::errc() ||
+        parseTileResult.ptr != component.data() + component.size()) {
+        raise(fmt::format("Invalid cache tile id: {}", fullKey));
+    }
+
+    if (parsedTileId == 0 && layer == LayerType::SourceData) {
+        // SourceData metadata/global keys historically use tile ID 0 as a
+        // sentinel, which collides with the removed mapget root-tile encoding.
+        return TileId();
+    }
+
+    if (parsedTileId >= std::numeric_limits<int32_t>::min() &&
+        parsedTileId <= std::numeric_limits<int32_t>::max()) {
+        try {
+            return TileId::fromValue(static_cast<int32_t>(parsedTileId));
+        }
+        catch (std::out_of_range const&) {
+            // Stale map tile keys may contain small legacy IDs such as level-only
+            // `13`; fall through to the explicit legacy-layout recognizer.
+        }
+    }
+
+    if (isLegacyTileId(parsedTileId))
+        return legacyTileIdToPacked(parsedTileId);
+
+    raise(fmt::format("Invalid cache tile id: {}", fullKey));
+    return TileId();
+}
+
+} // namespace
 
 MapTileKey::MapTileKey(const std::string& str)
 {
@@ -41,15 +85,7 @@ MapTileKey::MapTileKey(const std::string& str)
         raise(fmt::format("Invalid cache tile id '{}': {}", str, error));
     }
 
-    auto parseTileResult = std::from_chars(
-        parts[3].data(),
-        parts[3].data() + parts[3].size(),
-        tileId_.value_,
-        16);
-    if (parseTileResult.ec != std::errc() ||
-        parseTileResult.ptr != parts[3].data() + parts[3].size()) {
-        raise(fmt::format("Invalid cache tile id: {}", str));
-    }
+    tileId_ = parseTileIdComponent(parts[3], str, layer_);
 
     if (parts.size() >= 5) {
         uint32_t parsedStage = 0;
@@ -80,11 +116,11 @@ MapTileKey::MapTileKey(const TileLayer& data)
 std::string MapTileKey::toString() const
 {
     return fmt::format(
-        "{}:{}:{}:{:0x}:{}",
+        "{}:{}:{}:{}:{}",
         nlohmann::json(layer_).get<std::string>(),
         escapeIdentifierComponent(mapId_),
         escapeIdentifierComponent(layerId_),
-        tileId_.value_,
+        tileId_.value(),
         stage_);
 }
 
@@ -124,7 +160,7 @@ TileLayer::TileLayer(
     const std::vector<uint8_t>& input,
     const LayerInfoResolveFun& layerInfoResolveFun,
     size_t* bytesRead
-) : tileId_(0)
+) : tileId_()
 {
     using namespace std::chrono;
     using namespace nlohmann;
@@ -146,7 +182,9 @@ TileLayer::TileLayer(
             layerInfo_->version_.toString()));
     }
 
-    s.value8b(tileId_.value_);
+    int32_t rawTileId = 0;
+    s.value4b(rawTileId);
+    tileId_ = TileId::fromValue(rawTileId);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
 
     int64_t timestamp = 0;
@@ -317,7 +355,8 @@ tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
     s.text1b(mapId_, std::numeric_limits<uint32_t>::max());
     s.text1b(layerInfo_->layerId_, std::numeric_limits<uint32_t>::max());
     s.object(mapVersion_);
-    s.value8b(tileId_.value_);
+    auto rawTileId = tileId_.value();
+    s.value4b(rawTileId);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
     s.value8b(duration_cast<microseconds>(timestamp_.time_since_epoch()).count());
     s.value1b(ttl_.has_value());

@@ -8,7 +8,7 @@
         [
           {
             "partId": "tileId",
-            "datatype": "U64",
+            "datatype": "I64",
             "isSynthetic": true
           },
           {

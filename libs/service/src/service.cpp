@@ -407,14 +407,14 @@ nlohmann::json LayerTilesRequest::toJson()
         auto tileIds = nlohmann::json::array();
         if (!tileIdsByNextStage_.empty()) {
             for (auto const& tileId : tileIdsByNextStage_.front()) {
-                tileIds.emplace_back(tileId.value_);
+                tileIds.emplace_back(tileId.value());
             }
         }
         requestJson["tileIds"] = std::move(tileIds);
         if (!priorityTileIds_.empty()) {
             auto priorityTileIds = nlohmann::json::array();
             for (auto const& tileId : priorityTileIds_) {
-                priorityTileIds.emplace_back(tileId.value_);
+                priorityTileIds.emplace_back(tileId.value());
             }
             requestJson["priorityTileIds"] = std::move(priorityTileIds);
         }
@@ -425,7 +425,7 @@ nlohmann::json LayerTilesRequest::toJson()
     for (auto const& bucket : tileIdsByNextStage_) {
         auto tileIds = nlohmann::json::array();
         for (auto const& tileId : bucket) {
-            tileIds.emplace_back(tileId.value_);
+            tileIds.emplace_back(tileId.value());
         }
         tileIdsByNextStage.push_back(std::move(tileIds));
     }
@@ -433,7 +433,7 @@ nlohmann::json LayerTilesRequest::toJson()
     if (!priorityTileIds_.empty()) {
         auto priorityTileIds = nlohmann::json::array();
         for (auto const& tileId : priorityTileIds_) {
-            priorityTileIds.emplace_back(tileId.value_);
+            priorityTileIds.emplace_back(tileId.value());
         }
         requestJson["priorityTileIds"] = std::move(priorityTileIds);
     }
@@ -2070,7 +2070,7 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
                         "Search evaluation failed for {}::{} tile {:x}: {}",
                         request->mapId_,
                         request->layerId_,
-                        sourceTileId.value_,
+                        sourceTileId.value(),
                         exception.what())});
                 markEvalDone(0, false);
             }

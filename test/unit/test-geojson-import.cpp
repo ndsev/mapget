@@ -40,7 +40,7 @@ std::shared_ptr<LayerInfo> makeRoadLayerInfo()
           "name": "Road",
           "uniqueIdCompositions": [
             [
-              {"partId": "tileId", "datatype": "U64", "isSynthetic": true},
+              {"partId": "tileId", "datatype": "I64", "isSynthetic": true},
               {"partId": "regionId", "datatype": "STR"},
               {"partId": "roadId", "datatype": "U32"}
             ]
@@ -63,7 +63,7 @@ std::shared_ptr<LayerInfo> makeGenericLayerInfo()
         {
           "name": "AnyFeature",
           "uniqueIdCompositions": [[
-            {"partId": "tileId", "datatype": "U64", "isSynthetic": true},
+            {"partId": "tileId", "datatype": "I64", "isSynthetic": true},
             {"partId": "featureIndex", "datatype": "U32", "isSynthetic": true}
           ]]
         }
@@ -72,13 +72,13 @@ std::shared_ptr<LayerInfo> makeGenericLayerInfo()
 }
 
 TileFeatureLayer::Ptr makeTile(
-    uint64_t tileId,
+    int32_t tileId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::string const& nodeId = "GeoJsonImportNode",
     std::string const& mapId = "GeoJsonImportMap")
 {
     return std::make_shared<TileFeatureLayer>(
-        TileId(tileId),
+        TileId::fromValue(tileId),
         nodeId,
         mapId,
         layerInfo,
@@ -155,7 +155,7 @@ TEST_CASE("Feature ID strings roundtrip escaped string parts", "[FeatureId][GeoJ
     REQUIRE(parsed.keyValuePairs_[2].first == "roadId");
     REQUIRE(std::get<int64_t>(parsed.keyValuePairs_[2].second) == 7);
 
-    auto tile = makeTile(77, layerInfo, "FeatureIdNode");
+    auto tile = makeTile(131073, layerInfo, "FeatureIdNode");
     tile->setIdPrefix({{"tileId", static_cast<int64_t>(77)}, {"regionId", "DE.BY%:/,~"}});
     auto feature = tile->newFeature("Road", {{"roadId", 7}});
     REQUIRE(feature->id()->toString() == "Road.77.DE%2EBY%25%3A%2F%2C%7E.7");
@@ -165,7 +165,7 @@ TEST_CASE("Feature ID strings roundtrip escaped string parts", "[FeatureId][GeoJ
 TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[GeoJsonImport]")
 {
     auto layerInfo = makeRoadLayerInfo();
-    auto tile = makeTile(77, layerInfo, "StrictImportNode", "StrictImportMap");
+    auto tile = makeTile(131073, layerInfo, "StrictImportNode", "StrictImportMap");
 
     tile->setIdPrefix({{"tileId", static_cast<int64_t>(77)}, {"regionId", "DE.BY%"}});
     tile->setGeometryAnchor({11.3, 48.0, 5.0});
@@ -275,7 +275,7 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
             {"mapId", "ValidationMap"},
         });
 
-    auto imported = makeTile(77, layerInfo, "StrictImportNode", "StrictImportMap");
+    auto imported = makeTile(131073, layerInfo, "StrictImportNode", "StrictImportMap");
     REQUIRE_NOTHROW(imported->fromJson(originalJson));
     REQUIRE(imported->toJson() == originalJson);
     REQUIRE(imported->find("Road.77.DE%2EBY%25.7"));
@@ -285,7 +285,7 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
 TEST_CASE("TileFeatureLayer best-effort GeoJSON import shares the same pipeline", "[GeoJsonImport]")
 {
     auto layerInfo = makeGenericLayerInfo();
-    auto tile = makeTile(37392110387213ULL, layerInfo, "BestEffortNode");
+    auto tile = makeTile(131073, layerInfo, "BestEffortNode");
 
     auto input = R"json(
     {
@@ -325,7 +325,7 @@ TEST_CASE("TileFeatureLayer best-effort GeoJSON import shares the same pipeline"
 
     auto output = tile->toJson();
     REQUIRE(output["features"].size() == 1);
-    REQUIRE(output["features"][0]["id"] == "AnyFeature.37392110387213.0");
+    REQUIRE(output["features"][0]["id"] == "AnyFeature.131073.0");
     REQUIRE(output["features"][0]["geometry"]["type"] == "GeometryCollection");
     REQUIRE(output["features"][0]["properties"]["name"] == "Main");
     REQUIRE(output["features"][0]["properties"]["layer"]["restrictions"]["turn"]["value"] == "left");
@@ -337,7 +337,7 @@ TEST_CASE("TileFeatureLayer best-effort GeoJSON import shares the same pipeline"
 TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonImport][Polygon]")
 {
     auto layerInfo = makeGenericLayerInfo();
-    auto tile = makeTile(37392110387213ULL, layerInfo, "PolygonHoleNode");
+    auto tile = makeTile(131073, layerInfo, "PolygonHoleNode");
 
     auto input = R"json(
     {
@@ -346,9 +346,9 @@ TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonIm
       "features": [
         {
           "type": "Feature",
-          "id": "AnyFeature.37392110387213.0",
+          "id": "AnyFeature.131073.0",
           "typeId": "AnyFeature",
-          "tileId": 37392110387213,
+          "tileId": 131073,
           "featureIndex": 0,
           "geometry": {
             "type": "Polygon",
@@ -370,7 +370,7 @@ TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonIm
             .objectPropertiesAsAttributeLayers_ = true,
         }));
 
-    auto feature = tile->find("AnyFeature.37392110387213.0");
+    auto feature = tile->find("AnyFeature.131073.0");
     REQUIRE(feature);
     auto geometry = feature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::Polygon, 0);
     REQUIRE(geometry);
@@ -400,7 +400,7 @@ TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonIm
             return tile->strings();
         });
 
-    auto roundtrippedFeature = roundtrippedTile->find("AnyFeature.37392110387213.0");
+    auto roundtrippedFeature = roundtrippedTile->find("AnyFeature.131073.0");
     REQUIRE(roundtrippedFeature);
     auto roundtrippedGeometry = roundtrippedFeature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::Polygon, 0);
     REQUIRE(roundtrippedGeometry);
@@ -420,7 +420,7 @@ TEST_CASE("Large sanitized GeoJSON fixture roundtrips", "[GeoJsonImport][Fixture
     REQUIRE(featureCollectionJson.at("features").size() >= 64);
 
     auto tile = makeTile(
-        featureCollectionJson.at("mapgetTileId").get<uint64_t>(),
+        featureCollectionJson.at("mapgetTileId").get<int32_t>(),
         layerInfo,
         "FixtureImportNode",
         featureCollectionJson.at("mapId").get<std::string>());
@@ -438,6 +438,6 @@ TEST_CASE("Large sanitized GeoJSON fixture roundtrips", "[GeoJsonImport][Fixture
     INFO(formatJsonComparisonErrors(errors));
     REQUIRE(matches);
 
-    REQUIRE(tile->find("Entry.444000777123.group%2E00%25.0"));
-    REQUIRE(tile->find("Entry.444000777123.group%2E00%25.71"));
+    REQUIRE(tile->find("Entry.131073.group%2E00%25.0"));
+    REQUIRE(tile->find("Entry.131073.group%2E00%25.71"));
 }

@@ -65,8 +65,8 @@ void bindDataSourceServer(py::module_& m)
     py::class_<MapTileKey>(m, "MapTileKey", R"pbdoc(
         Fully qualified tile address used by datasource, cache and locate APIs.
 
-        A key contains the layer type, map id, layer id, numeric mapget tile id,
-        and optional staged-loading index.
+        A key contains the layer type, map id, layer id,
+        ndslive.math.PackedTileId, and optional staged-loading index.
     )pbdoc")
         .def(py::init<>(), "Construct an empty map tile key.")
         .def(py::init<std::string const&>(), py::arg("value"), "Parse a map tile key from its string form.")
@@ -80,7 +80,7 @@ void bindDataSourceServer(py::module_& m)
         .def_readwrite("layer_type", &MapTileKey::layer_, "Layer category addressed by this key.")
         .def_readwrite("map_id", &MapTileKey::mapId_, "Map identifier addressed by this key.")
         .def_readwrite("layer_id", &MapTileKey::layerId_, "Layer identifier addressed by this key.")
-        .def_readwrite("tile_id", &MapTileKey::tileId_, "Numeric mapget tile id addressed by this key.")
+        .def_readwrite("tile_id", &MapTileKey::tileId_, "Packed tile id addressed by this key.")
         .def_readwrite("stage", &MapTileKey::stage_, "Staged-loading index addressed by this key.")
         .def("to_string", &MapTileKey::toString, "Convert this key to its stable string form.")
         .def("__str__", &MapTileKey::toString);

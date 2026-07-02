@@ -13,6 +13,13 @@
 using namespace mapget;
 using namespace std::chrono_literals;
 
+
+namespace
+{
+constexpr int32_t kTtlTileIdValue = 131073;
+constexpr int32_t kTtlPriorityTileIdValue = 131076;
+}
+
 class UnsupportedSourceDataLayerError : public std::runtime_error
 {
 public:
@@ -167,7 +174,7 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request1 = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId(12345)});
+            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
 
         TileFeatureLayer::Ptr tile1;
         request1->onFeatureLayer([&](TileFeatureLayer::Ptr const& tile) { tile1 = tile; });
@@ -185,7 +192,7 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request2 = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId(12345)});
+            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
 
         TileFeatureLayer::Ptr tile2;
         request2->onFeatureLayer([&](TileFeatureLayer::Ptr const& tile) { tile2 = tile; });
@@ -202,7 +209,7 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request3 = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId(12345)});
+            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
 
         TileFeatureLayer::Ptr tile3;
         request3->onFeatureLayer([&](TileFeatureLayer::Ptr const& tile) { tile3 = tile; });
@@ -227,7 +234,7 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId(12345)});
+            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
 
         TileFeatureLayer::Ptr tile;
         request->onFeatureLayer([&](TileFeatureLayer::Ptr const& t) { tile = t; });
@@ -270,12 +277,12 @@ TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]"
         auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId(12345)});
+            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
 
         REQUIRE(request->toJson() == nlohmann::json{
             {"mapId", "Tropico"},
             {"layerId", "WayLayer"},
-            {"tileIds", nlohmann::json::array({12345})},
+            {"tileIds", nlohmann::json::array({kTtlTileIdValue})},
         });
     }
 
@@ -284,13 +291,13 @@ TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]"
         auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<std::vector<TileId>>{{TileId(12345)}});
+            std::vector<std::vector<TileId>>{{TileId::fromValue(kTtlTileIdValue)}});
 
         REQUIRE(request->toJson() == nlohmann::json{
             {"mapId", "Tropico"},
             {"layerId", "WayLayer"},
             {"tileIdsByNextStage", nlohmann::json::array({
-                nlohmann::json::array({12345})
+                nlohmann::json::array({kTtlTileIdValue})
             })},
         });
     }
@@ -300,16 +307,16 @@ TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]"
         auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<std::vector<TileId>>{{TileId(12345), TileId(67890)}},
-            std::vector<TileId>{TileId(67890)});
+            std::vector<std::vector<TileId>>{{TileId::fromValue(kTtlTileIdValue), TileId::fromValue(kTtlPriorityTileIdValue)}},
+            std::vector<TileId>{TileId::fromValue(kTtlPriorityTileIdValue)});
 
         REQUIRE(request->toJson() == nlohmann::json{
             {"mapId", "Tropico"},
             {"layerId", "WayLayer"},
             {"tileIdsByNextStage", nlohmann::json::array({
-                nlohmann::json::array({12345, 67890})
+                nlohmann::json::array({kTtlTileIdValue, kTtlPriorityTileIdValue})
             })},
-            {"priorityTileIds", nlohmann::json::array({67890})},
+            {"priorityTileIds", nlohmann::json::array({kTtlPriorityTileIdValue})},
         });
     }
 }

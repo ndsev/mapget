@@ -90,7 +90,7 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                 }
 
                 auto layer = impl_->info_.getLayer(layerIdParam);
-                TileId tileId{std::stoull(tileIdParam)};
+                auto tileId = TileId::fromValue(std::stoi(tileIdParam));
 
                 auto stageParam = 0u;
                 auto const& stageStr = req->getParameter("stage");

@@ -10,11 +10,14 @@
 #include <trantor/net/EventLoopThread.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -87,7 +90,7 @@ constexpr auto MANIFEST_FILENAME = "manifest.json";
 
 [[nodiscard]] std::string renderTemplate(
     std::string const& input,
-    uint64_t tileId,
+    int32_t tileId,
     std::string_view layerId,
     std::string_view baseUrl = {})
 {
@@ -300,7 +303,7 @@ void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
           "name": "AnyFeature",
           "uniqueIdCompositions": [
             [
-              {"partId": "tileId", "datatype": "U64"},
+              {"partId": "tileId", "datatype": "I64"},
               {"partId": "featureIndex", "datatype": "U32"}
             ]
           ]
@@ -315,6 +318,74 @@ void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
     info.maxParallelJobs_ = defaultParallelJobs();
     info.layers_.emplace(layerInfo->layerId_, std::move(layerInfo));
     return info;
+}
+
+enum class TileIdEncoding
+{
+    Auto,
+    Packed,
+    LegacyMapget
+};
+
+[[nodiscard]] TileIdEncoding parseTileIdEncoding(std::string const& value)
+{
+    if (value.empty() || value == "auto")
+        return TileIdEncoding::Auto;
+    if (value == "packed")
+        return TileIdEncoding::Packed;
+    if (value == "legacy-mapget")
+        return TileIdEncoding::LegacyMapget;
+    raise(fmt::format(
+        "Unsupported GeoJSON manifest tileIdEncoding `{}`. Expected `auto`, `packed`, or `legacy-mapget`.",
+        value));
+    return TileIdEncoding::Auto;
+}
+
+[[nodiscard]] std::optional<int32_t> tryParsePackedTileId(int64_t value)
+{
+    if (value < std::numeric_limits<int32_t>::min() ||
+        value > std::numeric_limits<int32_t>::max()) {
+        return std::nullopt;
+    }
+    try {
+        return TileId::fromValue(static_cast<int32_t>(value)).value();
+    }
+    catch (std::out_of_range const&) {
+        return std::nullopt;
+    }
+}
+
+[[nodiscard]] int32_t parseConfiguredTileId(
+    int64_t value,
+    std::string_view context,
+    TileIdEncoding encoding,
+    bool& convertedLegacyTileId)
+{
+    if (encoding != TileIdEncoding::LegacyMapget) {
+        if (auto packed = tryParsePackedTileId(value))
+            return *packed;
+        if (encoding == TileIdEncoding::Packed)
+            raise(fmt::format("{} contains invalid packed tile id `{}`.", context, value));
+    }
+
+    if (encoding != TileIdEncoding::Packed && isLegacyTileId(value)) {
+        convertedLegacyTileId = true;
+        return legacyTileIdToPacked(value).value();
+    }
+
+    raise(fmt::format("{} contains invalid tile id `{}`.", context, value));
+    return 0;
+}
+
+[[nodiscard]] int32_t parseConfiguredTileId(
+    nlohmann::json const& tileIdJson,
+    std::string_view context,
+    TileIdEncoding encoding,
+    bool& convertedLegacyTileId)
+{
+    if (!tileIdJson.is_number_integer())
+        raise(fmt::format("{} tile id must be an integer.", context));
+    return parseConfiguredTileId(tileIdJson.get<int64_t>(), context, encoding, convertedLegacyTileId);
 }
 
 [[nodiscard]] std::string featureTypeNameForTile(const TileFeatureLayer::Ptr& tile)
@@ -360,7 +431,7 @@ nlohmann::json GeoJsonSource::createLayerInfoJson(const std::string& layerName)
           {{
             "partId": "tileId",
             "description": "Mapget Tile ID.",
-            "datatype": "U64"
+            "datatype": "I64"
           }},
           {{
             "partId": "featureIndex",
@@ -383,6 +454,8 @@ bool GeoJsonSource::parseManifest()
     try {
         auto manifestJson = loadStructuredDocumentFile(manifestPath.string());
         manifest_.version = manifestJson.value("version", 1);
+        auto const tileIdEncoding = parseTileIdEncoding(manifestJson.value("tileIdEncoding", "auto"));
+        bool convertedLegacyTileIds = false;
 
         if (manifestJson.contains("metadata")) {
             auto& meta = manifestJson["metadata"];
@@ -409,17 +482,40 @@ bool GeoJsonSource::parseManifest()
                     FileEntry entry;
                     entry.filename = filename;
 
-                    if (fileInfo.is_object()) {
-                        entry.tileId = fileInfo.value("tileId", uint64_t{0});
-                        entry.layer = fileInfo.value("layer", std::string{});
+                    try {
+                        if (fileInfo.is_object()) {
+                            if (!fileInfo.contains("tileId")) {
+                                mapget::log().warn(
+                                    "Invalid file entry in manifest for '{}': missing tileId",
+                                    filename);
+                                continue;
+                            }
+                            entry.tileId = parseConfiguredTileId(
+                                fileInfo.at("tileId"),
+                                fmt::format("Manifest entry `{}`", filename),
+                                tileIdEncoding,
+                                convertedLegacyTileIds);
+                            entry.layer = fileInfo.value("layer", std::string{});
+                        }
+                        else if (fileInfo.is_number()) {
+                            entry.tileId = parseConfiguredTileId(
+                                fileInfo,
+                                fmt::format("Manifest entry `{}`", filename),
+                                tileIdEncoding,
+                                convertedLegacyTileIds);
+                        }
+                        else {
+                            mapget::log().warn(
+                                "Invalid file entry in manifest for '{}': expected object or number",
+                                filename);
+                            continue;
+                        }
                     }
-                    else if (fileInfo.is_number()) {
-                        entry.tileId = fileInfo.get<uint64_t>();
-                    }
-                    else {
+                    catch (const std::exception& e) {
                         mapget::log().warn(
-                            "Invalid file entry in manifest for '{}': expected object or number",
-                            filename);
+                            "Invalid file entry in manifest for '{}': {}",
+                            filename,
+                            e.what());
                         continue;
                     }
 
@@ -437,6 +533,13 @@ bool GeoJsonSource::parseManifest()
                     manifest_.files.push_back(std::move(entry));
                 }
             }
+        }
+
+        if (convertedLegacyTileIds) {
+            mapget::log().warn(
+                "GeoJSON manifest '{}' contains legacy mapget tile IDs; "
+                "converted them to signed NDS.Live packed tile IDs. Please rewrite the manifest.",
+                manifestPath.string());
         }
 
         mapget::log().info(
@@ -459,8 +562,9 @@ void GeoJsonSource::initFromManifest()
 
     for (const auto& [layerName, tileIds] : layerCoverage_) {
         auto layerInfo = mapget::LayerInfo::fromJson(createLayerInfoJson(layerName), layerName);
-        for (uint64_t tileId : tileIds) {
-            layerInfo->coverage_.emplace_back(mapget::Coverage{tileId, tileId, {}});
+        for (int32_t tileId : tileIds) {
+            auto packedTileId = mapget::TileId::fromValue(tileId);
+            layerInfo->coverage_.emplace_back(mapget::Coverage{packedTileId, packedTileId, {}});
         }
         info_.layers_.emplace(layerName, std::move(layerInfo));
     }
@@ -470,22 +574,40 @@ void GeoJsonSource::initFromDirectory()
 {
     const std::string defaultLayer = "GeoJsonAny";
     auto layerInfo = mapget::LayerInfo::fromJson(createLayerInfoJson(defaultLayer), defaultLayer);
+    bool convertedLegacyTileIds = false;
 
     for (const auto& file : std::filesystem::directory_iterator(inputDir_)) {
         if (file.path().extension() != ".geojson")
             continue;
 
         try {
-            auto tileId = static_cast<uint64_t>(std::stoull(file.path().stem()));
+            auto const stem = file.path().stem().string();
+            int64_t rawTileId = 0;
+            auto parseResult = std::from_chars(stem.data(), stem.data() + stem.size(), rawTileId, 10);
+            if (parseResult.ec != std::errc{} || parseResult.ptr != stem.data() + stem.size())
+                throw std::invalid_argument("filename is not a complete integer tile ID");
+            auto const tileId = parseConfiguredTileId(
+                rawTileId,
+                fmt::format("GeoJSON filename `{}`", file.path().filename().string()),
+                TileIdEncoding::Auto,
+                convertedLegacyTileIds);
             layerCoverage_[defaultLayer].insert(tileId);
             tileLayerToFile_[{tileId, defaultLayer}] = file.path().filename().string();
-            layerInfo->coverage_.emplace_back(mapget::Coverage{tileId, tileId, {}});
+            auto packedTileId = mapget::TileId::fromValue(tileId);
+            layerInfo->coverage_.emplace_back(mapget::Coverage{packedTileId, packedTileId, {}});
         }
         catch (const std::exception&) {
             mapget::log().debug(
                 "Skipping file '{}': filename is not a valid tile ID",
                 file.path().filename().string());
         }
+    }
+
+    if (convertedLegacyTileIds) {
+        mapget::log().warn(
+            "GeoJsonFolder '{}' contains legacy mapget tile-ID filenames; "
+            "converted them to signed NDS.Live packed tile IDs. Please rename the files or add a manifest.",
+            inputDir_);
     }
 
     info_.layers_.emplace(defaultLayer, std::move(layerInfo));
@@ -564,7 +686,7 @@ mapget::DataSourceInfo GeoJsonSource::info()
     return info_;
 }
 
-std::string GeoJsonSource::resolveTilePath(uint64_t tileId, std::string_view layerId) const
+std::string GeoJsonSource::resolveTilePath(int32_t tileId, std::string_view layerId) const
 {
     auto rendered = renderTemplate(tilePathTemplate_, tileId, layerId);
     std::filesystem::path path(rendered);
@@ -573,7 +695,7 @@ std::string GeoJsonSource::resolveTilePath(uint64_t tileId, std::string_view lay
     return (std::filesystem::path(inputDir_) / path).string();
 }
 
-std::string GeoJsonSource::readTileBody(uint64_t tileId, std::string_view layerId) const
+std::string GeoJsonSource::readTileBody(int32_t tileId, std::string_view layerId) const
 {
     if (usesTemplatePaths_) {
         auto path = resolveTilePath(tileId, layerId);
@@ -609,14 +731,14 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
     try {
         fillGeoJsonTile(
             tile,
-            readTileBody(tile->tileId().value_, tile->layerInfo()->layerId_),
+            readTileBody(tile->tileId().value(), tile->layerInfo()->layerId_),
             withAttrLayers_);
     }
     catch (const std::exception& e) {
         tile->setError(e.what());
         mapget::log().error(
             "GeoJsonFolder failed to fill tile {} for layer '{}': {}",
-            tile->tileId().value_,
+            tile->tileId().value(),
             tile->layerInfo()->layerId_,
             e.what());
     }
@@ -711,7 +833,7 @@ mapget::DataSourceInfo GeoJsonEndpointSource::info()
     return info_;
 }
 
-std::string GeoJsonEndpointSource::renderTileUrl(uint64_t tileId, std::string_view layerId) const
+std::string GeoJsonEndpointSource::renderTileUrl(int32_t tileId, std::string_view layerId) const
 {
     auto rendered = renderTemplate(tileUrlTemplate_, tileId, layerId, baseUrl_);
     if (looksLikeHttpUrl(rendered))
@@ -719,7 +841,7 @@ std::string GeoJsonEndpointSource::renderTileUrl(uint64_t tileId, std::string_vi
     return joinUrlPrefixAndPath(baseUrl_, rendered);
 }
 
-std::string GeoJsonEndpointSource::fetchTileBody(uint64_t tileId, std::string_view layerId) const
+std::string GeoJsonEndpointSource::fetchTileBody(int32_t tileId, std::string_view layerId) const
 {
     auto url = renderTileUrl(tileId, layerId);
     if (fetchText_)
@@ -767,14 +889,14 @@ void GeoJsonEndpointSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
     try {
         fillGeoJsonTile(
             tile,
-            fetchTileBody(tile->tileId().value_, tile->layerInfo()->layerId_),
+            fetchTileBody(tile->tileId().value(), tile->layerInfo()->layerId_),
             withAttrLayers_);
     }
     catch (const std::exception& e) {
         tile->setError(e.what());
         mapget::log().error(
             "GeoJsonEndpoint failed to fill tile {} for layer '{}': {}",
-            tile->tileId().value_,
+            tile->tileId().value(),
             tile->layerInfo()->layerId_,
             e.what());
     }

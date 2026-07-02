@@ -450,8 +450,8 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
 
         // Verify required fields
         REQUIRE(json["type"] == "FeatureCollection");
-        REQUIRE(json["mapgetTileId"].is_number_unsigned());
-        REQUIRE(json["mapgetTileId"].get<uint64_t>() == tile->tileId().value_);
+        REQUIRE(json["mapgetTileId"].is_number_integer());
+        REQUIRE(json["mapgetTileId"].get<int32_t>() == tile->tileId().value());
         REQUIRE(json["mapId"] == "Tropico");
         REQUIRE(json["mapgetLayerId"] == "WayLayer");
 
@@ -1408,62 +1408,65 @@ TEST_CASE("TileId", "[TileId]") {
 
     SECTION("fromWgs84: zoom level 0") {
         TileId tile = TileId::fromWgs84(0, 0, 0);
-        REQUIRE(tile.x() == 1);
+        REQUIRE(tile.x() == 0);
         REQUIRE(tile.y() == 0);
-        REQUIRE(tile.z() == 0);
+        REQUIRE(tile.level() == 0);
     }
 
     SECTION("fromWgs84: positive longitude, positive latitude") {
         TileId tile = TileId::fromWgs84(90, 45, 1);
-        REQUIRE(tile.x() == 3);
+        REQUIRE(tile.x() == 1);
         REQUIRE(tile.y() == 0);
-        REQUIRE(tile.z() == 1);
+        REQUIRE(tile.level() == 1);
     }
 
     SECTION("fromWgs84: negative longitude, positive latitude") {
         TileId tile = TileId::fromWgs84(-90, 45, 1);
-        REQUIRE(tile.x() == 1);
+        REQUIRE(tile.x() == 3);
         REQUIRE(tile.y() == 0);
-        REQUIRE(tile.z() == 1);
+        REQUIRE(tile.level() == 1);
     }
 
     SECTION("fromWgs84: positive longitude, negative latitude") {
         TileId tile = TileId::fromWgs84(90, -45, 1);
-        REQUIRE(tile.x() == 3);
+        REQUIRE(tile.x() == 1);
         REQUIRE(tile.y() == 1);
-        REQUIRE(tile.z() == 1);
+        REQUIRE(tile.level() == 1);
     }
 
     SECTION("fromWgs84: negative longitude, negative latitude") {
         TileId tile = TileId::fromWgs84(-90, -45, 1);
-        REQUIRE(tile.x() == 1);
+        REQUIRE(tile.x() == 3);
         REQUIRE(tile.y() == 1);
-        REQUIRE(tile.z() == 1);
+        REQUIRE(tile.level() == 1);
     }
 
     SECTION("Tile center/SW/NE/size calculation") {
-        TileId tile(0, 0, 0);
-        REQUIRE_EQUAL(tile.center(), {-90, 0});
-        REQUIRE_EQUAL(tile.sw(), {-180, -90});
-        REQUIRE_EQUAL(tile.ne(), {0, 90});
-        REQUIRE_EQUAL(tile.size(), {180, 180});
+        TileId tile = TileId::fromTileXY(0, 0, 1);
+        REQUIRE_EQUAL(Point(tile.centerWgs84()), {45, 45});
+        REQUIRE_EQUAL(Point(tile.southWestWgs84()), {0, 0});
+        REQUIRE_EQUAL(Point(tile.northEastWgs84()), {90, 90});
+        REQUIRE_EQUAL(Point(tile.wgs84Size()), {90, 90});
     }
 
     SECTION("Neighbor") {
-        TileId tile(0, 0, 1);
-        REQUIRE(tile.neighbor(1, 0) == TileId(1, 0, 1));
-        REQUIRE(tile.neighbor(0, 1) == TileId(0, 1, 1));
-        REQUIRE(tile.neighbor(-1, -1) == TileId(3, 0, 1));  // Wrap around
+        TileId tile = TileId::fromTileXY(0, 0, 1);
+        REQUIRE(tile.neighbor(1, 0) == TileId::fromTileXY(1, 0, 1));
+        REQUIRE(tile.neighbor(0, 1) == TileId::fromTileXY(0, 1, 1));
+        REQUIRE(tile.neighbor(-1, -1) == TileId::fromTileXY(3, 1, 1));  // Wrap around
 
-        TileId tile2(3, 1, 1);
-        REQUIRE(tile2.neighbor(-1, -1) == TileId(2, 0, 1));
-        REQUIRE(tile2.neighbor(1, 1) == TileId(0, 1, 1));  // Wrap around
+        TileId tile2 = TileId::fromTileXY(3, 1, 1);
+        REQUIRE(tile2.neighbor(-1, -1) == TileId::fromTileXY(2, 0, 1));
+        REQUIRE(tile2.neighbor(1, 1) == TileId::fromTileXY(0, 0, 1));  // Wrap around
+        REQUIRE(tile2.neighbor(4, 2) == tile2);
+    }
 
-        REQUIRE_THROWS(tile2.neighbor(2, -2));
-        REQUIRE_THROWS(tile2.neighbor(-2, 2));
-        REQUIRE_THROWS(tile2.neighbor(0, 3));
-        REQUIRE_THROWS(tile2.neighbor(0, -3));
-        REQUIRE_THROWS(tile2.neighbor(2, 0));
-        REQUIRE_THROWS(tile2.neighbor(-2, 0));
+    SECTION("Legacy mapget tile-id migration helpers") {
+        auto const legacy = (int64_t{1} << 32) | int64_t{1};
+        REQUIRE(isLegacyTileId(legacy));
+        REQUIRE(legacyTileIdToPacked(legacy) == TileId::fromTileXY(1, 0, 1));
+        REQUIRE_FALSE(isLegacyTileId(-1));
+        REQUIRE_FALSE(isLegacyTileId((int64_t{1} << 32) | (int64_t{2} << 16) | int64_t{1}));
+        REQUIRE_THROWS(legacyTileIdToPacked(-1));
     }
 }

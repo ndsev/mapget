@@ -1668,7 +1668,7 @@ private:
             {"requestId", requestId_},
             {"mapId", key.mapId_},
             {"layerId", key.layerId_},
-            {"tileId", key.tileId_.value_},
+            {"tileId", key.tileId_.value()},
             {"stage", key.stage_},
             {"state", static_cast<uint8_t>(state)},
             {"stateText", std::string(loadStateToString(state))},

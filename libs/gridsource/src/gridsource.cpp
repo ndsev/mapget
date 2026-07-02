@@ -256,7 +256,7 @@ TileSpatialContext::TileSpatialContext(TileId tid, double gridSize)
     // Use a proper hash of the tile ID to ensure different tiles get different seeds
     // This prevents tiles at the same latitude from having similar patterns
     std::hash<uint64_t> hasher;
-    seed = static_cast<uint32_t>(hasher(tid.value_));
+    seed = static_cast<uint32_t>(hasher(tid.value()));
 }
 
 uint64_t TileSpatialContext::cellKey(int x, int y) {
@@ -534,13 +534,13 @@ std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(TileId ti
 void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
     std::string layerName = tile->layerInfo()->layerId_;
 
-    mapget::log().info("GridDataSource::fill() called for layer '{}' tile {}", layerName, tile->tileId().value_);
+    mapget::log().info("GridDataSource::fill() called for layer '{}' tile {}", layerName, tile->tileId().value());
 
     // Get or create spatial context for this tile
     auto ctx = getOrCreateContext(tile->tileId());
 
     // Set ID prefix
-    tile->setIdPrefix({{"tileId", static_cast<int64_t>(tile->tileId().value_)}});
+    tile->setIdPrefix({{"tileId", static_cast<int64_t>(tile->tileId().value())}});
 
     // Find matching layer configuration
     for (const auto& layerCfg : config_.layers) {
@@ -593,7 +593,7 @@ std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
     mapTileKey.layer_ = LayerType::Features;
     mapTileKey.mapId_ = req.mapId_;
     mapTileKey.layerId_ = layerId;
-    mapTileKey.tileId_ = TileId(*tileId);
+    mapTileKey.tileId_ = TileId::fromValue(static_cast<int32_t>(*tileId));
 
     // Create and return the LocateResponse
     LocateResponse locateResponse(req);
@@ -645,8 +645,8 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
     }
 
     // Convert meters to degrees
-    const auto lowerLeft = tile->tileId().sw();
-    const auto upperRight = tile->tileId().ne();
+    const auto lowerLeft = Point(tile->tileId().southWestWgs84());
+    const auto upperRight = Point(tile->tileId().northEastWgs84());
     double metersPerDegree = 111320.0;
     double avgLat = (lowerLeft.y + upperRight.y) / 2.0;
     double metersPerDegreeLon = metersPerDegree * std::cos(avgLat * glm::pi<double>() / 180.0);
@@ -753,8 +753,8 @@ void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
     // Use std::call_once for thread-safe, exception-safe one-time initialization
     // This handles shutdown edge cases better than manual mutex + flag
     std::call_once(ctx.gridGeneratedOnce, [&]() {
-        const auto lowerLeft = tile->tileId().sw();
-        const auto upperRight = tile->tileId().ne();
+        const auto lowerLeft = Point(tile->tileId().southWestWgs84());
+        const auto upperRight = Point(tile->tileId().northEastWgs84());
 
         // Convert meters to degrees
         double metersPerDegree = 111320.0;
@@ -906,13 +906,13 @@ void GridDataSource::generateRoads(TileSpatialContext& ctx,
         // Add relations to start and end intersections
         if (road.startIntersectionId > 0) {
             feature->addRelation("startIntersection", "DevSrc-Intersection", {
-                {"tileId", static_cast<int64_t>(tile->tileId().value_)},
+                {"tileId", static_cast<int64_t>(tile->tileId().value())},
                 {"DevSrc-IntersectionId", static_cast<int64_t>(road.startIntersectionId)}
             });
         }
         if (road.endIntersectionId > 0) {
             feature->addRelation("endIntersection", "DevSrc-Intersection", {
-                {"tileId", static_cast<int64_t>(tile->tileId().value_)},
+                {"tileId", static_cast<int64_t>(tile->tileId().value())},
                 {"DevSrc-IntersectionId", static_cast<int64_t>(road.endIntersectionId)}
             });
         }
@@ -952,7 +952,7 @@ void GridDataSource::generateIntersections(TileSpatialContext& ctx,
         // Add relations to connected roads
         for (uint32_t roadId : intersection.connectedRoadIds) {
             feature->addRelation("connectedRoad", "DevSrc-Road", {
-                {"tileId", static_cast<int64_t>(tile->tileId().value_)},
+                {"tileId", static_cast<int64_t>(tile->tileId().value())},
                 {"DevSrc-RoadId", static_cast<int64_t>(roadId)}
             });
         }

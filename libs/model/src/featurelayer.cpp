@@ -338,7 +338,7 @@ TileFeatureLayer::TileFeatureLayer(
     TileFeatureModelLayerBase(tileId, nodeId, mapId, layerInfo, strings),
     impl_(std::make_unique<Impl>(strings, layerInfo))
 {
-    impl_->geometryAnchor_ = tileId.center();
+    impl_->geometryAnchor_ = Point(tileId.centerWgs84());
 }
 
 TileFeatureLayer::TileFeatureLayer(
@@ -349,7 +349,7 @@ TileFeatureLayer::TileFeatureLayer(
     TileFeatureModelLayerBase(input, layerInfoResolveFun, stringPoolGetter, &deserializationOffsetBytes_),
     impl_(std::make_unique<Impl>(strings(), layerInfo_))
 {
-    impl_->geometryAnchor_ = tileId_.center();
+    impl_->geometryAnchor_ = Point(tileId_.centerWgs84());
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
         raise("Failed to read TileFeatureLayer: invalid deserialization offset.");
@@ -1457,7 +1457,7 @@ nlohmann::json TileFeatureLayer::toJson() const
     auto result = nlohmann::json::object();
 
     result["type"] = "FeatureCollection";
-    result["mapgetTileId"] = tileId_.value_;
+    result["mapgetTileId"] = tileId_.value();
     result["mapId"] = mapId_;
     result["mapgetLayerId"] = layerInfo_->layerId_;
     result["geometryAnchor"] = {

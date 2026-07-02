@@ -91,7 +91,7 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
                 raiseFmt(
                     "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
                     mapId,
-                    tileKey.tileId_.value_,
+                    tileKey.tileId_.value(),
                     dataSource.mapId_);
             }
             return dataSource.getLayer(std::string(layerId));
@@ -122,7 +122,7 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
             }
         }
         cacheHits_.fetch_add(1, std::memory_order_relaxed);
-        log().debug("Returned tile from cache: {}", tileKey.tileId_.value_);
+        log().debug("Returned tile from cache: {}", tileKey.tileId_.value());
         result.tile = tile;
     }
     return result;

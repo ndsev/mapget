@@ -143,14 +143,14 @@ void bindHttpClient(py::module_& m)
             py::init(
                 [](const std::string& mapId,
                    const std::string& layerId,
-                   std::vector<uint64_t> tiles,
+                   std::vector<TileId> tiles,
                    std::function<void(TileFeatureLayer::Ptr)> onFeatureResult,
                    std::function<void(TileSourceDataLayer::Ptr)> onSourceDataResult)
                 {
                     auto req = std::make_shared<PyRequest>(
                         mapId,
                         layerId,
-                        std::vector<TileId>(tiles.begin(), tiles.end()));
+                        std::move(tiles));
                     req->onFeatureLayer(std::move(onFeatureResult));
                     req->onSourceDataLayer(std::move(onSourceDataResult));
                     return req;
@@ -167,7 +167,7 @@ void bindHttpClient(py::module_& m)
             Args:
                 map_id: The map id for which this request is dedicated.
                 layer_id: The map layer id for which this request is dedicated.
-                tiles: The map tile ids for which this request is dedicated.
+                tiles: The ndslive.math.PackedTileId values for which this request is dedicated.
                 on_feature_result: The callback function to be called when a result feature tile is available.
                 You can also iterate over this Request object instead of providing the callback.
                 on_sourcedata_result: The callback function to be callend when a result source-data tile
@@ -204,7 +204,7 @@ void bindHttpClient(py::module_& m)
             py::init(
                 [](const std::string& mapId,
                    const std::string& layerId,
-                   std::vector<uint64_t> tiles,
+                   std::vector<TileId> tiles,
                    const std::string& query,
                    const std::string& scope,
                    bool rewrite,
@@ -232,7 +232,7 @@ void bindHttpClient(py::module_& m)
                     auto req = std::make_shared<PySearchRequest>(
                         mapId,
                         layerId,
-                        std::vector<TileId>(tiles.begin(), tiles.end()),
+                        std::move(tiles),
                         std::move(search));
                     req->onSearchResult(std::move(onResult));
                     if (onStatus) {
@@ -258,7 +258,7 @@ void bindHttpClient(py::module_& m)
             Args:
                 map_id: The source map id to search.
                 layer_id: The source feature layer id to search.
-                tiles: Source tile ids to search.
+                tiles: Source ndslive.math.PackedTileId values to search.
                 query: SIMFIL predicate.
                 scope: "feature", "attribute" or "auto".
                 rewrite: Normalize the query through the feature-model schema before evaluation. Auto scope implies rewrite.

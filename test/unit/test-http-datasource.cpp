@@ -49,6 +49,11 @@ namespace fs = std::filesystem;
 namespace
 {
 
+
+constexpr int32_t kHttpTileIdValue = 131073;
+constexpr int32_t kSecondHttpTileIdValue = 131076;
+constexpr int32_t kThirdHttpTileIdValue = 131077;
+
 class SyncHttpClient
 {
 public:
@@ -490,7 +495,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     // Fetch /tile
     {
-        auto [result, resp] = dsClient.get("/tile?layer=WayLayer&tileId=1");
+        auto [result, resp] = dsClient.get(fmt::format("/tile?layer=WayLayer&tileId={}", kHttpTileIdValue));
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(resp != nullptr);
         REQUIRE(resp->statusCode() == drogon::k200OK);
@@ -513,7 +518,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     // Fetch /tile SourceData
     {
-        auto [result, resp] = dsClient.get("/tile?layer=SourceData-WayLayer&tileId=1");
+        auto [result, resp] = dsClient.get(fmt::format("/tile?layer=SourceData-WayLayer&tileId={}", kHttpTileIdValue));
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(resp != nullptr);
         REQUIRE(resp->statusCode() == drogon::k200OK);
@@ -552,7 +557,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
         REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
-        REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
+        REQUIRE(responseParsed.tileKey_.tileId_.value() == kHttpTileIdValue);
     }
 
     // Query mapget HTTP service (in-process, started once for entire test binary)
@@ -610,7 +615,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 client,
                 "Tropico",
                 "WayLayer",
-                std::vector<TileId>{1234, 5678, 9112});
+                std::vector<TileId>{TileId::fromValue(kHttpTileIdValue), TileId::fromValue(kSecondHttpTileIdValue), TileId::fromValue(kThirdHttpTileIdValue)});
 
             REQUIRE(receivedTileCount == 3);
             REQUIRE(request->getStatus() == RequestStatus::Success);
@@ -627,7 +632,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 {"requests", nlohmann::json::array({nlohmann::json::object({
                     {"mapId", "Tropico"},
                     {"layerId", "WayLayer"},
-                    {"tileIds", nlohmann::json::array({1234})},
+                    {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                 })})},
             }).dump();
 
@@ -662,7 +667,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
                 "Tropico",
                 "WayLayer",
-                std::vector<TileId>{TileId(1234)},
+                std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)},
                 std::move(search));
             size_t resultCount = 0;
             size_t statusCount = 0;
@@ -691,7 +696,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     {"requests", nlohmann::json::array({nlohmann::json::object({
                         {"mapId", "Tropico"},
                         {"layerId", "WayLayer"},
-                        {"tileIds", nlohmann::json::array({1234})},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                     })})},
                 }).dump());
 
@@ -707,14 +712,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(client, "UnknownMap", "WayLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(client, "UnknownMap", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(client, "Tropico", "UnknownLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(client, "Tropico", "UnknownLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
@@ -746,7 +751,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
             REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
             REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
-            REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
+            REQUIRE(responseParsed.tileKey_.tileId_.value() == kHttpTileIdValue);
         }
 
         // Test auth header requirement
@@ -761,14 +766,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(badClient, "Tropico", "WayLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(badClient, "Tropico", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::Unauthorized);
                 REQUIRE(receivedTileCount == 0);
             }
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(goodClient, "Tropico", "WayLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(goodClient, "Tropico", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::Success);
                 REQUIRE(receivedTileCount == 1);
             }
@@ -811,7 +816,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     {"requests", nlohmann::json::array({nlohmann::json::object({
                         {"mapId", "Tropico"},
                         {"layerId", "WayLayer"},
-                        {"tileIds", nlohmann::json::array({1234})},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                     })})},
                 }).dump();
 
@@ -828,7 +833,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     {"requests", nlohmann::json::array({nlohmann::json::object({
                         {"mapId", "UnknownMap"},
                         {"layerId", "WayLayer"},
-                        {"tileIds", nlohmann::json::array({1234})},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                     })})},
                 }).dump();
 
@@ -871,7 +876,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                         {"requests", nlohmann::json::array({nlohmann::json::object({
                             {"mapId", "Tropico"},
                             {"layerId", "WayLayer"},
-                            {"tileIds", nlohmann::json::array({1234})},
+                            {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                         })})},
                     }).dump();
 
@@ -902,7 +907,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                         {"mapId", "Tropico"},
                         {"layerId", "WayLayer"},
                         {"tileIdsByNextStage", nlohmann::json::array({
-                            nlohmann::json::array({1234}),
+                            nlohmann::json::array({kHttpTileIdValue}),
                         })},
                     })})},
                 }).dump();

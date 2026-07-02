@@ -41,8 +41,8 @@ public:
         line->append({43., 11.});
 
         // Use high-level geometry API
-        feature1->addPoint(tile->tileId().center());
-        feature1->addPoints({tile->tileId().ne(), tile->tileId().sw()});
+        feature1->addPoint(Point(tile->tileId().centerWgs84()));
+        feature1->addPoints({Point(tile->tileId().northEastWgs84()), Point(tile->tileId().southWestWgs84())});
         feature1->addLine({{41.5, 10.5, 0}, {41.6, 10.7}});
         feature1->addMesh({{41.5, 10.5, 0}, {41.6, 10.7}, {41.5, 10.3}});
         feature1->addPoly({{41.5, 10.5, 0}, {41.6, 10.7}, {41.5, 10.3}, {41.8, 10.9}});

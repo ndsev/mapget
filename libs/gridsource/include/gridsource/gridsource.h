@@ -21,7 +21,7 @@ namespace std {
     template<>
     struct hash<mapget::TileId> {
         size_t operator()(const mapget::TileId& tid) const noexcept {
-            return std::hash<uint64_t>{}(tid.value_);
+            return std::hash<uint64_t>{}(tid.value());
         }
     };
 }

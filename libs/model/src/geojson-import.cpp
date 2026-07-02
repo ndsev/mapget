@@ -253,10 +253,6 @@ void validateIdPartValue(
             typeId));
     }
 
-    if (tile.tileId().value_ > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-        raiseImport("tileId exceeds signed integer range needed for best-effort id synthesis.");
-    }
-
     auto const& composition = typeInfo->uniqueIdCompositions_.front();
     KeyValuePairs parts;
     parts.reserve(composition.size());
@@ -267,7 +263,7 @@ void validateIdPartValue(
             if (!isIntegerIdPart(idPart.datatype_)) {
                 raiseImport("Best-effort GeoJSON import requires an integer tileId id part.");
             }
-            parts.emplace_back(idPart.idPartLabel_, static_cast<int64_t>(tile.tileId().value_));
+            parts.emplace_back(idPart.idPartLabel_, static_cast<int64_t>(tile.tileId().value()));
             continue;
         }
 
@@ -983,7 +979,7 @@ void importGeoJson(
             raiseImport("GLB attachment import is not supported yet.");
         }
         // Strict mode treats top-level metadata mismatches as caller/configuration errors.
-        if (geoJson.contains("mapgetTileId") && geoJson.at("mapgetTileId").get<uint64_t>() != tile.tileId().value_) {
+        if (geoJson.contains("mapgetTileId") && geoJson.at("mapgetTileId").get<int32_t>() != tile.tileId().value()) {
             raiseImport("mapgetTileId does not match the target tile.");
         }
         if (geoJson.contains("mapId") && geoJson.at("mapId").get<std::string>() != tile.mapId()) {

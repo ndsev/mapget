@@ -97,7 +97,7 @@ public:
      *   + Added typed SIMFIL trace aggregates to TileSearchResultLayer.
      *   + Added SourceCatalogChange control messages.
      */
-    static constexpr Version CurrentProtocolVersion{1, 9, 0};
+    static constexpr Version CurrentProtocolVersion{2, 0, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

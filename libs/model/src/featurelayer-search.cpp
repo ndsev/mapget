@@ -460,7 +460,7 @@ tl::expected<FeatureLayerSearchResult, simfil::Error> searchFeatureLayerAsResult
     resultLayer->setInfo("sourceNodeId", sourceLayer.nodeId());
     resultLayer->setInfo("sourceMapId", sourceLayer.mapId());
     resultLayer->setInfo("sourceLayerId", sourceLayer.layerInfo() ? sourceLayer.layerInfo()->layerId_ : std::string{});
-    resultLayer->setInfo("sourceTileId", sourceLayer.tileId().value_);
+    resultLayer->setInfo("sourceTileId", sourceLayer.tileId().value());
     resultLayer->setInfo("chunkIndex", request.chunkIndex_);
     resultLayer->setInfo("resultCount", 0);
     resultLayer->setInfo("resultFields", request.withFields_);

@@ -75,7 +75,9 @@ namespace {
             layerInfo->type_,
             layerInfo->featureTypes_,
             std::vector<int>{0, 1, 2},
-            std::vector<Coverage>{{1, 2, {}}, {3, 3, {}}},
+            std::vector<Coverage>{
+                {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
+                {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}},
             1,
             std::vector<std::string>{"Complete"},
             0,

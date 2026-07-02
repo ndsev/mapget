@@ -100,7 +100,7 @@ RemoteDataSource::get(
     tileReq->setPath(fmt::format(
         "/tile?layer={}&tileId={}&stage={}&stringPoolOffset={}",
         k.layerId_,
-        k.tileId_.value_,
+        k.tileId_.value(),
         k.stage_,
         cachedStringPoolOffset(info.nodeId_, cache)));
     auto [resultCode, tileResponse] = client->sendRequest(tileReq);

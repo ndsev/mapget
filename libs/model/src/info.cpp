@@ -74,6 +74,16 @@ std::optional<T> from_chars(std::string_view s, Args... args)
            extraReserved.find(ch) != std::string_view::npos;
 }
 
+/** Return true when an identifier character is reserved and not explicitly allowed in this metadata context. */
+[[nodiscard]] bool isForbiddenIdentifierCharacter(
+    char ch,
+    std::string_view extraReserved,
+    std::string_view allowedReserved)
+{
+    return isReservedIdentifierCharacter(ch, extraReserved) &&
+           allowedReserved.find(ch) == std::string_view::npos;
+}
+
 /** Render a character for validation diagnostics without losing control characters. */
 [[nodiscard]] std::string printableCharacter(char ch)
 {
@@ -167,10 +177,14 @@ bool unescapeIdentifierComponent(std::string_view input, std::string& output, st
     return true;
 }
 
-void validateIdentifierName(std::string_view kind, std::string_view value, std::string_view extraReserved)
+void validateIdentifierName(
+    std::string_view kind,
+    std::string_view value,
+    std::string_view extraReserved,
+    std::string_view allowedReserved)
 {
     for (char ch : value) {
-        if (isReservedIdentifierCharacter(ch, extraReserved)) {
+        if (isForbiddenIdentifierCharacter(ch, extraReserved, allowedReserved)) {
             raise(fmt::format(
                 "Invalid {} '{}': reserved character {} is not allowed.",
                 kind,
@@ -465,28 +479,18 @@ nlohmann::json FeatureTypeInfo::toJson() const
 Coverage Coverage::fromJson(const nlohmann::json& j)
 {
     try {
-        if (j.is_number_unsigned())
-            // A bare integer is shorthand for a single covered tile.
+        if (j.is_number_integer() || j.is_number_unsigned()) {
+            // A bare integer is shorthand for a single covered packed tile.
+            auto tileId = j.get<int32_t>();
             return {
-                j.get<uint64_t>(),
-                j.get<uint64_t>(),
-                std::vector<bool>()
-            };
-        if (j.is_number_integer()) {
-            // YAML ingestion may materialize the same shorthand as a signed
-            // integer, so accept it as long as the tile id stays non-negative.
-            auto tileId = j.get<int64_t>();
-            if (tileId < 0)
-                raise("Coverage tile ID must be non-negative.");
-            return {
-                static_cast<uint64_t>(tileId),
-                static_cast<uint64_t>(tileId),
+                TileId::fromValue(tileId),
+                TileId::fromValue(tileId),
                 std::vector<bool>()
             };
         }
         return {
-            TileId(j.at("min").get<uint64_t>()),
-            TileId(j.at("max").get<uint64_t>()),
+            TileId::fromValue(j.at("min").get<int32_t>()),
+            TileId::fromValue(j.at("max").get<int32_t>()),
             j.value("filled", std::vector<bool>())};
     }
     catch (nlohmann::json::out_of_range const& e) {
@@ -497,8 +501,8 @@ Coverage Coverage::fromJson(const nlohmann::json& j)
 nlohmann::json Coverage::toJson() const
 {
     if (min_ == max_ && filled_.empty())
-        return min_.value_;
-    return nlohmann::json{{"min", min_.value_}, {"max", max_.value_}, {"filled", filled_}};
+        return min_.value();
+    return nlohmann::json{{"min", min_.value()}, {"max", max_.value()}, {"filled", filled_}};
 }
 
 std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::string const& layerId)
@@ -731,7 +735,7 @@ nlohmann::json DataSourceInfo::toJson() const
 
 void DataSourceInfo::validateIdentifiers() const
 {
-    validateIdentifierName("map id", mapId_);
+    validateIdentifierName("map id", mapId_, {}, "/");
     for (auto const& [layerId, layerInfo] : layers_) {
         validateIdentifierName("layer id", layerId);
         if (layerInfo) {

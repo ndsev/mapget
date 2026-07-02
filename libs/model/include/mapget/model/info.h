@@ -77,12 +77,14 @@ bool unescapeIdentifierComponent(
  * and queried in their raw form.
  *
  * Use extraReserved for context-specific delimiters such as the dot in
- * feature-id type names.
+ * feature-id type names. Use allowedReserved for deliberate exceptions, e.g.
+ * slash-separated map ids that erdblick renders as grouped paths.
  */
 void validateIdentifierName(
     std::string_view kind,
     std::string_view value,
-    std::string_view extraReserved = {});
+    std::string_view extraReserved = {},
+    std::string_view allowedReserved = {});
 
 /** Convert KeyValuePairs to KeyValuePairsView. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
@@ -262,16 +264,17 @@ struct FeatureTypeInfo
  */
 struct Coverage
 {
-    /** Minimum tile id (north-west AABB corner). */
+    /** Minimum packed-grid tile id (south-west AABB corner). */
     TileId min_;
 
-    /** Maximum tile id (south-east AABB corner). Must have same zoom level as min. */
+    /** Maximum packed-grid tile id (north-east AABB corner). Must have same zoom level as min. */
     TileId max_;
 
     /**
      * Bitset indicating where the associated layer is filled.
      * Must have size (max.x() - min.x() + 1) * (max.y() - min.y() + 1).
-     * Bits are stored row-major: [ y0x0..., y0xn, y1x0..., y1xn, ... ]
+     * Bits are stored row-major in packed-grid order:
+     * [ south-row x0..., south-row xn, next-row x0..., next-row xn, ... ]
      * If the vector is completely empty, the rectangle is considered
      * to be fully filled.
      */
@@ -283,8 +286,8 @@ struct Coverage
      * The JSON is expected to have the following structure:
      *
      * {
-     *   "min": <uint64_t>,                // Mandatory: The minimum tile ID.
-     *   "max": <uint64_t>,                // Mandatory: The maximum tile ID.
+     *   "min": <int32_t>,                 // Mandatory: The signed packed minimum tile ID.
+     *   "max": <int32_t>,                 // Mandatory: The signed packed maximum tile ID.
      *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled tiles. Defaults to an empty list.
      * }
      *
