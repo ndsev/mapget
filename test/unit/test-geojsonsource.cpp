@@ -582,6 +582,128 @@ layers:
         std::filesystem::remove_all(tempDir);
     }
 
+    SECTION("Template mode missing tile file yields empty tile without error")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "info.yaml", R"yaml(
+mapId: SparseGeoJson
+layers:
+  Road:
+    featureTypes:
+      - name: RoadFeature
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: I64
+            - partId: featureIndex
+              datatype: U32
+)yaml");
+
+        geojsonsource::GeoJsonSource source(
+            tempDir.string(),
+            geojsonsource::GeoJsonSourceOptions{
+                .withAttrLayers = false,
+                .tilePathTemplate = "{layerId}/{tileId}.geojson",
+                .dataSourceInfoLocation = (tempDir / "info.yaml").string()});
+
+        auto info = source.info();
+        auto layer = info.getLayer("Road");
+        REQUIRE(layer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromValue(largeTileId),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() == 0);
+        REQUIRE_FALSE(tile->error().has_value());
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Manifest mode missing tile mapping yields empty tile without error")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "existing.geojson", sampleGeoJson);
+        writeFile(tempDir / "manifest.json", R"json({
+            "version": 1,
+            "index": {
+                "files": {
+                    "existing.geojson": { "tileId": -2147483648, "layer": "Road" }
+                }
+            }
+        })json");
+
+        geojsonsource::GeoJsonSource source(tempDir.string(), false);
+
+        auto info = source.info();
+        auto layer = info.getLayer("Road");
+        REQUIRE(layer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromValue(secondTileId),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() == 0);
+        REQUIRE_FALSE(tile->error().has_value());
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Existing malformed GeoJSON remains a tile error")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "Road" / (std::to_string(largeTileId) + ".geojson"), "{not valid json");
+        writeFile(tempDir / "info.yaml", R"yaml(
+mapId: BrokenGeoJson
+layers:
+  Road:
+    featureTypes:
+      - name: RoadFeature
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: I64
+            - partId: featureIndex
+              datatype: U32
+)yaml");
+
+        geojsonsource::GeoJsonSource source(
+            tempDir.string(),
+            geojsonsource::GeoJsonSourceOptions{
+                .withAttrLayers = false,
+                .tilePathTemplate = "{layerId}/{tileId}.geojson",
+                .dataSourceInfoLocation = (tempDir / "info.yaml").string()});
+
+        auto info = source.info();
+        auto layer = info.getLayer("Road");
+        REQUIRE(layer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromValue(largeTileId),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() == 0);
+        REQUIRE(tile->error().has_value());
+
+        std::filesystem::remove_all(tempDir);
+    }
+
     SECTION("GeoJsonEndpoint loads tiles over HTTP with and without datasource info")
     {
         auto infoYaml = fmt::format(R"yaml(

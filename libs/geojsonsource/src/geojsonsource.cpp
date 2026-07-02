@@ -18,6 +18,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 
@@ -695,44 +696,77 @@ std::string GeoJsonSource::resolveTilePath(int32_t tileId, std::string_view laye
     return (std::filesystem::path(inputDir_) / path).string();
 }
 
-std::string GeoJsonSource::readTileBody(int32_t tileId, std::string_view layerId) const
+std::optional<std::string> GeoJsonSource::readTileBody(int32_t tileId, std::string_view layerId) const
 {
-    if (usesTemplatePaths_) {
-        auto path = resolveTilePath(tileId, layerId);
+    const auto readExistingFile = [](std::filesystem::path const& path) -> std::string {
         std::ifstream geojsonFile(path);
         if (!geojsonFile)
-            raise(fmt::format("Failed to open GeoJSON file `{}`.", path));
+            raise(fmt::format("Failed to open GeoJSON file `{}`.", path.string()));
+
         std::ostringstream buffer;
         buffer << geojsonFile.rdbuf();
         return buffer.str();
+    };
+
+    if (usesTemplatePaths_) {
+        auto path = resolveTilePath(tileId, layerId);
+        std::error_code existsError;
+        const auto fileExists = std::filesystem::exists(path, existsError);
+        if (existsError) {
+            raise(fmt::format("Failed to stat GeoJSON file `{}`: {}", path, existsError.message()));
+        }
+        if (!fileExists) {
+            // Sparse GeoJSON folders commonly omit files for empty tiles.
+            // Treat absence as "no features" instead of a datasource error.
+            mapget::log().debug(
+                "GeoJsonFolder has no file for tile {} in layer '{}' at '{}'.",
+                tileId,
+                layerId,
+                path);
+            return std::nullopt;
+        }
+        return readExistingFile(path);
     }
 
     TileLayerKey key{tileId, std::string(layerId)};
     auto fileIt = tileLayerToFile_.find(key);
     if (fileIt == tileLayerToFile_.end()) {
-        raise(fmt::format(
-            "No GeoJSON file registered for tile {} in layer `{}`.",
+        // Manifest/legacy mode only indexes known files. Missing entries mean
+        // the layer has no data for this tile, not that loading failed.
+        mapget::log().debug(
+            "GeoJsonFolder has no registered file for tile {} in layer '{}'.",
             tileId,
-            layerId));
+            layerId);
+        return std::nullopt;
     }
 
-    auto path = (std::filesystem::path(inputDir_) / fileIt->second).string();
-    std::ifstream geojsonFile(path);
-    if (!geojsonFile)
-        raise(fmt::format("Failed to open GeoJSON file `{}`.", path));
-
-    std::ostringstream buffer;
-    buffer << geojsonFile.rdbuf();
-    return buffer.str();
+    auto path = std::filesystem::path(inputDir_) / fileIt->second;
+    std::error_code existsError;
+    const auto fileExists = std::filesystem::exists(path, existsError);
+    if (existsError) {
+        raise(fmt::format("Failed to stat GeoJSON file `{}`: {}", path.string(), existsError.message()));
+    }
+    if (!fileExists) {
+        // A registered file can disappear while the server is running, e.g. if
+        // a folder export is refreshed. Keep sparse/freshening folders quiet.
+        mapget::log().debug(
+            "GeoJsonFolder registered file for tile {} in layer '{}' no longer exists at '{}'.",
+            tileId,
+            layerId,
+            path.string());
+        return std::nullopt;
+    }
+    return readExistingFile(path);
 }
 
 void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
 {
     try {
-        fillGeoJsonTile(
-            tile,
-            readTileBody(tile->tileId().value(), tile->layerInfo()->layerId_),
-            withAttrLayers_);
+        auto tileBody = readTileBody(tile->tileId().value(), tile->layerInfo()->layerId_);
+        if (!tileBody) {
+            return;
+        }
+        fillGeoJsonTile(tile, *tileBody, withAttrLayers_);
     }
     catch (const std::exception& e) {
         tile->setError(e.what());

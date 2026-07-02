@@ -138,7 +138,7 @@ private:
     void initFromManifest();
     void initFromDirectory();
     [[nodiscard]] std::string resolveTilePath(int32_t tileId, std::string_view layerId) const;
-    [[nodiscard]] std::string readTileBody(int32_t tileId, std::string_view layerId) const;
+    [[nodiscard]] std::optional<std::string> readTileBody(int32_t tileId, std::string_view layerId) const;
     [[nodiscard]] static nlohmann::json createLayerInfoJson(const std::string& layerName);
 
     mapget::DataSourceInfo info_;
