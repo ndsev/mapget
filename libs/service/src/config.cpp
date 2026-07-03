@@ -58,6 +58,31 @@ void reportInitStatus(DataSourceInitContext& initContext, std::string message)
     return initContext.isCancelled && initContext.isCancelled();
 }
 
+[[nodiscard]] std::string lowercaseConfigKey(std::string key)
+{
+    std::ranges::transform(
+        key,
+        key.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return key;
+}
+
+[[nodiscard]] bool isSecretConfigKey(std::string const& key)
+{
+    auto lowerKey = lowercaseConfigKey(key);
+    auto compactKey = lowerKey;
+    compactKey.erase(
+        std::remove_if(
+            compactKey.begin(),
+            compactKey.end(),
+            [](char c) { return c == '-' || c == '_'; }),
+        compactKey.end());
+
+    return compactKey == "apikey" ||
+           lowerKey.find("password") != std::string::npos ||
+           lowerKey.find("secret") != std::string::npos;
+}
+
 [[nodiscard]] std::optional<std::string> scalarString(YAML::Node const& node, std::string const& key)
 {
     if (auto value = node[key]; value && value.IsScalar()) {
@@ -454,21 +479,13 @@ nlohmann::json yamlToJson(
         auto objectJson = nlohmann::json::object();
         for (const auto& item : yamlNode) {
             auto key = item.first.as<std::string>();
-            auto lowerKey = key;
-            std::ranges::transform(
-                lowerKey,
-                lowerKey.begin(),
-                [](auto const& c) { return std::tolower(c); });
 
             const YAML::Node& valueNode = item.second;
             objectJson[key] = yamlToJson(
                 valueNode,
                 maskSecrets,
                 maskedSecretMap,
-                // mask secrets if key matches any of these (case-insensitive)
-                lowerKey == "api-key" ||
-                lowerKey.find("password") != std::string::npos ||
-                lowerKey.find("secret") != std::string::npos);
+                isSecretConfigKey(key));
         }
         return objectJson;
     }
@@ -531,7 +548,7 @@ YAML::Node jsonToYaml(
     YAML::Node node;
     if (json.is_object()) {
         for (auto it = json.begin(); it != json.end(); ++it) {
-            if ((it.key() == "api-key" || it.key() == "password") && it.value().is_string())
+            if (isSecretConfigKey(it.key()) && it.value().is_string())
             {
                 auto value = it.value().get<std::string>();
                 auto secretIt = maskedSecretMap.find(value);

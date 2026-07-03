@@ -1023,7 +1023,11 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     writeConfigFile(
         "sources: []\n"
-        "http-settings: [{'password': 'hunter2'}]\n"
+        "http-settings:\n"
+        "  - password: hunter2\n"
+        "    apiKey: camel-secret\n"
+        "    oauth2:\n"
+        "      clientSecret: oauth-secret\n"
         "publicConfig:\n"
         "  featureFlag: true\n"
         "erdblick:\n"
@@ -1076,9 +1080,18 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
         auto body = payload.dump();
         REQUIRE(body.find("hunter2") == std::string::npos);
-        REQUIRE(
-            body.find("MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") !=
-            std::string::npos);
+        REQUIRE(body.find("camel-secret") == std::string::npos);
+        REQUIRE(body.find("oauth-secret") == std::string::npos);
+
+        auto settings = payload["model"]["http-settings"][0];
+        auto passwordToken = settings["password"].get<std::string>();
+        auto apiKeyToken = settings["apiKey"].get<std::string>();
+        auto clientSecretToken = settings["oauth2"]["clientSecret"].get<std::string>();
+        REQUIRE(passwordToken.starts_with("MASKED:"));
+        REQUIRE(apiKeyToken.starts_with("MASKED:"));
+        REQUIRE(clientSecretToken.starts_with("MASKED:"));
+        REQUIRE(passwordToken != apiKeyToken);
+        REQUIRE(apiKeyToken != clientSecretToken);
     }
 
     SECTION("Get Configuration - Public section serializer exceptions are tolerated")
@@ -1138,12 +1151,25 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Post Configuration - Valid JSON Config preserves top-level erdblick")
     {
         setPostConfigEndpointEnabled(true);
-        std::string newConfig = R"({
-            "sources": [{"type": "TestDataSource"}],
-            "http-settings": [{"scope": "https://example.com", "password": "MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
-        })";
+        auto payload = getConfigPayload();
+        auto settings = payload["model"]["http-settings"][0];
+        auto newConfig = nlohmann::json::object({
+            {"sources", nlohmann::json::array({
+                nlohmann::json::object({{"type", "TestDataSource"}})
+            })},
+            {"http-settings", nlohmann::json::array({
+                nlohmann::json::object({
+                    {"scope", "https://example.com"},
+                    {"password", settings["password"].get<std::string>()},
+                    {"apiKey", settings["apiKey"].get<std::string>()},
+                    {"oauth2", nlohmann::json::object({
+                        {"clientSecret", settings["oauth2"]["clientSecret"].get<std::string>()}
+                    })}
+                })
+            })}
+        });
 
-        auto [result, res] = cli.postJson("/config", newConfig);
+        auto [result, res] = cli.postJson("/config", newConfig.dump());
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
         REQUIRE(res->statusCode() == drogon::k200OK);
@@ -1154,6 +1180,9 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         configContentStream << config.rdbuf();
         auto configContent = configContentStream.str();
         REQUIRE(configContent.find("hunter2") != std::string::npos);
+        REQUIRE(configContent.find("camel-secret") != std::string::npos);
+        REQUIRE(configContent.find("oauth-secret") != std::string::npos);
+        REQUIRE(configContent.find("MASKED:") == std::string::npos);
         REQUIRE(configContent.find("erdblick") != std::string::npos);
         REQUIRE(configContent.find("keepMe") != std::string::npos);
     }
