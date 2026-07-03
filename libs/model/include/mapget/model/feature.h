@@ -187,7 +187,7 @@ public:
     model_ptr<Relation> addRelation(std::string_view const& name, std::string_view const& targetType,
         KeyValueViewPairs const& targetIdParts);
     model_ptr<Relation> addRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
-    model_ptr<Relation> addRelation(model_ptr<Relation> const& relation);
+    model_ptr<Relation> addRelation(model_ptr<Relation> relation);
 
     /**
      * Visit all added relations. Return false from the callback to abort.

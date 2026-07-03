@@ -256,6 +256,11 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
         std::nullopt,
         Validity::Negative);
     roadA->addRelation(relation);
+    REQUIRE(tile->resolve<Relation>(relation->addr())->featureRelationIndex() == uint16_t{0});
+
+    auto relationRefEnvelope = tile->newObject(1, true);
+    requireExpectedOk(relationRefEnvelope->addField("primary", tile->newRelationReference(relation)));
+    requireExpectedOk(roadA->attributes()->addField("relationRefs", relationRefEnvelope));
 
     auto roadC = tile->newFeature("Road", {{"roadId", 11}});
     auto roadCAabb = roadC->geom()->newGeometry(GeomType::AABB, 2, true);
@@ -268,6 +273,9 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
         {"id", "Road.77.DE%2EBY%25.9"},
         {"mapId", "ValidationMap"},
     });
+    REQUIRE(
+        originalJson["features"][0]["properties"]["relationRefs"]["primary"] ==
+        nlohmann::json{{"$mapgetRelation", 0}});
     REQUIRE(
         originalJson["features"][0]["properties"]["layer"]["restrictions"]["clearance"]["validity"]["featureId"] ==
         nlohmann::json{

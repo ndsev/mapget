@@ -834,13 +834,34 @@ TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<Feat
     if (!nameStringId)
         raise(nameStringId.error().message);
     impl_->relations_.emplace_back(Relation::Data{
-        *nameStringId,
-        target->addr()
+        .name_ = *nameStringId,
+        .targetFeatureId_ = target->addr()
     });
     return Relation(
         &impl_->relations_.back(),
         shared_from_this(),
         {ColumnId::Relations, (uint32_t)relationIndex},
+        mpKey_);
+}
+
+model_ptr<RelationReference>
+TileFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
+{
+    if (!relation) {
+        raise("Cannot create RelationReference for null relation.");
+    }
+    if (relation->addr().column() != ColumnId::Relations) {
+        raise("RelationReference target must be a canonical Relation node.");
+    }
+    if (relation->owningModel().get() != this) {
+        raise("RelationReference target must belong to this TileFeatureLayer.");
+    }
+    if (relation->addr().index() >= impl_->relations_.size()) {
+        raise("RelationReference target index is out of range.");
+    }
+    return RelationReference(
+        shared_from_this(),
+        {ColumnId::RelationReferences, relation->addr().index()},
         mpKey_);
 }
 
@@ -1179,8 +1200,23 @@ model_ptr<Relation> resolveInternal(tag<Relation>, TileFeatureLayer const& model
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::Relations)
         raise("Cannot cast this node to a Relation.");
+    if (node.addr().index() >= model.impl_->relations_.size())
+        raise("Relation index is out of range.");
     return Relation(
         &model.impl_->relations_[node.addr().index()],
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
+}
+
+template<>
+model_ptr<RelationReference> resolveInternal(tag<RelationReference>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::RelationReferences)
+        raise("Cannot cast this node to a RelationReference.");
+    if (node.addr().index() >= model.impl_->relations_.size())
+        raise("RelationReference target index is out of range.");
+    return RelationReference(
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
@@ -1289,6 +1325,9 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
         return {};
     case ColumnId::Relations:
         cb(*resolve<Relation>(n));
+        return {};
+    case ColumnId::RelationReferences:
+        cb(*resolve<RelationReference>(n));
         return {};
     case ColumnId::Points:
         cb(*resolve<PointNode>(n));
@@ -2357,6 +2396,13 @@ ModelNode::Ptr TileFeatureLayer::clone(
             newNode->setTargetValidity(resolve<MultiValidity>(
                 *clone(cache, otherLayer, resolved->targetValidityOrNull())));
         }
+        newCacheNode = newNode;
+        break;
+    }
+    case ColumnId::RelationReferences: {
+        auto resolved = otherLayer->resolve<RelationReference>(*otherNode);
+        auto newNode = newRelationReference(
+            resolve<Relation>(*clone(cache, otherLayer, resolved->relation())));
         newCacheNode = newNode;
         break;
     }

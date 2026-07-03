@@ -133,6 +133,7 @@ public:
         FeatureGeometryCollectionView,
         FeatureGeometryArrayView,
         FeatureAttributeLayerListView,
+        RelationReferences,
     }; };
 
     /** Create a feature id in the concrete layer's shared FeatureId storage. */

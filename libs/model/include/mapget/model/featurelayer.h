@@ -58,6 +58,7 @@ class TileFeatureLayer : public TileFeatureModelLayerBase
     friend class MergedArrayView;
     friend class Feature;
     friend class Relation;
+    friend class RelationReference;
     friend class Attribute;
     friend class AttributeLayer;
     friend class AttributeLayerList;
@@ -174,6 +175,13 @@ public:
     model_ptr<Relation> newRelation(
         std::string_view const& name,
         model_ptr<FeatureId> const& target);
+
+    /**
+     * Create a lightweight reference to a canonical relation. The reference can
+     * be stored in attributes while the actual relation remains owned by the
+     * feature's top-level relation list.
+     */
+    model_ptr<RelationReference> newRelationReference(model_ptr<Relation> const& relation);
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.

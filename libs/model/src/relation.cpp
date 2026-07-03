@@ -133,4 +133,83 @@ void Relation::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
     data_->sourceData_ = addresses->addr();
 }
 
+std::optional<uint16_t> Relation::featureRelationIndex() const
+{
+    if (data_->featureRelationIndex_ == InvalidFeatureRelationIndex) {
+        return std::nullopt;
+    }
+    return data_->featureRelationIndex_;
+}
+
+void Relation::setFeatureRelationIndex(uint16_t index)
+{
+    data_->featureRelationIndex_ = index;
+}
+
+RelationReference::RelationReference(
+    simfil::ModelConstPtr l,
+    simfil::ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::ProceduralObject<6, RelationReference, TileFeatureLayer>(std::move(l), a, key)
+{
+}
+
+model_ptr<Relation> RelationReference::relation() const
+{
+    return model().resolve<Relation>(ModelNodeAddress{
+        TileFeatureLayer::ColumnId::Relations,
+        addr().index()});
+}
+
+simfil::ModelNode::Ptr RelationReference::get(simfil::StringId const& f) const
+{
+    if (f == StringPool::MapgetRelationStr) {
+        if (auto index = relation()->featureRelationIndex()) {
+            return model_ptr<simfil::ValueNode>::make(
+                static_cast<int64_t>(*index),
+                model().shared_from_this());
+        }
+        return {};
+    }
+    return relation()->get(f);
+}
+
+simfil::ModelNode::Ptr RelationReference::at(int64_t i) const
+{
+    if (auto index = relation()->featureRelationIndex()) {
+        if (i != 0) {
+            return {};
+        }
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(*index),
+            model().shared_from_this());
+    }
+    return relation()->at(i);
+}
+
+simfil::StringId RelationReference::keyAt(int64_t i) const
+{
+    if (relation()->featureRelationIndex()) {
+        return i == 0 ? StringPool::MapgetRelationStr : simfil::StringId{};
+    }
+    return relation()->keyAt(i);
+}
+
+uint32_t RelationReference::size() const
+{
+    if (relation()->featureRelationIndex()) {
+        return 1;
+    }
+    return relation()->size();
+}
+
+nlohmann::json RelationReference::toJson() const
+{
+    auto const relationNode = relation();
+    if (auto index = relationNode->featureRelationIndex()) {
+        return nlohmann::json::object({{"$mapgetRelation", *index}});
+    }
+    return relationNode->toJson();
+}
+
 }
