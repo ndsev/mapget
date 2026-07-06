@@ -9,6 +9,15 @@ if ("${_mapget_ndsmath_source_dir}" STREQUAL ""
     set(_mapget_ndsmath_source_dir "${CMAKE_CURRENT_LIST_DIR}/../../ndslive-math/cpp")
 endif()
 
+# Link ndsmath statically into mapget targets. The C++ API is tiny, and static
+# linkage avoids adding another platform-specific runtime library to Python wheels.
+set(_mapget_restore_build_shared_libs OFF)
+if (DEFINED BUILD_SHARED_LIBS)
+    set(_mapget_restore_build_shared_libs ON)
+    set(_mapget_previous_build_shared_libs "${BUILD_SHARED_LIBS}")
+endif()
+set(BUILD_SHARED_LIBS OFF)
+
 if (NOT "${_mapget_ndsmath_source_dir}" STREQUAL "")
     message(STATUS "Using local ndsmath from ${_mapget_ndsmath_source_dir}")
     CPMAddPackage(
@@ -28,6 +37,14 @@ else()
             "NDSMATH_BUILD_TESTS OFF"
             "NDSMATH_INSTALL OFF")
 endif()
+
+if (_mapget_restore_build_shared_libs)
+    set(BUILD_SHARED_LIBS "${_mapget_previous_build_shared_libs}")
+else()
+    unset(BUILD_SHARED_LIBS)
+endif()
+unset(_mapget_previous_build_shared_libs)
+unset(_mapget_restore_build_shared_libs)
 
 if (TARGET ndsmath AND NOT TARGET ndsmath::ndsmath)
     add_library(ndsmath::ndsmath ALIAS ndsmath)
