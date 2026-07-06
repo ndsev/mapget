@@ -961,8 +961,10 @@ struct Service::Impl : public Service::Controller
     mutable std::condition_variable_any sourceCatalogReadyCv_;
 
     struct ConstructionThread {
-        std::jthread thread;
+        // Use explicit cancellation instead of std::jthread; macOS CI's libc++ does not expose it yet.
+        std::thread thread;
         std::shared_ptr<std::atomic_bool> done;
+        std::shared_ptr<std::atomic_bool> stopRequested;
     };
 
     std::vector<ConstructionThread> dataSourceConstructionThreads_;
@@ -1010,11 +1012,19 @@ struct Service::Impl : public Service::Controller
         shuttingDown_ = true;
         sourceCatalogReadyCv_.notify_all();
         configSubscription_.reset();
-        for (auto& constructionThread : dataSourceConstructionThreads_) {
-            constructionThread.thread.request_stop();
+
+        std::vector<ConstructionThread> constructionThreadsToJoin;
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            requestStopForConstructionThreadsLocked();
+            constructionThreadsToJoin.swap(dataSourceConstructionThreads_);
         }
         constructionSlotCv_.notify_all();
-        dataSourceConstructionThreads_.clear();
+        for (auto& constructionThread : constructionThreadsToJoin) {
+            if (constructionThread.thread.joinable()) {
+                constructionThread.thread.join();
+            }
+        }
 
         std::vector<Worker::Ptr> workersToJoin;
         {
@@ -1089,26 +1099,36 @@ struct Service::Impl : public Service::Controller
     void pruneCompletedConstructionThreadsLocked()
     {
         std::erase_if(dataSourceConstructionThreads_, [](ConstructionThread& constructionThread) {
-            return constructionThread.done && constructionThread.done->load(std::memory_order_acquire);
+            if (!constructionThread.done || !constructionThread.done->load(std::memory_order_acquire)) {
+                return false;
+            }
+            if (constructionThread.thread.joinable()) {
+                constructionThread.thread.join();
+            }
+            return true;
         });
     }
 
     void requestStopForConstructionThreadsLocked()
     {
         for (auto& constructionThread : dataSourceConstructionThreads_) {
-            constructionThread.thread.request_stop();
+            if (constructionThread.stopRequested) {
+                constructionThread.stopRequested->store(true, std::memory_order_release);
+            }
         }
         constructionSlotCv_.notify_all();
     }
 
-    bool acquireConstructionSlot(std::stop_token stopToken)
+    bool acquireConstructionSlot(std::shared_ptr<std::atomic_bool> const& stopRequested)
     {
         std::unique_lock lock(constructionSlotMutex_);
-        constructionSlotCv_.wait(lock, stopToken, [this]() {
+        constructionSlotCv_.wait(lock, [this, &stopRequested]() {
             return shuttingDown_.load(std::memory_order_relaxed)
+                || (stopRequested && stopRequested->load(std::memory_order_acquire))
                 || activeDataSourceConstructions_ < maxConcurrentDataSourceConstructions_;
         });
-        if (stopToken.stop_requested() || shuttingDown_.load(std::memory_order_relaxed)) {
+        if ((stopRequested && stopRequested->load(std::memory_order_acquire))
+            || shuttingDown_.load(std::memory_order_relaxed)) {
             return false;
         }
         ++activeDataSourceConstructions_;
@@ -1250,11 +1270,12 @@ struct Service::Impl : public Service::Controller
         DataSourceDescriptor descriptor)
     {
         auto done = std::make_shared<std::atomic_bool>(false);
+        auto stopRequested = std::make_shared<std::atomic_bool>(false);
         auto sourceId = descriptor.sourceId;
         auto configIndex = descriptor.configIndex;
         dataSourceConstructionThreads_.push_back(ConstructionThread{
-            .thread = std::jthread(
-                [this, generation, configNode = std::move(configNode), sourceId, configIndex, done](std::stop_token stopToken) mutable
+            .thread = std::thread(
+                [this, generation, configNode = std::move(configNode), sourceId, configIndex, done, stopRequested]() mutable
                 {
                     bool slotAcquired = false;
                     auto finish = [&]() {
@@ -1265,7 +1286,7 @@ struct Service::Impl : public Service::Controller
                     };
 
                     try {
-                        slotAcquired = acquireConstructionSlot(stopToken);
+                        slotAcquired = acquireConstructionSlot(stopRequested);
                         if (!slotAcquired || !isCurrentCatalogGeneration(generation)) {
                             finish();
                             return;
@@ -1280,8 +1301,8 @@ struct Service::Impl : public Service::Controller
                             .setProgress = [this, generation, sourceId](std::optional<float> progress) {
                                 updateCatalogProgress(generation, sourceId, progress);
                             },
-                            .isCancelled = [this, generation, stopToken]() {
-                                return stopToken.stop_requested()
+                            .isCancelled = [this, generation, stopRequested]() {
+                                return stopRequested->load(std::memory_order_acquire)
                                     || !isCurrentCatalogGeneration(generation);
                             }};
 
@@ -1330,7 +1351,8 @@ struct Service::Impl : public Service::Controller
                     }
                     finish();
                 }),
-            .done = std::move(done)});
+            .done = std::move(done),
+            .stopRequested = std::move(stopRequested)});
     }
 
     void applyDataSourceConfig(std::vector<YAML::Node> const& dataSourceConfigNodes)
