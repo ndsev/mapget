@@ -21,7 +21,7 @@ else()
     CPMAddPackage(
         NAME ndsmath
         GITHUB_REPOSITORY ndsev/ndslive-math
-        GIT_TAG 8ffed7604e3fc84c681fb54b0a414f66b4e21992
+        GIT_TAG 009bba06356dfd01f98c1570a003e31180788811
         GIT_SHALLOW FALSE
         SOURCE_SUBDIR cpp
         OPTIONS
