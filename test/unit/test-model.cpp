@@ -1451,14 +1451,14 @@ TEST_CASE("TileId", "[TileId]") {
 
     SECTION("Neighbor") {
         TileId tile = TileId::fromTileXY(0, 0, 1);
-        REQUIRE(tile.neighbor(1, 0) == TileId::fromTileXY(1, 0, 1));
-        REQUIRE(tile.neighbor(0, 1) == TileId::fromTileXY(0, 1, 1));
-        REQUIRE(tile.neighbor(-1, -1) == TileId::fromTileXY(3, 1, 1));  // Wrap around
+        REQUIRE(tile.neighbour(1, 0) == TileId::fromTileXY(1, 0, 1));
+        REQUIRE(tile.neighbour(0, 1) == TileId::fromTileXY(0, 1, 1));
+        REQUIRE(tile.neighbour(-1, -1) == TileId::fromTileXY(3, 1, 1));  // Wrap around
 
         TileId tile2 = TileId::fromTileXY(3, 1, 1);
-        REQUIRE(tile2.neighbor(-1, -1) == TileId::fromTileXY(2, 0, 1));
-        REQUIRE(tile2.neighbor(1, 1) == TileId::fromTileXY(0, 0, 1));  // Wrap around
-        REQUIRE(tile2.neighbor(4, 2) == tile2);
+        REQUIRE(tile2.neighbour(-1, -1) == TileId::fromTileXY(2, 0, 1));
+        REQUIRE(tile2.neighbour(1, 1) == TileId::fromTileXY(0, 0, 1));  // Wrap around
+        REQUIRE(tile2.neighbour(4, 2) == tile2);
     }
 
     SECTION("Legacy mapget tile-id migration helpers") {

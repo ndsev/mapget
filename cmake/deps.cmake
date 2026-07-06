@@ -21,7 +21,7 @@ else()
     CPMAddPackage(
         NAME ndsmath
         GITHUB_REPOSITORY ndsev/ndslive-math
-        GIT_TAG geometry-cross-language
+        GIT_TAG 8ffed7604e3fc84c681fb54b0a414f66b4e21992
         GIT_SHALLOW FALSE
         OPTIONS
             "NDSMATH_BUILD_TESTS OFF"
