@@ -26,7 +26,7 @@ AuthHeaders tilesWsAuthHeadersFromRequest(const drogon::HttpRequestPtr& req);
 /** Encode a payload with the TileLayerStream frame header. */
 std::string tilesWsEncodeStreamMessage(TileLayerStream::MessageType type, std::string_view payload);
 
-/** Create one websocket session for an accepted `/interactive` connection. */
+/** Create one websocket session for an accepted `/interactive` or legacy `/tiles` connection. */
 std::shared_ptr<TilesWsSession> tilesWsCreateSession(
     HttpService& service,
     std::weak_ptr<drogon::WebSocketConnection> conn,

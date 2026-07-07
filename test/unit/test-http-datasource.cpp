@@ -136,11 +136,11 @@ public:
             });
     }
 
-    bool connect(bool sendAuthHeader)
+    bool connect(bool sendAuthHeader, std::string_view path = "/interactive")
     {
         auto connectReq = drogon::HttpRequest::newHttpRequest();
         connectReq->setMethod(drogon::Get);
-        connectReq->setPath("/interactive");
+        connectReq->setPath(std::string(path));
         if (sendAuthHeader) {
             connectReq->addHeader("X-USER-ROLE", "Tropico-Viewer");
         }
@@ -791,10 +791,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 return conn;
             };
 
-            auto runWsTilesRequest = [&](bool sendAuthHeader, const std::string& requestJson) {
+            auto runWsTilesRequestAtPath = [&](std::string_view path, bool sendAuthHeader, const std::string& requestJson) {
                 WsTilesClient wsClient(service.port(), layerInfo);
 
-                REQUIRE(wsClient.connect(sendAuthHeader));
+                REQUIRE(wsClient.connect(sendAuthHeader, path));
                 requireConnected(wsClient)->send(requestJson, drogon::WebSocketMessageType::Text);
 
                 REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
@@ -809,6 +809,27 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(status.has_value());
                 return std::make_tuple(*status, wsClient.receivedTileCount());
             };
+
+            auto runWsTilesRequest = [&](bool sendAuthHeader, const std::string& requestJson) {
+                return runWsTilesRequestAtPath("/interactive", sendAuthHeader, requestJson);
+            };
+
+            // WebSocket tiles: `/tiles` remains a legacy alias for `/interactive`.
+            {
+                auto req = nlohmann::json::object({
+                    {"requests", nlohmann::json::array({nlohmann::json::object({
+                        {"mapId", "Tropico"},
+                        {"layerId", "WayLayer"},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
+                    })})},
+                }).dump();
+
+                auto [status, wsTileCount] = runWsTilesRequestAtPath("/tiles", true, req);
+                REQUIRE(wsTileCount == 1);
+                REQUIRE(status["requests"].size() == 1);
+                REQUIRE(status["requests"][0]["status"].get<int>() ==
+                        static_cast<int>(RequestStatus::Success));
+            }
 
             // WebSocket tiles: unauthorized without auth header.
             {

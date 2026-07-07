@@ -329,9 +329,10 @@ Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`,
 
 ## `/interactive` – interactive control channel (WebSocket)
 
-`GET /interactive` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/interactive/payload`.
+`GET /interactive` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/interactive/payload`. `GET /tiles` is accepted as a legacy WebSocket alias for deployments with older reverse-proxy rules; `POST /tiles` remains the stateless REST tile endpoint.
 
 - **Connect:** `ws://<host>:<port>/interactive`
+  - Legacy alias: `ws://<host>:<port>/tiles`
 - **Client → Server:** send one *text* message containing tile `requests`, optional `stringPoolOffsets`, and optional interactive search fields (`searchId`, `searchQuery`, `searchScope`, `withFields`, `refresh`).
   - `stringPoolOffsets` is optional; the server remembers the latest offsets per WebSocket connection. Clients may re-send it to reset/resync offsets.
 - **Server → Client:** sends *binary* WebSocket messages carrying VTLV control frames.
@@ -356,7 +357,7 @@ To cancel, either send a new request message on the same connection (which repla
 
 ## `/interactive/payload` – pull binary tile frames
 
-`GET /interactive/payload` (also accepts `POST`) returns the next available binary tile frame batch for an active `/interactive` session.
+`GET /interactive/payload` (also accepts `POST`) returns the next available binary tile frame batch for an active `/interactive` session, including sessions opened through the legacy `/tiles` WebSocket alias.
 
 - **Method:** `GET` or `POST`
 - **Query parameters:**

@@ -127,6 +127,9 @@ public:
 
     WS_PATH_LIST_BEGIN
     WS_PATH_ADD("/interactive", drogon::Get);
+    // Keep accepting the historic websocket path for deployments whose reverse
+    // proxy rules have not yet been updated to `/interactive`.
+    WS_PATH_ADD("/tiles", drogon::Get);
     WS_PATH_LIST_END
 
 private:

@@ -15,7 +15,7 @@ class HttpService;
 namespace mapget::detail
 {
 
-/** Register `/interactive` websocket and `/interactive/payload` long-poll handlers with Drogon. */
+/** Register `/interactive`, its legacy `/tiles` websocket alias, and `/interactive/payload`. */
 void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService& service);
 
 /** Build the websocket/long-poll metrics snapshot attached to service status data. */

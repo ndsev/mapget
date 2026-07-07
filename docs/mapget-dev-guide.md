@@ -212,7 +212,7 @@ sequenceDiagram
   Ws-->>Client: Status(allDone=true)
 ```
 
-For interactive clients, tile streaming uses WebSocket `GET /interactive` as a control channel. Clients send request updates there, receive `RequestContext` / `Status` control frames back, and pull the actual binary tile frames via `/interactive/payload`. Sending a new request message replaces the current in-flight request on that connection.
+For interactive clients, tile streaming uses WebSocket `GET /interactive` as a control channel. `GET /tiles` is still registered as a WebSocket-only legacy alias so old reverse-proxy setups keep working; `POST /tiles` remains the REST tile endpoint. Clients send request updates over the WebSocket, receive `RequestContext` / `Status` control frames back, and pull the actual binary tile frames via `/interactive/payload`. Sending a new request message replaces the current in-flight request on that connection.
 
 Datasource startup is exposed through the service-owned source catalog. Config-created datasource constructors receive `DataSourceInitContext`, allowing them to publish human-readable loading text through `setStatusMessage`, optional `0..100` progress through `setProgress`, and to stop early when `isCancelled` becomes true after config reload or shutdown. The default `/sources` request waits until the current reload has no initializing datasource rows, preserving legacy startup semantics; `/sources?blocking=false` returns the immediate catalog snapshot. Status/progress updates increment the `/sources` revision and are also forwarded as lightweight `mapget.sources.changed` WebSocket frames with an embedded per-source delta, so interactive clients can update loading indicators without reloading heavy layer/schema metadata.
 
@@ -239,7 +239,7 @@ For `/tiles`, the HTTP layer:
 
 In JSONL mode the response is a sequence of newline‑separated JSON objects. In binary mode the HTTP layer uses `TileLayerStream::Writer` to serialize string pool updates and tile blobs. Binary responses can optionally be compressed using gzip if the client sends `Accept-Encoding: gzip`.
 
-WebSocket `/interactive` uses the same request JSON shape but serves only as the control plane: it emits `RequestContext` and `Status` VTLV frames, while `/interactive/payload` performs the long-poll delivery of one or more binary tile frames (optionally batched up to `maxBytes`).
+WebSocket `/interactive` (or its legacy `/tiles` alias) uses the same request JSON shape but serves only as the control plane: it emits `RequestContext` and `Status` VTLV frames, while `/interactive/payload` performs the long-poll delivery of one or more binary tile frames (optionally batched up to `maxBytes`).
 
 Server-side search-as-map uses the same backend execution path for two transport shapes. REST clients call `POST /search` with the simplified `query`, `scope`, `withFields` and `requests` envelope. Interactive WebSocket clients still send `searchId`, `searchQuery`, `searchScope`, `withFields` and `refresh` through the `/interactive` control channel so replacement/update semantics remain explicit. Search requests must use plain `tileIds`; the service loads all advertised source feature tile stages through the regular tile scheduler/cache path, assembles staged payloads when needed, runs the SIMFIL search job on the worker pool, and emits `TileSearchResultLayer` chunks. Search progress is sent as binary `Status` frames or JSONL objects with `type: "mapget.search.status"`.
 
