@@ -71,7 +71,7 @@ struct MapTileKey
      *   (0) being the layer type enum name,
      *   (1) being the percent-escaped map id,
      *   (2) being the percent-escaped layer id,
-     *   (3) being the hexadecimal tile id,
+     *   (3) being the decimal packed tile id,
      *   (4) being the decimal stage index.
      */
     [[nodiscard]] std::string toString() const;

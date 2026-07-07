@@ -5,3 +5,4 @@ cmake-build-release/
 venv/
 CMakeUserPresets.json
 build/
+mapget-cache.db

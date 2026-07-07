@@ -34,7 +34,19 @@ TileId parseTileIdComponent(std::string_view component, std::string const& fullK
         10);
     if (parseTileResult.ec != std::errc() ||
         parseTileResult.ptr != component.data() + component.size()) {
-        raise(fmt::format("Invalid cache tile id: {}", fullKey));
+        uint64_t parsedHexTileId = 0;
+        auto parseHexTileResult = std::from_chars(
+            component.data(),
+            component.data() + component.size(),
+            parsedHexTileId,
+            16);
+        if (parseHexTileResult.ec != std::errc() ||
+            parseHexTileResult.ptr != component.data() + component.size() ||
+            parsedHexTileId > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+            !isLegacyTileId(static_cast<int64_t>(parsedHexTileId))) {
+            raise(fmt::format("Invalid cache tile id: {}", fullKey));
+        }
+        return legacyTileIdToPacked(static_cast<int64_t>(parsedHexTileId));
     }
 
     if (parsedTileId == 0 && layer == LayerType::SourceData) {

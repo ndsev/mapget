@@ -216,6 +216,12 @@ TEST_CASE("MapTileKey accepts removed mapget tile-id layout", "[DataSourceInfo]"
     REQUIRE(parsed.tileId_ == TileId::fromTileXY(1, 0, 1));
 }
 
+TEST_CASE("MapTileKey accepts removed hexadecimal mapget tile-id layout", "[DataSourceInfo]")
+{
+    auto const parsed = MapTileKey("Features:Map:Layer:21fa0777000d:0");
+    REQUIRE(parsed.tileId_ == TileId::fromTileXY(0x21fa, 0x0777, 13));
+}
+
 TEST_CASE("MapTileKey keeps SourceData tile zero as metadata sentinel", "[DataSourceInfo]")
 {
     auto const parsed = MapTileKey("SourceData:Map:Layer:0:0");
