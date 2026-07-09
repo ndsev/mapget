@@ -13,6 +13,8 @@
 #include "mapget/log.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
+#include "mapget/model/sourcedatalayer.h"
+#include "mapget/service/memcache.h"
 #include "mapget/service/sqlitecache.h"
 #include "mapget/service/nullcache.h"
 
@@ -84,6 +86,13 @@ namespace {
             true,
             false,
             Version{0, 0, 0}});
+    }
+
+    std::shared_ptr<LayerInfo> createMetadataSourceDataLayerInfo() {
+        return LayerInfo::fromJson(R"({
+            "layerId": "Metadata-Test",
+            "type": "SourceData"
+        })"_json);
     }
 
     DataSourceInfo createTestDataSourceInfo(const std::string& nodeId, const std::string& mapId, std::shared_ptr<LayerInfo> layerInfo) {
@@ -727,4 +736,28 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
 TEST_CASE("NullCache", "[Cache]")
 {
     testNullCacheImplementation();
+}
+
+TEST_CASE("Cache roundtrips SourceData tile-zero sentinel", "[Cache]")
+{
+    auto layerInfo = createMetadataSourceDataLayerInfo();
+    auto nodeId = std::string("MetadataSourceDataNode");
+    auto mapId = std::string("MetadataMap");
+    auto strings = std::make_shared<StringPool>(nodeId);
+    auto sourceData = std::make_shared<TileSourceDataLayer>(
+        TileId(),
+        nodeId,
+        mapId,
+        layerInfo,
+        strings);
+    auto info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+    auto cache = std::make_shared<MemCache>(8);
+
+    cache->putTileLayer(sourceData);
+    auto result = cache->getTileLayer(MapTileKey(*sourceData), info);
+
+    REQUIRE(result.tile);
+    REQUIRE(result.tile->layerInfo()->type_ == LayerType::SourceData);
+    REQUIRE(result.tile->tileId().value() == 0);
+    REQUIRE(std::dynamic_pointer_cast<TileSourceDataLayer>(result.tile));
 }

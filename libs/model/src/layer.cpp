@@ -23,8 +23,47 @@ namespace mapget
 namespace
 {
 
+/** SourceData layers use tile id 0 as a request-wide metadata/global sentinel. */
+bool isSourceDataTileZeroSentinel(LayerType layer)
+{
+    return layer == LayerType::SourceData;
+}
+
+/** Parse packed tile IDs first, then accept the removed mapget layout for stale keys/blobs. */
+TileId parseRawTileIdValue(
+    int64_t parsedTileId,
+    std::string const& context,
+    LayerType layer)
+{
+    if (parsedTileId == 0 && isSourceDataTileZeroSentinel(layer)) {
+        // This sentinel is intentionally not a spatial tile and is therefore
+        // the only invalid PackedTileId value accepted in persisted layers.
+        return TileId();
+    }
+
+    if (parsedTileId >= std::numeric_limits<int32_t>::min() &&
+        parsedTileId <= std::numeric_limits<int32_t>::max()) {
+        try {
+            return TileId::fromValue(static_cast<int32_t>(parsedTileId));
+        }
+        catch (std::out_of_range const&) {
+            // Stale map tile keys/blobs may contain small legacy IDs such as
+            // level-only `13`; fall through to the legacy-layout recognizer.
+        }
+    }
+
+    if (isLegacyTileId(parsedTileId))
+        return legacyTileIdToPacked(parsedTileId);
+
+    raise(fmt::format("Invalid tile id '{}' in {}", parsedTileId, context));
+    return TileId();
+}
+
 /** Parse packed tile IDs first, then accept the removed mapget layout for stale keys. */
-TileId parseTileIdComponent(std::string_view component, std::string const& fullKey, LayerType layer)
+TileId parseTileIdComponent(
+    std::string_view component,
+    std::string const& fullKey,
+    LayerType layer)
 {
     int64_t parsedTileId = 0;
     auto parseTileResult = std::from_chars(
@@ -49,28 +88,7 @@ TileId parseTileIdComponent(std::string_view component, std::string const& fullK
         return legacyTileIdToPacked(static_cast<int64_t>(parsedHexTileId));
     }
 
-    if (parsedTileId == 0 && layer == LayerType::SourceData) {
-        // SourceData metadata/global keys historically use tile ID 0 as a
-        // sentinel, which collides with the removed mapget root-tile encoding.
-        return TileId();
-    }
-
-    if (parsedTileId >= std::numeric_limits<int32_t>::min() &&
-        parsedTileId <= std::numeric_limits<int32_t>::max()) {
-        try {
-            return TileId::fromValue(static_cast<int32_t>(parsedTileId));
-        }
-        catch (std::out_of_range const&) {
-            // Stale map tile keys may contain small legacy IDs such as level-only
-            // `13`; fall through to the explicit legacy-layout recognizer.
-        }
-    }
-
-    if (isLegacyTileId(parsedTileId))
-        return legacyTileIdToPacked(parsedTileId);
-
-    raise(fmt::format("Invalid cache tile id: {}", fullKey));
-    return TileId();
+    return parseRawTileIdValue(parsedTileId, fmt::format("cache key '{}'", fullKey), layer);
 }
 
 } // namespace
@@ -196,7 +214,10 @@ TileLayer::TileLayer(
 
     int32_t rawTileId = 0;
     s.value4b(rawTileId);
-    tileId_ = TileId::fromValue(rawTileId);
+    tileId_ = parseRawTileIdValue(
+        rawTileId,
+        fmt::format("serialized layer '{}:{}'", mapId_, layerName),
+        layerInfo_->type_);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
 
     int64_t timestamp = 0;

@@ -3,6 +3,8 @@
 
 #include "fmt/format.h"
 
+#include <exception>
+
 namespace mapget
 {
 
@@ -99,7 +101,17 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
         [&](auto&& parsedLayer){tile = parsedLayer;},
         shared_from_this());
 
-    tileReader.read(*tileBlob);
+    try {
+        tileReader.read(*tileBlob);
+    }
+    catch (std::exception const& e) {
+        log().warn(
+            "Ignoring unreadable cache entry for {}: {}",
+            tileKey.toString(),
+            e.what());
+        cacheMisses_.fetch_add(1, std::memory_order_relaxed);
+        return result;
+    }
     if (tile) {
         if (auto layerInfo = dataSource.getLayer(tileKey.layerId_);
             layerInfo &&
