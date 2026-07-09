@@ -174,11 +174,13 @@ public:
     {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
+            auto allDone = false;
             {
                 std::lock_guard lock(mutex_);
-                if (!error_.empty() || (lastStatus_.has_value() && lastStatus_->value("allDone", false))) {
+                if (!error_.empty()) {
                     return true;
                 }
+                allDone = lastStatus_.has_value() && lastStatus_->value("allDone", false);
             }
 
             const auto remainingMs = static_cast<int64_t>(
@@ -189,7 +191,11 @@ public:
 
             const auto clientId = clientId_.load(std::memory_order_relaxed);
             if (clientId > 0) {
-                const auto waitMs = std::clamp<int64_t>(remainingMs, 1, 1000);
+                // The WS status can arrive before the long-poll payload has
+                // been drained. After allDone, wait for one empty payload poll
+                // so tile-count assertions do not race the binary stream.
+                const auto waitCapMs = allDone ? 100 : 1000;
+                const auto waitMs = std::clamp<int64_t>(remainingMs, 1, waitCapMs);
                 const auto [result, resp] = pullClient_.get(fmt::format(
                     "/interactive/payload?clientId={}&waitMs={}&maxBytes={}",
                     clientId,
@@ -212,6 +218,9 @@ public:
                     }
                 }
                 else if (resp->statusCode() == drogon::k204NoContent) {
+                    if (allDone) {
+                        return true;
+                    }
                     continue;
                 }
                 else if (resp->statusCode() == drogon::k410Gone) {
@@ -224,6 +233,10 @@ public:
                 }
 
                 continue;
+            }
+
+            if (allDone) {
+                return true;
             }
 
             std::unique_lock lock(mutex_);
