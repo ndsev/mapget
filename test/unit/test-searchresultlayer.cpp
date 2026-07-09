@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "mapget/model/featurelayer-search.h"
@@ -306,6 +307,126 @@ std::shared_ptr<LayerInfo> makeLiveLikeSchemaBackedSearchResultLayerInfo()
             }
         }
     })"_json);
+}
+
+std::shared_ptr<LayerInfo> makeBroadEnumSchemaBackedSearchResultLayerInfo()
+{
+    auto info = R"({
+        "layerId": "Road",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Road",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                        {"partId": "roadId", "description": "Synthetic road id.", "datatype": "U64"}
+                    ]
+                ]
+            }
+        ],
+        "featureModelSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "oneOf": [
+                {"$ref": "#/$defs/RoadFeature"}
+            ],
+            "$defs": {
+                "RoadFeature": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Feature",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "typeId": {"const": "Road"},
+                        "properties": {"$ref": "#/$defs/RoadProperties"}
+                    }
+                },
+                "RoadProperties": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "FeatureProperties",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "layer": {"$ref": "#/$defs/RoadLayerMap"}
+                    }
+                },
+                "RoadLayerMap": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeLayerMap",
+                        "featureType": "Road"
+                    },
+                    "properties": {
+                        "RoadRulesLayer": {"$ref": "#/$defs/RoadRulesLayer"}
+                    }
+                },
+                "RoadRulesLayer": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "AttributeContainer"
+                    },
+                    "properties": {}
+                },
+                "BroadCondition": {
+                    "type": "object",
+                    "properties": {
+                        "conditionTypeCode": {
+                            "type": "string",
+                            "enum": ["TIME_RANGE_OF_DAY", "DAYS_OF_WEEK"]
+                        },
+                        "conditionValue": {"$ref": "#/$defs/BroadConditionValue"}
+                    }
+                },
+                "BroadConditionValue": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "timeRangeOfDay": {"type": "object"}
+                            },
+                            "required": ["timeRangeOfDay"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "daysOfWeek": {
+                                    "type": "object",
+                                    "properties": {
+                                        "isMonday": {"type": "boolean"}
+                                    }
+                                }
+                            },
+                            "required": ["daysOfWeek"]
+                        }
+                    ]
+                }
+            }
+        }
+    })"_json;
+    auto& defs = info["featureModelSchema"]["$defs"];
+    auto& layerProperties = defs["RoadRulesLayer"]["properties"];
+    for (auto i = 0; i < 9; ++i) {
+        auto name = "BROAD_ENUM_" + std::to_string(i);
+        auto defName = "BroadEnumAttribute" + std::to_string(i);
+        layerProperties[name] = {{"$ref", "#/$defs/" + defName}};
+        defs[defName] = {
+            {"type", "object"},
+            {"x-mapget", {
+                {"metaType", "Attribute"},
+                {"attributeTypeCode", name},
+                {"attributeType", "nds.rules.BroadEnum"}
+            }},
+            {"properties", {
+                {"conditions", {
+                    {"type", "array"},
+                    {"items", {{"$ref", "#/$defs/BroadCondition"}}}
+                }}
+            }}
+        };
+    }
+    return LayerInfo::fromJson(info);
 }
 
 
@@ -900,6 +1021,16 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
     REQUIRE(speedWildcard->normalizedQuery_.find("$name == \"SPEED_LIMIT_METRIC\"") != std::string::npos);
     REQUIRE(speedWildcard->normalizedQuery_.find("**.attributeValue.speedLimitKmh > 80") != std::string::npos);
 
+    auto countWildcard = registry->normalizeSearchQuery(
+        "count(**.speedLimitKmh) == 0",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(countWildcard.has_value());
+    INFO(countWildcard->normalizedQuery_);
+    REQUIRE(countWildcard->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Feature);
+    REQUIRE(countWildcard->attributeScopes_.empty());
+    REQUIRE(countWildcard->attributeScopeCandidateCount_ == 0);
+    REQUIRE(countWildcard->normalizedQuery_ == "count(**.speedLimitKmh) == 0");
+
     auto enumSymbol = registry->normalizeSearchQuery(
         "SPEED_LIMIT_END",
         LayerSchema::SearchQueryRequestedScope::Auto);
@@ -984,6 +1115,47 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
     REQUIRE(explicitWarningResult->layer_->info()["searchScope"] == "attribute");
     REQUIRE(explicitWarningResult->layer_->size() == 1);
     REQUIRE(explicitWarningResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({"SPEED_LIMIT"}));
+}
+
+TEST_CASE("Search query normalization suppresses broad attribute rewrites", "[feature-layer-search]")
+{
+    auto layerInfo = makeBroadEnumSchemaBackedSearchResultLayerInfo();
+    auto registry = layerInfo->layerSchema();
+    REQUIRE(registry);
+
+    auto autoScope = registry->normalizeSearchQuery(
+        "DAYS_OF_WEEK",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(autoScope.has_value());
+    INFO(autoScope->normalizedQuery_);
+    REQUIRE(autoScope->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(autoScope->normalizedQuery_ == "conditions.*.conditionTypeCode == \"DAYS_OF_WEEK\"");
+    REQUIRE(autoScope->attributeScopes_.empty());
+    REQUIRE(autoScope->attributeScopeCandidateCount_ == 9);
+    REQUIRE(autoScope->rewriteSuppressed_);
+    REQUIRE(autoScope->rewriteSuppressionReason_.find("9 candidate scopes") != std::string::npos);
+
+    auto attributeScope = registry->normalizeSearchQuery(
+        "DAYS_OF_WEEK",
+        LayerSchema::SearchQueryRequestedScope::Attribute);
+    REQUIRE(attributeScope.has_value());
+    INFO(attributeScope->normalizedQuery_);
+    REQUIRE(attributeScope->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(attributeScope->normalizedQuery_ == "conditions.*.conditionTypeCode == \"DAYS_OF_WEEK\"");
+    REQUIRE(attributeScope->attributeScopes_.empty());
+    REQUIRE(attributeScope->attributeScopeCandidateCount_ == 9);
+    REQUIRE(attributeScope->rewriteSuppressed_);
+
+    auto wildcardPath = registry->normalizeSearchQuery(
+        "**.daysOfWeek",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(wildcardPath.has_value());
+    INFO(wildcardPath->normalizedQuery_);
+    REQUIRE(wildcardPath->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(wildcardPath->normalizedQuery_ == "**.daysOfWeek");
+    REQUIRE(wildcardPath->attributeScopes_.empty());
+    REQUIRE(wildcardPath->attributeScopeCandidateCount_ == 9);
+    REQUIRE(wildcardPath->rewriteSuppressed_);
 }
 
 TEST_CASE("Attribute-scope search copies computed validity geometry", "[feature-layer-search]")
