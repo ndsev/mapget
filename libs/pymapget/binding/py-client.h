@@ -143,14 +143,14 @@ void bindHttpClient(py::module_& m)
             py::init(
                 [](const std::string& mapId,
                    const std::string& layerId,
-                   std::vector<uint64_t> tiles,
+                   std::vector<TileId> tiles,
                    std::function<void(TileFeatureLayer::Ptr)> onFeatureResult,
                    std::function<void(TileSourceDataLayer::Ptr)> onSourceDataResult)
                 {
                     auto req = std::make_shared<PyRequest>(
                         mapId,
                         layerId,
-                        std::vector<TileId>(tiles.begin(), tiles.end()));
+                        std::move(tiles));
                     req->onFeatureLayer(std::move(onFeatureResult));
                     req->onSourceDataLayer(std::move(onSourceDataResult));
                     return req;
@@ -167,7 +167,7 @@ void bindHttpClient(py::module_& m)
             Args:
                 map_id: The map id for which this request is dedicated.
                 layer_id: The map layer id for which this request is dedicated.
-                tiles: The map tile ids for which this request is dedicated.
+                tiles: The ndslive.math.PackedTileId values for which this request is dedicated.
                 on_feature_result: The callback function to be called when a result feature tile is available.
                 You can also iterate over this Request object instead of providing the callback.
                 on_sourcedata_result: The callback function to be callend when a result source-data tile
@@ -204,11 +204,12 @@ void bindHttpClient(py::module_& m)
             py::init(
                 [](const std::string& mapId,
                    const std::string& layerId,
-                   std::vector<uint64_t> tiles,
+                   std::vector<TileId> tiles,
                    const std::string& query,
                    const std::string& scope,
                    bool rewrite,
                    std::vector<std::string> withFields,
+                   std::vector<std::string> featureTypes,
                    std::function<void(TileSearchResultLayer::Ptr)> onResult,
                    std::function<void(py::object)> onStatus)
                 {
@@ -228,11 +229,12 @@ void bindHttpClient(py::module_& m)
                     }
                     search.rewriteQuery_ = rewrite || search.scope_ == FeatureLayerSearchScope::Auto;
                     search.withFields_ = std::move(withFields);
+                    search.featureTypes_ = std::move(featureTypes);
 
                     auto req = std::make_shared<PySearchRequest>(
                         mapId,
                         layerId,
-                        std::vector<TileId>(tiles.begin(), tiles.end()),
+                        std::move(tiles),
                         std::move(search));
                     req->onSearchResult(std::move(onResult));
                     if (onStatus) {
@@ -249,6 +251,7 @@ void bindHttpClient(py::module_& m)
             py::arg("scope") = "feature",
             py::arg("rewrite") = false,
             py::arg("with_fields") = std::vector<std::string>{},
+            py::arg("feature_types") = std::vector<std::string>{},
             py::arg("on_result") = py::none(),
             py::arg("on_status") = py::none(),
             py::call_guard<py::gil_scoped_acquire>(),
@@ -258,11 +261,12 @@ void bindHttpClient(py::module_& m)
             Args:
                 map_id: The source map id to search.
                 layer_id: The source feature layer id to search.
-                tiles: Source tile ids to search.
+                tiles: Source ndslive.math.PackedTileId values to search.
                 query: SIMFIL predicate.
                 scope: "feature", "attribute" or "auto".
                 rewrite: Normalize the query through the feature-model schema before evaluation. Auto scope implies rewrite.
                 with_fields: SIMFIL expressions stored in each result's values array.
+                feature_types: Optional feature type names to search; omitted means all feature types.
                 on_result: Optional callback for each TileSearchResultLayer.
                 on_status: Optional callback for progress/status dictionaries.
         )pbdoc")
@@ -276,13 +280,32 @@ void bindHttpClient(py::module_& m)
             Wait for the search request to be done.
         )pbdoc", py::call_guard<py::gil_scoped_release>());
 
-    py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client")
-        .def(py::init<const std::string&, uint16_t>(),
+    py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client", R"pbdoc(
+        Synchronous HTTP client for a running mapget service.
+
+        The client fetches `/sources` once during construction, keeps the
+        resulting layer metadata for request decoding, and can submit tile and
+        server-side search requests.
+    )pbdoc")
+        .def(py::init<const std::string&, uint16_t, AuthHeaders, bool>(),
              R"pbdoc(
-                Connect to a running mapget HTTP service. Immediately calls the /sources
-                endpoint, and caches the result for the lifetime of this object.
+                Connect to a running mapget HTTP service.
+
+                The constructor immediately calls `/sources` and caches the
+                ready datasource metadata for the lifetime of this object.
+
+                Args:
+                    host: Hostname or IP address of the mapget HTTP service.
+                    port: TCP port of the mapget HTTP service.
+                    headers: Optional HTTP headers sent with `/sources`,
+                        `/tiles`, and `/search` requests. Use this for auth.
+                    enable_compression: Request gzip responses unless the
+                        headers already contain an `Accept-Encoding` override.
             )pbdoc",
-             py::arg("host"), py::arg("port"))
+             py::arg("host"),
+             py::arg("port"),
+             py::arg("headers") = AuthHeaders{},
+             py::arg("enable_compression") = true)
         .def("sources", [](HttpClient& self){
                 auto jsonArray = nlohmann::json::array();
                 for (auto const& dsInfo : self.sources())

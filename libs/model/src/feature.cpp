@@ -331,6 +331,14 @@ simfil::ModelNode::Ptr Feature::get(const simfil::StringId& f) const
         if (fieldName == f)
             return fieldValue;
 
+    if (f == StringPool::AttributesStr) {
+        // Preserve real top-level fields named `attributes`, but otherwise
+        // allow query/import callers to use it as an alias for `properties`.
+        for (auto const& [fieldName, fieldValue] : fields_)
+            if (fieldName == StringPool::PropertiesStr)
+                return fieldValue;
+    }
+
     return {};
 }
 
@@ -649,9 +657,33 @@ model_ptr<Relation> Feature::addRelation(const std::string_view& name, const mod
     return addRelation(model().newRelation(name, target));
 }
 
-model_ptr<Relation> Feature::addRelation(const model_ptr<Relation>& relation)
+model_ptr<Relation> Feature::addRelation(model_ptr<Relation> relation)
 {
-    relations()->append(relation);
+    if (!relation) {
+        raise("Cannot add null relation.");
+    }
+    if (relation->addr().column() != TileFeatureLayer::ColumnId::Relations) {
+        raise("Feature relations must be canonical Relation nodes.");
+    }
+    if (relation->owningModel().get() != &model()) {
+        raise("Feature relations must belong to the same TileFeatureLayer.");
+    }
+
+    // Re-resolve by address before mutation because previously returned
+    // Relation wrappers can hold stale vector element pointers after growth.
+    relation = model().resolve<Relation>(relation->addr());
+
+    auto rels = relations();
+    auto const relationIndex = rels->size();
+    if (relationIndex >= Relation::InvalidFeatureRelationIndex) {
+        raise("Feature relation index exceeds RelationReference JSON range.");
+    }
+    // RelationReference JSON intentionally uses this feature-local ordinal.
+    // Known limitation: staged overlay relations are not remapped, so relation-
+    // backed attribute refs must be emitted by the same stage that owns the
+    // relevant top-level relation list.
+    relation->setFeatureRelationIndex(static_cast<uint16_t>(relationIndex));
+    rels->append(relation);
     return relation;
 }
 

@@ -1,9 +1,12 @@
 #include <atomic>
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <string>
+#include <utility>
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -36,6 +39,24 @@ struct TestDataSource : public DataSource
 
     void fill(TileFeatureLayer::Ptr const&) override {};
     void fill(TileSourceDataLayer::Ptr const&) override {};
+};
+
+struct NamedTestDataSource : public DataSource
+{
+    explicit NamedTestDataSource(std::string mapId) : mapId_(std::move(mapId)) {}
+
+    DataSourceInfo info() override
+    {
+        return DataSourceInfo::fromJson(nlohmann::json::object({
+            {"mapId", mapId_},
+            {"layers", nlohmann::json::object()},
+        }));
+    }
+
+    void fill(TileFeatureLayer::Ptr const&) override {};
+    void fill(TileSourceDataLayer::Ptr const&) override {};
+
+    std::string mapId_;
 };
 
 void syncFile(const fs::path& path)
@@ -257,6 +278,153 @@ sources:
     REQUIRE(serviceStats["datasource-config"]["enabled"].get<size_t>() == 1);
     REQUIRE(serviceStats["datasource-config"]["disabled"].get<size_t>() == 1);
     REQUIRE(serviceStats["datasource-config"]["construction-failed"].get<size_t>() == 0);
+
+    fs::remove_all(tempDir);
+    DataSourceConfigService::get().end();
+}
+
+TEST_CASE("Datasource catalog tracks config order and async startup status", "[DataSourceConfig]")
+{
+    auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_test_ds_catalog");
+    fs::create_directory(tempDir);
+    auto tempConfigPath = tempDir / "temp_config.yaml";
+
+    DataSourceConfigService::get().reset();
+
+    std::promise<void> slowStartedPromise;
+    auto slowStarted = slowStartedPromise.get_future().share();
+    std::promise<void> releaseSlowPromise;
+    auto releaseSlow = releaseSlowPromise.get_future().share();
+    std::atomic_bool slowStartedReported{false};
+
+    DataSourceConfigService::get().registerDataSourceType(
+        "SlowDataSource",
+        [&](const YAML::Node&, DataSourceInitContext& initContext) -> DataSource::Ptr
+        {
+            initContext.setStatusMessage("Waiting for test release.");
+            initContext.setProgress(25.0f);
+            if (!slowStartedReported.exchange(true)) {
+                slowStartedPromise.set_value();
+            }
+            while (releaseSlow.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+                if (initContext.isCancelled && initContext.isCancelled()) {
+                    return nullptr;
+                }
+            }
+            return std::make_shared<NamedTestDataSource>("SlowMap");
+        });
+
+    DataSourceConfigService::get().registerDataSourceType(
+        "FastDataSource",
+        [](const YAML::Node&, DataSourceInitContext&) -> DataSource::Ptr
+        {
+            return std::make_shared<NamedTestDataSource>("FastMap");
+        });
+
+    DataSourceConfigService::get().registerDataSourceType(
+        "FailingDataSource",
+        [](const YAML::Node&, DataSourceInitContext& initContext) -> DataSource::Ptr
+        {
+            initContext.setStatusMessage("Intentional test failure.");
+            return nullptr;
+        });
+
+    auto cache = std::make_shared<MemCache>();
+    Service service(cache, true);
+
+    std::mutex changesMutex;
+    std::vector<DataSourceCatalogChange> changes;
+    auto sourceChanges = service.subscribeToSourceCatalogChanges(
+        [&](DataSourceCatalogChange const& change) {
+            std::lock_guard lock(changesMutex);
+            changes.push_back(change);
+        });
+
+    {
+        std::ofstream out(tempConfigPath, std::ios_base::trunc);
+        out << R"(
+sources:
+  - type: SlowDataSource
+    id: slow-source
+    mapId: SlowConfiguredMap
+  - type: FailingDataSource
+    id: failing-source
+    mapId: FailingConfiguredMap
+  - type: FastDataSource
+    id: fast-source
+    mapId: FastConfiguredMap
+)";
+        out.flush();
+        out.close();
+        syncFile(tempConfigPath);
+    }
+
+    DataSourceConfigService::get().loadConfig(tempConfigPath.string());
+    REQUIRE(slowStarted.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+
+    waitForCondition([&service]() {
+        auto catalog = service.sourceCatalog();
+        return catalog.sources.size() == 3
+            && catalog.sources[0].status == DataSourceCatalogStatus::Initializing
+            && catalog.sources[1].status == DataSourceCatalogStatus::Failed
+            && catalog.sources[2].status == DataSourceCatalogStatus::Ready;
+    });
+
+    auto catalog = service.sourceCatalog();
+    REQUIRE(catalog.sources.size() == 3);
+    REQUIRE(catalog.sources[0].descriptor.sourceId == "slow-source");
+    REQUIRE(catalog.sources[1].descriptor.sourceId == "failing-source");
+    REQUIRE(catalog.sources[2].descriptor.sourceId == "fast-source");
+    REQUIRE(catalog.sources[0].descriptor.configIndex == 0);
+    REQUIRE(catalog.sources[1].descriptor.configIndex == 1);
+    REQUIRE(catalog.sources[2].descriptor.configIndex == 2);
+    REQUIRE(catalog.sources[0].statusMessage == "Waiting for test release.");
+    REQUIRE(catalog.sources[0].progress == std::optional<float>{25.0f});
+    REQUIRE(catalog.sources[1].statusMessage == "Intentional test failure.");
+    REQUIRE(catalog.sources[2].info.has_value());
+    REQUIRE(catalog.sources[2].info->mapId_ == "FastMap");
+
+    auto readyInfos = service.info();
+    REQUIRE(readyInfos.size() == 1);
+    REQUIRE(readyInfos.front().mapId_ == "FastMap");
+
+    auto blockingCatalogFuture = std::async(std::launch::async, [&service] {
+        return service.sourceCatalog({}, true);
+    });
+    REQUIRE(blockingCatalogFuture.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout);
+
+    releaseSlowPromise.set_value();
+    REQUIRE(blockingCatalogFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    waitForCondition([&service]() {
+        auto catalog = service.sourceCatalog();
+        return catalog.sources.size() == 3
+            && catalog.sources[0].status == DataSourceCatalogStatus::Ready
+            && catalog.sources[1].status == DataSourceCatalogStatus::Failed
+            && catalog.sources[2].status == DataSourceCatalogStatus::Ready;
+    });
+
+    catalog = service.sourceCatalog();
+    auto blockingCatalog = blockingCatalogFuture.get();
+    REQUIRE(blockingCatalog.sources.size() == 3);
+    REQUIRE(blockingCatalog.sources[0].status == DataSourceCatalogStatus::Ready);
+    REQUIRE(catalog.sources[0].info.has_value());
+    REQUIRE(catalog.sources[0].info->mapId_ == "SlowMap");
+    REQUIRE(service.info().size() == 2);
+    {
+        std::lock_guard lock(changesMutex);
+        REQUIRE_FALSE(changes.empty());
+        REQUIRE(std::ranges::any_of(changes, [](auto const& change) {
+            return change.sourceUpdate
+                && change.sourceUpdate->descriptor.sourceId == "slow-source"
+                && change.sourceUpdate->statusMessage == "Waiting for test release.";
+        }));
+        REQUIRE(std::ranges::any_of(changes, [](auto const& change) {
+            return change.sourceUpdate
+                && change.sourceUpdate->descriptor.sourceId == "slow-source"
+                && change.sourceUpdate->progress == std::optional<float>{25.0f};
+        }));
+        REQUIRE(changes.back().revision == service.sourceCatalogRevision());
+    }
 
     fs::remove_all(tempDir);
     DataSourceConfigService::get().end();

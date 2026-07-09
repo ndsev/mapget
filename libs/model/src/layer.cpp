@@ -10,40 +10,121 @@
 #include "simfil/model/bitsery-traits.h"
 
 #include <istream>
-#include <ranges>
 #include <string_view>
 #include <charconv>
+#include <limits>
+#include <vector>
 
 #include "nlohmann/json.hpp"
 
 namespace mapget
 {
 
+namespace
+{
+
+/** SourceData layers use tile id 0 as a request-wide metadata/global sentinel. */
+bool isSourceDataTileZeroSentinel(LayerType layer)
+{
+    return layer == LayerType::SourceData;
+}
+
+/** Parse packed tile IDs first, then accept the removed mapget layout for stale keys/blobs. */
+TileId parseRawTileIdValue(
+    int64_t parsedTileId,
+    std::string const& context,
+    LayerType layer)
+{
+    if (parsedTileId == 0 && isSourceDataTileZeroSentinel(layer)) {
+        // This sentinel is intentionally not a spatial tile and is therefore
+        // the only invalid PackedTileId value accepted in persisted layers.
+        return TileId();
+    }
+
+    if (parsedTileId >= std::numeric_limits<int32_t>::min() &&
+        parsedTileId <= std::numeric_limits<int32_t>::max()) {
+        try {
+            return TileId::fromValue(static_cast<int32_t>(parsedTileId));
+        }
+        catch (std::out_of_range const&) {
+            // Stale map tile keys/blobs may contain small legacy IDs such as
+            // level-only `13`; fall through to the legacy-layout recognizer.
+        }
+    }
+
+    if (isLegacyTileId(parsedTileId))
+        return legacyTileIdToPacked(parsedTileId);
+
+    raise(fmt::format("Invalid tile id '{}' in {}", parsedTileId, context));
+    return TileId();
+}
+
+/** Parse packed tile IDs first, then accept the removed mapget layout for stale keys. */
+TileId parseTileIdComponent(
+    std::string_view component,
+    std::string const& fullKey,
+    LayerType layer)
+{
+    int64_t parsedTileId = 0;
+    auto parseTileResult = std::from_chars(
+        component.data(),
+        component.data() + component.size(),
+        parsedTileId,
+        10);
+    if (parseTileResult.ec != std::errc() ||
+        parseTileResult.ptr != component.data() + component.size()) {
+        uint64_t parsedHexTileId = 0;
+        auto parseHexTileResult = std::from_chars(
+            component.data(),
+            component.data() + component.size(),
+            parsedHexTileId,
+            16);
+        if (parseHexTileResult.ec != std::errc() ||
+            parseHexTileResult.ptr != component.data() + component.size() ||
+            parsedHexTileId > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+            !isLegacyTileId(static_cast<int64_t>(parsedHexTileId))) {
+            raise(fmt::format("Invalid cache tile id: {}", fullKey));
+        }
+        return legacyTileIdToPacked(static_cast<int64_t>(parsedHexTileId));
+    }
+
+    return parseRawTileIdValue(parsedTileId, fmt::format("cache key '{}'", fullKey), layer);
+}
+
+} // namespace
+
 MapTileKey::MapTileKey(const std::string& str)
 {
-    // This will get simpler with C++ 23. Then we can just use ranges::to<std::vector>,
-    // and also the verbose conversion from a char range to a string_view
-    // will not be necessary anymore.
-    using namespace std::ranges;
-    auto parts = str | views::split(':');
-    auto partsVec = std::vector<decltype(*parts.begin())>(parts.begin(), parts.end());
+    std::vector<std::string_view> parts;
+    size_t start = 0;
+    for (size_t i = 0; i <= str.size(); ++i) {
+        if (i == str.size() || str[i] == ':') {
+            parts.push_back(std::string_view(str).substr(start, i - start));
+            start = i + 1;
+        }
+    }
 
-    if (partsVec.size() < 4)
+    if (parts.size() < 4)
         raise(fmt::format("Invalid cache tile id: {}", str));
-    layer_ = nlohmann::json(std::string_view(&*partsVec[0].begin(), distance(partsVec[0]))).get<LayerType>();
-    mapId_ = std::string_view(&*partsVec[1].begin(), distance(partsVec[1]));
-    layerId_ = std::string_view(&*partsVec[2].begin(), distance(partsVec[2]));
-    std::from_chars(&*partsVec[3].begin(), &*partsVec[3].begin() + distance(partsVec[3]), tileId_.value_, 16);
-    if (partsVec.size() >= 5) {
+
+    layer_ = nlohmann::json(std::string(parts[0])).get<LayerType>();
+
+    std::string error;
+    if (!unescapeIdentifierComponent(parts[1], mapId_, &error) ||
+        !unescapeIdentifierComponent(parts[2], layerId_, &error)) {
+        raise(fmt::format("Invalid cache tile id '{}': {}", str, error));
+    }
+
+    tileId_ = parseTileIdComponent(parts[3], str, layer_);
+
+    if (parts.size() >= 5) {
         uint32_t parsedStage = 0;
-        auto* stageBegin = &*partsVec[4].begin();
-        auto* stageEnd = stageBegin + distance(partsVec[4]);
         auto parseResult = std::from_chars(
-            stageBegin,
-            stageEnd,
+            parts[4].data(),
+            parts[4].data() + parts[4].size(),
             parsedStage,
             10);
-        if (parseResult.ec == std::errc() && parseResult.ptr == stageEnd) {
+        if (parseResult.ec == std::errc() && parseResult.ptr == parts[4].data() + parts[4].size()) {
             stage_ = parsedStage;
         }
     }
@@ -65,11 +146,11 @@ MapTileKey::MapTileKey(const TileLayer& data)
 std::string MapTileKey::toString() const
 {
     return fmt::format(
-        "{}:{}:{}:{:0x}:{}",
+        "{}:{}:{}:{}:{}",
         nlohmann::json(layer_).get<std::string>(),
-        mapId_,
-        layerId_,
-        tileId_.value_,
+        escapeIdentifierComponent(mapId_),
+        escapeIdentifierComponent(layerId_),
+        tileId_.value(),
         stage_);
 }
 
@@ -109,7 +190,7 @@ TileLayer::TileLayer(
     const std::vector<uint8_t>& input,
     const LayerInfoResolveFun& layerInfoResolveFun,
     size_t* bytesRead
-) : tileId_(0)
+) : tileId_()
 {
     using namespace std::chrono;
     using namespace nlohmann;
@@ -131,7 +212,12 @@ TileLayer::TileLayer(
             layerInfo_->version_.toString()));
     }
 
-    s.value8b(tileId_.value_);
+    int32_t rawTileId = 0;
+    s.value4b(rawTileId);
+    tileId_ = parseRawTileIdValue(
+        rawTileId,
+        fmt::format("serialized layer '{}:{}'", mapId_, layerName),
+        layerInfo_->type_);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
 
     int64_t timestamp = 0;
@@ -302,7 +388,8 @@ tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
     s.text1b(mapId_, std::numeric_limits<uint32_t>::max());
     s.text1b(layerInfo_->layerId_, std::numeric_limits<uint32_t>::max());
     s.object(mapVersion_);
-    s.value8b(tileId_.value_);
+    auto rawTileId = tileId_.value();
+    s.value4b(rawTileId);
     s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
     s.value8b(duration_cast<microseconds>(timestamp_.time_since_epoch()).count());
     s.value1b(ttl_.has_value());

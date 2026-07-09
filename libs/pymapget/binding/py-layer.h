@@ -9,6 +9,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "simfil/simfil.h"
+
 #include "py-model.h"
 
 namespace py = pybind11;
@@ -17,6 +19,209 @@ using namespace py::literals;
 namespace mapget
 {
 
+inline py::object layerJsonToPython(nlohmann::json const& j)
+{
+    switch (j.type()) {
+    case nlohmann::json::value_t::null:
+        return py::none();
+    case nlohmann::json::value_t::boolean:
+        return py::bool_(j.get<bool>());
+    case nlohmann::json::value_t::number_integer:
+        return py::int_(j.get<int64_t>());
+    case nlohmann::json::value_t::number_unsigned:
+        return py::int_(j.get<uint64_t>());
+    case nlohmann::json::value_t::number_float:
+        return py::float_(j.get<double>());
+    case nlohmann::json::value_t::string:
+        return py::str(j.get<std::string>());
+    case nlohmann::json::value_t::array: {
+        py::list result;
+        for (auto const& item : j) {
+            result.append(layerJsonToPython(item));
+        }
+        return result;
+    }
+    case nlohmann::json::value_t::object: {
+        py::dict result;
+        for (auto const& [key, value] : j.items()) {
+            result[py::str(key)] = layerJsonToPython(value);
+        }
+        return result;
+    }
+    default:
+        raise("Unsupported JSON value type.");
+    }
+}
+
+inline py::list diagnosticsToPython(simfil::Diagnostics const& diagnostics)
+{
+    py::list result;
+    auto messages = simfil::diagnostics(diagnostics);
+    if (!messages) {
+        return result;
+    }
+    for (auto const& message : *messages) {
+        py::dict item;
+        item["message"] = message.message;
+        py::dict location;
+        location["offset"] = message.location.offset;
+        location["size"] = message.location.size;
+        item["location"] = std::move(location);
+        if (message.fix) {
+            item["fix"] = *message.fix;
+        }
+        result.append(std::move(item));
+    }
+    return result;
+}
+
+struct BoundSearchResult : public BoundModelNode
+{
+    static void bind(py::module_& m)
+    {
+        py::class_<BoundSearchResult, BoundModelNode>(m, "SearchResult", R"pbdoc(
+            One root entry in a `TileSearchResultLayer`.
+
+            A result represents one matched feature or one matched attribute
+            validity context. It carries a copied feature id, copied display
+            geometry, optional attribute/validity indices, and the extracted
+            `with_fields` values aligned to the parent layer's `result_fields()`.
+        )pbdoc")
+            .def("feature_id", [](BoundSearchResult& self) {
+                    return BoundFeatureId(self.modelNodePtr_->featureId());
+                },
+                R"pbdoc(
+                Return the matched feature id as a `FeatureId` object.
+            )pbdoc")
+            .def("geometry", [](BoundSearchResult& self) {
+                    return BoundGeometryCollection(self.modelNodePtr_->geometry());
+                },
+                R"pbdoc(
+                Return the copied display geometry for this search result.
+            )pbdoc")
+            .def("attribute_index", [](BoundSearchResult& self) {
+                    return self.modelNodePtr_->attributeIndex();
+                },
+                R"pbdoc(
+                Return the matched attribute index for attribute-scope searches.
+
+                Returns `None` for feature-scope matches.
+            )pbdoc")
+            .def("validity_index", [](BoundSearchResult& self) {
+                    return self.modelNodePtr_->validityIndex();
+                },
+                R"pbdoc(
+                Return the matched validity index within the matched attribute.
+
+                Returns `None` when the match is not tied to one validity.
+            )pbdoc")
+            .def("validity_count", [](BoundSearchResult& self) {
+                    return self.modelNodePtr_->validityCount();
+                },
+                R"pbdoc(
+                Return how many validity contexts were considered for the matched attribute.
+
+                Returns `None` for feature-scope matches.
+            )pbdoc")
+            .def("values", [](BoundSearchResult& self) {
+                    return BoundArray(self.modelNodePtr_->values());
+                },
+                R"pbdoc(
+                Return the extracted `with_fields` values as an `Array`.
+
+                The array order is the same as `TileSearchResultLayer.result_fields()`.
+            )pbdoc")
+            .def("value", [](BoundSearchResult& self, int64_t i) {
+                    auto values = self.modelNodePtr_->values();
+                    auto sz = static_cast<int64_t>(values->size());
+                    if (i < 0) i += sz;
+                    if (i < 0 || i >= sz) {
+                        throw py::index_error();
+                    }
+                    BoundModelNodeBase node;
+                    node.modelNodePtr_ = values->at(static_cast<uint32_t>(i));
+                    return node;
+                },
+                py::arg("index"),
+                R"pbdoc(
+                Return one extracted `with_fields` value by index.
+
+                Negative indices follow Python sequence semantics.
+            )pbdoc")
+            .def("values_list", [](BoundSearchResult& self) {
+                    return nodeToPython(self.modelNodePtr_->values(), self.featureModelLayer());
+                },
+                R"pbdoc(
+                Return extracted `with_fields` values as a plain Python list.
+            )pbdoc")
+            .def("to_dict", [](BoundSearchResult& self) {
+                    return nodeToPython(self.node(), self.featureModelLayer());
+                },
+                R"pbdoc(
+                Convert this result to a Python dictionary.
+            )pbdoc")
+            .def("to_json", [](BoundSearchResult& self) {
+                    return self.modelNodePtr_->toJson().dump();
+                },
+                R"pbdoc(
+                Convert this result to a compact JSON string.
+            )pbdoc");
+    }
+
+    ModelNode::Ptr node() override { return modelNodePtr_; }
+
+    explicit BoundSearchResult(model_ptr<SearchResult> const& ptr) : modelNodePtr_(ptr) {}
+
+    model_ptr<SearchResult> modelNodePtr_;
+};
+
+struct BoundSearchTrace : public BoundModelNode
+{
+    static void bind(py::module_& m)
+    {
+        py::class_<BoundSearchTrace, BoundModelNode>(m, "SearchTrace", R"pbdoc(
+            Typed aggregate produced by SIMFIL `trace(...)` while evaluating a search.
+
+            Trace values are stored in the search-result layer's model pool, so
+            they can be inspected without mutating datasource string pools.
+        )pbdoc")
+            .def("name", [](BoundSearchTrace& self) {
+                    return self.modelNodePtr_->name();
+                },
+                "Return the trace name supplied by the SIMFIL expression.")
+            .def("calls", [](BoundSearchTrace& self) {
+                    return self.modelNodePtr_->calls();
+                },
+                "Return how often this trace expression was evaluated.")
+            .def("total_us", [](BoundSearchTrace& self) {
+                    return self.modelNodePtr_->totalUs().count();
+                },
+                "Return total evaluation time for this trace in microseconds.")
+            .def("values", [](BoundSearchTrace& self) {
+                    return BoundArray(self.modelNodePtr_->values());
+                },
+                "Return sampled trace values as an `Array`.")
+            .def("values_list", [](BoundSearchTrace& self) {
+                    return nodeToPython(self.modelNodePtr_->values(), self.featureModelLayer());
+                },
+                "Return sampled trace values as plain Python values.")
+            .def("to_dict", [](BoundSearchTrace& self) {
+                    return nodeToPython(self.node(), self.featureModelLayer());
+                },
+                "Convert this trace aggregate to a Python dictionary.")
+            .def("to_json", [](BoundSearchTrace& self) {
+                    return self.modelNodePtr_->toJson().dump();
+                },
+                "Convert this trace aggregate to a JSON string.");
+    }
+
+    ModelNode::Ptr node() override { return modelNodePtr_; }
+
+    explicit BoundSearchTrace(model_ptr<SearchTrace> const& ptr) : modelNodePtr_(ptr) {}
+
+    model_ptr<SearchTrace> modelNodePtr_;
+};
+
 struct BoundSourceDataCompound : public BoundModelNode
 {
     model_ptr<SourceDataCompoundNode>& ptr() { return *modelNodePtr_; }
@@ -24,7 +229,12 @@ struct BoundSourceDataCompound : public BoundModelNode
 
     static void bind(py::module_& m)
     {
-        py::class_<BoundSourceDataCompound, BoundModelNode>(m, "SourceDataCompoundNode")
+        py::class_<BoundSourceDataCompound, BoundModelNode>(m, "SourceDataCompoundNode", R"pbdoc(
+            Mutable compound source-data node.
+
+            Source-data compounds can carry a schema name, a source-data address,
+            and arbitrary fields used to represent raw/source payload metadata.
+        )pbdoc")
             .def("schema_name", [](BoundSourceDataCompound& self) {
                     return self.ptr()->schemaName();
                 },
@@ -139,7 +349,13 @@ void bindTileLayer(py::module_& m)
     using namespace mapget;
     using namespace simfil;
 
-    py::class_<TileLayer, TileLayer::Ptr>(m, "TileLayer")
+    py::class_<TileLayer, TileLayer::Ptr>(m, "TileLayer", R"pbdoc(
+        Common base class for mapget tile payloads.
+
+        Exposes tile identity, layer identity, error metadata, TTL metadata, and
+        arbitrary scalar info fields shared by feature, source-data, and search
+        result layers.
+    )pbdoc")
         .def("tile_id", &TileLayer::tileId, "Get the layer tile id.")
         .def("map_id", &TileLayer::mapId, "Get the map id.")
         .def("layer_id", [](TileLayer const& self) { return self.layerInfo()->layerId_; },
@@ -182,7 +398,14 @@ void bindTileLayer(py::module_& m)
 
     py::class_<TileFeatureLayer, TileLayer, TileFeatureLayer::Ptr>(
         m,
-        "TileFeatureLayer")
+        "TileFeatureLayer",
+        R"pbdoc(
+        Feature tile payload.
+
+        Datasource callbacks receive this object and fill it with features,
+        geometry, attributes, relations, validity data, and optional
+        source-data references.
+    )pbdoc")
         .def(
             "tile_id",
             [](TileFeatureLayer const& self){return self.tileId();},
@@ -452,13 +675,25 @@ void bindTileLayer(py::module_& m)
             return BoundFeature(self.at((size_t)i));
         });
 
-    py::enum_<TileSourceDataLayer::SourceDataAddressFormat>(m, "SourceDataAddressFormat")
+    py::enum_<TileSourceDataLayer::SourceDataAddressFormat>(m, "SourceDataAddressFormat", R"pbdoc(
+        Addressing scheme used by source-data references in a source-data tile.
+    )pbdoc")
         .value("UNKNOWN", TileSourceDataLayer::SourceDataAddressFormat::Unknown)
         .value("BIT_RANGE", TileSourceDataLayer::SourceDataAddressFormat::BitRange);
 
     BoundSourceDataCompound::bind(m);
+    BoundSearchResult::bind(m);
+    BoundSearchTrace::bind(m);
 
-    py::class_<TileSourceDataLayer, TileLayer, TileSourceDataLayer::Ptr>(m, "TileSourceDataLayer")
+    py::class_<TileSourceDataLayer, TileLayer, TileSourceDataLayer::Ptr>(
+        m,
+        "TileSourceDataLayer",
+        R"pbdoc(
+        Source-data tile payload.
+
+        Source-data layers store root compound nodes that can be referenced by
+        features, attributes, relations, or geometry in feature tiles.
+    )pbdoc")
         .def("new_compound", [](TileSourceDataLayer& self, size_t initialSize) {
                 return BoundSourceDataCompound(self.newCompound(initialSize));
             },
@@ -477,12 +712,91 @@ void bindTileLayer(py::module_& m)
         .def("to_json", [](TileSourceDataLayer& self) { return self.toJson().dump(); },
             "Convert this source-data layer to JSON.");
 
-    py::class_<TileSearchResultLayer, TileLayer, TileSearchResultLayer::Ptr>(m, "TileSearchResultLayer")
+    py::class_<TileSearchResultLayer, TileLayer, TileSearchResultLayer::Ptr>(
+        m,
+        "TileSearchResultLayer",
+        R"pbdoc(
+        Tile layer returned by server-side search-as-map requests.
+
+        The layer contains `SearchResult` roots instead of source features.
+        Each result carries a copied feature id, display geometry, optional
+        attribute-scope indices, and extracted values aligned to
+        `result_fields()`.
+    )pbdoc")
         .def("stage", [](TileSearchResultLayer const& self) { return self.stage(); },
-            "Get the source stage for single-stage search results, or None for assembled staged results.")
+            R"pbdoc(
+            Return the source stage for single-stage results, or `None` for
+            assembled staged results.
+        )pbdoc")
         .def("result_fields", &TileSearchResultLayer::resultFields,
-            "Return the withFields expressions aligned to each result's values array.")
+            R"pbdoc(
+            Return the `with_fields` expressions aligned to every result's `values()`.
+        )pbdoc")
+        .def("diagnostics", [](TileSearchResultLayer const& self) {
+                return diagnosticsToPython(self.diagnostics());
+            },
+            R"pbdoc(
+            Return SIMFIL diagnostics collected while evaluating this result chunk.
+
+            The returned value is a list of dictionaries with `message`,
+            `location`, and optional `fix` fields.
+        )pbdoc")
+        .def("trace_count", &TileSearchResultLayer::traceCount,
+            "Return the number of typed SIMFIL trace aggregates on this result chunk.")
+        .def("trace_at", [](TileSearchResultLayer const& self, int64_t i) {
+                auto sz = static_cast<int64_t>(self.traceCount());
+                if (i < 0) i += sz;
+                if (i < 0 || i >= sz) {
+                    throw py::index_error();
+                }
+                return BoundSearchTrace(self.traceAt(static_cast<size_t>(i)));
+            },
+            py::arg("index"),
+            R"pbdoc(
+            Return one `SearchTrace` by index; negative indices are supported.
+        )pbdoc")
+        .def("traces", [](TileSearchResultLayer const& self) {
+                py::list result;
+                for (size_t i = 0; i < self.traceCount(); ++i) {
+                    result.append(BoundSearchTrace(self.traceAt(i)));
+                }
+                return result;
+            },
+            R"pbdoc(
+            Return all typed SIMFIL trace aggregates as `SearchTrace` objects.
+        )pbdoc")
+        .def("to_dict", [](TileSearchResultLayer& self) {
+                return layerJsonToPython(self.toJson());
+            },
+            R"pbdoc(
+            Convert this search-result layer to a Python dictionary.
+        )pbdoc")
         .def("to_json", [](TileSearchResultLayer& self) { return self.toJson().dump(); },
-            "Convert this search-result layer to JSON.")
-        .def("__len__", [](TileSearchResultLayer const& self) { return self.size(); });
+            R"pbdoc(
+            Convert this search-result layer to a JSON string.
+        )pbdoc")
+        .def("__len__", [](TileSearchResultLayer const& self) { return self.size(); },
+            "Return the number of search results in this layer.")
+        .def("__getitem__", [](TileSearchResultLayer const& self, int64_t i) {
+                auto sz = static_cast<int64_t>(self.size());
+                if (i < 0) i += sz;
+                if (i < 0 || i >= sz) {
+                    throw py::index_error();
+                }
+                return BoundSearchResult(self.at(static_cast<size_t>(i)));
+            },
+            py::arg("index"),
+            R"pbdoc(
+            Return one `SearchResult` by index; negative indices are supported.
+        )pbdoc")
+        .def("__iter__", [](TileSearchResultLayer const& self) {
+                py::list result;
+                for (size_t i = 0; i < self.size(); ++i) {
+                    result.append(BoundSearchResult(self.at(i)));
+                }
+                return py::iter(result);
+            },
+            R"pbdoc(
+            Iterate over `SearchResult` objects in this layer.
+        )pbdoc");
 }

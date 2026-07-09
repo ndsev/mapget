@@ -1,6 +1,7 @@
 #!python
 
 import mapget
+from ndslive.math import PackedTileId
 from mapget import Point as Pt
 import sys
 
@@ -82,7 +83,7 @@ def handle_locate_request(request: mapget.LocateRequest):
         mapget.LayerType.FEATURES,
         request.map_id,
         "WayLayer",
-        mapget.TileId(12345),
+        PackedTileId.from_tile_xy(0, 0, 0),
         0)
     return [response]
 

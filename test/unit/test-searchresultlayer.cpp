@@ -73,6 +73,34 @@ std::shared_ptr<LayerInfo> makeSearchResultLayerInfo()
     })"_json);
 }
 
+std::shared_ptr<LayerInfo> makeMixedSearchResultLayerInfo()
+{
+    return LayerInfo::fromJson(R"({
+        "layerId": "SearchableLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Road",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                        {"partId": "roadId", "description": "Synthetic road id.", "datatype": "U64"}
+                    ]
+                ]
+            },
+            {
+                "name": "Sign",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                        {"partId": "signId", "description": "Synthetic sign id.", "datatype": "U64"}
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+}
+
 std::shared_ptr<LayerInfo> makeSchemaBackedSearchResultLayerInfo()
 {
     return LayerInfo::fromJson(R"({
@@ -280,12 +308,23 @@ std::shared_ptr<LayerInfo> makeLiveLikeSchemaBackedSearchResultLayerInfo()
     })"_json);
 }
 
+
+TileId primarySearchTileId()
+{
+    return TileId::fromTileXY(1, 0, 1);
+}
+
+TileId secondarySearchTileId()
+{
+    return TileId::fromTileXY(2, 0, 1);
+}
+
 TileSearchResultLayer::Ptr makeSearchResultLayer()
 {
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("SearchResultSourceNode");
     return std::make_shared<TileSearchResultLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         strings->nodeId_,
         "TestMap",
         layerInfo,
@@ -306,7 +345,7 @@ public:
 
         auto feature = tile->newFeature(
             "Road",
-            {{"tileId", static_cast<int64_t>(tile->tileId().value_)}, {"roadId", int64_t(42)}});
+            {{"tileId", static_cast<int64_t>(tile->tileId().value())}, {"roadId", int64_t(42)}});
         if (tile->stage().value_or(0U) == 0U) {
             feature->addLine({Point(11.0, 48.0, 0.0), Point(11.1, 48.1, 0.0)});
             return;
@@ -459,7 +498,7 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("SearchSourceNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "SearchSourceNode",
         "TestMap",
         layerInfo,
@@ -499,12 +538,68 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
     REQUIRE(searchResult->layer_->toJson()["traces"][0]["name"] == "match");
 }
 
+TEST_CASE("Feature-layer search restricts explicit feature types", "[feature-layer-search]")
+{
+    auto layerInfo = makeMixedSearchResultLayerInfo();
+    auto strings = std::make_shared<StringPool>("MixedSearchSourceNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        primarySearchTileId(),
+        "MixedSearchSourceNode",
+        "TestMap",
+        layerInfo,
+        strings);
+
+    auto road = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    road->addPoint(Point(11.0, 48.0, 0.0));
+    road->attributeLayers()->newLayer("rules")->newAttribute("speedLimit")->addField("limit", source->newValue(int64_t(80)));
+    auto sign = source->newFeature("Sign", {{"tileId", int64_t(7)}, {"signId", int64_t(99)}});
+    sign->addPoint(Point(11.1, 48.1, 0.0));
+    sign->attributeLayers()->newLayer("rules")->newAttribute("speedLimit")->addField("limit", source->newValue(int64_t(40)));
+
+    auto featureResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .query_ = "typeId != ''",
+            .scope_ = FeatureLayerSearchScope::Feature,
+            .withFields_ = {"typeId"},
+            .featureTypes_ = {"Road"},
+        });
+    REQUIRE(featureResult.has_value());
+    REQUIRE(featureResult->layer_->size() == 1);
+    REQUIRE(featureResult->layer_->at(0)->featureId()->toString() == "Road.7.42");
+    REQUIRE(featureResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({"Road"}));
+    REQUIRE(featureResult->layer_->info()["featureTypes"] == nlohmann::json::array({"Road"}));
+
+    auto attributeResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .query_ = "$name == 'speedLimit'",
+            .scope_ = FeatureLayerSearchScope::Attribute,
+            .withFields_ = {"$feature.typeId", "limit"},
+            .featureTypes_ = {"Sign"},
+        });
+    REQUIRE(attributeResult.has_value());
+    REQUIRE(attributeResult->layer_->size() == 1);
+    REQUIRE(attributeResult->layer_->at(0)->featureId()->toString() == "Sign.7.99");
+    REQUIRE(attributeResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({"Sign", 40}));
+
+    auto unknownType = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .query_ = "typeId != ''",
+            .scope_ = FeatureLayerSearchScope::Feature,
+            .featureTypes_ = {"Unknown"},
+        });
+    REQUIRE_FALSE(unknownType.has_value());
+    REQUIRE(unknownType.error().message.find("unknown feature type") != std::string::npos);
+}
+
 TEST_CASE("Feature-layer search stores diagnostics on the result layer", "[feature-layer-search][search-result-layer]")
 {
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("SearchDiagnosticsNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "SearchDiagnosticsNode",
         "TestMap",
         layerInfo,
@@ -548,7 +643,7 @@ TEST_CASE("Attribute-scope search records deterministic match metadata", "[featu
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("AttributeSearchSourceNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "AttributeSearchSourceNode",
         "TestMap",
         layerInfo,
@@ -585,7 +680,7 @@ TEST_CASE("Attribute-scope search uses schema scalar shorthand", "[feature-layer
     auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("AttributeShorthandSearchSourceNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "AttributeShorthandSearchSourceNode",
         "TestMap",
         layerInfo,
@@ -623,15 +718,15 @@ TEST_CASE("Attribute-scope search uses schema scalar shorthand", "[feature-layer
 TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[feature-layer-search]")
 {
     auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto normalized = registry->normalizeSearchQuery(
         "properties.layer.rules.speedLimit.limit > 40",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(normalized.has_value());
     INFO(normalized->normalizedQuery_);
-    REQUIRE(normalized->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(normalized->attributeScopes_.size() == 1);
     REQUIRE(normalized->attributeScopes_.front().featureType_ == "Road");
     REQUIRE(normalized->attributeScopes_.front().attributeLayerName_ == "rules");
@@ -642,9 +737,22 @@ TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[
     REQUIRE(normalized->normalizedQuery_.find("limit > 40") != std::string::npos);
     REQUIRE(normalized->normalizedQuery_.find("properties.layer.rules.speedLimit") == std::string::npos);
 
+    auto normalizedAlias = registry->normalizeSearchQuery(
+        "attributes.layer.rules.speedLimit.limit > 40",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(normalizedAlias.has_value());
+    INFO(normalizedAlias->normalizedQuery_);
+    REQUIRE(normalizedAlias->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalizedAlias->attributeScopes_.size() == 1);
+    REQUIRE(normalizedAlias->attributeScopes_.front().featureType_ == "Road");
+    REQUIRE(normalizedAlias->attributeScopes_.front().attributeLayerName_ == "rules");
+    REQUIRE(normalizedAlias->attributeScopes_.front().attributeName_ == "speedLimit");
+    REQUIRE(normalizedAlias->normalizedQuery_.find("limit > 40") != std::string::npos);
+    REQUIRE(normalizedAlias->normalizedQuery_.find("attributes.layer.rules.speedLimit") == std::string::npos);
+
     auto strings = std::make_shared<StringPool>("NormalizedAttributePathSearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "NormalizedAttributePathSearchNode",
         "TestMap",
         layerInfo,
@@ -669,20 +777,35 @@ TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[
     REQUIRE(searchResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({50}));
     REQUIRE(searchResult->layer_->info()["searchScope"] == "attribute");
     REQUIRE(searchResult->layer_->info()["normalizedSearchQuery"].get<std::string>().find("limit > 40") != std::string::npos);
+
+    auto aliasSearchResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "normalized-attribute-alias-path-search",
+            .query_ = "attributes.layer.rules.speedLimit.limit > 40",
+            .scope_ = FeatureLayerSearchScope::Auto,
+            .rewriteQuery_ = true,
+            .withFields_ = {"limit"},
+        });
+
+    REQUIRE(aliasSearchResult.has_value());
+    REQUIRE(aliasSearchResult->layer_->size() == 1);
+    REQUIRE(aliasSearchResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({50}));
+    REQUIRE(aliasSearchResult->layer_->info()["searchScope"] == "attribute");
 }
 
 TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[feature-layer-search]")
 {
     auto layerInfo = makeSchemaBackedSearchResultLayerInfo();
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto typeCode = registry->normalizeSearchQuery(
         "speedLimit",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(typeCode.has_value());
     INFO(typeCode->normalizedQuery_);
-    REQUIRE(typeCode->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(typeCode->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(typeCode->attributeScopes_.size() == 1);
     REQUIRE(typeCode->normalizedQuery_.find("$feature.typeId == \"Road\"") != std::string::npos);
     REQUIRE(typeCode->normalizedQuery_.find("$layer == \"rules\"") != std::string::npos);
@@ -691,36 +814,36 @@ TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[
 
     auto scalarOperand = registry->normalizeSearchQuery(
         "speedLimit > 40",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(scalarOperand.has_value());
     INFO(scalarOperand->normalizedQuery_);
-    REQUIRE(scalarOperand->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(scalarOperand->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(scalarOperand->normalizedQuery_.find("limit > 40") != std::string::npos);
     REQUIRE(scalarOperand->normalizedQuery_.find("speedLimit > 40") == std::string::npos);
 
     auto enumConstant = registry->normalizeSearchQuery(
         "\"SPEED_LIMIT\"",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(enumConstant.has_value());
     INFO(enumConstant->normalizedQuery_);
-    REQUIRE(enumConstant->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(enumConstant->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(enumConstant->attributeScopes_.size() == 1);
     REQUIRE(enumConstant->attributeScopes_.front().attributeName_ == "warningSign");
     REQUIRE(enumConstant->normalizedQuery_.find("kind == \"SPEED_LIMIT\"") != std::string::npos);
 
     auto unquotedEnumConstant = registry->normalizeSearchQuery(
         "SPEED_LIMIT_END",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(unquotedEnumConstant.has_value());
     INFO(unquotedEnumConstant->normalizedQuery_);
-    REQUIRE(unquotedEnumConstant->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(unquotedEnumConstant->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(unquotedEnumConstant->attributeScopes_.size() == 1);
     REQUIRE(unquotedEnumConstant->attributeScopes_.front().attributeName_ == "warningSign");
     REQUIRE(unquotedEnumConstant->normalizedQuery_.find("kind == \"SPEED_LIMIT_END\"") != std::string::npos);
 
     auto strings = std::make_shared<StringPool>("NormalizedAttributeShorthandSearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "NormalizedAttributeShorthandSearchNode",
         "TestMap",
         layerInfo,
@@ -752,15 +875,15 @@ TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[
 TEST_CASE("Search query normalization handles live-style attribute and enum expressions", "[feature-layer-search]")
 {
     auto layerInfo = makeLiveLikeSchemaBackedSearchResultLayerInfo();
-    auto registry = layerInfo->schemaRegistry();
+    auto registry = layerInfo->layerSchema();
     REQUIRE(registry);
 
     auto speedComparison = registry->normalizeSearchQuery(
         "SPEED_LIMIT_METRIC == 80",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(speedComparison.has_value());
     INFO(speedComparison->normalizedQuery_);
-    REQUIRE(speedComparison->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(speedComparison->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(speedComparison->attributeScopes_.size() == 1);
     REQUIRE(speedComparison->attributeScopes_.front().attributeName_ == "SPEED_LIMIT_METRIC");
     REQUIRE(speedComparison->normalizedQuery_.find("$name == \"SPEED_LIMIT_METRIC\"") != std::string::npos);
@@ -768,10 +891,10 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
 
     auto speedWildcard = registry->normalizeSearchQuery(
         "**.speedLimitKmh > 80",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(speedWildcard.has_value());
     INFO(speedWildcard->normalizedQuery_);
-    REQUIRE(speedWildcard->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(speedWildcard->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(speedWildcard->attributeScopes_.size() == 1);
     REQUIRE(speedWildcard->attributeScopes_.front().attributeName_ == "SPEED_LIMIT_METRIC");
     REQUIRE(speedWildcard->normalizedQuery_.find("$name == \"SPEED_LIMIT_METRIC\"") != std::string::npos);
@@ -779,20 +902,20 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
 
     auto enumSymbol = registry->normalizeSearchQuery(
         "SPEED_LIMIT_END",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(enumSymbol.has_value());
     INFO(enumSymbol->normalizedQuery_);
-    REQUIRE(enumSymbol->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(enumSymbol->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(enumSymbol->attributeScopes_.size() == 2);
     REQUIRE(enumSymbol->normalizedQuery_.find("attributeValue.warningSign == \"SPEED_LIMIT_END\"") != std::string::npos);
     REQUIRE(enumSymbol->normalizedQuery_.find("attributeValue.movableWarningSign == \"SPEED_LIMIT_END\"") != std::string::npos);
 
     auto explicitWarningPath = registry->normalizeSearchQuery(
         "**.WARNING_SIGN.attributeValue.warningSign == \"SPEED_LIMIT\"",
-        SchemaRegistry::SearchQueryRequestedScope::Auto);
+        LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(explicitWarningPath.has_value());
     INFO(explicitWarningPath->normalizedQuery_);
-    REQUIRE(explicitWarningPath->concreteScope_ == SchemaRegistry::SearchQueryConcreteScope::Attribute);
+    REQUIRE(explicitWarningPath->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     REQUIRE(explicitWarningPath->attributeScopes_.size() == 1);
     REQUIRE(explicitWarningPath->attributeScopes_.front().attributeName_ == "WARNING_SIGN");
     REQUIRE(explicitWarningPath->normalizedQuery_.find("$name == \"WARNING_SIGN\"") != std::string::npos);
@@ -801,7 +924,7 @@ TEST_CASE("Search query normalization handles live-style attribute and enum expr
 
     auto strings = std::make_shared<StringPool>("LiveLikeNormalizedSearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "LiveLikeNormalizedSearchNode",
         "TestMap",
         layerInfo,
@@ -868,7 +991,7 @@ TEST_CASE("Attribute-scope search copies computed validity geometry", "[feature-
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("ValidityGeometrySearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "ValidityGeometrySearchNode",
         "TestMap",
         layerInfo,
@@ -904,7 +1027,7 @@ TEST_CASE("Attribute-scope search preserves offset point validity geometry type"
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("PointValidityGeometrySearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         "PointValidityGeometrySearchNode",
         "TestMap",
         layerInfo,
@@ -944,7 +1067,7 @@ TEST_CASE("Service search loads staged payloads and evaluates in scheduled searc
     auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
         "TestMap",
         "SearchableLayer",
-        std::vector<TileId>{TileId(0x1234)},
+        std::vector<TileId>{primarySearchTileId()},
         FeatureLayerSearchRequest{
             .searchId_ = "service-search",
             .requestKey_ = "service-search:1",
@@ -993,7 +1116,7 @@ TEST_CASE("Service search requests staged source tiles in complete-tile order", 
     auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
         "TestMap",
         "SearchableLayer",
-        std::vector<TileId>{TileId(0x1234), TileId(0x1235)},
+        std::vector<TileId>{primarySearchTileId(), secondarySearchTileId()},
         FeatureLayerSearchRequest{
             .searchId_ = "service-search-stage-order",
             .query_ = "$name == 'speedLimit'",
@@ -1019,7 +1142,7 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
     auto layerInfo = makeSearchResultLayerInfo();
     auto strings = std::make_shared<StringPool>("RepeatedSearchStageNode");
     auto base = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         strings->nodeId_,
         "TestMap",
         layerInfo,
@@ -1029,7 +1152,7 @@ TEST_CASE("Repeated staged search assembly does not duplicate overlay matches", 
     baseFeature->addLine({Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0), Point(2.0, 0.0, 0.0)});
 
     auto overlay = std::make_shared<TileFeatureLayer>(
-        TileId(0x1234),
+        primarySearchTileId(),
         strings->nodeId_,
         "TestMap",
         layerInfo,
@@ -1084,14 +1207,15 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     nlohmann::json envelope = {
         {"searchId", "query-42"},
         {"refresh", 7},
-        {"searchQuery", "typeId == 'Road'"},
-        {"searchScope", "attribute"},
+        {"query", "typeId == 'Road'"},
+        {"scope", "attribute"},
         {"withFields", {"$feature.typeId", "$name"}},
+        {"featureTypes", {"Road"}},
     };
     nlohmann::json request = {
         {"mapId", "TestMap"},
         {"layerId", "RoadLayer"},
-        {"tileIds", {1, 2}},
+        {"tileIds", {primarySearchTileId().value(), secondarySearchTileId().value()}},
     };
 
     detail::inheritSearchFields(request, envelope);
@@ -1100,12 +1224,27 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     REQUIRE(parsed.searchRequest.has_value());
     REQUIRE(parsed.searchRequest->searchId_ == "query-42");
     REQUIRE(parsed.searchRequest->refresh_ == 7);
+    REQUIRE(parsed.searchRequest->query_ == "typeId == 'Road'");
     REQUIRE(parsed.searchRequest->scope_ == FeatureLayerSearchScope::Attribute);
     REQUIRE(parsed.searchRequest->withFields_ == std::vector<std::string>{"$feature.typeId", "$name"});
+    REQUIRE(parsed.searchRequest->featureTypes_ == std::vector<std::string>{"Road"});
     REQUIRE_FALSE(parsed.searchRequest->requestKey_.empty());
 
+    nlohmann::json legacyRequest = {
+        {"mapId", "TestMap"},
+        {"layerId", "RoadLayer"},
+        {"tileIds", {primarySearchTileId().value()}},
+        {"searchId", "legacy-query"},
+        {"searchQuery", "typeId == 'Road'"},
+        {"searchScope", "feature"},
+    };
+    auto legacyParsed = detail::parseLayerTilesRequestJson(legacyRequest);
+    REQUIRE(legacyParsed.searchRequest.has_value());
+    REQUIRE(legacyParsed.searchRequest->query_ == "typeId == 'Road'");
+    REQUIRE(legacyParsed.searchRequest->scope_ == FeatureLayerSearchScope::Feature);
+
     request.erase("tileIds");
-    request["tileIdsByNextStage"] = nlohmann::json::array({nlohmann::json::array({1, 2})});
+    request["tileIdsByNextStage"] = nlohmann::json::array({nlohmann::json::array({primarySearchTileId().value(), secondarySearchTileId().value()})});
     try {
         (void)detail::parseLayerTilesRequestJson(request);
         FAIL("search requests must reject tileIdsByNextStage");
@@ -1114,17 +1253,41 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     }
 }
 
+TEST_CASE("Tile request parser preserves metadata SourceData tile-zero sentinel", "[tiles-request]")
+{
+    nlohmann::json metadataRequest = {
+        {"mapId", "TestMap"},
+        {"layerId", "Metadata-RegistryMetadata"},
+        {"tileIds", {0}},
+    };
+
+    auto parsed = detail::parseLayerTilesRequestJson(metadataRequest);
+
+    REQUIRE(parsed.layerId == "Metadata-RegistryMetadata");
+    REQUIRE(parsed.tileIdsByNextStage.size() == 1);
+    REQUIRE(parsed.tileIdsByNextStage[0].size() == 1);
+    REQUIRE(parsed.tileIdsByNextStage[0][0].value() == 0);
+
+    nlohmann::json featureRequest = {
+        {"mapId", "TestMap"},
+        {"layerId", "RoadLayer"},
+        {"tileIds", {0}},
+    };
+    REQUIRE_THROWS(detail::parseLayerTilesRequestJson(featureRequest));
+}
+
 TEST_CASE("REST search parser keeps one-shot search fields on envelope", "[feature-layer-search][tiles-request]")
 {
     nlohmann::json envelope = {
         {"query", "typeId == 'Road'"},
         {"scope", "attribute"},
         {"withFields", {"$feature.typeId", "$name"}},
+        {"featureTypes", {"Road"}},
     };
     nlohmann::json request = {
         {"mapId", "TestMap"},
         {"layerId", "RoadLayer"},
-        {"tileIds", {1, 2}},
+        {"tileIds", {primarySearchTileId().value(), secondarySearchTileId().value()}},
     };
 
     auto search = detail::parseRestSearchEnvelopeJson(envelope);
@@ -1135,7 +1298,8 @@ TEST_CASE("REST search parser keeps one-shot search fields on envelope", "[featu
     REQUIRE(parsed.searchRequest->requestKey_.empty());
     REQUIRE(parsed.searchRequest->scope_ == FeatureLayerSearchScope::Attribute);
     REQUIRE(parsed.searchRequest->withFields_ == std::vector<std::string>{"$feature.typeId", "$name"});
-    REQUIRE(detail::collectSearchTileIds(parsed) == std::vector<TileId>{TileId(1), TileId(2)});
+    REQUIRE(parsed.searchRequest->featureTypes_ == std::vector<std::string>{"Road"});
+    REQUIRE(detail::collectSearchTileIds(parsed) == std::vector<TileId>{primarySearchTileId(), secondarySearchTileId()});
 
     envelope["searchId"] = "interactive-only";
     try {

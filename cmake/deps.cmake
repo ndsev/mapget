@@ -1,7 +1,56 @@
 ### Dependencies via CPM (converted from FetchContent)
 
 CPMAddPackage("gh:g-truc/glm#1.0.1")
+set(MAPGET_NDSMATH_SOURCE_DIR "" CACHE PATH
+    "Local ndslive-math source directory to use instead of fetching from Git.")
+set(_mapget_ndsmath_source_dir "${MAPGET_NDSMATH_SOURCE_DIR}")
+if ("${_mapget_ndsmath_source_dir}" STREQUAL ""
+    AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/../../ndslive-math/cpp/CMakeLists.txt")
+    set(_mapget_ndsmath_source_dir "${CMAKE_CURRENT_LIST_DIR}/../../ndslive-math/cpp")
+endif()
+
+# Link ndsmath statically into mapget targets. The C++ API is tiny, and static
+# linkage avoids adding another platform-specific runtime library to Python wheels.
+set(_mapget_restore_build_shared_libs OFF)
+if (DEFINED BUILD_SHARED_LIBS)
+    set(_mapget_restore_build_shared_libs ON)
+    set(_mapget_previous_build_shared_libs "${BUILD_SHARED_LIBS}")
+endif()
+set(BUILD_SHARED_LIBS OFF)
+
+if (NOT "${_mapget_ndsmath_source_dir}" STREQUAL "")
+    message(STATUS "Using local ndsmath from ${_mapget_ndsmath_source_dir}")
     CPMAddPackage(
+        NAME ndsmath
+        SOURCE_DIR "${_mapget_ndsmath_source_dir}"
+        OPTIONS
+            "NDSMATH_BUILD_TESTS OFF"
+            "NDSMATH_INSTALL OFF")
+else()
+    CPMAddPackage(
+        NAME ndsmath
+        GITHUB_REPOSITORY ndsev/ndslive-math
+        GIT_TAG 009bba06356dfd01f98c1570a003e31180788811
+        GIT_SHALLOW FALSE
+        SOURCE_SUBDIR cpp
+        OPTIONS
+            "NDSMATH_BUILD_TESTS OFF"
+            "NDSMATH_INSTALL OFF")
+endif()
+
+if (_mapget_restore_build_shared_libs)
+    set(BUILD_SHARED_LIBS "${_mapget_previous_build_shared_libs}")
+else()
+    unset(BUILD_SHARED_LIBS)
+endif()
+unset(_mapget_previous_build_shared_libs)
+unset(_mapget_restore_build_shared_libs)
+
+if (TARGET ndsmath AND NOT TARGET ndsmath::ndsmath)
+    add_library(ndsmath::ndsmath ALIAS ndsmath)
+endif()
+
+CPMAddPackage(
     URI "gh:fmtlib/fmt#11.1.4"
     OPTIONS "FMT_HEADER_ONLY OFF")
 CPMAddPackage(

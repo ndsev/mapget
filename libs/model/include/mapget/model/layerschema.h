@@ -3,13 +3,14 @@
 #include <compare>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
 #include "simfil/error.h"
@@ -19,21 +20,21 @@ namespace mapget
 {
 
 /**
- * Stable schema registry built from a LayerInfo JSON Schema.
+ * Typed feature-model schema for one mapget layer.
  *
- * The JSON Schema remains the authoritative interchange format. This registry
- * extracts x-mapget annotated object/array branches that SIMFIL needs for
- * wildcard field pruning and assigns deterministic SchemaId values by schema
- * traversal order. It deliberately does not own or mutate a StringPool; runtime
- * SIMFIL integration resolves StringIds back to datasource-owned strings.
+ * LayerSchema owns the compiled SIMFIL schema lookup tables used for wildcard
+ * pruning, completion and search normalization. JSON Schema is only the
+ * transport codec at API boundaries: callers attach a typed LayerSchema to
+ * LayerInfo, and serialization explicitly renders the transport schema back out.
+ * Runtime SIMFIL integration never mutates datasource-owned StringPools.
  */
-class SchemaRegistry
+class LayerSchema
 {
 public:
     /** Opaque storage for compiled schemas and lookup tables. */
     struct Impl;
 
-    /** Human-readable registry entry for a compiled JSON Schema branch. */
+    /** Human-readable entry for a compiled JSON Schema transport branch. */
     struct Entry
     {
         simfil::SchemaId id_ = simfil::NoSchemaId;
@@ -75,6 +76,7 @@ public:
     };
 
     using NamedSchemaPath = std::vector<NamedPathSegment>;
+    using JsonSchemaEmitter = std::function<nlohmann::json()>;
 
     /** User-facing scope request before schema normalization chooses concrete execution. */
     enum class SearchQueryRequestedScope {
@@ -89,7 +91,7 @@ public:
         Attribute,
     };
 
-    /** Schema-backed query normalization result for one feature layer registry. */
+    /** Schema-backed query normalization result for one feature layer. */
     struct SearchQueryNormalization
     {
         std::string originalQuery_;
@@ -101,16 +103,85 @@ public:
         std::string compiledAstDebug_;
     };
 
-    /** Parse all supported schema branches and assign deterministic SchemaIds. */
-    explicit SchemaRegistry(nlohmann::json const& schema);
+    /** Create an empty mutable schema. Call finalize() once all nodes are attached. */
+    LayerSchema();
 
-    /** Convenience factory returning nullptr for a missing/null schema. */
-    [[nodiscard]] static std::shared_ptr<SchemaRegistry> fromJson(nlohmann::json const& schema);
+    /** Convenience factory returning nullptr for a missing/null JSON Schema transport payload. */
+    [[nodiscard]] static std::shared_ptr<LayerSchema> fromJsonSchema(nlohmann::json schema);
+
+    /** Serialize this typed schema to its JSON Schema transport representation. */
+    [[nodiscard]] nlohmann::json toJsonSchema() const;
+
+    /**
+     * Create a detached copy without carrying the lazy transport emitter.
+     *
+     * Service metadata snapshots use this to avoid retaining datasource-owned
+     * state after initialization/reload while preserving the compiled schema.
+     */
+    [[nodiscard]] std::shared_ptr<LayerSchema const> detachedCopy() const;
+
+    /** Install a lazy JSON Schema transport emitter for serialization boundaries such as /sources. */
+    void setJsonSchemaEmitter(JsonSchemaEmitter emitter);
+
+    /** Add one object/array/value schema node and return its stable SchemaId. */
+    [[nodiscard]] simfil::SchemaId addSchema(
+        simfil::Schema::Kind kind,
+        std::string key = {},
+        std::string metaType = {},
+        std::string jsonPointer = {});
+
+    /** Register an additional lookup key for an existing schema node. */
+    void registerSchemaKey(std::string key, simfil::SchemaId id);
+
+    /** Add a direct field and optionally bind that field to a child schema node. */
+    void addFieldSchema(simfil::SchemaId parent, std::string fieldName, simfil::SchemaId child = simfil::NoSchemaId);
+
+    /** Add one possible element schema to an array node. */
+    void addElementSchema(simfil::SchemaId parent, simfil::SchemaId child);
+
+    /** Add an enum-like string symbol directly declared by a value node. */
+    void addEnumSymbol(simfil::SchemaId schemaId, std::string symbolName);
+
+    /** Add several enum-like string symbols directly declared by a value node. */
+    void addEnumSymbols(simfil::SchemaId schemaId, std::span<const std::string> symbolNames);
+
+    /** Attach zserio type metadata used by completion/result-coloring consumers. */
+    void setZserioType(simfil::SchemaId schemaId, std::string zserioType);
+
+    /** Attach mapget attribute metadata and ownership for one concrete Attribute node. */
+    void setAttributeMetadata(
+        simfil::SchemaId schemaId,
+        AttributePathOwner owner,
+        std::string attributeType,
+        std::string zserioType = {});
+
+    /** Recompute flattened field/enum indexes after direct construction. */
+    void finalize();
+
+    /** Return the deterministic key used by feature schema annotations. */
+    [[nodiscard]] static std::string featureKey(std::string_view featureType);
+
+    /** Return the deterministic key used by Feature.properties annotations. */
+    [[nodiscard]] static std::string featurePropertiesKey(std::string_view featureType);
+
+    /** Return the deterministic key used by Feature.properties.layer annotations. */
+    [[nodiscard]] static std::string attributeLayerMapKey(std::string_view featureType);
+
+    /** Return the deterministic key used by AttributeContainer schema annotations. */
+    [[nodiscard]] static std::string attributeContainerKey(
+        std::string_view featureType,
+        std::string_view attributeLayerName);
+
+    /** Return the deterministic key used by concrete Attribute schema annotations. */
+    [[nodiscard]] static std::string attributeKey(
+        std::string_view featureType,
+        std::string_view attributeLayerName,
+        std::string_view attributeTypeCode);
 
     /** Return an entry by exact key, or by feature type name as a fallback. */
     [[nodiscard]] Entry const* getSchema(std::string_view keyOrFeatureType) const;
 
-    /** Resolve a registry key to the serialized SchemaId domain. */
+    /** Resolve a schema key to the serialized SchemaId domain. */
     [[nodiscard]] simfil::SchemaId schemaId(std::string_view key) const;
 
     /** Return the kind of a compiled schema, defaulting to Object for unknown ids. */
@@ -178,10 +249,10 @@ public:
         simfil::SchemaId rootSchema,
         std::string_view attributeTypeCode) const;
 
-    /** Return all feature types represented by Feature schema roots in this registry. */
+    /** Return all feature types represented by Feature schema roots in this layer schema. */
     [[nodiscard]] std::vector<std::string> featureTypes() const;
 
-    /** Return all searchable attribute contexts represented by this layer registry. */
+    /** Return all searchable attribute contexts represented by this layer schema. */
     [[nodiscard]] std::vector<AttributePathOwner> attributeScopes() const;
 
     /**
@@ -198,6 +269,12 @@ public:
         SearchQueryRequestedScope requestedScope) const;
 
 private:
+    /** Parse all supported JSON Schema transport branches and assign deterministic SchemaIds. */
+    explicit LayerSchema(nlohmann::json schema);
+
+    mutable std::mutex transportJsonSchemaMutex_;
+    mutable nlohmann::json transportJsonSchema_;
+    JsonSchemaEmitter transportJsonSchemaEmitter_;
     std::shared_ptr<Impl> impl_;
 };
 

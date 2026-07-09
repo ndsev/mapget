@@ -8,6 +8,7 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/info.h"
 #include "mapget/model/layer.h"
+#include "mapget/model/stream.h"
 
 #include <memory>
 #include <optional>
@@ -16,11 +17,15 @@
 #include <thread>
 #include <list>
 #include <chrono>
+#include <cmath>
+#include <cctype>
 #include <exception>
 #include <shared_mutex>
 #include <algorithm>
 #include <numeric>
+#include <regex>
 #include <unordered_map>
+#include <utility>
 
 #include "simfil/types.h"
 
@@ -58,6 +63,44 @@ bool isDataSourceDescriptorEnabled(YAML::Node const& descriptor)
     }
 }
 
+bool isDescriptorAuthorized(DataSourceDescriptor const& descriptor, std::optional<AuthHeaders> const& clientHeaders)
+{
+    if (!clientHeaders || descriptor.authHeaderAlternatives.empty()) {
+        return true;
+    }
+
+    for (auto const& [k, v] : *clientHeaders) {
+        auto key = k;
+        std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        auto authHeaderPatternIt = descriptor.authHeaderAlternatives.find(key);
+        if (authHeaderPatternIt != descriptor.authHeaderAlternatives.end()
+            && std::regex_match(v, authHeaderPatternIt->second))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::optional<float> normalizeProgressPercentage(std::optional<float> progress)
+{
+    if (!progress || !std::isfinite(*progress)) {
+        return std::nullopt;
+    }
+    return std::clamp(*progress, 0.0f, 100.0f);
+}
+
+DataSourceCatalogSourceUpdate makeSourceCatalogSourceUpdate(DataSourceCatalogEntry const& entry)
+{
+    return DataSourceCatalogSourceUpdate{
+        .descriptor = entry.descriptor,
+        .status = entry.status,
+        .statusMessage = entry.statusMessage,
+        .progress = entry.progress,
+        .dataSource = entry.dataSource};
+}
+
 /** Build the common search-status payload, omitting interactive-only fields when absent. */
 nlohmann::json makeSearchStatusJson(
     FeatureLayerSearchTilesRequest const& request,
@@ -79,7 +122,7 @@ nlohmann::json makeSearchStatusJson(
     return status;
 }
 
-/** Create a detached LayerInfo copy without reading the lazy schema-registry cache. */
+/** Create a detached LayerInfo copy without retaining datasource-owned schema emitters. */
 std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
 {
     auto result = std::make_shared<LayerInfo>();
@@ -94,14 +137,21 @@ std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
     result->canRead_ = info.canRead_;
     result->canWrite_ = info.canWrite_;
     result->version_ = info.version_;
-    result->featureModelSchema_ = info.featureModelSchema_;
+    result->featureModelSchema_ = info.featureModelSchema_
+        ? info.featureModelSchema_->detachedCopy()
+        : nullptr;
     return result;
 }
 
 /** Create a service-owned metadata snapshot, detached from datasource internals. */
 DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
 {
+    info.validateIdentifiers();
+
     auto result = info;
+    if (result.protocolVersion_ == Version{}) {
+        result.protocolVersion_ = TileLayerStream::CurrentProtocolVersion;
+    }
     result.layers_.clear();
     result.layers_.reserve(info.layers_.size());
     for (auto const& [layerId, layerInfo] : info.layers_) {
@@ -357,14 +407,14 @@ nlohmann::json LayerTilesRequest::toJson()
         auto tileIds = nlohmann::json::array();
         if (!tileIdsByNextStage_.empty()) {
             for (auto const& tileId : tileIdsByNextStage_.front()) {
-                tileIds.emplace_back(tileId.value_);
+                tileIds.emplace_back(tileId.value());
             }
         }
         requestJson["tileIds"] = std::move(tileIds);
         if (!priorityTileIds_.empty()) {
             auto priorityTileIds = nlohmann::json::array();
             for (auto const& tileId : priorityTileIds_) {
-                priorityTileIds.emplace_back(tileId.value_);
+                priorityTileIds.emplace_back(tileId.value());
             }
             requestJson["priorityTileIds"] = std::move(priorityTileIds);
         }
@@ -375,7 +425,7 @@ nlohmann::json LayerTilesRequest::toJson()
     for (auto const& bucket : tileIdsByNextStage_) {
         auto tileIds = nlohmann::json::array();
         for (auto const& tileId : bucket) {
-            tileIds.emplace_back(tileId.value_);
+            tileIds.emplace_back(tileId.value());
         }
         tileIdsByNextStage.push_back(std::move(tileIds));
     }
@@ -383,7 +433,7 @@ nlohmann::json LayerTilesRequest::toJson()
     if (!priorityTileIds_.empty()) {
         auto priorityTileIds = nlohmann::json::array();
         for (auto const& tileId : priorityTileIds_) {
-            priorityTileIds.emplace_back(tileId.value_);
+            priorityTileIds.emplace_back(tileId.value());
         }
         requestJson["priorityTileIds"] = std::move(priorityTileIds);
     }
@@ -903,6 +953,32 @@ struct Service::Impl : public Service::Controller
     std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
     std::vector<DataSource::Ptr> dataSourcesFromConfig_;
     size_t dataSourceConstructionFailed_ = 0;
+    std::vector<DataSourceCatalogEntry> sourceCatalog_;
+    uint64_t sourceCatalogGeneration_ = 0;
+    uint64_t sourceCatalogRevision_ = 0;
+    std::string sourceConfigStatus_ = "ok";
+    std::string sourceConfigStatusMessage_;
+    mutable std::condition_variable_any sourceCatalogReadyCv_;
+
+    struct ConstructionThread {
+        // Use explicit cancellation instead of std::jthread; macOS CI's libc++ does not expose it yet.
+        std::thread thread;
+        std::shared_ptr<std::atomic_bool> done;
+        std::shared_ptr<std::atomic_bool> stopRequested;
+    };
+
+    std::vector<ConstructionThread> dataSourceConstructionThreads_;
+    std::mutex constructionSlotMutex_;
+    std::condition_variable_any constructionSlotCv_;
+    size_t activeDataSourceConstructions_ = 0;
+    size_t maxConcurrentDataSourceConstructions_ = std::max<size_t>(
+        1,
+        std::min<size_t>(4, std::max<unsigned>(1, std::thread::hardware_concurrency())));
+    std::atomic_bool shuttingDown_{false};
+
+    mutable std::mutex sourceCatalogCallbacksMutex_;
+    std::map<uint64_t, Service::DataSourceCatalogCallback> sourceCatalogCallbacks_;
+    uint64_t nextSourceCatalogCallbackId_ = 1;
 
     explicit Impl(
         Cache::Ptr cache,
@@ -915,49 +991,40 @@ struct Service::Impl : public Service::Controller
         configSubscription_ = DataSourceConfigService::get().subscribe(
             [this](auto&& dataSourceConfigNodes)
             {
-                std::vector<DataSource::Ptr> previousDataSources;
+                applyDataSourceConfig(dataSourceConfigNodes);
+            },
+            [this](std::string const& error)
+            {
+                DataSourceCatalogChange change;
                 {
                     std::unique_lock lock(dataSourcesMutex_);
-                    previousDataSources.swap(dataSourcesFromConfig_);
+                    sourceConfigStatus_ = "error";
+                    sourceConfigStatusMessage_ = error;
+                    change = markSourceCatalogChangedLocked("config-error");
                 }
-
-                // Remove previous datasources.
-                log().info("Config changed. Removing previous datasources.");
-                for (auto const& datasource : previousDataSources) {
-                    removeDataSource(datasource);
-                }
-
-                // Add datasources present in the new configuration.
-                auto index = 0;
-                std::vector<DataSource::Ptr> configuredDataSources;
-                size_t constructionFailures = 0;
-                for (const auto& configNode : dataSourceConfigNodes) {
-                    if (!isDataSourceDescriptorEnabled(configNode)) {
-                        ++index;
-                        continue;
-                    }
-                    if (auto dataSource = DataSourceConfigService::get().makeDataSource(configNode)) {
-                        addDataSource(dataSource);
-                        configuredDataSources.push_back(dataSource);
-                    }
-                    else {
-                        ++constructionFailures;
-                        log().error(
-                            "Failed to make datasource at index {}.", index);
-                    }
-                    ++index;
-                }
-
-                std::unique_lock lock(dataSourcesMutex_);
-                dataSourcesFromConfig_ = std::move(configuredDataSources);
-                dataSourceConstructionFailed_ = constructionFailures;
+                notifySourceCatalogChanged(change);
             });
     }
 
     ~Impl() override
     {
         // Ensure that no new datasources are added while we are cleaning up.
+        shuttingDown_ = true;
+        sourceCatalogReadyCv_.notify_all();
         configSubscription_.reset();
+
+        std::vector<ConstructionThread> constructionThreadsToJoin;
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            requestStopForConstructionThreadsLocked();
+            constructionThreadsToJoin.swap(dataSourceConstructionThreads_);
+        }
+        constructionSlotCv_.notify_all();
+        for (auto& constructionThread : constructionThreadsToJoin) {
+            if (constructionThread.thread.joinable()) {
+                constructionThread.thread.join();
+            }
+        }
 
         std::vector<Worker::Ptr> workersToJoin;
         {
@@ -984,7 +1051,364 @@ struct Service::Impl : public Service::Controller
         }
     }
 
-    void addDataSource(DataSource::Ptr const& dataSource)
+    [[nodiscard]] DataSourceCatalogChange markSourceCatalogChangedLocked(
+        std::string reason,
+        DataSourceCatalogEntry const* sourceUpdate = nullptr)
+    {
+        auto change = DataSourceCatalogChange{
+            .revision = ++sourceCatalogRevision_,
+            .reason = std::move(reason)};
+        if (sourceUpdate) {
+            change.sourceUpdate = makeSourceCatalogSourceUpdate(*sourceUpdate);
+        }
+        return change;
+    }
+
+    /** True once default `/sources` may expose the current catalog without legacy-visible partial reloads. */
+    [[nodiscard]] bool sourceCatalogReloadDoneLocked() const
+    {
+        return shuttingDown_.load(std::memory_order_relaxed)
+            || std::ranges::none_of(sourceCatalog_, [](auto const& entry) {
+                return entry.status == DataSourceCatalogStatus::Initializing;
+            });
+    }
+
+    void notifySourceCatalogChanged(DataSourceCatalogChange const& change)
+    {
+        sourceCatalogReadyCv_.notify_all();
+
+        std::vector<Service::DataSourceCatalogCallback> callbacks;
+        {
+            std::lock_guard lock(sourceCatalogCallbacksMutex_);
+            callbacks.reserve(sourceCatalogCallbacks_.size());
+            for (auto const& [_, callback] : sourceCatalogCallbacks_) {
+                callbacks.push_back(callback);
+            }
+        }
+
+        for (auto const& callback : callbacks) {
+            try {
+                callback(change);
+            }
+            catch (std::exception const& e) {
+                log().warn("Datasource catalog callback failed: {}", e.what());
+            }
+        }
+    }
+
+    void pruneCompletedConstructionThreadsLocked()
+    {
+        std::erase_if(dataSourceConstructionThreads_, [](ConstructionThread& constructionThread) {
+            if (!constructionThread.done || !constructionThread.done->load(std::memory_order_acquire)) {
+                return false;
+            }
+            if (constructionThread.thread.joinable()) {
+                constructionThread.thread.join();
+            }
+            return true;
+        });
+    }
+
+    void requestStopForConstructionThreadsLocked()
+    {
+        for (auto& constructionThread : dataSourceConstructionThreads_) {
+            if (constructionThread.stopRequested) {
+                constructionThread.stopRequested->store(true, std::memory_order_release);
+            }
+        }
+        constructionSlotCv_.notify_all();
+    }
+
+    bool acquireConstructionSlot(std::shared_ptr<std::atomic_bool> const& stopRequested)
+    {
+        std::unique_lock lock(constructionSlotMutex_);
+        constructionSlotCv_.wait(lock, [this, &stopRequested]() {
+            return shuttingDown_.load(std::memory_order_relaxed)
+                || (stopRequested && stopRequested->load(std::memory_order_acquire))
+                || activeDataSourceConstructions_ < maxConcurrentDataSourceConstructions_;
+        });
+        if ((stopRequested && stopRequested->load(std::memory_order_acquire))
+            || shuttingDown_.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        ++activeDataSourceConstructions_;
+        return true;
+    }
+
+    void releaseConstructionSlot()
+    {
+        {
+            std::lock_guard lock(constructionSlotMutex_);
+            if (activeDataSourceConstructions_ > 0) {
+                --activeDataSourceConstructions_;
+            }
+        }
+        constructionSlotCv_.notify_all();
+    }
+
+    [[nodiscard]] bool isCurrentCatalogGeneration(uint64_t generation) const
+    {
+        std::shared_lock lock(dataSourcesMutex_);
+        return generation == sourceCatalogGeneration_ && !shuttingDown_.load(std::memory_order_relaxed);
+    }
+
+    void updateCatalogStatusMessage(uint64_t generation, std::string const& sourceId, std::string message)
+    {
+        DataSourceCatalogChange change;
+        bool changed = false;
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            if (generation != sourceCatalogGeneration_) {
+                return;
+            }
+            auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
+                return entry.descriptor.sourceId == sourceId;
+            });
+            if (it == sourceCatalog_.end() || it->statusMessage == message) {
+                return;
+            }
+            it->statusMessage = std::move(message);
+            change = markSourceCatalogChangedLocked("status-message", &*it);
+            changed = true;
+        }
+        if (changed) {
+            notifySourceCatalogChanged(change);
+        }
+    }
+
+    void updateCatalogProgress(uint64_t generation, std::string const& sourceId, std::optional<float> progress)
+    {
+        DataSourceCatalogChange change;
+        bool changed = false;
+        progress = normalizeProgressPercentage(progress);
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            if (generation != sourceCatalogGeneration_) {
+                return;
+            }
+            auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
+                return entry.descriptor.sourceId == sourceId;
+            });
+            if (it == sourceCatalog_.end() || it->progress == progress) {
+                return;
+            }
+            it->progress = progress;
+            change = markSourceCatalogChangedLocked("progress", &*it);
+            changed = true;
+        }
+        if (changed) {
+            notifySourceCatalogChanged(change);
+        }
+    }
+
+    void markCatalogConstructionFailed(
+        uint64_t generation,
+        std::string const& sourceId,
+        std::string message)
+    {
+        DataSourceCatalogChange change;
+        bool changed = false;
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            if (generation != sourceCatalogGeneration_) {
+                return;
+            }
+            auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
+                return entry.descriptor.sourceId == sourceId;
+            });
+            if (it == sourceCatalog_.end()) {
+                return;
+            }
+            it->status = DataSourceCatalogStatus::Failed;
+            it->statusMessage = std::move(message);
+            it->progress.reset();
+            ++dataSourceConstructionFailed_;
+            change = markSourceCatalogChangedLocked("status", &*it);
+            changed = true;
+        }
+        if (changed) {
+            notifySourceCatalogChanged(change);
+        }
+    }
+
+    void markCatalogConstructionReady(
+        uint64_t generation,
+        std::string const& sourceId,
+        DataSource::Ptr dataSource,
+        DataSourceInfo info)
+    {
+        DataSourceCatalogChange change;
+        bool changed = false;
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            if (generation != sourceCatalogGeneration_) {
+                return;
+            }
+            auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
+                return entry.descriptor.sourceId == sourceId;
+            });
+            if (it == sourceCatalog_.end()) {
+                return;
+            }
+            it->status = DataSourceCatalogStatus::Ready;
+            it->statusMessage.clear();
+            it->progress.reset();
+            it->dataSource = std::move(dataSource);
+            it->info = cloneDataSourceInfo(info);
+            dataSourcesFromConfig_.push_back(it->dataSource);
+            change = markSourceCatalogChangedLocked("status", &*it);
+            changed = true;
+        }
+        if (changed) {
+            notifySourceCatalogChanged(change);
+        }
+    }
+
+    void launchDataSourceConstruction(
+        uint64_t generation,
+        YAML::Node configNode,
+        DataSourceDescriptor descriptor)
+    {
+        auto done = std::make_shared<std::atomic_bool>(false);
+        auto stopRequested = std::make_shared<std::atomic_bool>(false);
+        auto sourceId = descriptor.sourceId;
+        auto configIndex = descriptor.configIndex;
+        dataSourceConstructionThreads_.push_back(ConstructionThread{
+            .thread = std::thread(
+                [this, generation, configNode = std::move(configNode), sourceId, configIndex, done, stopRequested]() mutable
+                {
+                    bool slotAcquired = false;
+                    auto finish = [&]() {
+                        if (slotAcquired) {
+                            releaseConstructionSlot();
+                        }
+                        done->store(true, std::memory_order_release);
+                    };
+
+                    try {
+                        slotAcquired = acquireConstructionSlot(stopRequested);
+                        if (!slotAcquired || !isCurrentCatalogGeneration(generation)) {
+                            finish();
+                            return;
+                        }
+
+                        std::string lastStatusMessage;
+                        DataSourceInitContext initContext{
+                            .setStatusMessage = [this, generation, sourceId, &lastStatusMessage](std::string message) {
+                                lastStatusMessage = message;
+                                updateCatalogStatusMessage(generation, sourceId, std::move(message));
+                            },
+                            .setProgress = [this, generation, sourceId](std::optional<float> progress) {
+                                updateCatalogProgress(generation, sourceId, progress);
+                            },
+                            .isCancelled = [this, generation, stopRequested]() {
+                                return stopRequested->load(std::memory_order_acquire)
+                                    || !isCurrentCatalogGeneration(generation);
+                            }};
+
+                        auto dataSource = DataSourceConfigService::get().makeDataSource(configNode, initContext);
+                        if (!dataSource) {
+                            if (isCurrentCatalogGeneration(generation)) {
+                                if (lastStatusMessage.empty()) {
+                                    lastStatusMessage = fmt::format(
+                                        "Failed to make datasource at index {}.",
+                                        configIndex);
+                                }
+                                markCatalogConstructionFailed(generation, sourceId, std::move(lastStatusMessage));
+                            }
+                            finish();
+                            return;
+                        }
+
+                        if (!isCurrentCatalogGeneration(generation)) {
+                            finish();
+                            return;
+                        }
+
+                        auto info = addDataSource(dataSource, false);
+                        if (!isCurrentCatalogGeneration(generation)) {
+                            removeDataSource(dataSource, false);
+                            finish();
+                            return;
+                        }
+                        markCatalogConstructionReady(generation, sourceId, std::move(dataSource), std::move(info));
+                    }
+                    catch (std::exception const& e) {
+                        if (isCurrentCatalogGeneration(generation)) {
+                            markCatalogConstructionFailed(
+                                generation,
+                                sourceId,
+                                fmt::format("Exception while making datasource at index {}: {}", configIndex, e.what()));
+                        }
+                    }
+                    catch (...) {
+                        if (isCurrentCatalogGeneration(generation)) {
+                            markCatalogConstructionFailed(
+                                generation,
+                                sourceId,
+                                fmt::format("Unknown exception while making datasource at index {}.", configIndex));
+                        }
+                    }
+                    finish();
+                }),
+            .done = std::move(done),
+            .stopRequested = std::move(stopRequested)});
+    }
+
+    void applyDataSourceConfig(std::vector<YAML::Node> const& dataSourceConfigNodes)
+    {
+        std::vector<DataSource::Ptr> previousDataSources;
+        std::vector<std::pair<YAML::Node, DataSourceDescriptor>> constructionInputs;
+        uint64_t generation = 0;
+        DataSourceCatalogChange change;
+
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            pruneCompletedConstructionThreadsLocked();
+            requestStopForConstructionThreadsLocked();
+            previousDataSources.swap(dataSourcesFromConfig_);
+            dataSourceConstructionFailed_ = 0;
+            sourceCatalog_.clear();
+            sourceConfigStatus_ = "ok";
+            sourceConfigStatusMessage_.clear();
+            generation = ++sourceCatalogGeneration_;
+
+            auto index = uint32_t{0};
+            for (auto const& configNode : dataSourceConfigNodes) {
+                if (!isDataSourceDescriptorEnabled(configNode)) {
+                    ++index;
+                    continue;
+                }
+
+                auto descriptor = DataSourceConfigService::get().describeDataSource(configNode, index);
+                sourceCatalog_.push_back(DataSourceCatalogEntry{
+                    .descriptor = descriptor,
+                    .status = DataSourceCatalogStatus::Initializing,
+                    .statusMessage = "Initializing datasource."});
+                constructionInputs.emplace_back(configNode, std::move(descriptor));
+                ++index;
+            }
+
+            change = markSourceCatalogChangedLocked("reload");
+        }
+
+        // Remove previous datasources after publishing the initializing catalog
+        // so `/sources` never has to wait for constructor/network teardown.
+        log().info("Config changed. Removing previous datasources.");
+        for (auto const& datasource : previousDataSources) {
+            removeDataSource(datasource, false);
+        }
+        notifySourceCatalogChanged(change);
+
+        {
+            std::unique_lock lock(dataSourcesMutex_);
+            for (auto& [configNode, descriptor] : constructionInputs) {
+                launchDataSourceConstruction(generation, std::move(configNode), std::move(descriptor));
+            }
+        }
+    }
+
+    DataSourceInfo addDataSource(DataSource::Ptr const& dataSource, bool publishCatalogChange = true)
     {
         if (!dataSource) {
             raise("Tried to add a null data source.");
@@ -1012,7 +1436,12 @@ struct Service::Impl : public Service::Controller
         // does not have separate workers.
         if (info.isAddOn_) {
             addOnDataSources_.emplace_back(dataSource);
-            return;
+            if (publishCatalogChange) {
+                auto change = markSourceCatalogChangedLocked("added");
+                lock.unlock();
+                notifySourceCatalogChanged(change);
+            }
+            return info;
         }
 
         auto& workers = dataSourceWorkers_[dataSource];
@@ -1023,18 +1452,34 @@ struct Service::Impl : public Service::Controller
                 dataSource,
                 info,
                 *this));
+
+        if (publishCatalogChange) {
+            auto change = markSourceCatalogChangedLocked("added");
+            lock.unlock();
+            notifySourceCatalogChanged(change);
+        }
+
+        return info;
     }
 
-    void removeDataSource(DataSource::Ptr const& dataSource)
+    void removeDataSource(DataSource::Ptr const& dataSource, bool publishCatalogChange = true)
     {
         std::vector<Worker::Ptr> workersToJoin;
+        std::optional<DataSourceCatalogChange> change;
         {
             std::unique_lock lock(dataSourcesMutex_);
             dataSourceInfo_.erase(dataSource);
             addOnDataSources_.remove(dataSource);
+            if (publishCatalogChange) {
+                change = markSourceCatalogChangedLocked("removed");
+            }
 
             auto workers = dataSourceWorkers_.find(dataSource);
             if (workers == dataSourceWorkers_.end()) {
+                lock.unlock();
+                if (change) {
+                    notifySourceCatalogChanged(*change);
+                }
                 return;
             }
             for (auto& worker : workers->second) {
@@ -1050,6 +1495,9 @@ struct Service::Impl : public Service::Controller
             if (worker->thread_.joinable()) {
                 worker->thread_.join();
             }
+        }
+        if (change) {
+            notifySourceCatalogChanged(*change);
         }
     }
 
@@ -1102,6 +1550,103 @@ struct Service::Impl : public Service::Controller
             }
         }
         return infos;
+    }
+
+    DataSourceCatalogSnapshot getSourceCatalog(
+        std::optional<AuthHeaders> const& clientHeaders,
+        bool waitUntilReloadDone) const
+    {
+        DataSourceCatalogSnapshot snapshot;
+        std::shared_lock lock(dataSourcesMutex_);
+        if (waitUntilReloadDone) {
+            sourceCatalogReadyCv_.wait(lock, [this] {
+                return sourceCatalogReloadDoneLocked();
+            });
+        }
+        snapshot.revision = sourceCatalogRevision_;
+        snapshot.configStatus = sourceConfigStatus_;
+        snapshot.configStatusMessage = sourceConfigStatusMessage_;
+
+        if (!sourceCatalog_.empty()) {
+            snapshot.sources.reserve(sourceCatalog_.size());
+            for (auto const& entry : sourceCatalog_) {
+                const bool authorized = entry.dataSource
+                    ? (!clientHeaders || entry.dataSource->isDataSourceAuthorized(*clientHeaders))
+                    : isDescriptorAuthorized(entry.descriptor, clientHeaders);
+                if (!authorized) {
+                    continue;
+                }
+
+                auto copy = entry;
+                if (copy.info) {
+                    copy.info = cloneDataSourceInfo(*copy.info);
+                }
+                snapshot.sources.push_back(std::move(copy));
+            }
+            return snapshot;
+        }
+
+        snapshot.sources.reserve(dataSourceInfo_.size());
+        auto configIndex = uint32_t{0};
+        for (auto const& [dataSource, info] : dataSourceInfo_) {
+            if (clientHeaders && !dataSource->isDataSourceAuthorized(*clientHeaders)) {
+                continue;
+            }
+
+            auto infoCopy = cloneDataSourceInfo(info);
+            snapshot.sources.push_back(DataSourceCatalogEntry{
+                .descriptor = DataSourceDescriptor{
+                    .sourceId = infoCopy.nodeId_,
+                    .configIndex = configIndex++,
+                    .type = "",
+                    .configuredMapId = infoCopy.mapId_,
+                    .addOn = infoCopy.isAddOn_},
+                .status = DataSourceCatalogStatus::Ready,
+                .statusMessage = "",
+                .dataSource = dataSource,
+                .info = std::move(infoCopy)});
+        }
+        return snapshot;
+    }
+
+    uint64_t addSourceCatalogCallback(Service::DataSourceCatalogCallback callback)
+    {
+        if (!callback) {
+            return 0;
+        }
+        std::lock_guard lock(sourceCatalogCallbacksMutex_);
+        auto id = nextSourceCatalogCallbackId_++;
+        sourceCatalogCallbacks_[id] = std::move(callback);
+        return id;
+    }
+
+    void removeSourceCatalogCallback(uint64_t id)
+    {
+        if (!id) {
+            return;
+        }
+        std::lock_guard lock(sourceCatalogCallbacksMutex_);
+        sourceCatalogCallbacks_.erase(id);
+    }
+
+    uint64_t getSourceCatalogRevision() const
+    {
+        std::shared_lock lock(dataSourcesMutex_);
+        return sourceCatalogRevision_;
+    }
+
+    bool isSourceCatalogChangeVisible(
+        DataSourceCatalogChange const& change,
+        std::optional<AuthHeaders> const& clientHeaders) const
+    {
+        if (!change.sourceUpdate) {
+            return true;
+        }
+        auto const& source = *change.sourceUpdate;
+        if (source.dataSource) {
+            return !clientHeaders || source.dataSource->isDataSourceAuthorized(*clientHeaders);
+        }
+        return isDescriptorAuthorized(source.descriptor, clientHeaders);
     }
 
     void loadAddOnTiles(TileFeatureLayer::Ptr const& baseTile, DataSource& baseDataSource) override {
@@ -1208,6 +1753,39 @@ Service::Service(Cache::Ptr cache, bool useDataSourceConfig, std::optional<std::
 }
 
 Service::~Service() = default;
+
+Service::DataSourceCatalogSubscription::DataSourceCatalogSubscription(Service* service, uint64_t id)
+    : service_(service),
+      id_(id)
+{
+}
+
+Service::DataSourceCatalogSubscription::~DataSourceCatalogSubscription()
+{
+    if (service_ && id_) {
+        service_->impl_->removeSourceCatalogCallback(id_);
+    }
+}
+
+Service::DataSourceCatalogSubscription::DataSourceCatalogSubscription(DataSourceCatalogSubscription&& other) noexcept
+    : service_(std::exchange(other.service_, nullptr)),
+      id_(std::exchange(other.id_, 0))
+{
+}
+
+Service::DataSourceCatalogSubscription& Service::DataSourceCatalogSubscription::operator=(
+    DataSourceCatalogSubscription&& other) noexcept
+{
+    if (this == &other) {
+        return *this;
+    }
+    if (service_ && id_) {
+        service_->impl_->removeSourceCatalogCallback(id_);
+    }
+    service_ = std::exchange(other.service_, nullptr);
+    id_ = std::exchange(other.id_, 0);
+    return *this;
+}
 
 void Service::add(DataSource::Ptr const& dataSource)
 {
@@ -1514,7 +2092,7 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
                         "Search evaluation failed for {}::{} tile {:x}: {}",
                         request->mapId_,
                         request->layerId_,
-                        sourceTileId.value_,
+                        sourceTileId.value(),
                         exception.what())});
                 markEvalDone(0, false);
             }
@@ -1637,6 +2215,30 @@ void Service::abort(const FeatureLayerSearchTilesRequest::Ptr& r)
 std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clientHeaders)
 {
     return impl_->getDataSourceInfos(clientHeaders);
+}
+
+DataSourceCatalogSnapshot Service::sourceCatalog(
+    std::optional<AuthHeaders> const& clientHeaders,
+    bool waitUntilReloadDone) const
+{
+    return impl_->getSourceCatalog(clientHeaders, waitUntilReloadDone);
+}
+
+uint64_t Service::sourceCatalogRevision() const
+{
+    return impl_->getSourceCatalogRevision();
+}
+
+bool Service::isSourceCatalogChangeVisible(
+    DataSourceCatalogChange const& change,
+    std::optional<AuthHeaders> const& clientHeaders) const
+{
+    return impl_->isSourceCatalogChangeVisible(change, clientHeaders);
+}
+
+Service::DataSourceCatalogSubscription Service::subscribeToSourceCatalogChanges(DataSourceCatalogCallback callback)
+{
+    return DataSourceCatalogSubscription(this, impl_->addSourceCatalogCallback(std::move(callback)));
 }
 
 Cache::Ptr Service::cache()

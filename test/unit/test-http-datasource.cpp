@@ -49,6 +49,11 @@ namespace fs = std::filesystem;
 namespace
 {
 
+
+constexpr int32_t kHttpTileIdValue = 131073;
+constexpr int32_t kSecondHttpTileIdValue = 131076;
+constexpr int32_t kThirdHttpTileIdValue = 131077;
+
 class SyncHttpClient
 {
 public:
@@ -62,11 +67,16 @@ public:
             loopThread_->getLoop());
     }
 
-    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> get(std::string path)
+    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> get(
+        std::string path,
+        std::vector<std::pair<std::string, std::string>> headers = {})
     {
         auto req = drogon::HttpRequest::newHttpRequest();
         req->setMethod(drogon::Get);
         req->setPath(std::move(path));
+        for (auto const& [key, value] : headers) {
+            req->addHeader(key, value);
+        }
         return client_->sendRequest(req);
     }
 
@@ -126,11 +136,11 @@ public:
             });
     }
 
-    bool connect(bool sendAuthHeader)
+    bool connect(bool sendAuthHeader, std::string_view path = "/interactive")
     {
         auto connectReq = drogon::HttpRequest::newHttpRequest();
         connectReq->setMethod(drogon::Get);
-        connectReq->setPath("/tiles");
+        connectReq->setPath(std::string(path));
         if (sendAuthHeader) {
             connectReq->addHeader("X-USER-ROLE", "Tropico-Viewer");
         }
@@ -181,7 +191,7 @@ public:
             if (clientId > 0) {
                 const auto waitMs = std::clamp<int64_t>(remainingMs, 1, 1000);
                 const auto [result, resp] = pullClient_.get(fmt::format(
-                    "/tiles/next?clientId={}&waitMs={}&maxBytes={}",
+                    "/interactive/payload?clientId={}&waitMs={}&maxBytes={}",
                     clientId,
                     waitMs,
                     64 * 1024 * 1024));
@@ -209,7 +219,7 @@ public:
                     return true;
                 }
                 else {
-                    setError(fmt::format("Unexpected /tiles/next response status: {}", static_cast<int>(resp->statusCode())));
+                    setError(fmt::format("Unexpected /interactive/payload response status: {}", static_cast<int>(resp->statusCode())));
                     return true;
                 }
 
@@ -485,7 +495,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     // Fetch /tile
     {
-        auto [result, resp] = dsClient.get("/tile?layer=WayLayer&tileId=1");
+        auto [result, resp] = dsClient.get(fmt::format("/tile?layer=WayLayer&tileId={}", kHttpTileIdValue));
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(resp != nullptr);
         REQUIRE(resp->statusCode() == drogon::k200OK);
@@ -508,7 +518,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
     // Fetch /tile SourceData
     {
-        auto [result, resp] = dsClient.get("/tile?layer=SourceData-WayLayer&tileId=1");
+        auto [result, resp] = dsClient.get(fmt::format("/tile?layer=SourceData-WayLayer&tileId={}", kHttpTileIdValue));
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(resp != nullptr);
         REQUIRE(resp->statusCode() == drogon::k200OK);
@@ -547,7 +557,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
         REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
-        REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
+        REQUIRE(responseParsed.tileKey_.tileId_.value() == kHttpTileIdValue);
     }
 
     // Query mapget HTTP service (in-process, started once for entire test binary)
@@ -555,6 +565,39 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         auto& service = test::httpService();
         auto remoteDataSource = std::make_shared<RemoteDataSource>("127.0.0.1", dsProc.port());
         service.add(remoteDataSource);
+
+        // `/sources` keeps the legacy array body while exposing catalog metadata.
+        {
+            SyncHttpClient serviceClient("127.0.0.1", service.port());
+            auto [result, resp] = serviceClient.get("/sources");
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(resp != nullptr);
+            REQUIRE(resp->statusCode() == drogon::k200OK);
+            REQUIRE_FALSE(resp->getHeader("X-Mapget-Sources-Revision").empty());
+            REQUIRE(resp->getHeader("X-Mapget-Sources-Config-Status") == "ok");
+
+            auto sources = nlohmann::json::parse(std::string(resp->body()));
+            REQUIRE(sources.is_array());
+            REQUIRE_FALSE(sources.empty());
+            auto const& source = sources.front();
+            REQUIRE(source.value("status", "") == "ready");
+            REQUIRE(source.contains("sourceId"));
+            REQUIRE(source.contains("configIndex"));
+
+            auto etag = resp->getHeader("ETag");
+            REQUIRE_FALSE(etag.empty());
+            auto [notModifiedResult, notModifiedResp] = serviceClient.get(
+                "/sources",
+                {{"If-None-Match", etag}});
+            REQUIRE(notModifiedResult == drogon::ReqResult::Ok);
+            REQUIRE(notModifiedResp != nullptr);
+            REQUIRE(notModifiedResp->statusCode() == drogon::k304NotModified);
+
+            auto [nonBlockingResult, nonBlockingResp] = serviceClient.get("/sources?blocking=false");
+            REQUIRE(nonBlockingResult == drogon::ReqResult::Ok);
+            REQUIRE(nonBlockingResp != nullptr);
+            REQUIRE(nonBlockingResp->statusCode() == drogon::k200OK);
+        }
 
         auto countReceivedTiles = [](auto& client, auto mapId, auto layerId, auto tiles) {
             auto tileCount = 0;
@@ -572,7 +615,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 client,
                 "Tropico",
                 "WayLayer",
-                std::vector<TileId>{1234, 5678, 9112});
+                std::vector<TileId>{TileId::fromValue(kHttpTileIdValue), TileId::fromValue(kSecondHttpTileIdValue), TileId::fromValue(kThirdHttpTileIdValue)});
 
             REQUIRE(receivedTileCount == 3);
             REQUIRE(request->getStatus() == RequestStatus::Success);
@@ -585,11 +628,12 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 {"query", "typeId == 'Way'"},
                 {"scope", "feature"},
                 {"withFields", nlohmann::json::array({"typeId"})},
+                {"featureTypes", nlohmann::json::array({"Way"})},
                 {"responseType", "jsonl"},
                 {"requests", nlohmann::json::array({nlohmann::json::object({
                     {"mapId", "Tropico"},
                     {"layerId", "WayLayer"},
-                    {"tileIds", nlohmann::json::array({1234})},
+                    {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                 })})},
             }).dump();
 
@@ -613,6 +657,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(parsed["results"].size() == 1);
                 REQUIRE(parsed["resultFields"] == nlohmann::json::array({"typeId"}));
                 REQUIRE(parsed["info"].contains("searchId") == false);
+                REQUIRE(parsed["info"]["featureTypes"] == nlohmann::json::array({"Way"}));
             }
             REQUIRE(sawResultLayer);
 
@@ -620,17 +665,19 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             FeatureLayerSearchRequest search;
             search.query_ = "typeId == 'Way'";
             search.withFields_ = {"typeId"};
+            search.featureTypes_ = {"Way"};
 
             auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
                 "Tropico",
                 "WayLayer",
-                std::vector<TileId>{TileId(1234)},
+                std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)},
                 std::move(search));
             size_t resultCount = 0;
             size_t statusCount = 0;
             request->onSearchResult([&](TileSearchResultLayer::Ptr layer) {
                 resultCount += layer->size();
                 REQUIRE(layer->info().contains("searchId") == false);
+                REQUIRE(layer->info()["featureTypes"] == nlohmann::json::array({"Way"}));
             });
             request->onStatus([&](nlohmann::json const&) {
                 ++statusCount;
@@ -653,7 +700,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     {"requests", nlohmann::json::array({nlohmann::json::object({
                         {"mapId", "Tropico"},
                         {"layerId", "WayLayer"},
-                        {"tileIds", nlohmann::json::array({1234})},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                     })})},
                 }).dump());
 
@@ -669,14 +716,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(client, "UnknownMap", "WayLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(client, "UnknownMap", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(client, "Tropico", "UnknownLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(client, "Tropico", "UnknownLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
@@ -708,7 +755,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
             REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
             REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
-            REQUIRE(responseParsed.tileKey_.tileId_.value_ == 1);
+            REQUIRE(responseParsed.tileKey_.tileId_.value() == kHttpTileIdValue);
         }
 
         // Test auth header requirement
@@ -723,14 +770,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(badClient, "Tropico", "WayLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(badClient, "Tropico", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::Unauthorized);
                 REQUIRE(receivedTileCount == 0);
             }
 
             {
                 auto [request, receivedTileCount] =
-                    countReceivedTiles(goodClient, "Tropico", "WayLayer", std::vector<TileId>{{1234}});
+                    countReceivedTiles(goodClient, "Tropico", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::Success);
                 REQUIRE(receivedTileCount == 1);
             }
@@ -748,10 +795,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 return conn;
             };
 
-            auto runWsTilesRequest = [&](bool sendAuthHeader, const std::string& requestJson) {
+            auto runWsTilesRequestAtPath = [&](std::string_view path, bool sendAuthHeader, const std::string& requestJson) {
                 WsTilesClient wsClient(service.port(), layerInfo);
 
-                REQUIRE(wsClient.connect(sendAuthHeader));
+                REQUIRE(wsClient.connect(sendAuthHeader, path));
                 requireConnected(wsClient)->send(requestJson, drogon::WebSocketMessageType::Text);
 
                 REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
@@ -767,13 +814,34 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 return std::make_tuple(*status, wsClient.receivedTileCount());
             };
 
+            auto runWsTilesRequest = [&](bool sendAuthHeader, const std::string& requestJson) {
+                return runWsTilesRequestAtPath("/interactive", sendAuthHeader, requestJson);
+            };
+
+            // WebSocket tiles: `/tiles` remains a legacy alias for `/interactive`.
+            {
+                auto req = nlohmann::json::object({
+                    {"requests", nlohmann::json::array({nlohmann::json::object({
+                        {"mapId", "Tropico"},
+                        {"layerId", "WayLayer"},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
+                    })})},
+                }).dump();
+
+                auto [status, wsTileCount] = runWsTilesRequestAtPath("/tiles", true, req);
+                REQUIRE(wsTileCount == 1);
+                REQUIRE(status["requests"].size() == 1);
+                REQUIRE(status["requests"][0]["status"].get<int>() ==
+                        static_cast<int>(RequestStatus::Success));
+            }
+
             // WebSocket tiles: unauthorized without auth header.
             {
                 auto req = nlohmann::json::object({
                     {"requests", nlohmann::json::array({nlohmann::json::object({
                         {"mapId", "Tropico"},
                         {"layerId", "WayLayer"},
-                        {"tileIds", nlohmann::json::array({1234})},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                     })})},
                 }).dump();
 
@@ -790,7 +858,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     {"requests", nlohmann::json::array({nlohmann::json::object({
                         {"mapId", "UnknownMap"},
                         {"layerId", "WayLayer"},
-                        {"tileIds", nlohmann::json::array({1234})},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                     })})},
                 }).dump();
 
@@ -833,7 +901,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                         {"requests", nlohmann::json::array({nlohmann::json::object({
                             {"mapId", "Tropico"},
                             {"layerId", "WayLayer"},
-                            {"tileIds", nlohmann::json::array({1234})},
+                            {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
                         })})},
                     }).dump();
 
@@ -864,7 +932,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                         {"mapId", "Tropico"},
                         {"layerId", "WayLayer"},
                         {"tileIdsByNextStage", nlohmann::json::array({
-                            nlohmann::json::array({1234}),
+                            nlohmann::json::array({kHttpTileIdValue}),
                         })},
                     })})},
                 }).dump();
@@ -980,7 +1048,11 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     writeConfigFile(
         "sources: []\n"
-        "http-settings: [{'password': 'hunter2'}]\n"
+        "http-settings:\n"
+        "  - password: hunter2\n"
+        "    apiKey: camel-secret\n"
+        "    oauth2:\n"
+        "      clientSecret: oauth-secret\n"
         "publicConfig:\n"
         "  featureFlag: true\n"
         "erdblick:\n"
@@ -1033,9 +1105,18 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
         auto body = payload.dump();
         REQUIRE(body.find("hunter2") == std::string::npos);
-        REQUIRE(
-            body.find("MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7") !=
-            std::string::npos);
+        REQUIRE(body.find("camel-secret") == std::string::npos);
+        REQUIRE(body.find("oauth-secret") == std::string::npos);
+
+        auto settings = payload["model"]["http-settings"][0];
+        auto passwordToken = settings["password"].get<std::string>();
+        auto apiKeyToken = settings["apiKey"].get<std::string>();
+        auto clientSecretToken = settings["oauth2"]["clientSecret"].get<std::string>();
+        REQUIRE(passwordToken.starts_with("MASKED:"));
+        REQUIRE(apiKeyToken.starts_with("MASKED:"));
+        REQUIRE(clientSecretToken.starts_with("MASKED:"));
+        REQUIRE(passwordToken != apiKeyToken);
+        REQUIRE(apiKeyToken != clientSecretToken);
     }
 
     SECTION("Get Configuration - Public section serializer exceptions are tolerated")
@@ -1095,12 +1176,25 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Post Configuration - Valid JSON Config preserves top-level erdblick")
     {
         setPostConfigEndpointEnabled(true);
-        std::string newConfig = R"({
-            "sources": [{"type": "TestDataSource"}],
-            "http-settings": [{"scope": "https://example.com", "password": "MASKED:0:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7"}]
-        })";
+        auto payload = getConfigPayload();
+        auto settings = payload["model"]["http-settings"][0];
+        auto newConfig = nlohmann::json::object({
+            {"sources", nlohmann::json::array({
+                nlohmann::json::object({{"type", "TestDataSource"}})
+            })},
+            {"http-settings", nlohmann::json::array({
+                nlohmann::json::object({
+                    {"scope", "https://example.com"},
+                    {"password", settings["password"].get<std::string>()},
+                    {"apiKey", settings["apiKey"].get<std::string>()},
+                    {"oauth2", nlohmann::json::object({
+                        {"clientSecret", settings["oauth2"]["clientSecret"].get<std::string>()}
+                    })}
+                })
+            })}
+        });
 
-        auto [result, res] = cli.postJson("/config", newConfig);
+        auto [result, res] = cli.postJson("/config", newConfig.dump());
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
         REQUIRE(res->statusCode() == drogon::k200OK);
@@ -1111,6 +1205,9 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         configContentStream << config.rdbuf();
         auto configContent = configContentStream.str();
         REQUIRE(configContent.find("hunter2") != std::string::npos);
+        REQUIRE(configContent.find("camel-secret") != std::string::npos);
+        REQUIRE(configContent.find("oauth-secret") != std::string::npos);
+        REQUIRE(configContent.find("MASKED:") == std::string::npos);
         REQUIRE(configContent.find("erdblick") != std::string::npos);
         REQUIRE(configContent.find("keepMe") != std::string::npos);
     }

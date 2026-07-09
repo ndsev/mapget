@@ -1,9 +1,11 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 #include "sfl/small_vector.hpp"
 #include <variant>
@@ -12,7 +14,7 @@
 namespace mapget
 {
 
-class SchemaRegistry;
+class LayerSchema;
 
 /**
  * The KeyValue(View)Pairs type is a vector of pairs, where each pair
@@ -49,6 +51,40 @@ std::string mapNameFromUri(const std::string& uri);
 
 /** Generate a UUID which may be used as the node id. */
 std::string generateNodeHexUuid();
+
+/**
+ * Percent-escape one identifier component before embedding it into a
+ * delimiter-separated protocol string.
+ *
+ * This is intended for reversible string forms such as MapTileKey and
+ * FeatureId, not for mutating model metadata names.
+ */
+std::string escapeIdentifierComponent(std::string_view input, std::string_view extraReserved = {});
+
+/**
+ * Reverse escapeIdentifierComponent().
+ *
+ * Returns false and writes an explanatory message when the input contains a
+ * malformed percent escape.
+ */
+bool unescapeIdentifierComponent(
+    std::string_view input,
+    std::string& output,
+    std::string* error = nullptr);
+
+/**
+ * Reject protocol-reserved characters in metadata identifiers that are stored
+ * and queried in their raw form.
+ *
+ * Use extraReserved for context-specific delimiters such as the dot in
+ * feature-id type names. Use allowedReserved for deliberate exceptions, e.g.
+ * slash-separated map ids that erdblick renders as grouped paths.
+ */
+void validateIdentifierName(
+    std::string_view kind,
+    std::string_view value,
+    std::string_view extraReserved = {},
+    std::string_view allowedReserved = {});
 
 /** Convert KeyValuePairs to KeyValuePairsView. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
@@ -228,16 +264,17 @@ struct FeatureTypeInfo
  */
 struct Coverage
 {
-    /** Minimum tile id (north-west AABB corner). */
+    /** Minimum packed-grid tile id (south-west AABB corner). */
     TileId min_;
 
-    /** Maximum tile id (south-east AABB corner). Must have same zoom level as min. */
+    /** Maximum packed-grid tile id (north-east AABB corner). Must have same zoom level as min. */
     TileId max_;
 
     /**
      * Bitset indicating where the associated layer is filled.
      * Must have size (max.x() - min.x() + 1) * (max.y() - min.y() + 1).
-     * Bits are stored row-major: [ y0x0..., y0xn, y1x0..., y1xn, ... ]
+     * Bits are stored row-major in packed-grid order:
+     * [ south-row x0..., south-row xn, next-row x0..., next-row xn, ... ]
      * If the vector is completely empty, the rectangle is considered
      * to be fully filled.
      */
@@ -249,8 +286,8 @@ struct Coverage
      * The JSON is expected to have the following structure:
      *
      * {
-     *   "min": <uint64_t>,                // Mandatory: The minimum tile ID.
-     *   "max": <uint64_t>,                // Mandatory: The maximum tile ID.
+     *   "min": <int32_t>,                 // Mandatory: The signed packed minimum tile ID.
+     *   "max": <int32_t>,                 // Mandatory: The signed packed maximum tile ID.
      *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled tiles. Defaults to an empty list.
      * }
      *
@@ -283,6 +320,9 @@ struct LayerInfo
 
     /** Utility function to get some feature type info by name. */
     FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true) const;
+
+    /** Validate raw metadata identifiers that cannot be safely auto-escaped. */
+    void validateIdentifiers() const;
 
     /** List of zoom levels */
     std::vector<int> zoomLevels_;
@@ -319,17 +359,15 @@ struct LayerInfo
     /** Version of the map layer. */
     Version version_;
 
-    /** JSON Schema describing one emitted feature object for this layer. */
-    nlohmann::json featureModelSchema_;
+    /** Typed feature-model schema describing one emitted feature object for this layer. */
+    std::shared_ptr<LayerSchema const> featureModelSchema_;
 
     /**
-     * Return the parsed schema registry for this layer.
-     * SchemaIds are assigned by JSON Schema traversal and are independent of
+     * Return the typed feature-model schema for this layer.
+     * SchemaIds are assigned during schema construction and are independent of
      * datasource-owned StringPool state.
      */
-    [[nodiscard]] std::shared_ptr<SchemaRegistry> schemaRegistry() const;
-
-    mutable std::shared_ptr<SchemaRegistry> schemaRegistry_;
+    [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
 
     /**
      * Return the index of the first unique ID composition that matches this feature ID.
@@ -392,6 +430,9 @@ struct DataSourceInfo
 
     /** Get the layer, or a runtime error, if no such layer exists. */
     [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId, bool throwIfMissing=true) const;
+
+    /** Validate raw metadata identifiers that cannot be safely auto-escaped. */
+    void validateIdentifiers() const;
 
     /**
      * Deserializes a DataSourceInfo object from JSON.

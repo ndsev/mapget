@@ -10,4 +10,4 @@ mapget:
         # Layer of the map to retrieve.
         layer: WayLayer
         # Tile of the map to retrieve. Can be specified multiple times.
-        tile: 12345
+        tile: 65536

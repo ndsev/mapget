@@ -145,11 +145,90 @@ void validateIdPartValue(
     }
 }
 
-/** Delegate generic object/array/scalar import to simfil's shared JSON builder. */
+/** Detect compact references to a feature-local top-level relation. */
+[[nodiscard]] bool isRelationReferenceJson(nlohmann::json const& json)
+{
+    return json.is_object() &&
+           json.size() == 1 &&
+           json.contains("$mapgetRelation");
+}
+
+/** Recursively check whether generic JSON import needs mapget-specific relation-reference handling. */
+[[nodiscard]] bool containsRelationReferenceJson(nlohmann::json const& json)
+{
+    if (isRelationReferenceJson(json)) {
+        return true;
+    }
+    if (json.is_array()) {
+        return std::any_of(
+            json.begin(),
+            json.end(),
+            [](auto const& child) { return containsRelationReferenceJson(child); });
+    }
+    if (json.is_object()) {
+        return std::any_of(
+            json.begin(),
+            json.end(),
+            [](auto const& child) { return containsRelationReferenceJson(child); });
+    }
+    return false;
+}
+
+/** Delegate generic object/array/scalar import to simfil's shared JSON builder unless relation refs require feature context. */
 [[nodiscard]] simfil::ModelNode::Ptr importGenericNode(
     TileFeatureLayer& tile,
-    nlohmann::json const& json)
+    nlohmann::json const& json,
+    model_ptr<Feature> const& feature = {})
 {
+    if (isRelationReferenceJson(json)) {
+        if (!feature) {
+            raiseImport("$mapgetRelation can only be imported inside feature properties.");
+        }
+        auto const& relationIndexJson = json.at("$mapgetRelation");
+        if (!relationIndexJson.is_number_integer() && !relationIndexJson.is_number_unsigned()) {
+            raiseImport("$mapgetRelation must be encoded as an integer.");
+        }
+        uint64_t relationIndex = 0;
+        if (relationIndexJson.is_number_unsigned()) {
+            relationIndex = relationIndexJson.get<uint64_t>();
+        }
+        else {
+            auto const signedIndex = relationIndexJson.get<int64_t>();
+            if (signedIndex < 0) {
+                raiseImport("$mapgetRelation must not be negative.");
+            }
+            relationIndex = static_cast<uint64_t>(signedIndex);
+        }
+        if (relationIndex >= Relation::InvalidFeatureRelationIndex) {
+            raiseImport("$mapgetRelation exceeds the supported relation-reference range.");
+        }
+        auto relation = feature->getRelation(static_cast<uint32_t>(relationIndex));
+        if (!relation) {
+            raiseImport(fmt::format("Feature has no relation at index {}.", relationIndex));
+        }
+        return tile.newRelationReference(relation);
+    }
+
+    if (containsRelationReferenceJson(json)) {
+        if (json.is_array()) {
+            auto array = tile.newArray(json.size(), true);
+            for (auto const& item : json) {
+                array->append(importGenericNode(tile, item, feature));
+            }
+            return array;
+        }
+        if (json.is_object()) {
+            auto object = tile.newObject(json.size());
+            for (auto const& [key, value] : json.items()) {
+                auto result = object->addField(key, importGenericNode(tile, value, feature));
+                if (!result) {
+                    raiseImport(result.error().message);
+                }
+            }
+            return object;
+        }
+    }
+
     auto node = simfil::json::buildModelNode(json, tile);
     if (!node) {
         raiseImport(node.error().message);
@@ -253,10 +332,6 @@ void validateIdPartValue(
             typeId));
     }
 
-    if (tile.tileId().value_ > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-        raiseImport("tileId exceeds signed integer range needed for best-effort id synthesis.");
-    }
-
     auto const& composition = typeInfo->uniqueIdCompositions_.front();
     KeyValuePairs parts;
     parts.reserve(composition.size());
@@ -267,7 +342,7 @@ void validateIdPartValue(
             if (!isIntegerIdPart(idPart.datatype_)) {
                 raiseImport("Best-effort GeoJSON import requires an integer tileId id part.");
             }
-            parts.emplace_back(idPart.idPartLabel_, static_cast<int64_t>(tile.tileId().value_));
+            parts.emplace_back(idPart.idPartLabel_, static_cast<int64_t>(tile.tileId().value()));
             continue;
         }
 
@@ -815,6 +890,13 @@ struct DeferredRelation
     nlohmann::json relationJson_;
 };
 
+/** Defer property import until top-level relations are available for `$mapgetRelation` references. */
+struct DeferredProperties
+{
+    model_ptr<Feature> feature_;
+    nlohmann::json propertiesJson_;
+};
+
 /** Import one attribute payload object, excluding deferred validity handling. */
 void importAttributeObject(
     TileFeatureLayer& tile,
@@ -839,7 +921,7 @@ void importAttributeObject(
             }
             continue;
         }
-        auto result = attribute->addField(key, importGenericNode(tile, value));
+        auto result = attribute->addField(key, importGenericNode(tile, value, hostFeature));
         if (!result) {
             raiseImport(result.error().message);
         }
@@ -888,7 +970,7 @@ void importProperties(
                     importAttributeObject(tile, feature, attribute, attrValue, options, deferredValidities);
                 }
                 else {
-                    auto result = attribute->addField(attrName, importGenericNode(tile, attrValue));
+                    auto result = attribute->addField(attrName, importGenericNode(tile, attrValue, feature));
                     if (!result) {
                         raiseImport(result.error().message);
                     }
@@ -897,7 +979,7 @@ void importProperties(
             continue;
         }
 
-        auto result = feature->attributes()->addField(key, importGenericNode(tile, value));
+        auto result = feature->attributes()->addField(key, importGenericNode(tile, value, feature));
         if (!result) {
             raiseImport(result.error().message);
         }
@@ -983,7 +1065,7 @@ void importGeoJson(
             raiseImport("GLB attachment import is not supported yet.");
         }
         // Strict mode treats top-level metadata mismatches as caller/configuration errors.
-        if (geoJson.contains("mapgetTileId") && geoJson.at("mapgetTileId").get<uint64_t>() != tile.tileId().value_) {
+        if (geoJson.contains("mapgetTileId") && geoJson.at("mapgetTileId").get<int32_t>() != tile.tileId().value()) {
             raiseImport("mapgetTileId does not match the target tile.");
         }
         if (geoJson.contains("mapId") && geoJson.at("mapId").get<std::string>() != tile.mapId()) {
@@ -1023,6 +1105,7 @@ void importGeoJson(
 
     std::vector<DeferredAttributeValidity> deferredValidities;
     std::vector<DeferredRelation> deferredRelations;
+    std::vector<DeferredProperties> deferredProperties;
 
     uint32_t fallbackFeatureIndex = 0;
     for (auto const& featureJson : geoJson.at("features")) {
@@ -1070,22 +1153,21 @@ void importGeoJson(
         if (featureJson.contains("geometry")) {
             importFeatureGeometry(tile, feature, featureJson.at("geometry"), options);
         }
-        if (featureJson.contains("properties")) {
-            importProperties(tile, feature, featureJson.at("properties"), options, deferredValidities);
+        auto propertiesIt = featureJson.find("properties");
+        auto attributesIt = featureJson.find("attributes");
+        if (propertiesIt != featureJson.end() && attributesIt != featureJson.end()) {
+            raiseImport("Feature must not contain both 'properties' and its 'attributes' alias.");
+        }
+        if (propertiesIt != featureJson.end() || attributesIt != featureJson.end()) {
+            // `attributes` is accepted as an import-only alias; JSON export stays
+            // GeoJSON-compatible and emits the canonical `properties` key.
+            deferredProperties.push_back(DeferredProperties{
+                feature,
+                propertiesIt != featureJson.end() ? *propertiesIt : *attributesIt});
         }
         if (featureJson.contains("relations")) {
             deferredRelations.push_back(DeferredRelation{feature, featureJson.at("relations")});
         }
-    }
-
-    // Attribute validities may reference local features, so resolve them after all features exist.
-    for (auto& deferred : deferredValidities) {
-        importValidityCollection(
-            tile,
-            deferred.hostFeature_,
-            deferred.attribute_->validity(),
-            deferred.validityJson_,
-            options);
     }
 
     // Relations are imported last for the same reason: all target ids must already be present.
@@ -1096,6 +1178,22 @@ void importGeoJson(
         for (auto const& relationJson : deferred.relationJson_) {
             importRelation(tile, deferred.feature_, relationJson, options);
         }
+    }
+
+    // Properties are imported after relations so nested `$mapgetRelation`
+    // tokens can resolve to the owning feature's canonical relation objects.
+    for (auto& deferred : deferredProperties) {
+        importProperties(tile, deferred.feature_, deferred.propertiesJson_, options, deferredValidities);
+    }
+
+    // Attribute validities may reference local features and property import creates the attributes.
+    for (auto& deferred : deferredValidities) {
+        importValidityCollection(
+            tile,
+            deferred.hostFeature_,
+            deferred.attribute_->validity(),
+            deferred.validityJson_,
+            options);
     }
 }
 

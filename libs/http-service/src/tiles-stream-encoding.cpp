@@ -31,7 +31,7 @@ bool containsGzip(std::string_view acceptEncoding)
     return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;
 }
 
-/** Compress one complete payload into gzip format for `/tiles/next` long-poll responses. */
+/** Compress one complete payload into gzip format for `/interactive/payload` long-poll responses. */
 std::optional<std::string> gzipCompress(std::string_view input)
 {
     z_stream stream{};

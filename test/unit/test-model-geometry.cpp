@@ -536,8 +536,8 @@ TEST_CASE("Attribute Validity", "[validity]") {
     linestringGeomNamed->append({-1., -1.});
 
     // Create a validity collection.
-    auto metresAtFortyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-1., -1.})) * 0.4;
-    auto metresAtEightyPercent = Point({-0., -0.}).geographicDistanceTo(Point({-1., -1.})) * 0.8;
+    auto metresAtFortyPercent = Point(-0., -0.).geographicDistanceTo(Point(-1., -1.)) * 0.4;
+    auto metresAtEightyPercent = Point(-0., -0.).geographicDistanceTo(Point(-1., -1.)) * 0.8;
     auto validities = modelPool->newValidityCollection();
     validities->newDirection(Validity::Direction::Positive);
     validities->newGeometry(linestringGeom);
@@ -590,7 +590,11 @@ TEST_CASE("Attribute Validity", "[validity]") {
         DYNAMIC_SECTION(fmt::format("Validity Index #{}", validityIndex))
         {
             auto wgsPoints = validity.computeGeometry(geometryCollection);
-            log().info("Points #{}: {}", validityIndex, nlohmann::json(wgsPoints.points_).dump());
+            nlohmann::json pointsJson = nlohmann::json::array();
+            for (auto const& point : wgsPoints.points_) {
+                pointsJson.push_back(point);
+            }
+            log().info("Points #{}: {}", validityIndex, pointsJson.dump());
             auto const& expectedWgsPoints = expectedGeometry[validityIndex];
             REQUIRE(wgsPoints.points_.size() == expectedWgsPoints.size());
             for (auto pointIndex = 0; pointIndex < wgsPoints.points_.size(); ++pointIndex) {

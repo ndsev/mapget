@@ -393,7 +393,7 @@ TileSearchResultLayer::TileSearchResultLayer(
     : TileFeatureModelLayerBase(tileId, nodeId, mapId, layerInfo, strings),
       impl_(std::make_unique<Impl>())
 {
-    impl_->geometryAnchor_ = tileId.center();
+    impl_->geometryAnchor_ = Point(tileId.centerWgs84());
 }
 
 TileSearchResultLayer::TileSearchResultLayer(
@@ -403,7 +403,7 @@ TileSearchResultLayer::TileSearchResultLayer(
     : TileFeatureModelLayerBase(input, layerInfoResolveFun, stringPoolGetter, &deserializationOffsetBytes_),
       impl_(std::make_unique<Impl>())
 {
-    impl_->geometryAnchor_ = tileId_.center();
+    impl_->geometryAnchor_ = Point(tileId_.centerWgs84());
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
         raise("Failed to read TileSearchResultLayer: invalid deserialization offset.");
@@ -696,7 +696,7 @@ nlohmann::json TileSearchResultLayer::toJson() const
 {
     auto result = nlohmann::json::object({
         {"type", "SearchResultCollection"},
-        {"mapgetTileId", tileId_.value_},
+        {"mapgetTileId", tileId_.value()},
         {"mapId", mapId_},
         {"mapgetLayerId", layerInfo_->layerId_},
         {"geometryAnchor", {impl_->geometryAnchor_.x, impl_->geometryAnchor_.y, impl_->geometryAnchor_.z}},

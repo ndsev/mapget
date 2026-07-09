@@ -2,6 +2,7 @@
 
 #include <fmt/core.h>
 #include <cmath>
+#include <utility>
 
 #include "glm/glm.hpp"
 #include "nlohmann/json.hpp"
@@ -26,6 +27,8 @@ struct Point : public glm::dvec3
     Point();
     Point(Point const&) = default;
     Point(double const& x, double const& y, double const& z = .0);
+    /** Construct from a longitude/latitude pair, mapped to x/y with z=0. */
+    Point(std::pair<double, double> const& lonLat);  // NOLINT: Allow concise lon/lat conversion
 
     /**
      * Allow constructing a point from any class which has .x and .y members.

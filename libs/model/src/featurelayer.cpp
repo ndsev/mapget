@@ -263,25 +263,25 @@ struct TileFeatureLayer::Impl {
         std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
     }
 
-    // SIMFIL schema registry and compiled expression cache.
-    std::shared_ptr<SchemaRegistry> schemaRegistry_;
+    // SIMFIL schema lookup and compiled expression cache.
+    std::shared_ptr<LayerSchema const> layerSchema_;
     SimfilExpressionCache expressionCache_;
 
     static std::unique_ptr<simfil::Environment> makeSchemaAwareEnvironment(
         std::shared_ptr<simfil::StringPool> stringPool,
-        std::shared_ptr<SchemaRegistry const> schemaRegistry)
+        std::shared_ptr<LayerSchema const> layerSchema)
     {
         auto env = makeEnvironment(stringPool);
-        installSchemaRegistry(*env, std::move(schemaRegistry), std::move(stringPool));
+        installLayerSchema(*env, std::move(layerSchema), std::move(stringPool));
         return env;
     }
 
     static std::unique_ptr<simfil::Environment> makeSchemaAwareCompletionEnvironment(
         std::shared_ptr<simfil::StringPool> stringPool,
-        std::shared_ptr<SchemaRegistry const> schemaRegistry)
+        std::shared_ptr<LayerSchema const> layerSchema)
     {
         auto env = makeEnvironment(stringPool);
-        installCompletionSchemaRegistry(*env, std::move(schemaRegistry), std::move(stringPool));
+        installCompletionLayerSchema(*env, std::move(layerSchema), std::move(stringPool));
         return env;
     }
 
@@ -308,12 +308,12 @@ struct TileFeatureLayer::Impl {
     Impl(
         std::shared_ptr<simfil::StringPool> stringPool,
         std::shared_ptr<LayerInfo> const& layerInfo)
-        : schemaRegistry_(layerInfo ? layerInfo->schemaRegistry() : nullptr),
+        : layerSchema_(layerInfo ? layerInfo->layerSchema() : nullptr),
           expressionCache_(
-              makeSchemaAwareEnvironment(std::move(stringPool), schemaRegistry_),
+              makeSchemaAwareEnvironment(std::move(stringPool), layerSchema_),
               [this]() {
                   auto compileStrings = std::make_shared<simfil::StringPool>(*expressionCache_.environment().strings());
-                  return makeSchemaAwareCompletionEnvironment(std::move(compileStrings), schemaRegistry_);
+                  return makeSchemaAwareCompletionEnvironment(std::move(compileStrings), layerSchema_);
               })
     {
     }
@@ -338,7 +338,7 @@ TileFeatureLayer::TileFeatureLayer(
     TileFeatureModelLayerBase(tileId, nodeId, mapId, layerInfo, strings),
     impl_(std::make_unique<Impl>(strings, layerInfo))
 {
-    impl_->geometryAnchor_ = tileId.center();
+    impl_->geometryAnchor_ = Point(tileId.centerWgs84());
 }
 
 TileFeatureLayer::TileFeatureLayer(
@@ -349,7 +349,7 @@ TileFeatureLayer::TileFeatureLayer(
     TileFeatureModelLayerBase(input, layerInfoResolveFun, stringPoolGetter, &deserializationOffsetBytes_),
     impl_(std::make_unique<Impl>(strings(), layerInfo_))
 {
-    impl_->geometryAnchor_ = tileId_.center();
+    impl_->geometryAnchor_ = Point(tileId_.centerWgs84());
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
         raise("Failed to read TileFeatureLayer: invalid deserialization offset.");
@@ -834,13 +834,34 @@ TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<Feat
     if (!nameStringId)
         raise(nameStringId.error().message);
     impl_->relations_.emplace_back(Relation::Data{
-        *nameStringId,
-        target->addr()
+        .name_ = *nameStringId,
+        .targetFeatureId_ = target->addr()
     });
     return Relation(
         &impl_->relations_.back(),
         shared_from_this(),
         {ColumnId::Relations, (uint32_t)relationIndex},
+        mpKey_);
+}
+
+model_ptr<RelationReference>
+TileFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
+{
+    if (!relation) {
+        raise("Cannot create RelationReference for null relation.");
+    }
+    if (relation->addr().column() != ColumnId::Relations) {
+        raise("RelationReference target must be a canonical Relation node.");
+    }
+    if (relation->owningModel().get() != this) {
+        raise("RelationReference target must belong to this TileFeatureLayer.");
+    }
+    if (relation->addr().index() >= impl_->relations_.size()) {
+        raise("RelationReference target index is out of range.");
+    }
+    return RelationReference(
+        shared_from_this(),
+        {ColumnId::RelationReferences, relation->addr().index()},
         mpKey_);
 }
 
@@ -1179,8 +1200,23 @@ model_ptr<Relation> resolveInternal(tag<Relation>, TileFeatureLayer const& model
 {
     if (node.addr().column() != TileFeatureLayer::ColumnId::Relations)
         raise("Cannot cast this node to a Relation.");
+    if (node.addr().index() >= model.impl_->relations_.size())
+        raise("Relation index is out of range.");
     return Relation(
         &model.impl_->relations_[node.addr().index()],
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
+}
+
+template<>
+model_ptr<RelationReference> resolveInternal(tag<RelationReference>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::RelationReferences)
+        raise("Cannot cast this node to a RelationReference.");
+    if (node.addr().index() >= model.impl_->relations_.size())
+        raise("RelationReference target index is out of range.");
+    return RelationReference(
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
@@ -1290,6 +1326,9 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
     case ColumnId::Relations:
         cb(*resolve<Relation>(n));
         return {};
+    case ColumnId::RelationReferences:
+        cb(*resolve<RelationReference>(n));
+        return {};
     case ColumnId::Points:
         cb(*resolve<PointNode>(n));
         return {};
@@ -1390,7 +1429,7 @@ tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
 TileFeatureLayer::complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts)
 {
     auto completionStrings = std::make_shared<simfil::StringPool>(*strings());
-    auto completionEnv = Impl::makeSchemaAwareCompletionEnvironment(std::move(completionStrings), impl_->schemaRegistry_);
+    auto completionEnv = Impl::makeSchemaAwareCompletionEnvironment(std::move(completionStrings), impl_->layerSchema_);
     return simfil::complete(*completionEnv, query, point, node, opts);
 }
 
@@ -1457,7 +1496,7 @@ nlohmann::json TileFeatureLayer::toJson() const
     auto result = nlohmann::json::object();
 
     result["type"] = "FeatureCollection";
-    result["mapgetTileId"] = tileId_.value_;
+    result["mapgetTileId"] = tileId_.value();
     result["mapId"] = mapId_;
     result["mapgetLayerId"] = layerInfo_->layerId_;
     result["geometryAnchor"] = {
@@ -1498,45 +1537,45 @@ nlohmann::json TileFeatureLayer::toJson() const
 
 void TileFeatureLayer::validateSchema() const
 {
-    if (!layerInfo_ || layerInfo_->featureModelSchema_.is_null()) {
+    if (!layerInfo_ || !layerInfo_->featureModelSchema_) {
         raise("TileFeatureLayer::validateSchema: layer has no featureModelSchema.");
     }
 
     nlohmann::json_schema::json_validator validator;
-    validator.set_root_schema(layerInfo_->featureModelSchema_);
+    validator.set_root_schema(layerInfo_->featureModelSchema_->toJsonSchema());
     for (auto const& feature : *this) {
         validator.validate(feature->toJson());
     }
 }
 
-std::shared_ptr<SchemaRegistry const> TileFeatureLayer::schemaRegistry() const
+std::shared_ptr<LayerSchema const> TileFeatureLayer::layerSchema() const
 {
-    return impl_->schemaRegistry_;
+    return impl_->layerSchema_;
 }
 
-SchemaRegistry::Entry const* TileFeatureLayer::getSchema(std::string_view typeName) const
+LayerSchema::Entry const* TileFeatureLayer::getSchema(std::string_view typeName) const
 {
-    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->getSchema(typeName) : nullptr;
+    return impl_->layerSchema_ ? impl_->layerSchema_->getSchema(typeName) : nullptr;
 }
 
 simfil::SchemaId TileFeatureLayer::featureSchemaId(std::string_view featureType) const
 {
-    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->featureSchema(featureType) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ? impl_->layerSchema_->featureSchema(featureType) : simfil::NoSchemaId;
 }
 
 simfil::SchemaId TileFeatureLayer::featurePropertiesSchemaId(std::string_view featureType) const
 {
-    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->featurePropertiesSchema(featureType) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ? impl_->layerSchema_->featurePropertiesSchema(featureType) : simfil::NoSchemaId;
 }
 
 simfil::SchemaId TileFeatureLayer::attributeLayerMapSchemaId(std::string_view featureType) const
 {
-    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->attributeLayerMapSchema(featureType) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ? impl_->layerSchema_->attributeLayerMapSchema(featureType) : simfil::NoSchemaId;
 }
 
 simfil::SchemaId TileFeatureLayer::schemaIdForKey(std::string_view key) const
 {
-    return impl_->schemaRegistry_ ? impl_->schemaRegistry_->schemaId(key) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ? impl_->layerSchema_->schemaId(key) : simfil::NoSchemaId;
 }
 
 simfil::SchemaId TileFeatureLayer::childSchemaId(
@@ -1544,8 +1583,8 @@ simfil::SchemaId TileFeatureLayer::childSchemaId(
     std::string_view fieldName,
     std::optional<simfil::Schema::Kind> preferredKind) const
 {
-    return impl_->schemaRegistry_
-        ? impl_->schemaRegistry_->childSchema(parent, fieldName, preferredKind)
+    return impl_->layerSchema_
+        ? impl_->layerSchema_->childSchema(parent, fieldName, preferredKind)
         : simfil::NoSchemaId;
 }
 
@@ -1554,12 +1593,12 @@ simfil::SchemaId TileFeatureLayer::childSchemaId(
     simfil::StringId field,
     std::optional<simfil::Schema::Kind> preferredKind) const
 {
-    if (!impl_->schemaRegistry_) {
+    if (!impl_->layerSchema_) {
         return simfil::NoSchemaId;
     }
     auto fieldName = strings()->resolve(field);
     return fieldName
-        ? impl_->schemaRegistry_->childSchema(parent, *fieldName, preferredKind)
+        ? impl_->layerSchema_->childSchema(parent, *fieldName, preferredKind)
         : simfil::NoSchemaId;
 }
 
@@ -2036,7 +2075,7 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     auto oldDict = strings();
     // Reset simfil environment and clear expression cache
-    impl_->expressionCache_.reset(Impl::makeSchemaAwareEnvironment(newDict, impl_->schemaRegistry_));
+    impl_->expressionCache_.reset(Impl::makeSchemaAwareEnvironment(newDict, impl_->layerSchema_));
     if (auto res = ModelPool::setStrings(newDict); !res)
         return tl::unexpected<simfil::Error>(std::move(res.error()));
 
@@ -2357,6 +2396,13 @@ ModelNode::Ptr TileFeatureLayer::clone(
             newNode->setTargetValidity(resolve<MultiValidity>(
                 *clone(cache, otherLayer, resolved->targetValidityOrNull())));
         }
+        newCacheNode = newNode;
+        break;
+    }
+    case ColumnId::RelationReferences: {
+        auto resolved = otherLayer->resolve<RelationReference>(*otherNode);
+        auto newNode = newRelationReference(
+            resolve<Relation>(*clone(cache, otherLayer, resolved->relation())));
         newCacheNode = newNode;
         break;
     }

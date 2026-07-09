@@ -1,5 +1,6 @@
 #include "datasource-client.h"
 #include "mapget/model/sourcedatalayer.h"
+#include "mapget/model/stream.h"
 #include "process.hpp"
 #include "mapget/log.h"
 
@@ -33,7 +34,21 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
     if ((int)fetchedInfoResp->statusCode() >= 300) {
         raise(fmt::format("Failed to fetch datasource info: [{}]", (int)fetchedInfoResp->statusCode()));
     }
-    info_ = DataSourceInfo::fromJson(nlohmann::json::parse(std::string(fetchedInfoResp->body())));
+    auto infoJson = nlohmann::json::parse(std::string(fetchedInfoResp->body()));
+    auto const protocolVersionIt = infoJson.find("protocolVersion");
+    if (protocolVersionIt == infoJson.end()) {
+        raise(fmt::format(
+            "Remote data source is missing protocolVersion; expected mapget protocol {}.",
+            TileLayerStream::CurrentProtocolVersion.toString()));
+    }
+    auto const remoteProtocolVersion = Version::fromJson(*protocolVersionIt);
+    if (!remoteProtocolVersion.isCompatible(TileLayerStream::CurrentProtocolVersion)) {
+        raise(fmt::format(
+            "Remote data source protocol {} is incompatible with mapget protocol {}.",
+            remoteProtocolVersion.toString(),
+            TileLayerStream::CurrentProtocolVersion.toString()));
+    }
+    info_ = DataSourceInfo::fromJson(infoJson);
 
     if (info_.nodeId_.empty()) {
         // Unique node IDs are required for the string pool offsets.
@@ -85,7 +100,7 @@ RemoteDataSource::get(
     tileReq->setPath(fmt::format(
         "/tile?layer={}&tileId={}&stage={}&stringPoolOffset={}",
         k.layerId_,
-        k.tileId_.value_,
+        k.tileId_.value(),
         k.stage_,
         cachedStringPoolOffset(info.nodeId_, cache)));
     auto [resultCode, tileResponse] = client->sendRequest(tileReq);

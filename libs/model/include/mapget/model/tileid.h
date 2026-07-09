@@ -1,102 +1,52 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 
-#include "point.h"
+#include "ndsmath/packedtileid.h"
 
 namespace mapget
 {
 
+/** Public mapget tile identifier, backed directly by the NDS.Live packed tile ID. */
+using TileId = ndsmath::PackedTileId;
+
 /**
- * TileId class - represents a rectangular area on the globe, according to
- * the following tiling scheme.
- *
- * Each tile is identified by a zoom level `z` and two grid
- * coordinates `x` and `y`. *mapget* uses a binary tiling scheme for
- * the earths surface: The zoom level `z` controls the number of subdivisions for
- * the WGS84 longitudinal `[-180,180]` axis (columns) and latitudinal `[-90,90]` axis (rows).
- * The tile `x` coordinate indicates the column, and the `y` coordinate indicates the row.
- * On level zero, there are two columns and one row. In general, the number of rows is `2^z`,
- * and the number of columns is `2^(z+1)`.
- *
- * Note: Column 0 is at `lon=-180` and row 0 is at lat=`90` (the north pole).
+ * Return true if a numeric tile ID structurally matches the removed mapget
+ * `0xXXXXYYYYZZZZ` layout and can be converted to an NDS.Live packed tile.
  */
-struct TileId
+inline bool isLegacyTileId(int64_t value)
 {
-    /**
-     * Constructor to initialize TileId with x, y, z
-     */
-    TileId(uint16_t x, uint16_t y, uint16_t z);
+    if (value < 0)
+        return false;
 
-    /**
-     * Constructor to initialize TileId with value
-     */
-    TileId(uint64_t value);  // NOLINT (allow implicit call)
+    auto const raw = static_cast<uint64_t>(value);
+    if ((raw >> 48U) != 0)
+        return false;
 
-    /** Default constructor. */
-    TileId() = default;
+    auto const level = static_cast<uint32_t>(raw & 0xFFFFU);
+    if (level > 15)
+        return false;
 
-    /**
-     * Function to create a TileId from WGS84 longitude, latitude, and zoom level.
-     */
-    static TileId fromWgs84(double longitude, double latitude, uint16_t zoomLevel);
-
-    /**
-     * Get the neighbor for a mapget tile id. Tile row will be clamped to [0, maxForLevel],
-     * so a positive/negative wraparound is not possible. The tile id column will wrap at the
-     * antimeridian. Note: The implementation will only work for offset values [-1, 0, 1].
-     */
-    [[nodiscard]] TileId neighbor(int32_t offsetX, int32_t offsetY) const;
-
-    /**
-     * Get the center of the tile in Wgs84.
-     */
-    [[nodiscard]] Point center() const;
-
-    /**
-     * Get the south-west (minimum) corner of the tile in Wgs84.
-     */
-    [[nodiscard]] Point sw() const;
-
-    /**
-     * Get the north-east (maximum) corner of the tile in Wgs84.
-     */
-    [[nodiscard]] Point ne() const;
-
-    /**
-     * Get the size of the tile in Wgs84.
-     */
-    [[nodiscard]] Point size() const;
-
-    /**
-     * Function to get x (column) component of the TileId
-     */
-    [[nodiscard]] uint16_t x() const;
-
-    /**
-     * Function to get y (row) component of the TileId
-     */
-    [[nodiscard]] uint16_t y() const;
-
-    /**
-     * Function to get z (zoom level) component of the TileId (zoom level)
-     */
-    [[nodiscard]] uint16_t z() const;
-
-    /**
-     * Operator overload for equality comparison
-     */
-    bool operator==(TileId const&) const;
-
-    /**
-     * Operator overload for less than comparison
-     */
-    bool operator<(TileId const&) const;
-
-    /**
-     * The value representing the TileId, in 0x00xxyyzz format.
-     */
-    uint64_t value_ = 0;
-};
-
+    auto const x = static_cast<uint32_t>((raw >> 32U) & 0xFFFFU);
+    auto const y = static_cast<uint32_t>((raw >> 16U) & 0xFFFFU);
+    return x < (uint32_t{1} << (level + 1U)) && y < (uint32_t{1} << level);
 }
+
+/**
+ * Convert a removed mapget `0xXXXXYYYYZZZZ` tile ID to the canonical packed
+ * representation. This is migration glue for legacy manifests/keys only.
+ */
+inline TileId legacyTileIdToPacked(int64_t value)
+{
+    if (!isLegacyTileId(value))
+        throw std::out_of_range("Value is not a convertible legacy mapget tile id.");
+
+    auto const raw = static_cast<uint64_t>(value);
+    auto const level = static_cast<int>(raw & 0xFFFFU);
+    auto const x = static_cast<uint32_t>((raw >> 32U) & 0xFFFFU);
+    auto const y = static_cast<uint32_t>((raw >> 16U) & 0xFFFFU);
+    return TileId::fromTileXY(x, y, level);
+}
+
+} // namespace mapget

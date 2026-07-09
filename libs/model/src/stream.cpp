@@ -128,6 +128,7 @@ bool TileLayerStream::Reader::continueReading()
              && (nextValueType_ == MessageType::Status
                  || nextValueType_ == MessageType::LoadStateChange
                  || nextValueType_ == MessageType::RequestContext
+                 || nextValueType_ == MessageType::SourceCatalogChange
                  || nextValueType_ == MessageType::EndOfStream))
     {
         onControlMessage_(

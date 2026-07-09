@@ -1,19 +1,33 @@
 #include "info.h"
 #include "stream.h"
 #include "mapget/log.h"
-#include "schemaregistry.h"
+#include "layerschema.h"
 
 #include <tuple>
 #include <random>
 #include <sstream>
 #include <charconv>
-#include <mutex>
+#include <cctype>
 #include <regex>
 
 namespace mapget
 {
 
 namespace {
+
+constexpr std::string_view kProtocolReservedIdentifierChars = ":/,~";
+
+/** Returns whether a metadata version was left at its legacy aggregate default. */
+[[nodiscard]] bool isDefaultVersion(Version const& version)
+{
+    return version.major_ == 0 && version.minor_ == 0 && version.patch_ == 0;
+}
+
+/** Stamps local in-process datasources with the current stream protocol when they did not set one. */
+[[nodiscard]] Version effectiveDataSourceProtocolVersion(Version const& version)
+{
+    return isDefaultVersion(version) ? TileLayerStream::CurrentProtocolVersion : version;
+}
 
 /** Standardize missing-field errors across model metadata JSON parsers. */
 auto missing_field(std::string const& error, std::string const& context) {
@@ -33,11 +47,51 @@ std::optional<T> from_chars(std::string_view s, Args... args)
     return number;
 }
 
-/** Serialize LayerInfo schema cache access because the cache is mutable and lazy. */
-std::mutex& schemaRegistryMutex()
+/** Check whether a character can participate in a percent escape. */
+[[nodiscard]] bool isHexDigit(char ch)
 {
-    static std::mutex mutex;
-    return mutex;
+    return std::isdigit(static_cast<unsigned char>(ch)) ||
+           (ch >= 'a' && ch <= 'f') ||
+           (ch >= 'A' && ch <= 'F');
+}
+
+/** Decode one hexadecimal digit used by identifier escaping. */
+[[nodiscard]] uint8_t hexValue(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return static_cast<uint8_t>(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return static_cast<uint8_t>(10 + (ch - 'a'));
+    }
+    return static_cast<uint8_t>(10 + (ch - 'A'));
+}
+
+/** Return true when a character has structural meaning in a flattened identifier. */
+[[nodiscard]] bool isReservedIdentifierCharacter(char ch, std::string_view extraReserved)
+{
+    return kProtocolReservedIdentifierChars.find(ch) != std::string_view::npos ||
+           extraReserved.find(ch) != std::string_view::npos;
+}
+
+/** Return true when an identifier character is reserved and not explicitly allowed in this metadata context. */
+[[nodiscard]] bool isForbiddenIdentifierCharacter(
+    char ch,
+    std::string_view extraReserved,
+    std::string_view allowedReserved)
+{
+    return isReservedIdentifierCharacter(ch, extraReserved) &&
+           allowedReserved.find(ch) == std::string_view::npos;
+}
+
+/** Render a character for validation diagnostics without losing control characters. */
+[[nodiscard]] std::string printableCharacter(char ch)
+{
+    auto const uch = static_cast<unsigned char>(ch);
+    if (std::isprint(uch)) {
+        return fmt::format("'{}'", ch);
+    }
+    return fmt::format("'\\x{:02X}'", uch);
 }
 
 }
@@ -80,6 +134,64 @@ std::string generateNodeHexUuid()
     for (int i = 0; i < 4; ++i)
         ss << std::setw(4) << std::setfill('0') << (rng() & 0xFFFF);
     return ss.str();
+}
+
+std::string escapeIdentifierComponent(std::string_view input, std::string_view extraReserved)
+{
+    std::string result;
+    result.reserve(input.size());
+    for (char ch : input) {
+        auto const uch = static_cast<unsigned char>(ch);
+        if (ch == '%' || isReservedIdentifierCharacter(ch, extraReserved)) {
+            // Percent escaping keeps delimiter-separated protocol strings
+            // reversible without changing the underlying metadata value.
+            fmt::format_to(std::back_inserter(result), FMT_STRING("%{:02X}"), uch);
+        }
+        else {
+            result.push_back(ch);
+        }
+    }
+    return result;
+}
+
+bool unescapeIdentifierComponent(std::string_view input, std::string& output, std::string* error)
+{
+    output.clear();
+    output.reserve(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        char const ch = input[i];
+        if (ch != '%') {
+            output.push_back(ch);
+            continue;
+        }
+        if (i + 2 >= input.size() || !isHexDigit(input[i + 1]) || !isHexDigit(input[i + 2])) {
+            if (error) {
+                *error = fmt::format("Malformed percent escape in identifier component '{}'.", input);
+            }
+            return false;
+        }
+        auto const decoded = static_cast<char>((hexValue(input[i + 1]) << 4U) | hexValue(input[i + 2]));
+        output.push_back(decoded);
+        i += 2;
+    }
+    return true;
+}
+
+void validateIdentifierName(
+    std::string_view kind,
+    std::string_view value,
+    std::string_view extraReserved,
+    std::string_view allowedReserved)
+{
+    for (char ch : value) {
+        if (isForbiddenIdentifierCharacter(ch, extraReserved, allowedReserved)) {
+            raise(fmt::format(
+                "Invalid {} '{}': reserved character {} is not allowed.",
+                kind,
+                value,
+                printableCharacter(ch)));
+        }
+    }
 }
 
 bool Version::isCompatible(const Version& other) const
@@ -127,8 +239,10 @@ nlohmann::json Version::toJson() const
 IdPart IdPart::fromJson(const nlohmann::json& j)
 {
     try {
+        auto idPart = j.at("partId").get<std::string>();
+        validateIdentifierName("id-part label", idPart, ".");
         return {
-            j.at("partId").get<std::string>(),
+            std::move(idPart),
             j.value("description", ""),
             j.value("datatype", IdPartDataType::I64),
             j.value("isSynthetic", false),
@@ -339,7 +453,9 @@ FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
             idCompositions.push_back(idParts);
         }
 
-        return {j.at("name").get<std::string>(), idCompositions};
+        auto name = j.at("name").get<std::string>();
+        validateIdentifierName("feature type name", name, ".");
+        return {std::move(name), idCompositions};
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "FeatureTypeInfo");
@@ -363,28 +479,18 @@ nlohmann::json FeatureTypeInfo::toJson() const
 Coverage Coverage::fromJson(const nlohmann::json& j)
 {
     try {
-        if (j.is_number_unsigned())
-            // A bare integer is shorthand for a single covered tile.
+        if (j.is_number_integer() || j.is_number_unsigned()) {
+            // A bare integer is shorthand for a single covered packed tile.
+            auto tileId = j.get<int32_t>();
             return {
-                j.get<uint64_t>(),
-                j.get<uint64_t>(),
-                std::vector<bool>()
-            };
-        if (j.is_number_integer()) {
-            // YAML ingestion may materialize the same shorthand as a signed
-            // integer, so accept it as long as the tile id stays non-negative.
-            auto tileId = j.get<int64_t>();
-            if (tileId < 0)
-                raise("Coverage tile ID must be non-negative.");
-            return {
-                static_cast<uint64_t>(tileId),
-                static_cast<uint64_t>(tileId),
+                TileId::fromValue(tileId),
+                TileId::fromValue(tileId),
                 std::vector<bool>()
             };
         }
         return {
-            TileId(j.at("min").get<uint64_t>()),
-            TileId(j.at("max").get<uint64_t>()),
+            TileId::fromValue(j.at("min").get<int32_t>()),
+            TileId::fromValue(j.at("max").get<int32_t>()),
             j.value("filled", std::vector<bool>())};
     }
     catch (nlohmann::json::out_of_range const& e) {
@@ -395,8 +501,8 @@ Coverage Coverage::fromJson(const nlohmann::json& j)
 nlohmann::json Coverage::toJson() const
 {
     if (min_ == max_ && filled_.empty())
-        return min_.value_;
-    return nlohmann::json{{"min", min_.value_}, {"max", max_.value_}, {"filled", filled_}};
+        return min_.value();
+    return nlohmann::json{{"min", min_.value()}, {"max", max_.value()}, {"filled", filled_}};
 }
 
 std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::string const& layerId)
@@ -446,7 +552,10 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         result->canRead_ = j.value("canRead", true);
         result->canWrite_ = j.value("canWrite", false);
         result->version_ = Version::fromJson(j.value("version", Version().toJson()));
-        result->featureModelSchema_ = j.value("featureModelSchema", nlohmann::json{});
+        if (auto schemaIt = j.find("featureModelSchema"); schemaIt != j.end()) {
+            result->featureModelSchema_ = LayerSchema::fromJsonSchema(*schemaIt);
+        }
+        result->validateIdentifiers();
         return result;
     }
     catch (nlohmann::json::out_of_range const& e) {
@@ -481,24 +590,29 @@ nlohmann::json LayerInfo::toJson() const
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};
 
-    if (!featureModelSchema_.is_null()) {
-        result["featureModelSchema"] = featureModelSchema_;
+    if (featureModelSchema_) {
+        result["featureModelSchema"] = featureModelSchema_->toJsonSchema();
     }
 
     return result;
 }
 
-std::shared_ptr<SchemaRegistry> LayerInfo::schemaRegistry() const
+std::shared_ptr<LayerSchema const> LayerInfo::layerSchema() const
 {
-    if (featureModelSchema_.is_null()) {
-        return nullptr;
-    }
+    return featureModelSchema_;
+}
 
-    std::lock_guard lock(schemaRegistryMutex());
-    if (!schemaRegistry_) {
-        schemaRegistry_ = SchemaRegistry::fromJson(featureModelSchema_);
+void LayerInfo::validateIdentifiers() const
+{
+    validateIdentifierName("layer id", layerId_);
+    for (auto const& featureType : featureTypes_) {
+        validateIdentifierName("feature type name", featureType.name_, ".");
+        for (auto const& composition : featureType.uniqueIdCompositions_) {
+            for (auto const& idPart : composition) {
+                validateIdentifierName("id-part label", idPart.idPartLabel_, ".");
+            }
+        }
     }
-    return schemaRegistry_;
 }
 
 FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const
@@ -573,6 +687,7 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
     try {
         std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
         for (auto& item : j.at("layers").items()) {
+            validateIdentifierName("layer id", item.key());
             layers[item.key()] = LayerInfo::fromJson(item.value(), item.key());
         }
 
@@ -584,7 +699,7 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             // sources, so synthesize one to keep string-pool ownership valid.
             nodeId = generateNodeHexUuid();
 
-        return {
+        auto result = DataSourceInfo{
             nodeId,
             j.at("mapId").get<std::string>(),
             layers,
@@ -592,8 +707,9 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             j.value("addOn", false),
             j.value("extraJsonAttachment", nlohmann::json::object()),
             Version::fromJson(
-                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))
-        };
+                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))};
+        result.validateIdentifiers();
+        return result;
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "DataSourceInfo");
@@ -614,7 +730,18 @@ nlohmann::json DataSourceInfo::toJson() const
         {"maxParallelJobs", maxParallelJobs_},
         {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
-        {"protocolVersion", protocolVersion_.toJson()}};
+        {"protocolVersion", effectiveDataSourceProtocolVersion(protocolVersion_).toJson()}};
+}
+
+void DataSourceInfo::validateIdentifiers() const
+{
+    validateIdentifierName("map id", mapId_, {}, "/");
+    for (auto const& [layerId, layerInfo] : layers_) {
+        validateIdentifierName("layer id", layerId);
+        if (layerInfo) {
+            layerInfo->validateIdentifiers();
+        }
+    }
 }
 
 KeyValueViewPairs castToKeyValueView(const KeyValuePairs& kvp)

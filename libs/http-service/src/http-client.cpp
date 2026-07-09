@@ -326,7 +326,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
 
     auto tileIds = json::array();
     for (auto const& tileId : request->tileIds_) {
-        tileIds.emplace_back(tileId.value_);
+        tileIds.emplace_back(tileId.value());
     }
     auto requestJson = json::object({
         {"mapId", request->mapId_},
@@ -336,7 +336,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
     if (!request->priorityTileIds_.empty()) {
         auto priorityTileIds = json::array();
         for (auto const& tileId : request->priorityTileIds_) {
-            priorityTileIds.emplace_back(tileId.value_);
+            priorityTileIds.emplace_back(tileId.value());
         }
         requestJson["priorityTileIds"] = std::move(priorityTileIds);
     }
@@ -346,6 +346,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
         {"scope", searchScopeToJsonValue(request->search_.scope_)},
         {"rewrite", request->search_.rewriteQuery_},
         {"withFields", request->search_.withFields_},
+        {"featureTypes", request->search_.featureTypes_},
         {"requests", json::array({std::move(requestJson)})},
         {"stringPoolOffsets", reader->stringPoolCache()->stringPoolOffsets()},
     }).dump();

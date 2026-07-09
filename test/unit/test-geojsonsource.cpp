@@ -14,9 +14,11 @@ using namespace mapget;
 namespace
 {
 
-// Sample GeoJSON with a 64-bit tile ID (37392110387213 > UINT32_MAX)
-constexpr uint64_t largeTileId = 37392110387213;
-constexpr uint64_t secondTileId = 37392110387214;
+// Sample GeoJSON with signed packed tile IDs, including a negative level-15 value.
+constexpr int32_t largeTileId = -2147483648;
+constexpr int32_t secondTileId = -2147483647;
+constexpr int64_t legacyMapgetTileId = (int64_t{1} << 32) | int64_t{1};
+constexpr int32_t legacyMapgetTileIdPacked = 131073;
 
 auto sampleGeoJson = R"json({"type": "FeatureCollection", "features": [{
     "geometry": {
@@ -27,7 +29,7 @@ auto sampleGeoJson = R"json({"type": "FeatureCollection", "features": [{
         ],
         "type": "LineString"
     },
-    "id": "37392110387213.10",
+    "id": "-2147483648.10",
     "properties": {
         "length": 100
     },
@@ -80,10 +82,10 @@ void writeFile(const std::filesystem::path& path, const std::string& content)
 
 TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 {
-    SECTION("64-bit tile ID support (legacy mode)")
+    SECTION("signed packed tile ID support (legacy mode)")
     {
-        // Verify our test tile ID exceeds 32-bit max
-        REQUIRE(largeTileId > UINT32_MAX);
+        // Verify the test exercises signed level-15 tile IDs.
+        REQUIRE(largeTileId < 0);
 
         auto tempDir = createTempDir();
 
@@ -105,7 +107,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         // Create a TileFeatureLayer to fill
         auto strings = std::make_shared<StringPool>(info.nodeId_);
         auto tile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             layer,
@@ -137,7 +139,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
             },
             "index": {
                 "files": {
-                    "my_roads.geojson": { "tileId": 37392110387213 }
+                    "my_roads.geojson": { "tileId": -2147483648 }
                 }
             }
         })json";
@@ -155,7 +157,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         auto strings = std::make_shared<StringPool>(info.nodeId_);
         auto tile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             layer,
@@ -181,8 +183,8 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
             "index": {
                 "defaultLayer": "GeoJsonAny",
                 "files": {
-                    "roads.geojson": { "tileId": 37392110387213, "layer": "Road" },
-                    "lanes.geojson": { "tileId": 37392110387213, "layer": "Lane" }
+                    "roads.geojson": { "tileId": -2147483648, "layer": "Road" },
+                    "lanes.geojson": { "tileId": -2147483648, "layer": "Lane" }
                 }
             }
         })json";
@@ -209,7 +211,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         // Fill Road layer
         auto strings = std::make_shared<StringPool>(info.nodeId_);
         auto roadTile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             roadLayer,
@@ -220,7 +222,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         // Fill Lane layer
         auto laneTile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             laneLayer,
@@ -243,7 +245,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
             "version": 1,
             "index": {
                 "files": {
-                    "data.geojson": 37392110387213
+                    "data.geojson": -2147483648
                 }
             }
         })json";
@@ -254,6 +256,72 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(source.hasManifest());
         REQUIRE(source.manifest().files.size() == 1);
         REQUIRE(source.manifest().files[0].tileId == largeTileId);
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Manifest converts removed mapget tile ID layout")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "legacy.geojson", sampleGeoJson2);
+
+        auto manifest = fmt::format(R"json({{
+            "version": 1,
+            "index": {{
+                "files": {{
+                    "legacy.geojson": {{ "tileId": {} }}
+                }}
+            }}
+        }})json", legacyMapgetTileId);
+        writeFile(tempDir / "manifest.json", manifest);
+
+        geojsonsource::GeoJsonSource source(tempDir.string(), false);
+
+        REQUIRE(source.hasManifest());
+        REQUIRE(source.manifest().files.size() == 1);
+        REQUIRE(source.manifest().files[0].tileId == legacyMapgetTileIdPacked);
+
+        auto info = source.info();
+        auto layer = info.getLayer("GeoJsonAny");
+        REQUIRE(layer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromTileXY(1, 0, 1),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() > 0);
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Manifest can force legacy mapget tile ID interpretation")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "legacy.geojson", sampleGeoJson2);
+
+        auto manifest = R"json({
+            "version": 1,
+            "tileIdEncoding": "legacy-mapget",
+            "index": {
+                "files": {
+                    "legacy.geojson": { "tileId": 13 }
+                }
+            }
+        })json";
+        writeFile(tempDir / "manifest.json", manifest);
+
+        geojsonsource::GeoJsonSource source(tempDir.string(), false);
+
+        REQUIRE(source.hasManifest());
+        REQUIRE(source.manifest().files.size() == 1);
+        REQUIRE(source.manifest().files[0].tileId == TileId::fromTileXY(0, 0, 13).value());
 
         std::filesystem::remove_all(tempDir);
     }
@@ -299,8 +367,8 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
             "version": 1,
             "index": {
                 "files": {
-                    "existing.geojson": { "tileId": 37392110387213 },
-                    "missing.geojson": { "tileId": 37392110387214 }
+                    "existing.geojson": { "tileId": -2147483648 },
+                    "missing.geojson": { "tileId": -2147483647 }
                 }
             }
         })json";
@@ -338,6 +406,36 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         std::filesystem::remove_all(tempDir);
     }
 
+    SECTION("Legacy mode converts removed mapget tile ID filenames")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / (std::to_string(legacyMapgetTileId) + ".geojson"), sampleGeoJson2);
+
+        geojsonsource::GeoJsonSource source(tempDir.string(), false);
+
+        REQUIRE_FALSE(source.hasManifest());
+
+        auto info = source.info();
+        auto layer = info.getLayer("GeoJsonAny");
+        REQUIRE(layer != nullptr);
+        REQUIRE(layer->coverage_.size() == 1);
+        REQUIRE(layer->coverage_.front().min_ == TileId::fromTileXY(1, 0, 1));
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromTileXY(1, 0, 1),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() > 0);
+
+        std::filesystem::remove_all(tempDir);
+    }
+
     SECTION("Manifest prevents legacy filename parsing for non-numeric names")
     {
         auto tempDir = createTempDir();
@@ -350,7 +448,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
             "version": 1,
             "index": {
                 "files": {
-                    "mytestdata.geojson": { "tileId": 62530591326221, "layer": "Road" }
+                    "mytestdata.geojson": { "tileId": -2147483646, "layer": "Road" }
                 }
             }
         })json";
@@ -380,8 +478,8 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
             "version": 1,
             "index": {
                 "files": {
-                    "tile1.geojson": { "tileId": 37392110387213, "layer": "Road" },
-                    "tile2.geojson": { "tileId": 37392110387214, "layer": "Road" }
+                    "tile1.geojson": { "tileId": -2147483648, "layer": "Road" },
+                    "tile2.geojson": { "tileId": -2147483647, "layer": "Road" }
                 }
             }
         })json";
@@ -398,7 +496,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         auto strings = std::make_shared<StringPool>(info.nodeId_);
 
         auto tile1 = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             roadLayer,
@@ -407,7 +505,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(tile1->numRoots() > 0);
 
         auto tile2 = std::make_shared<TileFeatureLayer>(
-            TileId(secondTileId),
+            TileId::fromValue(secondTileId),
             info.nodeId_,
             info.mapId_,
             roadLayer,
@@ -432,7 +530,7 @@ layers:
       - name: RoadFeature
         uniqueIdCompositions:
           - - partId: tileId
-              datatype: U64
+              datatype: I64
             - partId: featureIndex
               datatype: U32
     coverage:
@@ -442,7 +540,7 @@ layers:
       - name: LaneFeature
         uniqueIdCompositions:
           - - partId: tileId
-              datatype: U64
+              datatype: I64
             - partId: featureIndex
               datatype: U32
     coverage:
@@ -464,7 +562,7 @@ layers:
 
         auto strings = std::make_shared<StringPool>(info.nodeId_);
         auto roadTile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             info.getLayer("Road"),
@@ -473,13 +571,135 @@ layers:
         REQUIRE(roadTile->numRoots() > 0);
 
         auto laneTile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             info.getLayer("Lane"),
             strings);
         REQUIRE_NOTHROW(source.fill(laneTile));
         REQUIRE(laneTile->numRoots() > 0);
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Template mode missing tile file yields empty tile without error")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "info.yaml", R"yaml(
+mapId: SparseGeoJson
+layers:
+  Road:
+    featureTypes:
+      - name: RoadFeature
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: I64
+            - partId: featureIndex
+              datatype: U32
+)yaml");
+
+        geojsonsource::GeoJsonSource source(
+            tempDir.string(),
+            geojsonsource::GeoJsonSourceOptions{
+                .withAttrLayers = false,
+                .tilePathTemplate = "{layerId}/{tileId}.geojson",
+                .dataSourceInfoLocation = (tempDir / "info.yaml").string()});
+
+        auto info = source.info();
+        auto layer = info.getLayer("Road");
+        REQUIRE(layer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromValue(largeTileId),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() == 0);
+        REQUIRE_FALSE(tile->error().has_value());
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Manifest mode missing tile mapping yields empty tile without error")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "existing.geojson", sampleGeoJson);
+        writeFile(tempDir / "manifest.json", R"json({
+            "version": 1,
+            "index": {
+                "files": {
+                    "existing.geojson": { "tileId": -2147483648, "layer": "Road" }
+                }
+            }
+        })json");
+
+        geojsonsource::GeoJsonSource source(tempDir.string(), false);
+
+        auto info = source.info();
+        auto layer = info.getLayer("Road");
+        REQUIRE(layer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromValue(secondTileId),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() == 0);
+        REQUIRE_FALSE(tile->error().has_value());
+
+        std::filesystem::remove_all(tempDir);
+    }
+
+    SECTION("Existing malformed GeoJSON remains a tile error")
+    {
+        auto tempDir = createTempDir();
+
+        writeFile(tempDir / "Road" / (std::to_string(largeTileId) + ".geojson"), "{not valid json");
+        writeFile(tempDir / "info.yaml", R"yaml(
+mapId: BrokenGeoJson
+layers:
+  Road:
+    featureTypes:
+      - name: RoadFeature
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: I64
+            - partId: featureIndex
+              datatype: U32
+)yaml");
+
+        geojsonsource::GeoJsonSource source(
+            tempDir.string(),
+            geojsonsource::GeoJsonSourceOptions{
+                .withAttrLayers = false,
+                .tilePathTemplate = "{layerId}/{tileId}.geojson",
+                .dataSourceInfoLocation = (tempDir / "info.yaml").string()});
+
+        auto info = source.info();
+        auto layer = info.getLayer("Road");
+        REQUIRE(layer != nullptr);
+
+        auto strings = std::make_shared<StringPool>(info.nodeId_);
+        auto tile = std::make_shared<TileFeatureLayer>(
+            TileId::fromValue(largeTileId),
+            info.nodeId_,
+            info.mapId_,
+            layer,
+            strings);
+
+        REQUIRE_NOTHROW(source.fill(tile));
+        REQUIRE(tile->numRoots() == 0);
+        REQUIRE(tile->error().has_value());
 
         std::filesystem::remove_all(tempDir);
     }
@@ -494,7 +714,7 @@ layers:
       - name: RoadFeature
         uniqueIdCompositions:
           - - partId: tileId
-              datatype: U64
+              datatype: I64
             - partId: featureIndex
               datatype: U32
     coverage:
@@ -531,7 +751,7 @@ layers:
 
         auto strings = std::make_shared<StringPool>(info.nodeId_);
         auto roadTile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             info.nodeId_,
             info.mapId_,
             roadLayer,
@@ -556,7 +776,7 @@ layers:
 
         auto fallbackStrings = std::make_shared<StringPool>(fallbackInfo.nodeId_);
         auto tile = std::make_shared<TileFeatureLayer>(
-            TileId(largeTileId),
+            TileId::fromValue(largeTileId),
             fallbackInfo.nodeId_,
             fallbackInfo.mapId_,
             anyLayer,

@@ -9,7 +9,7 @@ add_library(mapget-model STATIC
   include/mapget/model/featurelayer-search.h
   include/mapget/model/geojson-import.h
   include/mapget/model/json-compare.h
-  include/mapget/model/schemaregistry.h
+  include/mapget/model/layerschema.h
   include/mapget/model/info.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
@@ -40,12 +40,11 @@ add_library(mapget-model STATIC
   src/featurelayer-search.cpp
   src/geojson-import.cpp
   src/json-compare.cpp
-  src/schemaregistry.cpp
+  src/layerschema.cpp
   src/info.cpp
   src/feature.cpp
   src/attr.cpp
   src/attrlayer.cpp
-  src/tileid.cpp
   src/featureid.cpp
   src/relation.cpp
   src/stream.cpp
@@ -70,6 +69,7 @@ target_link_libraries(mapget-model
   PUBLIC
     glm::glm
     mapget-log
+    ndsmath::ndsmath
     sfl::sfl
     Bitsery::bitsery
     simfil::simfil

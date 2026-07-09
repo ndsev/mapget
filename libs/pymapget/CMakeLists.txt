@@ -25,8 +25,8 @@ target_include_directories(pymapget
     binding)
 
 target_compile_features(pymapget
-  INTERFACE
-    cxx_std_17)
+  PRIVATE
+    cxx_std_20)
 
 set(DEPLOY_FILES "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
 
@@ -37,5 +37,6 @@ add_wheel(pymapget
   VERSION "${MAPGET_VERSION}"
   DESCRIPTION "Python bindings for the mapget library."
   TARGET_DEPENDENCIES mapget-model mapget-http-datasource
+  MODULE_DEPENDENCIES ndslive-math
   LICENSE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE"
   DEPLOY_FILES ${DEPLOY_FILES})

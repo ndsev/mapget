@@ -22,7 +22,7 @@ namespace mapget::geojsonsource
 struct FileEntry
 {
     std::string filename;
-    uint64_t tileId = 0;
+    int32_t tileId = 0;
     std::string layer;
 };
 
@@ -55,7 +55,7 @@ struct Manifest
  */
 struct TileLayerKey
 {
-    uint64_t tileId = 0;
+    int32_t tileId = 0;
     std::string layer;
 
     bool operator==(const TileLayerKey& other) const
@@ -68,7 +68,7 @@ struct TileLayerKeyHash
 {
     std::size_t operator()(const TileLayerKey& key) const
     {
-        return std::hash<uint64_t>()(key.tileId) ^ (std::hash<std::string>()(key.layer) << 1);
+        return std::hash<int32_t>()(key.tileId) ^ (std::hash<std::string>()(key.layer) << 1);
     }
 };
 
@@ -137,8 +137,8 @@ private:
     [[nodiscard]] bool parseManifest();
     void initFromManifest();
     void initFromDirectory();
-    [[nodiscard]] std::string resolveTilePath(uint64_t tileId, std::string_view layerId) const;
-    [[nodiscard]] std::string readTileBody(uint64_t tileId, std::string_view layerId) const;
+    [[nodiscard]] std::string resolveTilePath(int32_t tileId, std::string_view layerId) const;
+    [[nodiscard]] std::optional<std::string> readTileBody(int32_t tileId, std::string_view layerId) const;
     [[nodiscard]] static nlohmann::json createLayerInfoJson(const std::string& layerName);
 
     mapget::DataSourceInfo info_;
@@ -149,7 +149,7 @@ private:
     std::string tilePathTemplate_;
     Manifest manifest_;
     std::unordered_map<TileLayerKey, std::string, TileLayerKeyHash> tileLayerToFile_;
-    std::unordered_map<std::string, std::unordered_set<uint64_t>> layerCoverage_;
+    std::unordered_map<std::string, std::unordered_set<int32_t>> layerCoverage_;
 };
 
 /**
@@ -166,8 +166,8 @@ public:
     void fill(mapget::TileSourceDataLayer::Ptr const&) override;
 
 private:
-    [[nodiscard]] std::string renderTileUrl(uint64_t tileId, std::string_view layerId) const;
-    [[nodiscard]] std::string fetchTileBody(uint64_t tileId, std::string_view layerId) const;
+    [[nodiscard]] std::string renderTileUrl(int32_t tileId, std::string_view layerId) const;
+    [[nodiscard]] std::string fetchTileBody(int32_t tileId, std::string_view layerId) const;
 
     mapget::DataSourceInfo info_;
     std::string baseUrl_;

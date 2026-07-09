@@ -25,6 +25,24 @@ struct BoundModelNode
 
     virtual ModelNode::Ptr node() = 0;
 
+    TileFeatureModelLayerBase& featureModelLayer()
+    {
+        struct GetTileFeatureModelLayer : public simfil::ModelNode {
+            explicit GetTileFeatureModelLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
+            auto operator()() {
+                return std::dynamic_pointer_cast<TileFeatureModelLayerBase>(
+                    std::const_pointer_cast<simfil::Model>(model_));
+            }
+        };
+        if (auto n = node()) {
+            if (auto ptr = GetTileFeatureModelLayer(*n)())
+                return *ptr;
+            else
+                throw pybind11::type_error("Unexpected model type");
+        }
+        throw pybind11::value_error("Node is NULL");
+    }
+
     TileFeatureLayer& featureLayer()
     {
         struct GetTileFeatureLayer : public simfil::ModelNode {
@@ -48,7 +66,12 @@ struct BoundModelNodeBase : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundModelNode>(m, "ModelNode")
+        py::class_<BoundModelNode>(m, "ModelNode", R"pbdoc(
+            Base wrapper for all mapget/SIMFIL model nodes exposed to Python.
+
+            Concrete subclasses represent objects, arrays, features, attributes,
+            geometry, feature ids, search results, and other typed nodes.
+        )pbdoc")
             .def(
                 "value",
                 [](BoundModelNode& self) {
@@ -57,7 +80,10 @@ struct BoundModelNodeBase : public BoundModelNode
                     return ScalarValueType{};
                 },
                 R"pbdoc(
-            Get the node's scalar value if it has one.
+                Return this node's scalar value.
+
+                Object and array nodes return an unset scalar value. Use
+                `to_dict()`, iteration, or indexed access for structured nodes.
         )pbdoc")
             .def(
                 "to_json",
@@ -66,18 +92,30 @@ struct BoundModelNodeBase : public BoundModelNode
                         return n->toJson().dump();
                     return std::string("null");
                 },
-                "Convert this node to a JSON string.")
+                R"pbdoc(
+                Convert this node and all nested children to a JSON string.
+            )pbdoc")
             .def(
                 "to_dict",
                 [](BoundModelNode& self) -> py::object {
                     if (auto n = self.node()) {
-                        auto& fl = self.featureLayer();
-                        return nodeToPython(n, fl);
+                        auto& model = self.featureModelLayer();
+                        return nodeToPython(n, model);
                     }
                     return py::none();
                 },
-                "Convert this node to a Python dict/list/scalar.");
-        py::enum_<ValueType>(m, "ValueType")
+                R"pbdoc(
+                Convert this node recursively to Python values.
+
+                Objects become dictionaries, arrays become lists, and scalar
+                nodes become the matching Python scalar type.
+            )pbdoc");
+        py::enum_<ValueType>(m, "ValueType", R"pbdoc(
+            SIMFIL model-node value category.
+
+            Use `ModelNode.type()` to distinguish scalar, object and array
+            access patterns before indexing dynamic model nodes.
+        )pbdoc")
             .value("UNDEF", ValueType::Undef)
             .value("NULL_", ValueType::Null)
             .value("BOOL", ValueType::Bool)
@@ -88,14 +126,20 @@ struct BoundModelNodeBase : public BoundModelNode
             .value("OBJECT", ValueType::Object)
             .value("ARRAY", ValueType::Array);
 
-        py::class_<BoundModelNodeBase, BoundModelNode>(m, "ModelNodeBase")
+        py::class_<BoundModelNodeBase, BoundModelNode>(m, "ModelNodeBase", R"pbdoc(
+            Generic resolved mapget/SIMFIL model node.
+
+            This wrapper supports dictionary-like access for object nodes,
+            sequence-like access for array nodes, scalar access through
+            `value()`, and recursive conversion through `to_dict()`.
+        )pbdoc")
             .def("__len__", [](BoundModelNodeBase& self) {
                 return self.modelNodePtr_->size();
-            })
+            }, "Return the number of object fields or array elements.")
             .def("__getitem__", [](BoundModelNodeBase& self, std::string_view const& key) {
-                auto& fl = self.featureLayer();
+                auto& model = self.featureModelLayer();
                 for (auto const& [fieldId, child] : self.modelNodePtr_->fields()) {
-                    if (auto resolved = fl.lookupStringId(fieldId)) {
+                    if (auto resolved = model.lookupStringId(fieldId)) {
                         if (*resolved == key) {
                             BoundModelNodeBase node;
                             node.modelNodePtr_ = child;
@@ -104,7 +148,7 @@ struct BoundModelNodeBase : public BoundModelNode
                     }
                 }
                 throw py::key_error(std::string(key));
-            }, py::arg("key"))
+            }, py::arg("key"), "Return an object field by key.")
             .def("__getitem__", [](BoundModelNodeBase& self, int64_t i) {
                 auto sz = (int64_t)self.modelNodePtr_->size();
                 if (i < 0) i += sz;
@@ -112,15 +156,15 @@ struct BoundModelNodeBase : public BoundModelNode
                 BoundModelNodeBase node;
                 node.modelNodePtr_ = self.modelNodePtr_->at(i);
                 return node;
-            }, py::arg("index"))
+            }, py::arg("index"), "Return an array element by index; negative indices are supported.")
             .def("__iter__", [](BoundModelNodeBase& self) {
                 auto n = self.modelNodePtr_;
                 auto type = n->type();
                 if (type == ValueType::Object) {
                     py::list result;
-                    auto& fl = self.featureLayer();
+                    auto& model = self.featureModelLayer();
                     for (auto const& [fieldId, child] : n->fields()) {
-                        if (auto key = fl.lookupStringId(fieldId)) {
+                        if (auto key = model.lookupStringId(fieldId)) {
                             BoundModelNodeBase node;
                             node.modelNodePtr_ = child;
                             result.append(py::make_tuple(std::string(*key), node));
@@ -139,10 +183,10 @@ struct BoundModelNodeBase : public BoundModelNode
                 }
                 py::list empty;
                 return py::iter(empty);
-            })
+            }, "Iterate object nodes as `(key, node)` pairs and array nodes as child nodes.")
             .def("type", [](BoundModelNodeBase& self) {
                 return self.modelNodePtr_->type();
-            });
+            }, "Return this node's `ValueType`.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -226,7 +270,7 @@ struct BoundObject : public BoundModelNode
             "add_field",
             [](ObjClass& self, std::string_view const& name, py::object const& py_value)
             {
-                auto vv = pyValueToModel(py_value, self.featureLayer());
+                auto vv = pyValueToModel(py_value, self.featureModelLayer());
                 std::visit(
                     [&self, &name](auto&& value)
                     {
@@ -252,7 +296,12 @@ struct BoundObject : public BoundModelNode
 
     static void bind(py::module_& m)
     {
-        auto boundClass = py::class_<BoundObject, BoundModelNode>(m, "Object");
+        auto boundClass = py::class_<BoundObject, BoundModelNode>(m, "Object", R"pbdoc(
+            Mutable SIMFIL object node.
+
+            Object fields are keyed by strings and may hold scalar values,
+            arrays, objects, or other model nodes.
+        )pbdoc");
         bindObjectMethods(boundClass);
         boundClass
             .def("__len__", [](BoundObject& self) { return self.modelNodePtr_->size(); })
@@ -269,9 +318,9 @@ struct BoundObject : public BoundModelNode
                 "Get a field by name.")
             .def("__iter__", [](BoundObject& self) {
                 py::list result;
-                auto& fl = self.featureLayer();
+                auto& model = self.featureModelLayer();
                 for (auto const& [fieldId, childNode] : self.modelNodePtr_->fields()) {
-                    if (auto resolved = fl.lookupStringId(fieldId)) {
+                    if (auto resolved = model.lookupStringId(fieldId)) {
                         BoundModelNodeBase node;
                         node.modelNodePtr_ = childNode;
                         result.append(py::make_tuple(std::string(*resolved), node));
@@ -292,11 +341,16 @@ struct BoundArray : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundArray, BoundModelNode>(m, "Array")
+        py::class_<BoundArray, BoundModelNode>(m, "Array", R"pbdoc(
+            Mutable SIMFIL array node.
+
+            Arrays preserve insertion order and may contain scalar values,
+            nested objects/arrays, or other model nodes.
+        )pbdoc")
             .def(
                 "append",
                 [](BoundArray& self, py::object const& py_value) {
-                    auto vv = pyValueToModel(py_value, self.featureLayer());
+                    auto vv = pyValueToModel(py_value, self.featureModelLayer());
                     std::visit([&self](auto&& value) { self.modelNodePtr_->append(value); }, vv);
                 },
                 py::arg("value"),
@@ -337,13 +391,19 @@ struct BoundGeometry : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::enum_<GeomType>(m, "GeomType")
+        py::enum_<GeomType>(m, "GeomType", R"pbdoc(
+            Geometry primitive type stored in a mapget geometry node.
+        )pbdoc")
             .value("LINE", GeomType::Line)
             .value("MESH", GeomType::Mesh)
             .value("POINTS", GeomType::Points)
             .value("POLYGON", GeomType::Polygon);
 
-        py::class_<BoundGeometry, BoundModelNode>(m, "Geometry")
+        py::class_<BoundGeometry, BoundModelNode>(m, "Geometry", R"pbdoc(
+            One geometry primitive inside a geometry collection.
+
+            Coordinates are stored as longitude, latitude and elevation triples.
+        )pbdoc")
             .def(
                 "append",
                 [](BoundGeometry& node, double const& lon, double const& lat, double const& alt) {
@@ -401,7 +461,9 @@ struct BoundGeometryCollection : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundGeometryCollection, BoundModelNode>(m, "GeometryCollection")
+        py::class_<BoundGeometryCollection, BoundModelNode>(m, "GeometryCollection", R"pbdoc(
+            Ordered collection of geometry primitives for a feature or search result.
+        )pbdoc")
             .def(
                 "new_geometry",
                 [](BoundGeometryCollection& self, GeomType const& geomType)
@@ -468,7 +530,12 @@ struct BoundAttribute : public BoundObject<Attribute>
     static void bind(py::module_& m)
     {
         auto boundClass =
-            py::class_<BoundAttribute, BoundModelNode>(m, "Attribute")
+            py::class_<BoundAttribute, BoundModelNode>(m, "Attribute", R"pbdoc(
+                Named feature attribute.
+
+                Attributes are object-like nodes: besides their name and
+                validity/source-data metadata, they can store arbitrary fields.
+            )pbdoc")
                 .def(
                     "validity",
                     [](BoundAttribute& self) { return BoundMultiValidity(self.modelNodePtr_->validity()); },
@@ -511,7 +578,7 @@ struct BoundAttribute : public BoundObject<Attribute>
         bindObjectMethods(boundClass);
         boundClass.def("__iter__", [](BoundAttribute& self) {
             py::list result;
-            auto& fl = self.featureLayer();
+            auto& fl = self.featureModelLayer();
             for (auto const& [fieldId, childNode] : self.modelNodePtr_->fields()) {
                 if (auto resolved = fl.lookupStringId(fieldId)) {
                     BoundModelNodeBase node;
@@ -530,7 +597,9 @@ struct BoundAttributeLayer : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundAttributeLayer, BoundModelNode>(m, "AttributeLayer")
+        py::class_<BoundAttributeLayer, BoundModelNode>(m, "AttributeLayer", R"pbdoc(
+            Ordered collection of attributes attached under one attribute-layer name.
+        )pbdoc")
             .def(
                 "new_attribute",
                 [](BoundAttributeLayer& self, std::string_view const& name)
@@ -554,7 +623,7 @@ struct BoundAttributeLayer : public BoundModelNode
             })
             .def("to_dict", [](BoundAttributeLayer& self) -> py::object {
                 if (auto n = self.node()) {
-                    auto& fl = self.featureLayer();
+                    auto& fl = self.featureModelLayer();
                     return nodeToPython(n, fl, true);
                 }
                 return py::none();
@@ -572,7 +641,9 @@ struct BoundAttributeLayerList : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundAttributeLayerList, BoundModelNode>(m, "AttributeLayerList")
+        py::class_<BoundAttributeLayerList, BoundModelNode>(m, "AttributeLayerList", R"pbdoc(
+            Collection of named attribute layers attached to a feature.
+        )pbdoc")
             .def(
                 "new_layer",
                 [](BoundAttributeLayerList& self, std::string_view const& name)
@@ -599,7 +670,7 @@ struct BoundAttributeLayerList : public BoundModelNode
             })
             .def("to_dict", [](BoundAttributeLayerList& self) -> py::object {
                 py::dict d;
-                auto& fl = self.featureLayer();
+                auto& fl = self.featureModelLayer();
                 self.modelNodePtr_->forEachLayer(
                     [&](std::string_view name, model_ptr<AttributeLayer> const& layer) {
                         d[py::str(std::string(name))] = nodeToPython(layer, fl, true);
@@ -622,7 +693,12 @@ struct BoundFeatureId : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundFeatureId, BoundModelNode>(m, "FeatureId")
+        py::class_<BoundFeatureId, BoundModelNode>(m, "FeatureId", R"pbdoc(
+            Structured mapget feature identifier.
+
+            Feature ids contain a type id, named id parts, and optionally an
+            external map id for cross-map references.
+        )pbdoc")
             .def(
                 "to_string",
                 [](BoundFeatureId& self) { return self.modelNodePtr_->toString(); },
@@ -670,7 +746,13 @@ struct BoundFeature : public BoundModelNode
 {
     static void bind(py::module_& m)
     {
-        py::class_<BoundFeature, BoundModelNode>(m, "Feature")
+        py::class_<BoundFeature, BoundModelNode>(m, "Feature", R"pbdoc(
+            Map feature root node in a `TileFeatureLayer`.
+
+            A feature has a structured id, geometry, arbitrary object
+            attributes, named attribute layers, source-data references, and
+            relations to other features.
+        )pbdoc")
             .def(
                 "type_id",
                 [](BoundFeature& self) { return self.modelNodePtr_->typeId(); },
@@ -833,32 +915,42 @@ inline ModelNode::Ptr BoundValidity::node() { return modelNodePtr_; }
 
 inline void BoundValidity::bind(py::module_& m)
 {
-    py::enum_<Validity::Direction>(m, "Direction")
+    py::enum_<Validity::Direction>(m, "Direction", R"pbdoc(
+        Direction in which a validity applies along referenced geometry.
+    )pbdoc")
         .value("EMPTY", Validity::Direction::Empty)
         .value("POSITIVE", Validity::Direction::Positive)
         .value("NEGATIVE", Validity::Direction::Negative)
         .value("COMPLETE", Validity::Direction::Both)
         .value("NONE", Validity::Direction::None);
 
-    py::enum_<Validity::GeometryDescriptionType>(m, "ValidityGeometryDescriptionType")
+    py::enum_<Validity::GeometryDescriptionType>(m, "ValidityGeometryDescriptionType", R"pbdoc(
+        Shape of geometry restriction represented by a validity.
+    )pbdoc")
         .value("NO_GEOMETRY", Validity::NoGeometry)
         .value("SIMPLE_GEOMETRY", Validity::SimpleGeometry)
         .value("OFFSET_POINT", Validity::OffsetPointValidity)
         .value("OFFSET_RANGE", Validity::OffsetRangeValidity)
         .value("FEATURE_TRANSITION", Validity::FeatureTransition);
 
-    py::enum_<Validity::GeometryOffsetType>(m, "ValidityGeometryOffsetType")
+    py::enum_<Validity::GeometryOffsetType>(m, "ValidityGeometryOffsetType", R"pbdoc(
+        Unit system used by one-dimensional validity offsets.
+    )pbdoc")
         .value("INVALID", Validity::InvalidOffsetType)
         .value("GEO_POSITION", Validity::GeoPosOffset)
         .value("BUFFER", Validity::BufferOffset)
         .value("RELATIVE_LENGTH", Validity::RelativeLengthOffset)
         .value("METRIC_LENGTH", Validity::MetricLengthOffset);
 
-    py::enum_<Validity::TransitionEnd>(m, "TransitionEnd")
+    py::enum_<Validity::TransitionEnd>(m, "TransitionEnd", R"pbdoc(
+        Endpoint selector for transition validities.
+    )pbdoc")
         .value("START", Validity::Start)
         .value("END", Validity::End);
 
-    py::class_<BoundValidity, BoundModelNode>(m, "Validity")
+    py::class_<BoundValidity, BoundModelNode>(m, "Validity", R"pbdoc(
+        One validity entry describing where and in which direction an attribute or relation applies.
+    )pbdoc")
         .def("direction", [](BoundValidity& self) { return self.modelNodePtr_->direction(); },
             "Get the direction in which this validity applies.")
         .def("set_direction", [](BoundValidity& self, Validity::Direction direction) {
@@ -960,7 +1052,12 @@ inline ModelNode::Ptr BoundMultiValidity::node() { return modelNodePtr_; }
 
 inline void BoundMultiValidity::bind(py::module_& m)
 {
-    py::class_<BoundMultiValidity, BoundModelNode>(m, "MultiValidity")
+    py::class_<BoundMultiValidity, BoundModelNode>(m, "MultiValidity", R"pbdoc(
+        Ordered collection of `Validity` entries.
+
+        Attributes and relations use this when their applicability is split
+        across multiple geometry ranges, directions, or referenced features.
+    )pbdoc")
         .def("new_point", [](BoundMultiValidity& self,
                              Point const& point,
                              std::optional<uint32_t> geometryStage,
@@ -1051,7 +1148,7 @@ inline void BoundMultiValidity::bind(py::module_& m)
             auto node = self.modelNodePtr_->at(i);
             BoundModelNodeBase base;
             base.modelNodePtr_ = node;
-            return BoundValidity(base.featureLayer().resolve<Validity>(*node));
+            return BoundValidity(base.featureModelLayer().resolve<Validity>(*node));
         })
         .def("__iter__", [](BoundMultiValidity& self) {
             py::list result;
@@ -1059,7 +1156,7 @@ inline void BoundMultiValidity::bind(py::module_& m)
                 auto node = self.modelNodePtr_->at(i);
                 BoundModelNodeBase base;
                 base.modelNodePtr_ = node;
-                result.append(BoundValidity(base.featureLayer().resolve<Validity>(*node)));
+                result.append(BoundValidity(base.featureModelLayer().resolve<Validity>(*node)));
             }
             return py::iter(result);
         });
@@ -1075,7 +1172,9 @@ inline ModelNode::Ptr BoundSourceDataReferenceCollection::node() { return modelN
 
 inline void BoundSourceDataReferenceCollection::bind(py::module_& m)
 {
-    py::class_<SourceDataAddress>(m, "SourceDataAddress")
+    py::class_<SourceDataAddress>(m, "SourceDataAddress", R"pbdoc(
+        Packed address of source data referenced by a feature, attribute or relation.
+    )pbdoc")
         .def(py::init<>(), "Construct an empty source-data address.")
         .def(py::init<uint32_t, uint32_t>(),
             py::arg("bit_offset"),
@@ -1086,7 +1185,12 @@ inline void BoundSourceDataReferenceCollection::bind(py::module_& m)
         .def("bit_offset", &SourceDataAddress::bitOffset, "Get the bit offset.")
         .def("bit_size", &SourceDataAddress::bitSize, "Get the bit size.");
 
-    py::class_<BoundSourceDataReferenceCollection, BoundModelNode>(m, "SourceDataReferenceCollection")
+    py::class_<BoundSourceDataReferenceCollection, BoundModelNode>(m, "SourceDataReferenceCollection", R"pbdoc(
+        Ordered collection of qualified source-data references.
+
+        Each reference stores a source-data layer id, qualifier, and packed
+        source-data address.
+    )pbdoc")
         .def("__len__", [](BoundSourceDataReferenceCollection& self) { return self.modelNodePtr_->size(); })
         .def("__iter__", [](BoundSourceDataReferenceCollection& self) {
             py::list result;
@@ -1118,7 +1222,11 @@ inline ModelNode::Ptr BoundRelation::node() { return modelNodePtr_; }
 
 inline void BoundRelation::bind(py::module_& m)
 {
-    py::class_<BoundRelation, BoundModelNode>(m, "Relation")
+    py::class_<BoundRelation, BoundModelNode>(m, "Relation", R"pbdoc(
+        Directed named relation from one feature to a target `FeatureId`.
+
+        Relations may carry source/target validities and source-data references.
+    )pbdoc")
         .def("name", [](BoundRelation& self) { return self.modelNodePtr_->name(); },
             "Get the relation name.")
         .def("target", [](BoundRelation& self) { return BoundFeatureId(self.modelNodePtr_->target()); },

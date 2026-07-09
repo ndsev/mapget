@@ -6,6 +6,7 @@ import json
 import urllib.request
 
 import mapget
+from ndslive.math import PackedTileId
 
 
 def _get_json(url: str):
@@ -28,12 +29,19 @@ def _post_json(url: str, body: dict):
 def main() -> int:
     assert hasattr(mapget, "SearchRequest")
     assert hasattr(mapget, "TileSearchResultLayer")
+    assert mapget.TileId is PackedTileId
+    assert mapget.PackedTileId is PackedTileId
+    parsed_key = mapget.MapTileKey("Features:Map:WayLayer:65536:0")
+    assert isinstance(parsed_key.tile_id, PackedTileId)
+    assert parsed_key.tile_id.value == 65536
 
     point = mapget.Point
     cache_expired_calls: list[tuple[str, int]] = []
     requested_stages: list[int | None] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
+        assert isinstance(tile.tile_id(), PackedTileId)
+        assert tile.tile_id().value == 65536
         requested_stages.append(tile.stage())
         feature = tile.new_feature("Way", [("wayId", 1)])
         feature.set_lod(3)
@@ -76,7 +84,7 @@ def main() -> int:
             mapget.LayerType.FEATURES,
             request.map_id,
             "WayLayer",
-            mapget.TileId(1),
+            PackedTileId.from_tile_xy(0, 0, 0),
             0,
         )
         return [response]
@@ -113,7 +121,7 @@ def main() -> int:
     try:
         base_url = f"http://127.0.0.1:{datasource.port()}"
 
-        feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=1&stage=2&responseType=json")
+        feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=65536&stage=2&responseType=json")
         assert requested_stages == [2]
         feature = feature_tile["features"][0]
         assert feature["relations"][0]["name"] == "next"
@@ -121,20 +129,20 @@ def main() -> int:
         assert feature["properties"]["layer"]["rules"]["speed"]["validity"]["offsetType"] == "RelativeLengthOffset"
         assert feature["_sourceData"][0]["qualifier"] == "primary"
 
-        source_tile = _get_json(f"{base_url}/tile?layer=RawLayer&tileId=1&responseType=json")
+        source_tile = _get_json(f"{base_url}/tile?layer=RawLayer&tileId=65536&responseType=json")
         assert source_tile == [{"answer": 42}]
 
         locate_response = _post_json(
             f"{base_url}/locate",
             {"mapId": "Map", "typeId": "Way", "featureId": ["wayId", 1]},
         )
-        assert locate_response[0]["tileId"] == "Features:Map:WayLayer:1:0"
+        assert locate_response[0]["tileId"] == "Features:Map:WayLayer:65536:0"
 
         _post_json(
             f"{base_url}/cache-expired",
-            {"tileKey": "Features:Map:WayLayer:1:0", "expiredAt": 123456},
+            {"tileKey": "Features:Map:WayLayer:65536:0", "expiredAt": 123456},
         )
-        assert cache_expired_calls == [("Features:Map:WayLayer:1:0", 123456)]
+        assert cache_expired_calls == [("Features:Map:WayLayer:65536:0", 123456)]
     finally:
         datasource.stop()
 

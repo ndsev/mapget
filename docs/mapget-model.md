@@ -77,19 +77,19 @@ When a tile is parsed from the binary stream, the reader calls a `LayerInfoResol
 
 ### Feature Model Schema
 
-Feature layers may attach `LayerInfo.featureModelSchema`, a JSON Schema document that validates one emitted GeoJSON-style feature object from that layer.
+Feature layers may attach `LayerInfo.featureModelSchema`, a typed `LayerSchema` that validates one emitted GeoJSON-style feature object from that layer.
 
 - The schema is optional; datasources can adopt it layer by layer.
-- The schema is serialized through `/sources` with the rest of `LayerInfo`.
+- The schema is serialized through `/sources` as JSON Schema transport with the rest of `LayerInfo`.
 - `TileFeatureLayer::validateSchema()` validates every emitted feature against the layer's attached schema.
 - The schema is intended for validation and tooling: simfil wildcard pruning, search/autocomplete, value-aware coloring and generated user-facing feature-model documentation.
 - Datasources should keep `FeatureTypeInfo` as the source for feature ID compositions. `featureModelSchema` describes the full JSON shape and value domains, including converter-owned fields, relations, geometry/source-data extensions and attribute-layer containers.
-- Mapget-specific schema branches may carry an `x-mapget` object with `metaType` values such as `Feature`, `FeatureProperties`, `AttributeLayerMap`, `AttributeContainer` and `Attribute`. `SchemaRegistry` uses these annotations to map JSON Schema branches onto SIMFIL `SchemaId` values for feature, property and attribute-layer nodes.
-- Attribute entries that can render either as a single object or as an array carry `x-mapget-multimap: true` on their `oneOf` wrapper. This lets `SchemaRegistry` use the logical object branch for SIMFIL pruning without treating the multimap serialization shape as an arbitrary union.
+- Mapget-specific schema branches may carry an `x-mapget` object with `metaType` values such as `Feature`, `FeatureProperties`, `AttributeLayerMap`, `AttributeContainer` and `Attribute`. `LayerSchema` uses these annotations to map JSON Schema transport branches onto SIMFIL `SchemaId` values for feature, property and attribute-layer nodes.
+- Attribute entries that can render either as a single object or as an array carry `x-mapget-multimap: true` on their `oneOf` wrapper. This lets `LayerSchema` use the logical object branch for SIMFIL pruning without treating the multimap serialization shape as an arbitrary union.
 - Large repeated schema branches may be shared through ordinary local JSON Schema `$ref` entries under `definitions`; consumers must resolve local refs before interpreting mapget-specific annotations.
 - `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
 
-Search-facing consumers use the schema in several distinct ways. Completion uses direct and nested schema fields for query suggestions. `SchemaRegistry::normalizeSearchQuery` is the shared query post-processing entry point used by mapget and Erdblick: it compiles through SIMFIL's schema rewrite engine, inspects AST-derived referenced schema paths, chooses feature or attribute scope, and emits guarded attribute-root predicates where needed. Schema-aware wildcard evaluation can skip branches that cannot contain a requested field. Result styling uses scalar field metadata, enum domains and numeric ranges to initialize labels, categories and gradients. None of these consumers replace the emitted feature data; the schema only describes and constrains it.
+Search-facing consumers use the schema in several distinct ways. Completion uses direct and nested schema fields for query suggestions. `LayerSchema::normalizeSearchQuery` is the shared query post-processing entry point used by mapget and Erdblick: it compiles through SIMFIL's schema rewrite engine, inspects AST-derived referenced schema paths, chooses feature or attribute scope, and emits guarded attribute-root predicates where needed. Schema-aware wildcard evaluation can skip branches that cannot contain a requested field. Result styling uses scalar field metadata, enum domains and numeric ranges to initialize labels, categories and gradients. None of these consumers replace the emitted feature data; the schema only describes and constrains it.
 
 ### Add‑on datasources
 

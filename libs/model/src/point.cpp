@@ -7,6 +7,8 @@ mapget::Point::Point() : glm::dvec3(.0, .0, .0) {}
 
 mapget::Point::Point(const double& x, const double& y, const double& z) : glm::dvec3(x, y, z) {}
 
+mapget::Point::Point(std::pair<double, double> const& lonLat) : glm::dvec3(lonLat.first, lonLat.second, .0) {}
+
 std::string Point::toString() const
 {
     return fmt::format("[{},{},{}]", x, y, z);

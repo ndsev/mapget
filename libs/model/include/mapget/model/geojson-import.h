@@ -24,7 +24,8 @@ struct GeoJsonImportOptions
 
     /**
      * In best-effort mode, treat object-valued entries under `properties`
-     * as attribute-layer payloads instead of plain JSON attributes.
+     * or its `attributes` alias as attribute-layer payloads instead of plain
+     * JSON attributes.
      */
     bool objectPropertiesAsAttributeLayers_ = false;
 };

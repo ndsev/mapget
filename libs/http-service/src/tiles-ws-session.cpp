@@ -67,6 +67,19 @@ std::mutex gSessionRegistryMutex;
 std::unordered_map<int64_t, std::weak_ptr<class TilesWsSession>> gSessionRegistry;
 std::atomic<int64_t> gNextClientId{1};
 
+std::string_view catalogStatusToString(DataSourceCatalogStatus status)
+{
+    switch (status) {
+    case DataSourceCatalogStatus::Initializing:
+        return "initializing";
+    case DataSourceCatalogStatus::Ready:
+        return "ready";
+    case DataSourceCatalogStatus::Failed:
+        return "failed";
+    }
+    return "failed";
+}
+
 constexpr int64_t DEFAULT_PULL_WAIT_MS = 25000;
 constexpr int64_t MAX_PULL_WAIT_MS = 30000;
 constexpr int64_t MAX_PULL_BATCH_BYTES = 64 * 1024 * 1024;
@@ -83,7 +96,7 @@ constexpr bool EMIT_LOAD_STATE_FRAMES = false;
 }
 
 /**
- * Per-client streaming state for `/tiles` and `/tiles/next`.
+ * Per-client streaming state for `/interactive` and `/interactive/payload`.
  *
  * The session owns active backend requests, queued tile frames, string-pool
  * writer offsets, and long-poll waiters for one logical websocket connection.
@@ -128,6 +141,18 @@ public:
     TilesWsSession(TilesWsSession const&) = delete;
     TilesWsSession& operator=(TilesWsSession const&) = delete;
 
+    /** Subscribe after shared ownership exists so callbacks can safely capture weak_from_this(). */
+    void startSourceCatalogSubscription()
+    {
+        auto weak = weak_from_this();
+        sourceCatalogSubscription_ = service_.subscribeToSourceCatalogChanges(
+            [weak](DataSourceCatalogChange const& change) {
+                if (auto self = weak.lock()) {
+                    self->queueSourceCatalogChangeMessage(change);
+                }
+            });
+    }
+
     /** Register this session in the global weak list used for `/status-data` snapshots. */
     void registerForMetrics()
     {
@@ -144,20 +169,20 @@ public:
         return {pendingFrames, pendingBytes};
     }
 
-    /** Return numeric client id used by `/tiles/next` pull requests. */
+    /** Return numeric client id used by `/interactive/payload` pull requests. */
     [[nodiscard]] int64_t clientId() const
     {
         return clientId_;
     }
 
-    /** Return current number of blocked `/tiles/next` long-poll requests. */
+    /** Return current number of blocked `/interactive/payload` long-poll requests. */
     [[nodiscard]] int64_t pendingPullRequestCount() const
     {
         std::lock_guard lock(mutex_);
         return static_cast<int64_t>(pendingPullWaiters_.size());
     }
 
-    /** Result delivered to one pending `/tiles/next` long-poll request. */
+    /** Result delivered to one pending `/interactive/payload` long-poll request. */
     struct PullFrameResult
     {
         /** Distinguishes payload delivery, timeout, and closed-session responses. */
@@ -173,7 +198,7 @@ public:
 
     using PullResultCallback = std::function<void(PullFrameResult)>;
 
-    /** Resolve one `/tiles/next` request immediately or register an async waiter. */
+    /** Resolve one `/interactive/payload` request immediately or register an async waiter. */
     void requestNextTileFrameAsync(
         std::chrono::milliseconds waitTimeout,
         size_t maxBatchBytes,
@@ -529,7 +554,7 @@ private:
         TileLayerStream::MessageType type{TileLayerStream::MessageType::None};
     };
 
-    /** One pending `/tiles/next` callback waiting for a frame or timeout. */
+    /** One pending `/interactive/payload` callback waiting for a frame or timeout. */
     struct PullWaiter
     {
         uint64_t waiterId = 0;
@@ -1210,7 +1235,7 @@ private:
                 && queuedOutgoingBytes_ < MAX_QUEUED_OUTGOING_BYTES);
     }
 
-    /** Block backend producer callbacks until `/tiles/next` drains queued frames. */
+    /** Block backend producer callbacks until `/interactive/payload` drains queued frames. */
     [[nodiscard]] bool waitForOutgoingCapacityLocked(std::unique_lock<std::mutex>& lock)
     {
         outgoingCapacityChanged_.wait(lock, [this] {
@@ -1569,6 +1594,12 @@ private:
         sendControlMessage(TileLayerStream::MessageType::RequestContext, buildRequestContextPayload());
     }
 
+    /** Send a datasource-catalog invalidation frame for this interactive session. */
+    void queueSourceCatalogChangeMessage(DataSourceCatalogChange const& change)
+    {
+        sendControlMessage(TileLayerStream::MessageType::SourceCatalogChange, buildSourceCatalogChangePayload(change));
+    }
+
     /** Forward backend tile load-state changes for tiles still requested by the client. */
     void onLoadStateChanged(MapTileKey const& key, TileLayer::LoadState state)
     {
@@ -1637,7 +1668,7 @@ private:
             {"requestId", requestId_},
             {"mapId", key.mapId_},
             {"layerId", key.layerId_},
-            {"tileId", key.tileId_.value_},
+            {"tileId", key.tileId_.value()},
             {"stage", key.stage_},
             {"state", static_cast<uint8_t>(state)},
             {"stateText", std::string(loadStateToString(state))},
@@ -1651,7 +1682,41 @@ private:
             {"type", "mapget.tiles.request-context"},
             {"requestId", requestId_},
             {"clientId", clientId_},
+            {"sourcesRevision", service_.sourceCatalogRevision()},
         }).dump();
+    }
+
+    /** Build the JSON payload for `mapget.sources.changed`. */
+    [[nodiscard]] std::string buildSourceCatalogChangePayload(DataSourceCatalogChange const& change) const
+    {
+        auto payload = nlohmann::json::object({
+            {"type", "mapget.sources.changed"},
+            {"revision", change.revision},
+            {"reason", change.reason},
+        });
+
+        // Only expose per-source details when the websocket client could also
+        // see the same catalog row through `/sources`; otherwise keep the old
+        // generic invalidation shape and avoid leaking auth-scoped metadata.
+        if (change.sourceUpdate
+            && service_.isSourceCatalogChangeVisible(change, std::optional<AuthHeaders>{authHeaders_}))
+        {
+            auto const& update = *change.sourceUpdate;
+            auto source = nlohmann::json::object({
+                {"sourceId", update.descriptor.sourceId},
+                {"configIndex", update.descriptor.configIndex},
+                {"type", update.descriptor.type},
+                {"status", std::string(catalogStatusToString(update.status))},
+                {"statusMessage", update.statusMessage},
+                {"addOn", update.descriptor.addOn},
+                {"progress", update.progress ? nlohmann::json(*update.progress) : nlohmann::json(nullptr)},
+            });
+            if (update.descriptor.configuredMapId) {
+                source["configuredMapId"] = *update.descriptor.configuredMapId;
+            }
+            payload["source"] = std::move(source);
+        }
+        return payload.dump();
     }
 
     HttpService& service_;
@@ -1685,6 +1750,7 @@ private:
     TileLayerStream::StringPoolOffsetMap writerOffsets_;
     std::unique_ptr<TileLayerStream::Writer> writer_;
     std::optional<std::vector<WriterMessage>> currentWriteBatch_;
+    std::optional<Service::DataSourceCatalogSubscription> sourceCatalogSubscription_;
 
     std::atomic_bool cancelled_{false};
 };
@@ -1730,7 +1796,7 @@ namespace
     }
 }
 
-/** Handle one `/tiles/next` long-poll request for queued websocket tile frames. */
+/** Handle one `/interactive/payload` long-poll request for queued websocket tile frames. */
 void handleTilesNextRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback)
@@ -1831,7 +1897,9 @@ std::shared_ptr<TilesWsSession> tilesWsCreateSession(
     std::weak_ptr<drogon::WebSocketConnection> conn,
     AuthHeaders authHeaders)
 {
-    return std::make_shared<TilesWsSession>(service, std::move(conn), std::move(authHeaders));
+    auto session = std::make_shared<TilesWsSession>(service, std::move(conn), std::move(authHeaders));
+    session->startSourceCatalogSubscription();
+    return session;
 }
 
 /** Add one session to the weak metrics list used by status snapshots. */
@@ -1840,7 +1908,7 @@ void tilesWsRegisterForMetrics(const std::shared_ptr<TilesWsSession>& session)
     session->registerForMetrics();
 }
 
-/** Add one session to the client-id registry used by `/tiles/next`. */
+/** Add one session to the client-id registry used by `/interactive/payload`. */
 void tilesWsRegisterSession(const std::shared_ptr<TilesWsSession>& session)
 {
     std::lock_guard lock(gSessionRegistryMutex);
@@ -1908,7 +1976,7 @@ void tilesWsRecordConnectionClosed()
     gTilesWsMetrics.activeConnections.fetch_sub(1, std::memory_order_relaxed);
 }
 
-/** Forward `/tiles/next` handling through the opaque-session adapter boundary. */
+/** Forward `/interactive/payload` handling through the opaque-session adapter boundary. */
 void tilesWsHandleNextRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback)
