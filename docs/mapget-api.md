@@ -196,6 +196,8 @@ When rewrite is enabled, mapget uses `LayerSchema::normalizeSearchQuery` before 
 - Feature-root attribute paths such as `properties.layer.rules.speedLimit.limit > 40` are rewritten to the attribute-root suffix, for example `limit > 40`, under the same guards.
 - Enum constants rewritten by SIMFIL to schema equality paths become guarded attribute-root comparisons, for example `attributeValue.warningSign == "SPEED_LIMIT"`.
 - Recursive wildcard expressions such as `**.speedLimitKmh` remain in SIMFIL's schema compile path so wildcard pruning still happens against the concrete root schema.
+- References inside feature-level aggregate calls such as `count(**.speedLimitKmh) == 0` do not drive attribute-scope inference, because the aggregate result belongs to the feature query context.
+- If an inferred attribute rewrite would fan out to more than eight candidate attribute contexts, mapget keeps attribute scope but suppresses the guarded rewrite. Schema-generated enum predicates are still compacted to generic attribute-root predicates, for example `conditions.*.conditionTypeCode == "DAYS_OF_WEEK"`, while ordinary wildcard paths stay in SIMFIL's schema-aware evaluation path.
 
 `withFields` expressions run in the same context as `query`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer. Attribute-scope results use the computed validity geometry for the matched validity when one is available; otherwise they fall back to the feature display geometry.
 

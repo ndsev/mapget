@@ -3,6 +3,7 @@
 #include "mapget/model/stringpool.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <map>
 #include <memory>
@@ -24,6 +25,8 @@ namespace
 {
 
 using Kind = simfil::Schema::Kind;
+
+constexpr size_t kMaxNormalizedAttributeScopes = 8;
 
 /** Escape one JSON Pointer path token. */
 std::string pointerToken(std::string_view token)
@@ -355,6 +358,7 @@ struct AttributeQueryReference
 {
     LayerSchema::AttributePathOwner owner;
     std::vector<std::string> fieldPath;
+    std::vector<std::string> expressionPath;
     simfil::SourceLocation location;
     bool viaWildcard = false;
     std::optional<std::string> equalsStringLiteral;
@@ -369,6 +373,8 @@ struct FeatureQueryAnalysis
     bool hasDynamicReference = false;
 };
 
+bool sourceRangeCoversWholeQuery(std::string_view query, simfil::SourceLocation location);
+
 /** Convert one compile-local SchemaPath into field names. Array markers are ignored for source-level path rewrites. */
 std::optional<std::vector<std::string>> schemaPathFieldNames(
     simfil::Environment& env,
@@ -377,6 +383,26 @@ std::optional<std::vector<std::string>> schemaPathFieldNames(
     std::vector<std::string> result;
     for (auto const& segment : path) {
         if (segment.kind != simfil::SchemaPathSegment::Kind::Field) {
+            continue;
+        }
+        auto fieldName = env.strings()->resolve(segment.field);
+        if (!fieldName) {
+            return std::nullopt;
+        }
+        result.emplace_back(*fieldName);
+    }
+    return result;
+}
+
+/** Convert one compile-local SchemaPath into SIMFIL path segments, preserving array wildcards. */
+std::optional<std::vector<std::string>> schemaPathExpressionSegments(
+    simfil::Environment& env,
+    simfil::SchemaPath const& path)
+{
+    std::vector<std::string> result;
+    for (auto const& segment : path) {
+        if (segment.kind == simfil::SchemaPathSegment::Kind::ArrayElement) {
+            result.emplace_back("*");
             continue;
         }
         auto fieldName = env.strings()->resolve(segment.field);
@@ -420,7 +446,10 @@ std::optional<std::string> attributeRootPathForFeaturePath(
 
     std::string result;
     for (auto it = suffixBegin; it != fieldPath.end(); ++it) {
-        if (isIdentifier(*it)) {
+        if (*it == "*") {
+            result += result.empty() ? "*" : ".*";
+        }
+        else if (isIdentifier(*it)) {
             if (!result.empty()) {
                 result += ".";
             }
@@ -431,6 +460,41 @@ std::optional<std::string> attributeRootPathForFeaturePath(
         }
     }
     return result.empty() ? std::optional<std::string>{"true"} : std::optional<std::string>{result};
+}
+
+/** Return one unguarded attribute-root predicate for a schema-generated enum comparison. */
+std::optional<std::string> generatedAttributeRootPredicate(
+    AttributeQueryReference const& reference,
+    LayerSchema::AttributePathOwner const& owner,
+    std::string_view query)
+{
+    if (!reference.equalsStringLiteral
+        || (!reference.viaWildcard
+            && reference.location.size != 0
+            && !sourceRangeCoversWholeQuery(query, reference.location))) {
+        return std::nullopt;
+    }
+    auto replacement = attributeRootPathForFeaturePath(reference.expressionPath, owner);
+    if (!replacement || *replacement == "true") {
+        return std::nullopt;
+    }
+    return *replacement + " == " + simfilStringLiteral(*reference.equalsStringLiteral);
+}
+
+/** Build a compact generic attribute-root body when specific scope guards would be too broad. */
+std::string genericAttributeRootQuery(
+    std::string_view query,
+    std::vector<AttributeQueryReference> const& references)
+{
+    std::vector<std::string> predicates;
+    std::set<std::string> seen;
+    for (auto const& reference : references) {
+        auto predicate = generatedAttributeRootPredicate(reference, reference.owner, query);
+        if (predicate && seen.insert(*predicate).second) {
+            predicates.push_back(std::move(*predicate));
+        }
+    }
+    return joinOr(std::move(predicates));
 }
 
 /** One source-location rewrite derived from a schema-aware AST reference. */
@@ -465,12 +529,85 @@ std::string applySourceRewrites(std::string query, std::vector<SourceRewrite> re
 }
 
 /** Return whether one AST source range covers the whole normalized query. */
-bool sourceRangeCoversWholeQuery(std::string const& query, simfil::SourceLocation location)
+bool sourceRangeCoversWholeQuery(std::string_view query, simfil::SourceLocation location)
 {
     if (location.size == 0 || location.offset + location.size > query.size()) {
         return false;
     }
     return location.offset == 0 && location.size == query.size();
+}
+
+/** Return whether a source range sits inside a function that changes feature-level cardinality. */
+bool sourceRangeIsInsideAggregateCall(std::string_view query, simfil::SourceLocation location)
+{
+    if (location.size == 0 || location.offset + location.size > query.size()) {
+        return false;
+    }
+
+    std::vector<std::string> enclosingCalls;
+    auto inString = false;
+    auto escaped = false;
+    for (size_t i = 0; i < location.offset; ++i) {
+        auto const c = query[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            }
+            else if (c == '\\') {
+                escaped = true;
+            }
+            else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            continue;
+        }
+        if (c == '(') {
+            auto nameEnd = i;
+            while (nameEnd > 0 && std::isspace(static_cast<unsigned char>(query[nameEnd - 1]))) {
+                --nameEnd;
+            }
+            auto nameBegin = nameEnd;
+            while (nameBegin > 0) {
+                auto const nameChar = query[nameBegin - 1];
+                if (!std::isalnum(static_cast<unsigned char>(nameChar)) && nameChar != '_') {
+                    break;
+                }
+                --nameBegin;
+            }
+            auto name = std::string(query.substr(nameBegin, nameEnd - nameBegin));
+            std::ranges::transform(name, name.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
+            enclosingCalls.push_back(std::move(name));
+            continue;
+        }
+        if (c == ')' && !enclosingCalls.empty()) {
+            enclosingCalls.pop_back();
+        }
+    }
+
+    static constexpr std::array aggregateFunctions = {
+        std::string_view("avg"),
+        std::string_view("count"),
+        std::string_view("exists"),
+        std::string_view("max"),
+        std::string_view("mean"),
+        std::string_view("min"),
+        std::string_view("sum")
+    };
+    return std::ranges::any_of(enclosingCalls, [](std::string const& name) {
+        return std::ranges::find(aggregateFunctions, name) != aggregateFunctions.end();
+    });
+}
+
+/** Attribute scope/style inference must ignore references inside feature-level aggregate calls. */
+bool referenceIsInferenceEligible(std::string_view query, simfil::SourceLocation location)
+{
+    return !sourceRangeIsInsideAggregateCall(query, location);
 }
 
 /** Return all attribute contexts whose mapget type-code matches one exact AST symbol. */
@@ -528,7 +665,8 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
     std::set<std::tuple<std::string, std::string, std::string, uint32_t, uint32_t, std::optional<std::string>>> seenReferences;
     for (auto const& reference : references->paths) {
         auto fieldPath = schemaPathFieldNames(*env, reference.path);
-        if (!fieldPath) {
+        auto expressionPath = schemaPathExpressionSegments(*env, reference.path);
+        if (!fieldPath || !expressionPath) {
             result.hasDynamicReference = true;
             continue;
         }
@@ -539,6 +677,9 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
         }
         if (owner.kind_ != LayerSchema::PathOwnerKind::Attribute) {
             result.hasDynamicReference = true;
+            continue;
+        }
+        if (!referenceIsInferenceEligible(query, reference.location)) {
             continue;
         }
         auto key = std::make_tuple(
@@ -552,6 +693,7 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
             result.attributeReferences.push_back({
                 owner.attribute_,
                 std::move(*fieldPath),
+                std::move(*expressionPath),
                 reference.location,
                 reference.viaWildcard,
                 reference.equalsStringLiteral});
@@ -763,7 +905,9 @@ struct LayerSchema::Impl
             return;
         }
         auto& fields = schemas_[parent].directFields_;
-        fields.emplace_back(fieldName);
+        if (std::ranges::find(fields, fieldName) == fields.end()) {
+            fields.emplace_back(fieldName);
+        }
     }
 
     void addEnumSymbol(simfil::SchemaId parent, std::string_view symbolName)
@@ -772,7 +916,9 @@ struct LayerSchema::Impl
             return;
         }
         auto& symbols = schemas_[parent].directEnumSymbols_;
-        symbols.emplace_back(symbolName);
+        if (std::ranges::find(symbols, symbolName) == symbols.end()) {
+            symbols.emplace_back(symbolName);
+        }
     }
 
     void addEnumSymbols(simfil::SchemaId parent, std::span<const std::string> symbolNames)
@@ -802,6 +948,27 @@ struct LayerSchema::Impl
         if (std::ranges::find(children, child) == children.end()) {
             children.push_back(child);
         }
+    }
+
+    void mergeAlternativeSchema(simfil::SchemaId target, simfil::SchemaId source)
+    {
+        if (!valid(target) || !valid(source) || target == source || kind(target) != kind(source)) {
+            return;
+        }
+
+        auto const& sourceSchema = schemas_[source];
+        for (auto const& fieldName : sourceSchema.directFields_) {
+            addDirectField(target, fieldName);
+        }
+        for (auto const& [fieldName, children] : sourceSchema.childSchemas_) {
+            for (auto child : children) {
+                addChild(target, fieldName, child);
+            }
+        }
+        for (auto child : sourceSchema.elementSchemas_) {
+            addElementSchema(target, child);
+        }
+        addEnumSymbols(target, sourceSchema.directEnumSymbols_);
     }
 
     void finalizeAll()
@@ -1259,22 +1426,41 @@ private:
         };
 
         if (auto selected = choose(preferredKind); selected != simfil::NoSchemaId) {
+            mergeAlternativeBranches(selected, branchIds);
             registerCombinedAliases(schema, pointer, context, selected);
             return selected;
         }
         if (auto selected = choose(Kind::Object); selected != simfil::NoSchemaId) {
+            mergeAlternativeBranches(selected, branchIds);
             registerCombinedAliases(schema, pointer, context, selected);
             return selected;
         }
         if (auto selected = choose(Kind::Array); selected != simfil::NoSchemaId) {
+            mergeAlternativeBranches(selected, branchIds);
             registerCombinedAliases(schema, pointer, context, selected);
             return selected;
         }
         if (auto selected = choose(Kind::Value); selected != simfil::NoSchemaId) {
+            mergeAlternativeBranches(selected, branchIds);
             registerCombinedAliases(schema, pointer, context, selected);
             return selected;
         }
         return simfil::NoSchemaId;
+    }
+
+    void mergeAlternativeBranches(simfil::SchemaId selected, std::span<const simfil::SchemaId> branchIds)
+    {
+        if (!registry_.metaType(selected).empty()) {
+            return;
+        }
+        for (auto branchId : branchIds) {
+            if (!registry_.metaType(branchId).empty()) {
+                return;
+            }
+        }
+        for (auto branchId : branchIds) {
+            registry_.mergeAlternativeSchema(selected, branchId);
+        }
     }
 
     void registerCombinedAliases(
@@ -2083,9 +2269,31 @@ tl::expected<LayerSchema::SearchQueryNormalization, simfil::Error> LayerSchema::
     if (requestedScope == SearchQueryRequestedScope::Attribute && result.attributeScopes_.empty()) {
         result.attributeScopes_ = attributeScopes();
     }
+    result.attributeScopeCandidateCount_ = result.attributeScopes_.size();
 
-    if (requestedScope == SearchQueryRequestedScope::Attribute
-        || (requestedScope == SearchQueryRequestedScope::Auto && !result.attributeScopes_.empty())) {
+    auto const shouldUseAttributeScope = requestedScope == SearchQueryRequestedScope::Attribute
+        || (requestedScope == SearchQueryRequestedScope::Auto && !result.attributeScopes_.empty());
+
+    if (result.attributeScopeCandidateCount_ > kMaxNormalizedAttributeScopes) {
+        result.rewriteSuppressed_ = true;
+        result.rewriteSuppressionReason_ = fmt::format(
+            "Attribute query rewrite suppressed: {} candidate scopes exceed the limit of {}.",
+            result.attributeScopeCandidateCount_,
+            kMaxNormalizedAttributeScopes);
+        result.attributeScopes_.clear();
+        result.concreteScope_ = shouldUseAttributeScope
+            ? SearchQueryConcreteScope::Attribute
+            : SearchQueryConcreteScope::Feature;
+        if (result.concreteScope_ == SearchQueryConcreteScope::Attribute) {
+            if (auto genericQuery = genericAttributeRootQuery(result.normalizedQuery_, attributeReferences);
+                !genericQuery.empty()) {
+                result.normalizedQuery_ = std::move(genericQuery);
+            }
+        }
+        return result;
+    }
+
+    if (shouldUseAttributeScope) {
         result.concreteScope_ = SearchQueryConcreteScope::Attribute;
     }
 
@@ -2131,7 +2339,7 @@ tl::expected<LayerSchema::SearchQueryNormalization, simfil::Error> LayerSchema::
                 if (!sameAttributeOwner(reference.owner, scope)) {
                     continue;
                 }
-                auto replacement = attributeRootPathForFeaturePath(reference.fieldPath, scope);
+                auto replacement = attributeRootPathForFeaturePath(reference.expressionPath, scope);
                 if (!replacement) {
                     continue;
                 }
@@ -2142,9 +2350,8 @@ tl::expected<LayerSchema::SearchQueryNormalization, simfil::Error> LayerSchema::
                     continue;
                 }
 
-                if (reference.equalsStringLiteral && (reference.viaWildcard || reference.location.size == 0)) {
-                    generatedPredicates.push_back(
-                        *replacement + " == " + simfilStringLiteral(*reference.equalsStringLiteral));
+                if (auto predicate = generatedAttributeRootPredicate(reference, scope, result.normalizedQuery_)) {
+                    generatedPredicates.push_back(std::move(*predicate));
                     continue;
                 }
 

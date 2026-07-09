@@ -99,6 +99,9 @@ public:
         SearchQueryRequestedScope requestedScope_ = SearchQueryRequestedScope::Feature;
         SearchQueryConcreteScope concreteScope_ = SearchQueryConcreteScope::Feature;
         std::vector<AttributePathOwner> attributeScopes_;
+        size_t attributeScopeCandidateCount_ = 0;
+        bool rewriteSuppressed_ = false;
+        std::string rewriteSuppressionReason_;
         std::vector<std::string> matchedFeatureTypes_;
         std::string compiledAstDebug_;
     };
