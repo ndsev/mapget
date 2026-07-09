@@ -331,6 +331,14 @@ simfil::ModelNode::Ptr Feature::get(const simfil::StringId& f) const
         if (fieldName == f)
             return fieldValue;
 
+    if (f == StringPool::AttributesStr) {
+        // Preserve real top-level fields named `attributes`, but otherwise
+        // allow query/import callers to use it as an alias for `properties`.
+        for (auto const& [fieldName, fieldValue] : fields_)
+            if (fieldName == StringPool::PropertiesStr)
+                return fieldValue;
+    }
+
     return {};
 }
 

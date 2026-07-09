@@ -56,7 +56,7 @@ private:
  *     typeId: "<type-id>",
  *     <part-name-n>: <part-value-n>, ...
  *     geometry: <geojson-geometry>,
- *     properties: {
+ *     properties: {  # `attributes` is accepted as a read/import alias.
  *       layers: {
  *         <attr-layer-name>: {
  *           <attr-name>: {

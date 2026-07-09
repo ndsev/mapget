@@ -342,6 +342,37 @@ TEST_CASE("TileFeatureLayer best-effort GeoJSON import shares the same pipeline"
         "POSITIVE");
 }
 
+TEST_CASE("TileFeatureLayer GeoJSON import accepts attributes as properties alias", "[GeoJsonImport]")
+{
+    auto layerInfo = makeGenericLayerInfo();
+    auto tile = makeTile(131073, layerInfo, "AttributesAliasNode");
+
+    auto input = R"json(
+    {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "AnyFeature.131073.0",
+          "typeId": "AnyFeature",
+          "tileId": 131073,
+          "featureIndex": 0,
+          "geometry": null,
+          "attributes": {
+            "name": "Alias Road"
+          }
+        }
+      ]
+    })json"_json;
+
+    REQUIRE_NOTHROW(tile->fromJson(input));
+
+    auto output = tile->toJson();
+    REQUIRE(output["features"][0].contains("properties"));
+    REQUIRE_FALSE(output["features"][0].contains("attributes"));
+    REQUIRE(output["features"][0]["properties"]["name"] == "Alias Road");
+}
+
 TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonImport][Polygon]")
 {
     auto layerInfo = makeGenericLayerInfo();

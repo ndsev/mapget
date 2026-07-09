@@ -13,13 +13,16 @@ namespace mapget::detail
 namespace
 {
 
-constexpr std::array<std::string_view, 6> SearchFieldNames = {
+constexpr std::array<std::string_view, 9> SearchFieldNames = {
     "searchId",
     "refresh",
+    "query",
+    "scope",
     "searchQuery",
     "searchScope",
     "withFields",
     "rewrite",
+    "featureTypes",
 };
 
 constexpr std::array<std::string_view, 4> LegacyOnlySearchFieldNames = {
@@ -29,12 +32,29 @@ constexpr std::array<std::string_view, 4> LegacyOnlySearchFieldNames = {
     "searchScope",
 };
 
-constexpr std::array<std::string_view, 4> RestSearchFieldNames = {
+constexpr std::array<std::string_view, 5> RestSearchFieldNames = {
     "query",
     "scope",
     "withFields",
     "rewrite",
+    "featureTypes",
 };
+
+/** Metadata SourceData layers use tile id 0 as a request-wide sentinel. */
+bool isMetadataSourceDataLayer(std::string_view layerId)
+{
+    return layerId.starts_with("Metadata-");
+}
+
+/** Parse a tile id while preserving the metadata SourceData tile-zero sentinel. */
+TileId parseRequestTileId(const nlohmann::json& tileIdJson, std::string_view layerId)
+{
+    auto const rawTileId = tileIdJson.get<int32_t>();
+    if (rawTileId == 0 && isMetadataSourceDataLayer(layerId)) {
+        return TileId();
+    }
+    return TileId::fromValue(rawTileId);
+}
 
 /** Detect whether a layer request/envelope uses any search-as-map fields. */
 [[nodiscard]] bool hasAnySearchField(const nlohmann::json& requestJson)
@@ -90,18 +110,20 @@ constexpr std::array<std::string_view, 4> RestSearchFieldNames = {
     fingerprint << searchScopeToString(search.scope_) << '\n';
     fingerprint << (search.rewriteQuery_ ? "rewrite\n" : "plain\n");
     fingerprint << search.query_ << '\n';
+    fingerprint << "fields\n";
     for (auto const& field : search.withFields_) {
         fingerprint << field << '\n';
+    }
+    fingerprint << "featureTypes\n";
+    for (auto const& featureType : search.featureTypes_) {
+        fingerprint << featureType << '\n';
     }
     return search.searchId_ + ":" + std::to_string(std::hash<std::string>{}(fingerprint.str()));
 }
 
-/** Parse search scope, defaulting to feature scope for backwards compatibility. */
-[[nodiscard]] FeatureLayerSearchScope parseSearchScopeField(
-    const nlohmann::json& requestJson,
-    std::string_view key)
+/** Parse a concrete search-scope token into the model enum. */
+[[nodiscard]] FeatureLayerSearchScope parseSearchScopeValue(std::string_view key, std::string const& scope)
 {
-    auto scope = requestJson.value(std::string(key), std::string("feature"));
     if (scope == "feature") {
         return FeatureLayerSearchScope::Feature;
     }
@@ -112,6 +134,64 @@ constexpr std::array<std::string_view, 4> RestSearchFieldNames = {
         return FeatureLayerSearchScope::Auto;
     }
     throw std::runtime_error(std::string(key) + " must be 'feature', 'attribute', or 'auto'");
+}
+
+/** Parse search scope, defaulting to feature scope for backwards compatibility. */
+[[nodiscard]] FeatureLayerSearchScope parseSearchScopeField(
+    const nlohmann::json& requestJson,
+    std::string_view key)
+{
+    auto scopeIt = requestJson.find(std::string(key));
+    if (scopeIt == requestJson.end()) {
+        return FeatureLayerSearchScope::Feature;
+    }
+    if (!scopeIt->is_string()) {
+        throw std::runtime_error(std::string(key) + " must be 'feature', 'attribute', or 'auto'");
+    }
+    return parseSearchScopeValue(key, scopeIt->get<std::string>());
+}
+
+/** Parse the canonical field or its legacy WebSocket alias, rejecting conflicting values. */
+[[nodiscard]] std::optional<std::string> parseAliasedStringField(
+    const nlohmann::json& requestJson,
+    std::string_view canonicalKey,
+    std::string_view legacyKey)
+{
+    auto canonicalIt = requestJson.find(std::string(canonicalKey));
+    auto legacyIt = requestJson.find(std::string(legacyKey));
+    if (canonicalIt == requestJson.end() && legacyIt == requestJson.end()) {
+        return std::nullopt;
+    }
+    if (canonicalIt != requestJson.end() && !canonicalIt->is_string()) {
+        throw std::runtime_error(std::string(canonicalKey) + " must be a string");
+    }
+    if (legacyIt != requestJson.end() && !legacyIt->is_string()) {
+        throw std::runtime_error(std::string(legacyKey) + " must be a string");
+    }
+    if (canonicalIt == requestJson.end()) {
+        return legacyIt->get<std::string>();
+    }
+    if (legacyIt == requestJson.end()) {
+        return canonicalIt->get<std::string>();
+    }
+
+    auto canonicalValue = canonicalIt->get<std::string>();
+    auto legacyValue = legacyIt->get<std::string>();
+    if (canonicalValue != legacyValue) {
+        throw std::runtime_error(
+            std::string(canonicalKey) + " and " + std::string(legacyKey) + " must match when both are present");
+    }
+    return canonicalValue;
+}
+
+/** Parse canonical `scope` or legacy `searchScope`, rejecting conflicting aliases. */
+[[nodiscard]] FeatureLayerSearchScope parseAliasedSearchScopeField(const nlohmann::json& requestJson)
+{
+    auto canonicalScope = parseAliasedStringField(requestJson, "scope", "searchScope");
+    if (!canonicalScope) {
+        return FeatureLayerSearchScope::Feature;
+    }
+    return parseSearchScopeValue(requestJson.contains("scope") ? "scope" : "searchScope", *canonicalScope);
 }
 
 /** Parse optional schema rewrite flag from either search request shape. */
@@ -147,8 +227,34 @@ void parseWithFields(const nlohmann::json& requestJson, FeatureLayerSearchReques
     }
 }
 
+/** Parse an optional feature-type allow-list from the shared search spec. */
+void parseFeatureTypes(const nlohmann::json& requestJson, FeatureLayerSearchRequest& search)
+{
+    auto featureTypesIt = requestJson.find("featureTypes");
+    if (featureTypesIt == requestJson.end()) {
+        return;
+    }
+    if (!featureTypesIt->is_array()) {
+        throw std::runtime_error("featureTypes must be an array");
+    }
+    search.featureTypes_.reserve(featureTypesIt->size());
+    for (auto const& featureTypeJson : *featureTypesIt) {
+        if (!featureTypeJson.is_string()) {
+            throw std::runtime_error("featureTypes entries must be strings");
+        }
+        auto featureType = featureTypeJson.get<std::string>();
+        if (featureType.empty()) {
+            throw std::runtime_error("featureTypes entries must not be empty");
+        }
+        search.featureTypes_.push_back(std::move(featureType));
+    }
+}
+
 /** Parse the common non-staged source request fields used by REST search. */
-void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json& requestJson)
+void parsePlainTileIdsInto(
+    ParsedLayerTilesRequest& result,
+    const nlohmann::json& requestJson,
+    std::string_view layerId)
 {
     if (requestJson.contains("tileIdsByNextStage")) {
         throw std::runtime_error("search requests must use tileIds; tileIdsByNextStage is not supported");
@@ -162,7 +268,7 @@ void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json
     std::vector<TileId> tileIds;
     tileIds.reserve(tileIdsJson.size());
     for (auto const& tileIdJson : tileIdsJson) {
-        tileIds.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
+        tileIds.emplace_back(parseRequestTileId(tileIdJson, layerId));
     }
     result.tileIdsByNextStage.push_back(std::move(tileIds));
 }
@@ -173,8 +279,9 @@ void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json
     if (!hasAnySearchField(requestJson)) {
         return std::nullopt;
     }
-    if (!requestJson.contains("searchQuery") || !requestJson.at("searchQuery").is_string()) {
-        throw std::runtime_error("searchQuery must be a string when search fields are present");
+    auto query = parseAliasedStringField(requestJson, "query", "searchQuery");
+    if (!query) {
+        throw std::runtime_error("query must be a string when search fields are present");
     }
     if (!requestJson.contains("searchId") || !requestJson.at("searchId").is_string()) {
         throw std::runtime_error("searchId must be a string when search fields are present");
@@ -182,8 +289,8 @@ void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json
 
     FeatureLayerSearchRequest search;
     search.searchId_ = requestJson.at("searchId").get<std::string>();
-    search.query_ = requestJson.at("searchQuery").get<std::string>();
-    search.scope_ = parseSearchScopeField(requestJson, "searchScope");
+    search.query_ = std::move(*query);
+    search.scope_ = parseAliasedSearchScopeField(requestJson);
     parseRewriteField(requestJson, search);
 
     if (auto refreshIt = requestJson.find("refresh"); refreshIt != requestJson.end()) {
@@ -194,6 +301,7 @@ void parsePlainTileIdsInto(ParsedLayerTilesRequest& result, const nlohmann::json
     }
 
     parseWithFields(requestJson, search);
+    parseFeatureTypes(requestJson, search);
     search.requestKey_ = makeSearchRequestKey(search);
     return search;
 }
@@ -236,7 +344,7 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
         }
         result.priorityTileIds.reserve(priorityIt->size());
         for (auto const& tileIdJson : *priorityIt) {
-            result.priorityTileIds.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
+            result.priorityTileIds.emplace_back(parseRequestTileId(tileIdJson, result.layerId));
         }
     }
 
@@ -259,24 +367,24 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& request
             std::vector<TileId> bucket;
             bucket.reserve(bucketJson.size());
             for (auto const& tileIdJson : bucketJson) {
-                bucket.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
+                bucket.emplace_back(parseRequestTileId(tileIdJson, result.layerId));
             }
             result.tileIdsByNextStage.push_back(std::move(bucket));
         }
         return result;
     }
 
-    parsePlainTileIdsInto(result, requestJson);
+    parsePlainTileIdsInto(result, requestJson, result.layerId);
     return result;
 }
 
 FeatureLayerSearchRequest parseRestSearchEnvelopeJson(const nlohmann::json& envelopeJson)
 {
+    if (hasAnyLegacyOnlySearchField(envelopeJson)) {
+        throw std::runtime_error("REST /search uses query/scope; searchId/searchQuery/searchScope/refresh are WebSocket-only fields");
+    }
     if (!envelopeJson.contains("query") || !envelopeJson.at("query").is_string()) {
         throw std::runtime_error("query must be a string");
-    }
-    if (hasAnyLegacyOnlySearchField(envelopeJson)) {
-        throw std::runtime_error("REST /search uses query/scope; searchId/searchQuery/refresh are WebSocket-only fields");
     }
 
     FeatureLayerSearchRequest search;
@@ -284,6 +392,7 @@ FeatureLayerSearchRequest parseRestSearchEnvelopeJson(const nlohmann::json& enve
     search.scope_ = parseSearchScopeField(envelopeJson, "scope");
     parseRewriteField(envelopeJson, search);
     parseWithFields(envelopeJson, search);
+    parseFeatureTypes(envelopeJson, search);
     return search;
 }
 
@@ -292,7 +401,7 @@ ParsedLayerTilesRequest parseRestSearchLayerRequestJson(
     const FeatureLayerSearchRequest& searchTemplate)
 {
     if (containsInteractiveSearchFields(requestJson) || containsRestSearchFields(requestJson)) {
-        throw std::runtime_error("REST /search query/scope/withFields must be specified on the request envelope");
+        throw std::runtime_error("REST /search query/scope/withFields/featureTypes must be specified on the request envelope");
     }
 
     ParsedLayerTilesRequest result;
@@ -308,11 +417,11 @@ ParsedLayerTilesRequest parseRestSearchLayerRequestJson(
         }
         result.priorityTileIds.reserve(priorityIt->size());
         for (auto const& tileIdJson : *priorityIt) {
-            result.priorityTileIds.emplace_back(TileId::fromValue(tileIdJson.get<int32_t>()));
+            result.priorityTileIds.emplace_back(parseRequestTileId(tileIdJson, result.layerId));
         }
     }
 
-    parsePlainTileIdsInto(result, requestJson);
+    parsePlainTileIdsInto(result, requestJson, result.layerId);
     return result;
 }
 

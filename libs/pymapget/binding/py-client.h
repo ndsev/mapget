@@ -209,6 +209,7 @@ void bindHttpClient(py::module_& m)
                    const std::string& scope,
                    bool rewrite,
                    std::vector<std::string> withFields,
+                   std::vector<std::string> featureTypes,
                    std::function<void(TileSearchResultLayer::Ptr)> onResult,
                    std::function<void(py::object)> onStatus)
                 {
@@ -228,6 +229,7 @@ void bindHttpClient(py::module_& m)
                     }
                     search.rewriteQuery_ = rewrite || search.scope_ == FeatureLayerSearchScope::Auto;
                     search.withFields_ = std::move(withFields);
+                    search.featureTypes_ = std::move(featureTypes);
 
                     auto req = std::make_shared<PySearchRequest>(
                         mapId,
@@ -249,6 +251,7 @@ void bindHttpClient(py::module_& m)
             py::arg("scope") = "feature",
             py::arg("rewrite") = false,
             py::arg("with_fields") = std::vector<std::string>{},
+            py::arg("feature_types") = std::vector<std::string>{},
             py::arg("on_result") = py::none(),
             py::arg("on_status") = py::none(),
             py::call_guard<py::gil_scoped_acquire>(),
@@ -263,6 +266,7 @@ void bindHttpClient(py::module_& m)
                 scope: "feature", "attribute" or "auto".
                 rewrite: Normalize the query through the feature-model schema before evaluation. Auto scope implies rewrite.
                 with_fields: SIMFIL expressions stored in each result's values array.
+                feature_types: Optional feature type names to search; omitted means all feature types.
                 on_result: Optional callback for each TileSearchResultLayer.
                 on_status: Optional callback for progress/status dictionaries.
         )pbdoc")

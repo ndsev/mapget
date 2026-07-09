@@ -890,6 +890,14 @@ struct LayerSchema::Impl
         if (!valid(id)) {
             return true;
         }
+        if (fieldName == "attributes" &&
+            metaType(id) == "Feature" &&
+            schemas_[id].childSchemas_.contains(std::string(fieldName))) {
+            // `attributes` is a feature-root alias for `properties`, but it is
+            // intentionally kept out of direct/flat field caches so schema-
+            // generated paths remain canonical.
+            return true;
+        }
         finalize(id);
         auto const& fields = schemas_[id].flatFields_;
         return std::ranges::binary_search(fields, fieldName);
@@ -1130,6 +1138,11 @@ struct LayerSchema::Impl
         visited.push_back(id);
         if (schema.kind_ == Kind::Object) {
             for (auto const& fieldName : schema.directFields_) {
+                if (schema.entry_.metaType_ == "Feature" && fieldName == "attributes") {
+                    // Do not let the feature-root alias duplicate canonical
+                    // `properties...` paths generated for shorthand rewrites.
+                    continue;
+                }
                 auto childIt = schema.childSchemas_.find(fieldName);
                 if (childIt == schema.childSchemas_.end()) {
                     continue;
@@ -1301,6 +1314,14 @@ private:
             return id;
         }
 
+        auto const shouldAddFeatureAttributesAlias =
+            metaType == "Feature" &&
+            propertiesIt->contains("properties") &&
+            !propertiesIt->contains("attributes");
+        if (shouldAddFeatureAttributesAlias) {
+            registry_.addDirectField(id, "attributes");
+        }
+
         for (auto const& [fieldName, childSchemaJson] : propertiesIt->items()) {
             registry_.addDirectField(id, fieldName);
 
@@ -1318,6 +1339,11 @@ private:
                     preferredKind);
                 if (childId != simfil::NoSchemaId) {
                     registry_.addChild(id, fieldName, childId);
+                    if (shouldAddFeatureAttributesAlias && fieldName == "properties") {
+                        // Keep generated schema paths canonical (`properties`),
+                        // but resolve explicit query paths using the alias.
+                        registry_.addChild(id, "attributes", childId);
+                    }
                 }
             };
 

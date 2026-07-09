@@ -346,6 +346,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
         {"scope", searchScopeToJsonValue(request->search_.scope_)},
         {"rewrite", request->search_.rewriteQuery_},
         {"withFields", request->search_.withFields_},
+        {"featureTypes", request->search_.featureTypes_},
         {"requests", json::array({std::move(requestJson)})},
         {"stringPoolOffsets", reader->stringPoolCache()->stringPoolOffsets()},
     }).dump();

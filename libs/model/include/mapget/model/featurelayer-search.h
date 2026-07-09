@@ -35,6 +35,8 @@ struct FeatureLayerSearchRequest
     bool rewriteQuery_ = false;
     /** SIMFIL expressions materialized into each SearchResult::values() row. */
     std::vector<std::string> withFields_;
+    /** Optional feature-type allow-list applied before feature or attribute contexts are evaluated. */
+    std::vector<std::string> featureTypes_;
     /** Optional client refresh counter for ordering updates of the same search id. */
     std::optional<int64_t> refresh_;
     /** Source stage mask used to assemble the searched tile, if it came from staged payloads. */

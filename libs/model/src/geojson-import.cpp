@@ -1153,8 +1153,17 @@ void importGeoJson(
         if (featureJson.contains("geometry")) {
             importFeatureGeometry(tile, feature, featureJson.at("geometry"), options);
         }
-        if (featureJson.contains("properties")) {
-            deferredProperties.push_back(DeferredProperties{feature, featureJson.at("properties")});
+        auto propertiesIt = featureJson.find("properties");
+        auto attributesIt = featureJson.find("attributes");
+        if (propertiesIt != featureJson.end() && attributesIt != featureJson.end()) {
+            raiseImport("Feature must not contain both 'properties' and its 'attributes' alias.");
+        }
+        if (propertiesIt != featureJson.end() || attributesIt != featureJson.end()) {
+            // `attributes` is accepted as an import-only alias; JSON export stays
+            // GeoJSON-compatible and emits the canonical `properties` key.
+            deferredProperties.push_back(DeferredProperties{
+                feature,
+                propertiesIt != featureJson.end() ? *propertiesIt : *attributesIt});
         }
         if (featureJson.contains("relations")) {
             deferredRelations.push_back(DeferredRelation{feature, featureJson.at("relations")});

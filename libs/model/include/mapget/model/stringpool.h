@@ -74,7 +74,8 @@ struct StringPool : public simfil::StringPool
         OverlayValidityCountStr,
         CallsStr,
         TotalUsStr,
-        MapgetRelationStr
+        MapgetRelationStr,
+        AttributesStr
     };
 
     explicit StringPool(const std::string_view& nodeId);

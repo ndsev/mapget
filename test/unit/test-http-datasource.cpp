@@ -628,6 +628,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 {"query", "typeId == 'Way'"},
                 {"scope", "feature"},
                 {"withFields", nlohmann::json::array({"typeId"})},
+                {"featureTypes", nlohmann::json::array({"Way"})},
                 {"responseType", "jsonl"},
                 {"requests", nlohmann::json::array({nlohmann::json::object({
                     {"mapId", "Tropico"},
@@ -656,6 +657,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(parsed["results"].size() == 1);
                 REQUIRE(parsed["resultFields"] == nlohmann::json::array({"typeId"}));
                 REQUIRE(parsed["info"].contains("searchId") == false);
+                REQUIRE(parsed["info"]["featureTypes"] == nlohmann::json::array({"Way"}));
             }
             REQUIRE(sawResultLayer);
 
@@ -663,6 +665,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             FeatureLayerSearchRequest search;
             search.query_ = "typeId == 'Way'";
             search.withFields_ = {"typeId"};
+            search.featureTypes_ = {"Way"};
 
             auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
                 "Tropico",
@@ -674,6 +677,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             request->onSearchResult([&](TileSearchResultLayer::Ptr layer) {
                 resultCount += layer->size();
                 REQUIRE(layer->info().contains("searchId") == false);
+                REQUIRE(layer->info()["featureTypes"] == nlohmann::json::array({"Way"}));
             });
             request->onStatus([&](nlohmann::json const&) {
                 ++statusCount;

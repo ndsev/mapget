@@ -32,7 +32,7 @@ struct ParsedLayerTilesRequest
 /** Copy top-level search fields into one layer request when clients use envelope-level search syntax. */
 void inheritSearchFields(nlohmann::json& requestJson, const nlohmann::json& envelopeJson);
 
-/** Return true if a JSON object contains any legacy interactive-search fields. */
+/** Return true if a JSON object contains any field accepted by interactive search. */
 bool containsInteractiveSearchFields(const nlohmann::json& requestJson);
 
 /** Return true if a JSON object contains fields reserved for REST `/search`. */

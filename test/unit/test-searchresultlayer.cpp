@@ -73,6 +73,34 @@ std::shared_ptr<LayerInfo> makeSearchResultLayerInfo()
     })"_json);
 }
 
+std::shared_ptr<LayerInfo> makeMixedSearchResultLayerInfo()
+{
+    return LayerInfo::fromJson(R"({
+        "layerId": "SearchableLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Road",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                        {"partId": "roadId", "description": "Synthetic road id.", "datatype": "U64"}
+                    ]
+                ]
+            },
+            {
+                "name": "Sign",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "tileId", "description": "Synthetic tile id.", "datatype": "U32"},
+                        {"partId": "signId", "description": "Synthetic sign id.", "datatype": "U64"}
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+}
+
 std::shared_ptr<LayerInfo> makeSchemaBackedSearchResultLayerInfo()
 {
     return LayerInfo::fromJson(R"({
@@ -510,6 +538,62 @@ TEST_CASE("Feature-layer search produces TileSearchResultLayer", "[feature-layer
     REQUIRE(searchResult->layer_->toJson()["traces"][0]["name"] == "match");
 }
 
+TEST_CASE("Feature-layer search restricts explicit feature types", "[feature-layer-search]")
+{
+    auto layerInfo = makeMixedSearchResultLayerInfo();
+    auto strings = std::make_shared<StringPool>("MixedSearchSourceNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        primarySearchTileId(),
+        "MixedSearchSourceNode",
+        "TestMap",
+        layerInfo,
+        strings);
+
+    auto road = source->newFeature("Road", {{"tileId", int64_t(7)}, {"roadId", int64_t(42)}});
+    road->addPoint(Point(11.0, 48.0, 0.0));
+    road->attributeLayers()->newLayer("rules")->newAttribute("speedLimit")->addField("limit", source->newValue(int64_t(80)));
+    auto sign = source->newFeature("Sign", {{"tileId", int64_t(7)}, {"signId", int64_t(99)}});
+    sign->addPoint(Point(11.1, 48.1, 0.0));
+    sign->attributeLayers()->newLayer("rules")->newAttribute("speedLimit")->addField("limit", source->newValue(int64_t(40)));
+
+    auto featureResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .query_ = "typeId != ''",
+            .scope_ = FeatureLayerSearchScope::Feature,
+            .withFields_ = {"typeId"},
+            .featureTypes_ = {"Road"},
+        });
+    REQUIRE(featureResult.has_value());
+    REQUIRE(featureResult->layer_->size() == 1);
+    REQUIRE(featureResult->layer_->at(0)->featureId()->toString() == "Road.7.42");
+    REQUIRE(featureResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({"Road"}));
+    REQUIRE(featureResult->layer_->info()["featureTypes"] == nlohmann::json::array({"Road"}));
+
+    auto attributeResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .query_ = "$name == 'speedLimit'",
+            .scope_ = FeatureLayerSearchScope::Attribute,
+            .withFields_ = {"$feature.typeId", "limit"},
+            .featureTypes_ = {"Sign"},
+        });
+    REQUIRE(attributeResult.has_value());
+    REQUIRE(attributeResult->layer_->size() == 1);
+    REQUIRE(attributeResult->layer_->at(0)->featureId()->toString() == "Sign.7.99");
+    REQUIRE(attributeResult->layer_->toJson()["results"][0]["values"] == nlohmann::json::array({"Sign", 40}));
+
+    auto unknownType = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .query_ = "typeId != ''",
+            .scope_ = FeatureLayerSearchScope::Feature,
+            .featureTypes_ = {"Unknown"},
+        });
+    REQUIRE_FALSE(unknownType.has_value());
+    REQUIRE(unknownType.error().message.find("unknown feature type") != std::string::npos);
+}
+
 TEST_CASE("Feature-layer search stores diagnostics on the result layer", "[feature-layer-search][search-result-layer]")
 {
     auto layerInfo = makeSearchResultLayerInfo();
@@ -653,6 +737,19 @@ TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[
     REQUIRE(normalized->normalizedQuery_.find("limit > 40") != std::string::npos);
     REQUIRE(normalized->normalizedQuery_.find("properties.layer.rules.speedLimit") == std::string::npos);
 
+    auto normalizedAlias = registry->normalizeSearchQuery(
+        "attributes.layer.rules.speedLimit.limit > 40",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(normalizedAlias.has_value());
+    INFO(normalizedAlias->normalizedQuery_);
+    REQUIRE(normalizedAlias->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalizedAlias->attributeScopes_.size() == 1);
+    REQUIRE(normalizedAlias->attributeScopes_.front().featureType_ == "Road");
+    REQUIRE(normalizedAlias->attributeScopes_.front().attributeLayerName_ == "rules");
+    REQUIRE(normalizedAlias->attributeScopes_.front().attributeName_ == "speedLimit");
+    REQUIRE(normalizedAlias->normalizedQuery_.find("limit > 40") != std::string::npos);
+    REQUIRE(normalizedAlias->normalizedQuery_.find("attributes.layer.rules.speedLimit") == std::string::npos);
+
     auto strings = std::make_shared<StringPool>("NormalizedAttributePathSearchNode");
     auto source = std::make_shared<TileFeatureLayer>(
         primarySearchTileId(),
@@ -680,6 +777,21 @@ TEST_CASE("Search query normalization rewrites feature-root attribute paths", "[
     REQUIRE(searchResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({50}));
     REQUIRE(searchResult->layer_->info()["searchScope"] == "attribute");
     REQUIRE(searchResult->layer_->info()["normalizedSearchQuery"].get<std::string>().find("limit > 40") != std::string::npos);
+
+    auto aliasSearchResult = searchFeatureLayerAsResultLayer(
+        *source,
+        FeatureLayerSearchRequest{
+            .searchId_ = "normalized-attribute-alias-path-search",
+            .query_ = "attributes.layer.rules.speedLimit.limit > 40",
+            .scope_ = FeatureLayerSearchScope::Auto,
+            .rewriteQuery_ = true,
+            .withFields_ = {"limit"},
+        });
+
+    REQUIRE(aliasSearchResult.has_value());
+    REQUIRE(aliasSearchResult->layer_->size() == 1);
+    REQUIRE(aliasSearchResult->layer_->at(0)->toJson()["values"] == nlohmann::json::array({50}));
+    REQUIRE(aliasSearchResult->layer_->info()["searchScope"] == "attribute");
 }
 
 TEST_CASE("Search query normalization uses AST-derived attribute shorthands", "[feature-layer-search]")
@@ -1095,9 +1207,10 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     nlohmann::json envelope = {
         {"searchId", "query-42"},
         {"refresh", 7},
-        {"searchQuery", "typeId == 'Road'"},
-        {"searchScope", "attribute"},
+        {"query", "typeId == 'Road'"},
+        {"scope", "attribute"},
         {"withFields", {"$feature.typeId", "$name"}},
+        {"featureTypes", {"Road"}},
     };
     nlohmann::json request = {
         {"mapId", "TestMap"},
@@ -1111,9 +1224,24 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     REQUIRE(parsed.searchRequest.has_value());
     REQUIRE(parsed.searchRequest->searchId_ == "query-42");
     REQUIRE(parsed.searchRequest->refresh_ == 7);
+    REQUIRE(parsed.searchRequest->query_ == "typeId == 'Road'");
     REQUIRE(parsed.searchRequest->scope_ == FeatureLayerSearchScope::Attribute);
     REQUIRE(parsed.searchRequest->withFields_ == std::vector<std::string>{"$feature.typeId", "$name"});
+    REQUIRE(parsed.searchRequest->featureTypes_ == std::vector<std::string>{"Road"});
     REQUIRE_FALSE(parsed.searchRequest->requestKey_.empty());
+
+    nlohmann::json legacyRequest = {
+        {"mapId", "TestMap"},
+        {"layerId", "RoadLayer"},
+        {"tileIds", {primarySearchTileId().value()}},
+        {"searchId", "legacy-query"},
+        {"searchQuery", "typeId == 'Road'"},
+        {"searchScope", "feature"},
+    };
+    auto legacyParsed = detail::parseLayerTilesRequestJson(legacyRequest);
+    REQUIRE(legacyParsed.searchRequest.has_value());
+    REQUIRE(legacyParsed.searchRequest->query_ == "typeId == 'Road'");
+    REQUIRE(legacyParsed.searchRequest->scope_ == FeatureLayerSearchScope::Feature);
 
     request.erase("tileIds");
     request["tileIdsByNextStage"] = nlohmann::json::array({nlohmann::json::array({primarySearchTileId().value(), secondarySearchTileId().value()})});
@@ -1125,12 +1253,36 @@ TEST_CASE("Tile request parser carries inherited search fields", "[feature-layer
     }
 }
 
+TEST_CASE("Tile request parser preserves metadata SourceData tile-zero sentinel", "[tiles-request]")
+{
+    nlohmann::json metadataRequest = {
+        {"mapId", "TestMap"},
+        {"layerId", "Metadata-RegistryMetadata"},
+        {"tileIds", {0}},
+    };
+
+    auto parsed = detail::parseLayerTilesRequestJson(metadataRequest);
+
+    REQUIRE(parsed.layerId == "Metadata-RegistryMetadata");
+    REQUIRE(parsed.tileIdsByNextStage.size() == 1);
+    REQUIRE(parsed.tileIdsByNextStage[0].size() == 1);
+    REQUIRE(parsed.tileIdsByNextStage[0][0].value() == 0);
+
+    nlohmann::json featureRequest = {
+        {"mapId", "TestMap"},
+        {"layerId", "RoadLayer"},
+        {"tileIds", {0}},
+    };
+    REQUIRE_THROWS(detail::parseLayerTilesRequestJson(featureRequest));
+}
+
 TEST_CASE("REST search parser keeps one-shot search fields on envelope", "[feature-layer-search][tiles-request]")
 {
     nlohmann::json envelope = {
         {"query", "typeId == 'Road'"},
         {"scope", "attribute"},
         {"withFields", {"$feature.typeId", "$name"}},
+        {"featureTypes", {"Road"}},
     };
     nlohmann::json request = {
         {"mapId", "TestMap"},
@@ -1146,6 +1298,7 @@ TEST_CASE("REST search parser keeps one-shot search fields on envelope", "[featu
     REQUIRE(parsed.searchRequest->requestKey_.empty());
     REQUIRE(parsed.searchRequest->scope_ == FeatureLayerSearchScope::Attribute);
     REQUIRE(parsed.searchRequest->withFields_ == std::vector<std::string>{"$feature.typeId", "$name"});
+    REQUIRE(parsed.searchRequest->featureTypes_ == std::vector<std::string>{"Road"});
     REQUIRE(detail::collectSearchTileIds(parsed) == std::vector<TileId>{primarySearchTileId(), secondarySearchTileId()});
 
     envelope["searchId"] = "interactive-only";
