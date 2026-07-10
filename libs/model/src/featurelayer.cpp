@@ -2364,6 +2364,13 @@ ModelNode::Ptr TileFeatureLayer::clone(
         newCacheNode = newNode;
         for (auto [key, value] : resolved->fields()) {
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
+                if (*keyStr == AttributeLayer::InstanceIdField) {
+                    auto const idValue = value->value();
+                    if (auto const* signedId = std::get_if<int64_t>(&idValue); signedId && *signedId >= 0) {
+                        newNode->setId(static_cast<uint64_t>(*signedId));
+                    }
+                    continue;
+                }
                 auto cloned = clone(cache, otherLayer, value);
                 newNode->addField(*keyStr, resolve<Attribute>(*cloned));
             }

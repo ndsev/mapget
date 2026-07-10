@@ -4,6 +4,10 @@
 #include "attr.h"
 #include "merged-array-view.h"
 
+#include "nlohmann/json.hpp"
+
+#include <optional>
+
 namespace mapget
 {
 
@@ -22,8 +26,22 @@ class AttributeLayer : public simfil::BaseObject<TileFeatureLayer, Attribute>
     friend class bitsery::Access;
 
 public:
+    static constexpr std::string_view InstanceIdField = "id";
+
     using BaseObject::addField;
     using BaseObject::get;
+
+    /**
+     * Attach a numeric source-layer instance id to this attribute layer.
+     *
+     * AttributeLayerList may contain multiple entries with the same public
+     * layer name. The instance id lets GeoJSON/inspection users distinguish
+     * those otherwise identical layer objects without changing query/style
+     * paths such as `properties.layer.RoadRulesLayer`.
+     */
+    void setId(uint64_t id);
+    [[nodiscard]] std::optional<uint64_t> id() const;
+    [[nodiscard]] nlohmann::json toJson() const override;
 
     /**
      * Create a new attribute and immediately insert it into the layer.
@@ -115,6 +133,7 @@ public:
     /** Assign the object schema for the layer-name map stored by this view. */
     tl::expected<void, simfil::Error> setObjectSchema(simfil::SchemaId schemaId);
 
+    [[nodiscard]] nlohmann::json toJson() const override;
     [[nodiscard]] simfil::ValueType type() const override;
     [[nodiscard]] simfil::ModelNode::Ptr at(int64_t i) const override;
     [[nodiscard]] uint32_t size() const override;

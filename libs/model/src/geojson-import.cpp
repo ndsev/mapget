@@ -911,6 +911,9 @@ void importAttributeObject(
     }
 
     for (auto const& [key, value] : json.items()) {
+        if (key == "_multimap") {
+            continue;
+        }
         if (key == "validity") {
             deferredValidities.push_back(DeferredAttributeValidity{hostFeature, attribute, value});
             continue;
@@ -924,6 +927,52 @@ void importAttributeObject(
         auto result = attribute->addField(key, importGenericNode(tile, value, hostFeature));
         if (!result) {
             raiseImport(result.error().message);
+        }
+    }
+}
+
+/** Import one attribute-layer object, preserving duplicate attribute names and optional instance id metadata. */
+void importAttributeLayerObject(
+    TileFeatureLayer& tile,
+    model_ptr<Feature> feature,
+    std::string const& layerName,
+    nlohmann::json const& layerJson,
+    GeoJsonImportOptions const& options,
+    std::vector<DeferredAttributeValidity>& deferredValidities)
+{
+    if (!layerJson.is_object()) {
+        raiseImport(fmt::format("Attribute layer '{}' must be a JSON object.", layerName));
+    }
+
+    auto attrLayer = feature->attributeLayers()->newLayer(layerName);
+    for (auto const& [attrName, attrValue] : layerJson.items()) {
+        if (attrName == "_multimap") {
+            continue;
+        }
+        if (attrName == AttributeLayer::InstanceIdField) {
+            if (!attrValue.is_number_unsigned() && !attrValue.is_number_integer()) {
+                raiseImport(fmt::format("Attribute layer '{}' id must be an integer.", layerName));
+            }
+            auto const layerId = attrValue.get<int64_t>();
+            if (layerId < 0) {
+                raiseImport(fmt::format("Attribute layer '{}' id must not be negative.", layerName));
+            }
+            attrLayer->setId(static_cast<uint64_t>(layerId));
+            continue;
+        }
+
+        auto importOneAttribute = [&](nlohmann::json const& attributeJson) {
+            auto attribute = attrLayer->newAttribute(attrName);
+            importAttributeObject(tile, feature, attribute, attributeJson, options, deferredValidities);
+        };
+
+        if (attrValue.is_array()) {
+            for (auto const& element : attrValue) {
+                importOneAttribute(element);
+            }
+        }
+        else {
+            importOneAttribute(attrValue);
         }
     }
 }
@@ -945,13 +994,16 @@ void importProperties(
             raiseImport("properties.layer must be a JSON object.");
         }
         for (auto const& [layerName, layerValue] : layerIt->items()) {
-            if (!layerValue.is_object()) {
-                raiseImport(fmt::format("Attribute layer '{}' must be a JSON object.", layerName));
+            if (layerName == "_multimap") {
+                continue;
             }
-            auto attrLayer = feature->attributeLayers()->newLayer(layerName);
-            for (auto const& [attrName, attrValue] : layerValue.items()) {
-                auto attribute = attrLayer->newAttribute(attrName);
-                importAttributeObject(tile, feature, attribute, attrValue, options, deferredValidities);
+            if (layerValue.is_array()) {
+                for (auto const& layerElement : layerValue) {
+                    importAttributeLayerObject(tile, feature, layerName, layerElement, options, deferredValidities);
+                }
+            }
+            else {
+                importAttributeLayerObject(tile, feature, layerName, layerValue, options, deferredValidities);
             }
         }
     }
