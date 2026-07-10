@@ -104,10 +104,15 @@ private:
 class WsTilesClient
 {
 public:
-    WsTilesClient(uint16_t port, std::shared_ptr<LayerInfo> layerInfo, bool requireFeatureLayer = true)
+    WsTilesClient(
+        uint16_t port,
+        std::shared_ptr<LayerInfo> layerInfo,
+        bool requireFeatureLayer = true,
+        std::string pullPath = "/interactive/payload")
         : pullClient_("127.0.0.1", port),
           layerInfo_(std::move(layerInfo)),
           requireFeatureLayer_(requireFeatureLayer),
+          pullPath_(std::move(pullPath)),
           reader_(
               [this](auto&&, auto&&) { return layerInfo_; },
               [this](auto&& tile) {
@@ -197,7 +202,8 @@ public:
                 const auto waitCapMs = allDone ? 100 : 1000;
                 const auto waitMs = std::clamp<int64_t>(remainingMs, 1, waitCapMs);
                 const auto [result, resp] = pullClient_.get(fmt::format(
-                    "/interactive/payload?clientId={}&waitMs={}&maxBytes={}",
+                    "{}?clientId={}&waitMs={}&maxBytes={}",
+                    pullPath_,
                     clientId,
                     waitMs,
                     64 * 1024 * 1024));
@@ -228,7 +234,7 @@ public:
                     return true;
                 }
                 else {
-                    setError(fmt::format("Unexpected /interactive/payload response status: {}", static_cast<int>(resp->statusCode())));
+                    setError(fmt::format("Unexpected {} response status: {}", pullPath_, static_cast<int>(resp->statusCode())));
                     return true;
                 }
 
@@ -362,6 +368,7 @@ private:
     SyncHttpClient pullClient_;
     std::shared_ptr<LayerInfo> layerInfo_;
     bool requireFeatureLayer_{true};
+    std::string pullPath_;
     TileLayerStream::Reader reader_;
 };
 
@@ -808,8 +815,12 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 return conn;
             };
 
-            auto runWsTilesRequestAtPath = [&](std::string_view path, bool sendAuthHeader, const std::string& requestJson) {
-                WsTilesClient wsClient(service.port(), layerInfo);
+            auto runWsTilesRequestAtPath = [&](
+                std::string_view path,
+                bool sendAuthHeader,
+                const std::string& requestJson,
+                std::string pullPath = "/interactive/payload") {
+                WsTilesClient wsClient(service.port(), layerInfo, true, std::move(pullPath));
 
                 REQUIRE(wsClient.connect(sendAuthHeader, path));
                 requireConnected(wsClient)->send(requestJson, drogon::WebSocketMessageType::Text);
@@ -841,7 +852,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     })})},
                 }).dump();
 
-                auto [status, wsTileCount] = runWsTilesRequestAtPath("/tiles", true, req);
+                auto [status, wsTileCount] = runWsTilesRequestAtPath("/tiles", true, req, "/tiles/next");
                 REQUIRE(wsTileCount == 1);
                 REQUIRE(status["requests"].size() == 1);
                 REQUIRE(status["requests"][0]["status"].get<int>() ==
