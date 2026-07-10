@@ -142,12 +142,19 @@ private:
 void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService& service)
 {
     app.registerController(std::make_shared<TilesWebSocketController>(service));
-    app.registerHandler(
-        "/interactive/payload",
-        [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-            tilesWsHandleNextRequest(req, std::move(callback));
-        },
-        {drogon::Get, drogon::Post});
+    auto registerPayloadEndpoint = [&app](std::string const& path) {
+        app.registerHandler(
+            path,
+            [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+                tilesWsHandleNextRequest(req, std::move(callback));
+            },
+            {drogon::Get, drogon::Post});
+    };
+
+    registerPayloadEndpoint("/interactive/payload");
+    // Keep the long-poll drain endpoint paired with the legacy `/tiles`
+    // websocket path for stale reverse-proxy configurations.
+    registerPayloadEndpoint("/tiles/next");
 }
 
 /** Return process-wide websocket metrics for `/status-data`. */

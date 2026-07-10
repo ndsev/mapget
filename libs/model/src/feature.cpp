@@ -540,6 +540,9 @@ nlohmann::json Feature::toJson() const
 {
     auto json = simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
     json.erase("lod");
+    if (auto layers = attributeLayersOrNull()) {
+        json["properties"]["layer"] = layers->toJson();
+    }
     return json;
 }
 

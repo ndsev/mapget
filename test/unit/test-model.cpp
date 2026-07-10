@@ -583,6 +583,86 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     }
 }
 
+TEST_CASE("AttributeLayer duplicate names retain instance identity in GeoJSON", "[test.featurelayer]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "Road",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Road",
+                "uniqueIdCompositions": [
+                    [
+                        {
+                            "partId": "roadId",
+                            "description": "Synthetic road id.",
+                            "datatype": "U32"
+                        }
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+    auto strings = std::make_shared<StringPool>("test-node");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromValue(545555028),
+        "test-node",
+        "TestMap",
+        layerInfo,
+        strings);
+
+    auto road = tile->newFeature("Road", {{"roadId", 1}});
+    auto firstRulesLayer = tile->newAttributeLayer();
+    firstRulesLayer->setId(3);
+    auto firstSpeedA = firstRulesLayer->newAttribute("SPEED_LIMIT");
+    REQUIRE(firstSpeedA->addField("value", int64_t{50}).has_value());
+    auto firstSpeedB = firstRulesLayer->newAttribute("SPEED_LIMIT");
+    REQUIRE(firstSpeedB->addField("value", int64_t{80}).has_value());
+
+    auto secondRulesLayer = tile->newAttributeLayer();
+    secondRulesLayer->setId(4);
+    auto secondSpeedA = secondRulesLayer->newAttribute("SPEED_LIMIT");
+    REQUIRE(secondSpeedA->addField("value", int64_t{30}).has_value());
+    auto secondSpeedB = secondRulesLayer->newAttribute("SPEED_LIMIT");
+    REQUIRE(secondSpeedB->addField("value", int64_t{60}).has_value());
+
+    auto layers = road->attributeLayers();
+    layers->addLayer("RoadRulesLayer", firstRulesLayer);
+    layers->addLayer("RoadRulesLayer", secondRulesLayer);
+
+    auto json = road->toJson();
+    auto const& layerMap = json.at("properties").at("layer");
+    REQUIRE(layerMap.at("_multimap") == true);
+    REQUIRE(layerMap.at("RoadRulesLayer").is_array());
+    REQUIRE(layerMap.at("RoadRulesLayer").size() == 2);
+
+    auto const& firstJson = layerMap.at("RoadRulesLayer")[0];
+    REQUIRE(firstJson.at("id") == 3);
+    REQUIRE(firstJson.at("_multimap") == true);
+    REQUIRE(firstJson.at("SPEED_LIMIT").is_array());
+    REQUIRE(firstJson.at("SPEED_LIMIT")[0].at("value") == 50);
+    REQUIRE(firstJson.at("SPEED_LIMIT")[1].at("value") == 80);
+
+    auto const& secondJson = layerMap.at("RoadRulesLayer")[1];
+    REQUIRE(secondJson.at("id") == 4);
+    REQUIRE(secondJson.at("_multimap") == true);
+    REQUIRE(secondJson.at("SPEED_LIMIT").is_array());
+    REQUIRE(secondJson.at("SPEED_LIMIT")[0].at("value") == 30);
+    REQUIRE(secondJson.at("SPEED_LIMIT")[1].at("value") == 60);
+
+    auto collected = collectLayerAttributeValues(layers);
+    REQUIRE(collected.size() == 4);
+
+    auto imported = std::make_shared<TileFeatureLayer>(
+        TileId::fromValue(545555028),
+        "test-node-import",
+        "TestMap",
+        layerInfo,
+        std::make_shared<StringPool>("test-node-import"));
+    REQUIRE_NOTHROW(imported->fromJson(tile->toJson()));
+    REQUIRE(imported->toJson() == tile->toJson());
+}
+
 TEST_CASE("FeatureLayer stores geometry source-data refs compactly for singleton geometries",
           "[test.featurelayer][test.featurelayer.sourcedatarefs]")
 {

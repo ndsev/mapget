@@ -6,6 +6,77 @@
 namespace mapget
 {
 
+void AttributeLayer::setId(uint64_t id)
+{
+    auto value = model().newValue(static_cast<int64_t>(id));
+    auto replaced = false;
+    storage_->iterate(members_, [&](auto&& member) {
+        if (simfil::detail::objectFieldName(member) == StringPool::IdStr) {
+            simfil::detail::objectFieldNode(member) = value->addr();
+            replaced = true;
+            return false;
+        }
+        return true;
+    });
+    if (!replaced) {
+        storage_->emplace_back(members_, StringPool::IdStr, value->addr());
+    }
+}
+
+std::optional<uint64_t> AttributeLayer::id() const
+{
+    auto valueNode = get(StringPool::IdStr);
+    if (!valueNode) {
+        return {};
+    }
+
+    auto value = valueNode->value();
+    if (auto const* signedValue = std::get_if<int64_t>(&value)) {
+        if (*signedValue < 0) {
+            return {};
+        }
+        return static_cast<uint64_t>(*signedValue);
+    }
+    return {};
+}
+
+nlohmann::json AttributeLayer::toJson() const
+{
+    auto result = nlohmann::json::object();
+    auto isMultiMap = false;
+    if (auto layerId = id()) {
+        result[std::string{InstanceIdField}] = *layerId;
+    }
+
+    for (auto const& [fieldId, value] : fields()) {
+        auto fieldName = model().strings()->resolve(fieldId);
+        if (!fieldName) {
+            continue;
+        }
+        if (*fieldName == InstanceIdField) {
+            continue;
+        }
+
+        auto const fieldKey = std::string{*fieldName};
+        auto fieldValue = value->toJson();
+        if (result.contains(fieldKey)) {
+            isMultiMap = true;
+            if (!result[fieldKey].is_array()) {
+                result[fieldKey] = nlohmann::json::array({std::move(result[fieldKey])});
+            }
+            result[fieldKey].push_back(std::move(fieldValue));
+        }
+        else {
+            result[fieldKey] = std::move(fieldValue);
+        }
+    }
+
+    if (isMultiMap) {
+        result["_multimap"] = true;
+    }
+    return result;
+}
+
 AttributeLayer::AttributeLayer(
     simfil::ArrayIndex i,
     simfil::ModelConstPtr l,
@@ -48,6 +119,9 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
         return false;
     for (auto const& [_, value] : fields()) {
         if (value->addr().column() != TileFeatureLayer::ColumnId::Attributes) {
+            if (_ == StringPool::IdStr) {
+                continue;
+            }
             log().warn("Don't add anything other than Attributes into AttributeLayers!");
             continue;
         }
@@ -145,6 +219,33 @@ bool AttributeLayerList::forEachLayer(
         return ext->forEachLayer(cb);
     }
     return true;
+}
+
+nlohmann::json AttributeLayerList::toJson() const
+{
+    auto result = nlohmann::json::object();
+    auto isMultiMap = false;
+
+    forEachLayer([&](std::string_view layerName, model_ptr<AttributeLayer> const& layer) {
+        auto const layerKey = std::string{layerName};
+        auto layerValue = layer->toJson();
+        if (result.contains(layerKey)) {
+            isMultiMap = true;
+            if (!result[layerKey].is_array()) {
+                result[layerKey] = nlohmann::json::array({std::move(result[layerKey])});
+            }
+            result[layerKey].push_back(std::move(layerValue));
+        }
+        else {
+            result[layerKey] = std::move(layerValue);
+        }
+        return true;
+    });
+
+    if (isMultiMap) {
+        result["_multimap"] = true;
+    }
+    return result;
 }
 
 simfil::model_ptr<simfil::Object> AttributeLayerList::localObject() const
