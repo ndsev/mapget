@@ -17,8 +17,8 @@ namespace
 // Sample GeoJSON with signed packed tile IDs, including a negative level-15 value.
 constexpr int32_t largeTileId = -2147483648;
 constexpr int32_t secondTileId = -2147483647;
-constexpr int64_t legacyMapgetTileId = (int64_t{1} << 32) | int64_t{1};
-constexpr int32_t legacyMapgetTileIdPacked = 131073;
+// Fixed legacy mapget tile covering Germany.
+constexpr int64_t legacyMapgetTileId = 0x21fa0777000d;
 
 auto sampleGeoJson = R"json({"type": "FeatureCollection", "features": [{
     "geometry": {
@@ -280,7 +280,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         REQUIRE(source.hasManifest());
         REQUIRE(source.manifest().files.size() == 1);
-        REQUIRE(source.manifest().files[0].tileId == legacyMapgetTileIdPacked);
+        REQUIRE(source.manifest().files[0].tileId == TileId::fromTileXY(0x01fa, 0x0888, 13).value());
 
         auto info = source.info();
         auto layer = info.getLayer("GeoJsonAny");
@@ -288,7 +288,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         auto strings = std::make_shared<StringPool>(info.nodeId_);
         auto tile = std::make_shared<TileFeatureLayer>(
-            TileId::fromTileXY(1, 0, 1),
+            TileId::fromTileXY(0x01fa, 0x0888, 13),
             info.nodeId_,
             info.mapId_,
             layer,
@@ -321,7 +321,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         REQUIRE(source.hasManifest());
         REQUIRE(source.manifest().files.size() == 1);
-        REQUIRE(source.manifest().files[0].tileId == TileId::fromTileXY(0, 0, 13).value());
+        REQUIRE(source.manifest().files[0].tileId == TileId::fromTileXY(8192, 4095, 13).value());
 
         std::filesystem::remove_all(tempDir);
     }
@@ -420,11 +420,11 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         auto layer = info.getLayer("GeoJsonAny");
         REQUIRE(layer != nullptr);
         REQUIRE(layer->coverage_.size() == 1);
-        REQUIRE(layer->coverage_.front().min_ == TileId::fromTileXY(1, 0, 1));
+        REQUIRE(layer->coverage_.front().min_ == TileId::fromTileXY(0x01fa, 0x0888, 13));
 
         auto strings = std::make_shared<StringPool>(info.nodeId_);
         auto tile = std::make_shared<TileFeatureLayer>(
-            TileId::fromTileXY(1, 0, 1),
+            TileId::fromTileXY(0x01fa, 0x0888, 13),
             info.nodeId_,
             info.mapId_,
             layer,
