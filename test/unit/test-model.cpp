@@ -1545,7 +1545,15 @@ TEST_CASE("TileId", "[TileId]") {
     SECTION("Legacy mapget tile-id migration helpers") {
         auto const legacy = (int64_t{1} << 32) | int64_t{1};
         REQUIRE(isLegacyTileId(legacy));
-        REQUIRE(legacyTileIdToPacked(legacy) == TileId::fromTileXY(1, 0, 1));
+        REQUIRE(legacyTileIdToPacked(legacy) == TileId::fromTileXY(3, 0, 1));
+
+        // This fixed legacy tile covers Germany and exercises both origin
+        // changes rather than merely producing a structurally valid tile.
+        constexpr int64_t legacyGermanyTile = 0x21fa0777000d;
+        REQUIRE(legacyTileIdToPacked(legacyGermanyTile) ==
+            TileId::fromTileXY(0x01fa, 0x0888, 13));
+        REQUIRE(legacyTileIdToPacked(legacyGermanyTile) ==
+            TileId::fromWgs84(11.13, 48.0, 13));
         REQUIRE_FALSE(isLegacyTileId(-1));
         REQUIRE_FALSE(isLegacyTileId((int64_t{1} << 32) | (int64_t{2} << 16) | int64_t{1}));
         REQUIRE_THROWS(legacyTileIdToPacked(-1));

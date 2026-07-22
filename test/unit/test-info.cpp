@@ -213,13 +213,13 @@ TEST_CASE("MapTileKey accepts removed mapget tile-id layout", "[DataSourceInfo]"
 {
     auto const legacyTileId = (int64_t{1} << 32) | int64_t{1};
     auto const parsed = MapTileKey("Features:Map:Layer:" + std::to_string(legacyTileId) + ":0");
-    REQUIRE(parsed.tileId_ == TileId::fromTileXY(1, 0, 1));
+    REQUIRE(parsed.tileId_ == TileId::fromTileXY(3, 0, 1));
 }
 
 TEST_CASE("MapTileKey accepts removed hexadecimal mapget tile-id layout", "[DataSourceInfo]")
 {
     auto const parsed = MapTileKey("Features:Map:Layer:21fa0777000d:0");
-    REQUIRE(parsed.tileId_ == TileId::fromTileXY(0x21fa, 0x0777, 13));
+    REQUIRE(parsed.tileId_ == TileId::fromTileXY(0x01fa, 0x0888, 13));
 }
 
 TEST_CASE("MapTileKey keeps SourceData tile zero as metadata sentinel", "[DataSourceInfo]")
