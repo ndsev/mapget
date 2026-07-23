@@ -408,7 +408,10 @@ The `mapget` Python package is deployed to PyPI through GitHub Actions with auto
 
 The guarded workflow verifies the CMake version, current `main` head, and its
 successful CI run before creating `vX.Y.Z` and the GitHub release. It then
-dispatches the wheel workflow explicitly for that tag.
+dispatches the wheel workflow explicitly for that tag. A release-tag ruleset
+allows only the workflow's dedicated deploy key, stored in the
+`MAPGET_RELEASE_DEPLOY_KEY` repository secret, to create, move, or delete
+`vX.Y.Z` tags.
 
 #### Automated Process:
 

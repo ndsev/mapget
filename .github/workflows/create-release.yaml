@@ -91,9 +91,10 @@ jobs:
           fi
           echo "Validated main CI: $SUCCESSFUL_RUN"
 
-      - name: Create tag and GitHub release
+      - name: Create release tag
         env:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
+          RELEASE_DEPLOY_KEY: ${{ secrets.MAPGET_RELEASE_DEPLOY_KEY }}
         run: |
           TAG="v$RELEASE_VERSION"
           REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')
@@ -103,12 +104,28 @@ jobs:
           fi
 
           if [[ -z "$REMOTE_TAG_SHA" ]]; then
+            if [[ -z "$RELEASE_DEPLOY_KEY" ]]; then
+              echo "MAPGET_RELEASE_DEPLOY_KEY is not configured." >&2
+              exit 1
+            fi
+
+            KEY_FILE="$RUNNER_TEMP/mapget-release-deploy-key"
+            KNOWN_HOSTS_FILE="$RUNNER_TEMP/mapget-release-known-hosts"
+            printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$KEY_FILE"
+            chmod 600 "$KEY_FILE"
+            gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$KNOWN_HOSTS_FILE"
+            trap 'rm -f "$KEY_FILE" "$KNOWN_HOSTS_FILE"' EXIT
+
             git tag "$TAG" "$TARGET_SHA"
-            git push origin "refs/tags/$TAG"
+            GIT_SSH_COMMAND="ssh -i $KEY_FILE -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS_FILE" \
+              git push "git@github.com:$GITHUB_REPOSITORY.git" "refs/tags/$TAG"
           else
             echo "$TAG already points to the requested target; keeping it."
           fi
 
+      - name: Create GitHub release
+        run: |
+          TAG="v$RELEASE_VERSION"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "GitHub release $TAG already exists; keeping it."
             exit 0
@@ -140,23 +157,34 @@ jobs:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           TAG="v$RELEASE_VERSION"
-          ACTIVE_RUN=$(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow ci-deploy.yaml \
-            --branch "$TAG" \
-            --limit 20 \
-            --json status,conclusion,headSha,url \
-            --jq ".[] | select(
-              .headSha == \"$TARGET_SHA\" and
-              (.status != \"completed\" or .conclusion == \"success\")
-            ) | .url" | head -n 1)
+          ACTIVE_RUN=""
+
+          # A deploy-key push starts the tag workflow automatically, but the
+          # run may take a few seconds to become visible through the API.
+          for _ in {1..6}; do
+            ACTIVE_RUN=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ci-deploy.yaml \
+              --branch "$TAG" \
+              --limit 20 \
+              --json status,conclusion,headSha,url \
+              --jq ".[] | select(
+                .headSha == \"$TARGET_SHA\" and
+                (.status != \"completed\" or .conclusion == \"success\")
+              ) | .url" | head -n 1)
+            if [[ -n "$ACTIVE_RUN" ]]; then
+              break
+            fi
+            sleep 5
+          done
+
           if [[ -n "$ACTIVE_RUN" ]]; then
             echo "Release CI is already active or successful: $ACTIVE_RUN"
             exit 0
           fi
 
-          # Pushes made with GITHUB_TOKEN do not recursively start workflows,
-          # so dispatch the tag build explicitly.
+          # Recover idempotently when the tag already existed or GitHub did
+          # not register the push-triggered workflow.
           gh workflow run ci-deploy.yaml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$TAG"
