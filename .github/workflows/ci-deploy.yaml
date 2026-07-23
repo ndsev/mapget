@@ -6,6 +6,10 @@ on:
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ '**' ]
+  # The guarded release workflow creates the tag with GITHUB_TOKEN and then
+  # dispatches this workflow explicitly because token-authored pushes do not
+  # trigger another workflow run.
+  workflow_dispatch:
 
 jobs:
   determine-version:
@@ -25,21 +29,21 @@ jobs:
       
       - name: Install setuptools_scm
         run: pip install setuptools_scm
-      
+
+      - name: Test version validation
+        run: python .github/scripts/test_validate_version.py
+
+      # Fail malformed tags and release branches before starting the platform
+      # matrix instead of discovering the mismatch in the final deploy job.
+      - name: Validate release version
+        id: release-version
+        run: python .github/scripts/validate_version.py
+
       - name: Get version
         id: version
+        env:
+          CMAKE_VERSION: ${{ steps.release-version.outputs.cmake_version }}
         run: |
-          CMAKE_VERSION=$(python - <<'PY'
-          import re
-          from pathlib import Path
-
-          match = re.search(r'set\(MAPGET_VERSION\s+([0-9.]+)\)', Path('CMakeLists.txt').read_text())
-          if not match:
-              raise SystemExit('Could not find MAPGET_VERSION in CMakeLists.txt')
-          print(match.group(1))
-          PY
-          )
-
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$GITHUB_BASE_REF" == "main" && "$GITHUB_HEAD_REF" == release/* ]]; then
             # Release PRs need installable intermediate wheels before the final
             # release tag exists. Use the planned CMake version as the base so
@@ -65,6 +69,9 @@ jobs:
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       SCCACHE_GHA_ENABLED: "true"
+      # Release correctness is more important than cache speed. The GitHub
+      # cache backend can reject sccache reads when its egress quota is busy.
+      USE_SCCACHE: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,6 +81,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule update --init --recursive --depth=1
       - name: Run sccache-cache
+        if: env.USE_SCCACHE == 'true'
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Install libuuid
         run: |
@@ -83,9 +91,14 @@ jobs:
           python3 -m venv venv && . ./venv/bin/activate
           pip install -U setuptools wheel pip
           mkdir -p build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+          SCCACHE_ARGS=()
+          if [[ "$USE_SCCACHE" == "true" ]]; then
+            SCCACHE_ARGS+=(
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            )
+          fi
+          cmake .. -DCMAKE_BUILD_TYPE=Release "${SCCACHE_ARGS[@]}" \
             -DMAPGET_ENABLE_TESTING=True \
             -DMAPGET_BUILD_EXAMPLES=True \
             -DMAPGET_WITH_WHEEL=True \
@@ -172,6 +185,7 @@ jobs:
     needs: [determine-version]
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-14, windows-2022]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -181,11 +195,13 @@ jobs:
             python-version: "3.10"
     env:
       SCCACHE_GHA_ENABLED: "true"
+      USE_SCCACHE: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - name: Run sccache-cache
+        if: env.USE_SCCACHE == 'true'
         uses: mozilla-actions/sccache-action@v0.0.9
       - uses: actions/setup-python@v5
         with:
@@ -198,12 +214,17 @@ jobs:
           python -m pip install delocate
           export MACOSX_DEPLOYMENT_TARGET=11.0  # ARM64 requires macOS 11.0+
           mkdir -p build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release \
+          SCCACHE_ARGS=()
+          if [[ "$USE_SCCACHE" == "true" ]]; then
+            SCCACHE_ARGS+=(
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            )
+          fi
+          cmake .. -DCMAKE_BUILD_TYPE=Release "${SCCACHE_ARGS[@]}" \
                 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
                 -DPython3_ROOT_DIR="$pythonLocation" \
                 -DPython3_FIND_FRAMEWORK=LAST \
-                -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-                -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
                 -DMAPGET_ENABLE_TESTING=ON \
                 -DMAPGET_BUILD_EXAMPLES=ON \
                 -DMAPGET_WITH_WHEEL=True \
@@ -227,17 +248,24 @@ jobs:
           echo "cmake -DPython3_ROOT_DIR=$env:pythonLocation"
           mkdir build
           cd build
-          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release `
-                "-DPython3_ROOT_DIR=$env:pythonLocation" `
-                -DPython3_FIND_REGISTRY=LAST `
-                -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-                -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-                -DMAPGET_ENABLE_TESTING=YES `
-                -DMAPGET_BUILD_EXAMPLES=YES `
-                -DMAPGET_WITH_WHEEL=True `
-                -DMAPGET_WITH_SERVICE=True `
-                -DMAPGET_WITH_HTTPLIB=True `
-                -DMAPGET_VERSION="${{ needs.determine-version.outputs.version }}"
+          $cmakeArgs = @(
+            ".."
+            "-GNinja"
+            "-DCMAKE_BUILD_TYPE=Release"
+            "-DPython3_ROOT_DIR=$env:pythonLocation"
+            "-DPython3_FIND_REGISTRY=LAST"
+            "-DMAPGET_ENABLE_TESTING=YES"
+            "-DMAPGET_BUILD_EXAMPLES=YES"
+            "-DMAPGET_WITH_WHEEL=True"
+            "-DMAPGET_WITH_SERVICE=True"
+            "-DMAPGET_WITH_HTTPLIB=True"
+            "-DMAPGET_VERSION=${{ needs.determine-version.outputs.version }}"
+          )
+          if ($env:USE_SCCACHE -eq "true") {
+            $cmakeArgs += "-DCMAKE_C_COMPILER_LAUNCHER=sccache"
+            $cmakeArgs += "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          }
+          cmake @cmakeArgs
           cmake --build . --config Release
       - name: Deploy
         uses: actions/upload-artifact@v4
@@ -255,7 +283,8 @@ jobs:
     if: |
       (github.event_name == 'push' && 
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
-      (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))
+      (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

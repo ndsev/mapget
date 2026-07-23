@@ -398,23 +398,25 @@ The `mapget` Python package is deployed to PyPI through GitHub Actions with auto
 
 #### Manual Steps:
 
-1. **Update Version**: Before creating a release, update `MAPGET_VERSION` in `CMakeLists.txt` to the new version (e.g., `2025.3.1`)
-2. **Commit and Push**: Commit this change to the `main` branch with a clear message like "Bump version to 2025.3.1"
-3. **Create GitHub Release**:
-  - Go to the repository's "Releases" page on GitHub
-  - Click "Create a new release"
-  - Set the tag to `v2025.3.1` (matching the CMakeLists.txt version)
-  - Select "Create new tag on publish"
-  - Fill in release title and notes
-  - Publish the release
+1. **Update Version**: On `release/X.Y.Z`, update `MAPGET_VERSION` in
+   `CMakeLists.txt` to `X.Y.Z`. Release-PR CI rejects a branch/version mismatch.
+2. **Merge Green Release PR**: Merge the version change and release content to
+   `main`, then wait for the resulting `CI and Deploy` run to succeed.
+3. **Run `Create Release`**: Start the manual GitHub Actions workflow from
+   `main`, enter `X.Y.Z` without a leading `v`, and optionally provide a title
+   and notes. Do not create the tag through the GitHub Releases page.
+
+The guarded workflow verifies the CMake version, current `main` head, and its
+successful CI run before creating `vX.Y.Z` and the GitHub release. It then
+dispatches the wheel workflow explicitly for that tag.
 
 #### Automated Process:
 
-When the release is published, GitHub Actions will automatically:
+When the guarded release workflow succeeds, GitHub Actions will automatically:
 
 - Use `setuptools_scm` to determine the version from the git tag
 - Pass this version to CMake during the build process (overriding the default in CMakeLists.txt)
-- Validate that the git tag matches the CMakeLists.txt version (release will fail if they don't match)
+- Validate the release branch and tag before starting the platform build matrix
 - Build wheels for all supported platforms (Linux x86_64/aarch64, macOS Intel/ARM, Windows) and Python versions (3.10-3.14)
 - Upload the official release to PyPI
 
