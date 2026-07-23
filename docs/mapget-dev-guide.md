@@ -425,10 +425,16 @@ When the guarded release workflow succeeds, GitHub Actions will automatically:
 
 ### Development Snapshots
 
-Every push to the `main` branch automatically triggers a development release:
-- Version is determined by `setuptools_scm` (e.g., `2025.3.0.dev61` for the 61st commit after the last tag)
-- Development versions are uploaded to PyPI and can be installed with `pip install mapget --pre`
-- No manual intervention required - the version is automatically derived from git history
+Pull requests from `release/X.Y.Z` to `main` publish development previews:
+
+- The preview version uses the planned CMake version and a unique CI serial
+  (for example, `2026.3.5.dev31001`).
+- Development versions can be installed with `pip install mapget --pre`.
+- Ordinary `main` pushes run the complete wheel matrix but do not upload
+  another PyPI snapshot.
+- Superseded development previews should be deleted from PyPI after the final
+  release is available. Retaining every platform wheel from every preview will
+  eventually exhaust PyPI's per-project storage quota.
 
 ### Version Management
 
