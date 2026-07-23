@@ -157,23 +157,34 @@ jobs:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           TAG="v$RELEASE_VERSION"
-          ACTIVE_RUN=$(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow ci-deploy.yaml \
-            --branch "$TAG" \
-            --limit 20 \
-            --json status,conclusion,headSha,url \
-            --jq ".[] | select(
-              .headSha == \"$TARGET_SHA\" and
-              (.status != \"completed\" or .conclusion == \"success\")
-            ) | .url" | head -n 1)
+          ACTIVE_RUN=""
+
+          # A deploy-key push starts the tag workflow automatically, but the
+          # run may take a few seconds to become visible through the API.
+          for _ in {1..6}; do
+            ACTIVE_RUN=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ci-deploy.yaml \
+              --branch "$TAG" \
+              --limit 20 \
+              --json status,conclusion,headSha,url \
+              --jq ".[] | select(
+                .headSha == \"$TARGET_SHA\" and
+                (.status != \"completed\" or .conclusion == \"success\")
+              ) | .url" | head -n 1)
+            if [[ -n "$ACTIVE_RUN" ]]; then
+              break
+            fi
+            sleep 5
+          done
+
           if [[ -n "$ACTIVE_RUN" ]]; then
             echo "Release CI is already active or successful: $ACTIVE_RUN"
             exit 0
           fi
 
-          # Pushes made with GITHUB_TOKEN do not recursively start workflows,
-          # so dispatch the tag build explicitly.
+          # Recover idempotently when the tag already existed or GitHub did
+          # not register the push-triggered workflow.
           gh workflow run ci-deploy.yaml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$TAG"
