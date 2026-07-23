@@ -47,7 +47,7 @@ jobs:
           python-version: "3.10"
 
       - name: Install version tooling
-        run: pip install setuptools_scm
+        run: "pip install --only-binary=:all: setuptools-scm==10.2.1"
 
       - name: Test version validation
         run: python .github/scripts/test_validate_version.py
