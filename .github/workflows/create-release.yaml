@@ -1,0 +1,163 @@
+name: Create Release
+run-name: Create mapget v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v (X.Y.Z)
+        required: true
+        type: string
+      title:
+        description: Optional GitHub release title
+        required: false
+        type: string
+      notes:
+        description: Optional GitHub release notes; generated notes are used when empty
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: mapget-release
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_TITLE: ${{ inputs.title }}
+      RELEASE_NOTES: ${{ inputs.notes }}
+    steps:
+      # Releases are always cut from the current main head, regardless of which
+      # ref the operator happened to select in the workflow UI.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install version tooling
+        run: pip install setuptools_scm
+
+      - name: Test version validation
+        run: python .github/scripts/test_validate_version.py
+
+      - name: Validate requested release
+        run: |
+          python .github/scripts/validate_version.py \
+            --expected-version "$RELEASE_VERSION"
+
+      - name: Resolve release target
+        id: target
+        run: |
+          git fetch origin main --tags
+          TARGET_SHA=$(git rev-parse HEAD)
+          REMOTE_MAIN_SHA=$(git rev-parse origin/main)
+          if [[ "$TARGET_SHA" != "$REMOTE_MAIN_SHA" ]]; then
+            echo "Checked-out target $TARGET_SHA is not current origin/main $REMOTE_MAIN_SHA." >&2
+            exit 1
+          fi
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Require green main CI
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          SUCCESSFUL_RUN=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow ci-deploy.yaml \
+            --commit "$TARGET_SHA" \
+            --event push \
+            --limit 20 \
+            --json databaseId,status,conclusion,headBranch,url \
+            --jq '.[] | select(
+              .headBranch == "main" and
+              .status == "completed" and
+              .conclusion == "success"
+            ) | .url' | head -n 1)
+          if [[ -z "$SUCCESSFUL_RUN" ]]; then
+            echo "No successful main CI run exists for $TARGET_SHA." >&2
+            exit 1
+          fi
+          echo "Validated main CI: $SUCCESSFUL_RUN"
+
+      - name: Create tag and GitHub release
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          TAG="v$RELEASE_VERSION"
+          REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')
+          if [[ -n "$REMOTE_TAG_SHA" && "$REMOTE_TAG_SHA" != "$TARGET_SHA" ]]; then
+            echo "$TAG already points to $REMOTE_TAG_SHA instead of $TARGET_SHA." >&2
+            exit 1
+          fi
+
+          if [[ -z "$REMOTE_TAG_SHA" ]]; then
+            git tag "$TAG" "$TARGET_SHA"
+            git push origin "refs/tags/$TAG"
+          else
+            echo "$TAG already points to the requested target; keeping it."
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists; keeping it."
+            exit 0
+          fi
+
+          TITLE="$RELEASE_TITLE"
+          if [[ -z "$TITLE" ]]; then
+            TITLE="$TAG"
+          fi
+
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            NOTES_FILE="$RUNNER_TEMP/mapget-release-notes.md"
+            printf '%s\n' "$RELEASE_NOTES" > "$NOTES_FILE"
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$TITLE" \
+              --generate-notes
+          fi
+
+      - name: Start release wheel deployment
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          TAG="v$RELEASE_VERSION"
+          ACTIVE_RUN=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow ci-deploy.yaml \
+            --branch "$TAG" \
+            --limit 20 \
+            --json status,conclusion,headSha,url \
+            --jq ".[] | select(
+              .headSha == \"$TARGET_SHA\" and
+              (.status != \"completed\" or .conclusion == \"success\")
+            ) | .url" | head -n 1)
+          if [[ -n "$ACTIVE_RUN" ]]; then
+            echo "Release CI is already active or successful: $ACTIVE_RUN"
+            exit 0
+          fi
+
+          # Pushes made with GITHUB_TOKEN do not recursively start workflows,
+          # so dispatch the tag build explicitly.
+          gh workflow run ci-deploy.yaml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$TAG"
+          echo "Dispatched release CI for $TAG."
