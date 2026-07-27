@@ -283,6 +283,30 @@ sources:
     DataSourceConfigService::get().end();
 }
 
+TEST_CASE("Datasource catalog display names are generic and display-only", "[DataSourceConfig]")
+{
+    auto& configService = DataSourceConfigService::get();
+
+    auto const configuredMap = configService.describeDataSource(YAML::Load(R"(
+type: TestDataSource
+mapId: ConfiguredMap
+uri: /ignored/when/mapId/is/present
+)"), 3);
+    REQUIRE(configuredMap.displayName == "datasource-3-ConfiguredMap");
+
+    auto const scalarFallback = configService.describeDataSource(YAML::Load(R"(
+type: TestDataSource
+uri: filestore:/tmp/Example.Map
+serverIndex: 2
+apiKey: must-not-leak
+auth-header:
+  Authorization: "^Bearer .+$"
+)"), 4);
+    REQUIRE(
+        scalarFallback.displayName
+        == "datasource-4-TestDataSource-filestore:/tmp/Example.Map-2");
+}
+
 TEST_CASE("Datasource catalog tracks config order and async startup status", "[DataSourceConfig]")
 {
     auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_test_ds_catalog");
@@ -345,13 +369,10 @@ TEST_CASE("Datasource catalog tracks config order and async startup status", "[D
         out << R"(
 sources:
   - type: SlowDataSource
-    id: slow-source
     mapId: SlowConfiguredMap
   - type: FailingDataSource
-    id: failing-source
     mapId: FailingConfiguredMap
   - type: FastDataSource
-    id: fast-source
     mapId: FastConfiguredMap
 )";
         out.flush();
@@ -372,9 +393,9 @@ sources:
 
     auto catalog = service.sourceCatalog();
     REQUIRE(catalog.sources.size() == 3);
-    REQUIRE(catalog.sources[0].descriptor.sourceId == "slow-source");
-    REQUIRE(catalog.sources[1].descriptor.sourceId == "failing-source");
-    REQUIRE(catalog.sources[2].descriptor.sourceId == "fast-source");
+    REQUIRE(catalog.sources[0].descriptor.displayName == "datasource-0-SlowConfiguredMap");
+    REQUIRE(catalog.sources[1].descriptor.displayName == "datasource-1-FailingConfiguredMap");
+    REQUIRE(catalog.sources[2].descriptor.displayName == "datasource-2-FastConfiguredMap");
     REQUIRE(catalog.sources[0].descriptor.configIndex == 0);
     REQUIRE(catalog.sources[1].descriptor.configIndex == 1);
     REQUIRE(catalog.sources[2].descriptor.configIndex == 2);
@@ -415,12 +436,12 @@ sources:
         REQUIRE_FALSE(changes.empty());
         REQUIRE(std::ranges::any_of(changes, [](auto const& change) {
             return change.sourceUpdate
-                && change.sourceUpdate->descriptor.sourceId == "slow-source"
+                && change.sourceUpdate->descriptor.configIndex == 0
                 && change.sourceUpdate->statusMessage == "Waiting for test release.";
         }));
         REQUIRE(std::ranges::any_of(changes, [](auto const& change) {
             return change.sourceUpdate
-                && change.sourceUpdate->descriptor.sourceId == "slow-source"
+                && change.sourceUpdate->descriptor.configIndex == 0
                 && change.sourceUpdate->progress == std::optional<float>{25.0f};
         }));
         REQUIRE(changes.back().revision == service.sourceCatalogRevision());

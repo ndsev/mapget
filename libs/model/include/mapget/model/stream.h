@@ -96,8 +96,12 @@ public:
      * - Version 1.9:
      *   + Added typed SIMFIL trace aggregates to TileSearchResultLayer.
      *   + Added SourceCatalogChange control messages.
+     * - Version 2.0:
+     *   + Adopted NDS.Live-compatible packed tile IDs.
+     * - Version 2.1:
+     *   + Added presentation address scopes to SourceData compound nodes.
      */
-    static constexpr Version CurrentProtocolVersion{2, 0, 0};
+    static constexpr Version CurrentProtocolVersion{2, 1, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

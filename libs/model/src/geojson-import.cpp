@@ -516,26 +516,6 @@ struct ParsedFeatureReferenceJson
     return tile.newFeatureId(parsed.featureId_.typeId_, partsView, externalMapId);
 }
 
-/** Resolve a canonical feature-id string to a feature already created in this tile. */
-[[nodiscard]] model_ptr<Feature> resolveLocalFeatureReference(
-    TileFeatureLayer& tile,
-    nlohmann::json const& json)
-{
-    auto parsed = parseFeatureReferenceJson(tile, json);
-    if (parsed.externalMapId_ && *parsed.externalMapId_ != tile.mapId()) {
-        raiseImport(fmt::format(
-            "Feature transition references must stay local to map '{}'.",
-            tile.mapId()));
-    }
-
-    if (auto feature = tile.find(parsed.featureId_.typeId_, parsed.featureId_.keyValuePairs_)) {
-        return feature;
-    }
-    auto referenceJson = json.is_string() ? json.get<std::string>() : json.dump();
-    raiseImport(fmt::format("Could not resolve local feature reference '{}'.", referenceJson));
-    return {};
-}
-
 [[nodiscard]] model_ptr<Geometry> importStandaloneGeometry(
     TileFeatureLayer& tile,
     nlohmann::json const& geometryJson,
@@ -803,23 +783,23 @@ void importValidityCollection(
         }
 
         if (value.contains("from") || value.contains("to")) {
-            // Transition validities are the only variant that references two local features.
+            // Transition endpoints are semantic IDs and may point outside the current tile.
             if (!value.contains("from") || !value.contains("to") ||
                 !value.contains("fromConnectedEnd") || !value.contains("toConnectedEnd") ||
                 !value.contains("transitionNumber")) {
                 raiseImport("Feature transition validities must define from/to ids, connected ends, and transitionNumber.");
             }
-            auto fromFeature = resolveLocalFeatureReference(tile, value.at("from"));
-            auto toFeature = resolveLocalFeatureReference(tile, value.at("to"));
+            auto fromFeatureId = importFeatureReferenceId(tile, value.at("from"));
+            auto toFeatureId = importFeatureReferenceId(tile, value.at("to"));
             auto fromEnd = transitionEndFromJson(value.at("fromConnectedEnd"));
             auto toEnd = transitionEndFromJson(value.at("toConnectedEnd"));
             if (!fromEnd || !toEnd) {
                 raiseImport("Invalid transition end in feature transition validity.");
             }
             validity->setFeatureTransition(
-                fromFeature,
+                fromFeatureId,
                 *fromEnd,
-                toFeature,
+                toFeatureId,
                 *toEnd,
                 value.at("transitionNumber").get<uint32_t>());
             collection->append(validity);

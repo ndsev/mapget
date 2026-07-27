@@ -29,12 +29,10 @@ Each item includes:
 - `status`: `initializing`, `ready` or `failed`.
 - `statusMessage`: human-readable progress or failure text.
 - `progress`: optional datasource-constructor progress percentage in the range `0..100`.
-- `sourceId`: stable source identity from config `id`/`sourceId`, or generated as `config:<index>`.
-- `configIndex`: order in `mapviewer.yaml`.
+- `configIndex`: zero-based order in `mapviewer.yaml`; this identifies the catalog row within the current config generation.
 - `type`: datasource type from config.
-- `configuredMapId` when known before construction.
 
-Ready entries also contain map ID, available layers and basic metadata. Each layer entry includes its type, `zoomLevels`, `coverage`, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`) and feature-type information. This endpoint is typically used by frontends to discover which maps and layers can be requested via `POST /tiles` or `/interactive`.
+Ready entries also contain their authoritative map ID, available layers and basic metadata. Before construction succeeds, placeholder `mapId` and `nodeId` values use `datasource-<configIndex>-<mapId>` when `mapId` is configured, or concatenate the entry's non-secret top-level scalar values when it is not. These placeholder names are display-only; clients correlate startup updates by `configIndex`. Each layer entry includes its type, `zoomLevels`, `coverage`, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`) and feature-type information. This endpoint is typically used by frontends to discover which maps and layers can be requested via `POST /tiles` or `/interactive`.
 
 Response headers:
 
@@ -343,7 +341,7 @@ Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`,
 - **Server → Client:** sends *binary* WebSocket messages carrying VTLV control frames.
   - `RequestContext` frames contain a UTF-8 JSON payload with `requestId`, `clientId` and `sourcesRevision`. The `clientId` is then used for `/interactive/payload`.
   - `Status` frames contain UTF-8 JSON describing per-request `RequestStatus` transitions, search progress updates, and human-readable messages. The final regular tile status frame has `"allDone": true`.
-  - `SourceCatalogChange` frames contain `{"type":"mapget.sources.changed","revision":<number>,"reason":<string>}`. Status-message and progress changes also include a `source` object with `sourceId`, `configIndex`, `type`, `status`, `statusMessage`, `progress`, `addOn` and optional `configuredMapId`, allowing clients to update loading UI without refetching `/sources`. Generic reload/add/remove changes omit `source` and tell clients to refetch `/sources`.
+  - `SourceCatalogChange` frames contain `{"type":"mapget.sources.changed","revision":<number>,"reason":<string>}`. Status-message and progress changes also include a `source` object with `configIndex`, `type`, `status`, `statusMessage`, `progress` and `addOn`, allowing clients to update loading UI without refetching `/sources`. Generic reload/add/remove changes omit `source` and tell clients to refetch `/sources`.
   - `LoadStateChange` exists in the protocol but is currently not emitted by the HTTP service.
 
 For search requests, `/interactive/payload` returns normal stream frames plus `TileSearchResultLayer` frames. Clients should decode the binary message type and handle search-result layers separately from source `TileFeatureLayer` / `TileSourceDataLayer` frames.

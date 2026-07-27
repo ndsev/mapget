@@ -96,6 +96,44 @@ void reportInitStatus(DataSourceInitContext& initContext, std::string message)
     return std::nullopt;
 }
 
+/**
+ * Build a display-only name for a catalog row that has no authoritative
+ * DataSourceInfo yet. A configured map ID wins; otherwise non-secret
+ * top-level scalar values are concatenated in YAML order.
+ */
+[[nodiscard]] std::string dataSourceDisplayName(
+    YAML::Node const& descriptor,
+    uint32_t configIndex)
+{
+    std::string suffix;
+    if (auto mapId = scalarString(descriptor, "mapId"); mapId && !mapId->empty()) {
+        suffix = std::move(*mapId);
+    }
+    else if (descriptor.IsMap()) {
+        for (auto const& item : descriptor) {
+            if (!item.first.IsScalar() || !item.second.IsScalar()) {
+                continue;
+            }
+            auto const key = item.first.as<std::string>();
+            if (isSecretConfigKey(key)) {
+                continue;
+            }
+            auto const value = item.second.as<std::string>();
+            if (value.empty()) {
+                continue;
+            }
+            if (!suffix.empty()) {
+                suffix += '-';
+            }
+            suffix += value;
+        }
+    }
+
+    return suffix.empty()
+        ? fmt::format("datasource-{}", configIndex)
+        : fmt::format("datasource-{}-{}", configIndex, suffix);
+}
+
 [[nodiscard]] std::unordered_map<std::string, std::regex> parseAuthHeaderAlternatives(YAML::Node const& descriptor)
 {
     std::unordered_map<std::string, std::regex> result;
@@ -340,14 +378,7 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
     DataSourceDescriptor result;
     result.configIndex = configIndex;
     result.type = scalarString(descriptor, "type").value_or("");
-    result.sourceId = scalarString(descriptor, "id").value_or("");
-    if (result.sourceId.empty()) {
-        result.sourceId = scalarString(descriptor, "sourceId").value_or(fmt::format("config:{}", configIndex));
-    }
-    result.configuredMapId = scalarString(descriptor, "mapId");
-    if (!result.configuredMapId) {
-        result.configuredMapId = scalarString(descriptor, "configuredMapId");
-    }
+    result.displayName = dataSourceDisplayName(descriptor, configIndex);
 
     try {
         result.addOn = descriptor["addOn"].as<bool>(false);
@@ -366,52 +397,13 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
             e.what());
     }
 
-    DataSourceDescribeFn describe;
-    {
-        std::lock_guard memberAccessLock(memberAccessMutex_);
-        auto it = constructors_.find(result.type);
-        if (it != constructors_.end()) {
-            describe = it->second.describe_;
-        }
-    }
-
-    if (describe) {
-        DataSourceDescriptor described;
-        try {
-            described = describe(descriptor, configIndex);
-        }
-        catch (std::exception const& e) {
-            log().warn(
-                "Datasource descriptor callback for type {} at index {} failed: {}",
-                result.type,
-                configIndex,
-                e.what());
-            return result;
-        }
-        if (described.sourceId.empty()) {
-            described.sourceId = result.sourceId;
-        }
-        if (described.type.empty()) {
-            described.type = result.type;
-        }
-        described.configIndex = configIndex;
-        if (!described.configuredMapId) {
-            described.configuredMapId = result.configuredMapId;
-        }
-        if (described.authHeaderAlternatives.empty()) {
-            described.authHeaderAlternatives = std::move(result.authHeaderAlternatives);
-        }
-        return described;
-    }
-
     return result;
 }
 
 void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
     LegacyDataSourceConstructor constructor,
-    nlohmann::json schema,
-    DataSourceDescribeFn describe)
+    nlohmann::json schema)
 {
     if (!constructor) {
         log().warn("Refusing to register NULL constructor for datasource type {}", typeName);
@@ -422,22 +414,20 @@ void DataSourceConfigService::registerDataSourceType(
         [constructor = std::move(constructor)](YAML::Node const& node, DataSourceInitContext&) {
             return constructor(node);
         },
-        std::move(schema),
-        std::move(describe));
+        std::move(schema));
 }
 
 void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
     DataSourceConstructor constructor,
-    nlohmann::json schema,
-    DataSourceDescribeFn describe)
+    nlohmann::json schema)
 {
     if (!constructor) {
         log().warn("Refusing to register NULL constructor for datasource type {}", typeName);
         return;
     }
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    constructors_[typeName] = {std::move(constructor), std::move(schema), std::move(describe)};
+    constructors_[typeName] = {std::move(constructor), std::move(schema)};
     schema_.reset();
     validator_.reset();
     log().info("Registered data source type {}.", typeName);

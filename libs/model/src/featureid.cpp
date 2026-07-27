@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -531,19 +532,39 @@ bool parseFeatureIdString(
         return false;
     }
 
+    auto selectedMatch = matches.begin();
     if (matches.size() > 1) {
-        if (error) {
-            *error = fmt::format(
-                "Feature id '{}' matches multiple id compositions of type '{}'.",
-                featureId,
-                typeId);
+        auto const primaryMatch = std::find_if(
+            matches.begin(), matches.end(), [](auto const& match) {
+                return match.first == 0;
+            });
+        auto const secondPrimaryMatch = primaryMatch == matches.end()
+            ? matches.end()
+            : std::find_if(
+                  std::next(primaryMatch), matches.end(), [](auto const& match) {
+                      return match.first == 0;
+                  });
+
+        // Stored features always use composition zero. Prefer its one valid
+        // interpretation when a secondary locate composition serializes to
+        // the same unlabeled token shape.
+        if (primaryMatch != matches.end() && secondPrimaryMatch == matches.end()) {
+            selectedMatch = primaryMatch;
         }
-        return false;
+        else {
+            if (error) {
+                *error = fmt::format(
+                    "Feature id '{}' matches multiple id compositions of type '{}'.",
+                    featureId,
+                    typeId);
+            }
+            return false;
+        }
     }
 
     result.typeId_ = typeId;
-    result.idCompositionIndex_ = matches.front().first;
-    result.keyValuePairs_ = std::move(matches.front().second.values);
+    result.idCompositionIndex_ = selectedMatch->first;
+    result.keyValuePairs_ = std::move(selectedMatch->second.values);
     return true;
 }
 

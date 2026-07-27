@@ -88,6 +88,14 @@ public:
     SourceDataAddressFormat sourceDataAddressFormat() const;
 
 private:
+    friend class SourceDataCompoundNode;
+
+    /** Set the sparse address-scope flag associated with one compound. */
+    void setSourceDataAddressScope(uint32_t compoundIndex, bool enabled);
+
+    /** Read one compound's address-scope flag without growing storage. */
+    [[nodiscard]] bool isSourceDataAddressScope(uint32_t compoundIndex) const;
+
     /**
      * Generic node resolution overload.
      */

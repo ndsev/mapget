@@ -360,9 +360,9 @@ Validity::Validity(Validity::Data* data,
             StringPool::FromStr,
             [](Validity const& self)
             {
-                auto fromFeature = self.transitionFromFeature();
+                auto fromFeatureId = self.transitionFromFeatureId();
                 return model_ptr<simfil::ValueNode>::make(
-                    fromFeature ? fromFeature->id()->toString() : std::string{},
+                    fromFeatureId ? fromFeatureId->toString() : std::string{},
                     self.model_);
             });
         fields_.emplace_back(
@@ -377,9 +377,9 @@ Validity::Validity(Validity::Data* data,
             StringPool::ToStr,
             [](Validity const& self)
             {
-                auto toFeature = self.transitionToFeature();
+                auto toFeatureId = self.transitionToFeatureId();
                 return model_ptr<simfil::ValueNode>::make(
-                    toFeature ? toFeature->id()->toString() : std::string{},
+                    toFeatureId ? toFeatureId->toString() : std::string{},
                     self.model_);
             });
         fields_.emplace_back(
@@ -586,42 +586,78 @@ model_ptr<Geometry> Validity::simpleGeometry() const
 }
 
 void Validity::setFeatureTransition(
-    model_ptr<Feature> const& fromFeature,
+    model_ptr<FeatureId> const& fromFeatureId,
     TransitionEnd fromConnectedEnd,
-    model_ptr<Feature> const& toFeature,
+    model_ptr<FeatureId> const& toFeatureId,
     TransitionEnd toConnectedEnd,
     uint32_t transitionNumber)
 {
     ensureMaterialized();
-    if (!fromFeature || !toFeature) {
-        raise("Validity::setFeatureTransition requires both from/to features.");
+    if (!fromFeatureId || !toFeatureId) {
+        raise("Validity::setFeatureTransition requires both from/to feature IDs.");
     }
     data_->geomDescrType_ = FeatureTransition;
     data_->geomOffsetType_ = InvalidOffsetType;
     data_->referencedStage_ = Data::InvalidReferencedStage;
     data_->featureAddress_ = {};
     data_->geomDescr_.featureTransition_ = {
-        fromFeature->addr(),
-        toFeature->addr(),
+        fromFeatureId->addr(),
+        toFeatureId->addr(),
         transitionNumber,
         packTransitionEnds(fromConnectedEnd, toConnectedEnd),
     };
 }
 
-model_ptr<Feature> Validity::transitionFromFeature() const
+void Validity::setFeatureTransition(
+    model_ptr<Feature> const& fromFeature,
+    TransitionEnd fromConnectedEnd,
+    model_ptr<Feature> const& toFeature,
+    TransitionEnd toConnectedEnd,
+    uint32_t transitionNumber)
+{
+    if (!fromFeature || !toFeature) {
+        raise("Validity::setFeatureTransition requires both from/to features.");
+    }
+    setFeatureTransition(
+        fromFeature->id(),
+        fromConnectedEnd,
+        toFeature->id(),
+        toConnectedEnd,
+        transitionNumber);
+}
+
+model_ptr<FeatureId> Validity::transitionFromFeatureId() const
 {
     if (!data_ || data_->geomDescrType_ != FeatureTransition) {
         return {};
     }
-    return model().resolve<Feature>(data_->geomDescr_.featureTransition_.fromFeature_);
+    return model().resolve<FeatureId>(data_->geomDescr_.featureTransition_.fromFeatureId_);
+}
+
+model_ptr<FeatureId> Validity::transitionToFeatureId() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return {};
+    }
+    return model().resolve<FeatureId>(data_->geomDescr_.featureTransition_.toFeatureId_);
+}
+
+model_ptr<Feature> Validity::transitionFromFeature() const
+{
+    auto featureId = transitionFromFeatureId();
+    if (!featureId || featureId->mapId() != model().mapId()) {
+        return {};
+    }
+    return model().find(featureId->typeId(), featureId->keyValuePairs());
 }
 
 model_ptr<Feature> Validity::transitionToFeature() const
 {
-    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+    auto featureId = transitionToFeatureId();
+    if (!featureId || featureId->mapId() != model().mapId()) {
         return {};
     }
-    return model().resolve<Feature>(data_->geomDescr_.featureTransition_.toFeature_);
+    return model().find(featureId->typeId(), featureId->keyValuePairs());
 }
 
 std::optional<Validity::TransitionEnd> Validity::transitionFromConnectedEnd() const
@@ -665,13 +701,31 @@ SelfContainedGeometry Validity::computeGeometry(
         : defaultGeometryStage;
 
     if (geometryDescriptionType() == FeatureTransition) {
+        auto fromFeatureId = transitionFromFeatureId();
+        auto toFeatureId = transitionToFeatureId();
         auto fromFeature = transitionFromFeature();
         auto toFeature = transitionToFeature();
         auto fromConnectedEnd = transitionFromConnectedEnd();
         auto toConnectedEnd = transitionToConnectedEnd();
-        if (!fromFeature || !toFeature || !fromConnectedEnd || !toConnectedEnd) {
+        if (!fromFeatureId || !toFeatureId || !fromConnectedEnd || !toConnectedEnd) {
             if (error) {
-                *error = "Failed to resolve semantic feature transition validity.";
+                *error = "Malformed semantic feature transition validity.";
+            }
+            return {};
+        }
+        if (!fromFeature) {
+            if (error) {
+                *error = fmt::format(
+                    "Transition source geometry is unavailable for feature {}.",
+                    fromFeatureId->toString());
+            }
+            return {};
+        }
+        if (!toFeature) {
+            if (error) {
+                *error = fmt::format(
+                    "Transition target geometry is unavailable for feature {}.",
+                    toFeatureId->toString());
             }
             return {};
         }
@@ -967,6 +1021,26 @@ MultiValidity::newGeomStage(uint32_t geometryStage, Validity::Direction directio
 }
 
 model_ptr<Validity> MultiValidity::newFeatureTransition(
+    model_ptr<FeatureId> const& fromFeatureId,
+    Validity::TransitionEnd fromConnectedEnd,
+    model_ptr<FeatureId> const& toFeatureId,
+    Validity::TransitionEnd toConnectedEnd,
+    uint32_t transitionNumber,
+    Validity::Direction direction)
+{
+    auto result = featureLayer().newValidity();
+    result->setFeatureTransition(
+        fromFeatureId,
+        fromConnectedEnd,
+        toFeatureId,
+        toConnectedEnd,
+        transitionNumber);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> MultiValidity::newFeatureTransition(
     model_ptr<Feature> const& fromFeature,
     Validity::TransitionEnd fromConnectedEnd,
     model_ptr<Feature> const& toFeature,
@@ -974,16 +1048,16 @@ model_ptr<Validity> MultiValidity::newFeatureTransition(
     uint32_t transitionNumber,
     Validity::Direction direction)
 {
-    auto result = featureLayer().newValidity();
-    result->setFeatureTransition(
-        fromFeature,
+    if (!fromFeature || !toFeature) {
+        raise("MultiValidity::newFeatureTransition requires both from/to features.");
+    }
+    return newFeatureTransition(
+        fromFeature->id(),
         fromConnectedEnd,
-        toFeature,
+        toFeature->id(),
         toConnectedEnd,
-        transitionNumber);
-    result->setDirection(direction);
-    append(result);
-    return result;
+        transitionNumber,
+        direction);
 }
 
 model_ptr<Validity> MultiValidity::newComplete(Validity::Direction direction)

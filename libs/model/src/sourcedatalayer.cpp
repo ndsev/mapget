@@ -32,6 +32,7 @@ struct TileSourceDataLayer::Impl
 {
     SourceDataAddressFormat format_;
     simfil::ModelColumn<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> addressScopeFlags_;
 
     // Simfil compiled expression and environment
     SimfilExpressionCache expressionCache_;
@@ -46,6 +47,7 @@ struct TileSourceDataLayer::Impl
     void readWrite(S& s) {
         s.object(compounds_);
         s.value1b(format_);
+        s.object(addressScopeFlags_);
     }
 };
 
@@ -179,6 +181,20 @@ void TileSourceDataLayer::setSourceDataAddressFormat(SourceDataAddressFormat f)
 TileSourceDataLayer::SourceDataAddressFormat TileSourceDataLayer::sourceDataAddressFormat() const
 {
     return impl_->format_;
+}
+
+void TileSourceDataLayer::setSourceDataAddressScope(uint32_t compoundIndex, bool enabled)
+{
+    while (impl_->addressScopeFlags_.size() <= compoundIndex) {
+        impl_->addressScopeFlags_.emplace_back(0);
+    }
+    impl_->addressScopeFlags_.at(compoundIndex) = enabled ? 1 : 0;
+}
+
+bool TileSourceDataLayer::isSourceDataAddressScope(uint32_t compoundIndex) const
+{
+    return compoundIndex < impl_->addressScopeFlags_.size()
+        && impl_->addressScopeFlags_.at(compoundIndex) != 0;
 }
 
 }

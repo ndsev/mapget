@@ -41,17 +41,14 @@ struct DataSourceInitContext {
 
 /** Cheap, config-derived datasource facts available before construction starts. */
 struct DataSourceDescriptor {
-    /** Stable identity for frontend diffing and async completion lookup. */
-    std::string sourceId;
-
     /** Preserves `mapviewer.yaml` order and gives clear diagnostics for config-entry failures. */
     uint32_t configIndex = 0;
 
     /** Needed for placeholder UI and error messages before a `DataSource` exists. */
     std::string type;
 
-    /** Best-known map identity before construction; runtime `mapId` still comes from ready DataSourceInfo. */
-    std::optional<std::string> configuredMapId;
+    /** Display-only placeholder used until construction provides authoritative `DataSourceInfo`. */
+    std::string displayName;
 
     /** Prevents initializing/failed add-on sources from being shown as standalone maps. */
     bool addOn = false;
@@ -80,8 +77,6 @@ public:
         std::function<DataSource::Ptr(YAML::Node const& arguments, DataSourceInitContext& initContext)>;
     using LegacyDataSourceConstructor =
         std::function<DataSource::Ptr(YAML::Node const& arguments)>;
-    using DataSourceDescribeFn =
-        std::function<DataSourceDescriptor(YAML::Node const& descriptor, uint32_t configIndex)>;
 
     /**
      * Gets the singleton instance of the DataSourceConfig class.
@@ -167,8 +162,7 @@ public:
     void registerDataSourceType(
         std::string const& typeName,
         LegacyDataSourceConstructor constructor,
-        nlohmann::json schema = {},
-        DataSourceDescribeFn describe = {});
+        nlohmann::json schema = {});
 
     /**
      * Registers a constructor that can report startup progress and observe cancellation.
@@ -176,8 +170,7 @@ public:
     void registerDataSourceType(
         std::string const& typeName,
         DataSourceConstructor constructor,
-        nlohmann::json schema = {},
-        DataSourceDescribeFn describe = {});
+        nlohmann::json schema = {});
 
     /** Get (and lazily build) JSON schema that describes registered datasource types. */
     [[nodiscard]] nlohmann::json getDataSourceConfigSchema() const;
@@ -258,7 +251,6 @@ private:
     struct DataSourceRegistration {
         DataSourceConstructor constructor_;
         nlohmann::json schema_;
-        DataSourceDescribeFn describe_;
     };
 
     // Map of data source type names to their respective constructor functions.

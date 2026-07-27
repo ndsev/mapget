@@ -1152,7 +1152,7 @@ struct Service::Impl : public Service::Controller
         return generation == sourceCatalogGeneration_ && !shuttingDown_.load(std::memory_order_relaxed);
     }
 
-    void updateCatalogStatusMessage(uint64_t generation, std::string const& sourceId, std::string message)
+    void updateCatalogStatusMessage(uint64_t generation, uint32_t configIndex, std::string message)
     {
         DataSourceCatalogChange change;
         bool changed = false;
@@ -1162,7 +1162,7 @@ struct Service::Impl : public Service::Controller
                 return;
             }
             auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
-                return entry.descriptor.sourceId == sourceId;
+                return entry.descriptor.configIndex == configIndex;
             });
             if (it == sourceCatalog_.end() || it->statusMessage == message) {
                 return;
@@ -1176,7 +1176,7 @@ struct Service::Impl : public Service::Controller
         }
     }
 
-    void updateCatalogProgress(uint64_t generation, std::string const& sourceId, std::optional<float> progress)
+    void updateCatalogProgress(uint64_t generation, uint32_t configIndex, std::optional<float> progress)
     {
         DataSourceCatalogChange change;
         bool changed = false;
@@ -1187,7 +1187,7 @@ struct Service::Impl : public Service::Controller
                 return;
             }
             auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
-                return entry.descriptor.sourceId == sourceId;
+                return entry.descriptor.configIndex == configIndex;
             });
             if (it == sourceCatalog_.end() || it->progress == progress) {
                 return;
@@ -1203,7 +1203,7 @@ struct Service::Impl : public Service::Controller
 
     void markCatalogConstructionFailed(
         uint64_t generation,
-        std::string const& sourceId,
+        uint32_t configIndex,
         std::string message)
     {
         DataSourceCatalogChange change;
@@ -1214,7 +1214,7 @@ struct Service::Impl : public Service::Controller
                 return;
             }
             auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
-                return entry.descriptor.sourceId == sourceId;
+                return entry.descriptor.configIndex == configIndex;
             });
             if (it == sourceCatalog_.end()) {
                 return;
@@ -1233,7 +1233,7 @@ struct Service::Impl : public Service::Controller
 
     void markCatalogConstructionReady(
         uint64_t generation,
-        std::string const& sourceId,
+        uint32_t configIndex,
         DataSource::Ptr dataSource,
         DataSourceInfo info)
     {
@@ -1245,7 +1245,7 @@ struct Service::Impl : public Service::Controller
                 return;
             }
             auto it = std::ranges::find_if(sourceCatalog_, [&](auto const& entry) {
-                return entry.descriptor.sourceId == sourceId;
+                return entry.descriptor.configIndex == configIndex;
             });
             if (it == sourceCatalog_.end()) {
                 return;
@@ -1271,11 +1271,10 @@ struct Service::Impl : public Service::Controller
     {
         auto done = std::make_shared<std::atomic_bool>(false);
         auto stopRequested = std::make_shared<std::atomic_bool>(false);
-        auto sourceId = descriptor.sourceId;
         auto configIndex = descriptor.configIndex;
         dataSourceConstructionThreads_.push_back(ConstructionThread{
             .thread = std::thread(
-                [this, generation, configNode = std::move(configNode), sourceId, configIndex, done, stopRequested]() mutable
+                [this, generation, configNode = std::move(configNode), configIndex, done, stopRequested]() mutable
                 {
                     bool slotAcquired = false;
                     auto finish = [&]() {
@@ -1294,12 +1293,12 @@ struct Service::Impl : public Service::Controller
 
                         std::string lastStatusMessage;
                         DataSourceInitContext initContext{
-                            .setStatusMessage = [this, generation, sourceId, &lastStatusMessage](std::string message) {
+                            .setStatusMessage = [this, generation, configIndex, &lastStatusMessage](std::string message) {
                                 lastStatusMessage = message;
-                                updateCatalogStatusMessage(generation, sourceId, std::move(message));
+                                updateCatalogStatusMessage(generation, configIndex, std::move(message));
                             },
-                            .setProgress = [this, generation, sourceId](std::optional<float> progress) {
-                                updateCatalogProgress(generation, sourceId, progress);
+                            .setProgress = [this, generation, configIndex](std::optional<float> progress) {
+                                updateCatalogProgress(generation, configIndex, progress);
                             },
                             .isCancelled = [this, generation, stopRequested]() {
                                 return stopRequested->load(std::memory_order_acquire)
@@ -1314,7 +1313,7 @@ struct Service::Impl : public Service::Controller
                                         "Failed to make datasource at index {}.",
                                         configIndex);
                                 }
-                                markCatalogConstructionFailed(generation, sourceId, std::move(lastStatusMessage));
+                                markCatalogConstructionFailed(generation, configIndex, std::move(lastStatusMessage));
                             }
                             finish();
                             return;
@@ -1331,13 +1330,13 @@ struct Service::Impl : public Service::Controller
                             finish();
                             return;
                         }
-                        markCatalogConstructionReady(generation, sourceId, std::move(dataSource), std::move(info));
+                        markCatalogConstructionReady(generation, configIndex, std::move(dataSource), std::move(info));
                     }
                     catch (std::exception const& e) {
                         if (isCurrentCatalogGeneration(generation)) {
                             markCatalogConstructionFailed(
                                 generation,
-                                sourceId,
+                                configIndex,
                                 fmt::format("Exception while making datasource at index {}: {}", configIndex, e.what()));
                         }
                     }
@@ -1345,7 +1344,7 @@ struct Service::Impl : public Service::Controller
                         if (isCurrentCatalogGeneration(generation)) {
                             markCatalogConstructionFailed(
                                 generation,
-                                sourceId,
+                                configIndex,
                                 fmt::format("Unknown exception while making datasource at index {}.", configIndex));
                         }
                     }
@@ -1589,6 +1588,7 @@ struct Service::Impl : public Service::Controller
         snapshot.sources.reserve(dataSourceInfo_.size());
         auto configIndex = uint32_t{0};
         for (auto const& [dataSource, info] : dataSourceInfo_) {
+            auto const currentConfigIndex = configIndex++;
             if (clientHeaders && !dataSource->isDataSourceAuthorized(*clientHeaders)) {
                 continue;
             }
@@ -1596,10 +1596,12 @@ struct Service::Impl : public Service::Controller
             auto infoCopy = cloneDataSourceInfo(info);
             snapshot.sources.push_back(DataSourceCatalogEntry{
                 .descriptor = DataSourceDescriptor{
-                    .sourceId = infoCopy.nodeId_,
-                    .configIndex = configIndex++,
+                    .configIndex = currentConfigIndex,
                     .type = "",
-                    .configuredMapId = infoCopy.mapId_,
+                    .displayName = fmt::format(
+                        "datasource-{}-{}",
+                        currentConfigIndex,
+                        infoCopy.mapId_),
                     .addOn = infoCopy.isAddOn_},
                 .status = DataSourceCatalogStatus::Ready,
                 .statusMessage = "",

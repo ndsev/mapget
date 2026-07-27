@@ -70,7 +70,7 @@ struct DataSourceCatalogEntry {
 
 /** Lightweight per-source delta embedded into interactive catalog-change messages. */
 struct DataSourceCatalogSourceUpdate {
-    /** Cheap static config facts used by clients for row lookup and by the server for auth filtering. */
+    /** Static config facts; `configIndex` identifies the row and auth rules scope visibility. */
     DataSourceDescriptor descriptor;
 
     /** Current lifecycle state after the change. */

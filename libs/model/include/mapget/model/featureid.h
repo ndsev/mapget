@@ -89,7 +89,8 @@ struct ParsedFeatureId
 /**
  * Parse a canonical dot-separated feature-id string as emitted by FeatureId::toString().
  * String-valued id parts are percent-unescaped before datatype validation.
- * Ambiguous matches are rejected so callers can resolve a single composition.
+ * The primary composition wins when a secondary composition has the same serialized
+ * shape; ambiguities within the primary or among secondary compositions are rejected.
  */
 bool parseFeatureIdString(
     std::string_view featureId,

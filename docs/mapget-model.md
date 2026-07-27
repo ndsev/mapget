@@ -241,6 +241,7 @@ Attributes and relations can attach their own validity lists, so a datasource ca
 Features can refer back to their original source material and to other features.
 
 - Source data references group pointers to raw data, such as blobs or records in an external system. They are organised per feature in a `SourceDataReferenceCollection`.
+- A `SourceDataCompoundNode` may be marked as an address scope. Its stored address remains canonical and absolute, but presentation clients may show that node and its descendants relative to the scope node's offset. This is useful for records embedded in a larger virtual address space, such as decoded SQL blob cells.
 - Relations connect a feature to other features by ID. Each relation has a `name`, a target feature ID and optional validity information for both the source and the target.
 
 These mechanisms make it possible to keep a clean separation between the processed map model and the original data sources while still preserving traceability.
@@ -293,6 +294,13 @@ classDiagram
   class TileSourceDataLayer {
     +model_ptr~SourceDataCompoundNode~ newCompound(initialSize)
     +Environment& evaluationEnvironment()
+  }
+
+  class SourceDataCompoundNode {
+    +SourceDataAddress sourceDataAddress()
+    +void setSourceDataAddress(address)
+    +bool isSourceDataAddressScope()
+    +void setSourceDataAddressScope(enabled)
   }
 
   class Feature {
@@ -375,6 +383,7 @@ classDiagram
   TileLayer <|-- TileFeatureLayer
   TileLayer <|-- TileSearchResultLayer
   TileLayer <|-- TileSourceDataLayer
+  TileSourceDataLayer "1" *-- "many" SourceDataCompoundNode
 
   simfil_ModelPool <|-- TileFeatureLayer
   simfil_ModelPool <|-- TileSearchResultLayer
@@ -462,6 +471,11 @@ When a tile is streamed as JSON Lines, each `TileFeatureLayer` becomes a single 
 ```
 
 Source data tiles follow a similar pattern but expose an array of source data items instead of features. The exact JSON layout mirrors what `TileFeatureLayer::toJson()` and `TileSourceDataLayer::toJson()` produce, so a client can round‑trip between binary and JSON representations without losing information.
+
+Tile-stream protocol 2.1 adds a sparse address-scope flag for SourceData
+compound nodes. The marker changes presentation only: serialized
+`SourceDataAddress` values and feature source-data references remain in the
+same canonical address namespace.
 
 Each feature inside that tile looks like this:
 

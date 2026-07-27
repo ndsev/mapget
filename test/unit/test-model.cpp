@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/sourcedata.h"
+#include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/sourcedatareference.h"
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
@@ -53,6 +55,62 @@ LayerAttributeValues collectLayerAttributeValues(model_ptr<AttributeLayerList> c
 }
 
 }  // namespace
+
+TEST_CASE(
+    "SourceData address scopes roundtrip through TileLayerStream",
+    "[test.sourcedatalayer][stream]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "SourceData-Test",
+        "type": "SourceData"
+    })"_json);
+    auto strings = std::make_shared<StringPool>("SourceDataScopeNode");
+    auto tile = std::make_shared<TileSourceDataLayer>(
+        TileId{},
+        "SourceDataScopeNode",
+        "SourceDataScopeMap",
+        layerInfo,
+        strings);
+
+    auto structural = tile->newCompound(0);
+    structural->setSourceDataAddress({0, 128});
+    auto payload = tile->newCompound(0);
+    payload->setSourceDataAddress({32, 64});
+    payload->setSourceDataAddressScope();
+    tile->addRoot(structural);
+    tile->addRoot(payload);
+
+    REQUIRE_FALSE(structural->isSourceDataAddressScope());
+    REQUIRE(payload->isSourceDataAddressScope());
+
+    std::string streamBytes;
+    TileLayerStream::StringPoolOffsetMap offsets;
+    TileLayerStream::Writer writer(
+        [&](std::string bytes, TileLayerStream::MessageType) {
+            streamBytes.append(bytes);
+        },
+        offsets);
+    writer.write(tile);
+
+    TileSourceDataLayer::Ptr parsed;
+    TileLayerStream::Reader reader(
+        [&](std::string_view const&, std::string_view const&) {
+            return layerInfo;
+        },
+        [&](TileLayer::Ptr parsedLayer) {
+            parsed = std::dynamic_pointer_cast<TileSourceDataLayer>(parsedLayer);
+        });
+    reader.read(streamBytes);
+
+    REQUIRE(parsed);
+    auto parsedStructural = parsed->resolve<SourceDataCompoundNode>(
+        simfil::ModelNodeAddress{TileSourceDataLayer::Compound, 0});
+    auto parsedPayload = parsed->resolve<SourceDataCompoundNode>(
+        simfil::ModelNodeAddress{TileSourceDataLayer::Compound, 1});
+    REQUIRE_FALSE(parsedStructural->isSourceDataAddressScope());
+    REQUIRE(parsedPayload->isSourceDataAddressScope());
+    REQUIRE(parsedPayload->sourceDataAddress().u64() == SourceDataAddress{32, 64}.u64());
+}
 
 TEST_CASE("FeatureLayer", "[test.featurelayer]")
 {
@@ -1076,6 +1134,12 @@ TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test
     auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
     auto const attrValidityNode = attrNode.get(StringPool::ValidityStr);
     REQUIRE(attrValidityNode);
+    auto transition = tile->resolve<Validity>(*attr->validity()->at(0));
+    REQUIRE(transition);
+    REQUIRE(transition->transitionFromFeatureId()->toString() == "Way.1");
+    REQUIRE(transition->transitionToFeatureId()->toString() == "Way.2");
+    REQUIRE(transition->transitionFromFeature() == fromFeature);
+    REQUIRE(transition->transitionToFeature() == toFeature);
     REQUIRE(attrValidityNode->toJson() == nlohmann::json{
         {"from", "Way.1"},
         {"fromConnectedEnd", "END"},
@@ -1083,6 +1147,69 @@ TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test
         {"toConnectedEnd", "START"},
         {"transitionNumber", 7},
     });
+}
+
+TEST_CASE("Semantic feature transitions preserve cross-tile endpoint IDs", "[test.featurelayer.validity]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [
+            {
+                "name": "Way",
+                "uniqueIdCompositions": [
+                    [
+                        {"partId": "wayId", "description": "way id", "datatype": "U32"}
+                    ],
+                    [
+                        {"partId": "tileId", "description": "source tile", "datatype": "I64"},
+                        {"partId": "wayIndex", "description": "source index", "datatype": "U32"}
+                    ]
+                ]
+            }
+        ]
+    })"_json);
+
+    auto strings = std::make_shared<StringPool>("CrossTileTransitionNode");
+    auto tile = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "CrossTileTransitionNode",
+        "Tropico",
+        layerInfo,
+        strings);
+
+    auto host = tile->newFeature("Way", {{"wayId", 1}});
+    auto fromFeatureId = tile->newFeatureId(
+        "Way", {{"tileId", int64_t{1001}}, {"wayIndex", 7}});
+    auto toFeatureId = tile->newFeatureId(
+        "Way", {{"tileId", int64_t{1002}}, {"wayIndex", 9}});
+    auto transition = host->attributeLayers()
+                          ->newLayer("rules")
+                          ->newAttribute("turn")
+                          ->validity()
+                          ->newFeatureTransition(
+                              fromFeatureId,
+                              Validity::End,
+                              toFeatureId,
+                              Validity::Start,
+                              11);
+
+    REQUIRE(transition->transitionFromFeatureId()->toString() == "Way.1001.7");
+    REQUIRE(transition->transitionToFeatureId()->toString() == "Way.1002.9");
+    REQUIRE_FALSE(transition->transitionFromFeature());
+    REQUIRE_FALSE(transition->transitionToFeature());
+    auto materializedTransition = tile->resolve<Validity>(transition->addr());
+    REQUIRE(materializedTransition->toJson() == nlohmann::json{
+        {"from", "Way.1001.7"},
+        {"fromConnectedEnd", "END"},
+        {"to", "Way.1002.9"},
+        {"toConnectedEnd", "START"},
+        {"transitionNumber", 11},
+    });
+
+    std::string error;
+    REQUIRE(transition->computeGeometry({}, &error).points_.empty());
+    REQUIRE(error == "Transition source geometry is unavailable for feature Way.1001.7.");
 }
 
 TEST_CASE("Validity GeoJSON exposes stage labels only beyond the default stage", "[test.featurelayer.validity]")

@@ -2331,9 +2331,9 @@ ModelNode::Ptr TileFeatureLayer::clone(
             break;
         case Validity::FeatureTransition:
             newNode->setFeatureTransition(
-                resolve<Feature>(*clone(cache, otherLayer, resolved->transitionFromFeature())),
+                resolve<FeatureId>(*clone(cache, otherLayer, resolved->transitionFromFeatureId())),
                 *resolved->transitionFromConnectedEnd(),
-                resolve<Feature>(*clone(cache, otherLayer, resolved->transitionToFeature())),
+                resolve<FeatureId>(*clone(cache, otherLayer, resolved->transitionToFeatureId())),
                 *resolved->transitionToConnectedEnd(),
                 *resolved->transitionNumber());
             break;

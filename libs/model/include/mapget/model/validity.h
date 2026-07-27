@@ -98,14 +98,31 @@ public:
 
     /**
      * Get or set a semantic feature transition validity.
-     * The connected ends indicate which endpoint of each referenced feature touches the transition.
+     * The connected ends indicate which endpoint of each referenced feature ID touches the transition.
+     * Feature IDs are stored directly so transitions may reference features outside the current tile.
      */
+    void setFeatureTransition(
+        model_ptr<FeatureId> const& fromFeatureId,
+        TransitionEnd fromConnectedEnd,
+        model_ptr<FeatureId> const& toFeatureId,
+        TransitionEnd toConnectedEnd,
+        uint32_t transitionNumber);
+
+    /** Convenience overload for transitions between features in the current tile. */
     void setFeatureTransition(
         model_ptr<Feature> const& fromFeature,
         TransitionEnd fromConnectedEnd,
         model_ptr<Feature> const& toFeature,
         TransitionEnd toConnectedEnd,
         uint32_t transitionNumber);
+
+    [[nodiscard]] model_ptr<FeatureId> transitionFromFeatureId() const;
+    [[nodiscard]] model_ptr<FeatureId> transitionToFeatureId() const;
+
+    /**
+     * Resolve transition endpoint IDs to features in the current tile when possible.
+     * Cross-tile, external-map, and secondary-ID references intentionally return null.
+     */
     [[nodiscard]] model_ptr<Feature> transitionFromFeature() const;
     [[nodiscard]] model_ptr<Feature> transitionToFeature() const;
     [[nodiscard]] std::optional<TransitionEnd> transitionFromConnectedEnd() const;
@@ -252,6 +269,15 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     /**
      * Append a semantic transition validity connecting two feature endpoints.
      */
+    model_ptr<Validity> newFeatureTransition(
+        model_ptr<FeatureId> const& fromFeatureId,
+        Validity::TransitionEnd fromConnectedEnd,
+        model_ptr<FeatureId> const& toFeatureId,
+        Validity::TransitionEnd toConnectedEnd,
+        uint32_t transitionNumber,
+        Validity::Direction direction = Validity::Empty);
+
+    /** Convenience overload for transitions between features in the current tile. */
     model_ptr<Validity> newFeatureTransition(
         model_ptr<Feature> const& fromFeature,
         Validity::TransitionEnd fromConnectedEnd,

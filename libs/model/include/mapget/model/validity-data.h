@@ -57,10 +57,10 @@ struct ValidityData
     };
 
     struct FeatureTransitionDescription {
-        simfil::ModelNodeAddress fromFeature_;
-        simfil::ModelNodeAddress toFeature_;
+        simfil::ModelNodeAddress fromFeatureId_;
+        simfil::ModelNodeAddress toFeatureId_;
         uint32_t transitionNumber_ = 0;
-        // Bit 0 encodes the connected end of fromFeature_, bit 1 the end of toFeature_.
+        // Bit 0 encodes the connected end of fromFeatureId_, bit 1 the end of toFeatureId_.
         uint8_t connectedEnds_ = 0;
     };
 

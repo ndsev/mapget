@@ -1703,7 +1703,6 @@ private:
         {
             auto const& update = *change.sourceUpdate;
             auto source = nlohmann::json::object({
-                {"sourceId", update.descriptor.sourceId},
                 {"configIndex", update.descriptor.configIndex},
                 {"type", update.descriptor.type},
                 {"status", std::string(catalogStatusToString(update.status))},
@@ -1711,9 +1710,6 @@ private:
                 {"addOn", update.descriptor.addOn},
                 {"progress", update.progress ? nlohmann::json(*update.progress) : nlohmann::json(nullptr)},
             });
-            if (update.descriptor.configuredMapId) {
-                source["configuredMapId"] = *update.descriptor.configuredMapId;
-            }
             payload["source"] = std::move(source);
         }
         return payload.dump();

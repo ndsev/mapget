@@ -601,7 +601,6 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE_FALSE(sources.empty());
             auto const& source = sources.front();
             REQUIRE(source.value("status", "") == "ready");
-            REQUIRE(source.contains("sourceId"));
             REQUIRE(source.contains("configIndex"));
 
             auto etag = resp->getHeader("ETag");

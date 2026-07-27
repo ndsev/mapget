@@ -253,6 +253,15 @@ struct BoundSourceDataCompound : public BoundModelNode
                 },
                 py::arg("address"),
                 "Set the source-data address associated with this node.")
+            .def("is_source_data_address_scope", [](BoundSourceDataCompound& self) {
+                    return self.ptr()->isSourceDataAddressScope();
+                },
+                "Return whether this node starts a presentation address scope.")
+            .def("set_source_data_address_scope", [](BoundSourceDataCompound& self, bool enabled) {
+                    self.ptr()->setSourceDataAddressScope(enabled);
+                },
+                py::arg("enabled") = true,
+                "Mark this node as the origin of an independently addressed payload.")
             .def("add_field", [](BoundSourceDataCompound& self,
                                   std::string_view const& name,
                                   py::object const& pyValue) {
