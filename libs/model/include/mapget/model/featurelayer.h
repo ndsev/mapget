@@ -33,21 +33,6 @@ namespace mapget
 {
 
 /**
- * Optional GLB payload stored alongside a TileFeatureLayer.
- *
- * The attachment lives on TileFeatureLayer rather than on the base TileLayer
- * because only feature tiles need binary side payloads today. The model is
- * intentionally opinionated: at most one GLB payload may be attached to a tile.
- */
-struct TileGlbAttachment
-{
-    std::string name_;
-    std::vector<uint8_t> bytes_;
-
-    [[nodiscard]] nlohmann::json toJsonMetadata() const;
-};
-
-/**
  * The TileFeatureLayer class represents a specific map layer
  * within a map tile. It is a container for map features.
  * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
@@ -97,10 +82,10 @@ public:
 
     /**
      * This constructor initializes a new TileFeatureLayer instance.
-     * Each instance is associated with a specific TileId, nodeId, and mapId.
+     * Each instance is associated with a specific TileId, stringPoolId, and mapId.
      * @param tileId The tile id of the new feature layer. Features in this layer
      *  should be roughly within the area indicated by the tile.
-     * @param nodeId Unique id of the data source node which produced this feature.
+     * @param stringPoolId Unique id of the data source node which produced this feature.
      * @param mapId ID of the map which the layer belongs to.
      * @param layerInfo Information about the map layer this feature is associated with.
      *  Each feature in this layer must have a feature type which is also present in
@@ -112,7 +97,7 @@ public:
      */
     TileFeatureLayer(
         TileId tileId,
-        std::string const& nodeId,
+        std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& strings);
@@ -290,15 +275,14 @@ public:
     void fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options = {});
 
     /**
-     * Inspect or replace the optional tile-level GLB attachment without
-     * inlining payload bytes.
+     * Inspect or replace the optional name of the tile-level GLB attachment.
      *
-     * `GeomType::GltfNodeIndex` always refers to nodes inside this GLB
-     * attachment when present.
+     * Attachment bytes are transferred independently through the datasource
+     * attachment API and are never serialized into this model.
+     * `GeomType::GltfNodeIndex` refers to nodes inside the named GLB.
      */
-    [[nodiscard]] TileGlbAttachment const* glbAttachment() const;
-    void setGlbAttachment(std::string name, std::vector<uint8_t> bytes);
-    void clearGlbAttachment();
+    [[nodiscard]] std::optional<std::string> const& glbAttachmentName() const;
+    void setGlbAttachmentName(std::optional<std::string> name);
 
     /** Report serialized size stats for feature-layer data and model-pool columns. */
     [[nodiscard]] nlohmann::json serializationSizeStats() const;
@@ -320,34 +304,6 @@ public:
     model_ptr<Feature> find(std::string_view const& featureId) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
-
-    /** Optional staged-loading index (0-based) for this feature tile. */
-    [[nodiscard]] std::optional<uint32_t> stage() const override;
-
-    /** Store or clear the tile-stage marker without affecting contained geometries. */
-    void setStage(std::optional<uint32_t> stage) override;
-
-    /**
-     * Configure expected feature-id sequence for strict staged overlay validation.
-     * When configured, every newFeature call must match the next expected id.
-     */
-    void setExpectedFeatureSequence(std::vector<std::string> expectedFeatureIds);
-    void clearExpectedFeatureSequence();
-    [[nodiscard]] bool hasExpectedFeatureSequence() const;
-    void validateExpectedFeatureSequenceComplete() const;
-
-    /**
-     * Attach an overlay tile. Overlay tiles must have the same features in the
-     * same positions. Additional attribute layers, geometries and relations from
-     * overlay features are attached to the base features efficiently and lazily
-     * when retrieving the feature from the base layer.
-     * If this tile already has an overlay, the new overlay gets attached at the
-     * tail of the overlay chain.
-     */
-    void attachOverlay(TileFeatureLayer::Ptr const& overlay);
-
-    /** Get the next overlay tile in the chain (if any). */
-    [[nodiscard]] TileFeatureLayer::Ptr overlay() const;
 
     /**
      * Evaluate a (potentially cached) simfil query on this pool
@@ -455,7 +411,6 @@ protected:
      */
     tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
 
-    [[nodiscard]] std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const override;
     [[nodiscard]] model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const override;
     [[nodiscard]] model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const override;
 
@@ -465,10 +420,6 @@ protected:
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
-    std::optional<uint32_t> stage_;
-    TileFeatureLayer::Ptr overlay_;
-    mutable std::mutex overlayMutex_;
-    std::vector<std::string> expectedFeatureIds_;
 };
 
 // Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).

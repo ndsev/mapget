@@ -2,6 +2,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <array>
+#include <cmath>
+#include <cstdint>
 #include <mutex>
 #include <condition_variable>
 #include <queue>
@@ -53,6 +56,61 @@ py::object json_to_py_value(const json& j)
     }
     }
 }
+
+mapget::FeatureLayerFilterBinding filter_binding_from_python(
+    py::handle value,
+    std::string const& name)
+{
+    if (value.is_none()) {
+        return std::monostate{};
+    }
+    if (py::isinstance<py::bool_>(value)) {
+        return value.cast<bool>();
+    }
+    if (py::isinstance<py::int_>(value)) {
+        try {
+            return value.cast<int64_t>();
+        }
+        catch (py::cast_error const&) {
+            throw py::value_error(
+                "filter binding '" + name +
+                "' exceeds the signed 64-bit integer range");
+        }
+    }
+    if (py::isinstance<py::float_>(value)) {
+        auto const result = value.cast<double>();
+        if (!std::isfinite(result)) {
+            throw py::value_error(
+                "filter binding '" + name + "' must be finite");
+        }
+        return result;
+    }
+    if (py::isinstance<py::str>(value)) {
+        return value.cast<std::string>();
+    }
+    throw py::value_error(
+        "filter binding '" + name +
+        "' must be None, bool, int, float, or str");
+}
+
+std::map<std::string, mapget::FeatureLayerFilterBinding>
+filter_bindings_from_python(py::dict const& bindings)
+{
+    std::map<std::string, mapget::FeatureLayerFilterBinding> result;
+    for (auto const& [key, value] : bindings) {
+        if (!py::isinstance<py::str>(key)) {
+            throw py::value_error("filter binding names must be strings");
+        }
+        auto name = key.cast<std::string>();
+        if (name.empty()) {
+            throw py::value_error("filter binding names must not be empty");
+        }
+        result.emplace(
+            name,
+            filter_binding_from_python(value, name));
+    }
+    return result;
+}
 }
 
 namespace mapget
@@ -91,19 +149,19 @@ private:
     std::condition_variable bufferSignal_;
 };
 
-class PySearchRequest : public FeatureLayerSearchTilesRequest
+class PyFilterRequest : public FeatureLayerFilterTilesRequest
 {
 public:
-    using FeatureLayerSearchTilesRequest::FeatureLayerSearchTilesRequest;
+    using FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest;
 
-    void notifyResult(TileSearchResultLayer::Ptr result) override {
+    void notifyResult(TileSubsetLayer::Ptr result) override {
         std::unique_lock lock(bufferMutex_);
         buffer_.push(result);
         bufferSignal_.notify_one();
-        FeatureLayerSearchTilesRequest::notifyResult(std::move(result));
+        FeatureLayerFilterTilesRequest::notifyResult(std::move(result));
     }
 
-    TileSearchResultLayer::Ptr next() {
+    TileSubsetLayer::Ptr next() {
         std::unique_lock lock(bufferMutex_);
         bufferSignal_.wait(lock, [this](){ return !buffer_.empty() ||
                                  this->getStatus() != RequestStatus::Open; });
@@ -117,7 +175,7 @@ public:
     }
 
 private:
-    std::queue<TileSearchResultLayer::Ptr> buffer_;
+    std::queue<TileSubsetLayer::Ptr> buffer_;
     std::mutex bufferMutex_;
     std::condition_variable bufferSignal_;
 };
@@ -126,6 +184,141 @@ private:
 void bindHttpClient(py::module_& m)
 {
     using namespace mapget;
+
+    py::enum_<FeatureLayerFilterScope>(m, "FilterScope")
+        .value("FEATURE", FeatureLayerFilterScope::Feature)
+        .value("ATTRIBUTE", FeatureLayerFilterScope::Attribute)
+        .value("RELATION", FeatureLayerFilterScope::Relation)
+        .value("AUTO", FeatureLayerFilterScope::Auto);
+
+    py::class_<FeatureLayerPointGridGroup>(m, "PointGridGroup")
+        .def(
+            py::init(
+                [](std::array<double, 3> const& origin,
+                   std::array<double, 3> const& cellSize)
+                {
+                    return FeatureLayerPointGridGroup{
+                        .origin_ = {
+                            origin[0],
+                            origin[1],
+                            origin[2]},
+                        .cellSize_ = {
+                            cellSize[0],
+                            cellSize[1],
+                            cellSize[2]},
+                    };
+                }),
+            py::arg("origin") =
+                std::array<double, 3>{0.0, 0.0, 0.0},
+            py::arg("cell_size") =
+                std::array<double, 3>{1.0, 1.0, 1.0});
+
+    py::class_<FeatureLayerStoredRelationOptions>(
+        m,
+        "StoredRelationOptions")
+        .def(
+            py::init(
+                [](std::optional<std::string> namePattern,
+                   bool recursive,
+                   bool mergeTwoway)
+                {
+                    return FeatureLayerStoredRelationOptions{
+                        .relationNamePattern_ =
+                            std::move(namePattern),
+                        .recursive_ = recursive,
+                        .mergeTwoway_ = mergeTwoway,
+                    };
+                }),
+            py::arg("name_pattern") = py::none(),
+            py::arg("recursive") = false,
+            py::arg("merge_twoway") = false);
+
+    py::class_<FeatureLayerFilterRoot>(
+        m,
+        "FilterRoot")
+        .def(
+            py::init(
+                [](TileId tileId,
+                   std::string typeId,
+                   KeyValuePairVec const& featureId,
+                   size_t requestOrdinal)
+                {
+                    return FeatureLayerFilterRoot{
+                        tileId,
+                        std::move(typeId),
+                        castToKeyValue(
+                            castToKeyValueView(
+                                featureId)),
+                        requestOrdinal,
+                    };
+                }),
+            py::arg("tile_id"),
+            py::arg("type_id"),
+            py::arg("feature_id_parts"),
+            py::arg("request_ordinal") = 0);
+
+    py::class_<FeatureLayerFilterChannel>(m, "FilterChannel")
+        .def(
+            py::init(
+                [](std::string channelId,
+                   FeatureLayerFilterScope scope,
+                   std::optional<std::string> featureFilter,
+                   std::optional<std::string> entryFilter,
+                   bool rewrite,
+                   std::vector<std::string> featureTypes,
+                   std::vector<std::string> featureFields,
+                   std::vector<std::string> entryFields,
+                   uint32_t geometryTypes,
+                   std::optional<std::string> geometryName,
+                   std::optional<FeatureLayerPointGridGroup> group,
+                   std::optional<FeatureLayerStoredRelationOptions>
+                       relation)
+                {
+                    if (channelId.empty()) {
+                        throw py::value_error(
+                            "channel_id must not be empty");
+                    }
+                    if (geometryName && *geometryName == "*") {
+                        geometryName.reset();
+                    }
+                    return FeatureLayerFilterChannel{
+                        .channelId_ = std::move(channelId),
+                        .featureFilter_ =
+                            std::move(featureFilter),
+                        .entryFilter_ =
+                            std::move(entryFilter),
+                        .scope_ = scope,
+                        .rewrite_ = rewrite,
+                        .featureTypes_ =
+                            std::move(featureTypes),
+                        .featureFields_ =
+                            std::move(featureFields),
+                        .entryFields_ =
+                            std::move(entryFields),
+                        .geometryTypes_ = geometryTypes,
+                        .geometryName_ =
+                            std::move(geometryName),
+                        .group_ = std::move(group),
+                        .relation_ = std::move(relation),
+                    };
+                }),
+            py::arg("channel_id"),
+            py::arg("scope") =
+                FeatureLayerFilterScope::Feature,
+            py::arg("feature_filter") = py::none(),
+            py::arg("entry_filter") = py::none(),
+            py::arg("rewrite") = false,
+            py::arg("feature_types") =
+                std::vector<std::string>{},
+            py::arg("feature_fields") =
+                std::vector<std::string>{},
+            py::arg("entry_fields") =
+                std::vector<std::string>{},
+            py::arg("geometry_types") =
+                FeatureLayerFilterChannel::AllGeometryTypes,
+            py::arg("geometry_name") = py::none(),
+            py::arg("group") = py::none(),
+            py::arg("relation") = py::none());
 
     py::class_<PyRequest, std::shared_ptr<PyRequest>>(m, "Request", R"pbdoc(
         Client request for map data.
@@ -145,12 +338,14 @@ void bindHttpClient(py::module_& m)
                    const std::string& layerId,
                    std::vector<TileId> tiles,
                    std::function<void(TileFeatureLayer::Ptr)> onFeatureResult,
-                   std::function<void(TileSourceDataLayer::Ptr)> onSourceDataResult)
+                   std::function<void(TileSourceDataLayer::Ptr)> onSourceDataResult,
+                   std::optional<std::string> sourceId)
                 {
                     auto req = std::make_shared<PyRequest>(
                         mapId,
                         layerId,
                         std::move(tiles));
+                    req->sourceId_ = std::move(sourceId);
                     req->onFeatureLayer(std::move(onFeatureResult));
                     req->onSourceDataLayer(std::move(onSourceDataResult));
                     return req;
@@ -160,6 +355,7 @@ void bindHttpClient(py::module_& m)
             py::arg("tiles"),
             py::arg("on_feature_result") = py::none(),
             py::arg("on_sourcedata_result") = py::none(),
+            py::arg("source_id") = py::none(),
             py::call_guard<py::gil_scoped_acquire>(),
             R"pbdoc(
             Construct a Request.
@@ -172,6 +368,7 @@ void bindHttpClient(py::module_& m)
                 You can also iterate over this Request object instead of providing the callback.
                 on_sourcedata_result: The callback function to be callend when a result source-data tile
                 is available. You can also iterate over this Request object instead of porviding the callback.
+                source_id: Optional catalog source assertion.
 
             Note: The provided tile ids are processed in the given order.
         )pbdoc")
@@ -193,50 +390,48 @@ void bindHttpClient(py::module_& m)
             This function blocks until all results have been processed.
         )pbdoc", py::call_guard<py::gil_scoped_release>());
 
-    py::class_<PySearchRequest, std::shared_ptr<PySearchRequest>>(m, "SearchRequest", R"pbdoc(
-        Client request for server-side search-as-map evaluation.
+    py::class_<PyFilterRequest, std::shared_ptr<PyFilterRequest>>(m, "FilterRequest", R"pbdoc(
+        Client request for server-side filter evaluation evaluation.
 
-        SearchRequest posts a simplified REST /search request. Results are
-        TileSearchResultLayer objects and can be consumed with a callback or by
-        iterating over the request object returned by Client.search().
+        FilterRequest posts a simplified REST /filter request. Results are
+        TileSubsetLayer objects and can be consumed with a callback or by
+        iterating over the request object returned by Client.filter().
     )pbdoc")
         .def(
             py::init(
                 [](const std::string& mapId,
                    const std::string& layerId,
                    std::vector<TileId> tiles,
-                   const std::string& query,
-                   const std::string& scope,
-                   bool rewrite,
-                   std::vector<std::string> withFields,
-                   std::vector<std::string> featureTypes,
-                   std::function<void(TileSearchResultLayer::Ptr)> onResult,
-                   std::function<void(py::object)> onStatus)
+                   std::string filterId,
+                   uint64_t generation,
+                   std::vector<FeatureLayerFilterChannel> channels,
+                   py::dict const& bindings,
+                   std::vector<FeatureLayerFilterRoot> exactRoots,
+                   std::function<void(TileSubsetLayer::Ptr)> onResult,
+                   std::function<void(py::object)> onStatus,
+                   std::optional<std::string> sourceId)
                 {
-                    FeatureLayerSearchRequest search;
-                    search.query_ = query;
-                    if (scope == "feature") {
-                        search.scope_ = FeatureLayerSearchScope::Feature;
+                    if (channels.empty()) {
+                        throw py::value_error(
+                            "channels must not be empty");
                     }
-                    else if (scope == "attribute") {
-                        search.scope_ = FeatureLayerSearchScope::Attribute;
-                    }
-                    else if (scope == "auto") {
-                        search.scope_ = FeatureLayerSearchScope::Auto;
-                    }
-                    else {
-                        throw py::value_error("scope must be 'feature', 'attribute' or 'auto'");
-                    }
-                    search.rewriteQuery_ = rewrite || search.scope_ == FeatureLayerSearchScope::Auto;
-                    search.withFields_ = std::move(withFields);
-                    search.featureTypes_ = std::move(featureTypes);
+                    FeatureLayerFilterRequest filter{
+                        .filterId_ = std::move(filterId),
+                        .generation_ = generation,
+                        .channels_ = std::move(channels),
+                        .bindings_ =
+                            filter_bindings_from_python(bindings),
+                    };
 
-                    auto req = std::make_shared<PySearchRequest>(
+                    auto req = std::make_shared<PyFilterRequest>(
                         mapId,
                         layerId,
                         std::move(tiles),
-                        std::move(search));
-                    req->onSearchResult(std::move(onResult));
+                        std::move(filter));
+                    req->sourceId_ = std::move(sourceId);
+                    req->exactRoots_ =
+                        std::move(exactRoots);
+                    req->onFilterResult(std::move(onResult));
                     if (onStatus) {
                         req->onStatus([callback = std::move(onStatus)](nlohmann::json const& status) {
                             callback(json_to_py_value(status));
@@ -247,37 +442,41 @@ void bindHttpClient(py::module_& m)
             py::arg("map_id"),
             py::arg("layer_id"),
             py::arg("tiles"),
-            py::arg("query"),
-            py::arg("scope") = "feature",
-            py::arg("rewrite") = false,
-            py::arg("with_fields") = std::vector<std::string>{},
-            py::arg("feature_types") = std::vector<std::string>{},
+            py::arg("filter_id"),
+            py::arg("generation"),
+            py::arg("channels"),
+            py::arg("bindings") = py::dict(),
+            py::arg("exact_roots") =
+                std::vector<
+                    FeatureLayerFilterRoot>{},
             py::arg("on_result") = py::none(),
             py::arg("on_status") = py::none(),
+            py::arg("source_id") = py::none(),
             py::call_guard<py::gil_scoped_acquire>(),
             R"pbdoc(
-            Construct a SearchRequest.
+            Construct a FilterRequest.
 
             Args:
-                map_id: The source map id to search.
-                layer_id: The source feature layer id to search.
-                tiles: Source ndslive.math.PackedTileId values to search.
-                query: SIMFIL predicate.
-                scope: "feature", "attribute" or "auto".
-                rewrite: Normalize the query through the feature-model schema before evaluation. Auto scope implies rewrite.
-                with_fields: SIMFIL expressions stored in each result's values array.
-                feature_types: Optional feature type names to search; omitted means all feature types.
-                on_result: Optional callback for each TileSearchResultLayer.
+                map_id: The source map id to filter.
+                layer_id: The source feature layer id to filter.
+                tiles: Source ndslive.math.PackedTileId values to filter.
+                filter_id: Stable identity of this filter subscription.
+                generation: Definition/coverage revision for stale-result rejection.
+                channels: Ordered FilterChannel instances; channels are never conflated.
+                bindings: Scalar SIMFIL constants/overlay fields shared by all channels.
+                exact_roots: Optional indexed roots for relation traversal.
+                on_result: Optional callback for each TileSubsetLayer.
                 on_status: Optional callback for progress/status dictionaries.
+                source_id: Optional catalog source assertion.
         )pbdoc")
-        .def("__iter__", [](PySearchRequest &r) { return &r; }, R"pbdoc(
+        .def("__iter__", [](PyFilterRequest &r) { return &r; }, R"pbdoc(
             Return the iterator object (self).
         )pbdoc")
-        .def("__next__", &PySearchRequest::next, R"pbdoc(
-            Get the next available search-result layer.
+        .def("__next__", &PyFilterRequest::next, R"pbdoc(
+            Get the next available subset layer.
         )pbdoc", py::call_guard<py::gil_scoped_release>())
-        .def("wait", &PySearchRequest::wait, R"pbdoc(
-            Wait for the search request to be done.
+        .def("wait", &PyFilterRequest::wait, R"pbdoc(
+            Wait for the filter request to be done.
         )pbdoc", py::call_guard<py::gil_scoped_release>());
 
     py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client", R"pbdoc(
@@ -285,7 +484,7 @@ void bindHttpClient(py::module_& m)
 
         The client fetches `/sources` once during construction, keeps the
         resulting layer metadata for request decoding, and can submit tile and
-        server-side search requests.
+        server-side filter requests.
     )pbdoc")
         .def(py::init<const std::string&, uint16_t, AuthHeaders, bool>(),
              R"pbdoc(
@@ -298,7 +497,7 @@ void bindHttpClient(py::module_& m)
                     host: Hostname or IP address of the mapget HTTP service.
                     port: TCP port of the mapget HTTP service.
                     headers: Optional HTTP headers sent with `/sources`,
-                        `/tiles`, and `/search` requests. Use this for auth.
+                        `/tiles`, and `/filter` requests. Use this for auth.
                     enable_compression: Request gzip responses unless the
                         headers already contain an `Accept-Encoding` override.
             )pbdoc",
@@ -327,13 +526,13 @@ void bindHttpClient(py::module_& m)
             )pbdoc",
             py::arg("request"))
         .def(
-            "search",
-            [](HttpClient& self, std::shared_ptr<PySearchRequest> request) {
-                self.search(request);
+            "filter",
+            [](HttpClient& self, std::shared_ptr<PyFilterRequest> request) {
+                self.filter(request);
                 return std::move(request);
             },
             R"pbdoc(
-                Post a SearchRequest to the REST /search endpoint.
+                Post a FilterRequest to the REST /filter endpoint.
                 Returns the request object which was put in.
             )pbdoc",
             py::arg("request"));

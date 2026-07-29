@@ -71,15 +71,43 @@ SQLiteCache::SQLiteCache(uint32_t cacheMaxTiles, std::string cachePath, bool cle
 
     // Update stringPoolOffsets_ for each existing string pool
     rc = sqlite3_prepare_v2(db_, "SELECT node_id FROM string_pools", -1, &stmt, nullptr);
+    bool incompatibleCache = false;
+    std::string incompatibleCacheReason;
     if (rc == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
-            const char* nodeId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            if (nodeId) {
-                // Trigger cache lookup to update offsets
-                Cache::getStringPool(nodeId);
+            const char* stringPoolId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            if (stringPoolId) {
+                try {
+                    // Trigger cache lookup to update offsets.
+                    Cache::getStringPool(stringPoolId);
+                }
+                catch (std::exception const& exception) {
+                    incompatibleCache = true;
+                    incompatibleCacheReason = exception.what();
+                    break;
+                }
             }
         }
         sqlite3_finalize(stmt);
+    }
+    if (incompatibleCache) {
+        log().warn(
+            "Clearing incompatible persistent cache '{}': {}",
+            dbPath_,
+            incompatibleCacheReason);
+        executeSQL("DELETE FROM tiles");
+        executeSQL("DELETE FROM string_pools");
+        std::unique_lock stringPoolCacheLock(
+            stringPoolCacheMutex_,
+            std::defer_lock);
+        std::unique_lock stringPoolOffsetLock(
+            stringPoolOffsetMutex_,
+            std::defer_lock);
+        std::lock(
+            stringPoolCacheLock,
+            stringPoolOffsetLock);
+        stringPoolPerStringPoolId_.clear();
+        stringPoolOffsets_.clear();
     }
 }
 
@@ -259,6 +287,26 @@ void SQLiteCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
     }
 }
 
+void SQLiteCache::eraseTileLayerBlob(MapTileKey const& k)
+{
+    std::lock_guard<std::mutex> lock(dbMutex_);
+    sqlite3_reset(stmts_.deleteTile);
+    auto const key = k.toString();
+    sqlite3_bind_text(
+        stmts_.deleteTile,
+        1,
+        key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    int const rc = sqlite3_step(stmts_.deleteTile);
+    if (rc != SQLITE_DONE) {
+        raise(fmt::format(
+            "Could not delete cache entry '{}': {}",
+            key,
+            sqlite3_errmsg(db_)));
+    }
+}
+
 void SQLiteCache::forEachTileLayerBlob(const TileBlobVisitor& cb) const
 {
     std::lock_guard<std::mutex> lock(dbMutex_);
@@ -303,12 +351,12 @@ void SQLiteCache::cleanupOldestTiles()
     }
 }
 
-std::optional<std::string> SQLiteCache::getStringPoolBlob(std::string_view const& sourceNodeId)
+std::optional<std::string> SQLiteCache::getStringPoolBlob(std::string_view const& sourceStringPoolId)
 {
     std::lock_guard<std::mutex> lock(dbMutex_);
     
     sqlite3_reset(stmts_.getStringPool);
-    sqlite3_bind_text(stmts_.getStringPool, 1, sourceNodeId.data(), sourceNodeId.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmts_.getStringPool, 1, sourceStringPoolId.data(), sourceStringPoolId.size(), SQLITE_TRANSIENT);
 
     int rc = sqlite3_step(stmts_.getStringPool);
     if (rc == SQLITE_ROW) {
@@ -316,7 +364,7 @@ std::optional<std::string> SQLiteCache::getStringPoolBlob(std::string_view const
         int size = sqlite3_column_bytes(stmts_.getStringPool, 0);
         std::string result(static_cast<const char*>(data), size);
         
-        log().trace(fmt::format("Node: {} | String pool size: {}", sourceNodeId, size));
+        log().trace(fmt::format("Node: {} | String pool size: {}", sourceStringPoolId, size));
         return result;
     }
     else if (rc == SQLITE_DONE) {
@@ -327,12 +375,12 @@ std::optional<std::string> SQLiteCache::getStringPoolBlob(std::string_view const
     }
 }
 
-void SQLiteCache::putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v)
+void SQLiteCache::putStringPoolBlob(std::string_view const& sourceStringPoolId, std::string const& v)
 {
     std::lock_guard<std::mutex> lock(dbMutex_);
     
     sqlite3_reset(stmts_.putStringPool);
-    sqlite3_bind_text(stmts_.putStringPool, 1, sourceNodeId.data(), sourceNodeId.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmts_.putStringPool, 1, sourceStringPoolId.data(), sourceStringPoolId.size(), SQLITE_TRANSIENT);
     sqlite3_bind_blob(stmts_.putStringPool, 2, v.data(), v.size(), SQLITE_TRANSIENT);
 
     int rc = sqlite3_step(stmts_.putStringPool);

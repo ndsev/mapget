@@ -61,6 +61,16 @@ public:
                 conn->setContext(session);
             }
 
+            // Drogon delivers WebSocket control frames to the controller.
+            // In particular, its periodic connection-health ping produces a
+            // Pong here.  Control frames are not tile-stream requests and
+            // must not be turned into an untagged terminal status.
+            if (type == drogon::WebSocketMessageType::Ping
+                || type == drogon::WebSocketMessageType::Pong
+                || type == drogon::WebSocketMessageType::Close) {
+                return;
+            }
+
             if (type != drogon::WebSocketMessageType::Text) {
                 const auto payload = nlohmann::json::object({
                     {"type", "mapget.tiles.status"},

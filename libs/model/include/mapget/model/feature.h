@@ -92,23 +92,8 @@ class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
 public:
     struct MergedBasicAttributesView;
 
-    enum class LOD : uint8_t {
-        LOD_0 = 0,
-        LOD_1 = 1,
-        LOD_2 = 2,
-        LOD_3 = 3,
-        LOD_4 = 4,
-        LOD_5 = 5,
-        LOD_6 = 6,
-        LOD_7 = 7
-    };
-
-    static constexpr LOD MAX_LOD = LOD::LOD_7;
-
     /** Get the name of this feature's type. */
     [[nodiscard]] std::string_view typeId() const;
-    [[nodiscard]] LOD lod() const;
-    void setLod(LOD lod);
 
     /** Get this feature's ID. */
     [[nodiscard]] model_ptr<FeatureId> id() const;
@@ -210,10 +195,6 @@ public:
     [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
     void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
 
-    [[nodiscard]] model_ptr<Feature> extension() const;
-    void setExtension(model_ptr<Feature> extension);
-    void setExtensionAddress(TileFeatureLayer const* extensionModel, simfil::ModelNodeAddress extensionAddress);
-
 protected:
     /**
      * Simfil Model-Node Functions
@@ -236,14 +217,11 @@ protected:
     [[nodiscard]] model_ptr<Array> relations();
     [[nodiscard]] model_ptr<Array> relationsOrNull() const;
     [[nodiscard]] model_ptr<RelationArrayView> mergedRelationsOrNull() const;
-    void refreshExtensionBindingFromOverlay() const;
-
-    struct TypeIdAndLOD
+    struct TypeId
     {
         MODEL_COLUMN_TYPE(4);
 
         simfil::StringId typeId_ = 0;
-        uint8_t lod_ = static_cast<uint8_t>(MAX_LOD);
     };
 
     /**
@@ -253,7 +231,7 @@ protected:
     {
         MODEL_COLUMN_TYPE(12);
 
-        TypeIdAndLOD typeIdAndLod_{};
+        TypeId typeId_{};
         simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
         simfil::ModelNodeAddress geom_{};
     };
@@ -284,9 +262,6 @@ public:
 protected:
     BasicData* basicData_ = nullptr;
     mutable ComplexData* complexData_ = nullptr;
-    mutable TileFeatureLayer const* extensionModel_ = nullptr;
-    mutable simfil::ModelNodeAddress extensionAddress_;
-
     // We keep the fields in a tiny vector on the stack,
     // because their number is dynamic, as a variable number
     // of id-part fields is adopted from the feature id.

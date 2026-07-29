@@ -1,6 +1,8 @@
 #include "featuremodellayer.h"
 
+#include <algorithm>
 #include <limits>
+#include <set>
 #include <tuple>
 #include <type_traits>
 
@@ -21,7 +23,7 @@ constexpr uint32_t SourceAddressArenaIndexBits = 20;
 constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaIndexBits);
 constexpr uint32_t SourceAddressArenaSizeBits = 4;
 constexpr uint32_t SourceAddressArenaSizeMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaSizeBits);
-constexpr uint8_t InvalidGeometryStage = std::numeric_limits<uint8_t>::max();
+constexpr uint8_t UnnamedGeometry = 0;
 
 std::tuple<size_t, size_t> modelAddressToSourceDataAddressList(uint32_t addr)
 {
@@ -71,15 +73,15 @@ void ensureGeometrySourceRefCapacity(
     }
 }
 
-void ensureGeometryStageCapacity(
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize>& stages,
+void ensureGeometryNameCapacity(
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize>& names,
     simfil::ArrayIndex index)
 {
     if (index == simfil::InvalidArrayIndex) {
         raiseFmt("Invalid geometry buffer index {}.", index);
     }
-    while (stages.size() <= static_cast<size_t>(index)) {
-        stages.emplace_back(InvalidGeometryStage);
+    while (names.size() <= static_cast<size_t>(index)) {
+        names.emplace_back(UnnamedGeometry);
     }
 }
 
@@ -130,29 +132,22 @@ simfil::ArrayIndex polygonRingStartRefAt(
     return simfil::InvalidArrayIndex;
 }
 
-std::optional<uint8_t> geometryStageAt(
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> const& stages,
+uint8_t geometryNameIndexAt(
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> const& names,
     uint32_t index)
 {
-    if (index >= stages.size()) {
-        return std::nullopt;
-    }
-    auto const storedStage = stages.at(index);
-    if (storedStage == InvalidGeometryStage) {
-        return std::nullopt;
-    }
-    return storedStage;
+    return index < names.size() ? names.at(index) : UnnamedGeometry;
 }
 
 } // namespace
 
 TileFeatureModelLayerBase::TileFeatureModelLayerBase(
     TileId tileId,
-    std::string const& nodeId,
+    std::string const& stringPoolId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& strings)
-    : TileLayer(tileId, nodeId, mapId, layerInfo),
+    : TileLayer(tileId, stringPoolId, mapId, layerInfo),
       simfil::ModelPool(strings)
 {
 }
@@ -163,7 +158,7 @@ TileFeatureModelLayerBase::TileFeatureModelLayerBase(
     StringPoolResolveFun const& stringPoolGetter,
     size_t* bytesRead)
     : TileLayer(input, layerInfoResolveFun, bytesRead),
-      simfil::ModelPool(stringPoolGetter(nodeId_))
+      simfil::ModelPool(stringPoolGetter(stringPoolId_))
 {
 }
 
@@ -256,6 +251,15 @@ TileFeatureModelLayerBase::GeometryStorage& TileFeatureModelLayerBase::vertexBuf
     return pointBuffers_;
 }
 
+uint64_t TileFeatureModelLayerBase::geometryVertexCount() const
+{
+    uint64_t result = 0;
+    for (auto const& buffer : pointBuffers_) {
+        result += buffer.size();
+    }
+    return result;
+}
+
 GeometryViewData const* TileFeatureModelLayerBase::geometryViewData(simfil::ModelNodeAddress address) const
 {
     if (address.column() != ColumnId::GeometryViews || address.index() >= geomViews_.size()) {
@@ -264,7 +268,8 @@ GeometryViewData const* TileFeatureModelLayerBase::geometryViewData(simfil::Mode
     return &geomViews_.at(address.index());
 }
 
-std::optional<uint8_t> TileFeatureModelLayerBase::geometryStage(simfil::ModelNodeAddress address) const
+std::optional<std::string_view> TileFeatureModelLayerBase::geometryName(
+    simfil::ModelNodeAddress address) const
 {
     if (!isBaseGeometryColumn(address.column()) && address.column() != ColumnId::GeometryViews) {
         return std::nullopt;
@@ -272,19 +277,89 @@ std::optional<uint8_t> TileFeatureModelLayerBase::geometryStage(simfil::ModelNod
     auto const storageIndex = address.column() == ColumnId::GeometryViews
         ? address.index()
         : extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
-    return geometryStageAt(geomStages_, storageIndex);
+    auto const storedIndex = geometryNameIndexAt(geomNameIndices_, storageIndex);
+    if (storedIndex != UnnamedGeometry) {
+        return decodeGeometryName(storedIndex);
+    }
+    if (address.column() == ColumnId::GeometryViews) {
+        return geometryName(geomViews_.at(address.index()).baseGeometry_);
+    }
+    return std::nullopt;
 }
 
-void TileFeatureModelLayerBase::setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage)
+void TileFeatureModelLayerBase::setGeometryName(
+    simfil::ModelNodeAddress address,
+    std::optional<std::string_view> name)
 {
     if (!isBaseGeometryColumn(address.column()) && address.column() != ColumnId::GeometryViews) {
-        raise("Geometry stage can only be stored on geometry nodes.");
+        raise("Geometry name can only be stored on geometry nodes.");
     }
     auto const storageIndex = address.column() == ColumnId::GeometryViews
         ? address.index()
         : extraGeometryDataStorageIndex(static_cast<simfil::ArrayIndex>(address.index()));
-    ensureGeometryStageCapacity(geomStages_, storageIndex);
-    geomStages_.at(storageIndex) = stage.value_or(InvalidGeometryStage);
+    ensureGeometryNameCapacity(geomNameIndices_, storageIndex);
+    geomNameIndices_.at(storageIndex) = encodeGeometryName(name);
+}
+
+uint8_t TileFeatureModelLayerBase::encodeGeometryName(
+    std::optional<std::string_view> name)
+{
+    if (!name) {
+        return UnnamedGeometry;
+    }
+    if (name->empty()) {
+        raise("Geometry names must not be empty; clear the name instead.");
+    }
+    auto const found = std::find(geometryNames_.begin(), geometryNames_.end(), *name);
+    if (found != geometryNames_.end()) {
+        return static_cast<uint8_t>(
+            std::distance(geometryNames_.begin(), found) + 1);
+    }
+    if (geometryNames_.size() >= std::numeric_limits<uint8_t>::max()) {
+        raise("A tile layer cannot contain more than 255 distinct geometry names.");
+    }
+    geometryNames_.emplace_back(*name);
+    return static_cast<uint8_t>(geometryNames_.size());
+}
+
+std::optional<std::string_view> TileFeatureModelLayerBase::decodeGeometryName(
+    uint8_t index) const
+{
+    if (index == UnnamedGeometry) {
+        return std::nullopt;
+    }
+    auto const tableIndex = static_cast<size_t>(index - 1U);
+    if (tableIndex >= geometryNames_.size()) {
+        raiseFmt(
+            "Geometry name index {} is invalid for a table with {} entries.",
+            index,
+            geometryNames_.size());
+    }
+    return geometryNames_[tableIndex];
+}
+
+void TileFeatureModelLayerBase::validateGeometryNameStorage() const
+{
+    std::set<std::string_view> uniqueNames;
+    for (auto const& name : geometryNames_) {
+        if (name.empty()) {
+            raise("Geometry name table contains an empty name.");
+        }
+        if (!uniqueNames.insert(name).second) {
+            raiseFmt("Geometry name table contains duplicate name '{}'.", name);
+        }
+    }
+    for (size_t slot = 0; slot < geomNameIndices_.size(); ++slot) {
+        auto const index = geomNameIndices_.at(slot);
+        if (index != UnnamedGeometry &&
+            static_cast<size_t>(index - 1U) >= geometryNames_.size())
+        {
+            raiseFmt(
+                "Geometry metadata slot {} references invalid name index {}.",
+                slot,
+                index);
+        }
+    }
 }
 
 simfil::ModelNodeAddress TileFeatureModelLayerBase::geometrySourceDataReferences(

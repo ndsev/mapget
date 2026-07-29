@@ -19,6 +19,30 @@ namespace mapget
 using AuthHeaders = std::unordered_map<std::string, std::string>;
 
 /**
+ * Request for one named binary attachment belonging to a feature tile.
+ *
+ * `sourceId_` is an optional catalog assertion used by Service admission;
+ * datasource implementations route by the already resolved tile key.
+ */
+struct AttachmentRequest
+{
+    MapTileKey tileKey_;
+    std::string name_;
+    std::optional<std::string> sourceId_;
+};
+
+/** Immutable payload and HTTP metadata returned by a datasource attachment. */
+struct AttachmentResponse
+{
+    std::string name_;
+    std::string mimeType_ =
+        "application/octet-stream";
+    std::shared_ptr<
+        std::vector<uint8_t> const> bytes_;
+    std::optional<std::string> etag_;
+};
+
+/**
  * Abstract class which defines the behavior of a mapget data source,
  * as expected by the mapget Service. Any derived data source must implement
  * the info() and fill() methods.
@@ -57,6 +81,37 @@ public:
      */
     virtual std::vector<LocateResponse> locate(LocateRequest const& req);
 
+    /**
+     * Locate candidate tiles without requiring the candidate feature to be
+     * materialized. The default preserves the existing locate contract.
+     *
+     * Datasources whose secondary-id lookup normally needs a complete tile
+     * may override this method with a cheap tile-only answer, then canonicalize
+     * the identity in resolveFeatures() after the ordinary cached tile load.
+     */
+    virtual std::vector<LocateResponse> locateCandidates(LocateRequest const& req);
+
+    /**
+     * Resolve one located identity against an already loaded complete tile.
+     *
+     * Zero results mean missing and several results mean ambiguous. The
+     * default performs the ordinary primary-id lookup. Implementations must
+     * not fetch or reconstruct the tile again.
+     */
+    virtual std::vector<model_ptr<Feature>> resolveFeatures(
+        LocateRequest const& located,
+        TileFeatureLayer const& tile);
+
+    /**
+     * Produce or return one named tile attachment.
+     *
+     * The default reports no attachment. Implementations may retain values
+     * produced during fill() or construct them lazily. The returned name must
+     * equal the requested name.
+     */
+    virtual std::optional<AttachmentResponse> attachment(
+        AttachmentRequest const& request);
+
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
     virtual TileLayer::Ptr get(
         MapTileKey const& k,
@@ -89,7 +144,7 @@ public:
     }
 
 protected:
-    static StringId cachedStringPoolOffset(std::string const& nodeId, Cache::Ptr const& cache);
+    static StringId cachedStringPoolOffset(std::string const& stringPoolId, Cache::Ptr const& cache);
 
     /** Map of authorization header-regex pairs which can be entered into the datasource YAML config. */
     std::unordered_map<std::string, std::regex> authHeaderAlternatives_;

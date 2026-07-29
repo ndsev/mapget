@@ -1,9 +1,11 @@
 #include "http-client.h"
+#include "tiles-request-json.h"
 
 #include "mapget/log.h"
 
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
+#include <drogon/utils/Utilities.h>
 #include <trantor/net/EventLoopThread.h>
 
 #include <algorithm>
@@ -120,19 +122,6 @@ void applyHeaders(drogon::HttpRequestPtr const& req, AuthHeaders const& headers)
     return gunzip(body);
 }
 
-[[nodiscard]] std::string searchScopeToJsonValue(FeatureLayerSearchScope scope)
-{
-    switch (scope) {
-    case FeatureLayerSearchScope::Feature:
-        return "feature";
-    case FeatureLayerSearchScope::Attribute:
-        return "attribute";
-    case FeatureLayerSearchScope::Auto:
-        return "auto";
-    }
-    return "feature";
-}
-
 }  // namespace
 
 struct HttpClient::Impl {
@@ -238,7 +227,7 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         if (resp->statusCode() == drogon::k200OK) {
             try {
                 auto const layerInfo = impl_->resolve(request->mapId_, request->layerId_);
-                request->prepareResolvedLayer(layerInfo->type_, layerInfo->stages_);
+                request->prepareResolvedLayer(layerInfo->type_);
             }
             catch (const std::exception& e) {
                 log().error("Failed to resolve request layer context: {}", e.what());
@@ -285,7 +274,8 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     return request;
 }
 
-FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchTilesRequest::Ptr& request)
+FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
+    FeatureLayerFilterTilesRequest::Ptr const& request)
 {
     if (request->isDone()) {
         request->notifyStatus();
@@ -295,12 +285,12 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
     auto reader = std::make_unique<TileLayerStream::Reader>(
         [this](auto&& mapId, auto&& layerId) { return impl_->resolve(mapId, layerId); },
         [request](auto&& result) {
-            auto searchResult = std::dynamic_pointer_cast<TileSearchResultLayer>(result);
-            if (!searchResult) {
-                log().warn("HttpClient /search ignored non-search tile layer result");
+            auto subset = std::dynamic_pointer_cast<TileSubsetLayer>(result);
+            if (!subset) {
+                log().warn("HttpClient /filter ignored non-subset tile layer result");
                 return;
             }
-            request->notifyResult(std::move(searchResult));
+            request->notifyResult(std::move(subset));
         },
         impl_->stringPoolProvider_,
         [request](TileLayerStream::MessageType type, std::string_view payload) {
@@ -318,7 +308,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
                 }
             }
             catch (const std::exception& e) {
-                log().warn("HttpClient /search ignored invalid status payload: {}", e.what());
+                log().warn("HttpClient /filter ignored invalid status payload: {}", e.what());
             }
         });
 
@@ -333,6 +323,9 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
         {"layerId", request->layerId_},
         {"tileIds", std::move(tileIds)},
     });
+    if (request->sourceId_) {
+        requestJson["sourceId"] = *request->sourceId_;
+    }
     if (!request->priorityTileIds_.empty()) {
         auto priorityTileIds = json::array();
         for (auto const& tileId : request->priorityTileIds_) {
@@ -340,20 +333,50 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
         }
         requestJson["priorityTileIds"] = std::move(priorityTileIds);
     }
+    if (!request->exactRoots_.empty()) {
+        auto roots = json::array();
+        for (auto const& root :
+             request->exactRoots_)
+        {
+            if (!root.canonicalFeatureId_.empty()) {
+                roots.push_back({
+                    {"tileId", root.tileId_.value()},
+                    {"featureId", root.canonicalFeatureId_},
+                });
+                continue;
+            }
+            auto featureId = json::array();
+            for (auto const& [key, value] :
+                 root.featureId_)
+            {
+                featureId.push_back(key);
+                std::visit(
+                    [&](auto const& item) {
+                        featureId.push_back(item);
+                    },
+                    value);
+            }
+            roots.push_back({
+                {"tileId", root.tileId_.value()},
+                {"typeId", root.typeId_},
+                {"featureId", std::move(featureId)},
+            });
+        }
+        requestJson["roots"] = std::move(roots);
+    }
 
-    auto body = json::object({
-        {"query", request->search_.query_},
-        {"scope", searchScopeToJsonValue(request->search_.scope_)},
-        {"rewrite", request->search_.rewriteQuery_},
-        {"withFields", request->search_.withFields_},
-        {"featureTypes", request->search_.featureTypes_},
-        {"requests", json::array({std::move(requestJson)})},
-        {"stringPoolOffsets", reader->stringPoolCache()->stringPoolOffsets()},
-    }).dump();
+    auto envelope = detail::filterRequestToJson(
+        request->filter_,
+        false);
+    envelope["requests"] =
+        json::array({std::move(requestJson)});
+    envelope["stringPoolOffsets"] =
+        reader->stringPoolCache()->stringPoolOffsets();
+    auto body = envelope.dump();
 
     auto httpReq = drogon::HttpRequest::newHttpRequest();
     httpReq->setMethod(drogon::Post);
-    httpReq->setPath("/search");
+    httpReq->setPath("/filter");
     httpReq->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     httpReq->addHeader("Accept", "application/binary");
     httpReq->setBody(std::move(body));
@@ -364,7 +387,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
         if (resp->statusCode() == drogon::k200OK) {
             auto decodedBody = decodeResponseBody(resp);
             if (!decodedBody) {
-                log().error("HttpClient /search decode failed");
+                log().error("HttpClient /filter decode failed");
                 request->setStatus(RequestStatus::Aborted);
                 return request;
             }
@@ -373,7 +396,7 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
                 reader->read(*decodedBody);
             }
             catch (const std::exception& e) {
-                log().error("Failed to parse /search response: {}", e.what());
+                log().error("Failed to parse /filter response: {}", e.what());
                 request->setStatus(RequestStatus::Aborted);
                 return request;
             }
@@ -393,6 +416,72 @@ FeatureLayerSearchTilesRequest::Ptr HttpClient::search(const FeatureLayerSearchT
     }
 
     return request;
+}
+
+std::optional<AttachmentResponse>
+HttpClient::attachment(
+    AttachmentRequest const& request)
+{
+    auto httpRequest =
+        drogon::HttpRequest::newHttpRequest();
+    httpRequest->setMethod(drogon::Get);
+    auto path = fmt::format(
+        "/attachment?mapId={}&layerId={}"
+        "&tileId={}&name={}",
+        drogon::utils::urlEncodeComponent(
+            request.tileKey_.mapId_),
+        drogon::utils::urlEncodeComponent(
+            request.tileKey_.layerId_),
+        request.tileKey_.tileId_.value(),
+        drogon::utils::urlEncodeComponent(
+            request.name_));
+    if (request.sourceId_) {
+        path += fmt::format(
+            "&sourceId={}",
+            drogon::utils::urlEncodeComponent(
+                *request.sourceId_));
+    }
+    httpRequest->setPath(std::move(path));
+    applyHeaders(
+        httpRequest,
+        impl_->headers_);
+
+    auto [result, response] =
+        impl_->client_->sendRequest(
+            httpRequest);
+    if (result != drogon::ReqResult::Ok ||
+        !response ||
+        response->statusCode() !=
+            drogon::k200OK)
+    {
+        return {};
+    }
+    auto decoded =
+        decodeResponseBody(response);
+    if (!decoded) {
+        return {};
+    }
+
+    auto attachment =
+        AttachmentResponse{
+            .name_ = request.name_,
+            .mimeType_ =
+                response->contentTypeString(),
+            .bytes_ =
+                std::make_shared<
+                    std::vector<
+                        uint8_t> const>(
+                    decoded->begin(),
+                    decoded->end()),
+        };
+    if (auto etag =
+            response->getHeader("etag");
+        !etag.empty())
+    {
+        attachment.etag_ =
+            std::move(etag);
+    }
+    return attachment;
 }
 
 }  // namespace mapget

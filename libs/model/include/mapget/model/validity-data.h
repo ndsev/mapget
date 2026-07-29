@@ -76,8 +76,8 @@ struct ValidityData
     GeometryDescriptionType geomDescrType_ = NoGeometry;
     GeometryOffsetType geomOffsetType_ = InvalidOffsetType;
     GeometryDescription geomDescr_{};
-    static constexpr int8_t InvalidReferencedStage = -1;
-    int8_t referencedStage_ = InvalidReferencedStage;
+    // Compact layer-local geometry-name index. Zero means unnamed/unrestricted.
+    uint8_t referencedGeometryName_ = 0;
     simfil::ModelNodeAddress featureAddress_;
 };
 

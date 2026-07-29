@@ -156,15 +156,12 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
         std::vector<Coverage>{
             {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
             {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}},
-        1,
-        std::vector<std::string>{"Complete"},
-        0,
         true,
         false,
         Version{1, 0, 0}});
 
     DataSourceInfo info(DataSourceInfo{
-        "testNodeId",
+        "testStringPoolId",
         "testMapId",
         layers,
         5,
@@ -195,43 +192,42 @@ TEST_CASE("MapTileKey percent-escapes map and layer identifier components", "[Da
         LayerType::Features,
         "Map.A:B/C,D~%",
         "Layer:X/Y,Z~%",
-        TileId::fromTileXY(1, 0, 1),
-        2);
+        TileId::fromTileXY(1, 0, 1));
 
     auto const encoded = key.toString();
-    REQUIRE(encoded == "Features:Map.A%3AB%2FC%2CD%7E%25:Layer%3AX%2FY%2CZ%7E%25:131073:2");
+    REQUIRE(encoded == "Features:Map.A%3AB%2FC%2CD%7E%25:Layer%3AX%2FY%2CZ%7E%25:131073");
 
     auto const parsed = MapTileKey(encoded);
     REQUIRE(parsed.layer_ == key.layer_);
     REQUIRE(parsed.mapId_ == key.mapId_);
     REQUIRE(parsed.layerId_ == key.layerId_);
     REQUIRE(parsed.tileId_ == key.tileId_);
-    REQUIRE(parsed.stage_ == key.stage_);
+    REQUIRE_THROWS(MapTileKey(encoded + ":2"));
 }
 
 TEST_CASE("MapTileKey accepts removed mapget tile-id layout", "[DataSourceInfo]")
 {
     auto const legacyTileId = (int64_t{1} << 32) | int64_t{1};
-    auto const parsed = MapTileKey("Features:Map:Layer:" + std::to_string(legacyTileId) + ":0");
+    auto const parsed = MapTileKey("Features:Map:Layer:" + std::to_string(legacyTileId));
     REQUIRE(parsed.tileId_ == TileId::fromTileXY(3, 0, 1));
 }
 
 TEST_CASE("MapTileKey accepts removed hexadecimal mapget tile-id layout", "[DataSourceInfo]")
 {
-    auto const parsed = MapTileKey("Features:Map:Layer:21fa0777000d:0");
+    auto const parsed = MapTileKey("Features:Map:Layer:21fa0777000d");
     REQUIRE(parsed.tileId_ == TileId::fromTileXY(0x01fa, 0x0888, 13));
 }
 
 TEST_CASE("MapTileKey keeps SourceData tile zero as metadata sentinel", "[DataSourceInfo]")
 {
-    auto const parsed = MapTileKey("SourceData:Map:Layer:0:0");
+    auto const parsed = MapTileKey("SourceData:Map:Layer:0");
     REQUIRE(parsed.tileId_.value() == 0);
 }
 
 TEST_CASE("DataSourceInfo validates reserved characters in raw metadata identifiers", "[DataSourceInfo]")
 {
     auto valid = R"({
-        "nodeId": "ReservedNamesNode",
+        "stringPoolId": "ReservedNamesNode",
         "mapId": "ValidMap",
         "layers": {
             "ValidLayer": {
@@ -817,7 +813,7 @@ TEST_CASE("InfoFromJson", "[DataSourceInfo]")
 {
     // Create a JSON object with some mandatory fields missing.
     nlohmann::json j = R"({
-        "nodeId": "testNodeId",
+        "stringPoolId": "testStringPoolId",
         "protocolVersion": {
             "major": 1,
             "minor": 0,

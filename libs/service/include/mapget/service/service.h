@@ -3,7 +3,7 @@
 #include "cache.h"
 #include "config.h"
 #include "datasource.h"
-#include "mapget/model/featurelayer-search.h"
+#include "mapget/model/featurelayer-filter.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/layer.h"
 #include "memcache.h"
@@ -13,6 +13,7 @@
 #include <optional>
 #include <utility>
 #include <chrono>
+#include <map>
 #include <set>
 #include <vector>
 #include <atomic>
@@ -117,7 +118,19 @@ struct LayerRequestContext {
     RequestStatus status_ = RequestStatus::NoDataSource;
     NoDataSourceReason noDataSourceReason_ = NoDataSourceReason::MissingMapOrLayer;
     LayerType layerType_ = LayerType::Features;
-    uint32_t stages_ = 1;
+};
+
+/**
+ * Result of synchronous attachment admission and production.
+ *
+ * `Success` with no response means that the selected datasource or source
+ * tile has no matching attachment.
+ */
+struct AttachmentResult
+{
+    RequestStatus status_ =
+        RequestStatus::NoDataSource;
+    std::optional<AttachmentResponse> response_;
 };
 
 /**
@@ -139,24 +152,11 @@ public:
         std::string layerId,
         std::vector<TileId> tiles);
 
-    /** Construct an unstaged request with foreground tile IDs prioritized for scheduling. */
+    /** Construct a request with foreground tile IDs prioritized for scheduling. */
     LayerTilesRequest(
         std::string mapId,
         std::string layerId,
         std::vector<TileId> tiles,
-        std::vector<TileId> const& priorityTileIds);
-
-    /** Construct a staged request with tile IDs grouped by next missing stage. */
-    LayerTilesRequest(
-        std::string mapId,
-        std::string layerId,
-        std::vector<std::vector<TileId>> tileIdsByNextStage);
-
-    /** Construct a staged request with foreground tile IDs prioritized for scheduling. */
-    LayerTilesRequest(
-        std::string mapId,
-        std::string layerId,
-        std::vector<std::vector<TileId>> tileIdsByNextStage,
         std::vector<TileId> const& priorityTileIds);
 
     /** Get the current status of the request. */
@@ -174,11 +174,11 @@ public:
     /** The map layer id for which this request is dedicated. */
     std::string layerId_;
 
-    /**
-     * The map tile IDs for this request, grouped by next missing stage.
-     * Bucket index N means: send stage N and all higher stages for these IDs.
-     */
-    std::vector<std::vector<TileId>> tileIdsByNextStage_;
+    /** Optional catalog source selector/assertion; never part of MapTileKey. */
+    std::optional<std::string> sourceId_;
+
+    /** Map tile IDs for this request, in caller-specified processing order. */
+    std::vector<TileId> tileIds_;
 
     /**
      * Tile IDs within this request that should be scheduled before regular
@@ -188,11 +188,11 @@ public:
     std::set<TileId> priorityTileIds_;
 
     /**
-     * True iff the request explicitly uses `tileIdsByNextStage`.
-     * Legacy `tileIds` requests keep unstaged semantics and must not be
-     * expanded into one backend request per advertised stage.
+     * Optional canonical feature IDs to retain in each returned feature tile.
+     * Source loading and caching remain tile-granular; restriction is applied
+     * only to this request's immutable response value.
      */
-    bool usesStageBuckets_ = false;
+    std::map<TileId, std::vector<std::string>> featureIdsByTile_;
 
     /**
      * The callback function which is called when all tiles have been processed.
@@ -222,8 +222,8 @@ protected:
     nlohmann::json toJson();
 
 private:
-    /** Resolve staged tile IDs into concrete stage-qualified tile keys. */
-    void prepareResolvedLayer(LayerType layerType, uint32_t stages);
+    /** Resolve tile IDs into concrete keys while preserving priority/order. */
+    void prepareResolvedLayer(LayerType layerType);
 
     /**
      * The callback functions which are called when a result tile is available.
@@ -236,22 +236,14 @@ private:
     // is next in line to be processed.
     size_t nextTileIndex_ = 0;
 
-    // Resolved staged tile keys in scheduling order.
+    // Resolved tile keys in scheduling order.
     std::vector<MapTileKey> resolvedTileKeys_;
-
-    /**
-     * Search needs complete staged tiles before it can evaluate a predicate.
-     * This internal scheduling hint keeps normal staged frontend requests
-     * stage-major, but lets search load all stages of one tile before moving
-     * on to the next tile.
-     */
-    bool preferCompleteStagedTiles_ = false;
 
     // Track which resolved tile keys still need to be scheduled/served.
     std::set<MapTileKey> tileKeysNotStarted_;
 
     // So the requester can track how many results have been received.
-    size_t resultCount_ = 0;
+    std::atomic_size_t resultCount_ = 0;
 
     // Mutex/condition variable for reading/setting request status.
     std::mutex statusMutex_;
@@ -260,36 +252,35 @@ private:
 };
 
 /**
- * Client request for server-side search-as-map evaluation.
+ * Client request for server-side multi-channel feature filtering.
  *
- * The service loads the source feature tile stages through the normal tile
- * scheduler/cache path, assembles a transient full tile where needed, then
- * runs SIMFIL evaluation as a scheduled service job.
+ * The service loads source feature tiles through the normal scheduler/cache
+ * path, then runs SIMFIL evaluation as a scheduled service job.
  */
-class FeatureLayerSearchTilesRequest
+class FeatureLayerFilterTilesRequest
 {
     friend class Service;
     friend class HttpClient;
 
 public:
-    using Ptr = std::shared_ptr<FeatureLayerSearchTilesRequest>;
+    using Ptr = std::shared_ptr<FeatureLayerFilterTilesRequest>;
 
-    /** Construct a search request over a set of source feature tile IDs. */
-    FeatureLayerSearchTilesRequest(
+    /** Construct a filter request over a set of source feature tile IDs. */
+    FeatureLayerFilterTilesRequest(
         std::string mapId,
         std::string layerId,
         std::vector<TileId> tiles,
-        FeatureLayerSearchRequest search);
+        FeatureLayerFilterRequest filter);
 
-    /** Construct a search request with foreground tile IDs prioritized for source loads. */
-    FeatureLayerSearchTilesRequest(
+    /** Construct a filter request with foreground tile IDs prioritized for source loads. */
+    FeatureLayerFilterTilesRequest(
         std::string mapId,
         std::string layerId,
         std::vector<TileId> tiles,
-        FeatureLayerSearchRequest search,
+        FeatureLayerFilterRequest filter,
         std::vector<TileId> const& priorityTileIds);
 
-    /** Get the current status of the search request. */
+    /** Get the current status of the filter request. */
     RequestStatus getStatus();
 
     /** Wait for the request to reach a terminal state. */
@@ -301,32 +292,38 @@ public:
     /** Check whether the request has been cancelled by the owning transport. */
     [[nodiscard]] bool isCancelled() const;
 
-    /** The source map id for this search. */
+    /** The source map id for this filter execution. */
     std::string mapId_;
 
-    /** The source layer id for this search. */
+    /** The source layer id for this filter execution. */
     std::string layerId_;
 
-    /** Source tile IDs to search. */
+    /** Optional catalog source selector/assertion; never part of subset identity. */
+    std::optional<std::string> sourceId_;
+
+    /** Requested output/source tile IDs, retained in client order. */
     std::vector<TileId> tileIds_;
 
     /** Source tile IDs that should be scheduled first. */
     std::set<TileId> priorityTileIds_;
 
-    /** Search predicate, result-field expressions, and result identity. */
-    FeatureLayerSearchRequest search_;
+    /** Ordered channel bundle, scalar bindings, and transport identity. */
+    FeatureLayerFilterRequest filter_;
 
-    /** Callback for each emitted TileSearchResultLayer. */
+    /** Optional exact relation roots grouped by their requested origin tile. */
+    std::vector<FeatureLayerFilterRoot> exactRoots_;
+
+    /** Callback for each emitted TileSubsetLayer. */
     template <class Fun>
-    FeatureLayerSearchTilesRequest& onSearchResult(Fun&& callback)
+    FeatureLayerFilterTilesRequest& onFilterResult(Fun&& callback)
     {
-        onSearchResult_ = std::forward<Fun>(callback);
+        onFilterResult_ = std::forward<Fun>(callback);
         return *this;
     }
 
     /** Callback for JSON status/progress updates. */
     template <class Fun>
-    FeatureLayerSearchTilesRequest& onStatus(Fun&& callback)
+    FeatureLayerFilterTilesRequest& onStatus(Fun&& callback)
     {
         onStatus_ = std::forward<Fun>(callback);
         return *this;
@@ -336,15 +333,16 @@ public:
     std::function<void(RequestStatus)> onDone_;
 
 protected:
-    virtual void notifyResult(TileSearchResultLayer::Ptr);
+    virtual void notifyResult(TileSubsetLayer::Ptr);
     void notifyProgress(nlohmann::json const& status);
     void setStatus(RequestStatus s);
     void notifyStatus();
     void cancel();
 
 private:
-    std::function<void(TileSearchResultLayer::Ptr)> onSearchResult_;
+    std::function<void(TileSubsetLayer::Ptr)> onFilterResult_;
     std::function<void(nlohmann::json const&)> onStatus_;
+    std::mutex childRequestsMutex_;
     std::vector<LayerTilesRequest::Ptr> childRequests_;
     std::atomic_bool cancelled_{false};
     std::mutex statusMutex_;
@@ -428,15 +426,32 @@ public:
     bool request(std::vector<LayerTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
-     * Request server-side feature search over source feature tiles.
+     * Request server-side filtering over source feature tiles.
      *
-     * The returned binary chunks are TileSearchResultLayer instances produced
-     * via FeatureLayerSearchTilesRequest::onSearchResult.
+     * The returned binary chunks are TileSubsetLayer instances produced
+     * via FeatureLayerFilterTilesRequest::onFilterResult.
      */
-    bool request(FeatureLayerSearchTilesRequest::Ptr const& request, std::optional<AuthHeaders> const& clientHeaders = {});
+    bool request(FeatureLayerFilterTilesRequest::Ptr const& request, std::optional<AuthHeaders> const& clientHeaders = {});
 
-    /** Request multiple server-side searches. */
-    bool request(std::vector<FeatureLayerSearchTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
+    /** Request multiple server-side filter bundles. */
+    bool request(std::vector<FeatureLayerFilterTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
+
+    /**
+     * Load the source feature tile through the ordinary scheduler/cache path,
+     * then obtain its separately transferred named attachment.
+     */
+    AttachmentResult attachment(
+        AttachmentRequest const& request,
+        std::optional<AuthHeaders> const& clientHeaders = {});
+
+    /**
+     * Asynchronous attachment form used by non-blocking transports.
+     * The callback is invoked exactly once with a terminal result.
+     */
+    void requestAttachment(
+        AttachmentRequest request,
+        std::function<void(AttachmentResult)> callback,
+        std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
      * Trigger queries to all connected data sources to check
@@ -451,8 +466,8 @@ public:
      */
     void abort(LayerTilesRequest::Ptr const& r);
 
-    /** Abort a server-side search request. */
-    void abort(FeatureLayerSearchTilesRequest::Ptr const& r);
+    /** Abort a server-side filter request. */
+    void abort(FeatureLayerFilterTilesRequest::Ptr const& r);
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
@@ -489,12 +504,13 @@ public:
         std::optional<AuthHeaders> const& clientHeaders) const;
 
     /**
-     * Resolve request context (status, layer type, stage count) for one map+layer.
+     * Resolve request context (status and layer type) for one map+layer.
      */
     [[nodiscard]] LayerRequestContext resolveLayerRequest(
         std::string const& mapId,
         std::string const& layerId,
-        std::optional<AuthHeaders> const& clientHeaders) const;
+        std::optional<AuthHeaders> const& clientHeaders,
+        std::optional<std::string> const& sourceId = {}) const;
 
     /**
      * Get Statistics about the operation of this service.

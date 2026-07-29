@@ -510,7 +510,7 @@ void HttpService::Impl::handleStatusDataRequest(
     const bool includeTileSizeDistribution =
         parseBoolParameter(req, "includeTileSizeDistribution", false);
     const bool includeCachedFeatureTreeBytes =
-        parseBoolParameter(req, "includeCachedFeatureTreeBytes", true);
+        parseBoolParameter(req, "includeCachedFeatureTreeBytes", false);
 
     const auto payload = nlohmann::json::object({
         {"timestampMs",

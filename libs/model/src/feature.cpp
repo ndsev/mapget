@@ -29,13 +29,7 @@ model_ptr<Feature> resolveFeatureByRootIndex(TileFeatureLayer const& model, uint
 
 RelationArrayView::ExtensionPtr RelationArrayView::mergedExtension() const
 {
-    auto overlay = model().overlay();
-    if (!overlay || addr().index() >= overlay->size()) {
-        return {};
-    }
-
-    return overlay->resolve<RelationArrayView>(
-        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, addr().index()});
+    return {};
 }
 
 uint32_t RelationArrayView::localMergedSize() const
@@ -96,39 +90,16 @@ model_ptr<FeatureId> Feature::id() const
     if (featureIdAddress) {
         return model().resolve<FeatureId>(featureIdAddress);
     }
-    if (auto ext = extension()) {
-        return ext->id();
-    }
     return {};
 }
 
 std::string_view mapget::Feature::typeId() const
 {
     if (basicData_) {
-        if (auto s = model().strings()->resolve(basicData_->typeIdAndLod_.typeId_))
+        if (auto s = model().strings()->resolve(basicData_->typeId_.typeId_))
             return *s;
     }
     return id()->typeId();
-}
-
-Feature::LOD Feature::lod() const
-{
-    if (!basicData_) {
-        return MAX_LOD;
-    }
-    auto const raw = std::min<uint8_t>(
-        basicData_->typeIdAndLod_.lod_,
-        static_cast<uint8_t>(MAX_LOD));
-    return static_cast<LOD>(raw);
-}
-
-void Feature::setLod(LOD newLod)
-{
-    if (!basicData_) {
-        return;
-    }
-    basicData_->typeIdAndLod_.lod_ = static_cast<uint8_t>(newLod);
-    fieldsDirty_ = true;
 }
 
 model_ptr<GeometryCollection> Feature::geom()
@@ -146,19 +117,10 @@ model_ptr<GeometryCollection> Feature::geom()
 
 model_ptr<GeometryCollection> Feature::geomOrNull() const
 {
-    auto const hasLocalGeometry = static_cast<bool>(geometryNodeAddress());
-    auto extFeature = extension();
-    auto ext = extFeature ? extFeature->geomOrNull() : model_ptr<GeometryCollection>{};
-    if (!hasLocalGeometry) {
-        return ext;
+    if (!geometryNodeAddress()) {
+        return {};
     }
-    if (!ext) {
-        return model().resolve<GeometryCollection>(geometryNodeAddress());
-    }
-
-    return model_ptr<GeometryCollection>::make(
-        model_,
-        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureGeometryCollectionView, addr().index()});
+    return model().resolve<GeometryCollection>(geometryNodeAddress());
 }
 
 model_ptr<AttributeLayerList> Feature::attributeLayers()
@@ -180,18 +142,10 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
 
 model_ptr<AttributeLayerList> Feature::attributeLayersOrNull() const
 {
-    auto const hasLocalAttributeLayers = static_cast<bool>(attributeLayerNodeAddress());
-    auto extFeature = extension();
-    auto ext = extFeature ? extFeature->attributeLayersOrNull() : model_ptr<AttributeLayerList>{};
-    if (!hasLocalAttributeLayers) {
-        return ext;
+    if (!attributeLayerNodeAddress()) {
+        return {};
     }
-    if (!ext) {
-        return model().resolve<AttributeLayerList>(attributeLayerNodeAddress());
-    }
-
-    return model().resolve<AttributeLayerList>(
-        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureAttributeLayerListView, addr().index()});
+    return model().resolve<AttributeLayerList>(attributeLayerNodeAddress());
 }
 
 model_ptr<Object> Feature::attributes()
@@ -216,8 +170,7 @@ model_ptr<Object> Feature::attributesOrNull() const
 
 model_ptr<Feature::MergedBasicAttributesView> Feature::mergedAttributesOrNull() const
 {
-    auto extFeature = extension();
-    if (!attributeNodeAddress() && !extFeature) {
+    if (!attributeNodeAddress()) {
         return {};
     }
     return model_ptr<MergedBasicAttributesView>::make(model_, addr());
@@ -250,10 +203,8 @@ model_ptr<Array> Feature::relationsOrNull() const
 
 model_ptr<RelationArrayView> Feature::mergedRelationsOrNull() const
 {
-    auto extFeature = extension();
-    auto ext = extFeature ? extFeature->mergedRelationsOrNull() : model_ptr<RelationArrayView>{};
     if (!relationNodeAddress()) {
-        return ext;
+        return {};
     }
 
     return model_ptr<RelationArrayView>::make(
@@ -481,10 +432,6 @@ void Feature::updateFields() const {
         StringPool::TypeIdStr,
         model_ptr<simfil::ValueNode>::make(idNode->typeId(), model_));
 
-    fields_.emplace_back(
-        StringPool::LodStr,
-        model_ptr<simfil::ValueNode>::make(static_cast<int64_t>(lod()), model_));
-
     // Add map and layer ids.
     fields_.emplace_back(
         StringPool::MapIdStr,
@@ -516,15 +463,9 @@ void Feature::updateFields() const {
     if (auto geomNode = geomOrNull()) {
         fields_.emplace_back(StringPool::GeometryStr, geomNode);
     }
-    bool hasExtensionProperties = false;
-    if (auto extFeature = extension()) {
-        hasExtensionProperties =
-            extFeature->attributeLayersOrNull() ||
-            extFeature->attributesOrNull();
-    }
     auto const localAttrLayerAddress = attributeLayerNodeAddress();
     auto const localAttrAddress = attributeNodeAddress();
-    if (localAttrLayerAddress || localAttrAddress || hasExtensionProperties)
+    if (localAttrLayerAddress || localAttrAddress)
         fields_.emplace_back(
             StringPool::PropertiesStr,
             Ptr::make(
@@ -539,7 +480,6 @@ void Feature::updateFields() const {
 nlohmann::json Feature::toJson() const
 {
     auto json = simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
-    json.erase("lod");
     if (auto layers = attributeLayersOrNull()) {
         json["properties"]["layer"] = layers->toJson();
     }
@@ -682,9 +622,6 @@ model_ptr<Relation> Feature::addRelation(model_ptr<Relation> relation)
         raise("Feature relation index exceeds RelationReference JSON range.");
     }
     // RelationReference JSON intentionally uses this feature-local ordinal.
-    // Known limitation: staged overlay relations are not remapped, so relation-
-    // backed attribute refs must be emitted by the same stage that owns the
-    // relevant top-level relation list.
     relation->setFeatureRelationIndex(static_cast<uint16_t>(relationIndex));
     rels->append(relation);
     return relation;
@@ -692,11 +629,7 @@ model_ptr<Relation> Feature::addRelation(model_ptr<Relation> relation)
 
 uint32_t Feature::numRelations() const
 {
-    auto localCount = relationNodeAddress() ? relationsOrNull()->size() : 0U;
-    if (auto extFeature = extension()) {
-        localCount += extFeature->numRelations();
-    }
-    return localCount;
+    return relationNodeAddress() ? relationsOrNull()->size() : 0U;
 }
 
 model_ptr<Relation> Feature::getRelation(uint32_t index) const
@@ -710,9 +643,6 @@ model_ptr<Relation> Feature::getRelation(uint32_t index) const
         index -= localCount;
     }
 
-    if (auto extFeature = extension()) {
-        return extFeature->getRelation(index);
-    }
     return {};
 }
 
@@ -729,11 +659,6 @@ bool Feature::forEachRelation(std::function<bool(const model_ptr<Relation>&)> co
         }
     }
 
-    if (auto extFeature = extension()) {
-        if (!extFeature->forEachRelation(callback)) {
-            return false;
-        }
-    }
     return true;
 }
 
@@ -755,28 +680,8 @@ SelfContainedGeometry Feature::firstGeometry() const
 
 SelfContainedGeometry Feature::preferredGeometry() const
 {
-    model_ptr<Geometry> result;
-    if (auto geometryCollection = geomOrNull()) {
-        geometryCollection->forEachGeometryAtPreferredStage(
-            std::nullopt,
-            [&result](auto&& geometry)
-            {
-                result = geometry;
-                return false;
-            });
-        if (!result) {
-            geometryCollection->forEachGeometry(
-                [&result](auto&& geometry)
-                {
-                    result = geometry;
-                    return false;
-                });
-        }
-    }
-    if (result) {
-        return result->toSelfContained();
-    }
-    return {};
+    // Presentation fidelity no longer selects geometry in the model.
+    return firstGeometry();
 }
 
 std::optional<std::vector<model_ptr<Relation>>>
@@ -815,63 +720,8 @@ void Feature::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
     complexData_->sourceData_ = addresses->addr();
 }
 
-void Feature::refreshExtensionBindingFromOverlay() const
-{
-    if (extensionModel_ || extensionAddress_) {
-        return;
-    }
-    if (addr().column() != TileFeatureLayer::ColumnId::Features) {
-        return;
-    }
-    auto const overlay = model().overlay();
-    if (!overlay || addr().index() >= overlay->size()) {
-        return;
-    }
-    extensionModel_ = overlay.get();
-    extensionAddress_ = simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::Features,
-        static_cast<uint32_t>(addr().index())};
-    fieldsDirty_ = true;
-}
-
-model_ptr<Feature> Feature::extension() const
-{
-    refreshExtensionBindingFromOverlay();
-    if (!extensionModel_ || !extensionAddress_) {
-        return {};
-    }
-    return extensionModel_->resolve<Feature>(extensionAddress_);
-}
-
-void Feature::setExtension(model_ptr<Feature> extension)
-{
-    if (!extension) {
-        extensionModel_ = nullptr;
-        extensionAddress_ = {};
-        fieldsDirty_ = true;
-        return;
-    }
-    extensionModel_ = &extension->model();
-    extensionAddress_ = extension->addr();
-    fieldsDirty_ = true;
-}
-
-void Feature::setExtensionAddress(TileFeatureLayer const* extensionModel, simfil::ModelNodeAddress extensionAddress)
-{
-    if (!extensionModel || !extensionAddress) {
-        extensionModel_ = nullptr;
-        extensionAddress_ = {};
-        fieldsDirty_ = true;
-        return;
-    }
-    extensionModel_ = extensionModel;
-    extensionAddress_ = extensionAddress;
-    fieldsDirty_ = true;
-}
-
 void Feature::ensureFieldsReady() const
 {
-    refreshExtensionBindingFromOverlay();
     if (!fieldsDirty_) {
         return;
     }
@@ -921,23 +771,6 @@ void Feature::MergedBasicAttributesView::rebuildMergedFields() const
             }
         }
 
-        if (auto extFeature = feature->extension()) {
-            if (auto ext = extFeature->mergedAttributesOrNull()) {
-                ext->ensureMergedFieldsReady();
-                for (auto const& [key, value] : ext->mergedFields_) {
-                    auto it = std::find_if(
-                        mergedFields_.begin(),
-                        mergedFields_.end(),
-                        [&](const AttrField& existing) { return existing.first == key; });
-                    if (it == mergedFields_.end()) {
-                        mergedFields_.emplace_back(key, value);
-                    }
-                    else {
-                        it->second = value;
-                    }
-                }
-            }
-        }
     }
 
     mergedFieldsDirty_ = false;

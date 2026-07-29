@@ -28,45 +28,24 @@ TileLayer::Ptr DataSource::get(
     case mapget::LayerType::Features: {
         auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
             k.tileId_,
-            info.nodeId_,
+            info.stringPoolId_,
             info.mapId_,
             info.getLayer(k.layerId_),
-            cache->getStringPool(info.nodeId_));
+            cache->getStringPool(info.stringPoolId_));
         if (loadStateCallback) {
             tileFeatureLayer->setLoadStateCallback(loadStateCallback);
         }
-        if (layerInfo->stages_ > 1 && k.stage_ != UnspecifiedStage) {
-            tileFeatureLayer->setStage(k.stage_);
-            if (k.stage_ > 0) {
-                auto stageZeroKey = k;
-                stageZeroKey.stage_ = 0;
-                auto stageZeroLookup = cache->getTileLayer(stageZeroKey, info);
-                auto stageZeroLayer =
-                    std::dynamic_pointer_cast<TileFeatureLayer>(stageZeroLookup.tile);
-                if (stageZeroLayer) {
-                    std::vector<std::string> expectedFeatureIds;
-                    expectedFeatureIds.reserve(stageZeroLayer->size());
-                    for (auto const& feature : *stageZeroLayer) {
-                        expectedFeatureIds.emplace_back(feature->id()->toString());
-                    }
-                    tileFeatureLayer->setExpectedFeatureSequence(std::move(expectedFeatureIds));
-                }
-            }
-        } else {
-            tileFeatureLayer->setStage(std::nullopt);
-        }
         fill(tileFeatureLayer);
-        tileFeatureLayer->validateExpectedFeatureSequenceComplete();
         result = tileFeatureLayer;
         break;
     }
     case mapget::LayerType::SourceData: {
         auto tileSourceDataLayer = std::make_shared<TileSourceDataLayer>(
             k.tileId_,
-            info.nodeId_,
+            info.stringPoolId_,
             info.mapId_,
             info.getLayer(k.layerId_),
-            cache->getStringPool(info.nodeId_));
+            cache->getStringPool(info.stringPoolId_));
         if (loadStateCallback) {
             tileSourceDataLayer->setLoadStateCallback(loadStateCallback);
         }
@@ -112,9 +91,9 @@ bool DataSource::isDataSourceAuthorized(
     return false;
 }
 
-StringId DataSource::cachedStringPoolOffset(const std::string& nodeId, Cache::Ptr const& cache)
+StringId DataSource::cachedStringPoolOffset(const std::string& stringPoolId, Cache::Ptr const& cache)
 {
-    return cache->cachedStringPoolOffset(nodeId);
+    return cache->cachedStringPoolOffset(stringPoolId);
 }
 
 void DataSource::setTtl(std::optional<std::chrono::milliseconds> ttl)
@@ -128,6 +107,28 @@ std::optional<std::chrono::milliseconds> DataSource::ttl() const
 }
 
 std::vector<LocateResponse> DataSource::locate(const LocateRequest& req)
+{
+    return {};
+}
+
+std::vector<LocateResponse> DataSource::locateCandidates(const LocateRequest& req)
+{
+    return locate(req);
+}
+
+std::vector<model_ptr<Feature>> DataSource::resolveFeatures(
+    LocateRequest const& located,
+    TileFeatureLayer const& tile)
+{
+    auto feature = tile.find(located.typeId_, located.featureId_);
+    if (!feature) {
+        return {};
+    }
+    return {std::move(feature)};
+}
+
+std::optional<AttachmentResponse> DataSource::attachment(
+    AttachmentRequest const&)
 {
     return {};
 }

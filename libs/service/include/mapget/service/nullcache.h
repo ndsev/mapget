@@ -20,14 +20,17 @@ public:
     /** Upsert a TileLayer blob - does nothing. */
     void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
 
+    /** Remove a TileLayer blob - does nothing. */
+    void eraseTileLayerBlob(MapTileKey const& k) override;
+
     /** Iterate cached tile blobs - no-op. */
     void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;
 
-    /** Retrieve a string-pool blob for a sourceNodeId - always returns empty. */
-    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override;
+    /** Retrieve a string-pool blob for a sourceStringPoolId - always returns empty. */
+    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceStringPoolId) override;
 
     /** Upsert a string-pool blob - does nothing. */
-    void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override;
+    void putStringPoolBlob(std::string_view const& sourceStringPoolId, std::string const& v) override;
 };
 
 }

@@ -29,14 +29,17 @@ public:
     /** Upsert a TileLayer blob. */
     void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
 
+    /** Remove a TileLayer blob. */
+    void eraseTileLayerBlob(MapTileKey const& k) override;
+
     /** Iterate over cached tile layer blobs. */
     void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;
 
-    /** Retrieve a string-pool blob for a sourceNodeId -> No-Op */
-    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override {return {};}
+    /** Retrieve a string-pool blob for a sourceStringPoolId -> No-Op */
+    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceStringPoolId) override {return {};}
 
     /** Upsert a string-pool blob. -> No-Op */
-    void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override {}
+    void putStringPoolBlob(std::string_view const& sourceStringPoolId, std::string const& v) override {}
 
     /** Enriches the statistics with info about the number of cached tiles. */
     nlohmann::json getStatistics() const override;

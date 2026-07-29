@@ -93,12 +93,30 @@ Validity::TransitionEnd unpackToConnectedEnd(uint8_t packedEnds)
 /** Pick the line geometry that should be used for line-based validity resolution. */
 model_ptr<Geometry> resolveLineGeometry(
     model_ptr<GeometryCollection> const& geometryCollection,
-    std::optional<uint32_t> referencedStage)
+    std::optional<std::string_view> referencedName)
 {
     if (!geometryCollection) {
         return {};
     }
-    return geometryCollection->geometryOfTypeAtPreferredStage(GeomType::Line, referencedStage);
+    model_ptr<Geometry> firstLine;
+    model_ptr<Geometry> matchingLine;
+    geometryCollection->forEachGeometry([&](model_ptr<Geometry> const& geometry)
+    {
+        if (geometry->geomType() != GeomType::Line) {
+            return true;
+        }
+        if (!firstLine) {
+            firstLine = geometry;
+        }
+        if (geometry->name() == referencedName) {
+            matchingLine = geometry;
+            return false;
+        }
+        return true;
+    });
+    // Unnamed validities prefer an unnamed line but retain the historical
+    // fallback to the first line when a feature only has named geometry.
+    return matchingLine ? matchingLine : (!referencedName ? firstLine : model_ptr<Geometry>{});
 }
 
 struct TransitionSegment
@@ -117,13 +135,13 @@ bool pointsCoincide(Point const& left, Point const& right)
 std::optional<TransitionSegment> resolveTransitionSegment(
     model_ptr<Feature> const& feature,
     Validity::TransitionEnd connectedEnd,
-    std::optional<uint32_t> referencedStage)
+    std::optional<std::string_view> referencedName)
 {
     if (!feature) {
         return std::nullopt;
     }
 
-    auto geometry = resolveLineGeometry(feature->geomOrNull(), referencedStage);
+    auto geometry = resolveLineGeometry(feature->geomOrNull(), referencedName);
     if (!geometry || geometry->numPoints() == 0) {
         return std::nullopt;
     }
@@ -196,29 +214,6 @@ GeomType geomTypeForOffsetValidity(
         return GeomType::Points;
     }
     return points.size() > 1 ? GeomType::Line : GeomType::Points;
-}
-
-/** Map a stored geometry stage back to the optional exported `geometryName`. */
-std::optional<std::string_view> geometryNameForStage(
-    TileFeatureLayer const& model,
-    std::optional<uint32_t> geometryStage)
-{
-    if (!geometryStage || !model.layerInfo()) {
-        return std::nullopt;
-    }
-    auto const& layerInfo = *model.layerInfo();
-    if (*geometryStage <= layerInfo.highFidelityStage_) {
-        // High-fidelity geometries intentionally omit a stage label in JSON.
-        return std::nullopt;
-    }
-    if (*geometryStage >= layerInfo.stageLabels_.size()) {
-        return std::nullopt;
-    }
-    auto const& label = layerInfo.stageLabels_.at(*geometryStage);
-    if (label.empty()) {
-        return std::nullopt;
-    }
-    return label;
 }
 
 }
@@ -323,12 +318,12 @@ Validity::Validity(Validity::Data* data,
                     self.model_);
             });
 
-    if (auto geometryName = geometryNameForStage(model(), geometryStage())) {
+    if (auto referencedGeometryName = geometryName()) {
         fields_.emplace_back(
             StringPool::GeometryNameStr,
-            [geometryName](Validity const& self)
+            [referencedGeometryName](Validity const& self)
             {
-                return model_ptr<simfil::ValueNode>::make(*geometryName, self.model_);
+                return model_ptr<simfil::ValueNode>::make(*referencedGeometryName, self.model_);
             });
     }
 
@@ -485,28 +480,18 @@ Validity::GeometryDescriptionType Validity::geometryDescriptionType() const
     return data_->geomDescrType_;
 }
 
-void Validity::setGeometryStage(std::optional<uint32_t> geometryStage)
+void Validity::setGeometryName(std::optional<std::string_view> geometryName)
 {
     ensureMaterialized();
-    if (!geometryStage) {
-        data_->referencedStage_ = Data::InvalidReferencedStage;
-        return;
-    }
-    if (*geometryStage > static_cast<uint32_t>(std::numeric_limits<int8_t>::max())) {
-        raise("Validity::setGeometryStage: stage is out of int8_t range.");
-    }
-    data_->referencedStage_ = static_cast<int8_t>(*geometryStage);
+    data_->referencedGeometryName_ = model().encodeGeometryName(geometryName);
 }
 
-std::optional<uint32_t> Validity::geometryStage() const
+std::optional<std::string_view> Validity::geometryName() const
 {
     if (!data_) {
         return {};
     }
-    if (data_->referencedStage_ == Data::InvalidReferencedStage) {
-        return {};
-    }
-    return static_cast<uint32_t>(data_->referencedStage_);
+    return model().decodeGeometryName(data_->referencedGeometryName_);
 }
 
 void Validity::setOffsetPoint(Point pos) {
@@ -598,7 +583,7 @@ void Validity::setFeatureTransition(
     }
     data_->geomDescrType_ = FeatureTransition;
     data_->geomOffsetType_ = InvalidOffsetType;
-    data_->referencedStage_ = Data::InvalidReferencedStage;
+    data_->referencedGeometryName_ = 0;
     data_->featureAddress_ = {};
     data_->geomDescr_.featureTransition_ = {
         fromFeatureId->addr(),
@@ -686,8 +671,7 @@ std::optional<uint32_t> Validity::transitionNumber() const
 
 SelfContainedGeometry Validity::computeGeometry(
     model_ptr<GeometryCollection> geometryCollection,
-    std::string* error,
-    std::optional<uint32_t> defaultGeometryStage) const
+    std::string* error) const
 {
     if (geometryDescriptionType() == SimpleGeometry) {
         // Return the self-contained geometry points.
@@ -696,9 +680,7 @@ SelfContainedGeometry Validity::computeGeometry(
         return applyDirectionToGeometry(simpleGeom->toSelfContained(), direction());
     }
 
-    const auto referencedStage = geometryStage().has_value()
-        ? geometryStage()
-        : defaultGeometryStage;
+    const auto referencedName = geometryName();
 
     if (geometryDescriptionType() == FeatureTransition) {
         auto fromFeatureId = transitionFromFeatureId();
@@ -730,7 +712,7 @@ SelfContainedGeometry Validity::computeGeometry(
             return {};
         }
 
-        auto fromSegment = resolveTransitionSegment(fromFeature, *fromConnectedEnd, referencedStage);
+        auto fromSegment = resolveTransitionSegment(fromFeature, *fromConnectedEnd, referencedName);
         if (!fromSegment) {
             if (error) {
                 *error = fmt::format(
@@ -740,7 +722,7 @@ SelfContainedGeometry Validity::computeGeometry(
             return {};
         }
 
-        auto toSegment = resolveTransitionSegment(toFeature, *toConnectedEnd, referencedStage);
+        auto toSegment = resolveTransitionSegment(toFeature, *toConnectedEnd, referencedName);
         if (!toSegment) {
             if (error) {
                 *error = fmt::format(
@@ -803,18 +785,18 @@ SelfContainedGeometry Validity::computeGeometry(
         return {};
     }
 
-    // Line-based validities always resolve against the preferred line geometry
-    // for the chosen stage, not against arbitrary polygons or meshes.
-    auto geometry = resolveLineGeometry(geometryCollection, referencedStage);
+    // Line-based validities resolve by semantic geometry name, never by
+    // presentation fidelity or loading stage.
+    auto geometry = resolveLineGeometry(geometryCollection, referencedName);
 
     if (!geometry) {
         if (error) {
-            if (referencedStage) {
+            if (referencedName) {
                 *error = fmt::format(
-                    "Failed to find line geometry for validity stage {}.",
-                    *referencedStage);
+                    "Failed to find line geometry named '{}' for validity.",
+                    *referencedName);
             } else {
-                *error = "Failed to find line geometry for validity at the configured high-fidelity stage.";
+                *error = "Failed to find a line geometry for validity.";
             }
         }
         return {};
@@ -913,11 +895,14 @@ TileFeatureLayer& MultiValidity::featureLayer()
 }
 
 model_ptr<Validity>
-MultiValidity::newPoint(Point pos, std::optional<uint32_t> geometryStage, Validity::Direction direction)
+MultiValidity::newPoint(
+    Point pos,
+    std::optional<std::string_view> geometryName,
+    Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetPoint(pos);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;
@@ -926,12 +911,12 @@ MultiValidity::newPoint(Point pos, std::optional<uint32_t> geometryStage, Validi
 model_ptr<Validity> MultiValidity::newRange(
     Point start,
     Point end,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetRange(start, end);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;
@@ -940,12 +925,12 @@ model_ptr<Validity> MultiValidity::newRange(
 model_ptr<Validity> MultiValidity::newPoint(
     Validity::GeometryOffsetType offsetType,
     double pos,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetPoint(offsetType, pos);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;
@@ -954,22 +939,22 @@ model_ptr<Validity> MultiValidity::newPoint(
 model_ptr<Validity> MultiValidity::newPoint(
     Validity::GeometryOffsetType offsetType,
     int32_t pos,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
-    return newPoint(offsetType, static_cast<double>(pos), geometryStage, direction);
+    return newPoint(offsetType, static_cast<double>(pos), geometryName, direction);
 }
 
 model_ptr<Validity> MultiValidity::newRange(
     Validity::GeometryOffsetType offsetType,
     double start,
     double end,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetRange(offsetType, start, end);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;
@@ -979,14 +964,14 @@ model_ptr<Validity> MultiValidity::newRange(
     Validity::GeometryOffsetType offsetType,
     int32_t start,
     int32_t end,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     return newRange(
         offsetType,
         static_cast<double>(start),
         static_cast<double>(end),
-        geometryStage,
+        geometryName,
         direction);
 }
 
@@ -1011,10 +996,10 @@ MultiValidity::newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Dir
 }
 
 model_ptr<Validity>
-MultiValidity::newGeomStage(uint32_t geometryStage, Validity::Direction direction)
+MultiValidity::newGeomName(std::string_view geometryName, Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;

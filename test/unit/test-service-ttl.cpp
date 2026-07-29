@@ -30,7 +30,7 @@ DataSourceInfo makeTestTtlDataSourceInfo()
 {
     return DataSourceInfo::fromJson(R"(
     {
-        "nodeId": "TtlTestNode",
+        "stringPoolId": "TtlTestNode",
         "mapId": "Tropico",
         "maxParallelJobs": 1,
         "layers": {
@@ -131,7 +131,7 @@ public:
                 },
             })},
         });
-        info_.nodeId_ = "MutableInfoNode";
+        info_.stringPoolId_ = "MutableInfoNode";
         info_.mapId_ = "MutableMap";
         info_.layers_.try_emplace("MutableLayer", layerInfo_);
     }
@@ -270,9 +270,9 @@ TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service]
     REQUIRE(secondSnapshot.front().layers_.at("MutableLayer")->layerId_ == "MutableLayer");
 }
 
-TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]")
+TEST_CASE("LayerTilesRequest preserves tile order and priority hints in JSON", "[Service][JSON]")
 {
-    SECTION("Legacy unstaged requests serialize as tileIds")
+    SECTION("Requests serialize as tileIds")
     {
         auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
@@ -286,37 +286,33 @@ TEST_CASE("LayerTilesRequest preserves staged intent in JSON", "[Service][JSON]"
         });
     }
 
-    SECTION("Single-bucket staged requests serialize as tileIdsByNextStage")
-    {
-        auto request = std::make_shared<TestLayerTilesRequest>(
-            "Tropico",
-            "WayLayer",
-            std::vector<std::vector<TileId>>{{TileId::fromValue(kTtlTileIdValue)}});
-
-        REQUIRE(request->toJson() == nlohmann::json{
-            {"mapId", "Tropico"},
-            {"layerId", "WayLayer"},
-            {"tileIdsByNextStage", nlohmann::json::array({
-                nlohmann::json::array({kTtlTileIdValue})
-            })},
-        });
-    }
-
     SECTION("Priority tile IDs are serialized as scheduling hints")
     {
         auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<std::vector<TileId>>{{TileId::fromValue(kTtlTileIdValue), TileId::fromValue(kTtlPriorityTileIdValue)}},
+            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue), TileId::fromValue(kTtlPriorityTileIdValue)},
             std::vector<TileId>{TileId::fromValue(kTtlPriorityTileIdValue)});
 
         REQUIRE(request->toJson() == nlohmann::json{
             {"mapId", "Tropico"},
             {"layerId", "WayLayer"},
-            {"tileIdsByNextStage", nlohmann::json::array({
-                nlohmann::json::array({kTtlTileIdValue, kTtlPriorityTileIdValue})
-            })},
+            {"tileIds", nlohmann::json::array({kTtlTileIdValue, kTtlPriorityTileIdValue})},
             {"priorityTileIds", nlohmann::json::array({kTtlPriorityTileIdValue})},
         });
+    }
+
+    SECTION("Priority hints cannot add tiles to the request")
+    {
+        REQUIRE_THROWS(
+            TestLayerTilesRequest(
+                "Tropico",
+                "WayLayer",
+                std::vector<TileId>{
+                    TileId::fromValue(
+                        kTtlTileIdValue)},
+                std::vector<TileId>{
+                    TileId::fromValue(
+                        kTtlPriorityTileIdValue)}));
     }
 }

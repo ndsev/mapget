@@ -21,6 +21,8 @@ public:
     std::string mapId_;
     std::string typeId_;
     KeyValuePairs featureId_;
+    /** Canonical FeatureId::toString() form resolved by Service before datasource dispatch. */
+    std::optional<std::string> canonicalFeatureId_;
 
     void setFeatureId(KeyValueViewPairs const& kvp);
 
@@ -42,6 +44,7 @@ public:
     explicit LocateResponse(LocateRequest const& req);
 
     MapTileKey tileKey_;
+    std::optional<std::string> resolvedCanonicalFeatureId_;
 
     [[nodiscard]] nlohmann::json serialize() const override;
 };

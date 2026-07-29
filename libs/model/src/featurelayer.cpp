@@ -49,13 +49,6 @@ void serialize(S& s, glm::vec3& v) {
     s.value4b(v.z);
 }
 
-template <typename S>
-void serialize(S& s, mapget::TileGlbAttachment& attachment)
-{
-    s.text1b(attachment.name_, std::numeric_limits<uint32_t>::max());
-    s.container1b(attachment.bytes_, std::numeric_limits<uint32_t>::max());
-}
-
 }
 
 namespace
@@ -146,19 +139,6 @@ void ensureGeometrySourceRefCapacity(
     }
 }
 
-constexpr uint8_t InvalidGeometryStage = std::numeric_limits<uint8_t>::max();
-
-void ensureGeometryStageCapacity(
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize>& stages,
-    simfil::ArrayIndex index)
-{
-    if (index == simfil::InvalidArrayIndex) {
-        raiseFmt("Invalid geometry buffer index {}.", index);
-    }
-    while (stages.size() <= static_cast<size_t>(index)) {
-        stages.emplace_back(InvalidGeometryStage);
-    }
-}
 
 uint32_t extraGeometryDataStorageIndex(simfil::ArrayIndex geometryIndex)
 {
@@ -170,7 +150,7 @@ uint32_t extraGeometryDataStorageIndex(simfil::ArrayIndex geometryIndex)
     // Regular handles and singleton handles live in disjoint source domains:
     // regular arrays are plain indices, while singleton handles are encoded as
     // 0x00800000 | payload. We remap them into one collision-free auxiliary
-    // storage space for geometry stages and extra geometry data by reserving
+    // storage space for geometry-name indices and extra geometry data by reserving
     // even indices for regular arrays and odd indices for singleton payloads:
     //   regular n    -> 2 * n
     //   singleton p  -> 2 * p + 1
@@ -190,20 +170,6 @@ simfil::ModelNodeAddress geometrySourceRefsAt(
         return refs.at(index);
     }
     return {};
-}
-
-std::optional<uint8_t> geometryStageAt(
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> const& stages,
-    uint32_t index)
-{
-    if (index >= stages.size()) {
-        return std::nullopt;
-    }
-    auto const storedStage = stages.at(index);
-    if (storedStage == InvalidGeometryStage) {
-        return std::nullopt;
-    }
-    return storedStage;
 }
 
 void ensureFeatureComplexDataRefCapacity(
@@ -237,7 +203,7 @@ struct FeatureAddrWithIdHash
 struct TileFeatureLayer::Impl {
     ModelNodeAddress featureIdPrefix_;
     Point geometryAnchor_{};
-    std::optional<TileGlbAttachment> glbAttachment_;
+    std::optional<std::string> glbAttachmentName_;
 
     simfil::ModelColumn<Feature::BasicData, simfil::detail::ColumnPageSize / 4> features_;
     simfil::ModelColumn<Feature::ComplexData, simfil::detail::ColumnPageSize / 4> complexFeatureData_;
@@ -291,7 +257,14 @@ struct TileFeatureLayer::Impl {
         s.value8b(geometryAnchor_.x);
         s.value8b(geometryAnchor_.y);
         s.value8b(geometryAnchor_.z);
-        s.ext(glbAttachment_, bitsery::ext::StdOptional{});
+        s.ext(
+            glbAttachmentName_,
+            bitsery::ext::StdOptional{},
+            [](S& serializer, std::string& name) {
+                serializer.text1b(
+                    name,
+                    std::numeric_limits<uint32_t>::max());
+            });
         s.object(features_);
         s.object(complexFeatureData_);
         s.object(complexFeatureDataRefs_);
@@ -320,22 +293,13 @@ struct TileFeatureLayer::Impl {
 
 };
 
-nlohmann::json TileGlbAttachment::toJsonMetadata() const
-{
-    return nlohmann::json::object({
-        {"name", name_},
-        {"mimeType", std::string(TileFeatureLayer::GLB_ATTACHMENT_MIME_TYPE)},
-        {"sizeBytes", bytes_.size()},
-    });
-}
-
 TileFeatureLayer::TileFeatureLayer(
     TileId tileId,
-    std::string const& nodeId,
+    std::string const& stringPoolId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& strings) :
-    TileFeatureModelLayerBase(tileId, nodeId, mapId, layerInfo, strings),
+    TileFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
     impl_(std::make_unique<Impl>(strings, layerInfo))
 {
     impl_->geometryAnchor_ = Point(tileId.centerWgs84());
@@ -357,7 +321,6 @@ TileFeatureLayer::TileFeatureLayer(
     bitsery::Deserializer<Adapter> s(Adapter(
         input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
         input.end()));
-    s.ext4b(stage_, bitsery::ext::StdOptional{});
     impl_->readWrite(s);
     readWriteCommonColumns(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
@@ -365,6 +328,7 @@ TileFeatureLayer::TileFeatureLayer(
             "Failed to read TileFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
+    validateGeometryNameStorage();
     const auto modelOffset = deserializationOffsetBytes_ + s.adapter().currentReadPos();
     if (auto result = ModelPool::read(input, modelOffset); !result) {
         raise(result.error().message);
@@ -383,76 +347,17 @@ void TileFeatureLayer::setGeometryAnchor(Point const& anchor)
 
 TileFeatureLayer::~TileFeatureLayer() = default;
 
-std::optional<uint32_t> TileFeatureLayer::stage() const
+std::optional<std::string> const& TileFeatureLayer::glbAttachmentName() const
 {
-    return stage_;
+    return impl_->glbAttachmentName_;
 }
 
-void TileFeatureLayer::setStage(std::optional<uint32_t> stage)
+void TileFeatureLayer::setGlbAttachmentName(std::optional<std::string> name)
 {
-    stage_ = stage;
-}
-
-TileGlbAttachment const* TileFeatureLayer::glbAttachment() const
-{
-    return impl_->glbAttachment_ ? &*impl_->glbAttachment_ : nullptr;
-}
-
-void TileFeatureLayer::setGlbAttachment(std::string name, std::vector<uint8_t> bytes)
-{
-    if (name.empty()) {
+    if (name && name->empty()) {
         raise("GLB attachment name must not be empty.");
     }
-    impl_->glbAttachment_ = TileGlbAttachment{
-        std::move(name),
-        std::move(bytes),
-    };
-}
-
-void TileFeatureLayer::clearGlbAttachment()
-{
-    impl_->glbAttachment_.reset();
-}
-
-void TileFeatureLayer::setExpectedFeatureSequence(std::vector<std::string> expectedFeatureIds)
-{
-    expectedFeatureIds_ = std::move(expectedFeatureIds);
-}
-
-void TileFeatureLayer::clearExpectedFeatureSequence()
-{
-    expectedFeatureIds_.clear();
-}
-
-bool TileFeatureLayer::hasExpectedFeatureSequence() const
-{
-    return !expectedFeatureIds_.empty();
-}
-
-void TileFeatureLayer::validateExpectedFeatureSequenceComplete() const
-{
-    if (expectedFeatureIds_.empty()) {
-        return;
-    }
-
-    auto const createdFeatureCount = impl_->features_.size();
-    if (createdFeatureCount == expectedFeatureIds_.size()) {
-        return;
-    }
-
-    if (createdFeatureCount < expectedFeatureIds_.size()) {
-        auto const& nextExpectedId = expectedFeatureIds_[createdFeatureCount];
-        raiseFmt(
-            "Feature sequence incomplete: created {} of {} expected features. Next expected id: {}.",
-            createdFeatureCount,
-            expectedFeatureIds_.size(),
-            nextExpectedId);
-    }
-
-    raiseFmt(
-        "Feature sequence overflow: created {} features, expected {}.",
-        createdFeatureCount,
-        expectedFeatureIds_.size());
+    impl_->glbAttachmentName_ = std::move(name);
 }
 
 Feature::ComplexData const* TileFeatureLayer::featureComplexDataOrNull(uint32_t featureIndex) const
@@ -492,52 +397,6 @@ Feature::ComplexData& TileFeatureLayer::ensureFeatureComplexData(uint32_t featur
         raiseFmt("Invalid complex feature data address column {}.", addr.column());
     }
     return impl_->complexFeatureData_.at(addr.index());
-}
-
-void TileFeatureLayer::attachOverlay(TileFeatureLayer::Ptr const& overlay)
-{
-    if (!overlay) {
-        return;
-    }
-    if (overlay.get() == this) {
-        raise("Cannot attach a feature layer as its own overlay.");
-    }
-
-    if (overlay->size() < size()) {
-        raiseFmt(
-            "Overlay feature count {} is smaller than base feature count {}.",
-            overlay->size(),
-            size());
-    }
-
-    // Search may assemble the same cached stage stack repeatedly. Treat an
-    // already-attached overlay as a no-op so the chain cannot grow unbounded.
-    for (auto cursor = this->overlay(); cursor; cursor = cursor->overlay()) {
-        if (cursor == overlay) {
-            return;
-        }
-    }
-
-    TileFeatureLayer::Ptr currentOverlay;
-    {
-        std::lock_guard lock(overlayMutex_);
-        if (!overlay_) {
-            overlay_ = overlay;
-            return;
-        }
-        currentOverlay = overlay_;
-    }
-
-    if (currentOverlay == overlay) {
-        return;
-    }
-    currentOverlay->attachOverlay(overlay);
-}
-
-TileFeatureLayer::Ptr TileFeatureLayer::overlay() const
-{
-    std::lock_guard lock(overlayMutex_);
-    return overlay_;
 }
 
 namespace
@@ -722,21 +581,9 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     if (!res)
         raise(res.error().message);
 
-    // Initial backend LOD strategy:
-    // - stage 0 ("Low-Fi"): default to LOD_0 (no random culling); converters can
-    //   override per-feature LOD semantically (e.g. road classes).
-    // - other stages: default to MAX_LOD. During stage merge, stage-0 feature data
-    //   remains authoritative for LOD.
-    auto lodValue = static_cast<uint8_t>(Feature::MAX_LOD);
-    if (stage_ && *stage_ == 0) {
-        lodValue = static_cast<uint8_t>(Feature::LOD::LOD_0);
-    }
-
     auto featureIndex = impl_->features_.size();
     impl_->features_.emplace_back(Feature::BasicData{
-        Feature::TypeIdAndLOD{
-            *res,
-            lodValue},
+        Feature::TypeId{*res},
         idPartValues,
         ModelNodeAddress{Null, 0},
     });
@@ -746,27 +593,6 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
         shared_from_this(),
         ModelNodeAddress{ColumnId::Features, (uint32_t)featureIndex},
         mpKey_);
-
-    if (!expectedFeatureIds_.empty()) {
-        if (featureIndex >= expectedFeatureIds_.size()) {
-            raiseFmt(
-                "Feature sequence mismatch: unexpected extra feature at index {}: {}.",
-                featureIndex,
-                result.id()->toString());
-        }
-
-        auto const& expectedFeatureId = expectedFeatureIds_[featureIndex];
-        auto const actualFeatureId = result.id()->toString();
-        if (actualFeatureId != expectedFeatureId) {
-            // Overlay validation is sequence-based on purpose so stage imports
-            // fail immediately when converters reorder or drop features.
-            raiseFmt(
-                "Feature sequence mismatch at index {}: expected {}, got {}.",
-                featureIndex,
-                expectedFeatureId,
-                actualFeatureId);
-        }
-    }
 
     // Add feature hash index entry.
     auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
@@ -937,21 +763,11 @@ model_ptr<Geometry> TileFeatureLayer::newGeometry(
 {
     initialCapacity = std::max<size_t>(1, initialCapacity);
 
-    auto const currentGeometryStage = [this]() -> std::optional<uint8_t>
-    {
-        auto stage = stage_.value_or(layerInfo_ ? layerInfo_->highFidelityStage_ : 0U);
-        if (stage > std::numeric_limits<uint8_t>::max()) {
-            raiseFmt("Geometry stage {} exceeds uint8_t range.", stage);
-        }
-        return static_cast<uint8_t>(stage);
-    }();
-
     auto makeGeometry =
-        [this, currentGeometryStage](uint8_t column, simfil::ArrayIndex vertexArray)
+        [this](uint8_t column, simfil::ArrayIndex vertexArray)
     {
         auto const geometryAddress =
             simfil::ModelNodeAddress{column, static_cast<uint32_t>(vertexArray)};
-        setGeometryStage(geometryAddress, currentGeometryStage);
         return Geometry(shared_from_this(), geometryAddress, mpKey_);
     };
 
@@ -1129,14 +945,6 @@ model_ptr<Feature> resolveInternal(tag<Feature>, TileFeatureLayer const& model, 
         node.addr(),
         model.mpKey_);
 
-    auto overlay = model.overlay();
-    if (overlay && node.addr().index() < overlay->size()) {
-        result->setExtensionAddress(
-            overlay.get(),
-            ModelNodeAddress{
-                TileFeatureLayer::ColumnId::Features,
-                static_cast<uint32_t>(node.addr().index())});
-    }
     return result;
 }
 
@@ -1169,7 +977,7 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& nod
             FeatureId::Data{
                 true,
                 0,
-                featureData.typeIdAndLod_.typeId_,
+                featureData.typeId_.typeId_,
                 featureData.idPartValues_,
                 simfil::StringPool::Empty},
             shared_from_this(),
@@ -1485,7 +1293,6 @@ tl::expected<void, simfil::Error> TileFeatureLayer::write(std::ostream& outputSt
 {
     TileLayer::write(outputStream);
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
-    s.ext4b(stage_, bitsery::ext::StdOptional{});
     impl_->readWrite(s);
     readWriteCommonColumns(s);
     return ModelPool::write(outputStream);
@@ -1504,8 +1311,9 @@ nlohmann::json TileFeatureLayer::toJson() const
         impl_->geometryAnchor_.y,
         impl_->geometryAnchor_.z};
 
-    if (impl_->glbAttachment_) {
-        result["glbAttachment"] = impl_->glbAttachment_->toJsonMetadata();
+    if (impl_->glbAttachmentName_) {
+        result["glbAttachmentName"] =
+            *impl_->glbAttachmentName_;
     }
 
     // Preserve the binary timestamp representation exactly in strict JSON.
@@ -1647,17 +1455,23 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     featureLayer["point-geometries"] = 0;
     featureLayer["geometries"] = geomViews_.byte_size();
     featureLayer["geometry-source-data-references"] = geomSourceDataRefs_.byte_size();
-    featureLayer["geometry-stages"] = geomStages_.byte_size();
+    featureLayer["geometry-name-indices"] = geomNameIndices_.byte_size();
+    featureLayer["geometry-names"] = std::accumulate(
+        geometryNames_.begin(),
+        geometryNames_.end(),
+        size_t{0},
+        [](size_t total, std::string const& name) { return total + name.size(); });
     featureLayer["geometry-views"] = geomViews_.byte_size();
     featureLayer["polygon-ring-start-refs"] = polygonRingStartRefs_.byte_size();
     featureLayer["polygon-ring-starts"] = polygonRingStarts_.byte_size();
     featureLayer["point-buffers"] = pointBuffers_.byte_size();
     featureLayer["source-data-references"] = sourceDataReferences_.byte_size();
-    featureLayer["glb-attachment-present"] = impl_->glbAttachment_.has_value();
+    featureLayer["glb-attachment-present"] =
+        impl_->glbAttachmentName_.has_value();
     featureLayer["glb-attachment-name"] =
-        impl_->glbAttachment_ ? impl_->glbAttachment_->name_.size() : 0;
-    featureLayer["glb-attachment-payload"] =
-        impl_->glbAttachment_ ? impl_->glbAttachment_->bytes_.size() : 0;
+        impl_->glbAttachmentName_
+            ? impl_->glbAttachmentName_->size()
+            : 0;
 
     auto singletonStatsToJson = [](auto const& stats) {
         return nlohmann::json::object({
@@ -1716,7 +1530,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         {"simple-column", 0},
         {"direction-only", 0},
         {"with-direction", 0},
-        {"with-geometry-stage", 0},
+        {"with-geometry-name", 0},
         {"with-feature-id", 0},
         {"simple-geometry-with-address", 0},
         {"by-direction", nlohmann::json::object({
@@ -1740,11 +1554,6 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
             {"metric-length", 0},
         })},
     });
-
-    auto featureLodUsage = nlohmann::json::object();
-    for (uint32_t lod = 0; lod <= static_cast<uint32_t>(Feature::MAX_LOD); ++lod) {
-        featureLodUsage[fmt::format("lod_{}", lod)] = 0;
-    }
 
     auto increment = [](nlohmann::json& obj, std::string_view key) {
         obj[std::string(key)] = obj[std::string(key)].get<int64_t>() + 1;
@@ -1825,13 +1634,6 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         }
     }
 
-    for (auto const& featureData : impl_->features_) {
-        auto const lod = std::min<uint8_t>(
-            featureData.typeIdAndLod_.lod_,
-            static_cast<uint8_t>(Feature::MAX_LOD));
-        increment(featureLodUsage, fmt::format("lod_{}", lod));
-    }
-
     for (auto const& validity : impl_->validities_) {
         increment(validityUsage, "total");
 
@@ -1846,8 +1648,8 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         if (validity.direction_ != Validity::Empty) {
             increment(validityUsage, "with-direction");
         }
-        if (validity.referencedStage_ != ValidityData::InvalidReferencedStage) {
-            increment(validityUsage, "with-geometry-stage");
+        if (validity.referencedGeometryName_ != 0) {
+            increment(validityUsage, "with-geometry-name");
         }
         if (validity.featureAddress_) {
             increment(validityUsage, "with-feature-id");
@@ -1895,7 +1697,7 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         if (validity.direction_ != Validity::Empty &&
             validity.geomDescrType_ == Validity::NoGeometry &&
             validity.geomOffsetType_ == Validity::InvalidOffsetType &&
-            validity.referencedStage_ == ValidityData::InvalidReferencedStage &&
+            validity.referencedGeometryName_ == 0 &&
             !validity.featureAddress_) {
             increment(validityUsage, "direction-only");
         }
@@ -1977,7 +1779,6 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     return {
         {"feature-layer", featureLayer},
         {"geometry-usage", geometryUsage},
-        {"feature-lod-usage", featureLodUsage},
         {"validity-usage", validityUsage},
         {"array-arena-singletons", arrayArenaSingletons},
         {"model-pool", modelPool},
@@ -1994,7 +1795,7 @@ size_t TileFeatureLayer::size() const
 
 uint64_t TileFeatureLayer::numVertices() const
 {
-    return static_cast<uint64_t>(pointBuffers_.byte_size() / sizeof(glm::vec3));
+    return geometryVertexCount();
 }
 
 model_ptr<Feature> TileFeatureLayer::at(size_t i) const
@@ -2108,9 +1909,9 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
         }
     }
     for (auto& feature : impl_->features_) {
-        if (auto resolvedName = oldDict->resolve(feature.typeIdAndLod_.typeId_)) {
+        if (auto resolvedName = oldDict->resolve(feature.typeId_.typeId_)) {
             if (auto res = newDict->emplace(*resolvedName))
-                feature.typeIdAndLod_.typeId_ = *res;
+                feature.typeId_.typeId_ = *res;
             else
                 return tl::unexpected<simfil::Error>(res.error());
         }
@@ -2209,12 +2010,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
             }
             break;
         }
-        if (auto geometryStage = resolved->stage()) {
-            if (*geometryStage > std::numeric_limits<uint8_t>::max()) {
-                raiseFmt("Geometry stage {} exceeds uint8_t range during clone.", *geometryStage);
-            }
-            setGeometryStage(newNode->addr(), static_cast<uint8_t>(*geometryStage));
-        }
+        newNode->setName(resolved->name());
         break;
     }
     case ColumnId::GeometryCollections:
@@ -2512,32 +2308,6 @@ void TileFeatureLayer::clone(
                 cloneTarget->addRelation(newRel);
                 return true;
             });
-    }
-}
-
-std::optional<uint8_t> TileFeatureLayer::geometryStage(simfil::ModelNodeAddress address) const
-{
-    switch (address.column()) {
-    case ColumnId::PointGeometries:
-    case ColumnId::LineGeometries:
-    case ColumnId::PolygonGeometries:
-    case ColumnId::MeshGeometries:
-    case ColumnId::AabbGeometries:
-    case ColumnId::GltfNodeIndexGeometries: {
-        auto const compactIndex = extraGeometryDataStorageIndex(address.index());
-        if (auto storedStage = geometryStageAt(geomStages_, compactIndex)) {
-            return storedStage;
-        }
-        auto fallbackStage = stage_.value_or(layerInfo_ ? layerInfo_->highFidelityStage_ : 0U);
-        if (fallbackStage > std::numeric_limits<uint8_t>::max()) {
-            raiseFmt("Geometry stage {} exceeds uint8_t range.", fallbackStage);
-        }
-        return static_cast<uint8_t>(fallbackStage);
-    }
-    case ColumnId::GeometryViews:
-        return geometryStage(geomViews_.at(address.index()).baseGeometry_);
-    default:
-        return std::nullopt;
     }
 }
 

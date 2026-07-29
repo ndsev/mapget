@@ -377,6 +377,11 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
 {
     DataSourceDescriptor result;
     result.configIndex = configIndex;
+    result.sourceId = scalarString(descriptor, "sourceId")
+        .value_or(fmt::format("datasource-{}", configIndex));
+    if (result.sourceId.empty()) {
+        result.sourceId = fmt::format("datasource-{}", configIndex);
+    }
     result.type = scalarString(descriptor, "type").value_or("");
     result.displayName = dataSourceDisplayName(descriptor, configIndex);
 
@@ -643,6 +648,10 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
         {"type", "object"},
         {"properties", {
             {"type", typeProperty},
+            {"sourceId", {
+                {"type", "string"},
+                {"minLength", 1},
+            }},
             {"enabled", enabledSchema()},
             {"ttl", ttlSchema()},
             {"auth-header", authHeaderSchema()}

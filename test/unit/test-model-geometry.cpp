@@ -239,26 +239,19 @@ TEST_CASE("Spatial Operators", "[spatial.ops]") {
     }
 }
 
-TEST_CASE("GeoJSON geometry names are derived from non-default stages", "[geometry][geojson]")
+TEST_CASE("Semantic geometry names roundtrip independently of presentation", "[geometry][geojson]")
 {
     auto tile = makeTile();
-    tile->layerInfo()->stages_ = 3;
-    tile->layerInfo()->stageLabels_ = {"Low-Fi", "High-Fi", "ADAS"};
-    tile->layerInfo()->highFidelityStage_ = 1;
-
     auto feature = tile->newFeature("Way", {{"wayId", 77}});
 
-    tile->setStage(1U);
     auto baseGeometry = feature->geom()->newGeometry(GeomType::Line, 2);
     baseGeometry->append({0., 0., 0.});
     baseGeometry->append({1., 0., 0.});
 
-    tile->setStage(2U);
     auto adasGeometry = feature->geom()->newGeometry(GeomType::Line, 2);
     adasGeometry->append({1., 0., 0.});
     adasGeometry->append({2., 0., 0.});
-
-    tile->setStage(std::nullopt);
+    adasGeometry->setName("ADAS");
 
     auto json = feature->toJson();
     REQUIRE_FALSE(json.contains("lod"));
@@ -266,6 +259,43 @@ TEST_CASE("GeoJSON geometry names are derived from non-default stages", "[geomet
     REQUIRE(geometries.size() == 2);
     REQUIRE_FALSE(geometries[0].contains("geometryName"));
     REQUIRE(geometries[1].at("geometryName") == "ADAS");
+
+    std::stringstream bytes;
+    tile->write(bytes);
+    auto const serialized = bytes.str();
+    auto roundtripped = std::make_shared<TileFeatureLayer>(
+        std::vector<uint8_t>(serialized.begin(), serialized.end()),
+        [&](auto&&, auto&&) {
+            return tile->layerInfo();
+        },
+        [&](auto&&) {
+            return tile->strings();
+        });
+
+    auto roundtrippedFeature = roundtripped->at(0);
+    std::vector<std::optional<std::string>> names;
+    roundtrippedFeature->geomOrNull()->forEachGeometry(
+        [&](model_ptr<Geometry> const& geometry) {
+            auto const name = geometry->name();
+            names.emplace_back(name ? std::optional<std::string>(*name) : std::nullopt);
+            return true;
+        });
+    REQUIRE(names == std::vector<std::optional<std::string>>{std::nullopt, "ADAS"});
+}
+
+TEST_CASE("A layer supports all 255 compact geometry-name indices", "[geometry][name]")
+{
+    auto tile = makeTile();
+    auto feature = tile->newFeature("Way", {{"wayId", 78}});
+
+    for (uint32_t i = 0; i < 255; ++i) {
+        auto geometry = feature->geom()->newGeometry(GeomType::Points, 0);
+        geometry->setName("geometry-" + std::to_string(i));
+    }
+
+    REQUIRE(feature->geomOrNull()->numGeometries() == 255);
+    auto overflow = feature->geom()->newGeometry(GeomType::Points, 0);
+    REQUIRE_THROWS(overflow->setName("geometry-255"));
 }
 
 TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]") {
@@ -401,8 +431,13 @@ TEST_CASE("AABB geometry roundtrip and JSON exposure", "[geom.aabb]")
         });
 
     auto roundTrippedFeature = deserializedTile->at(0);
-    auto roundTrippedAabb =
-        roundTrippedFeature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::AABB, 0U);
+    model_ptr<Geometry> roundTrippedAabb;
+    roundTrippedFeature->geomOrNull()->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
+        if (candidate->geomType() != GeomType::AABB)
+            return true;
+        roundTrippedAabb = candidate;
+        return false;
+    });
     REQUIRE(roundTrippedAabb);
     REQUIRE(roundTrippedAabb->aabbOrigin() == Point{1.0, 2.0, 3.0});
     REQUIRE(roundTrippedAabb->aabbSize() == Point{10.0, 20.0, 30.0});
@@ -411,7 +446,7 @@ TEST_CASE("AABB geometry roundtrip and JSON exposure", "[geom.aabb]")
 TEST_CASE("GltfNodeIndex geometry roundtrip and JSON exposure", "[geom.gltf]")
 {
     auto tile = makeTile();
-    tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
+    tile->setGlbAttachmentName("city.glb");
     auto feature = tile->newFeature("Way", {{"wayId", 202}});
     auto first = feature->geom()->newGeometry(GeomType::GltfNodeIndex);
     first->setGltfNodeIndex(17);

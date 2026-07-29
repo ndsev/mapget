@@ -9,7 +9,7 @@ class TileFeatureLayer;
 class TileFeatureModelLayerBase;
 
 /**
- * Generic forward-linked merged array view.
+ * Generic array view with overridable local storage.
  *
  * The local entries can be customized by derived classes via
  * localMerged* methods. By default this wraps the BaseArray storage.
@@ -89,11 +89,7 @@ public:
 
 protected:
     /**
-     * Return the overlay portion of this view.
-     *
-     * Derived feature-scoped views compute this from the layer overlay chain
-     * on demand. Keeping the link implicit avoids mutating shared tile state
-     * during read-only traversal.
+     * Return an optional continuation of this view.
      */
     [[nodiscard]] virtual ExtensionPtr mergedExtension() const
     {

@@ -286,15 +286,7 @@ model_ptr<Feature> AttributeLayerList::featureScopedFeature() const
 
 AttributeLayerList::ExtensionPtr AttributeLayerList::mergedExtension() const
 {
-    if (!isFeatureScopedView()) {
-        return {};
-    }
-    auto overlay = model().overlay();
-    if (!overlay || addr().index() >= overlay->size()) {
-        return {};
-    }
-    return overlay->resolve<AttributeLayerList>(
-        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureAttributeLayerListView, addr().index()});
+    return {};
 }
 
 simfil::SchemaId AttributeLayerList::schema() const

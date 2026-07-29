@@ -6,8 +6,8 @@
 #include "tiles-ws-status.h"
 
 #include "mapget/log.h"
-#include "mapget/model/featurelayer-search.h"
-#include "mapget/model/searchresultlayer.h"
+#include "mapget/model/featurelayer-filter.h"
+#include "mapget/model/subsetlayer.h"
 #include "mapget/model/stream.h"
 
 #include <drogon/HttpAppFramework.h>
@@ -87,6 +87,32 @@ constexpr size_t MAX_QUEUED_OUTGOING_FRAMES = 4096;
 constexpr size_t MAX_QUEUED_OUTGOING_BYTES = 256 * 1024 * 1024;
 constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
+
+/** Preserve caller order while restricting scheduling hints to retained work. */
+std::vector<TileId> prioritiesWithin(
+    std::vector<TileId> const& tileIds,
+    std::vector<TileId> const& priorityTileIds)
+{
+    std::set<TileId> const membership(
+        tileIds.begin(),
+        tileIds.end());
+    std::vector<TileId> result;
+    result.reserve(
+        std::min(tileIds.size(), priorityTileIds.size()));
+    for (auto const& tileId : priorityTileIds) {
+        if (membership.contains(tileId)) {
+            result.push_back(tileId);
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] bool isTileDataMessage(TileLayerStream::MessageType type)
+{
+    return type == TileLayerStream::MessageType::TileFeatureLayer
+        || type == TileLayerStream::MessageType::TileSourceDataLayer
+        || type == TileLayerStream::MessageType::TileSubsetLayer;
+}
 
 /** Clamp an atomic metric value to zero to avoid exposing negative snapshots. */
 [[nodiscard]] int64_t nonNegative(std::atomic<int64_t> const& value)
@@ -257,9 +283,9 @@ public:
         try {
             auto parsedOffsets = parseStringPoolOffsetsJson(offsetsJson);
             std::lock_guard lock(mutex_);
-            for (auto const& [nodeId, offset] : parsedOffsets) {
-                committedStringPoolOffsets_[nodeId] = offset;
-                writerOffsets_[nodeId] = offset;
+            for (auto const& [stringPoolId, offset] : parsedOffsets) {
+                committedStringPoolOffsets_[stringPoolId] = offset;
+                writerOffsets_[stringPoolId] = offset;
             }
             return true;
         }
@@ -401,9 +427,9 @@ public:
         }
 
         std::vector<LayerTilesRequest::Ptr> serviceRequests;
-        std::vector<FeatureLayerSearchTilesRequest::Ptr> searchServiceRequests;
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> filterServiceRequests;
         std::vector<LayerTilesRequest::Ptr> nextActiveRequests;
-        std::vector<FeatureLayerSearchTilesRequest::Ptr> nextActiveSearchRequests;
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> nextActiveFilterRequests;
         std::vector<RequestInfo> nextRequestInfos;
         std::vector<RequestStatus> nextRequestStatuses;
         std::set<MapTileKey> desiredTileKeys;
@@ -415,12 +441,13 @@ public:
 
             for (size_t index = 0; index < requestsIt->size(); ++index) {
                 auto effectiveRequestJson = requestsIt->at(index);
-                detail::inheritSearchFields(effectiveRequestJson, j);
+                detail::inheritFilterFields(effectiveRequestJson, j);
                 auto parsedRequest = detail::parseLayerTilesRequestJson(effectiveRequestJson);
                 auto layerContext = service_.resolveLayerRequest(
                     parsedRequest.mapId,
                     parsedRequest.layerId,
-                    authHeaders_);
+                    authHeaders_,
+                    parsedRequest.sourceId);
 
                 nextRequestInfos.push_back(RequestInfo{
                     .mapId = parsedRequest.mapId,
@@ -428,20 +455,20 @@ public:
                     .noDataSourceReason = layerContext.noDataSourceReason_,
                 });
                 nextRequestStatuses.push_back(RequestStatus::Success);
-                addDesiredTileKeys(parsedRequest, layerContext.stages_, desiredTileKeys, nextTilePriorityRanks);
+                addDesiredTileKeys(parsedRequest, desiredTileKeys, nextTilePriorityRanks);
 
                 const auto statusIndex = requestIndexBase + index;
-                if (parsedRequest.searchRequest) {
-                    auto request = makeSearchBackendRequestIfNeeded(parsedRequest, requestId, statusIndex);
+                if (parsedRequest.filterRequest) {
+                    auto request = makeFilterBackendRequestIfNeeded(parsedRequest, requestId, statusIndex);
                     if (request) {
-                        searchServiceRequests.push_back(request);
-                        nextActiveSearchRequests.push_back(std::move(request));
+                        filterServiceRequests.push_back(request);
+                        nextActiveFilterRequests.push_back(std::move(request));
                         nextRequestStatuses[index] = RequestStatus::Open;
                     }
                     continue;
                 }
 
-                auto request = makeLayerBackendRequestIfNeeded(parsedRequest, layerContext, requestId, statusIndex);
+                auto request = makeLayerBackendRequestIfNeeded(parsedRequest, requestId, statusIndex);
                 if (request) {
                     serviceRequests.push_back(request);
                     nextActiveRequests.push_back(std::move(request));
@@ -455,13 +482,13 @@ public:
         }
 
         std::vector<LayerTilesRequest::Ptr> replacedRequests;
-        std::vector<FeatureLayerSearchTilesRequest::Ptr> replacedSearchRequests;
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> replacedFilterRequests;
         {
             std::lock_guard lock(mutex_);
             if (updateMode == ClientRequestUpdateMode::Append && requestId_ == requestId) {
                 appendActiveRequestStateLocked(
                     nextActiveRequests,
-                    nextActiveSearchRequests,
+                    nextActiveFilterRequests,
                     nextRequestInfos,
                     nextRequestStatuses,
                     desiredTileKeys,
@@ -470,13 +497,13 @@ public:
                 replaceActiveRequestStateLocked(
                     requestId,
                     nextActiveRequests,
-                    nextActiveSearchRequests,
+                    nextActiveFilterRequests,
                     nextRequestInfos,
                     nextRequestStatuses,
                     desiredTileKeys,
                     nextTilePriorityRanks,
                     replacedRequests,
-                    replacedSearchRequests);
+                    replacedFilterRequests);
             }
             requestChunksComplete_ = requestChunksComplete;
             // Refresh ordering so queued tiles follow the latest request priority.
@@ -484,9 +511,9 @@ public:
             statusEmissionEnabled_ = true;
         }
 
-        abortReplacedRequests(std::move(replacedRequests), std::move(replacedSearchRequests));
+        abortReplacedRequests(std::move(replacedRequests), std::move(replacedFilterRequests));
         queueRequestContextMessage();
-        submitBackendRequests(serviceRequests, searchServiceRequests);
+        submitBackendRequests(serviceRequests, filterServiceRequests);
         queueStatusMessage({});
     }
 
@@ -495,7 +522,7 @@ public:
     {
         cancelled_ = true;
         std::vector<LayerTilesRequest::Ptr> requestsToAbort;
-        std::vector<FeatureLayerSearchTilesRequest::Ptr> searchRequestsToAbort;
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> filterRequestsToAbort;
         std::vector<PullDispatch> pullDispatches;
 
         // Stop sending any queued tile frames from this session.
@@ -504,15 +531,15 @@ public:
             clearOutgoingLocked();
             requestsToAbort = std::move(activeRequests_);
             activeRequests_.clear();
-            searchRequestsToAbort = std::move(activeSearchRequests_);
-            activeSearchRequests_.clear();
+            filterRequestsToAbort = std::move(activeFilterRequests_);
+            activeFilterRequests_.clear();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
             outgoingCapacityChanged_.notify_all();
         }
 
         // Abort in-flight requests (best-effort).
         abortRequests(std::move(requestsToAbort));
-        abortSearchRequests(std::move(searchRequestsToAbort));
+        abortFilterRequests(std::move(filterRequestsToAbort));
 
         // Refresh locally cached statuses after aborting.
         {
@@ -607,22 +634,23 @@ private:
     /** Compute all queue keys expected by one parsed request and their layer-local priorities. */
     void addDesiredTileKeys(
         const detail::ParsedLayerTilesRequest& request,
-        uint32_t stageCount,
         std::set<MapTileKey>& desiredTileKeys,
         std::map<MapTileKey, int64_t>& tilePriorityRanks) const
     {
         int64_t nextPriorityRank = 0;
-        if (request.searchRequest) {
-            for (auto const& tileId : collectSearchTileIds(request)) {
+        if (request.filterRequest) {
+            auto const key = detail::filterRequestKey(
+                request.filterRequest->filterId_,
+                request.filterRequest->generation_);
+            for (auto const& tileId : collectFilterTileIds(request)) {
                 addDesiredTileKey(
                     makeRequestedTileKey(
                         MapTileKey(
                             REQUEST_TILE_LAYER_TYPE,
                             request.mapId,
                             request.layerId,
-                            tileId,
-                            UnspecifiedStage),
-                        std::optional<std::string_view>(request.searchRequest->requestKey_)),
+                            tileId),
+                        std::optional<std::string_view>(key)),
                     desiredTileKeys,
                     tilePriorityRanks,
                     nextPriorityRank);
@@ -632,8 +660,7 @@ private:
 
         auto expandedTileKeys = detail::expandLayerTilesRequestKeys(
             request,
-            REQUEST_TILE_LAYER_TYPE,
-            stageCount);
+            REQUEST_TILE_LAYER_TYPE);
         for (auto const& tileKey : expandedTileKeys) {
             addDesiredTileKey(
                 makeRequestedTileKey(tileKey, std::nullopt),
@@ -643,153 +670,130 @@ private:
         }
     }
 
-    /** Return search tile ids whose result frames are not already queued for this session. */
-    [[nodiscard]] std::vector<TileId> searchTileIdsMissingFromQueue(
+    /** Return filter tile ids whose result frames are not already queued for this session. */
+    [[nodiscard]] std::vector<TileId> filterTileIdsMissingFromQueue(
         const detail::ParsedLayerTilesRequest& request,
-        std::string_view searchRequestKey)
+        std::string_view filterRequestKey)
     {
-        std::vector<TileId> tileIdsToSearch;
+        std::vector<TileId> tileIdsToFilter;
         std::lock_guard lock(mutex_);
-        for (auto const& tileId : collectSearchTileIds(request)) {
+        for (auto const& tileId : collectFilterTileIds(request)) {
             auto requestedTileKey = makeRequestedTileKey(
                 MapTileKey(
                     REQUEST_TILE_LAYER_TYPE,
                     request.mapId,
                     request.layerId,
-                    tileId,
-                    UnspecifiedStage),
-                searchRequestKey);
+                    tileId),
+                filterRequestKey);
             // Reconnect/update requests may repeat tiles whose frames are still buffered.
             const bool alreadyQueued =
                 queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
-            if (!alreadyQueued) {
-                tileIdsToSearch.push_back(tileId);
+            const bool alreadyForwarded =
+                forwardedTileKeys_.find(requestedTileKey) != forwardedTileKeys_.end();
+            if (!alreadyQueued && !alreadyForwarded) {
+                tileIdsToFilter.push_back(tileId);
             }
         }
-        return tileIdsToSearch;
+        return tileIdsToFilter;
     }
 
-    /** Return staged feature tile ids whose requested stage frames are not all queued yet. */
-    [[nodiscard]] std::vector<std::vector<TileId>> stagedTileIdsMissingFromQueue(
-        const detail::ParsedLayerTilesRequest& request,
-        uint32_t stageCount)
-    {
-        std::vector<std::vector<TileId>> tileIdsByNextStageToFetch;
-        tileIdsByNextStageToFetch.resize(request.tileIdsByNextStage.size());
-
-        std::lock_guard lock(mutex_);
-        for (size_t bucketIndex = 0; bucketIndex < request.tileIdsByNextStage.size(); ++bucketIndex) {
-            auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
-            if (nextMissingStage >= stageCount) {
-                continue;
-            }
-            for (auto const& tileId : request.tileIdsByNextStage[bucketIndex]) {
-                bool needsBackendFetch = false;
-                for (uint32_t stage = nextMissingStage; stage < stageCount; ++stage) {
-                    auto requestedTileKey = makeRequestedTileKey(
-                        MapTileKey(
-                            REQUEST_TILE_LAYER_TYPE,
-                            request.mapId,
-                            request.layerId,
-                            tileId,
-                            stage),
-                        std::nullopt);
-                    const bool alreadyQueued =
-                        queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
-                    if (!alreadyQueued) {
-                        needsBackendFetch = true;
-                        break;
-                    }
-                }
-                // A staged backend request must cover the first missing stage onward.
-                if (needsBackendFetch) {
-                    tileIdsByNextStageToFetch[bucketIndex].push_back(tileId);
-                }
-            }
-        }
-        return tileIdsByNextStageToFetch;
-    }
-
-    /** Return unstaged feature tile ids whose frames are not already queued. */
-    [[nodiscard]] std::vector<TileId> unstagedTileIdsMissingFromQueue(
+    /** Return feature tile ids whose frames are not already queued. */
+    [[nodiscard]] std::vector<TileId> tileIdsMissingFromQueue(
         const detail::ParsedLayerTilesRequest& request)
     {
         std::vector<TileId> tileIdsToFetch;
-        if (request.tileIdsByNextStage.empty()) {
-            return tileIdsToFetch;
-        }
 
         std::lock_guard lock(mutex_);
-        for (auto const& tileId : request.tileIdsByNextStage.front()) {
+        for (auto const& tileId : request.tileIds) {
             auto requestedTileKey = makeRequestedTileKey(
                 MapTileKey(
                     REQUEST_TILE_LAYER_TYPE,
                     request.mapId,
                     request.layerId,
-                    tileId,
-                    UnspecifiedStage),
+                    tileId),
                 std::nullopt);
             const bool alreadyQueued =
                 queuedTileFrameRefCount_.find(requestedTileKey) != queuedTileFrameRefCount_.end();
-            if (!alreadyQueued) {
+            const bool alreadyForwarded =
+                forwardedTileKeys_.find(requestedTileKey) != forwardedTileKeys_.end();
+            if (!alreadyQueued && !alreadyForwarded) {
                 tileIdsToFetch.push_back(tileId);
             }
         }
         return tileIdsToFetch;
     }
 
-    /** Attach websocket callbacks to one backend search request. */
-    void attachSearchRequestCallbacks(
-        const FeatureLayerSearchTilesRequest::Ptr& request,
+    /** Attach websocket callbacks to one backend filter request. */
+    void attachFilterRequestCallbacks(
+        const FeatureLayerFilterTilesRequest::Ptr& request,
         uint64_t expectedRequestId,
         size_t statusIndex)
     {
         const auto weak = weak_from_this();
-        const std::weak_ptr<FeatureLayerSearchTilesRequest> weakRequest = request;
-        request->onSearchResult([weak](TileSearchResultLayer::Ptr layer) {
+        const std::weak_ptr<FeatureLayerFilterTilesRequest> weakRequest = request;
+        request->onFilterResult([weak](TileSubsetLayer::Ptr layer) {
             if (auto self = weak.lock()) {
                 self->onTileLayer(std::move(layer));
             }
         });
-        request->onStatus([weak](nlohmann::json const& status) {
+        request->onStatus([weak, expectedRequestId](nlohmann::json const& status) {
             if (auto self = weak.lock()) {
-                self->sendControlMessage(
-                    TileLayerStream::MessageType::Status,
-                    status.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore));
+                if (self->isCurrentRequest(expectedRequestId)) {
+                    self->sendControlMessage(
+                        TileLayerStream::MessageType::Status,
+                        status.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore));
+                }
             }
         });
         request->onDone_ = [weak, statusIndex, expectedRequestId, weakRequest](RequestStatus status) {
             if (auto self = weak.lock()) {
                 if (auto request = weakRequest.lock()) {
-                    self->onSearchRequestDone(statusIndex, expectedRequestId, request, status);
+                    self->onFilterRequestDone(statusIndex, expectedRequestId, request, status);
                 }
             }
         };
     }
 
-    /** Create a backend search request unless all requested search results are already queued. */
-    [[nodiscard]] FeatureLayerSearchTilesRequest::Ptr makeSearchBackendRequestIfNeeded(
+    /** Create a backend filter request unless all requested filter results are already queued. */
+    [[nodiscard]] FeatureLayerFilterTilesRequest::Ptr makeFilterBackendRequestIfNeeded(
         const detail::ParsedLayerTilesRequest& parsedRequest,
         uint64_t expectedRequestId,
         size_t statusIndex)
     {
-        if (!parsedRequest.searchRequest) {
+        if (!parsedRequest.filterRequest) {
             return {};
         }
 
-        auto searchRequest = *parsedRequest.searchRequest;
-        auto tileIdsToSearch = searchTileIdsMissingFromQueue(parsedRequest, searchRequest.requestKey_);
-        if (tileIdsToSearch.empty()) {
+        auto filterRequest = *parsedRequest.filterRequest;
+        auto const key = detail::filterRequestKey(
+            filterRequest.filterId_,
+            filterRequest.generation_);
+        auto tileIdsToFilter =
+            filterTileIdsMissingFromQueue(parsedRequest, key);
+        if (tileIdsToFilter.empty()) {
             return {};
         }
+        auto priorityTileIds = prioritiesWithin(
+            tileIdsToFilter,
+            parsedRequest.priorityTileIds);
+        std::set<TileId> const missingTileIds(
+            tileIdsToFilter.begin(),
+            tileIdsToFilter.end());
 
-        auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
             parsedRequest.mapId,
             parsedRequest.layerId,
-            std::move(tileIdsToSearch),
-            std::move(searchRequest),
-            parsedRequest.priorityTileIds);
-        attachSearchRequestCallbacks(request, expectedRequestId, statusIndex);
+            std::move(tileIdsToFilter),
+            std::move(filterRequest),
+            priorityTileIds);
+        request->sourceId_ = parsedRequest.sourceId;
+        request->exactRoots_ = parsedRequest.exactRoots;
+        std::erase_if(
+            request->exactRoots_,
+            [&](FeatureLayerFilterRoot const& root) {
+                return !missingTileIds.contains(root.tileId_);
+            });
+        attachFilterRequestCallbacks(request, expectedRequestId, statusIndex);
         return request;
     }
 
@@ -830,37 +834,31 @@ private:
     /** Create a backend feature-tile request unless all requested tile frames are already queued. */
     [[nodiscard]] LayerTilesRequest::Ptr makeLayerBackendRequestIfNeeded(
         const detail::ParsedLayerTilesRequest& parsedRequest,
-        const LayerRequestContext& layerContext,
         uint64_t expectedRequestId,
         size_t statusIndex)
     {
-        LayerTilesRequest::Ptr request;
-        if (parsedRequest.usesStageBuckets) {
-            auto stageCount = std::max<uint32_t>(1U, layerContext.stages_);
-            auto tileIdsByNextStageToFetch = stagedTileIdsMissingFromQueue(parsedRequest, stageCount);
-            const bool hasTilesToFetch = std::any_of(
-                tileIdsByNextStageToFetch.begin(),
-                tileIdsByNextStageToFetch.end(),
-                [](auto const& bucket) { return !bucket.empty(); });
-            if (!hasTilesToFetch) {
-                return {};
-            }
-            request = std::make_shared<LayerTilesRequest>(
-                parsedRequest.mapId,
-                parsedRequest.layerId,
-                std::move(tileIdsByNextStageToFetch),
-                parsedRequest.priorityTileIds);
-        } else {
-            auto unstagedTileIdsToFetch = unstagedTileIdsMissingFromQueue(parsedRequest);
-            if (unstagedTileIdsToFetch.empty()) {
-                return {};
-            }
-            request = std::make_shared<LayerTilesRequest>(
-                parsedRequest.mapId,
-                parsedRequest.layerId,
-                std::move(unstagedTileIdsToFetch),
-                parsedRequest.priorityTileIds);
+        auto tileIdsToFetch = tileIdsMissingFromQueue(parsedRequest);
+        if (tileIdsToFetch.empty()) {
+            return {};
         }
+        auto priorityTileIds = prioritiesWithin(
+            tileIdsToFetch,
+            parsedRequest.priorityTileIds);
+        std::set<TileId> const missingTileIds(
+            tileIdsToFetch.begin(),
+            tileIdsToFetch.end());
+        auto request = std::make_shared<LayerTilesRequest>(
+            parsedRequest.mapId,
+            parsedRequest.layerId,
+            std::move(tileIdsToFetch),
+            priorityTileIds);
+        request->sourceId_ = parsedRequest.sourceId;
+        request->featureIdsByTile_ = parsedRequest.featureIdsByTile;
+        std::erase_if(
+            request->featureIdsByTile_,
+            [&](auto const& item) {
+                return !missingTileIds.contains(item.first);
+            });
 
         attachLayerRequestCallbacks(request, expectedRequestId, statusIndex);
         return request;
@@ -869,7 +867,7 @@ private:
     /** Append one chunk's request state to the currently active logical request. */
     void appendActiveRequestStateLocked(
         std::vector<LayerTilesRequest::Ptr>& nextActiveRequests,
-        std::vector<FeatureLayerSearchTilesRequest::Ptr>& nextActiveSearchRequests,
+        std::vector<FeatureLayerFilterTilesRequest::Ptr>& nextActiveFilterRequests,
         std::vector<RequestInfo>& nextRequestInfos,
         std::vector<RequestStatus>& nextRequestStatuses,
         const std::set<MapTileKey>& desiredTileKeys,
@@ -878,8 +876,8 @@ private:
         for (auto& request : nextActiveRequests) {
             activeRequests_.push_back(std::move(request));
         }
-        for (auto& request : nextActiveSearchRequests) {
-            activeSearchRequests_.push_back(std::move(request));
+        for (auto& request : nextActiveFilterRequests) {
+            activeFilterRequests_.push_back(std::move(request));
         }
         for (auto& info : nextRequestInfos) {
             requestInfos_.push_back(std::move(info));
@@ -897,23 +895,33 @@ private:
     void replaceActiveRequestStateLocked(
         uint64_t requestId,
         std::vector<LayerTilesRequest::Ptr>& nextActiveRequests,
-        std::vector<FeatureLayerSearchTilesRequest::Ptr>& nextActiveSearchRequests,
+        std::vector<FeatureLayerFilterTilesRequest::Ptr>& nextActiveFilterRequests,
         std::vector<RequestInfo>& nextRequestInfos,
         std::vector<RequestStatus>& nextRequestStatuses,
         std::set<MapTileKey>& desiredTileKeys,
         std::map<MapTileKey, int64_t>& tilePriorityRanks,
         std::vector<LayerTilesRequest::Ptr>& replacedRequests,
-        std::vector<FeatureLayerSearchTilesRequest::Ptr>& replacedSearchRequests)
+        std::vector<FeatureLayerFilterTilesRequest::Ptr>& replacedFilterRequests)
     {
         replacedRequests = std::move(activeRequests_);
-        replacedSearchRequests = std::move(activeSearchRequests_);
+        replacedFilterRequests = std::move(activeFilterRequests_);
         activeRequests_ = std::move(nextActiveRequests);
-        activeSearchRequests_ = std::move(nextActiveSearchRequests);
+        activeFilterRequests_ = std::move(nextActiveFilterRequests);
         requestId_ = requestId;
         requestInfos_ = std::move(nextRequestInfos);
         requestStatuses_ = std::move(nextRequestStatuses);
         desiredTileKeys_ = std::move(desiredTileKeys);
         tilePriorityRanks_ = std::move(tilePriorityRanks);
+        for (auto it = forwardedTileKeys_.begin();
+             it != forwardedTileKeys_.end();)
+        {
+            if (desiredTileKeys_.find(*it) == desiredTileKeys_.end()) {
+                it = forwardedTileKeys_.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
         // When request scope shrinks, remove stale tile data already queued for send.
         filterOutgoingByDesiredLocked();
     }
@@ -921,7 +929,7 @@ private:
     /** Abort requests replaced by a newer logical request and update replacement metrics. */
     void abortReplacedRequests(
         std::vector<LayerTilesRequest::Ptr> replacedRequests,
-        std::vector<FeatureLayerSearchTilesRequest::Ptr> replacedSearchRequests)
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> replacedFilterRequests)
     {
         if (!replacedRequests.empty()) {
             gTilesWsMetrics.replacedRequests.fetch_add(
@@ -929,29 +937,29 @@ private:
                 std::memory_order_relaxed);
             abortRequests(std::move(replacedRequests));
         }
-        if (!replacedSearchRequests.empty()) {
+        if (!replacedFilterRequests.empty()) {
             gTilesWsMetrics.replacedRequests.fetch_add(
-                static_cast<int64_t>(replacedSearchRequests.size()),
+                static_cast<int64_t>(replacedFilterRequests.size()),
                 std::memory_order_relaxed);
-            abortSearchRequests(std::move(replacedSearchRequests));
+            abortFilterRequests(std::move(replacedFilterRequests));
         }
     }
 
     /** Submit newly created backend work and abort it if the service rejects the batch. */
     void submitBackendRequests(
         const std::vector<LayerTilesRequest::Ptr>& serviceRequests,
-        const std::vector<FeatureLayerSearchTilesRequest::Ptr>& searchServiceRequests)
+        const std::vector<FeatureLayerFilterTilesRequest::Ptr>& filterServiceRequests)
     {
         bool serviceRequestsAccepted = true;
         if (!serviceRequests.empty()) {
             serviceRequestsAccepted = service_.request(serviceRequests, authHeaders_);
         }
-        if (serviceRequestsAccepted && !searchServiceRequests.empty()) {
-            serviceRequestsAccepted = service_.request(searchServiceRequests, authHeaders_);
+        if (serviceRequestsAccepted && !filterServiceRequests.empty()) {
+            serviceRequestsAccepted = service_.request(filterServiceRequests, authHeaders_);
         }
         if (!serviceRequestsAccepted) {
             abortRequests(serviceRequests);
-            abortSearchRequests(searchServiceRequests);
+            abortFilterRequests(filterServiceRequests);
         }
     }
 
@@ -1006,6 +1014,9 @@ private:
         outgoingCapacityChanged_.notify_all();
         if (frame.stringPoolCommit) {
             committedStringPoolOffsets_[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
+        }
+        if (frame.requestedTileKey && isTileDataMessage(frame.type)) {
+            forwardedTileKeys_.insert(*frame.requestedTileKey);
         }
 
         const auto frameBytes = static_cast<int64_t>(frame.bytes.size());
@@ -1101,29 +1112,11 @@ private:
     /** Match one backend-produced tile key against the currently desired request set. */
     [[nodiscard]] std::optional<MapTileKey> matchDesiredTileKeyLocked(
         MapTileKey key,
-        uint32_t advertisedStages,
-        std::optional<std::string_view> searchKey = std::nullopt) const
+        std::optional<std::string_view> filterKey = std::nullopt) const
     {
-        auto requestedTileKey = makeRequestedTileKey(std::move(key), searchKey);
+        auto requestedTileKey = makeRequestedTileKey(std::move(key), filterKey);
         if (desiredTileKeys_.find(requestedTileKey) != desiredTileKeys_.end()) {
             return requestedTileKey;
-        }
-
-        // Single-stage datasources legitimately return stage-less tiles even when
-        // the client used staged bucket requests. Treat stage 0 and "unspecified"
-        // as equivalent only for those layers.
-        if (advertisedStages <= 1U) {
-            if (requestedTileKey.stage_ == UnspecifiedStage) {
-                requestedTileKey.stage_ = 0;
-                if (desiredTileKeys_.find(requestedTileKey) != desiredTileKeys_.end()) {
-                    return requestedTileKey;
-                }
-            } else if (requestedTileKey.stage_ == 0) {
-                requestedTileKey.stage_ = UnspecifiedStage;
-                if (desiredTileKeys_.find(requestedTileKey) != desiredTileKeys_.end()) {
-                    return requestedTileKey;
-                }
-            }
         }
 
         return std::nullopt;
@@ -1349,7 +1342,7 @@ private:
         if (cancelled_.exchange(true))
             return;
         std::vector<LayerTilesRequest::Ptr> requestsToAbort;
-        std::vector<FeatureLayerSearchTilesRequest::Ptr> searchRequestsToAbort;
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> filterRequestsToAbort;
         std::vector<PullDispatch> pullDispatches;
 
         // Ensure we stop emitting any further frames.
@@ -1358,14 +1351,14 @@ private:
             clearOutgoingLocked();
             requestsToAbort = std::move(activeRequests_);
             activeRequests_.clear();
-            searchRequestsToAbort = std::move(activeSearchRequests_);
-            activeSearchRequests_.clear();
+            filterRequestsToAbort = std::move(activeFilterRequests_);
+            activeFilterRequests_.clear();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
             outgoingCapacityChanged_.notify_all();
         }
 
         abortRequests(std::move(requestsToAbort));
-        abortSearchRequests(std::move(searchRequestsToAbort));
+        abortFilterRequests(std::move(filterRequestsToAbort));
         dispatchPullResults(std::move(pullDispatches));
     }
 
@@ -1380,8 +1373,8 @@ private:
         }
     }
 
-    /** Abort a batch of backend search requests outside `mutex_` to avoid lock inversion. */
-    void abortSearchRequests(std::vector<FeatureLayerSearchTilesRequest::Ptr> requests)
+    /** Abort a batch of backend filter requests outside `mutex_` to avoid lock inversion. */
+    void abortFilterRequests(std::vector<FeatureLayerFilterTilesRequest::Ptr> requests)
     {
         for (auto const& request : requests) {
             if (!request || request->isDone()) {
@@ -1417,13 +1410,19 @@ private:
                 std::unique_lock lock(mutex_);
                 if (cancelled_)
                     return;
-                auto searchKey = searchRequestKey(layer);
+                auto filterKey = filterRequestKey(layer);
                 auto requestedTileKey = matchDesiredTileKeyLocked(
                     layer->id(),
-                    layer->layerInfo() ? std::max<uint32_t>(1U, layer->layerInfo()->stages_) : 1U,
-                    searchKey ? std::optional<std::string_view>(*searchKey) : std::nullopt);
+                    filterKey ? std::optional<std::string_view>(*filterKey) : std::nullopt);
                 // Late-arriving tile for an outdated request: drop before serialization work.
                 if (!requestedTileKey.has_value()) {
+                    return;
+                }
+                if (queuedTileFrameRefCount_.find(*requestedTileKey) !=
+                        queuedTileFrameRefCount_.end() ||
+                    forwardedTileKeys_.find(*requestedTileKey) !=
+                        forwardedTileKeys_.end())
+                {
                     return;
                 }
                 if (!waitForOutgoingCapacityLocked(lock)) {
@@ -1440,13 +1439,13 @@ private:
 
                 // If a StringPool message was generated, the writer updates writerOffsets_
                 // to the new highest string ID for this node after emitting it.
-                const auto nodeId = layer->nodeId();
-                const auto it = writerOffsets_.find(nodeId);
+                const auto stringPoolId = layer->stringPoolId();
+                const auto it = writerOffsets_.find(stringPoolId);
                 if (it != writerOffsets_.end()) {
                     const auto newOffset = it->second;
                     for (auto const& m : batch) {
                         if (m.type == TileLayerStream::MessageType::StringPool) {
-                            stringPoolCommit = std::make_pair(nodeId, newOffset);
+                            stringPoolCommit = std::make_pair(stringPoolId, newOffset);
                             break;
                         }
                     }
@@ -1460,9 +1459,7 @@ private:
                         frame.stringPoolCommit = stringPoolCommit;
                         frame.requestedTileKey = *requestedTileKey;
                     }
-                    if (m.type == TileLayerStream::MessageType::TileFeatureLayer
-                        || m.type == TileLayerStream::MessageType::TileSourceDataLayer
-                        || m.type == TileLayerStream::MessageType::TileSearchResultLayer) {
+                    if (isTileDataMessage(m.type)) {
                         frame.requestedTileKey = *requestedTileKey;
                     }
                     enqueueOutgoingLocked(std::move(frame));
@@ -1515,11 +1512,11 @@ private:
         }
     }
 
-    /** Update per-search completion state and emit status when it changes. */
-    void onSearchRequestDone(
+    /** Update per-filter completion state and emit status when it changes. */
+    void onFilterRequestDone(
         size_t requestIndex,
         uint64_t expectedRequestId,
-        const FeatureLayerSearchTilesRequest::Ptr& completedRequest,
+        const FeatureLayerFilterTilesRequest::Ptr& completedRequest,
         RequestStatus status)
     {
         if (cancelled_)
@@ -1530,14 +1527,14 @@ private:
             std::lock_guard lock(mutex_);
             if (cancelled_)
                 return;
-            activeSearchRequests_.erase(
+            activeFilterRequests_.erase(
                 std::remove_if(
-                    activeSearchRequests_.begin(),
-                    activeSearchRequests_.end(),
-                    [&](const FeatureLayerSearchTilesRequest::Ptr& req) {
+                    activeFilterRequests_.begin(),
+                    activeFilterRequests_.end(),
+                    [&](const FeatureLayerFilterTilesRequest::Ptr& req) {
                         return !req || req == completedRequest || req->isDone();
                     }),
-                activeSearchRequests_.end());
+                activeFilterRequests_.end());
             if (expectedRequestId == requestId_ && requestIndex < requestStatuses_.size()) {
                 if (requestStatuses_[requestIndex] == status) {
                     return;
@@ -1580,6 +1577,13 @@ private:
                     self->sendControlMessageOnLoop(type, std::move(payload));
                 }
             });
+    }
+
+    /** True while a backend callback still belongs to the active logical request. */
+    [[nodiscard]] bool isCurrentRequest(uint64_t expectedRequestId) const
+    {
+        std::lock_guard lock(mutex_);
+        return !cancelled_ && requestId_ == expectedRequestId;
     }
 
     /** Send a status frame describing the current request statuses. */
@@ -1669,7 +1673,6 @@ private:
             {"mapId", key.mapId_},
             {"layerId", key.layerId_},
             {"tileId", key.tileId_.value()},
-            {"stage", key.stage_},
             {"state", static_cast<uint8_t>(state)},
             {"stateText", std::string(loadStateToString(state))},
         }).dump();
@@ -1704,6 +1707,7 @@ private:
             auto const& update = *change.sourceUpdate;
             auto source = nlohmann::json::object({
                 {"configIndex", update.descriptor.configIndex},
+                {"sourceId", update.descriptor.sourceId},
                 {"type", update.descriptor.type},
                 {"status", std::string(catalogStatusToString(update.status))},
                 {"statusMessage", update.statusMessage},
@@ -1733,10 +1737,11 @@ private:
     std::vector<RequestInfo> requestInfos_;
     std::vector<RequestStatus> requestStatuses_;
     std::vector<LayerTilesRequest::Ptr> activeRequests_;
-    std::vector<FeatureLayerSearchTilesRequest::Ptr> activeSearchRequests_;
+    std::vector<FeatureLayerFilterTilesRequest::Ptr> activeFilterRequests_;
     std::set<MapTileKey> desiredTileKeys_;
     std::map<MapTileKey, int64_t> tilePriorityRanks_;
     std::map<MapTileKey, int64_t> queuedTileFrameRefCount_;
+    std::set<MapTileKey> forwardedTileKeys_;
     bool statusEmissionEnabled_ = false;
     uint64_t pendingChunkedRequestId_ = 0;
     uint64_t pendingChunkedNextIndex_ = 0;

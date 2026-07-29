@@ -65,12 +65,9 @@ public:
     [[nodiscard]] GeometryOffsetType geometryOffsetType() const;
     [[nodiscard]] GeometryDescriptionType geometryDescriptionType() const;
 
-    /**
-     * Referenced geometry stage accessors.
-     * If unset, validity resolution falls back to the first matching line geometry.
-     */
-    [[nodiscard]] std::optional<uint32_t> geometryStage() const;
-    void setGeometryStage(std::optional<uint32_t> geometryStage);
+    /** Referenced layer-local geometry name used for validity resolution. */
+    [[nodiscard]] std::optional<std::string_view> geometryName() const;
+    void setGeometryName(std::optional<std::string_view> geometryName);
 
     /**
      * Single offset point accessors. Note for the getter:
@@ -133,7 +130,7 @@ public:
      * Compute the actual shape-points of the validity with respect to one
      * of the geometries in the given collection, or the geometry collection of
      * the directly referenced feature. The geometry is picked based
-     * on the validity's geometryStage when available. The return value may be one of the following:
+     * on the validity's geometryName when available. The return value may be one of the following:
      * - An empty vector, indicating that the validity could not be applied.
      *   If an error string was passed, then it would be set to an error message.
      * - A vector containing a single point, if the validity resolved to a point geometry.
@@ -141,8 +138,7 @@ public:
      */
      SelfContainedGeometry computeGeometry(
          model_ptr<GeometryCollection> geometryCollection,
-         std::string* error=nullptr,
-         std::optional<uint32_t> defaultGeometryStage = std::nullopt) const;
+         std::string* error=nullptr) const;
 
 protected:
     using Data = ValidityData;
@@ -187,7 +183,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
      */
     model_ptr<Validity> newPoint(
         Point pos,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -196,7 +192,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     model_ptr<Validity> newRange(
         Point start,
         Point end,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -208,7 +204,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     model_ptr<Validity> newPoint(
         Validity::GeometryOffsetType offsetType,
         double pos,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -219,7 +215,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     model_ptr<Validity> newPoint(
         Validity::GeometryOffsetType offsetType,
         int32_t pos,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -232,7 +228,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
         Validity::GeometryOffsetType offsetType,
         double start,
         double end,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -244,7 +240,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
         Validity::GeometryOffsetType offsetType,
         int32_t start,
         int32_t end,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -261,10 +257,10 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Direction direction = Validity::Empty);
 
     /**
-     * Append a validity that references a staged geometry in the current feature context.
+     * Append a validity that references a named geometry in the current feature context.
      */
     model_ptr<Validity>
-    newGeomStage(uint32_t geometryStage, Validity::Direction direction = Validity::Empty);
+    newGeomName(std::string_view geometryName, Validity::Direction direction = Validity::Empty);
 
     /**
      * Append a semantic transition validity connecting two feature endpoints.

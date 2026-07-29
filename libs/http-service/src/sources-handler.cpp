@@ -47,7 +47,7 @@ nlohmann::json sourceCatalogEntryToJson(DataSourceCatalogEntry const& entry)
     }
     else {
         result = nlohmann::json::object({
-            {"nodeId", entry.descriptor.displayName},
+            {"stringPoolId", entry.descriptor.displayName},
             {"mapId", entry.descriptor.displayName},
             {"layers", nlohmann::json::object()},
             {"maxParallelJobs", 0},
@@ -57,6 +57,7 @@ nlohmann::json sourceCatalogEntryToJson(DataSourceCatalogEntry const& entry)
         });
     }
 
+    result["sourceId"] = entry.descriptor.sourceId;
     result["configIndex"] = entry.descriptor.configIndex;
     result["type"] = entry.descriptor.type;
     result["status"] = std::string(catalogStatusToString(entry.status));

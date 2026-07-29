@@ -568,4 +568,32 @@ bool parseFeatureIdString(
     return true;
 }
 
+std::string formatFeatureIdString(
+    std::string_view typeId,
+    KeyValuePairs const& featureIdParts)
+{
+    std::string result(typeId);
+    for (auto const& [_, value] : featureIdParts) {
+        std::visit(
+            [&](auto&& part) {
+                using T = std::decay_t<decltype(part)>;
+                if constexpr (std::is_same_v<T, std::string_view> ||
+                              std::is_same_v<T, std::string>) {
+                    fmt::format_to(
+                        std::back_inserter(result),
+                        FMT_STRING(".{}"),
+                        escapeFeatureIdPart(part));
+                }
+                else {
+                    fmt::format_to(
+                        std::back_inserter(result),
+                        FMT_STRING(".{}"),
+                        part);
+                }
+            },
+            value);
+    }
+    return result;
+}
+
 }

@@ -25,9 +25,10 @@ public:
 
     std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override;
     void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
+    void eraseTileLayerBlob(MapTileKey const& k) override;
     void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;
-    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) override;
-    void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) override;
+    std::optional<std::string> getStringPoolBlob(std::string_view const& sourceStringPoolId) override;
+    void putStringPoolBlob(std::string_view const& sourceStringPoolId, std::string const& v) override;
 
 private:
     void initDatabase();

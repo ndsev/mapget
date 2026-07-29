@@ -112,30 +112,6 @@ GeomType geometryTypeForColumn(uint8_t column)
     }
 }
 
-/** Map a stored geometry stage back to the optional exported `geometryName`. */
-std::optional<std::string_view> geometryNameForStage(
-    TileFeatureModelLayerBase const& model,
-    std::optional<uint32_t> geometryStage)
-{
-    if (!geometryStage || !model.layerInfo()) {
-        return std::nullopt;
-    }
-    auto const& layerInfo = *model.layerInfo();
-    if (*geometryStage <= layerInfo.highFidelityStage_) {
-        // The default high-fidelity stage is represented by the absence of a
-        // label so generic GeoJSON stays uncluttered.
-        return std::nullopt;
-    }
-    if (*geometryStage >= layerInfo.stageLabels_.size()) {
-        return std::nullopt;
-    }
-    auto const& label = layerInfo.stageLabels_.at(*geometryStage);
-    if (label.empty()) {
-        return std::nullopt;
-    }
-    return label;
-}
-
 /** Serialize one 3D coordinate triple in GeoJSON position form. */
 nlohmann::json positionJson(Point const& point)
 {
@@ -387,45 +363,6 @@ size_t GeometryCollection::numGeometries() const
     return result;
 }
 
-std::optional<uint32_t> GeometryCollection::preferredGeometryStage(
-    std::optional<uint32_t> stageOverride) const
-{
-    if (stageOverride) {
-        return stageOverride;
-    }
-
-    std::optional<uint32_t> preferredStage;
-    forEachGeometry([&](model_ptr<Geometry> const& geom) {
-        preferredStage = geom->model().layerInfo()->highFidelityStage_;
-        return false;
-    });
-    return preferredStage;
-}
-
-model_ptr<Geometry> GeometryCollection::geometryOfTypeAtPreferredStage(
-    GeomType type,
-    std::optional<uint32_t> stageOverride) const
-{
-    auto const preferredStage = preferredGeometryStage(stageOverride);
-    model_ptr<Geometry> result;
-    if (!preferredStage) {
-        return result;
-    }
-
-    forEachGeometry([&](model_ptr<Geometry> const& geom) {
-        if (geom->geomType() != type) {
-            return true;
-        }
-        auto const geometryStage = geom->stage().value_or(0U);
-        if (geometryStage != *preferredStage) {
-            return true;
-        }
-        result = geom;
-        return false;
-    });
-    return result;
-}
-
 ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
 {
     if (i < 0) {
@@ -506,19 +443,7 @@ bool GeometryCollection::localMergedIterate(const IterCallback& cb) const
 
 GeometryCollection::ExtensionPtr GeometryCollection::mergedExtension() const
 {
-    if (!isFeatureScopedView()) {
-        return {};
-    }
-    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
-    if (!featureLayer) {
-        return {};
-    }
-    auto overlay = featureLayer->overlay();
-    if (!overlay || addr().index() >= overlay->size()) {
-        return {};
-    }
-    return overlay->resolve<GeometryCollection>(
-        ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::FeatureGeometryCollectionView, addr().index()});
+    return {};
 }
 
 bool GeometryCollection::isFeatureScopedView() const
@@ -546,19 +471,7 @@ ModelNodeAddress GeometryCollection::featureScopedGeometryAddress() const
 
 GeometryArrayView::ExtensionPtr GeometryArrayView::mergedExtension() const
 {
-    if (!isFeatureScopedView()) {
-        return {};
-    }
-    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
-    if (!featureLayer) {
-        return {};
-    }
-    auto overlay = featureLayer->overlay();
-    if (!overlay || addr().index() >= overlay->size()) {
-        return {};
-    }
-    return overlay->resolve<GeometryArrayView>(
-        ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView, addr().index()});
+    return {};
 }
 
 bool GeometryArrayView::isFeatureScopedView() const
@@ -699,25 +612,12 @@ uint64_t Geometry::getHash() const
 
 std::optional<std::string_view> Geometry::name() const
 {
-    return geometryNameForStage(model(), stage());
+    return model().geometryName(addr_);
 }
 
-std::optional<uint32_t> Geometry::stage() const
+void Geometry::setName(std::optional<std::string_view> geometryName)
 {
-    if (auto geometryStage = model().geometryStage(addr_)) {
-        return *geometryStage;
-    }
-    return std::nullopt;
-}
-
-void Geometry::setStage(std::optional<uint32_t> geometryStage)
-{
-    if (geometryStage && *geometryStage > static_cast<uint32_t>(std::numeric_limits<uint8_t>::max())) {
-        raise("Geometry::setStage: stage is out of uint8_t range.");
-    }
-    model().setGeometryStage(
-        addr_,
-        geometryStage ? std::optional<uint8_t>{static_cast<uint8_t>(*geometryStage)} : std::nullopt);
+    model().setGeometryName(addr_, geometryName);
 }
 
 SelfContainedGeometry Geometry::toSelfContained() const

@@ -269,6 +269,15 @@ public:
 
     void resetTileCount() { receivedTileCount_.store(0, std::memory_order_relaxed); }
 
+    [[nodiscard]] bool waitForStatus(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        return cv_.wait_for(
+            lock,
+            timeout,
+            [this] { return !error_.empty() || lastStatus_.has_value(); });
+    }
+
     std::optional<nlohmann::json> lastStatus() const
     {
         std::lock_guard lock(mutex_);
@@ -454,7 +463,7 @@ nlohmann::json testDataSourceInfoJson()
     using nlohmann::json;
     return json::parse(R"(
     {
-        "nodeId": "test-datasource",
+        "stringPoolId": "test-datasource",
         "mapId": "Tropico",
         "layers": {
             "WayLayer": {
@@ -559,6 +568,34 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(receivedTileCount == 1);
     }
 
+    // Fetch a separately transferred tile attachment.
+    {
+        auto [result, resp] = dsClient.get(
+            fmt::format(
+                "/attachment?layer=WayLayer&tileId={}&name=ways.glb",
+                kHttpTileIdValue));
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(resp != nullptr);
+        REQUIRE(resp->statusCode() == drogon::k200OK);
+        REQUIRE(resp->contentTypeString() == "model/gltf-binary");
+        REQUIRE(resp->getHeader("ETag") == "\"ways-v1\"");
+        REQUIRE(std::string(resp->body()) == "glTF");
+
+        auto [notModifiedResult, notModified] =
+            dsClient.get(
+                fmt::format(
+                    "/attachment?layer=WayLayer&tileId={}&name=ways.glb",
+                    kHttpTileIdValue),
+                {{"If-None-Match", "\"ways-v1\""}});
+        REQUIRE(
+            notModifiedResult ==
+            drogon::ReqResult::Ok);
+        REQUIRE(notModified != nullptr);
+        REQUIRE(
+            notModified->statusCode() ==
+            drogon::k304NotModified);
+    }
+
     // Fetch /locate
     {
         auto [result, resp] = dsClient.postJson(
@@ -585,6 +622,73 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         auto& service = test::httpService();
         auto remoteDataSource = std::make_shared<RemoteDataSource>("127.0.0.1", dsProc.port());
         service.add(remoteDataSource);
+
+        // The MapTileStream attachment endpoint validates the name against
+        // the normally cached source tile and forwards remote datasource
+        // bytes without embedding them in that tile.
+        {
+            SyncHttpClient serviceClient(
+                "127.0.0.1",
+                service.port());
+            auto path = fmt::format(
+                "/attachment?mapId=Tropico&layerId=WayLayer&tileId={}&name=ways.glb",
+                kHttpTileIdValue);
+            auto [result, resp] =
+                serviceClient.get(path);
+            REQUIRE(
+                result ==
+                drogon::ReqResult::Ok);
+            REQUIRE(resp != nullptr);
+            REQUIRE(
+                resp->statusCode() ==
+                drogon::k200OK);
+            REQUIRE(
+                resp->contentTypeString() ==
+                "model/gltf-binary");
+            REQUIRE(
+                std::string(resp->body()) ==
+                "glTF");
+            auto etag =
+                resp->getHeader("ETag");
+            REQUIRE(etag == "\"ways-v1\"");
+
+            auto [notModifiedResult,
+                  notModified] =
+                serviceClient.get(
+                    path,
+                    {{"If-None-Match",
+                      etag}});
+            REQUIRE(
+                notModifiedResult ==
+                drogon::ReqResult::Ok);
+            REQUIRE(notModified != nullptr);
+            REQUIRE(
+                notModified->statusCode() ==
+                drogon::k304NotModified);
+
+            HttpClient mapgetClient(
+                "127.0.0.1",
+                service.port(),
+                {},
+                false);
+            auto attachment =
+                mapgetClient.attachment({
+                    .tileKey_ = MapTileKey(
+                        LayerType::Features,
+                        "Tropico",
+                        "WayLayer",
+                        TileId::fromValue(
+                            kHttpTileIdValue)),
+                    .name_ = "ways.glb",
+                });
+            REQUIRE(attachment);
+            REQUIRE(attachment->bytes_);
+            REQUIRE(
+                std::string(
+                    attachment->bytes_->begin(),
+                    attachment->bytes_->end()) ==
+                "glTF");
+        }
 
         // `/sources` keeps the legacy array body while exposing catalog metadata.
         {
@@ -640,14 +744,21 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(request->getStatus() == RequestStatus::Success);
         }
 
-        // Search through the dedicated REST endpoint and C++ client helper.
+        // Filter through the dedicated REST endpoint and C++ client helper.
         {
             SyncHttpClient serviceClient("127.0.0.1", service.port());
-            auto searchBody = nlohmann::json::object({
-                {"query", "typeId == 'Way'"},
-                {"scope", "feature"},
-                {"withFields", nlohmann::json::array({"typeId"})},
-                {"featureTypes", nlohmann::json::array({"Way"})},
+            auto filterBody = nlohmann::json::object({
+                {"channels", nlohmann::json::array({
+                    nlohmann::json::object({
+                        {"channelId", "ways"},
+                        {"scope", "feature"},
+                        {"entryFilter", "typeId == 'Way'"},
+                        {"featureFields",
+                         nlohmann::json::array({"typeId"})},
+                        {"featureTypes",
+                         nlohmann::json::array({"Way"})},
+                    }),
+                })},
                 {"responseType", "jsonl"},
                 {"requests", nlohmann::json::array({nlohmann::json::object({
                     {"mapId", "Tropico"},
@@ -656,7 +767,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 })})},
             }).dump();
 
-            auto [result, resp] = serviceClient.postJson("/search", searchBody);
+            auto [result, resp] =
+                serviceClient.postJson("/filter", filterBody);
             REQUIRE(result == drogon::ReqResult::Ok);
             REQUIRE(resp != nullptr);
             REQUIRE(resp->statusCode() == drogon::k200OK);
@@ -669,53 +781,84 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     continue;
                 }
                 auto parsed = nlohmann::json::parse(line);
-                if (parsed.value("type", "") != "SearchResultCollection") {
+                if (parsed.value("type", "") != "TileSubsetLayer") {
                     continue;
                 }
                 sawResultLayer = true;
-                REQUIRE(parsed["results"].size() == 1);
-                REQUIRE(parsed["resultFields"] == nlohmann::json::array({"typeId"}));
-                REQUIRE(parsed["info"].contains("searchId") == false);
-                REQUIRE(parsed["info"]["featureTypes"] == nlohmann::json::array({"Way"}));
+                REQUIRE(parsed["filterId"] == "");
+                REQUIRE(parsed["generation"] == 0);
+                REQUIRE(parsed["channels"].size() == 1);
+                REQUIRE(
+                    parsed["channels"][0]["channelId"] ==
+                    "ways");
+                REQUIRE(
+                    parsed["channels"][0]["featureFields"] ==
+                    nlohmann::json::array({"typeId"}));
+                REQUIRE(
+                    parsed["channels"][0]["featureEntries"]
+                        .size() == 1);
+                REQUIRE(
+                    parsed["channels"][0]["featureEntries"][0]
+                          ["values"] ==
+                    nlohmann::json::array({"Way"}));
             }
             REQUIRE(sawResultLayer);
 
             HttpClient client("127.0.0.1", service.port());
-            FeatureLayerSearchRequest search;
-            search.query_ = "typeId == 'Way'";
-            search.withFields_ = {"typeId"};
-            search.featureTypes_ = {"Way"};
+            FeatureLayerFilterRequest filter{
+                .filterId_ = "client-filter",
+                .generation_ = 3,
+                .channels_ = {
+                    FeatureLayerFilterChannel{
+                        .channelId_ = "ways",
+                        .entryFilter_ =
+                            "typeId == 'Way'",
+                        .scope_ =
+                            FeatureLayerFilterScope::Feature,
+                        .featureTypes_ = {"Way"},
+                        .featureFields_ = {"typeId"},
+                    },
+                },
+            };
 
-            auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
+            auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
                 "Tropico",
                 "WayLayer",
                 std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)},
-                std::move(search));
+                std::move(filter));
             size_t resultCount = 0;
             size_t statusCount = 0;
-            request->onSearchResult([&](TileSearchResultLayer::Ptr layer) {
-                resultCount += layer->size();
-                REQUIRE(layer->info().contains("searchId") == false);
-                REQUIRE(layer->info()["featureTypes"] == nlohmann::json::array({"Way"}));
+            request->onFilterResult([&](TileSubsetLayer::Ptr layer) {
+                REQUIRE(layer->size() == 1);
+                resultCount +=
+                    layer->at(0)->featureEntryCount();
+                REQUIRE(layer->filterId().empty());
+                REQUIRE(layer->generation() == 0);
+                REQUIRE(
+                    layer->at(0)->featureFields() ==
+                    std::vector<std::string>{"typeId"});
             });
             request->onStatus([&](nlohmann::json const&) {
                 ++statusCount;
             });
 
-            client.search(request)->wait();
+            client.filter(request)->wait();
             REQUIRE(request->getStatus() == RequestStatus::Success);
             REQUIRE(resultCount == 1);
             REQUIRE(statusCount > 0);
         }
 
-        // POST /tiles no longer accepts search fields; REST clients must use /search.
+        // POST /tiles does not accept filter fields.
         {
             SyncHttpClient serviceClient("127.0.0.1", service.port());
             auto [result, resp] = serviceClient.postJson(
                 "/tiles",
                 nlohmann::json::object({
-                    {"searchId", "legacy-rest-search"},
-                    {"searchQuery", "typeId == 'Way'"},
+                    {"channels", nlohmann::json::array({
+                        nlohmann::json::object({
+                            {"channelId", "ways"},
+                        }),
+                    })},
                     {"requests", nlohmann::json::array({nlohmann::json::object({
                         {"mapId", "Tropico"},
                         {"layerId", "WayLayer"},
@@ -726,7 +869,9 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(result == drogon::ReqResult::Ok);
             REQUIRE(resp != nullptr);
             REQUIRE(resp->statusCode() == drogon::k400BadRequest);
-            REQUIRE(std::string(resp->body()).find("POST /search") != std::string::npos);
+            REQUIRE(
+                std::string(resp->body()).find("POST /filter") !=
+                std::string::npos);
         }
 
         // Trigger 400 responses
@@ -900,6 +1045,16 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
                 auto conn = requireConnected(wsClient);
 
+                // Ping/Pong connection-health traffic is transport control,
+                // not an invalid tile request.
+                {
+                    wsClient.resetStatus();
+                    conn->send("health", drogon::WebSocketMessageType::Pong);
+                    REQUIRE_FALSE(
+                        wsClient.waitForStatus(std::chrono::milliseconds(200)));
+                    REQUIRE(conn->connected());
+                }
+
                 // Invalid JSON: should yield a Status message but keep the socket open.
                 {
                     conn->send("{not json", drogon::WebSocketMessageType::Text);
@@ -948,7 +1103,81 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 wsClient.stop();
             }
 
-            // WebSocket tiles: single-stage layers must also work through staged bucket requests.
+            // Coverage-only filter updates retain already forwarded overlap
+            // without retaining subset bytes on the server.
+            {
+                WsTilesClient wsClient(
+                    service.port(),
+                    layerInfo,
+                    false);
+                REQUIRE(wsClient.connect(true));
+                auto conn = requireConnected(wsClient);
+                auto makeRequest =
+                    [](std::initializer_list<int32_t> tileIds) {
+                        return nlohmann::json::object({
+                            {"filterId", "coverage-overlap"},
+                            {"generation", 1},
+                            {"channels", nlohmann::json::array({
+                                nlohmann::json::object({
+                                    {"channelId", "ways"},
+                                    {"scope", "feature"},
+                                    {"entryFilter", "typeId == 'Way'"},
+                                    {"featureTypes", nlohmann::json::array({"Way"})},
+                                }),
+                            })},
+                            {"requests", nlohmann::json::array({
+                                nlohmann::json::object({
+                                    {"mapId", "Tropico"},
+                                    {"layerId", "WayLayer"},
+                                    {"tileIds", tileIds},
+                                    {"priorityTileIds", tileIds},
+                                }),
+                            })},
+                        }).dump();
+                    };
+                auto sendAndDrain =
+                    [&](std::initializer_list<int32_t> tileIds) {
+                        wsClient.resetStatus();
+                        wsClient.resetTileCount();
+                        conn->send(
+                            makeRequest(tileIds),
+                            drogon::WebSocketMessageType::Text);
+                        REQUIRE(
+                            wsClient.waitForDone(
+                                std::chrono::seconds(10)));
+                        if (!wsClient.error().empty()) {
+                            wsClient.stop();
+                            FAIL(wsClient.error());
+                        }
+                        auto status = wsClient.lastStatus();
+                        REQUIRE(status.has_value());
+                        REQUIRE((*status)["requests"].size() == 1);
+                        REQUIRE(
+                            (*status)["requests"][0]["status"].get<int>() ==
+                            static_cast<int>(RequestStatus::Success));
+                        return wsClient.receivedTileCount();
+                    };
+
+                REQUIRE(
+                    sendAndDrain({
+                        kHttpTileIdValue,
+                        kSecondHttpTileIdValue,
+                    }) == 2);
+                REQUIRE(
+                    sendAndDrain({
+                        kSecondHttpTileIdValue,
+                        kThirdHttpTileIdValue,
+                    }) == 1);
+                // The first tile left the desired set in the preceding update,
+                // so requesting it again performs one fresh evaluation.
+                REQUIRE(
+                    sendAndDrain({
+                        kHttpTileIdValue,
+                    }) == 1);
+                wsClient.stop();
+            }
+
+            // WebSocket tiles: staged bucket requests are rejected after the protocol-3 cutover.
             {
                 auto req = nlohmann::json::object({
                     {"requests", nlohmann::json::array({nlohmann::json::object({
@@ -961,10 +1190,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 }).dump();
 
                 auto [status, wsTileCount] = runWsTilesRequest(true, req);
-                REQUIRE(wsTileCount == 1);
-                REQUIRE(status["requests"].size() == 1);
-                REQUIRE(status["requests"][0]["status"].get<int>() ==
-                        static_cast<int>(RequestStatus::Success));
+                REQUIRE(wsTileCount == 0);
+                REQUIRE(status["requests"].empty());
+                REQUIRE(status["message"].get<std::string>().find("tileIdsByNextStage") !=
+                        std::string::npos);
             }
         }
 

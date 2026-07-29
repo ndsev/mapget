@@ -53,11 +53,11 @@ struct TileSourceDataLayer::Impl
 
 TileSourceDataLayer::TileSourceDataLayer(
     TileId tileId,
-    std::string const& nodeId,
+    std::string const& stringPoolId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& stringPool) :
-    TileLayer(tileId, nodeId, mapId, layerInfo),
+    TileLayer(tileId, stringPoolId, mapId, layerInfo),
     ModelPool(stringPool),
     impl_(std::make_unique<Impl>(stringPool))
 {}
@@ -68,8 +68,8 @@ TileSourceDataLayer::TileSourceDataLayer(
     StringPoolResolveFun const& stringPoolGetter
 ) :
     TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
-    ModelPool(stringPoolGetter(nodeId_)),
-    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
+    ModelPool(stringPoolGetter(stringPoolId_)),
+    impl_(std::make_unique<Impl>(stringPoolGetter(stringPoolId_)))
 {
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {

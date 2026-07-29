@@ -1,5 +1,7 @@
 #include "locate.h"
 
+#include <stdexcept>
+
 namespace mapget
 {
 
@@ -11,6 +13,14 @@ LocateRequest::LocateRequest(const nlohmann::json& j)
         typeId_ = j["typeId"].get<std::string>();
     if (j.contains("featureId")) {
         auto featureIdParts = j["featureId"];
+        if (featureIdParts.is_string()) {
+            canonicalFeatureId_ = featureIdParts.get<std::string>();
+            return;
+        }
+        if (!featureIdParts.is_array() || featureIdParts.size() % 2 != 0) {
+            throw std::invalid_argument(
+                "LocateRequest featureId must be a canonical string or an even key/value array.");
+        }
         auto numFeatureIdParts = featureIdParts.size();
         for (auto kvIndex = 0; kvIndex < numFeatureIdParts; kvIndex += 2) {
             auto key = featureIdParts.at(kvIndex).get<std::string>();
@@ -29,6 +39,12 @@ LocateRequest::LocateRequest(std::string mapId, std::string typeId, KeyValuePair
 
 nlohmann::json LocateRequest::serialize() const
 {
+    if (canonicalFeatureId_) {
+        return nlohmann::json::object({
+            {"mapId", mapId_},
+            {"featureId", *canonicalFeatureId_},
+        });
+    }
     nlohmann::json featureId = nlohmann::json::array();
     for (auto const& [k, v] : featureId_) {
         featureId.emplace_back(k);
@@ -54,12 +70,20 @@ LocateResponse::LocateResponse(const nlohmann::json& j) : LocateRequest(j)
     if (j.contains("tileId")) {
         tileKey_ = MapTileKey(j["tileId"].get<std::string>());
     }
+    if (j.contains("canonicalFeatureId")) {
+        resolvedCanonicalFeatureId_ =
+            j["canonicalFeatureId"].get<std::string>();
+    }
 }
 
 nlohmann::json LocateResponse::serialize() const
 {
     auto result = LocateRequest::serialize();
     result["tileId"] = tileKey_.toString();
+    if (resolvedCanonicalFeatureId_) {
+        result["canonicalFeatureId"] =
+            *resolvedCanonicalFeatureId_;
+    }
     return result;
 }
 

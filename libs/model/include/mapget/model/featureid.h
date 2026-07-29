@@ -19,7 +19,6 @@ class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelL
 {
     friend class TileFeatureModelLayerBase;
     friend class TileFeatureLayer;
-    friend class TileSearchResultLayer;
     friend class Feature;
     friend class Relation;
     friend class bitsery::Access;
@@ -97,5 +96,10 @@ bool parseFeatureIdString(
     LayerInfo const& layerInfo,
     ParsedFeatureId& result,
     std::string* error = nullptr);
+
+/** Format typed parts into the same canonical string emitted by FeatureId::toString(). */
+std::string formatFeatureIdString(
+    std::string_view typeId,
+    KeyValuePairs const& featureIdParts);
 
 }

@@ -251,51 +251,21 @@ void validateIdPartValue(
     return nullptr;
 }
 
-/** Resolve a geometry stage label back to its layer-specific numeric stage. */
-[[nodiscard]] std::optional<uint32_t> stageFromGeometryName(
-    TileFeatureLayer const& tile,
-    nlohmann::json const& json,
-    bool strict)
+/** Read an optional logical geometry name without interpreting presentation stages. */
+[[nodiscard]] std::optional<std::string> geometryNameFromJson(
+    nlohmann::json const& json)
 {
-    auto const* layerInfo = tile.layerInfo().get();
-    if (!layerInfo) {
-        return std::nullopt;
-    }
     if (!json.contains("geometryName")) {
-        return layerInfo->highFidelityStage_;
+        return std::nullopt;
     }
     if (!json.at("geometryName").is_string()) {
         raiseImport("geometryName must be a string.");
     }
-    auto const label = json.at("geometryName").get<std::string>();
-    auto const& labels = layerInfo->stageLabels_;
-    std::optional<uint32_t> matchedStage;
-    for (uint32_t i = 0; i < labels.size(); ++i) {
-        if (labels[i] != label) {
-            continue;
-        }
-        if (matchedStage) {
-            if (strict) {
-                raiseImport(fmt::format(
-                    "Ambiguous geometryName '{}' for layer '{}'.",
-                    label,
-                    layerInfo->layerId_));
-            }
-            // In best-effort mode ambiguous labels are ignored rather than guessed.
-            return std::nullopt;
-        }
-        matchedStage = i;
+    auto name = json.at("geometryName").get<std::string>();
+    if (name.empty()) {
+        raiseImport("geometryName must not be empty.");
     }
-    if (!matchedStage) {
-        if (strict) {
-            raiseImport(fmt::format(
-                "Unknown geometryName '{}' for layer '{}'.",
-                label,
-                layerInfo->layerId_));
-        }
-        return std::nullopt;
-    }
-    return matchedStage;
+    return name;
 }
 
 /** Restrict best-effort synthetic ids to integer id-part slots. */
@@ -532,8 +502,8 @@ void applyGeometryDecorations(
         return;
     }
 
-    if (auto stage = stageFromGeometryName(tile, geometryJson, options.strict_)) {
-        geometry->setStage(*stage);
+    if (auto name = geometryNameFromJson(geometryJson)) {
+        geometry->setName(*name);
     }
     if (auto sourceDataJson = findSourceDataJson(geometryJson)) {
         if (auto refs = importSourceDataReferences(tile, *sourceDataJson)) {
@@ -740,7 +710,7 @@ void importFeatureGeometry(
                 {"type", "Polygon"},
                 {"coordinates", polygon},
             });
-            if (auto stage = stageFromGeometryName(tile, geometryJson, options.strict_)) {
+            if (geometryJson.contains("geometryName")) {
                 polyJson["geometryName"] = geometryJson.at("geometryName");
             }
             if (auto sourceDataJson = findSourceDataJson(geometryJson)) {
@@ -778,8 +748,8 @@ void importValidityCollection(
             }
             validity->setDirection(*direction);
         }
-        if (auto stage = stageFromGeometryName(tile, value, options.strict_)) {
-            validity->setGeometryStage(*stage);
+        if (auto name = geometryNameFromJson(value)) {
+            validity->setGeometryName(*name);
         }
 
         if (value.contains("from") || value.contains("to")) {
@@ -1094,7 +1064,9 @@ void importGeoJson(
 
     if (options.strict_) {
         if (geoJson.contains("glbAttachment")) {
-            raiseImport("GLB attachment import is not supported yet.");
+            raiseImport(
+                "Embedded GLB attachment import is not supported; "
+                "use glbAttachmentName and the attachment API.");
         }
         // Strict mode treats top-level metadata mismatches as caller/configuration errors.
         if (geoJson.contains("mapgetTileId") && geoJson.at("mapgetTileId").get<int32_t>() != tile.tileId().value()) {
@@ -1110,6 +1082,17 @@ void importGeoJson(
 
     if (geoJson.contains("geometryAnchor")) {
         tile.setGeometryAnchor(pointFromCoordinateJson(geoJson.at("geometryAnchor")));
+    }
+    if (auto attachmentName =
+            geoJson.find("glbAttachmentName");
+        attachmentName != geoJson.end())
+    {
+        if (!attachmentName->is_string()) {
+            raiseImport(
+                "glbAttachmentName must be a string.");
+        }
+        tile.setGlbAttachmentName(
+            attachmentName->get<std::string>());
     }
     if (geoJson.contains("timestamp")) {
         auto const& timestampJson = geoJson.at("timestamp");

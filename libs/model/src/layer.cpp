@@ -104,7 +104,7 @@ MapTileKey::MapTileKey(const std::string& str)
         }
     }
 
-    if (parts.size() < 4)
+    if (parts.size() != 4)
         raise(fmt::format("Invalid cache tile id: {}", str));
 
     layer_ = nlohmann::json(std::string(parts[0])).get<LayerType>();
@@ -117,21 +117,10 @@ MapTileKey::MapTileKey(const std::string& str)
 
     tileId_ = parseTileIdComponent(parts[3], str, layer_);
 
-    if (parts.size() >= 5) {
-        uint32_t parsedStage = 0;
-        auto parseResult = std::from_chars(
-            parts[4].data(),
-            parts[4].data() + parts[4].size(),
-            parsedStage,
-            10);
-        if (parseResult.ec == std::errc() && parseResult.ptr == parts[4].data() + parts[4].size()) {
-            stage_ = parsedStage;
-        }
-    }
 }
 
-MapTileKey::MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId, uint32_t stage) :
-    layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), tileId_(tileId), stage_(stage)
+MapTileKey::MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId) :
+    layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), tileId_(tileId)
 {}
 
 MapTileKey::MapTileKey(const TileLayer& data)
@@ -140,30 +129,28 @@ MapTileKey::MapTileKey(const TileLayer& data)
     mapId_ = data.mapId();
     layerId_ = data.layerInfo()->layerId_;
     tileId_ = data.tileId();
-    stage_ = data.stage().value_or(UnspecifiedStage);
 }
 
 std::string MapTileKey::toString() const
 {
     return fmt::format(
-        "{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}",
         nlohmann::json(layer_).get<std::string>(),
         escapeIdentifierComponent(mapId_),
         escapeIdentifierComponent(layerId_),
-        tileId_.value(),
-        stage_);
+        tileId_.value());
 }
 
 bool MapTileKey::operator<(const MapTileKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_, stage_) <
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_, other.stage_);
+    return std::tie(layer_, mapId_, layerId_, tileId_) <
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
 }
 
 bool MapTileKey::operator==(const MapTileKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_, stage_) ==
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_, other.stage_);
+    return std::tie(layer_, mapId_, layerId_, tileId_) ==
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
 }
 
 bool MapTileKey::operator!=(const MapTileKey& other) const
@@ -173,12 +160,12 @@ bool MapTileKey::operator!=(const MapTileKey& other) const
 
 TileLayer::TileLayer(
     const TileId& id,
-    std::string nodeId,
+    std::string stringPoolId,
     std::string mapId,
     const std::shared_ptr<LayerInfo>& info
 )
     : tileId_(id),
-      nodeId_(std::move(nodeId)),
+      stringPoolId_(std::move(stringPoolId)),
       mapId_(std::move(mapId)),
       layerInfo_(info),
       timestamp_(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -218,7 +205,7 @@ TileLayer::TileLayer(
         rawTileId,
         fmt::format("serialized layer '{}:{}'", mapId_, layerName),
         layerInfo_->type_);
-    s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
+    s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
 
     int64_t timestamp = 0;
     s.value8b(timestamp);
@@ -271,8 +258,8 @@ TileId TileLayer::tileId() const {
     return tileId_;
 }
 
-std::string TileLayer::nodeId() const {
-    return nodeId_;
+std::string TileLayer::stringPoolId() const {
+    return stringPoolId_;
 }
 
 std::string TileLayer::mapId() const {
@@ -303,6 +290,10 @@ nlohmann::json TileLayer::info() const {
     return info_;
 }
 
+void TileLayer::setInfo(nlohmann::json const& info) {
+    info_ = info;
+}
+
 std::optional<std::string> TileLayer::legalInfo() const
 {
     return legalInfo_;
@@ -312,8 +303,8 @@ void TileLayer::setTileId(const TileId& id) {
     tileId_ = id;
 }
 
-void TileLayer::setNodeId(const std::string& id) {
-    nodeId_ = id;
+void TileLayer::setStringPoolId(const std::string& id) {
+    stringPoolId_ = id;
 }
 
 void TileLayer::setMapId(const std::string& id) {
@@ -369,16 +360,6 @@ void TileLayer::setLoadState(LoadState state)
     }
 }
 
-std::optional<uint32_t> TileLayer::stage() const
-{
-    return {};
-}
-
-void TileLayer::setStage(std::optional<uint32_t> /*stage*/)
-{
-    // Base TileLayer does not carry stage information.
-}
-
 tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
 {
     using namespace std::chrono;
@@ -390,7 +371,7 @@ tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
     s.object(mapVersion_);
     auto rawTileId = tileId_.value();
     s.value4b(rawTileId);
-    s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
+    s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
     s.value8b(duration_cast<microseconds>(timestamp_.time_since_epoch()).count());
     s.value1b(ttl_.has_value());
     if (ttl_)

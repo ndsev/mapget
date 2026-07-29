@@ -70,7 +70,7 @@ struct BoundModelNodeBase : public BoundModelNode
             Base wrapper for all mapget/SIMFIL model nodes exposed to Python.
 
             Concrete subclasses represent objects, arrays, features, attributes,
-            geometry, feature ids, search results, and other typed nodes.
+            geometry, feature ids, subset entries, and other typed nodes.
         )pbdoc")
             .def(
                 "value",
@@ -439,15 +439,19 @@ struct BoundGeometry : public BoundModelNode
             })
             .def("length", [](BoundGeometry& self) { return self.modelNodePtr_->length(); },
                 "Get total length in metres (for polylines).")
-            .def("stage", [](BoundGeometry& self) {
-                    return self.modelNodePtr_->stage();
+            .def("name", [](BoundGeometry& self) -> std::optional<std::string> {
+                    auto const name = self.modelNodePtr_->name();
+                    return name ? std::optional<std::string>(*name) : std::nullopt;
                 },
-                "Get the geometry stage, or None if no stage is set.")
-            .def("set_stage", [](BoundGeometry& self, std::optional<uint32_t> stage) {
-                    self.modelNodePtr_->setStage(stage);
+                "Get the semantic geometry name, or None if no name is set.")
+            .def("set_name", [](BoundGeometry& self, std::optional<std::string> const& name) {
+                    if (name)
+                        self.modelNodePtr_->setName(*name);
+                    else
+                        self.modelNodePtr_->setName(std::nullopt);
                 },
-                py::arg("stage") = std::nullopt,
-                "Set or clear the geometry stage.");
+                py::arg("name") = std::nullopt,
+                "Set or clear the semantic geometry name.");
     }
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
@@ -462,7 +466,7 @@ struct BoundGeometryCollection : public BoundModelNode
     static void bind(py::module_& m)
     {
         py::class_<BoundGeometryCollection, BoundModelNode>(m, "GeometryCollection", R"pbdoc(
-            Ordered collection of geometry primitives for a feature or search result.
+            Ordered collection of geometry primitives for a feature or subset entry.
         )pbdoc")
             .def(
                 "new_geometry",
@@ -780,21 +784,6 @@ struct BoundFeature : public BoundModelNode
                 { return BoundAttributeLayerList(self.modelNodePtr_->attributeLayers()); },
                 "Access this feature's attribute layer collection.")
             .def(
-                "lod",
-                [](BoundFeature& self) {
-                    return static_cast<uint32_t>(self.modelNodePtr_->lod());
-                },
-                "Get this feature's level-of-detail value as an integer in [0, 7].")
-            .def(
-                "set_lod",
-                [](BoundFeature& self, uint32_t lod) {
-                    if (lod > static_cast<uint32_t>(Feature::MAX_LOD))
-                        throw py::value_error("Feature LOD must be in the range [0, 7].");
-                    self.modelNodePtr_->setLod(static_cast<Feature::LOD>(lod));
-                },
-                py::arg("lod"),
-                "Set this feature's level-of-detail value as an integer in [0, 7].")
-            .def(
                 "relations",
                 [](BoundFeature& self) {
                     py::list result;
@@ -966,15 +955,19 @@ inline void BoundValidity::bind(py::module_& m)
                 return self.modelNodePtr_->geometryOffsetType();
             },
             "Get the offset interpretation used by point/range validities.")
-        .def("geometry_stage", [](BoundValidity& self) {
-                return self.modelNodePtr_->geometryStage();
+        .def("geometry_name", [](BoundValidity& self) -> std::optional<std::string> {
+                auto const name = self.modelNodePtr_->geometryName();
+                return name ? std::optional<std::string>(*name) : std::nullopt;
             },
-            "Get the referenced geometry stage if one is set.")
-        .def("set_geometry_stage", [](BoundValidity& self, std::optional<uint32_t> stage) {
-                self.modelNodePtr_->setGeometryStage(stage);
+            "Get the referenced semantic geometry name if one is set.")
+        .def("set_geometry_name", [](BoundValidity& self, std::optional<std::string> const& name) {
+                if (name)
+                    self.modelNodePtr_->setGeometryName(*name);
+                else
+                    self.modelNodePtr_->setGeometryName(std::nullopt);
             },
-            py::arg("stage"),
-            "Set or clear the referenced geometry stage.")
+            py::arg("name"),
+            "Set or clear the referenced semantic geometry name.")
         .def("feature_id", [](BoundValidity& self) -> py::object {
                 if (auto featureId = self.modelNodePtr_->featureId())
                     return py::cast(BoundFeatureId(featureId));
@@ -1060,50 +1053,62 @@ inline void BoundMultiValidity::bind(py::module_& m)
     )pbdoc")
         .def("new_point", [](BoundMultiValidity& self,
                              Point const& point,
-                             std::optional<uint32_t> geometryStage,
+                             std::optional<std::string> const& geometryName,
                              Validity::Direction direction) {
-                return BoundValidity(self.modelNodePtr_->newPoint(point, geometryStage, direction));
+                auto const name = geometryName
+                    ? std::optional<std::string_view>(*geometryName)
+                    : std::nullopt;
+                return BoundValidity(self.modelNodePtr_->newPoint(point, name, direction));
             },
             py::arg("point"),
-            py::arg("geometry_stage") = std::nullopt,
+            py::arg("geometry_name") = std::nullopt,
             py::arg("direction") = Validity::Empty,
             "Append a geographic point validity.")
         .def("new_offset_point", [](BoundMultiValidity& self,
                                     Validity::GeometryOffsetType offsetType,
                                     double point,
-                                    std::optional<uint32_t> geometryStage,
+                                    std::optional<std::string> const& geometryName,
                                     Validity::Direction direction) {
-                return BoundValidity(self.modelNodePtr_->newPoint(offsetType, point, geometryStage, direction));
+                auto const name = geometryName
+                    ? std::optional<std::string_view>(*geometryName)
+                    : std::nullopt;
+                return BoundValidity(self.modelNodePtr_->newPoint(offsetType, point, name, direction));
             },
             py::arg("offset_type"),
             py::arg("point"),
-            py::arg("geometry_stage") = std::nullopt,
+            py::arg("geometry_name") = std::nullopt,
             py::arg("direction") = Validity::Empty,
             "Append a one-dimensional point-offset validity.")
         .def("new_range", [](BoundMultiValidity& self,
                              Point const& start,
                              Point const& end,
-                             std::optional<uint32_t> geometryStage,
+                             std::optional<std::string> const& geometryName,
                              Validity::Direction direction) {
-                return BoundValidity(self.modelNodePtr_->newRange(start, end, geometryStage, direction));
+                auto const name = geometryName
+                    ? std::optional<std::string_view>(*geometryName)
+                    : std::nullopt;
+                return BoundValidity(self.modelNodePtr_->newRange(start, end, name, direction));
             },
             py::arg("start"),
             py::arg("end"),
-            py::arg("geometry_stage") = std::nullopt,
+            py::arg("geometry_name") = std::nullopt,
             py::arg("direction") = Validity::Empty,
             "Append a geographic range validity.")
         .def("new_offset_range", [](BoundMultiValidity& self,
                                     Validity::GeometryOffsetType offsetType,
                                     double start,
                                     double end,
-                                    std::optional<uint32_t> geometryStage,
+                                    std::optional<std::string> const& geometryName,
                                     Validity::Direction direction) {
-                return BoundValidity(self.modelNodePtr_->newRange(offsetType, start, end, geometryStage, direction));
+                auto const name = geometryName
+                    ? std::optional<std::string_view>(*geometryName)
+                    : std::nullopt;
+                return BoundValidity(self.modelNodePtr_->newRange(offsetType, start, end, name, direction));
             },
             py::arg("offset_type"),
             py::arg("start"),
             py::arg("end"),
-            py::arg("geometry_stage") = std::nullopt,
+            py::arg("geometry_name") = std::nullopt,
             py::arg("direction") = Validity::Empty,
             "Append a one-dimensional range-offset validity.")
         .def("new_geometry", [](BoundMultiValidity& self,
@@ -1122,14 +1127,14 @@ inline void BoundMultiValidity::bind(py::module_& m)
             py::arg("feature_id"),
             py::arg("direction") = Validity::Empty,
             "Append a validity that references another feature's full geometry.")
-        .def("new_geom_stage", [](BoundMultiValidity& self,
-                                  uint32_t geometryStage,
+        .def("new_geom_name", [](BoundMultiValidity& self,
+                                  std::string const& geometryName,
                                   Validity::Direction direction) {
-                return BoundValidity(self.modelNodePtr_->newGeomStage(geometryStage, direction));
+                return BoundValidity(self.modelNodePtr_->newGeomName(geometryName, direction));
             },
-            py::arg("geometry_stage"),
+            py::arg("geometry_name"),
             py::arg("direction") = Validity::Empty,
-            "Append a validity that references one staged geometry.")
+            "Append a validity that references one named geometry.")
         .def("new_complete", [](BoundMultiValidity& self, Validity::Direction direction) {
                 return BoundValidity(self.modelNodePtr_->newComplete(direction));
             },

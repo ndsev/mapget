@@ -44,6 +44,9 @@ struct DataSourceDescriptor {
     /** Preserves `mapviewer.yaml` order and gives clear diagnostics for config-entry failures. */
     uint32_t configIndex = 0;
 
+    /** Stable catalog identity used only for lifecycle and optional request assertions. */
+    std::string sourceId;
+
     /** Needed for placeholder UI and error messages before a `DataSource` exists. */
     std::string type;
 

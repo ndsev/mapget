@@ -50,14 +50,19 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
-    void handleSearchRequest(
+    void handleFilterRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
+
+    /** Handle GET /attachment without blocking the HTTP event loop. */
+    void handleAttachmentRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
     void handleTilesLikeRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback,
-        bool searchEndpoint) const;
+        bool filterEndpoint) const;
 
     void handleSourcesRequest(
         const drogon::HttpRequestPtr& req,

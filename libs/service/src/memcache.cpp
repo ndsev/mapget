@@ -31,6 +31,14 @@ void MemCache::putTileLayerBlob(const MapTileKey& k, const std::string& v)
     }
 }
 
+void MemCache::eraseTileLayerBlob(MapTileKey const& k)
+{
+    std::unique_lock cacheLock(cacheMutex_);
+    auto const key = k.toString();
+    cachedTiles_.erase(key);
+    std::erase(fifo_, key);
+}
+
 void MemCache::forEachTileLayerBlob(const TileBlobVisitor& cb) const
 {
     std::shared_lock cacheLock(cacheMutex_);

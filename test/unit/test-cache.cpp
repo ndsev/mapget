@@ -27,9 +27,9 @@ struct CacheTraits;
 
 template<>
 struct CacheTraits<SQLiteCache> {
-    static constexpr const char* nodeIdPrefix = "SQLiteCacheTestingNode";
-    static constexpr const char* otherNodeIdPrefix = "OtherSQLiteCacheTestingNode";
-    static constexpr const char* stringPoolNodeIdPrefix = "SQLiteStringPoolTestingNode";
+    static constexpr const char* stringPoolIdPrefix = "SQLiteCacheTestingNode";
+    static constexpr const char* otherStringPoolIdPrefix = "OtherSQLiteCacheTestingNode";
+    static constexpr const char* stringPoolStringPoolIdPrefix = "SQLiteStringPoolTestingNode";
     static constexpr const char* defaultCacheName = "mapget-cache.db";
     static constexpr const char* testDirPrefix = "sqlite-unit-test-";
     static constexpr bool needsDbExtension = true;
@@ -37,9 +37,9 @@ struct CacheTraits<SQLiteCache> {
 
 template<>
 struct CacheTraits<NullCache> {
-    static constexpr const char* nodeIdPrefix = "NullCacheTestingNode";
-    static constexpr const char* otherNodeIdPrefix = "OtherNullCacheTestingNode";
-    static constexpr const char* stringPoolNodeIdPrefix = "NullStringPoolTestingNode";
+    static constexpr const char* stringPoolIdPrefix = "NullCacheTestingNode";
+    static constexpr const char* otherStringPoolIdPrefix = "OtherNullCacheTestingNode";
+    static constexpr const char* stringPoolStringPoolIdPrefix = "NullStringPoolTestingNode";
     static constexpr const char* defaultCacheName = "";
     static constexpr const char* testDirPrefix = "null-unit-test-";
     static constexpr bool needsDbExtension = false;
@@ -80,9 +80,6 @@ namespace {
             std::vector<Coverage>{
                 {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
                 {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}},
-            1,
-            std::vector<std::string>{"Complete"},
-            0,
             true,
             false,
             Version{0, 0, 0}});
@@ -95,12 +92,12 @@ namespace {
         })"_json);
     }
 
-    DataSourceInfo createTestDataSourceInfo(const std::string& nodeId, const std::string& mapId, std::shared_ptr<LayerInfo> layerInfo) {
+    DataSourceInfo createTestDataSourceInfo(const std::string& stringPoolId, const std::string& mapId, std::shared_ptr<LayerInfo> layerInfo) {
         std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
         layers[layerInfo->layerId_] = layerInfo;
         
         return DataSourceInfo{
-            nodeId,
+            stringPoolId,
             mapId,
             layers,
             5,
@@ -109,15 +106,18 @@ namespace {
             TileLayerStream::CurrentProtocolVersion};
     }
 
-    std::string createSerializedStringPoolMessage(const std::string& testStringPoolNodeId) {
-        auto testStringPool = StringPool(testStringPoolNodeId);
+    std::string createSerializedStringPoolMessage(
+        const std::string& testStringPoolStringPoolId,
+        Version protocolVersion =
+            TileLayerStream::CurrentProtocolVersion) {
+        auto testStringPool = StringPool(testStringPoolStringPoolId);
         
         std::stringstream serializedStrings;
         testStringPool.write(serializedStrings, 0);
 
         std::stringstream serializedMessage;
         bitsery::Serializer<bitsery::OutputStreamAdapter> s(serializedMessage);
-        s.object(TileLayerStream::CurrentProtocolVersion);
+        s.object(protocolVersion);
         s.value1b(TileLayerStream::MessageType::StringPool);
         s.value4b((uint32_t)serializedStrings.str().size());
         serializedMessage << serializedStrings.str();
@@ -162,14 +162,14 @@ namespace {
     // Helper for creating test tiles with features
     std::shared_ptr<TileFeatureLayer> createTestTile(
         const TileId& tileId,
-        const std::string& nodeId,
+        const std::string& stringPoolId,
         const std::string& mapId,
         std::shared_ptr<LayerInfo> layerInfo,
         std::shared_ptr<StringPool> strings,
         int featureCount = 0) {
         
         auto tile = std::make_shared<TileFeatureLayer>(
-            tileId, nodeId, mapId, layerInfo, strings);
+            tileId, stringPoolId, mapId, layerInfo, strings);
         
         for (int i = 0; i < featureCount; ++i) {
             tile->newFeature("Way", {
@@ -194,37 +194,37 @@ void testCacheImplementation() {
 
     // Create a basic TileFeatureLayer.
     auto tileId = TileId::fromWgs84(42., 11., 13);
-    auto nodeId = Traits::nodeIdPrefix;
+    auto stringPoolId = Traits::stringPoolIdPrefix;
     auto mapId = "CacheMe";
     // Create empty shared autofilled string dictionary.
-    auto strings = std::make_shared<StringPool>(nodeId);
+    auto strings = std::make_shared<StringPool>(stringPoolId);
     auto tile = std::make_shared<TileFeatureLayer>(
         tileId,
-        nodeId,
+        stringPoolId,
         mapId,
         layerInfo,
         strings);
     // Create a DataSourceInfo object.
-    DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+    DataSourceInfo info = createTestDataSourceInfo(stringPoolId, mapId, layerInfo);
 
     // Create another basic TileFeatureLayer for a different node.
     auto otherTileId = TileId::fromWgs84(42., 12., 13);
-    auto otherNodeId = Traits::otherNodeIdPrefix;
+    auto otherStringPoolId = Traits::otherStringPoolIdPrefix;
     auto otherMapId = "CacheMeToo";
     // Create empty shared autofilled string-pool.
-    auto otherStringPool = std::make_shared<StringPool>(otherNodeId);
+    auto otherStringPool = std::make_shared<StringPool>(otherStringPoolId);
     auto otherTile = std::make_shared<TileFeatureLayer>(
         otherTileId,
-        otherNodeId,
+        otherStringPoolId,
         otherMapId,
         layerInfo,
         otherStringPool);
     // Create another DataSourceInfo object, but reuse the layer info.
-    DataSourceInfo otherInfo = createTestDataSourceInfo(otherNodeId, otherMapId, layerInfo);
+    DataSourceInfo otherInfo = createTestDataSourceInfo(otherStringPoolId, otherMapId, layerInfo);
 
 
-    auto testStringPoolNodeId = Traits::stringPoolNodeIdPrefix;
-    auto serializedMessage = createSerializedStringPoolMessage(testStringPoolNodeId);
+    auto testStringPoolStringPoolId = Traits::stringPoolStringPoolIdPrefix;
+    auto serializedMessage = createSerializedStringPoolMessage(testStringPoolStringPoolId);
 
     auto getFeatureLayer = [](auto& cache, auto tileId, auto info) {
         auto layer = cache->getTileLayer(tileId, info);
@@ -273,7 +273,7 @@ void testCacheImplementation() {
         cache->putTileLayer(otherTile);
 
         auto returnedTile = getFeatureLayer(cache, otherTile->id(), otherInfo);
-        REQUIRE(returnedTile->nodeId() == otherTile->nodeId());
+        REQUIRE(returnedTile->stringPoolId() == otherTile->stringPoolId());
 
         // String pools are updated with getTileLayer.
         stringPoolCount = cache->getStatistics()["loaded-string-pools"].template get<int>();
@@ -313,8 +313,8 @@ void testCacheImplementation() {
         auto cache = std::make_shared<CacheType>();
         REQUIRE(cache->getStatistics()["loaded-string-pools"] == 2);
 
-        cache->putStringPoolBlob(testStringPoolNodeId, serializedMessage);
-        auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
+        cache->putStringPoolBlob(testStringPoolStringPoolId, serializedMessage);
+        auto returnedEntry = cache->getStringPoolBlob(testStringPoolStringPoolId);
 
         // Make sure the string pool was properly stored.
         REQUIRE(returnedEntry.value() == serializedMessage);
@@ -331,7 +331,7 @@ void testCacheImplementation() {
         REQUIRE(cache->getStatistics()["loaded-string-pools"] == 3);
 
         // Check that the same value can still be retrieved from string pooln.
-        auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
+        auto returnedEntry = cache->getStringPoolBlob(testStringPoolStringPoolId);
         REQUIRE(returnedEntry.value() == serializedMessage);
     }
 
@@ -360,21 +360,21 @@ void testNullCacheImplementation() {
 
     // Create a basic TileFeatureLayer.
     auto tileId = TileId::fromWgs84(42., 11., 13);
-    auto nodeId = Traits::nodeIdPrefix;
+    auto stringPoolId = Traits::stringPoolIdPrefix;
     auto mapId = "CacheMe";
     // Create empty shared autofilled string dictionary.
-    auto strings = std::make_shared<StringPool>(nodeId);
+    auto strings = std::make_shared<StringPool>(stringPoolId);
     auto tile = std::make_shared<TileFeatureLayer>(
         tileId,
-        nodeId,
+        stringPoolId,
         mapId,
         layerInfo,
         strings);
     // Create a DataSourceInfo object.
-    DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+    DataSourceInfo info = createTestDataSourceInfo(stringPoolId, mapId, layerInfo);
 
-    auto testStringPoolNodeId = Traits::stringPoolNodeIdPrefix;
-    auto serializedMessage = createSerializedStringPoolMessage(testStringPoolNodeId);
+    auto testStringPoolStringPoolId = Traits::stringPoolStringPoolIdPrefix;
+    auto serializedMessage = createSerializedStringPoolMessage(testStringPoolStringPoolId);
 
     SECTION("NullCache always returns empty/cache misses") {
         // Create NullCache instance
@@ -396,8 +396,8 @@ void testNullCacheImplementation() {
         REQUIRE(cache->getStatistics()["cache-misses"] == 1);
         
         // Try string pool operations
-        cache->putStringPoolBlob(testStringPoolNodeId, serializedMessage);
-        auto returnedEntry = cache->getStringPoolBlob(testStringPoolNodeId);
+        cache->putStringPoolBlob(testStringPoolStringPoolId, serializedMessage);
+        auto returnedEntry = cache->getStringPoolBlob(testStringPoolStringPoolId);
         
         // String pool retrieval should also return empty
         REQUIRE(!returnedEntry.has_value());
@@ -434,9 +434,9 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         auto cache = std::make_shared<SQLiteCache>(0, test_cache.string(), true);
         
         // Create test data
-        auto nodeId = "ConcurrentTestNode";
+        auto stringPoolId = "ConcurrentTestNode";
         auto mapId = "ConcurrentMap";
-        DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+        DataSourceInfo info = createTestDataSourceInfo(stringPoolId, mapId, layerInfo);
         
         // Create multiple tiles for testing
         std::vector<TileId> tileIds;
@@ -445,10 +445,10 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
             auto tileId = TileId::fromWgs84(42.0 + i * 0.1, 11.0, 13);
             auto tile = createTestTile(
                 tileId,
-                nodeId,
+                stringPoolId,
                 mapId,
                 layerInfo,
-                std::make_shared<StringPool>(nodeId),
+                std::make_shared<StringPool>(stringPoolId),
                 1);
             tileIds.push_back(tileId);
             tileKeys.push_back(tile->id());
@@ -521,7 +521,7 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         std::vector<std::thread> writers;
         for (int i = 0; i < 2; ++i) {
             writers.emplace_back([&cache, &tileIds, &layerInfo, &metrics, i,
-                                  nodeId, mapId, &start, &completedWrites,
+                                  stringPoolId, mapId, &start, &completedWrites,
                                   &expectedFeatureCounts]() {
                 while (!start.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
@@ -535,10 +535,10 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
                             expectedFeatureCounts[tileIndex].fetch_add(1, std::memory_order_relaxed) + 1;
                         auto tile = createTestTile(
                             tileIds[tileIndex],
-                            nodeId,
+                            stringPoolId,
                             mapId,
                             layerInfo,
-                            std::make_shared<StringPool>(nodeId),
+                            std::make_shared<StringPool>(stringPoolId),
                             static_cast<int>(featureCount));
                         cache->putTileLayer(tile);
                         metrics.successfulWrites++;
@@ -592,26 +592,26 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         auto cache = std::make_shared<SQLiteCache>(0, test_cache.string(), true);
         
         // Create test data for multiple nodes
-        std::vector<std::string> nodeIds = {"Node1", "Node2", "Node3", "Node4"};
+        std::vector<std::string> stringPoolIds = {"Node1", "Node2", "Node3", "Node4"};
         std::vector<std::string> mapIds = {"Map1", "Map2", "Map3", "Map4"};
         
         ConcurrentTestMetrics metrics;
         
         // Start multiple writer threads, each writing different tiles
         std::vector<std::thread> writers;
-        for (size_t i = 0; i < nodeIds.size(); ++i) {
-            writers.emplace_back([&cache, &layerInfo, &metrics, i, &nodeIds, &mapIds]() {
-                auto nodeId = nodeIds[i];
+        for (size_t i = 0; i < stringPoolIds.size(); ++i) {
+            writers.emplace_back([&cache, &layerInfo, &metrics, i, &stringPoolIds, &mapIds]() {
+                auto stringPoolId = stringPoolIds[i];
                 auto mapId = mapIds[i];
-                auto strings = std::make_shared<StringPool>(nodeId);
-                DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+                auto strings = std::make_shared<StringPool>(stringPoolId);
+                DataSourceInfo info = createTestDataSourceInfo(stringPoolId, mapId, layerInfo);
                 
                 for (int j = 0; j < 25; ++j) {
                     try {
                         // Create unique tiles for each thread
                         auto tileId = TileId::fromWgs84(40.0 + i, 10.0 + j * 0.1, 13);
                         auto tile = std::make_shared<TileFeatureLayer>(
-                            tileId, nodeId, mapId, layerInfo, strings);
+                            tileId, stringPoolId, mapId, layerInfo, strings);
                         
                         // Add multiple features
                         // Store area ID to ensure it outlives the string_view
@@ -631,8 +631,8 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
                         
                         // Also test string pool writes
                         if (j % 5 == 0) {
-                            std::string poolData = "TestPool_" + nodeId + "_" + std::to_string(j);
-                            cache->putStringPoolBlob(nodeId + "_" + std::to_string(j), poolData);
+                            std::string poolData = "TestPool_" + stringPoolId + "_" + std::to_string(j);
+                            cache->putStringPoolBlob(stringPoolId + "_" + std::to_string(j), poolData);
                         }
                     } catch (...) {
                         metrics.writeErrors++;
@@ -649,16 +649,16 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         REQUIRE(metrics.successfulWrites == 100); // 4 writers * 25 writes each
         
         // Verify all data was written correctly by reading it back
-        for (size_t i = 0; i < nodeIds.size(); ++i) {
-            auto nodeId = nodeIds[i];
+        for (size_t i = 0; i < stringPoolIds.size(); ++i) {
+            auto stringPoolId = stringPoolIds[i];
             auto mapId = mapIds[i];
-            DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+            DataSourceInfo info = createTestDataSourceInfo(stringPoolId, mapId, layerInfo);
             
             for (int j = 0; j < 25; ++j) {
                 auto tileId = TileId::fromWgs84(40.0 + i, 10.0 + j * 0.1, 13);
                 // Need to create a temporary tile to get the proper MapTileKey
                 auto tempTile = std::make_shared<TileFeatureLayer>(
-                    tileId, nodeId, mapId, layerInfo, std::make_shared<StringPool>(nodeId));
+                    tileId, stringPoolId, mapId, layerInfo, std::make_shared<StringPool>(stringPoolId));
                 auto tile = cache->getTileLayer(tempTile->id(), info);
                 REQUIRE(tile.tile != nullptr);
                 auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(tile.tile);
@@ -676,17 +676,17 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         auto cache = std::make_shared<SQLiteCache>(0, test_cache.string(), true);
         
         // Create test data
-        auto nodeId = "ReaderTestNode";
+        auto stringPoolId = "ReaderTestNode";
         auto mapId = "ReaderTestMap";
-        auto strings = std::make_shared<StringPool>(nodeId);
-        DataSourceInfo info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+        auto strings = std::make_shared<StringPool>(stringPoolId);
+        DataSourceInfo info = createTestDataSourceInfo(stringPoolId, mapId, layerInfo);
         
         // Write some initial data
         std::vector<TileId> tileIds;
         for (int i = 0; i < 20; ++i) {
             auto tileId = TileId::fromWgs84(42.0 + i * 0.1, 11.0, 13);
             tileIds.push_back(tileId);
-            auto tile = createTestTile(tileId, nodeId, mapId, layerInfo, strings, 1);
+            auto tile = createTestTile(tileId, stringPoolId, mapId, layerInfo, strings, 1);
             cache->putTileLayer(tile);
         }
         
@@ -695,14 +695,14 @@ TEST_CASE("SQLiteCache Concurrent Access", "[Cache][Concurrent]")
         // Start many reader threads
         std::vector<std::thread> readers;
         for (int i = 0; i < 10; ++i) {
-            readers.emplace_back([&cache, &tileIds, &info, &metrics, &nodeId, &mapId, &layerInfo, &strings]() {
+            readers.emplace_back([&cache, &tileIds, &info, &metrics, &stringPoolId, &mapId, &layerInfo, &strings]() {
                 for (int j = 0; j < 50; ++j) {
                     try {
                         // Read tiles in a pattern
                         for (const auto& tileId : tileIds) {
                             // Need to create a temporary tile to get the proper MapTileKey
                             auto tempTile = std::make_shared<TileFeatureLayer>(
-                                tileId, nodeId, mapId, layerInfo, strings);
+                                tileId, stringPoolId, mapId, layerInfo, strings);
                             auto tile = cache->getTileLayer(tempTile->id(), info);
                             if (tile.tile) {
                                 metrics.successfulReads++;
@@ -741,16 +741,16 @@ TEST_CASE("NullCache", "[Cache]")
 TEST_CASE("Cache roundtrips SourceData tile-zero sentinel", "[Cache]")
 {
     auto layerInfo = createMetadataSourceDataLayerInfo();
-    auto nodeId = std::string("MetadataSourceDataNode");
+    auto stringPoolId = std::string("MetadataSourceDataNode");
     auto mapId = std::string("MetadataMap");
-    auto strings = std::make_shared<StringPool>(nodeId);
+    auto strings = std::make_shared<StringPool>(stringPoolId);
     auto sourceData = std::make_shared<TileSourceDataLayer>(
         TileId(),
-        nodeId,
+        stringPoolId,
         mapId,
         layerInfo,
         strings);
-    auto info = createTestDataSourceInfo(nodeId, mapId, layerInfo);
+    auto info = createTestDataSourceInfo(stringPoolId, mapId, layerInfo);
     auto cache = std::make_shared<MemCache>(8);
 
     cache->putTileLayer(sourceData);
@@ -760,4 +760,39 @@ TEST_CASE("Cache roundtrips SourceData tile-zero sentinel", "[Cache]")
     REQUIRE(result.tile->layerInfo()->type_ == LayerType::SourceData);
     REQUIRE(result.tile->tileId().value() == 0);
     REQUIRE(std::dynamic_pointer_cast<TileSourceDataLayer>(result.tile));
+}
+
+TEST_CASE(
+    "SQLiteCache clears an incompatible persisted protocol",
+    "[Cache][SQLiteCache][protocol]")
+{
+    auto const cachePath =
+        createTempCachePath(
+            "sqlite-incompatible-protocol-");
+    auto const stringPoolId =
+        std::string("LegacyProtocolPool");
+    {
+        auto cache = std::make_shared<SQLiteCache>(
+            8,
+            cachePath.string(),
+            true);
+        cache->putStringPoolBlob(
+            stringPoolId,
+            createSerializedStringPoolMessage(
+                stringPoolId,
+                Version{2, 0, 0}));
+    }
+
+    std::shared_ptr<SQLiteCache> reopened;
+    REQUIRE_NOTHROW(
+        reopened =
+            std::make_shared<SQLiteCache>(
+                8,
+                cachePath.string(),
+                false));
+    REQUIRE_FALSE(
+        reopened->getStringPoolBlob(
+            stringPoolId));
+    reopened.reset();
+    std::filesystem::remove(cachePath);
 }

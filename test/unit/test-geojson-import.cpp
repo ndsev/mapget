@@ -46,10 +46,7 @@ std::shared_ptr<LayerInfo> makeRoadLayerInfo()
             ]
           ]
         }
-      ],
-      "stages": 3,
-      "stageLabels": ["Draft", "High-Fi", "ADAS"],
-      "highFidelityStage": 1
+      ]
     })json"_json);
 }
 
@@ -74,15 +71,15 @@ std::shared_ptr<LayerInfo> makeGenericLayerInfo()
 TileFeatureLayer::Ptr makeTile(
     int32_t tileId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    std::string const& nodeId = "GeoJsonImportNode",
+    std::string const& stringPoolId = "GeoJsonImportNode",
     std::string const& mapId = "GeoJsonImportMap")
 {
     return std::make_shared<TileFeatureLayer>(
         TileId::fromValue(tileId),
-        nodeId,
+        stringPoolId,
         mapId,
         layerInfo,
-        std::make_shared<StringPool>(nodeId));
+        std::make_shared<StringPool>(stringPoolId));
 }
 
 simfil::ModelNode::Ptr nullNode(TileFeatureLayer& tile)
@@ -179,7 +176,7 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
     roadALine->append({11.3, 48.0, 0.0});
     roadALine->append({11.31, 48.01, 0.0});
     roadALine->append({11.32, 48.015, 0.0});
-    roadALine->setStage(2);
+    roadALine->setName("ADAS");
     roadALine->setSourceDataReferences(makeSourceDataRefs(
         *tile,
         {{10, 20, "road-src", "centerline"}}));
@@ -188,7 +185,7 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
     roadAMesh->append({11.3, 48.0, 0.0});
     roadAMesh->append({11.3, 48.002, 0.0});
     roadAMesh->append({11.302, 48.001, 0.0});
-    roadAMesh->setStage(2);
+    roadAMesh->setName("ADAS");
 
     roadA->setSourceDataReferences(makeSourceDataRefs(
         *tile,
@@ -249,7 +246,7 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
         Validity::RelativeLengthOffset,
         0.25,
         0.75,
-        2,
+        "ADAS",
         Validity::Positive);
     relation->targetValidity()->newPoint(
         Point{11.32, 48.015, 0.0},
@@ -411,7 +408,13 @@ TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonIm
 
     auto feature = tile->find("AnyFeature.131073.0");
     REQUIRE(feature);
-    auto geometry = feature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::Polygon, 0);
+    model_ptr<Geometry> geometry;
+    feature->geomOrNull()->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
+        if (candidate->geomType() != GeomType::Polygon)
+            return true;
+        geometry = candidate;
+        return false;
+    });
     REQUIRE(geometry);
     REQUIRE(geometry->numPolygonRings() == 2);
     REQUIRE(geometry->polygonRingStart(0) == 0);
@@ -434,14 +437,20 @@ TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonIm
             REQUIRE(layerId == "GeoJsonAny");
             return layerInfo;
         },
-        [&](auto&& nodeId) {
-            REQUIRE(nodeId == "PolygonHoleNode");
+        [&](auto&& stringPoolId) {
+            REQUIRE(stringPoolId == "PolygonHoleNode");
             return tile->strings();
         });
 
     auto roundtrippedFeature = roundtrippedTile->find("AnyFeature.131073.0");
     REQUIRE(roundtrippedFeature);
-    auto roundtrippedGeometry = roundtrippedFeature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::Polygon, 0);
+    model_ptr<Geometry> roundtrippedGeometry;
+    roundtrippedFeature->geomOrNull()->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
+        if (candidate->geomType() != GeomType::Polygon)
+            return true;
+        roundtrippedGeometry = candidate;
+        return false;
+    });
     REQUIRE(roundtrippedGeometry);
     REQUIRE(roundtrippedGeometry->numPolygonRings() == 2);
     REQUIRE(roundtrippedGeometry->polygonRingStart(0) == 0);

@@ -41,7 +41,7 @@ public:
 
     TileSourceDataLayer(
         TileId tileId,
-        std::string const& nodeId,
+        std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& stringPool);

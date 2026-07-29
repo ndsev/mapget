@@ -65,23 +65,21 @@ void bindDataSourceServer(py::module_& m)
     py::class_<MapTileKey>(m, "MapTileKey", R"pbdoc(
         Fully qualified tile address used by datasource, cache and locate APIs.
 
-        A key contains the layer type, map id, layer id,
-        ndslive.math.PackedTileId, and optional staged-loading index.
+        A key contains the layer type, map id, layer id, and
+        ndslive.math.PackedTileId.
     )pbdoc")
         .def(py::init<>(), "Construct an empty map tile key.")
         .def(py::init<std::string const&>(), py::arg("value"), "Parse a map tile key from its string form.")
-        .def(py::init<LayerType, std::string, std::string, TileId, uint32_t>(),
+        .def(py::init<LayerType, std::string, std::string, TileId>(),
             py::arg("layer_type"),
             py::arg("map_id"),
             py::arg("layer_id"),
             py::arg("tile_id"),
-            py::arg("stage") = 0,
             "Construct a map tile key from individual components.")
         .def_readwrite("layer_type", &MapTileKey::layer_, "Layer category addressed by this key.")
         .def_readwrite("map_id", &MapTileKey::mapId_, "Map identifier addressed by this key.")
         .def_readwrite("layer_id", &MapTileKey::layerId_, "Layer identifier addressed by this key.")
         .def_readwrite("tile_id", &MapTileKey::tileId_, "Packed tile id addressed by this key.")
-        .def_readwrite("stage", &MapTileKey::stage_, "Staged-loading index addressed by this key.")
         .def("to_string", &MapTileKey::toString, "Convert this key to its stable string form.")
         .def("__str__", &MapTileKey::toString);
 
@@ -164,6 +162,89 @@ void bindDataSourceServer(py::module_& m)
         .def("to_json", [](LocateResponse const& self) { return self.serialize().dump(); },
             "Serialize the response to a JSON string.");
 
+    py::class_<AttachmentRequest>(
+        m,
+        "AttachmentRequest",
+        "Request for one named feature-tile side payload.")
+        .def(py::init<>())
+        .def_readwrite(
+            "tile_key",
+            &AttachmentRequest::tileKey_)
+        .def_readwrite(
+            "name",
+            &AttachmentRequest::name_)
+        .def_readwrite(
+            "source_id",
+            &AttachmentRequest::sourceId_);
+
+    py::class_<AttachmentResponse>(
+        m,
+        "AttachmentResponse",
+        "Immutable bytes and HTTP metadata for a named tile attachment.")
+        .def(
+            py::init(
+                [](std::string name,
+                   std::string mimeType,
+                   py::bytes bytes,
+                   std::optional<std::string> etag)
+                {
+                    auto value =
+                        bytes.cast<std::string>();
+                    return AttachmentResponse{
+                        .name_ =
+                            std::move(name),
+                        .mimeType_ =
+                            std::move(mimeType),
+                        .bytes_ =
+                            std::make_shared<
+                                std::vector<
+                                    uint8_t> const>(
+                                value.begin(),
+                                value.end()),
+                        .etag_ =
+                            std::move(etag),
+                    };
+                }),
+            py::arg("name"),
+            py::arg("mime_type") =
+                "application/octet-stream",
+            py::arg("bytes") = py::bytes{},
+            py::arg("etag") = std::nullopt)
+        .def_readwrite(
+            "name",
+            &AttachmentResponse::name_)
+        .def_readwrite(
+            "mime_type",
+            &AttachmentResponse::mimeType_)
+        .def_property(
+            "bytes",
+            [](AttachmentResponse const& self)
+            {
+                if (!self.bytes_) {
+                    return py::bytes{};
+                }
+                return py::bytes(
+                    reinterpret_cast<
+                        char const*>(
+                        self.bytes_->data()),
+                    self.bytes_->size());
+            },
+            [](AttachmentResponse& self,
+               py::bytes bytes)
+            {
+                auto value =
+                    bytes.cast<std::string>();
+                self.bytes_ =
+                    std::make_shared<
+                        std::vector<
+                            uint8_t> const>(
+                        value.begin(),
+                        value.end());
+            })
+        .def_readwrite(
+            "etag",
+            &AttachmentResponse::etag_);
+
     py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer", R"pbdoc(
         Small HTTP datasource server implemented from Python callbacks.
 
@@ -241,6 +322,35 @@ void bindDataSourceServer(py::module_& m)
             R"pbdoc(
             Set the Callback which will be invoked when a `/locate` request is received.
             The callback receives a LocateRequest and must return a list of LocateResponse objects.
+        )pbdoc")
+        .def(
+            "on_attachment_request",
+            [](DataSourceServer& self,
+               py::function callback)
+                -> DataSourceServer&
+            {
+                return self.onAttachmentRequest(
+                    [callback =
+                         std::move(callback)](
+                        AttachmentRequest const&
+                            request)
+                        -> std::optional<
+                            AttachmentResponse>
+                    {
+                        py::gil_scoped_acquire gil;
+                        auto result =
+                            callback(request);
+                        if (result.is_none()) {
+                            return {};
+                        }
+                        return result.cast<
+                            AttachmentResponse>();
+                    });
+            },
+            py::arg("callback"),
+            R"pbdoc(
+            Set the callback invoked for `/attachment`. It receives an
+            AttachmentRequest and returns AttachmentResponse or None.
         )pbdoc")
         .def(
             "on_cache_expired",

@@ -6,6 +6,7 @@
 #include "mapget/log.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/featureid.h"
 #include "mapget/model/info.h"
 #include "mapget/model/layer.h"
 #include "mapget/model/stream.h"
@@ -27,29 +28,16 @@
 #include <unordered_map>
 #include <utility>
 
+#ifdef __linux__
+#include <malloc.h>
+#endif
+
 #include "simfil/types.h"
 
 namespace mapget
 {
 
 namespace {
-
-/** Ensure that Tile IDs are unique across all stages. */
-std::vector<std::vector<TileId>> normalizeTileBuckets(std::vector<std::vector<TileId>> buckets)
-{
-    std::set<TileId> seenTileIds;
-    for (auto& bucket : buckets) {
-        std::vector<TileId> uniqueTiles;
-        uniqueTiles.reserve(bucket.size());
-        for (auto const& tileId : bucket) {
-            if (seenTileIds.insert(tileId).second) {
-                uniqueTiles.push_back(tileId);
-            }
-        }
-        bucket.swap(uniqueTiles);
-    }
-    return buckets;
-}
 
 bool isDataSourceDescriptorEnabled(YAML::Node const& descriptor)
 {
@@ -91,6 +79,101 @@ std::optional<float> normalizeProgressPercentage(std::optional<float> progress)
     return std::clamp(*progress, 0.0f, 100.0f);
 }
 
+TileFeatureLayer::Ptr restrictFeatureLayerForResponse(
+    TileFeatureLayer::Ptr const& source,
+    std::span<std::string const> featureIds)
+{
+    auto result = std::make_shared<TileFeatureLayer>(
+        source->tileId(),
+        source->stringPoolId(),
+        source->mapId(),
+        source->layerInfo(),
+        source->strings());
+    result->setInfo(source->info());
+    if (auto legalInfo = source->legalInfo()) {
+        result->setLegalInfo(*legalInfo);
+    }
+    result->setGlbAttachmentName(
+        source->glbAttachmentName());
+
+    TileFeatureLayer::CloneCache cloneCache;
+    for (auto const& canonicalId : featureIds) {
+        auto feature = source->find(canonicalId);
+        if (!feature) {
+            continue;
+        }
+        auto featureId = feature->id();
+        result->clone(
+            cloneCache,
+            source,
+            *feature,
+            featureId->typeId(),
+            featureId->keyValuePairs());
+    }
+    return result;
+}
+
+tl::expected<TileId, simfil::Error> pointGroupOwnerTile(
+    FeatureLayerPointGroupMember const& member,
+    FeatureLayerFilterRequest const& request,
+    int level)
+{
+    if (member.channelIndex_ >= request.channels_.size()) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InternalError,
+            "Point-group member references a missing filter channel.",
+        });
+    }
+    auto const& group =
+        request.channels_[member.channelIndex_].group_;
+    if (!group) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InternalError,
+            "Point-group member references a channel without grouping.",
+        });
+    }
+
+    auto const longitude =
+        group->origin_.x +
+        (static_cast<double>(member.key_.x_) + 0.5) *
+            group->cellSize_.x;
+    auto const latitude =
+        group->origin_.y +
+        (static_cast<double>(member.key_.y_) + 0.5) *
+            group->cellSize_.y;
+    if (!std::isfinite(longitude) || !std::isfinite(latitude)) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "Point-group cell center is outside the finite WGS84 domain.",
+        });
+    }
+
+    auto wrappedLongitude = std::fmod(longitude + 180.0, 360.0);
+    if (wrappedLongitude < 0.0) {
+        wrappedLongitude += 360.0;
+    }
+    wrappedLongitude -= 180.0;
+    auto const boundedLatitude = std::clamp(
+        latitude,
+        -90.0,
+        std::nextafter(
+            90.0,
+            -std::numeric_limits<double>::infinity()));
+    return TileId::fromWgs84(
+        wrappedLongitude,
+        boundedLatitude,
+        level);
+}
+
+void mergeFilterTraces(
+    std::map<std::string, simfil::Trace>& target,
+    std::map<std::string, simfil::Trace> source)
+{
+    for (auto&& [name, trace] : source) {
+        target[name].append(std::move(trace));
+    }
+}
+
 DataSourceCatalogSourceUpdate makeSourceCatalogSourceUpdate(DataSourceCatalogEntry const& entry)
 {
     return DataSourceCatalogSourceUpdate{
@@ -101,23 +184,21 @@ DataSourceCatalogSourceUpdate makeSourceCatalogSourceUpdate(DataSourceCatalogEnt
         .dataSource = entry.dataSource};
 }
 
-/** Build the common search-status payload, omitting interactive-only fields when absent. */
-nlohmann::json makeSearchStatusJson(
-    FeatureLayerSearchTilesRequest const& request,
+/** Build the common generation-aware filter status payload. */
+nlohmann::json makeFilterStatusJson(
+    FeatureLayerFilterTilesRequest const& request,
     std::string state)
 {
     auto status = nlohmann::json::object({
-        {"type", "mapget.search.status"},
+        {"type", "mapget.filter.status"},
         {"mapId", request.mapId_},
         {"layerId", request.layerId_},
         {"state", std::move(state)},
+        {"filterId", request.filter_.filterId_},
+        {"generation", request.filter_.generation_},
     });
-    if (!request.search_.searchId_.empty()) {
-        status["searchId"] = request.search_.searchId_;
-        status["refresh"] = request.search_.refresh_.value_or(0);
-    }
-    if (!request.search_.requestKey_.empty()) {
-        status["requestKey"] = request.search_.requestKey_;
+    if (request.sourceId_) {
+        status["sourceId"] = *request.sourceId_;
     }
     return status;
 }
@@ -131,9 +212,6 @@ std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
     result->featureTypes_ = info.featureTypes_;
     result->zoomLevels_ = info.zoomLevels_;
     result->coverage_ = info.coverage_;
-    result->stages_ = info.stages_;
-    result->stageLabels_ = info.stageLabels_;
-    result->highFidelityStage_ = info.highFidelityStage_;
     result->canRead_ = info.canRead_;
     result->canWrite_ = info.canWrite_;
     result->version_ = info.version_;
@@ -158,7 +236,7 @@ DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
         if (!layerInfo) {
             raise(fmt::format(
                 "Datasource '{}' has null LayerInfo for layer '{}'.",
-                info.nodeId_,
+                info.stringPoolId_,
                 layerId));
         }
         result.layers_.try_emplace(layerId, cloneLayerInfo(*layerInfo));
@@ -185,61 +263,44 @@ LayerTilesRequest::LayerTilesRequest(
     std::string layerId,
     std::vector<TileId> tiles,
     std::vector<TileId> const& priorityTileIds)
-    : LayerTilesRequest(
-          std::move(mapId),
-          std::move(layerId),
-          std::vector<std::vector<TileId>>{std::move(tiles)},
-          std::move(priorityTileIds))
-{
-    usesStageBuckets_ = false;
-}
-
-LayerTilesRequest::LayerTilesRequest(
-    std::string mapId,
-    std::string layerId,
-    std::vector<std::vector<TileId>> tileIdsByNextStage)
-    : LayerTilesRequest(
-          std::move(mapId),
-          std::move(layerId),
-          std::move(tileIdsByNextStage),
-          {})
-{
-}
-
-LayerTilesRequest::LayerTilesRequest(
-    std::string mapId,
-    std::string layerId,
-    std::vector<std::vector<TileId>> tileIdsByNextStage,
-    std::vector<TileId> const& priorityTileIds)
     : mapId_(std::move(mapId)),
       layerId_(std::move(layerId)),
-      tileIdsByNextStage_(normalizeTileBuckets(std::move(tileIdsByNextStage))),
+      tileIds_(std::move(tiles)),
       priorityTileIds_({priorityTileIds.begin(), priorityTileIds.end()})
 {
-    usesStageBuckets_ = true;
-    bool hasAnyTileIds = false;
-    for (auto const& bucket : tileIdsByNextStage_) {
-        if (!bucket.empty()) {
-            hasAnyTileIds = true;
-            break;
+    std::set<TileId> seenTileIds;
+    std::vector<TileId> uniqueTileIds;
+    uniqueTileIds.reserve(tileIds_.size());
+    for (auto const& tileId : tileIds_) {
+        if (seenTileIds.insert(tileId).second) {
+            uniqueTileIds.push_back(tileId);
         }
     }
-
-    if (!hasAnyTileIds) {
+    tileIds_.swap(uniqueTileIds);
+    for (auto const& priorityTileId :
+         priorityTileIds_)
+    {
+        if (!seenTileIds.contains(
+                priorityTileId))
+        {
+            raise(
+                "Priority tile IDs must be contained in the request tile IDs.");
+        }
+    }
+    if (tileIds_.empty()) {
         // An empty request is always set to success, but the client/service
         // is responsible for triggering notifyStatus() in that case.
         status_ = RequestStatus::Success;
     }
 }
 
-void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stages)
+void LayerTilesRequest::prepareResolvedLayer(LayerType layerType)
 {
     nextTileIndex_ = 0;
     resultCount_ = 0;
     resolvedTileKeys_.clear();
     tileKeysNotStarted_.clear();
 
-    const auto normalizedStages = std::max<uint32_t>(1U, stages);
     const auto isPriorityTile = [this](TileId const& tileId) {
         return priorityTileIds_.find(tileId) != priorityTileIds_.end();
     };
@@ -249,91 +310,19 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType, uint32_t stage
         }
     };
 
-    if (!usesStageBuckets_) {
-        const auto appendUnstagedTiles = [&](std::optional<bool> priorityFilter) {
-            if (tileIdsByNextStage_.empty()) {
-                return;
-            }
-            for (auto const& tileId : tileIdsByNextStage_.front()) {
-                if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
-                    continue;
-                }
-                MapTileKey key(
-                    layerType,
-                    mapId_,
-                    layerId_,
-                    tileId,
-                    UnspecifiedStage);
-                appendKey(std::move(key));
-            }
-        };
-
-        if (priorityTileIds_.empty()) {
-            appendUnstagedTiles(std::nullopt);
-        } else {
-            appendUnstagedTiles(true);
-            appendUnstagedTiles(false);
-        }
-        status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
-        return;
-    }
-
-    const auto appendTileMajorStagedTiles = [&](std::optional<bool> priorityFilter) {
-        for (size_t bucketIndex = 0; bucketIndex < tileIdsByNextStage_.size(); ++bucketIndex) {
-            const auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
-            if (nextMissingStage >= normalizedStages) {
+    const auto appendTiles = [&](std::optional<bool> priorityFilter) {
+        for (auto const& tileId : tileIds_) {
+            if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
                 continue;
             }
-            for (auto const& tileId : tileIdsByNextStage_[bucketIndex]) {
-                if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
-                    continue;
-                }
-                for (uint32_t stage = nextMissingStage; stage < normalizedStages; ++stage) {
-                    appendKey(MapTileKey(layerType, mapId_, layerId_, tileId, stage));
-                }
-            }
+            appendKey(MapTileKey(layerType, mapId_, layerId_, tileId));
         }
     };
-
-    const auto appendStagedTiles = [&](std::optional<bool> priorityFilter) {
-        for (uint32_t stage = 0; stage < normalizedStages; ++stage) {
-            // For all tiles in bucket 0, we need to enqueue N stages.
-            // For tiles in bucket 1, we need to enqueue N-1 stages.
-            // etc.
-            for (size_t bucketIndex = 0; bucketIndex < tileIdsByNextStage_.size(); ++bucketIndex) {
-                const auto nextMissingStage = static_cast<uint32_t>(bucketIndex);
-                if (nextMissingStage > stage || nextMissingStage >= normalizedStages) {
-                    continue;
-                }
-                for (auto const& tileId : tileIdsByNextStage_[bucketIndex]) {
-                    if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
-                        continue;
-                    }
-                    appendKey(MapTileKey(layerType, mapId_, layerId_, tileId, stage));
-                }
-            }
-        }
-    };
-
     if (priorityTileIds_.empty()) {
-        if (preferCompleteStagedTiles_) {
-            // Search cannot emit a result until all stages of a tile are
-            // present. Tile-major ordering prevents retaining one partial
-            // stage for every requested tile in large searches.
-            appendTileMajorStagedTiles(std::nullopt);
-        } else {
-            appendStagedTiles(std::nullopt);
-        }
+        appendTiles(std::nullopt);
     } else {
-        if (preferCompleteStagedTiles_) {
-            // Keep foreground tiles first while still completing each tile
-            // before advancing to the next one.
-            appendTileMajorStagedTiles(true);
-            appendTileMajorStagedTiles(false);
-        } else {
-            appendStagedTiles(true);
-            appendStagedTiles(false);
-        }
+        appendTiles(true);
+        appendTiles(false);
     }
 
     status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
@@ -347,8 +336,22 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r) {
     const auto type = r->layerInfo()->type_;
     switch (type) {
     case LayerType::Features:
-        if (onFeatureLayer_)
-            onFeatureLayer_(std::move(std::static_pointer_cast<TileFeatureLayer>(r)));
+        if (onFeatureLayer_) {
+            auto featureLayer =
+                std::static_pointer_cast<TileFeatureLayer>(r);
+            if (auto restriction =
+                    featureIdsByTile_.find(
+                        featureLayer->tileId());
+                restriction !=
+                    featureIdsByTile_.end())
+            {
+                featureLayer =
+                    restrictFeatureLayerForResponse(
+                        featureLayer,
+                        restriction->second);
+            }
+            onFeatureLayer_(std::move(featureLayer));
+        }
         break;
     case LayerType::SourceData:
         if (onSourceDataLayer_)
@@ -359,8 +362,9 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r) {
         break;
     }
 
-    ++resultCount_;
-    if (resultCount_ == resolvedTileKeys_.size()) {
+    const auto resultCount =
+        resultCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (resultCount == resolvedTileKeys_.size()) {
         setStatus(RequestStatus::Success);
     }
 }
@@ -402,40 +406,34 @@ nlohmann::json LayerTilesRequest::toJson()
         {"mapId", mapId_},
         {"layerId", layerId_}
     });
-
-    if (!usesStageBuckets_) {
-        auto tileIds = nlohmann::json::array();
-        if (!tileIdsByNextStage_.empty()) {
-            for (auto const& tileId : tileIdsByNextStage_.front()) {
-                tileIds.emplace_back(tileId.value());
-            }
-        }
-        requestJson["tileIds"] = std::move(tileIds);
-        if (!priorityTileIds_.empty()) {
-            auto priorityTileIds = nlohmann::json::array();
-            for (auto const& tileId : priorityTileIds_) {
-                priorityTileIds.emplace_back(tileId.value());
-            }
-            requestJson["priorityTileIds"] = std::move(priorityTileIds);
-        }
-        return requestJson;
+    if (sourceId_) {
+        requestJson["sourceId"] = *sourceId_;
     }
 
-    auto tileIdsByNextStage = nlohmann::json::array();
-    for (auto const& bucket : tileIdsByNextStage_) {
-        auto tileIds = nlohmann::json::array();
-        for (auto const& tileId : bucket) {
-            tileIds.emplace_back(tileId.value());
-        }
-        tileIdsByNextStage.push_back(std::move(tileIds));
+    auto tileIds = nlohmann::json::array();
+    for (auto const& tileId : tileIds_) {
+        tileIds.emplace_back(tileId.value());
     }
-    requestJson["tileIdsByNextStage"] = std::move(tileIdsByNextStage);
+    requestJson["tileIds"] = std::move(tileIds);
     if (!priorityTileIds_.empty()) {
         auto priorityTileIds = nlohmann::json::array();
         for (auto const& tileId : priorityTileIds_) {
             priorityTileIds.emplace_back(tileId.value());
         }
         requestJson["priorityTileIds"] = std::move(priorityTileIds);
+    }
+    if (!featureIdsByTile_.empty()) {
+        auto featureIds = nlohmann::json::array();
+        for (auto const& [tileId, ids] :
+             featureIdsByTile_)
+        {
+            featureIds.push_back({
+                {"tileId", tileId.value()},
+                {"ids", ids},
+            });
+        }
+        requestJson["featureIds"] =
+            std::move(featureIds);
     }
     return requestJson;
 }
@@ -450,31 +448,31 @@ bool LayerTilesRequest::isDone()
     return status_ != RequestStatus::Open;
 }
 
-FeatureLayerSearchTilesRequest::FeatureLayerSearchTilesRequest(
+FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
     std::string mapId,
     std::string layerId,
     std::vector<TileId> tiles,
-    FeatureLayerSearchRequest search)
-    : FeatureLayerSearchTilesRequest(
+    FeatureLayerFilterRequest filter)
+    : FeatureLayerFilterTilesRequest(
           std::move(mapId),
           std::move(layerId),
           std::move(tiles),
-          std::move(search),
+          std::move(filter),
           {})
 {
 }
 
-FeatureLayerSearchTilesRequest::FeatureLayerSearchTilesRequest(
+FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
     std::string mapId,
     std::string layerId,
     std::vector<TileId> tiles,
-    FeatureLayerSearchRequest search,
+    FeatureLayerFilterRequest filter,
     std::vector<TileId> const& priorityTileIds)
     : mapId_(std::move(mapId)),
       layerId_(std::move(layerId)),
       tileIds_(std::move(tiles)),
       priorityTileIds_({priorityTileIds.begin(), priorityTileIds.end()}),
-      search_(std::move(search))
+      filter_(std::move(filter))
 {
     std::set<TileId> seenTileIds;
     std::vector<TileId> uniqueTileIds;
@@ -485,27 +483,37 @@ FeatureLayerSearchTilesRequest::FeatureLayerSearchTilesRequest(
         }
     }
     tileIds_.swap(uniqueTileIds);
+    for (auto const& priorityTileId :
+         priorityTileIds_)
+    {
+        if (!seenTileIds.contains(
+                priorityTileId))
+        {
+            raise(
+                "Priority tile IDs must be contained in the request tile IDs.");
+        }
+    }
     if (tileIds_.empty()) {
         status_ = RequestStatus::Success;
     }
 }
 
-RequestStatus FeatureLayerSearchTilesRequest::getStatus()
+RequestStatus FeatureLayerFilterTilesRequest::getStatus()
 {
     return status_;
 }
 
-bool FeatureLayerSearchTilesRequest::isDone()
+bool FeatureLayerFilterTilesRequest::isDone()
 {
     return status_ != RequestStatus::Open;
 }
 
-bool FeatureLayerSearchTilesRequest::isCancelled() const
+bool FeatureLayerFilterTilesRequest::isCancelled() const
 {
     return cancelled_;
 }
 
-void FeatureLayerSearchTilesRequest::wait()
+void FeatureLayerFilterTilesRequest::wait()
 {
     std::unique_lock doneLock(statusMutex_);
     if (!isDone()) {
@@ -513,17 +521,17 @@ void FeatureLayerSearchTilesRequest::wait()
     }
 }
 
-void FeatureLayerSearchTilesRequest::notifyResult(TileSearchResultLayer::Ptr result)
+void FeatureLayerFilterTilesRequest::notifyResult(TileSubsetLayer::Ptr result)
 {
     if (cancelled_ || isDone()) {
         return;
     }
-    if (onSearchResult_) {
-        onSearchResult_(std::move(result));
+    if (onFilterResult_) {
+        onFilterResult_(std::move(result));
     }
 }
 
-void FeatureLayerSearchTilesRequest::notifyProgress(nlohmann::json const& status)
+void FeatureLayerFilterTilesRequest::notifyProgress(nlohmann::json const& status)
 {
     if (cancelled_) {
         return;
@@ -533,7 +541,7 @@ void FeatureLayerSearchTilesRequest::notifyProgress(nlohmann::json const& status
     }
 }
 
-void FeatureLayerSearchTilesRequest::setStatus(RequestStatus s)
+void FeatureLayerFilterTilesRequest::setStatus(RequestStatus s)
 {
     auto const previous = status_.exchange(s);
     if (previous != RequestStatus::Open) {
@@ -542,7 +550,7 @@ void FeatureLayerSearchTilesRequest::setStatus(RequestStatus s)
     notifyStatus();
 }
 
-void FeatureLayerSearchTilesRequest::notifyStatus()
+void FeatureLayerFilterTilesRequest::notifyStatus()
 {
     if (isDone() && onDone_) {
         onDone_(status_);
@@ -550,7 +558,7 @@ void FeatureLayerSearchTilesRequest::notifyStatus()
     statusConditionVariable_.notify_all();
 }
 
-void FeatureLayerSearchTilesRequest::cancel()
+void FeatureLayerFilterTilesRequest::cancel()
 {
     cancelled_ = true;
     setStatus(RequestStatus::Aborted);
@@ -558,19 +566,22 @@ void FeatureLayerSearchTilesRequest::cancel()
 
 struct Service::Controller
 {
-    virtual ~Controller() = default;
+    virtual ~Controller()
+    {
+        stopFilterEvalWorkers();
+    }
 
     struct Job {
         MapTileKey tileKey;
         std::vector<LayerTilesRequest::Ptr> waitingRequests;
         std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
         TileLayer::LoadState loadStatus = TileLayer::LoadState::LoadingQueued;
-        std::function<void()> searchWork;
+        uint64_t mapEpoch = 0;
     };
 
-    struct SearchEvalWork {
-        DataSourceInfo dataSourceInfo;
-        std::weak_ptr<FeatureLayerSearchTilesRequest> owner;
+    struct FilterEvalWork {
+        std::string mapId;
+        std::weak_ptr<FeatureLayerFilterTilesRequest> owner;
         std::function<void()> work;
         std::function<void()> discard;
     };
@@ -579,9 +590,14 @@ struct Service::Controller
     Cache::Ptr cache_;                       // The cache for the service
     std::optional<std::chrono::milliseconds> defaultTtl_; // Default TTL applied when datasource does not override
     std::list<LayerTilesRequest::Ptr> requests_;       // List of requests currently being processed
-    std::list<SearchEvalWork> searchEvalJobs_; // Derived search jobs scheduled after source stages are loaded.
+    std::list<FilterEvalWork> filterEvalJobs_; // Derived filter jobs scheduled after source tiles are loaded.
+    std::map<std::string, uint64_t> mapEpochs_; // Invalidates late work after source-composition changes.
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
+    std::condition_variable filterJobsAvailable_; // Signals CPU-only derived evaluation work.
     std::mutex jobsMutex_;  // Mutex used with the jobsAvailable_ condition variable
+    std::vector<std::thread> filterEvalWorkers_;
+    size_t runningFilterEvalJobs_ = 0;
+    bool filterEvalStopping_ = false;
 
     explicit Controller(Cache::Ptr cache, std::optional<std::chrono::milliseconds> defaultTtl)
         : cache_(std::move(cache)),
@@ -589,6 +605,164 @@ struct Service::Controller
     {
         if (!cache_)
             raise("Cache must not be null!");
+    }
+
+    [[nodiscard]] static size_t filterEvalWorkerCount()
+    {
+        auto const available =
+            std::max(1u, std::thread::hardware_concurrency());
+        return std::min<size_t>(32, available);
+    }
+
+    /**
+     * Leave CPU capacity for datasource conversion while source work remains,
+     * then use the complete filter pool for cache-hit/filter-only bursts.
+     *
+     * Must be called with jobsMutex_ held.
+     */
+    [[nodiscard]] size_t filterEvalConcurrentLimitLocked() const
+    {
+        auto const fullLimit = filterEvalWorkerCount();
+        auto const sourceWorkPending =
+            !jobsInProgress_.empty() ||
+            std::ranges::any_of(
+                requests_,
+                [](auto const& request) {
+                    return request &&
+                        !request->isDone() &&
+                        !request->tileKeysNotStarted_.empty();
+                });
+        if (!sourceWorkPending) {
+            return fullLimit;
+        }
+        return std::max<size_t>(
+            1,
+            fullLimit * 3 / 4);
+    }
+
+    /** Start the request-wide CPU pool lazily on the first filter result. */
+    void startFilterEvalWorkersLocked()
+    {
+        if (!filterEvalWorkers_.empty() ||
+            filterEvalStopping_)
+        {
+            return;
+        }
+        auto const workerCount = filterEvalWorkerCount();
+        filterEvalWorkers_.reserve(workerCount);
+        for (size_t index = 0;
+             index < workerCount;
+             ++index)
+        {
+            filterEvalWorkers_.emplace_back(
+                [this] {
+                    filterEvalWorkerLoop();
+                });
+        }
+    }
+
+    /** Consume source-independent subset evaluation work in FIFO order. */
+    void filterEvalWorkerLoop()
+    {
+        while (true) {
+            FilterEvalWork job;
+            FeatureLayerFilterTilesRequest::Ptr owner;
+            bool execute = false;
+            {
+                std::unique_lock lock(jobsMutex_);
+                filterJobsAvailable_.wait(
+                    lock,
+                    [this] {
+                        return filterEvalStopping_ ||
+                            (!filterEvalJobs_.empty() &&
+                             runningFilterEvalJobs_ <
+                                 filterEvalConcurrentLimitLocked());
+                    });
+                if (filterEvalStopping_) {
+                    return;
+                }
+
+                job = std::move(filterEvalJobs_.front());
+                filterEvalJobs_.pop_front();
+                owner = job.owner.lock();
+                execute =
+                    owner &&
+                    !owner->isDone() &&
+                    static_cast<bool>(job.work);
+                if (execute) {
+                    ++runningFilterEvalJobs_;
+                }
+            }
+
+            if (!execute) {
+                if (job.discard) {
+                    job.discard();
+                }
+                continue;
+            }
+
+            try {
+                job.work();
+            }
+            catch (std::exception const& error) {
+                log().error(
+                    "Unhandled filter evaluation failure: {}",
+                    error.what());
+                owner->setStatus(RequestStatus::Aborted);
+                if (job.discard) {
+                    job.discard();
+                }
+            }
+            catch (...) {
+                log().error(
+                    "Unhandled non-standard filter evaluation failure.");
+                owner->setStatus(RequestStatus::Aborted);
+                if (job.discard) {
+                    job.discard();
+                }
+            }
+
+            {
+                std::unique_lock lock(jobsMutex_);
+                --runningFilterEvalJobs_;
+            }
+            // Source work may have drained while this evaluation ran. Wake
+            // parked workers so the pool can expand to its filter-only limit.
+            filterJobsAvailable_.notify_all();
+        }
+    }
+
+    /**
+     * Drain queued work and join derived-evaluation threads before datasource
+     * and request state owned by Impl is torn down.
+     */
+    void stopFilterEvalWorkers()
+    {
+        std::vector<std::function<void()>> discarded;
+        {
+            std::unique_lock lock(jobsMutex_);
+            if (filterEvalStopping_) {
+                return;
+            }
+            filterEvalStopping_ = true;
+            for (auto& job : filterEvalJobs_) {
+                if (job.discard) {
+                    discarded.push_back(
+                        std::move(job.discard));
+                }
+            }
+            filterEvalJobs_.clear();
+        }
+        filterJobsAvailable_.notify_all();
+        for (auto& worker : filterEvalWorkers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        filterEvalWorkers_.clear();
+        for (auto& discard : discarded) {
+            discard();
+        }
     }
 
     struct Candidate {
@@ -696,7 +870,13 @@ struct Service::Controller
             return nullptr;
         }
 
-        auto startedJob = std::make_shared<Job>(Job{candidate.tileKey_, {request}, cachedResult.expiredAt});
+        auto startedJob = std::make_shared<Job>();
+        startedJob->tileKey = candidate.tileKey_;
+        startedJob->waitingRequests = {request};
+        startedJob->cacheExpiredAt =
+            cachedResult.expiredAt;
+        startedJob->mapEpoch =
+            mapEpochs_[candidate.tileKey_.mapId_];
         attachMatchingRequests(request, candidate.tileKey_, startedJob->waitingRequests);
         jobsInProgress_.emplace(startedJob->tileKey, startedJob);
         log().debug("Working on tile: {}", startedJob->tileKey.toString());
@@ -704,53 +884,45 @@ struct Service::Controller
         return startedJob;
     }
 
-    [[nodiscard]] std::shared_ptr<Job> nextSearchEvalJob(DataSourceInfo const& info)
-    {
-        for (auto it = searchEvalJobs_.begin(); it != searchEvalJobs_.end(); ++it) {
-            if (it->dataSourceInfo.nodeId_ != info.nodeId_) {
-                continue;
-            }
-            if (auto owner = it->owner.lock(); !owner || owner->isDone()) {
-                // The owning request already reached a terminal state; dropping
-                // the closure releases any staged tiles it captured.
-                it = searchEvalJobs_.erase(it);
-                continue;
-            }
-            auto work = std::move(it->work);
-            searchEvalJobs_.erase(it);
-            auto job = std::make_shared<Job>();
-            job->searchWork = std::move(work);
-            return job;
-        }
-        return {};
-    }
-
-    void enqueueSearchEvalJob(
-        DataSourceInfo dataSourceInfo,
-        FeatureLayerSearchTilesRequest::Ptr const& owner,
+    void enqueueFilterEvalJob(
+        std::string mapId,
+        FeatureLayerFilterTilesRequest::Ptr const& owner,
         std::function<void()> work,
         std::function<void()> discard)
     {
         if (!work) {
             return;
         }
+        bool discardImmediately = false;
         {
             std::unique_lock lock(jobsMutex_);
-            searchEvalJobs_.push_back(SearchEvalWork{
-                std::move(dataSourceInfo),
-                owner,
-                std::move(work),
-                std::move(discard)});
+            if (filterEvalStopping_) {
+                discardImmediately = true;
+            }
+            else {
+                startFilterEvalWorkersLocked();
+                filterEvalJobs_.push_back(FilterEvalWork{
+                    std::move(mapId),
+                    owner,
+                    std::move(work),
+                    std::move(discard)});
+            }
         }
-        jobsAvailable_.notify_all();
+        if (discardImmediately) {
+            if (discard) {
+                discard();
+            }
+            return;
+        }
+        filterJobsAvailable_.notify_one();
     }
 
-    void abortSearchEvalJobs(FeatureLayerSearchTilesRequest::Ptr const& request)
+    void abortFilterEvalJobs(FeatureLayerFilterTilesRequest::Ptr const& request)
     {
         std::vector<std::function<void()>> discarded;
         {
             std::unique_lock lock(jobsMutex_);
-            for (auto it = searchEvalJobs_.begin(); it != searchEvalJobs_.end();) {
+            for (auto it = filterEvalJobs_.begin(); it != filterEvalJobs_.end();) {
                 if (it->owner.lock() != request) {
                     ++it;
                     continue;
@@ -758,20 +930,156 @@ struct Service::Controller
                 if (it->discard) {
                     discarded.push_back(std::move(it->discard));
                 }
-                it = searchEvalJobs_.erase(it);
+                it = filterEvalJobs_.erase(it);
+            }
+        }
+        for (auto& discard : discarded) {
+            discard();
+        }
+        filterJobsAvailable_.notify_all();
+    }
+
+    /**
+     * Abort queued/waiting work and invalidate cached content for a map whose
+     * primary or add-on composition changed.
+     *
+     * A monotonically increasing epoch also prevents a backend call which was
+     * already running from publishing after this method returns.
+     */
+    void invalidateMap(std::string const& mapId)
+    {
+        std::vector<LayerTilesRequest::Ptr> abortedRequests;
+        std::vector<std::function<void()>> discarded;
+        {
+            std::unique_lock lock(jobsMutex_);
+            ++mapEpochs_[mapId];
+
+            for (auto it = requests_.begin();
+                 it != requests_.end();)
+            {
+                if (*it && (*it)->mapId_ == mapId) {
+                    abortedRequests.push_back(*it);
+                    it = requests_.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+
+            for (auto it = jobsInProgress_.begin();
+                 it != jobsInProgress_.end();)
+            {
+                if (it->first.mapId_ != mapId) {
+                    ++it;
+                    continue;
+                }
+                abortedRequests.insert(
+                    abortedRequests.end(),
+                    it->second->waitingRequests.begin(),
+                    it->second->waitingRequests.end());
+                it->second->waitingRequests.clear();
+                it = jobsInProgress_.erase(it);
+            }
+
+            for (auto it = filterEvalJobs_.begin();
+                 it != filterEvalJobs_.end();)
+            {
+                if (it->mapId != mapId) {
+                    ++it;
+                    continue;
+                }
+                if (it->discard) {
+                    discarded.push_back(
+                        std::move(it->discard));
+                }
+                it = filterEvalJobs_.erase(it);
+            }
+
+            // Workers publish under jobsMutex_ as well. Clearing here means
+            // an old worker either published before this point and is erased,
+            // or observes the new epoch and cannot publish afterward.
+            cache_->invalidateMap(mapId);
+        }
+
+        std::ranges::sort(
+            abortedRequests,
+            {},
+            [](auto const& request) {
+                return request.get();
+            });
+        abortedRequests.erase(
+            std::unique(
+                abortedRequests.begin(),
+                abortedRequests.end()),
+            abortedRequests.end());
+        for (auto const& request : abortedRequests) {
+            if (request && !request->isDone()) {
+                request->setStatus(
+                    RequestStatus::Aborted);
             }
         }
         for (auto& discard : discarded) {
             discard();
         }
         jobsAvailable_.notify_all();
+        filterJobsAvailable_.notify_all();
     }
 
     void removeCompletedRequests()
     {
         requests_.remove_if([](auto const& request) {
-            return !request || request->tileKeysNotStarted_.empty();
+            return !request ||
+                request->isDone() ||
+                request->tileKeysNotStarted_.empty();
         });
+    }
+
+    /**
+     * Complete every request waiting on a source-tile job which failed.
+     *
+     * The job must leave the in-flight table before callbacks run, otherwise a
+     * retry can join a dead job. Failed requests are also detached from other
+     * jobs so later successful loads cannot retain or notify them.
+     */
+    void failTileJob(Job const& job)
+    {
+        std::vector<LayerTilesRequest::Ptr> failedRequests;
+        {
+            std::unique_lock lock(jobsMutex_);
+            if (auto inProgress =
+                    jobsInProgress_.find(job.tileKey);
+                inProgress != jobsInProgress_.end() &&
+                inProgress->second.get() == &job)
+            {
+                jobsInProgress_.erase(inProgress);
+            }
+            failedRequests = job.waitingRequests;
+
+            for (auto const& failed : failedRequests) {
+                requests_.remove_if(
+                    [&](auto const& request) {
+                        return request == failed;
+                    });
+            }
+            for (auto& [_, inProgress] : jobsInProgress_) {
+                std::erase_if(
+                    inProgress->waitingRequests,
+                    [&](auto const& request) {
+                        return std::ranges::find(
+                                   failedRequests,
+                                   request) !=
+                               failedRequests.end();
+                    });
+            }
+        }
+
+        for (auto const& request : failedRequests) {
+            if (request && !request->isDone()) {
+                request->setStatus(
+                    RequestStatus::Aborted);
+            }
+        }
+        jobsAvailable_.notify_all();
     }
 
     std::shared_ptr<Job> nextJob(DataSourceInfo const& i, std::unique_lock<std::mutex>& lock)
@@ -782,10 +1090,6 @@ struct Service::Controller
         //  between sweeps to allow external updates.
 
         while (true) {
-            if (auto searchJob = nextSearchEvalJob(i)) {
-                return searchJob;
-            }
-
             // 1) Pick the next pending tile from the first matching request.
             auto candidate = nextCandidateInRequestOrder(i);
             if (!candidate)
@@ -861,12 +1165,6 @@ struct Service::Worker
 
         try
         {
-            if (job.searchWork) {
-                job.searchWork();
-                controller_.jobsAvailable_.notify_all();
-                return true;
-            }
-
             if (job.cacheExpiredAt) {
                 dataSource_->onCacheExpired(job.tileKey, *job.cacheExpiredAt);
             }
@@ -912,13 +1210,28 @@ struct Service::Worker
                     layer->setTtl(ttlFallback);
             }
 
-            controller_.cache_->putTileLayer(layer);
-
             std::vector<LayerTilesRequest::Ptr> notifyRequests;
             {
                 std::unique_lock<std::mutex> lock(controller_.jobsMutex_);
-                controller_.jobsInProgress_.erase(job.tileKey);
-                notifyRequests = job.waitingRequests;
+                auto const currentEpoch =
+                    controller_.mapEpochs_[
+                        job.tileKey.mapId_];
+                if (job.mapEpoch == currentEpoch) {
+                    controller_.cache_->putTileLayer(
+                        layer);
+                    notifyRequests =
+                        job.waitingRequests;
+                }
+                if (auto inProgress =
+                        controller_.jobsInProgress_.find(
+                            job.tileKey);
+                    inProgress !=
+                        controller_.jobsInProgress_.end() &&
+                    inProgress->second == nextJob)
+                {
+                    controller_.jobsInProgress_.erase(
+                        inProgress);
+                }
             }
             for (auto const& req : notifyRequests) {
                 if (req) {
@@ -930,13 +1243,10 @@ struct Service::Worker
             controller_.jobsAvailable_.notify_all();
         }
         catch (std::exception& e) {
-            if (job.searchWork) {
-                log().error("Could not evaluate search job: {}", e.what());
-            } else {
-                log().error("Could not load tile {}: {}",
-                    job.tileKey.toString(),
-                    e.what());
-            }
+            log().error("Could not load tile {}: {}",
+                job.tileKey.toString(),
+                e.what());
+            controller_.failTileJob(job);
         }
 
         return true;
@@ -946,6 +1256,7 @@ struct Service::Worker
 struct Service::Impl : public Service::Controller
 {
     std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;
+    std::map<DataSource::Ptr, std::string> dataSourceSourceIds_;
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
     std::list<DataSource::Ptr> addOnDataSources_;
 
@@ -956,6 +1267,7 @@ struct Service::Impl : public Service::Controller
     std::vector<DataSourceCatalogEntry> sourceCatalog_;
     uint64_t sourceCatalogGeneration_ = 0;
     uint64_t sourceCatalogRevision_ = 0;
+    uint64_t nextRuntimeSourceId_ = 0;
     std::string sourceConfigStatus_ = "ok";
     std::string sourceConfigStatusMessage_;
     mutable std::condition_variable_any sourceCatalogReadyCv_;
@@ -1008,6 +1320,11 @@ struct Service::Impl : public Service::Controller
 
     ~Impl() override
     {
+        // Derived filter closures capture Impl-owned request state and may
+        // enqueue further source work. Let them finish while every datasource
+        // worker and catalog object they can reach is still alive.
+        stopFilterEvalWorkers();
+
         // Ensure that no new datasources are added while we are cleaning up.
         shuttingDown_ = true;
         sourceCatalogReadyCv_.notify_all();
@@ -1031,15 +1348,24 @@ struct Service::Impl : public Service::Controller
             std::unique_lock lock(dataSourcesMutex_);
             for (auto& [_, workers] : dataSourceWorkers_) {
                 for (auto& worker : workers) {
-                    worker->shouldTerminate_ = true;
                     workersToJoin.push_back(worker);
                 }
             }
             dataSourceWorkers_.clear();
             dataSourceInfo_.clear();
+            dataSourceSourceIds_.clear();
             addOnDataSources_.clear();
             dataSourcesFromConfig_.clear();
             dataSourceConstructionFailed_ = 0;
+        }
+        // Protect the termination predicate with the same mutex used by the
+        // condition-variable wait. An atomic flag alone still permits a
+        // notify-before-wait race during teardown.
+        {
+            std::unique_lock lock(jobsMutex_);
+            for (auto& worker : workersToJoin) {
+                worker->shouldTerminate_ = true;
+            }
         }
         // Wake up all workers to check shouldTerminate_.
         jobsAvailable_.notify_all();
@@ -1272,9 +1598,16 @@ struct Service::Impl : public Service::Controller
         auto done = std::make_shared<std::atomic_bool>(false);
         auto stopRequested = std::make_shared<std::atomic_bool>(false);
         auto configIndex = descriptor.configIndex;
+        auto sourceId = descriptor.sourceId;
         dataSourceConstructionThreads_.push_back(ConstructionThread{
             .thread = std::thread(
-                [this, generation, configNode = std::move(configNode), configIndex, done, stopRequested]() mutable
+                [this,
+                 generation,
+                 configNode = std::move(configNode),
+                 configIndex,
+                 sourceId = std::move(sourceId),
+                 done,
+                 stopRequested]() mutable
                 {
                     bool slotAcquired = false;
                     auto finish = [&]() {
@@ -1324,7 +1657,10 @@ struct Service::Impl : public Service::Controller
                             return;
                         }
 
-                        auto info = addDataSource(dataSource, false);
+                        auto info = addDataSource(
+                            dataSource,
+                            false,
+                            sourceId);
                         if (!isCurrentCatalogGeneration(generation)) {
                             removeDataSource(dataSource, false);
                             finish();
@@ -1407,7 +1743,10 @@ struct Service::Impl : public Service::Controller
         }
     }
 
-    DataSourceInfo addDataSource(DataSource::Ptr const& dataSource, bool publishCatalogChange = true)
+    DataSourceInfo addDataSource(
+        DataSource::Ptr const& dataSource,
+        bool publishCatalogChange = true,
+        std::optional<std::string> sourceId = {})
     {
         if (!dataSource) {
             raise("Tried to add a null data source.");
@@ -1416,20 +1755,49 @@ struct Service::Impl : public Service::Controller
         auto info = cloneDataSourceInfo(dataSource->info());
         std::unique_lock lock(dataSourcesMutex_);
 
-        if (info.nodeId_.empty()) {
+        if (info.stringPoolId_.empty()) {
             // Unique node IDs are required for the string pool offsets.
             raise("Tried to create service worker for an unnamed node!");
         }
         for (auto& existingSource : dataSourceInfo_) {
-            if (existingSource.second.nodeId_ == info.nodeId_) {
+            if (existingSource.second.stringPoolId_ == info.stringPoolId_) {
                 // Unique node IDs are required for the string pool offsets.
                 raise(
                     fmt::format("Data source with node ID '{}' already registered!",
-                                info.nodeId_));
+                                info.stringPoolId_));
+            }
+            if (!info.isAddOn_ &&
+                !existingSource.second.isAddOn_ &&
+                existingSource.second.mapId_ == info.mapId_)
+            {
+                raise(fmt::format(
+                    "Primary data source for map '{}' is already registered.",
+                    info.mapId_));
             }
         }
 
+        auto effectiveSourceId = sourceId
+            ? std::move(*sourceId)
+            : fmt::format(
+                  "runtime-source-{}",
+                  nextRuntimeSourceId_++);
+        if (effectiveSourceId.empty()) {
+            raise("Data source catalog sourceId must not be empty.");
+        }
+        if (std::ranges::any_of(
+                dataSourceSourceIds_,
+                [&](auto const& entry) {
+                    return entry.second == effectiveSourceId;
+                }))
+        {
+            raise(fmt::format(
+                "Data source catalog sourceId '{}' is already registered.",
+                effectiveSourceId));
+        }
+
         dataSourceInfo_[dataSource] = info;
+        dataSourceSourceIds_[dataSource] =
+            std::move(effectiveSourceId);
 
         // If the datasource is an add-on source, then it
         // does not have separate workers.
@@ -1465,9 +1833,17 @@ struct Service::Impl : public Service::Controller
     {
         std::vector<Worker::Ptr> workersToJoin;
         std::optional<DataSourceCatalogChange> change;
+        std::optional<std::string> affectedMapId;
         {
             std::unique_lock lock(dataSourcesMutex_);
+            if (auto info = dataSourceInfo_.find(dataSource);
+                info != dataSourceInfo_.end())
+            {
+                affectedMapId =
+                    info->second.mapId_;
+            }
             dataSourceInfo_.erase(dataSource);
+            dataSourceSourceIds_.erase(dataSource);
             addOnDataSources_.remove(dataSource);
             if (publishCatalogChange) {
                 change = markSourceCatalogChangedLocked("removed");
@@ -1476,24 +1852,40 @@ struct Service::Impl : public Service::Controller
             auto workers = dataSourceWorkers_.find(dataSource);
             if (workers == dataSourceWorkers_.end()) {
                 lock.unlock();
+                if (affectedMapId) {
+                    invalidateMap(*affectedMapId);
+                }
                 if (change) {
                     notifySourceCatalogChanged(*change);
                 }
                 return;
             }
             for (auto& worker : workers->second) {
-                worker->shouldTerminate_ = true;
                 workersToJoin.push_back(worker);
             }
             dataSourceWorkers_.erase(workers);
         }
 
+        {
+            std::unique_lock lock(jobsMutex_);
+            for (auto& worker : workersToJoin) {
+                worker->shouldTerminate_ = true;
+            }
+        }
+        if (affectedMapId) {
+            invalidateMap(*affectedMapId);
+        }
         jobsAvailable_.notify_all();
 
         for (auto& worker : workersToJoin) {
             if (worker->thread_.joinable()) {
                 worker->thread_.join();
             }
+        }
+        // The epoch prevents late publication, and this second pass also
+        // covers cache writes performed before the epoch was advanced.
+        if (affectedMapId) {
+            cache_->invalidateMap(*affectedMapId);
         }
         if (change) {
             notifySourceCatalogChanged(*change);
@@ -1594,9 +1986,15 @@ struct Service::Impl : public Service::Controller
             }
 
             auto infoCopy = cloneDataSourceInfo(info);
+            auto sourceId = dataSourceSourceIds_.find(dataSource);
             snapshot.sources.push_back(DataSourceCatalogEntry{
                 .descriptor = DataSourceDescriptor{
                     .configIndex = currentConfigIndex,
+                    .sourceId = sourceId != dataSourceSourceIds_.end()
+                        ? sourceId->second
+                        : fmt::format(
+                              "runtime-source-{}",
+                              currentConfigIndex),
                     .type = "",
                     .displayName = fmt::format(
                         "datasource-{}-{}",
@@ -1689,10 +2087,10 @@ struct Service::Impl : public Service::Controller
                 // to the base tile. Since we cannot manipulate the original
                 // node's string pool, we have to create a new one based on a new
                 // artificial node id.
-                auto auxBaseNodeId = baseTile->nodeId() + "|" + auxTile->nodeId();
-                auto auxBaseStringPool = cache_->getStringPool(auxBaseNodeId);
+                auto auxBaseStringPoolId = baseTile->stringPoolId() + "|" + auxTile->stringPoolId();
+                auto auxBaseStringPool = cache_->getStringPool(auxBaseStringPoolId);
                 (void) baseTile->setStrings(auxBaseStringPool);
-                baseTile->setNodeId(auxBaseNodeId);
+                baseTile->setStringPoolId(auxBaseStringPoolId);
 
                 // Adopt new attributes, features and relations for the base feature
                 // from the auxiliary feature.
@@ -1803,7 +2201,11 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> const& requests, std::
 {
     bool dataSourcesAvailable = true;
     for (const auto& r : requests) {
-        auto context = resolveLayerRequest(r->mapId_, r->layerId_, clientHeaders);
+        auto context = resolveLayerRequest(
+            r->mapId_,
+            r->layerId_,
+            clientHeaders,
+            r->sourceId_);
         switch (context.status_) {
         case RequestStatus::NoDataSource:
             dataSourcesAvailable = false;
@@ -1821,7 +2223,7 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> const& requests, std::
             break;
         default: {
             // Nothing to do.
-            r->prepareResolvedLayer(context.layerType_, context.stages_);
+            r->prepareResolvedLayer(context.layerType_);
             if (r->isDone()) {
                 r->notifyStatus();
             }
@@ -1846,17 +2248,21 @@ bool Service::request(std::vector<LayerTilesRequest::Ptr> const& requests, std::
     return dataSourcesAvailable;
 }
 
-bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::optional<AuthHeaders> const& clientHeaders)
+bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::optional<AuthHeaders> const& clientHeaders)
 {
     if (!request) {
-        raise("Attempt to request a null FeatureLayerSearchTilesRequest.");
+        raise("Attempt to request a null FeatureLayerFilterTilesRequest.");
     }
     if (request->isDone()) {
         request->notifyStatus();
         return true;
     }
 
-    auto context = resolveLayerRequest(request->mapId_, request->layerId_, clientHeaders);
+    auto context = resolveLayerRequest(
+        request->mapId_,
+        request->layerId_,
+        clientHeaders,
+        request->sourceId_);
     if (context.status_ != RequestStatus::Success) {
         request->setStatus(context.status_);
         return false;
@@ -1867,11 +2273,22 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
     }
 
     std::optional<DataSourceInfo> sourceInfo;
+    DataSource::Ptr sourceDataSource;
     {
         std::shared_lock lock(impl_->dataSourcesMutex_);
         for (auto const& [dataSource, info] : impl_->dataSourceInfo_) {
             if (info.isAddOn_ || info.mapId_ != request->mapId_) {
                 continue;
+            }
+            if (request->sourceId_) {
+                auto sourceId =
+                    impl_->dataSourceSourceIds_.find(dataSource);
+                if (sourceId ==
+                        impl_->dataSourceSourceIds_.end() ||
+                    sourceId->second != *request->sourceId_)
+                {
+                    continue;
+                }
             }
             if (info.layers_.find(request->layerId_) == info.layers_.end()) {
                 continue;
@@ -1880,6 +2297,7 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
                 continue;
             }
             sourceInfo = info;
+            sourceDataSource = dataSource;
             break;
         }
     }
@@ -1888,91 +2306,421 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
         return false;
     }
 
-    auto stageCount = std::max<uint32_t>(1U, context.stages_);
-    auto childRequest = [&]() -> LayerTilesRequest::Ptr {
-        std::vector<TileId> priorityTileIds(
-            request->priorityTileIds_.begin(),
-            request->priorityTileIds_.end());
-        if (stageCount > 1U) {
-            auto stagedRequest = std::make_shared<LayerTilesRequest>(
-                request->mapId_,
-                request->layerId_,
-                std::vector<std::vector<TileId>>{request->tileIds_},
-                priorityTileIds);
-            stagedRequest->preferCompleteStagedTiles_ = true;
-            return stagedRequest;
-        }
-        return std::make_shared<LayerTilesRequest>(
-            request->mapId_,
-            request->layerId_,
-            request->tileIds_,
-            priorityTileIds);
-    }();
-    request->childRequests_.push_back(childRequest);
-
-    struct SearchExecutionState : std::enable_shared_from_this<SearchExecutionState>
+    auto const hasPointGroups = std::ranges::any_of(
+        request->filter_.channels_,
+        [](auto const& channel) {
+            return channel.group_.has_value();
+        });
+    auto const hasStoredRelations = std::ranges::any_of(
+        request->filter_.channels_,
+        [](auto const& channel) {
+            return channel.scope_ ==
+                FeatureLayerFilterScope::Relation;
+        });
+    if (request->exactRoots_.size() > 4096) {
+        auto status =
+            makeFilterStatusJson(*request, "Failed");
+        status["error"] =
+            "Stored-relation traversal exceeded the initial 4096 exact-root limit.";
+        request->notifyProgress(status);
+        request->setStatus(RequestStatus::Aborted);
+        return false;
+    }
+    for (size_t rootIndex = 0;
+         rootIndex < request->exactRoots_.size();
+         ++rootIndex)
     {
-        Service::Impl* impl = nullptr;
-        FeatureLayerSearchTilesRequest::Ptr request;
-        DataSourceInfo sourceInfo;
-        uint32_t stageCount = 1;
-        size_t expectedTiles = 0;
+        request->exactRoots_[rootIndex]
+            .requestOrdinal_ = rootIndex;
+    }
+    if (!request->exactRoots_.empty() &&
+        !hasStoredRelations)
+    {
+        auto status =
+            makeFilterStatusJson(*request, "Failed");
+        status["error"] =
+            "Exact roots are valid only for a relation-scope filter bundle.";
+        request->notifyProgress(status);
+        request->setStatus(RequestStatus::Aborted);
+        return false;
+    }
+    auto const requestedOutputMembership =
+        std::set<TileId>(
+            request->tileIds_.begin(),
+            request->tileIds_.end());
+    if (std::ranges::any_of(
+            request->exactRoots_,
+            [&](auto const& root) {
+                return !requestedOutputMembership
+                            .contains(root.tileId_);
+            }))
+    {
+        auto status =
+            makeFilterStatusJson(*request, "Failed");
+        status["error"] =
+            "Every exact relation root must belong to an original requested output tile.";
+        request->notifyProgress(status);
+        request->setStatus(RequestStatus::Aborted);
+        return false;
+    }
 
+    std::vector<TileId> tileIdsToProcess = request->tileIds_;
+    std::set<TileId> sourceTileMembership(
+        tileIdsToProcess.begin(),
+        tileIdsToProcess.end());
+    if (hasPointGroups) {
+        auto const level = request->tileIds_.front().level();
+        for (auto const& tileId : request->tileIds_) {
+            if (!tileId.isValid() || tileId.level() != level) {
+                auto status = makeFilterStatusJson(*request, "Failed");
+                status["error"] =
+                    "Point-grid outputs must be valid tiles at one common level.";
+                request->notifyProgress(status);
+                request->setStatus(RequestStatus::Aborted);
+                return false;
+            }
+        }
+        auto const [tileWidth, tileHeight] =
+            request->tileIds_.front().wgs84Size();
+        for (auto const& channel : request->filter_.channels_) {
+            if (!channel.group_) {
+                continue;
+            }
+            if (!std::isfinite(channel.group_->cellSize_.x) ||
+                !std::isfinite(channel.group_->cellSize_.y) ||
+                channel.group_->cellSize_.x <= 0.0 ||
+                channel.group_->cellSize_.y <= 0.0 ||
+                channel.group_->cellSize_.x > tileWidth ||
+                channel.group_->cellSize_.y > tileHeight)
+            {
+                auto status = makeFilterStatusJson(*request, "Failed");
+                status["error"] = fmt::format(
+                    "Point-grid channel '{}' exceeds the initial one-tile halo span.",
+                    channel.channelId_);
+                request->notifyProgress(status);
+                request->setStatus(RequestStatus::Aborted);
+                return false;
+            }
+        }
+
+        // Requested outputs remain first. Halo-only source tiles are appended
+        // in first-needed order, never promoted ahead of another output.
+        for (auto const& outputTileId : request->tileIds_) {
+            for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
+                for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
+                    if (offsetX == 0 && offsetY == 0) {
+                        continue;
+                    }
+                    auto const sourceTileId =
+                        outputTileId.neighbour(offsetX, offsetY);
+                    if (sourceTileMembership.insert(sourceTileId).second) {
+                        tileIdsToProcess.push_back(sourceTileId);
+                    }
+                }
+            }
+        }
+    }
+
+    auto childRequest = std::make_shared<LayerTilesRequest>(
+        request->mapId_,
+        request->layerId_,
+        tileIdsToProcess,
+        std::vector<TileId>(
+            request->priorityTileIds_.begin(),
+            request->priorityTileIds_.end()));
+    childRequest->sourceId_ = request->sourceId_;
+    {
+        std::lock_guard lock(
+            request->childRequestsMutex_);
+        request->childRequests_.push_back(
+            childRequest);
+    }
+
+    struct FilterExecutionState
+        : std::enable_shared_from_this<FilterExecutionState>
+    {
+        struct SourceTileContribution
+        {
+            TileSubsetDependency dependency_;
+            std::vector<FeatureLayerPointGroupMember>
+                pointGroupMembers_;
+            std::vector<FeatureLayerRelationDescriptor>
+                relationDescriptors_;
+            std::vector<FilterIssue> issues_;
+            std::map<std::string, simfil::Trace> traces_;
+            simfil::Diagnostics diagnostics_;
+        };
+
+        struct OutputTileState
+        {
+            TileId tileId_;
+            TileSubsetLayer::Ptr wipSubset_;
+            std::vector<TileId> sourceTileIds_;
+            std::vector<std::optional<SourceTileContribution>>
+                contributions_;
+            size_t missingContributions_ = 0;
+            bool takenForCompletion_ = false;
+        };
+
+        struct DependentOutputSlot
+        {
+            size_t outputIndex_ = 0;
+            size_t slotIndex_ = 0;
+        };
+
+        struct ReadyOutput
+        {
+            size_t outputIndex_ = 0;
+            TileSubsetLayer::Ptr layer_;
+            std::vector<SourceTileContribution> contributions_;
+            std::map<
+                MapTileKey,
+                SourceTileContribution>
+                dynamicContributions_;
+        };
+
+        struct PendingRelationOutput
+        {
+            ReadyOutput ready_;
+            std::set<MapTileKey> pendingTargetTiles_;
+        };
+
+        struct RelationTargetTileState
+        {
+            bool scheduled_ = false;
+            bool terminal_ = false;
+            TileFeatureLayer::Ptr layer_;
+            std::set<size_t> dependentOutputs_;
+        };
+
+        struct PreparedRelationOutputs
+        {
+            std::vector<ReadyOutput> ready_;
+            std::vector<MapTileKey> targetsToSchedule_;
+        };
+
+        Service::Impl* impl = nullptr;
+        Service* service = nullptr;
+        FeatureLayerFilterTilesRequest::Ptr request;
+        DataSourceInfo sourceInfo;
+        DataSource::Ptr sourceDataSource;
+        std::optional<AuthHeaders> clientHeaders;
+        bool hasPointGroups = false;
+        bool hasStoredRelations = false;
+        int outputLevel = 0;
+
+        std::vector<TileId> sourceTileIds;
+        std::map<TileId, size_t> sourceIndexByTile;
+        std::map<TileId, size_t> outputIndexByTile;
+        std::vector<OutputTileState> outputs;
+        std::vector<std::vector<DependentOutputSlot>>
+            dependentOutputsBySource;
+        std::vector<bool> receivedSourceTiles;
+        std::vector<bool> committedSourceTiles;
+        std::set<std::string> groupChannelIds;
+        std::map<
+            std::string,
+            std::vector<LocateResponse>>
+            relationLocationCache;
+        std::mutex relationLocationMutex;
+        std::map<
+            size_t,
+            PendingRelationOutput>
+            pendingRelationOutputs;
+        std::map<
+            MapTileKey,
+            RelationTargetTileState>
+            relationTargetTiles;
         std::mutex mutex;
-        std::map<TileId, std::map<uint32_t, TileFeatureLayer::Ptr>> stagesByTile;
-        size_t loadedStages = 0;
-        size_t searchedTiles = 0;
-        size_t matches = 0;
-        size_t chunksEmitted = 0;
-        size_t pendingEvalJobs = 0;
-        bool childDone = false;
+        size_t loadedSourceTiles = 0;
+        size_t evaluatedSourceTiles = 0;
+        size_t readyOutputTiles = 0;
+        size_t emittedOutputTiles = 0;
+        size_t entriesEmitted = 0;
+        size_t pendingEvaluationJobs = 0;
+        std::atomic_size_t progressEventCount = 0;
+        bool childRequestDone = false;
         bool terminal = false;
 
-        [[nodiscard]] nlohmann::json progress(std::string state) const
+        void configure(
+            std::vector<TileId> const& outputTileIds,
+            std::vector<TileId> processingTileIds)
         {
-            auto status = makeSearchStatusJson(*request, std::move(state));
-            status["tilesQueued"] = expectedTiles;
-            status["tilesLoaded"] = loadedStages;
-            status["tilesSearched"] = searchedTiles;
-            status["matches"] = matches;
-            status["chunksEmitted"] = chunksEmitted;
+            sourceTileIds = std::move(processingTileIds);
+            receivedSourceTiles.resize(sourceTileIds.size(), false);
+            committedSourceTiles.resize(sourceTileIds.size(), false);
+            dependentOutputsBySource.resize(sourceTileIds.size());
+            for (size_t index = 0;
+                 index < sourceTileIds.size();
+                 ++index)
+            {
+                sourceIndexByTile.emplace(
+                    sourceTileIds[index],
+                    index);
+            }
+            for (auto const& channel : request->filter_.channels_) {
+                if (channel.group_) {
+                    groupChannelIds.insert(channel.channelId_);
+                }
+            }
+
+            outputs.reserve(outputTileIds.size());
+            for (size_t outputIndex = 0;
+                 outputIndex < outputTileIds.size();
+                 ++outputIndex)
+            {
+                auto const outputTileId =
+                    outputTileIds[outputIndex];
+                outputIndexByTile.emplace(
+                    outputTileId,
+                    outputIndex);
+
+                std::set<TileId> dependencyMembership{
+                    outputTileId};
+                if (hasPointGroups) {
+                    for (int32_t offsetY = -1;
+                         offsetY <= 1;
+                         ++offsetY)
+                    {
+                        for (int32_t offsetX = -1;
+                             offsetX <= 1;
+                             ++offsetX)
+                        {
+                            dependencyMembership.insert(
+                                outputTileId.neighbour(
+                                    offsetX,
+                                    offsetY));
+                        }
+                    }
+                }
+
+                OutputTileState output;
+                output.tileId_ = outputTileId;
+                for (auto const& sourceTileId :
+                     sourceTileIds)
+                {
+                    if (dependencyMembership.contains(
+                            sourceTileId))
+                    {
+                        output.sourceTileIds_.push_back(
+                            sourceTileId);
+                    }
+                }
+                output.contributions_.resize(
+                    output.sourceTileIds_.size());
+                output.missingContributions_ =
+                    output.sourceTileIds_.size();
+                outputs.push_back(std::move(output));
+            }
+
+            for (size_t outputIndex = 0;
+                 outputIndex < outputs.size();
+                 ++outputIndex)
+            {
+                auto const& output = outputs[outputIndex];
+                for (size_t slotIndex = 0;
+                     slotIndex < output.sourceTileIds_.size();
+                     ++slotIndex)
+                {
+                    dependentOutputsBySource.at(
+                        sourceIndexByTile.at(
+                            output.sourceTileIds_[slotIndex]))
+                        .push_back({
+                            outputIndex,
+                            slotIndex,
+                        });
+                }
+            }
+        }
+
+        [[nodiscard]] nlohmann::json progress(
+            std::string state)
+        {
+            std::lock_guard lock(mutex);
+            auto status =
+                makeFilterStatusJson(*request, std::move(state));
+            status["outputTilesRequested"] = outputs.size();
+            status["sourceTilesQueued"] = sourceTileIds.size();
+            status["sourceTilesLoaded"] = loadedSourceTiles;
+            status["sourceTilesEvaluated"] =
+                evaluatedSourceTiles;
+            status["outputTilesReady"] = readyOutputTiles;
+            status["outputTilesEmitted"] =
+                emittedOutputTiles;
+            status["entriesEmitted"] = entriesEmitted;
             return status;
         }
 
-        void emitProgress(std::string state)
+        void emitProgress(
+            std::string state,
+            bool force = false)
         {
-            request->notifyProgress(progress(std::move(state)));
+            // Per-source callbacks can outnumber useful UI refreshes by
+            // thousands in a large viewport. Keep exact counters in request
+            // state, but serialize only periodic intermediate snapshots.
+            constexpr size_t ProgressEventStride = 32;
+            if (!force) {
+                auto const event =
+                    progressEventCount.fetch_add(
+                        1,
+                        std::memory_order_relaxed) + 1;
+                if (event % ProgressEventStride != 0) {
+                    return;
+                }
+            }
+            request->notifyProgress(
+                progress(std::move(state)));
         }
 
         void releaseChildRequests()
         {
+            std::lock_guard lock(
+                request->childRequestsMutex_);
             request->childRequests_.clear();
         }
 
         void abortChildRequests()
         {
-            auto children = request->childRequests_;
+            std::vector<LayerTilesRequest::Ptr> children;
+            {
+                std::lock_guard lock(
+                    request->childRequestsMutex_);
+                children = request->childRequests_;
+                request->childRequests_.clear();
+            }
             for (auto const& child : children) {
                 if (child && !child->isDone()) {
                     impl->abortRequest(child);
                 }
             }
-            releaseChildRequests();
         }
 
         void finishIfComplete()
         {
-            RequestStatus finalStatus = RequestStatus::Open;
+            RequestStatus finalStatus =
+                RequestStatus::Open;
             {
                 std::lock_guard lock(mutex);
-                if (terminal || !childDone || pendingEvalJobs != 0 || searchedTiles < expectedTiles) {
+                if (terminal ||
+                    !childRequestDone ||
+                    pendingEvaluationJobs != 0 ||
+                    evaluatedSourceTiles <
+                        sourceTileIds.size() ||
+                    emittedOutputTiles < outputs.size())
+                {
                     return;
                 }
                 terminal = true;
-                finalStatus = request->isCancelled() ? RequestStatus::Aborted : RequestStatus::Success;
+                finalStatus = request->isCancelled()
+                    ? RequestStatus::Aborted
+                    : RequestStatus::Success;
             }
             releaseChildRequests();
-            emitProgress(finalStatus == RequestStatus::Success ? "Success" : "Aborted");
+            emitProgress(
+                finalStatus == RequestStatus::Success
+                    ? "Success"
+                    : "Aborted",
+                true);
             request->setStatus(finalStatus);
         }
 
@@ -1986,12 +2734,14 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
                 terminal = true;
             }
             log().error(
-                "Search {} failed for {}::{}: {}",
-                request->search_.searchId_,
+                "Filter {} generation {} failed for {}::{}: {}",
+                request->filter_.filterId_,
+                request->filter_.generation_,
                 request->mapId_,
                 request->layerId_,
                 error.message);
-            auto status = makeSearchStatusJson(*request, "Failed");
+            auto status =
+                makeFilterStatusJson(*request, "Failed");
             status["error"] = error.message;
             request->notifyProgress(status);
             abortChildRequests();
@@ -2003,121 +2753,1155 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
             if (!layer || request->isCancelled()) {
                 return;
             }
+            auto found =
+                sourceIndexByTile.find(layer->tileId());
+            if (found == sourceIndexByTile.end()) {
+                fail(simfil::Error{
+                    simfil::Error::InternalError,
+                    "Filter source request returned an unplanned tile.",
+                });
+                return;
+            }
 
-            std::vector<TileFeatureLayer::Ptr> readyStages;
+            bool duplicate = false;
+            auto const sourceIndex = found->second;
             {
                 std::lock_guard lock(mutex);
                 if (terminal) {
                     return;
                 }
-                auto stage = stageCount > 1U ? layer->stage().value_or(0U) : 0U;
-                auto& tileStages = stagesByTile[layer->tileId()];
-                if (tileStages.emplace(stage, layer).second) {
-                    ++loadedStages;
+                if (receivedSourceTiles[sourceIndex]) {
+                    // The ordinary child request is stable-deduplicated, so a
+                    // second delivery is an internal scheduler violation.
+                    duplicate = true;
                 }
-                if (tileStages.size() != stageCount) {
-                    return;
+                else {
+                    receivedSourceTiles[sourceIndex] = true;
+                    ++loadedSourceTiles;
+                    ++pendingEvaluationJobs;
                 }
-                readyStages.reserve(tileStages.size());
-                for (auto const& [_, stageLayer] : tileStages) {
-                    readyStages.push_back(stageLayer);
-                }
-                // The eval job now owns the ready stage pointers. Keeping them
-                // here would retain every searched source tile until request end.
-                stagesByTile.erase(layer->tileId());
-                ++pendingEvalJobs;
+            }
+            if (duplicate) {
+                fail(simfil::Error{
+                    simfil::Error::InternalError,
+                    "Filter source tile was delivered more than once.",
+                });
+                return;
             }
 
-            emitProgress("TileLoaded");
+            // Source jobs are admitted by LayerTilesRequest in request order,
+            // but their datasource work may complete in parallel. Evaluate a
+            // completed source immediately: waiting for every preceding
+            // completion creates an unnecessary request-wide head-of-line
+            // barrier and retains complete source models while idle.
             auto self = shared_from_this();
-            impl->enqueueSearchEvalJob(
-                sourceInfo,
+            impl->enqueueFilterEvalJob(
+                sourceInfo.mapId_,
                 request,
-                [self, readyStages = std::move(readyStages)]() mutable {
-                    self->evaluate(std::move(readyStages));
+                [self,
+                 sourceIndex,
+                 source = std::move(layer)]() mutable {
+                    self->evaluate(
+                        sourceIndex,
+                        std::move(source));
                 },
                 [self]() {
-                    self->markEvalDone(0, false);
+                    self->discardEvaluationJob();
                 });
+            emitProgress("SourceTileLoaded");
         }
 
-        void evaluate(std::vector<TileFeatureLayer::Ptr> readyStages)
+        void discardEvaluationJob()
         {
-            try {
-                if (request->isCancelled()) {
-                    markEvalDone(0, false);
-                    return;
+            {
+                std::lock_guard lock(mutex);
+                if (pendingEvaluationJobs > 0) {
+                    --pendingEvaluationJobs;
+                }
+            }
+            finishIfComplete();
+        }
+
+        tl::expected<void, simfil::Error>
+        locateRelationTargets(
+            TileFeatureLayer const& source,
+            FeatureLayerFilterSourceResult& result)
+        {
+            if (result.relationDescriptors_.size() >
+                100000)
+            {
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::InvalidArguments,
+                    "Stored-relation traversal exceeded the initial 100000 directed-relation limit.",
+                });
+            }
+
+            std::vector<FeatureLayerRelationDescriptor>
+                retained;
+            retained.reserve(
+                result.relationDescriptors_.size());
+            for (auto&& descriptor :
+                 result.relationDescriptors_)
+            {
+                if (descriptor.target_) {
+                    retained.push_back(
+                        std::move(descriptor));
+                    continue;
+                }
+                auto targetId =
+                    descriptor.relation_
+                        ? descriptor.relation_->target()
+                        : model_ptr<FeatureId>{};
+                auto const channelId =
+                    descriptor.channelIndex_ <
+                            request->filter_.channels_.size()
+                    ? request->filter_
+                          .channels_[
+                              descriptor.channelIndex_]
+                          .channelId_
+                    : std::string{};
+                auto addIssue =
+                    [&](std::string message) {
+                        result.issues_.push_back(
+                            FilterIssue{
+                                channelId,
+                                "<relation-target>",
+                                Scope::Relation,
+                                std::move(message),
+                                1,
+                            });
+                    };
+                if (!targetId) {
+                    addIssue(
+                        "Stored relation has no target feature identity.");
+                    continue;
+                }
+                if (auto externalMap =
+                        targetId->externalMapId();
+                    externalMap &&
+                    *externalMap != request->mapId_)
+                {
+                    addIssue(fmt::format(
+                        "Cross-map relation target '{}' is unsupported.",
+                        targetId->toString()));
+                    continue;
                 }
 
-                auto searchRequest = request->search_;
-                searchRequest.sourceStageMask_.clear();
-                searchRequest.sourceStageMask_.reserve(readyStages.size());
-                for (auto const& stageLayer : readyStages) {
-                    if (stageLayer) {
-                        searchRequest.sourceStageMask_.push_back(
-                            stageCount > 1U ? stageLayer->stage().value_or(0U) : UnspecifiedStage);
+                LocateRequest locateRequest(
+                    request->mapId_,
+                    descriptor.targetTypeId_,
+                    descriptor.targetFeatureId_);
+                auto const locationKey =
+                    locateRequest.serialize().dump();
+                std::vector<LocateResponse> locations;
+                bool locationCached = false;
+                {
+                    std::lock_guard lock(
+                        relationLocationMutex);
+                    auto found =
+                        relationLocationCache.find(
+                            locationKey);
+                    if (found !=
+                        relationLocationCache.end())
+                    {
+                        locations = found->second;
+                        locationCached = true;
+                    }
+                }
+                if (!locationCached) {
+                    // Never invoke a potentially remote datasource callback
+                    // while holding the shared location-cache mutex. Racing
+                    // misses may perform duplicate idempotent locate work;
+                    // the first normalized value installed wins.
+                    auto located =
+                        sourceDataSource->locateCandidates(
+                            locateRequest);
+                    std::map<
+                        std::string,
+                        LocateResponse>
+                        unique;
+                    for (auto&& location : located) {
+                        if (location.tileKey_.layer_ !=
+                                LayerType::Features ||
+                            location.tileKey_.mapId_ !=
+                                request->mapId_)
+                        {
+                            continue;
+                        }
+                        unique.try_emplace(
+                            location.serialize().dump(),
+                            std::move(location));
+                    }
+                    std::vector<LocateResponse>
+                        normalized;
+                    normalized.reserve(unique.size());
+                    for (auto&& [_, location] : unique) {
+                        normalized.push_back(
+                            std::move(location));
+                    }
+                    std::lock_guard lock(
+                        relationLocationMutex);
+                    auto [found, _] =
+                        relationLocationCache
+                            .try_emplace(
+                                locationKey,
+                                std::move(normalized));
+                    locations = found->second;
+                }
+
+                if (locations.empty()) {
+                    addIssue(fmt::format(
+                        "Could not locate relation target '{}'.",
+                        targetId->toString()));
+                    continue;
+                }
+                if (locations.size() != 1) {
+                    addIssue(fmt::format(
+                        "Relation target '{}' resolved ambiguously to {} candidates.",
+                        targetId->toString(),
+                        locations.size()));
+                    continue;
+                }
+
+                auto const& location =
+                    locations.front();
+                descriptor.targetTypeId_ =
+                    location.typeId_;
+                descriptor.targetFeatureId_ =
+                    location.featureId_;
+                descriptor.targetTileKey_ =
+                    location.tileKey_;
+                if (location.tileKey_ == source.id()) {
+                    auto resolved =
+                        sourceDataSource->resolveFeatures(
+                            location,
+                            source);
+                    if (resolved.empty()) {
+                        addIssue(fmt::format(
+                            "Located relation target '{}' was not found in its source tile.",
+                            targetId->toString()));
+                        continue;
+                    }
+                    if (resolved.size() != 1) {
+                        addIssue(fmt::format(
+                            "Relation target '{}' resolved ambiguously to {} features in its source tile.",
+                            targetId->toString(),
+                            resolved.size()));
+                        continue;
+                    }
+                    descriptor.target_ =
+                        std::move(resolved.front());
+                    descriptor.targetTypeId_ =
+                        std::string(
+                            descriptor.target_->id()
+                                ->typeId());
+                    descriptor.targetFeatureId_ =
+                        castToKeyValue(
+                            descriptor.target_->id()
+                                ->keyValuePairs());
+                }
+                retained.push_back(
+                    std::move(descriptor));
+            }
+            result.relationDescriptors_ =
+                std::move(retained);
+            return {};
+        }
+
+        tl::expected<std::vector<ReadyOutput>, simfil::Error>
+        commitSource(
+            size_t sourceIndex,
+            TileFeatureLayer const& source,
+            FeatureLayerFilterSourceResult result)
+        {
+            std::map<
+                size_t,
+                std::vector<FeatureLayerPointGroupMember>>
+                membersByOutput;
+            for (auto&& member :
+                 result.pointGroupMembers_)
+            {
+                auto owner = pointGroupOwnerTile(
+                    member,
+                    request->filter_,
+                    outputLevel);
+                if (!owner) {
+                    return tl::unexpected(owner.error());
+                }
+                auto output =
+                    outputIndexByTile.find(*owner);
+                if (output != outputIndexByTile.end()) {
+                    auto const& dependents =
+                        dependentOutputsBySource[sourceIndex];
+                    if (std::ranges::none_of(
+                            dependents,
+                            [&](auto const& dependent) {
+                                return dependent.outputIndex_ ==
+                                    output->second;
+                            }))
+                    {
+                        return tl::unexpected(simfil::Error{
+                            simfil::Error::InternalError,
+                            "Point-group member escaped the configured source halo.",
+                        });
+                    }
+                    membersByOutput[output->second]
+                        .push_back(std::move(member));
+                }
+            }
+
+            std::vector<ReadyOutput> ready;
+            {
+                std::lock_guard lock(mutex);
+                if (terminal || request->isCancelled()) {
+                    return ready;
+                }
+                if (sourceIndex >=
+                        committedSourceTiles.size() ||
+                    committedSourceTiles[sourceIndex])
+                {
+                    return tl::unexpected(simfil::Error{
+                        simfil::Error::InternalError,
+                        "Filter source tile committed more than once.",
+                    });
+                }
+
+                auto outputForSource =
+                    outputIndexByTile.find(source.tileId());
+                if (outputForSource !=
+                    outputIndexByTile.end())
+                {
+                    if (!result.layer_) {
+                        return tl::unexpected(simfil::Error{
+                            simfil::Error::InternalError,
+                            "Requested filter output source produced no WIP subset.",
+                        });
+                    }
+                    outputs[outputForSource->second]
+                        .wipSubset_ =
+                        std::move(result.layer_);
+                }
+                else if (result.layer_) {
+                    return tl::unexpected(simfil::Error{
+                        simfil::Error::InternalError,
+                        "Halo-only filter source produced an output subset.",
+                    });
+                }
+
+                auto const dependency =
+                    TileSubsetDependency{
+                        MapTileKey(source),
+                        result.sourceFeatureCount_,
+                    };
+                for (auto const& dependent :
+                     dependentOutputsBySource[sourceIndex])
+                {
+                    auto& output =
+                        outputs[dependent.outputIndex_];
+                    auto& slot =
+                        output.contributions_[
+                            dependent.slotIndex_];
+                    if (slot) {
+                        return tl::unexpected(simfil::Error{
+                            simfil::Error::InternalError,
+                            "Filter contribution slot was written more than once.",
+                        });
+                    }
+
+                    std::vector<FilterIssue> issues;
+                    issues.reserve(result.issues_.size());
+                    auto const isLocalOutput =
+                        output.tileId_ == source.tileId();
+                    for (auto const& issue :
+                         result.issues_)
+                    {
+                        if (isLocalOutput ||
+                            groupChannelIds.contains(
+                                issue.channelId_))
+                        {
+                            issues.push_back(issue);
+                        }
+                    }
+                    simfil::Diagnostics contributionDiagnostics;
+                    contributionDiagnostics.append(
+                        result.diagnostics_);
+                    slot.emplace(SourceTileContribution{
+                        dependency,
+                        std::move(
+                            membersByOutput[
+                                dependent.outputIndex_]),
+                        isLocalOutput
+                            ? std::move(
+                                  result
+                                      .relationDescriptors_)
+                            : std::vector<
+                                  FeatureLayerRelationDescriptor>{},
+                        std::move(issues),
+                        result.traces_,
+                        std::move(
+                            contributionDiagnostics),
+                    });
+                    --output.missingContributions_;
+                    if (output.missingContributions_ == 0) {
+                        if (!output.wipSubset_) {
+                            return tl::unexpected(simfil::Error{
+                                simfil::Error::InternalError,
+                                "Complete filter output has no WIP subset.",
+                            });
+                        }
+                        output.takenForCompletion_ = true;
+                        ReadyOutput item{
+                            dependent.outputIndex_,
+                            std::move(output.wipSubset_),
+                            {},
+                        };
+                        item.contributions_.reserve(
+                            output.contributions_.size());
+                        for (auto& contribution :
+                             output.contributions_)
+                        {
+                            if (!contribution) {
+                                return tl::unexpected(
+                                    simfil::Error{
+                                        simfil::Error::InternalError,
+                                        "Complete filter output has an empty contribution slot.",
+                                    });
+                            }
+                            item.contributions_.push_back(
+                                std::move(*contribution));
+                        }
+                        ready.push_back(std::move(item));
                     }
                 }
 
-                TileFeatureLayer::Ptr searchSource;
-                if (readyStages.size() == 1) {
-                    searchSource = readyStages.front();
-                } else {
-                    auto assembled = assembleFeatureLayerStages(readyStages);
-                    if (!assembled) {
-                        fail(assembled.error());
-                        markEvalDone(0, false);
+                committedSourceTiles[sourceIndex] = true;
+                ++evaluatedSourceTiles;
+            }
+            std::ranges::sort(
+                ready,
+                {},
+                &ReadyOutput::outputIndex_);
+            return ready;
+        }
+
+        tl::expected<void, simfil::Error>
+        resolveRelationTargetInOutput(
+            ReadyOutput& output,
+            MapTileKey const& targetKey,
+            TileFeatureLayer const& targetLayer)
+        {
+            if (targetLayer.size() >
+                static_cast<size_t>(
+                    std::numeric_limits<uint32_t>::max()))
+            {
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::InvalidArguments,
+                    "Relation target feature count exceeds the subset dependency representation.",
+                });
+            }
+            SourceTileContribution targetContribution{
+                TileSubsetDependency{
+                    targetKey,
+                    static_cast<uint32_t>(
+                        targetLayer.size()),
+                },
+                {},
+                {},
+                {},
+                {},
+            };
+
+            for (auto& contribution :
+                 output.contributions_)
+            {
+                for (auto& descriptor :
+                     contribution.relationDescriptors_)
+                {
+                    if (descriptor.target_ ||
+                        descriptor.targetTileKey_ !=
+                            std::optional<MapTileKey>{
+                                targetKey})
+                    {
+                        continue;
+                    }
+                    auto located = LocateRequest(
+                        request->mapId_,
+                        descriptor.targetTypeId_,
+                        descriptor.targetFeatureId_);
+                    auto resolved =
+                        sourceDataSource->resolveFeatures(
+                            located,
+                            targetLayer);
+                    if (resolved.size() == 1) {
+                        descriptor.target_ =
+                            std::move(resolved.front());
+                        descriptor.targetTypeId_ =
+                            std::string(
+                                descriptor.target_->id()
+                                    ->typeId());
+                        descriptor.targetFeatureId_ =
+                            castToKeyValue(
+                                descriptor.target_->id()
+                                    ->keyValuePairs());
+                        continue;
+                    }
+                    auto const channelId =
+                        descriptor.channelIndex_ <
+                                request->filter_
+                                    .channels_.size()
+                        ? request->filter_
+                              .channels_[
+                                  descriptor
+                                      .channelIndex_]
+                              .channelId_
+                        : std::string{};
+                    auto message = resolved.empty()
+                        ? fmt::format(
+                              "Located relation target of type '{}' was not found in tile {}.",
+                              descriptor.targetTypeId_,
+                              targetKey.toString())
+                        : fmt::format(
+                              "Relation target of type '{}' resolved ambiguously to {} features in tile {}.",
+                              descriptor.targetTypeId_,
+                              resolved.size(),
+                              targetKey.toString());
+                    targetContribution.issues_.push_back(
+                        FilterIssue{
+                            channelId,
+                            "<relation-target>",
+                            Scope::Relation,
+                            std::move(message),
+                            1,
+                        });
+                }
+            }
+            output.dynamicContributions_.erase(
+                targetKey);
+            output.dynamicContributions_.emplace(
+                targetKey,
+                std::move(targetContribution));
+            return {};
+        }
+
+        tl::expected<
+            PreparedRelationOutputs,
+            simfil::Error>
+        prepareRelationOutputs(
+            std::vector<ReadyOutput> fixedReady)
+        {
+            PreparedRelationOutputs prepared;
+            std::lock_guard lock(mutex);
+            if (terminal || request->isCancelled()) {
+                return prepared;
+            }
+
+            for (auto&& ready : fixedReady) {
+                std::set<MapTileKey> targetKeys;
+                for (auto const& contribution :
+                     ready.contributions_)
+                {
+                    for (auto const& descriptor :
+                         contribution
+                             .relationDescriptors_)
+                    {
+                        if (!descriptor.target_ &&
+                            descriptor.targetTileKey_)
+                        {
+                            targetKeys.insert(
+                                *descriptor
+                                     .targetTileKey_);
+                        }
+                    }
+                }
+
+                std::set<MapTileKey> pendingKeys;
+                for (auto const& targetKey :
+                     targetKeys)
+                {
+                    auto [targetState, inserted] =
+                        relationTargetTiles
+                            .try_emplace(targetKey);
+                    if (inserted &&
+                        relationTargetTiles.size() >
+                            2048)
+                    {
+                        return tl::unexpected(
+                            simfil::Error{
+                                simfil::Error::InvalidArguments,
+                                "Stored-relation traversal exceeded the initial 2048 unique-target-tile limit.",
+                            });
+                    }
+                    if (targetState->second.terminal_) {
+                        if (!targetState->second.layer_) {
+                            return tl::unexpected(
+                                simfil::Error{
+                                    simfil::Error::InternalError,
+                                    "Terminal relation target tile has no layer.",
+                                });
+                        }
+                        auto resolved =
+                            resolveRelationTargetInOutput(
+                                ready,
+                                targetKey,
+                                *targetState->second
+                                     .layer_);
+                        if (!resolved) {
+                            return tl::unexpected(
+                                resolved.error());
+                        }
+                        continue;
+                    }
+                    pendingKeys.insert(targetKey);
+                    targetState->second
+                        .dependentOutputs_
+                        .insert(ready.outputIndex_);
+                    if (!targetState->second
+                             .scheduled_)
+                    {
+                        targetState->second
+                            .scheduled_ = true;
+                        prepared.targetsToSchedule_
+                            .push_back(targetKey);
+                    }
+                }
+
+                if (pendingKeys.empty()) {
+                    prepared.ready_.push_back(
+                        std::move(ready));
+                    ++readyOutputTiles;
+                    continue;
+                }
+                auto [pending, inserted] =
+                    pendingRelationOutputs.emplace(
+                        ready.outputIndex_,
+                        PendingRelationOutput{
+                            std::move(ready),
+                            std::move(pendingKeys),
+                        });
+                if (!inserted) {
+                    return tl::unexpected(
+                        simfil::Error{
+                            simfil::Error::InternalError,
+                            "Filter output entered relation-target resolution more than once.",
+                        });
+                }
+            }
+            return prepared;
+        }
+
+        void scheduleRelationTarget(
+            MapTileKey const& targetKey)
+        {
+            auto child =
+                std::make_shared<LayerTilesRequest>(
+                    targetKey.mapId_,
+                    targetKey.layerId_,
+                    std::vector<TileId>{
+                        targetKey.tileId_});
+            child->sourceId_ =
+                request->sourceId_;
+            auto self = shared_from_this();
+            child->onFeatureLayer(
+                [self, targetKey](
+                    TileFeatureLayer::Ptr layer)
+                {
+                    self->collectRelationTarget(
+                        targetKey,
+                        std::move(layer));
+                });
+            child->onDone_ =
+                [self, targetKey](
+                    RequestStatus status)
+                {
+                    if (status ==
+                        RequestStatus::Success)
+                    {
                         return;
                     }
-                    searchSource = *assembled;
-                }
-
-                auto searchResult = searchFeatureLayerAsResultLayer(*searchSource, searchRequest);
-                if (!searchResult) {
-                    fail(searchResult.error());
-                    markEvalDone(0, false);
-                    return;
-                }
-
-                auto resultCount = searchResult->layer_ ? searchResult->layer_->size() : 0;
-                if (searchResult->layer_) {
-                    request->notifyResult(std::move(searchResult->layer_));
-                }
-                markEvalDone(resultCount, true);
-            } catch (std::exception const& exception) {
-                auto const sourceTileId = readyStages.empty() || !readyStages.front()
-                    ? TileId{}
-                    : readyStages.front()->tileId();
+                    self->fail(simfil::Error{
+                        simfil::Error::InternalError,
+                        fmt::format(
+                            "Could not load relation target tile {}.",
+                            targetKey.toString()),
+                    });
+                };
+            {
+                std::lock_guard lock(
+                    request->childRequestsMutex_);
+                request->childRequests_.push_back(
+                    child);
+            }
+            if (!service->request(
+                    std::vector<
+                        LayerTilesRequest::Ptr>{
+                        child},
+                    clientHeaders))
+            {
                 fail(simfil::Error{
                     simfil::Error::InternalError,
                     fmt::format(
-                        "Search evaluation failed for {}::{} tile {:x}: {}",
+                        "Could not schedule relation target tile {}.",
+                        targetKey.toString()),
+                });
+            }
+        }
+
+        void collectRelationTarget(
+            MapTileKey const& targetKey,
+            TileFeatureLayer::Ptr layer)
+        {
+            if (!layer ||
+                layer->id() != targetKey)
+            {
+                fail(simfil::Error{
+                    simfil::Error::InternalError,
+                    fmt::format(
+                        "Relation target request returned the wrong tile for {}.",
+                        targetKey.toString()),
+                });
+                return;
+            }
+
+            std::vector<ReadyOutput> ready;
+            std::optional<simfil::Error> error;
+            {
+                std::lock_guard lock(mutex);
+                if (terminal ||
+                    request->isCancelled())
+                {
+                    return;
+                }
+                auto found =
+                    relationTargetTiles.find(
+                        targetKey);
+                if (found ==
+                    relationTargetTiles.end())
+                {
+                    error = simfil::Error{
+                        simfil::Error::InternalError,
+                        "Unplanned relation target tile was delivered.",
+                    };
+                }
+                else if (found->second.terminal_) {
+                    error = simfil::Error{
+                        simfil::Error::InternalError,
+                        "Relation target tile was delivered more than once.",
+                    };
+                }
+                else {
+                    found->second.terminal_ = true;
+                    found->second.layer_ = layer;
+                    for (auto const outputIndex :
+                         found->second
+                             .dependentOutputs_)
+                    {
+                        auto pending =
+                            pendingRelationOutputs
+                                .find(outputIndex);
+                        if (pending ==
+                            pendingRelationOutputs.end())
+                        {
+                            continue;
+                        }
+                        auto resolved =
+                            resolveRelationTargetInOutput(
+                                pending->second.ready_,
+                                targetKey,
+                                *layer);
+                        if (!resolved) {
+                            error =
+                                resolved.error();
+                            break;
+                        }
+                        pending->second
+                            .pendingTargetTiles_
+                            .erase(targetKey);
+                        if (pending->second
+                                .pendingTargetTiles_
+                                .empty())
+                        {
+                            ready.push_back(
+                                std::move(
+                                    pending->second
+                                        .ready_));
+                            pendingRelationOutputs
+                                .erase(pending);
+                            ++readyOutputTiles;
+                        }
+                    }
+                }
+            }
+            if (error) {
+                fail(*error);
+                return;
+            }
+            std::ranges::sort(
+                ready,
+                {},
+                &ReadyOutput::outputIndex_);
+            emitCompletedOutputs(
+                std::move(ready));
+            emitProgress(
+                "RelationTargetResolved");
+            finishIfComplete();
+        }
+
+        tl::expected<size_t, simfil::Error>
+        finalizeOutput(ReadyOutput ready)
+        {
+            std::vector<TileSubsetDependency> dependencies;
+            std::vector<FeatureLayerPointGroupMember> members;
+            std::vector<FeatureLayerRelationDescriptor>
+                relationDescriptors;
+            std::map<
+                std::tuple<
+                    std::string,
+                    std::string,
+                    Scope,
+                    std::string>,
+                FilterIssue>
+                issues;
+            std::map<std::string, simfil::Trace> traces;
+            simfil::Diagnostics diagnostics;
+
+            for (auto& contribution :
+                 ready.contributions_)
+            {
+                dependencies.push_back(
+                    std::move(contribution.dependency_));
+                members.insert(
+                    members.end(),
+                    std::make_move_iterator(
+                        contribution
+                            .pointGroupMembers_.begin()),
+                    std::make_move_iterator(
+                        contribution
+                            .pointGroupMembers_.end()));
+                relationDescriptors.insert(
+                    relationDescriptors.end(),
+                    std::make_move_iterator(
+                        contribution
+                            .relationDescriptors_.begin()),
+                    std::make_move_iterator(
+                        contribution
+                            .relationDescriptors_.end()));
+                for (auto&& issue : contribution.issues_) {
+                    auto key = std::make_tuple(
+                        issue.channelId_,
+                        issue.expression_,
+                        issue.scope_,
+                        issue.message_);
+                    auto [found, inserted] =
+                        issues.emplace(key, issue);
+                    if (!inserted) {
+                        auto const remaining =
+                            std::numeric_limits<uint64_t>::max() -
+                            found->second.occurrenceCount_;
+                        found->second.occurrenceCount_ +=
+                            std::min(
+                                remaining,
+                                issue.occurrenceCount_);
+                    }
+                }
+                mergeFilterTraces(
+                    traces,
+                    std::move(contribution.traces_));
+                if (!contribution.diagnostics_.exprIndex_.empty() ||
+                    !contribution.diagnostics_.fieldData_.empty() ||
+                    !contribution.diagnostics_.comparisonData_.empty())
+                {
+                    diagnostics.append(
+                        contribution.diagnostics_);
+                }
+            }
+            for (auto& [_, contribution] :
+                 ready.dynamicContributions_)
+            {
+                dependencies.push_back(
+                    std::move(contribution.dependency_));
+                for (auto&& issue :
+                     contribution.issues_)
+                {
+                    auto key = std::make_tuple(
+                        issue.channelId_,
+                        issue.expression_,
+                        issue.scope_,
+                        issue.message_);
+                    auto [found, inserted] =
+                        issues.emplace(key, issue);
+                    if (!inserted) {
+                        auto const remaining =
+                            std::numeric_limits<uint64_t>::max() -
+                            found->second.occurrenceCount_;
+                        found->second.occurrenceCount_ +=
+                            std::min(
+                                remaining,
+                                issue.occurrenceCount_);
+                    }
+                }
+                mergeFilterTraces(
+                    traces,
+                    std::move(contribution.traces_));
+            }
+
+            ready.layer_->setDependencies(
+                std::move(dependencies));
+            if (hasPointGroups) {
+                auto completion =
+                    completeFeatureLayerPointGroups(
+                        *ready.layer_,
+                        request->filter_,
+                        members,
+                        [request = this->request] {
+                            return request
+                                ->isCancelled();
+                        });
+                if (!completion) {
+                    return tl::unexpected(
+                        completion.error());
+                }
+                if (request->isCancelled()) {
+                    return size_t{0};
+                }
+                for (auto&& issue :
+                     completion->issues_)
+                {
+                    auto key = std::make_tuple(
+                        issue.channelId_,
+                        issue.expression_,
+                        issue.scope_,
+                        issue.message_);
+                    auto [found, inserted] =
+                        issues.emplace(key, issue);
+                    if (!inserted) {
+                        auto const remaining =
+                            std::numeric_limits<uint64_t>::max() -
+                            found->second.occurrenceCount_;
+                        found->second.occurrenceCount_ +=
+                            std::min(
+                                remaining,
+                                issue.occurrenceCount_);
+                    }
+                }
+                mergeFilterTraces(
+                    traces,
+                    std::move(completion->traces_));
+            }
+            if (hasStoredRelations) {
+                std::vector<MapTileKey>
+                    requestedOutputKeys;
+                requestedOutputKeys.reserve(
+                    outputs.size());
+                for (auto const& output : outputs) {
+                    requestedOutputKeys.emplace_back(
+                        LayerType::Features,
+                        request->mapId_,
+                        request->layerId_,
+                        output.tileId_);
+                }
+                auto completion =
+                    completeFeatureLayerRelations(
+                        *ready.layer_,
+                        request->filter_,
+                        relationDescriptors,
+                        requestedOutputKeys,
+                        request->exactRoots_,
+                        [request = this->request] {
+                            return request
+                                ->isCancelled();
+                        });
+                if (!completion) {
+                    return tl::unexpected(
+                        completion.error());
+                }
+                if (request->isCancelled()) {
+                    return size_t{0};
+                }
+                for (auto&& issue :
+                     completion->issues_)
+                {
+                    auto key = std::make_tuple(
+                        issue.channelId_,
+                        issue.expression_,
+                        issue.scope_,
+                        issue.message_);
+                    auto [found, inserted] =
+                        issues.emplace(key, issue);
+                    if (!inserted) {
+                        auto const remaining =
+                            std::numeric_limits<uint64_t>::max() -
+                            found->second.occurrenceCount_;
+                        found->second.occurrenceCount_ +=
+                            std::min(
+                                remaining,
+                                issue.occurrenceCount_);
+                    }
+                }
+                mergeFilterTraces(
+                    traces,
+                    std::move(completion->traces_));
+            }
+
+            for (auto&& [key, issue] : issues) {
+                ready.layer_->addIssue(
+                    std::move(issue));
+            }
+            ready.layer_->setTraces(
+                std::move(traces));
+            ready.layer_->setDiagnostics(
+                diagnostics);
+
+            size_t entryCount = 0;
+            ready.layer_->forEachChannel(
+                [&](model_ptr<TileSubsetChannel> const&
+                        channel)
+                {
+                    entryCount += channel->entryCount();
+                    return true;
+                });
+            if (request->isCancelled()) {
+                return size_t{0};
+            }
+            request->notifyResult(
+                std::move(ready.layer_));
+            return entryCount;
+        }
+
+        bool emitCompletedOutputs(
+            std::vector<ReadyOutput> ready)
+        {
+            for (auto&& output : ready) {
+                auto entryCount =
+                    finalizeOutput(std::move(output));
+                if (!entryCount) {
+                    fail(entryCount.error());
+                    return false;
+                }
+                bool stopped = false;
+                {
+                    std::lock_guard lock(mutex);
+                    if (terminal) {
+                        stopped = true;
+                    }
+                    else {
+                        ++emittedOutputTiles;
+                        entriesEmitted +=
+                            *entryCount;
+                    }
+                }
+                if (stopped) {
+                    return false;
+                }
+                emitProgress(
+                    "OutputTileEmitted");
+            }
+            return true;
+        }
+
+        void evaluate(
+            size_t sourceIndex,
+            TileFeatureLayer::Ptr source)
+        {
+            bool evaluationJobPending = true;
+            auto finishEvaluationJob = [&]() {
+                if (!evaluationJobPending) {
+                    return;
+                }
+                {
+                    std::lock_guard lock(mutex);
+                    if (pendingEvaluationJobs > 0) {
+                        --pendingEvaluationJobs;
+                    }
+                }
+                evaluationJobPending = false;
+            };
+            try {
+                if (!source || request->isCancelled()) {
+                    finishEvaluationJob();
+                    finishIfComplete();
+                    return;
+                }
+
+                auto sourceResult =
+                    filterFeatureLayerSource(
+                        *source,
+                        request->filter_,
+                        outputIndexByTile.contains(
+                            source->tileId()),
+                        request->exactRoots_,
+                        [request = this->request] {
+                            return request
+                                ->isCancelled();
+                        });
+                if (!sourceResult) {
+                    finishEvaluationJob();
+                    fail(sourceResult.error());
+                    return;
+                }
+                if (request->isCancelled()) {
+                    finishEvaluationJob();
+                    finishIfComplete();
+                    return;
+                }
+                auto locatedRelations =
+                    locateRelationTargets(
+                        *source,
+                        *sourceResult);
+                if (!locatedRelations) {
+                    finishEvaluationJob();
+                    fail(locatedRelations.error());
+                    return;
+                }
+
+                auto ready = commitSource(
+                    sourceIndex,
+                    *source,
+                    std::move(*sourceResult));
+                if (!ready) {
+                    finishEvaluationJob();
+                    fail(ready.error());
+                    return;
+                }
+                emitProgress("SourceTileEvaluated");
+
+                auto prepared =
+                    prepareRelationOutputs(
+                        std::move(*ready));
+                if (!prepared) {
+                    finishEvaluationJob();
+                    fail(prepared.error());
+                    return;
+                }
+                for (auto const& targetKey :
+                     prepared
+                         ->targetsToSchedule_)
+                {
+                    scheduleRelationTarget(
+                        targetKey);
+                }
+                if (!emitCompletedOutputs(
+                        std::move(
+                            prepared->ready_)))
+                {
+                    finishEvaluationJob();
+                    return;
+                }
+                finishEvaluationJob();
+                finishIfComplete();
+            }
+            catch (std::exception const& exception) {
+                finishEvaluationJob();
+                auto const sourceTileId =
+                    source ? source->tileId() : TileId{};
+                fail(simfil::Error{
+                    simfil::Error::InternalError,
+                    fmt::format(
+                        "Filter evaluation failed for {}::{} tile {:x}: {}",
                         request->mapId_,
                         request->layerId_,
                         sourceTileId.value(),
                         exception.what())});
-                markEvalDone(0, false);
             }
-        }
-
-        void markEvalDone(size_t resultCount, bool emittedChunk)
-        {
-            {
-                std::lock_guard lock(mutex);
-                if (pendingEvalJobs > 0) {
-                    --pendingEvalJobs;
-                }
-                if (terminal) {
-                    return;
-                }
-                ++searchedTiles;
-                matches += resultCount;
-                if (emittedChunk) {
-                    ++chunksEmitted;
-                }
-            }
-            emitProgress("TileSearched");
-            finishIfComplete();
         }
 
         void childFinished(RequestStatus status)
@@ -2126,47 +3910,239 @@ bool Service::request(FeatureLayerSearchTilesRequest::Ptr const& request, std::o
                 {
                     std::lock_guard lock(mutex);
                     terminal = true;
-                    stagesByTile.clear();
                 }
-                releaseChildRequests();
+                abortChildRequests();
                 request->setStatus(status);
                 return;
             }
             {
                 std::lock_guard lock(mutex);
-                childDone = true;
+                childRequestDone = true;
             }
             finishIfComplete();
         }
     };
 
-    auto state = std::make_shared<SearchExecutionState>();
+    auto state = std::make_shared<FilterExecutionState>();
     state->impl = impl_.get();
+    state->service = this;
     state->request = request;
     state->sourceInfo = *sourceInfo;
-    state->stageCount = stageCount > 1U ? stageCount : 1U;
-    state->expectedTiles = request->tileIds_.size();
+    state->sourceDataSource =
+        std::move(sourceDataSource);
+    state->clientHeaders = clientHeaders;
+    state->hasPointGroups = hasPointGroups;
+    state->hasStoredRelations = hasStoredRelations;
+    state->outputLevel = request->tileIds_.front().level();
+    state->configure(
+        request->tileIds_,
+        tileIdsToProcess);
 
-    childRequest->onFeatureLayer([state](TileFeatureLayer::Ptr layer) {
-        state->collect(std::move(layer));
-    });
-    childRequest->onDone_ = [state](RequestStatus status) {
-        state->childFinished(status);
+    childRequest->onFeatureLayer(
+        [state](TileFeatureLayer::Ptr layer) {
+            state->collect(std::move(layer));
+        });
+    childRequest->onDone_ =
+        [state](RequestStatus status) {
+            state->childFinished(status);
+        };
+
+    request->notifyProgress(
+        state->progress("Open"));
+
+    return this->request(
+        std::vector<LayerTilesRequest::Ptr>{childRequest},
+        clientHeaders);
+}
+
+AttachmentResult Service::attachment(
+    AttachmentRequest const& request,
+    std::optional<AuthHeaders> const& clientHeaders)
+{
+    std::mutex resultMutex;
+    std::condition_variable resultAvailable;
+    std::optional<AttachmentResult> completed;
+    requestAttachment(
+        request,
+        [&](AttachmentResult result) {
+            {
+                std::lock_guard lock(resultMutex);
+                completed = std::move(result);
+            }
+            resultAvailable.notify_one();
+        },
+        clientHeaders);
+    std::unique_lock lock(resultMutex);
+    resultAvailable.wait(
+        lock,
+        [&] { return completed.has_value(); });
+    auto result = std::move(*completed);
+    return result;
+}
+
+void Service::requestAttachment(
+    AttachmentRequest request,
+    std::function<void(AttachmentResult)> callback,
+    std::optional<AuthHeaders> const& clientHeaders)
+{
+    if (!callback) {
+        return;
+    }
+    if (request.tileKey_.layer_ != LayerType::Features ||
+        request.name_.empty())
+    {
+        callback({});
+        return;
+    }
+
+    auto context = resolveLayerRequest(
+        request.tileKey_.mapId_,
+        request.tileKey_.layerId_,
+        clientHeaders,
+        request.sourceId_);
+    if (context.status_ != RequestStatus::Success ||
+        context.layerType_ != LayerType::Features)
+    {
+        callback(AttachmentResult{
+            .status_ = context.status_});
+        return;
+    }
+
+    DataSource::Ptr selectedDataSource;
+    {
+        std::shared_lock lock(impl_->dataSourcesMutex_);
+        for (auto const& [dataSource, info] :
+             impl_->dataSourceInfo_)
+        {
+            if (info.isAddOn_ ||
+                info.mapId_ != request.tileKey_.mapId_ ||
+                !info.layers_.contains(
+                    request.tileKey_.layerId_))
+            {
+                continue;
+            }
+            if (request.sourceId_) {
+                auto sourceId =
+                    impl_->dataSourceSourceIds_.find(
+                        dataSource);
+                if (sourceId ==
+                        impl_->dataSourceSourceIds_.end() ||
+                    sourceId->second != *request.sourceId_)
+                {
+                    continue;
+                }
+            }
+            if (clientHeaders &&
+                !dataSource->isDataSourceAuthorized(
+                    *clientHeaders))
+            {
+                continue;
+            }
+            selectedDataSource = dataSource;
+            break;
+        }
+    }
+    if (!selectedDataSource) {
+        callback({});
+        return;
+    }
+
+    struct AttachmentState
+    {
+        AttachmentRequest request;
+        DataSource::Ptr dataSource;
+        std::function<void(AttachmentResult)> callback;
+        std::mutex mutex;
+        std::optional<AttachmentResponse> response;
+        std::atomic_bool completed = false;
+
+        void consumeTile(TileFeatureLayer::Ptr const& tile)
+        {
+            if (!tile || tile->error()) {
+                return;
+            }
+            auto const& name =
+                tile->glbAttachmentName();
+            if (!name ||
+                *name != request.name_)
+            {
+                return;
+            }
+
+            auto produced =
+                dataSource->attachment(request);
+            if (!produced) {
+                return;
+            }
+            if (produced->name_ != request.name_) {
+                log().warn(
+                    "Datasource returned attachment '{}' "
+                    "for requested attachment '{}'.",
+                    produced->name_,
+                    request.name_);
+                return;
+            }
+            if (!produced->bytes_) {
+                log().warn(
+                    "Datasource returned attachment '{}' "
+                    "without a byte payload.",
+                    request.name_);
+                return;
+            }
+            if (produced->mimeType_.empty()) {
+                produced->mimeType_ =
+                    "application/octet-stream";
+            }
+            std::lock_guard lock(mutex);
+            response = std::move(produced);
+        }
+
+        void finish(RequestStatus status)
+        {
+            if (completed.exchange(true)) {
+                return;
+            }
+            AttachmentResult result{
+                .status_ = status};
+            {
+                std::lock_guard lock(mutex);
+                result.response_ =
+                    std::move(response);
+            }
+            callback(std::move(result));
+        }
     };
 
-    auto status = makeSearchStatusJson(*request, "Open");
-    status["tilesQueued"] = request->tileIds_.size();
-    status["tilesLoaded"] = 0;
-    status["tilesSearched"] = 0;
-    status["matches"] = 0;
-    status["chunksEmitted"] = 0;
-    request->notifyProgress(status);
-
-    return this->request(std::vector<LayerTilesRequest::Ptr>{childRequest}, clientHeaders);
+    auto state =
+        std::make_shared<AttachmentState>();
+    state->request = std::move(request);
+    state->dataSource =
+        std::move(selectedDataSource);
+    state->callback = std::move(callback);
+    auto tileRequest =
+        std::make_shared<LayerTilesRequest>(
+            state->request.tileKey_.mapId_,
+            state->request.tileKey_.layerId_,
+            std::vector<TileId>{
+                state->request.tileKey_.tileId_});
+    tileRequest->sourceId_ =
+        state->request.sourceId_;
+    tileRequest->onFeatureLayer(
+        [state](TileFeatureLayer::Ptr tile) {
+            state->consumeTile(tile);
+        });
+    tileRequest->onDone_ =
+        [state](RequestStatus status) {
+            state->finish(status);
+        };
+    this->request(
+        std::vector<LayerTilesRequest::Ptr>{
+            tileRequest},
+        clientHeaders);
 }
 
 bool Service::request(
-    std::vector<FeatureLayerSearchTilesRequest::Ptr> const& requests,
+    std::vector<FeatureLayerFilterTilesRequest::Ptr> const& requests,
     std::optional<AuthHeaders> const& clientHeaders)
 {
     bool allAccepted = true;
@@ -2185,11 +4161,46 @@ std::vector<LocateResponse> Service::locate(LocateRequest const& req)
         dataSources.assign(impl_->dataSourceInfo_.begin(), impl_->dataSourceInfo_.end());
     }
 
-    for (auto const& [ds, info] : dataSources)
-        if (info.mapId_ == req.mapId_ && !info.isAddOn_) {
-            for (auto const& location : ds->locate(req))
-                results.emplace_back(location);
+    std::set<std::string> seenResults;
+    for (auto const& [ds, info] : dataSources) {
+        if (info.mapId_ != req.mapId_ || info.isAddOn_) {
+            continue;
         }
+        auto appendLocations =
+            [&](LocateRequest const& resolvedRequest) {
+                for (auto const& location : ds->locate(resolvedRequest)) {
+                    auto normalized = location;
+                    normalized.resolvedCanonicalFeatureId_ =
+                        formatFeatureIdString(
+                            normalized.typeId_,
+                            normalized.featureId_);
+                    auto serialized = normalized.serialize().dump();
+                    if (seenResults.insert(serialized).second) {
+                        results.emplace_back(std::move(normalized));
+                    }
+                }
+            };
+        if (!req.canonicalFeatureId_) {
+            appendLocations(req);
+            continue;
+        }
+        for (auto const& [_, layerInfo] : info.layers_) {
+            if (!layerInfo || layerInfo->type_ != LayerType::Features) {
+                continue;
+            }
+            ParsedFeatureId parsed;
+            if (!parseFeatureIdString(
+                    *req.canonicalFeatureId_,
+                    *layerInfo,
+                    parsed)) {
+                continue;
+            }
+            appendLocations(LocateRequest{
+                req.mapId_,
+                std::move(parsed.typeId_),
+                std::move(parsed.keyValuePairs_)});
+        }
+    }
     return results;
 }
 
@@ -2198,20 +4209,24 @@ void Service::abort(const LayerTilesRequest::Ptr& r)
     impl_->abortRequest(r);
 }
 
-void Service::abort(const FeatureLayerSearchTilesRequest::Ptr& r)
+void Service::abort(const FeatureLayerFilterTilesRequest::Ptr& r)
 {
     if (!r || r->isDone()) {
         return;
     }
     r->cancel();
-    impl_->abortSearchEvalJobs(r);
-    auto childRequests = r->childRequests_;
+    impl_->abortFilterEvalJobs(r);
+    std::vector<LayerTilesRequest::Ptr> childRequests;
+    {
+        std::lock_guard lock(r->childRequestsMutex_);
+        childRequests = r->childRequests_;
+        r->childRequests_.clear();
+    }
     for (auto const& child : childRequests) {
         if (child && !child->isDone()) {
             impl_->abortRequest(child);
         }
     }
-    r->childRequests_.clear();
 }
 
 std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clientHeaders)
@@ -2259,7 +4274,8 @@ RequestStatus Service::hasLayerAndCanAccess(
 LayerRequestContext Service::resolveLayerRequest(
     std::string const& mapId,
     std::string const& layerId,
-    std::optional<AuthHeaders> const& clientHeaders) const
+    std::optional<AuthHeaders> const& clientHeaders,
+    std::optional<std::string> const& sourceId) const
 {
     LayerRequestContext result;
 
@@ -2268,6 +4284,17 @@ LayerRequestContext Service::resolveLayerRequest(
     bool unauthorized = false;
     bool foundAuthorizedLayer = false;
     for (auto const& [ds, info] : impl_->dataSourceInfo_) {
+        if (info.isAddOn_) {
+            continue;
+        }
+        if (sourceId) {
+            auto id = impl_->dataSourceSourceIds_.find(ds);
+            if (id == impl_->dataSourceSourceIds_.end() ||
+                id->second != *sourceId)
+            {
+                continue;
+            }
+        }
         if (mapId != info.mapId_)
             continue;
 
@@ -2284,7 +4311,6 @@ LayerRequestContext Service::resolveLayerRequest(
         if (!foundAuthorizedLayer) {
             result.status_ = RequestStatus::Success;
             result.layerType_ = layerIt->second->type_;
-            result.stages_ = std::max<uint32_t>(1U, layerIt->second->stages_);
             foundAuthorizedLayer = true;
             continue;
         }
@@ -2297,9 +4323,6 @@ LayerRequestContext Service::resolveLayerRequest(
                 static_cast<int>(result.layerType_),
                 static_cast<int>(layerIt->second->type_));
         }
-        result.stages_ = std::max<uint32_t>(
-            result.stages_,
-            std::max<uint32_t>(1U, layerIt->second->stages_));
     }
 
     if (foundAuthorizedLayer) {
@@ -2434,10 +4457,22 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
     }
 
     size_t activeRequests = 0;
+    size_t filterEvalWorkers = 0;
+    size_t filterEvalConcurrencyLimit = 0;
+    size_t queuedFilterEvalJobs = 0;
+    size_t runningFilterEvalJobs = 0;
     size_t constructionFailures = 0;
     {
         std::unique_lock lock(impl_->jobsMutex_);
         activeRequests = impl_->requests_.size();
+        filterEvalWorkers =
+            impl_->filterEvalWorkers_.size();
+        filterEvalConcurrencyLimit =
+            impl_->filterEvalConcurrentLimitLocked();
+        queuedFilterEvalJobs =
+            impl_->filterEvalJobs_.size();
+        runningFilterEvalJobs =
+            impl_->runningFilterEvalJobs_;
     }
     {
         std::shared_lock lock(impl_->dataSourcesMutex_);
@@ -2447,6 +4482,12 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
     auto result = nlohmann::json{
         {"datasources", datasources},
         {"active-requests", activeRequests},
+        {"filter-evaluation", nlohmann::json{
+            {"workers", filterEvalWorkers},
+            {"concurrency-limit", filterEvalConcurrencyLimit},
+            {"queued", queuedFilterEvalJobs},
+            {"running", runningFilterEvalJobs}
+        }},
         {"datasource-config", nlohmann::json{
             {"configured", configStats.configured},
             {"enabled", configStats.enabled},
@@ -2454,6 +4495,17 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
             {"construction-failed", constructionFailures}
         }}
     };
+
+#ifdef __linux__
+    auto const allocator = mallinfo2();
+    result["allocator"] = nlohmann::json{
+        {"arena-bytes", allocator.arena},
+        {"free-arena-bytes", allocator.fordblks},
+        {"in-use-arena-bytes", allocator.uordblks},
+        {"mmap-bytes", allocator.hblkhd},
+        {"releasable-top-bytes", allocator.keepcost},
+    };
+#endif
 
     if (!includeCachedFeatureTreeBytes && !includeTileSizeDistribution) {
         return result;
@@ -2484,7 +4536,8 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
         }
     };
 
-    std::unique_ptr<TileLayerStream::Reader> tileReader;
+    LayerInfoResolveFun resolveLayerInfo;
+    std::function<void(TileLayer::Ptr)> collectFeatureTreeStats;
     if (includeCachedFeatureTreeBytes) {
         auto layerInfoByMap =
             std::unordered_map<std::string, std::unordered_map<std::string, std::shared_ptr<LayerInfo>>>{};
@@ -2503,7 +4556,7 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
             }
         }
 
-        auto resolveLayerInfo = [layerInfoByMap](std::string_view mapId, std::string_view layerId)
+        resolveLayerInfo = [layerInfoByMap](std::string_view mapId, std::string_view layerId)
             -> std::shared_ptr<LayerInfo> {
             auto mapIt = layerInfoByMap.find(std::string(mapId));
             if (mapIt == layerInfoByMap.end())
@@ -2517,22 +4570,19 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
             return layerIt->second;
         };
 
-        tileReader = std::make_unique<TileLayerStream::Reader>(
-            resolveLayerInfo,
-            [&](auto&& parsedLayer) {
-                auto tile = std::dynamic_pointer_cast<mapget::TileFeatureLayer>(parsedLayer);
-                if (!tile) {
-                    ++parseErrors;
-                    return;
-                }
-                auto sizeStats = tile->serializationSizeStats();
-                addTotals(featureLayerTotals, sizeStats["feature-layer"], addTotals);
-                addTotals(modelPoolTotals, sizeStats["model-pool"], addTotals);
-                addTotals(geometryUsageTotals, sizeStats["geometry-usage"], addTotals);
-                addTotals(validityUsageTotals, sizeStats["validity-usage"], addTotals);
-                addTotals(arrayArenaSingletonTotals, sizeStats["array-arena-singletons"], addTotals);
-            },
-            impl_->cache_);
+        collectFeatureTreeStats = [&](auto&& parsedLayer) {
+            auto tile = std::dynamic_pointer_cast<mapget::TileFeatureLayer>(parsedLayer);
+            if (!tile) {
+                ++parseErrors;
+                return;
+            }
+            auto sizeStats = tile->serializationSizeStats();
+            addTotals(featureLayerTotals, sizeStats["feature-layer"], addTotals);
+            addTotals(modelPoolTotals, sizeStats["model-pool"], addTotals);
+            addTotals(geometryUsageTotals, sizeStats["geometry-usage"], addTotals);
+            addTotals(validityUsageTotals, sizeStats["validity-usage"], addTotals);
+            addTotals(arrayArenaSingletonTotals, sizeStats["array-arena-singletons"], addTotals);
+        };
     }
 
     impl_->cache_->forEachTileLayerBlob([&](const MapTileKey& key, const std::string& blob) {
@@ -2552,7 +4602,18 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
         }
 
         try {
-            tileReader->read(blob);
+            // A malformed cache value must not poison the framing state used
+            // for the next independent value. Construct one reader per blob:
+            // Reader::read deliberately retains an incomplete/error phase for
+            // incremental streams.
+            TileLayerStream::Reader tileReader(
+                resolveLayerInfo,
+                collectFeatureTreeStats,
+                impl_->cache_);
+            tileReader.read(blob);
+            if (!tileReader.eos()) {
+                ++parseErrors;
+            }
         } catch (const std::exception&) {
             ++parseErrors;
         }

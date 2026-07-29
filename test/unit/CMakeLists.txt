@@ -4,7 +4,9 @@ add_executable(test.mapget
   test-main.cpp
   test-model.cpp
   test-model-geometry.cpp
-  test-searchresultlayer.cpp
+  test-filter-service.cpp
+  test-subsetlayer.cpp
+  test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
   test-location.cpp

@@ -289,8 +289,8 @@ void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
 {
     ensureFeatureLayerInfoOnly(info, "GeoJSON datasource");
     info.maxParallelJobs_ = std::max(info.maxParallelJobs_, 1);
-    if (info.nodeId_.empty())
-        info.nodeId_ = generateNodeHexUuid();
+    if (info.stringPoolId_.empty())
+        info.stringPoolId_ = generateNodeHexUuid();
     if (!mapIdOverride.empty())
         info.mapId_ = mapIdOverride;
 }
@@ -314,7 +314,7 @@ void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
 
     auto layerInfo = LayerInfo::fromJson(fallbackLayerJson, "GeoJsonAny");
     DataSourceInfo info;
-    info.nodeId_ = generateNodeHexUuid();
+    info.stringPoolId_ = generateNodeHexUuid();
     info.mapId_ = mapId;
     info.maxParallelJobs_ = defaultParallelJobs();
     info.layers_.emplace(layerInfo->layerId_, std::move(layerInfo));
@@ -633,7 +633,7 @@ GeoJsonSource::GeoJsonSource(std::string inputDir, GeoJsonSourceOptions options)
 {
     info_.maxParallelJobs_ = defaultParallelJobs();
     info_.mapId_ = options.mapId.empty() ? mapNameFromUri(inputDir_) : options.mapId;
-    info_.nodeId_ = generateNodeHexUuid();
+    info_.stringPoolId_ = generateNodeHexUuid();
 
     if (auto loadedInfo = loadConfiguredDataSourceInfo(
             options.dataSourceInfoJson,
@@ -830,7 +830,7 @@ GeoJsonEndpointSource::GeoJsonEndpointSource(GeoJsonEndpointSourceOptions option
 
     info_.maxParallelJobs_ = defaultParallelJobs();
     info_.mapId_ = options.mapId.empty() ? mapNameFromUri(baseUrl_) : options.mapId;
-    info_.nodeId_ = generateNodeHexUuid();
+    info_.stringPoolId_ = generateNodeHexUuid();
 
     if (auto loadedInfo = loadConfiguredDataSourceInfo(
             options.dataSourceInfoJson,

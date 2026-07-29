@@ -24,7 +24,6 @@ struct StringPool : public simfil::StringPool
     enum StaticStringIds : simfil::StringId {
         IdStr = NextStaticId,
         TypeIdStr,
-        LodStr,
         MapIdStr,
         LayerIdStr,
         LayerStr,
@@ -69,21 +68,53 @@ struct StringPool : public simfil::StringPool
         ValidityCountStr,
         OverlayNameStr,
         OverlayFeatureStr,
+        OverlayFeaturesStr,
+        OverlaySourceStr,
+        OverlayTargetStr,
+        OverlayTwowayStr,
         OverlayLayerStr,
         OverlayValidityIndexStr,
         OverlayValidityCountStr,
+        OverlayHasValidityStr,
         CallsStr,
         TotalUsStr,
         MapgetRelationStr,
-        AttributesStr
+        AttributesStr,
+        ChannelIdStr,
+        ScopeStr,
+        GeometryTypesStr,
+        FeatureFieldsStr,
+        EntryFieldsStr,
+        FeatureEntriesStr,
+        AttributeValidityEntriesStr,
+        RelationEntriesStr,
+        GroupEntriesStr,
+        HostValuesStr,
+        AttributeLayerStr,
+        AttributeNameStr,
+        HasValidityStr,
+        RelationIdStr,
+        ProvenanceStr,
+        TwowayStr,
+        SourceStr,
+        SourceGeometryStr,
+        TargetGeometryStr,
+        GroupKeyStr,
+        RepresentativeFeatureIdStr,
+        MemberFeatureIdsStr,
+        FilterIdStr,
+        GenerationStr,
+        SourceFeatureCountStr,
+        OverlayAttributeIndexStr,
+        OverlayRelationIndexStr
     };
 
-    explicit StringPool(const std::string_view& nodeId);
+    explicit StringPool(const std::string_view& stringPoolId);
 
     /**
      * Write is overloaded, because it prepends the stream with
      * this dictionary's data source node id. On the read side, the
-     * consumer must call readDataSourceNodeId() before calling read().
+     * consumer must call readDataSourceStringPoolId() before calling read().
      */
     tl::expected<void, simfil::Error>
     write(std::ostream& outputStream, simfil::StringId offset) const override;
@@ -91,12 +122,12 @@ struct StringPool : public simfil::StringPool
     /**
      * Parse the datasource node id prefix from a serialized StringPool message.
      */
-    static std::string readDataSourceNodeId(
+    static std::string readDataSourceStringPoolId(
         const std::vector<uint8_t>& input,
         size_t offset = 0,
         size_t* bytesRead = nullptr);
 
-    std::string const nodeId_;
+    std::string const stringPoolId_;
 };
 
 }

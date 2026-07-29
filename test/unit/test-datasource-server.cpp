@@ -12,7 +12,7 @@ int main()
 
     auto info = DataSourceInfo::fromJson(R"(
     {
-        "nodeId": "test-datasource",
+        "stringPoolId": "test-datasource",
         "mapId": "Tropico",
         "layers": {
             "WayLayer": {
@@ -49,6 +49,8 @@ int main()
     ds.onTileFeatureRequest(
         [&](const auto& tile)
         {
+            tile->setGlbAttachmentName(
+                "ways.glb");
             auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
             auto g = f->geom()->newGeometry(GeomType::Line);
             g->append({42., 11});
@@ -62,6 +64,30 @@ int main()
             response.tileKey_.layerId_ = "WayLayer";
             response.tileKey_.tileId_ = TileId::fromValue(131073);
             return {response};
+        });
+    ds.onAttachmentRequest(
+        [](AttachmentRequest const& request)
+            -> std::optional<AttachmentResponse>
+        {
+            if (request.name_ != "ways.glb") {
+                return {};
+            }
+            return AttachmentResponse{
+                .name_ = request.name_,
+                .mimeType_ =
+                    "model/gltf-binary",
+                .bytes_ =
+                    std::make_shared<
+                        std::vector<
+                            uint8_t> const>(
+                        std::initializer_list<
+                            uint8_t>{
+                            0x67,
+                            0x6c,
+                            0x54,
+                            0x46}),
+                .etag_ = "\"ways-v1\"",
+            };
         });
 
     ds.go("127.0.0.1", 0, 5000);

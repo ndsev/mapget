@@ -27,31 +27,30 @@ def _post_json(url: str, body: dict):
 
 
 def main() -> int:
-    assert hasattr(mapget, "SearchRequest")
-    assert hasattr(mapget, "TileSearchResultLayer")
+    assert hasattr(mapget, "FilterRequest")
+    assert hasattr(mapget, "FilterChannel")
+    assert hasattr(mapget, "TileSubsetLayer")
     assert mapget.TileId is PackedTileId
     assert mapget.PackedTileId is PackedTileId
-    parsed_key = mapget.MapTileKey("Features:Map:WayLayer:65536:0")
+    parsed_key = mapget.MapTileKey("Features:Map:WayLayer:65536")
     assert isinstance(parsed_key.tile_id, PackedTileId)
     assert parsed_key.tile_id.value == 65536
 
     point = mapget.Point
     cache_expired_calls: list[tuple[str, int]] = []
-    requested_stages: list[int | None] = []
+    requested_tiles: list[int] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
         assert isinstance(tile.tile_id(), PackedTileId)
         assert tile.tile_id().value == 65536
-        requested_stages.append(tile.stage())
+        requested_tiles.append(tile.tile_id().value)
         feature = tile.new_feature("Way", [("wayId", 1)])
-        feature.set_lod(3)
-        assert feature.lod() == 3
 
         geometry = feature.geom().new_geometry(mapget.GeomType.LINE)
         geometry.append(point(1.0, 2.0))
         geometry.append(point(2.0, 3.0))
-        assert geometry.stage() == tile.stage()
-        geometry.set_stage(tile.stage())
+        geometry.set_name("centerline")
+        assert geometry.name() == "centerline"
 
         attr = feature.attribute_layers().new_layer("rules").new_attribute("speed")
         attr.validity().new_offset_range(
@@ -85,7 +84,6 @@ def main() -> int:
             request.map_id,
             "WayLayer",
             PackedTileId.from_tile_xy(0, 0, 0),
-            0,
         )
         return [response]
 
@@ -94,13 +92,10 @@ def main() -> int:
 
     datasource = mapget.DataSourceServer(
         {
-            "nodeId": "python-bindings-smoke",
+            "stringPoolId": "python-bindings-smoke",
             "mapId": "Map",
             "layers": {
                 "WayLayer": {
-                    "stages": 3,
-                    "stageLabels": ["Preview", "Complete", "Validation"],
-                    "highFidelityStage": 1,
                     "featureTypes": [
                         {
                             "name": "Way",
@@ -121,9 +116,10 @@ def main() -> int:
     try:
         base_url = f"http://127.0.0.1:{datasource.port()}"
 
-        feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=65536&stage=2&responseType=json")
-        assert requested_stages == [2]
+        feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=65536&responseType=json")
+        assert requested_tiles == [65536]
         feature = feature_tile["features"][0]
+        assert feature["geometry"]["geometryName"] == "centerline"
         assert feature["relations"][0]["name"] == "next"
         assert feature["relations"][0]["sourceValidity"]["direction"] == "COMPLETE"
         assert feature["properties"]["layer"]["rules"]["speed"]["validity"]["offsetType"] == "RelativeLengthOffset"
@@ -136,13 +132,13 @@ def main() -> int:
             f"{base_url}/locate",
             {"mapId": "Map", "typeId": "Way", "featureId": ["wayId", 1]},
         )
-        assert locate_response[0]["tileId"] == "Features:Map:WayLayer:65536:0"
+        assert locate_response[0]["tileId"] == "Features:Map:WayLayer:65536"
 
         _post_json(
             f"{base_url}/cache-expired",
-            {"tileKey": "Features:Map:WayLayer:65536:0", "expiredAt": 123456},
+            {"tileKey": "Features:Map:WayLayer:65536", "expiredAt": 123456},
         )
-        assert cache_expired_calls == [("Features:Map:WayLayer:65536:0", 123456)]
+        assert cache_expired_calls == [("Features:Map:WayLayer:65536", 123456)]
     finally:
         datasource.stop()
 

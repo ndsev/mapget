@@ -1,10 +1,11 @@
 #pragma once
 
-#include "mapget/model/featurelayer-search.h"
+#include "mapget/model/featurelayer-filter.h"
 #include "mapget/model/layer.h"
 #include "mapget/model/stream.h"
 
 #include <optional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -13,52 +14,56 @@
 namespace mapget::detail
 {
 
-/**
- * Normalized representation of one layer tile request parsed from HTTP or WS JSON.
- *
- * `tileIdsByNextStage` stores either one unstaged bucket or staged buckets where
- * each bucket index is the next stage the client still needs for those tiles.
- */
+/** Normalized representation of one HTTP or interactive layer request. */
 struct ParsedLayerTilesRequest
 {
     std::string mapId;
     std::string layerId;
-    std::vector<std::vector<TileId>> tileIdsByNextStage;
+    std::optional<std::string> sourceId;
+    std::vector<TileId> tileIds;
     std::vector<TileId> priorityTileIds;
-    std::optional<FeatureLayerSearchRequest> searchRequest;
-    bool usesStageBuckets = false;
+    std::map<TileId, std::vector<std::string>> featureIdsByTile;
+    std::vector<FeatureLayerFilterRoot> exactRoots;
+    std::optional<FeatureLayerFilterRequest> filterRequest;
 };
 
-/** Copy top-level search fields into one layer request when clients use envelope-level search syntax. */
-void inheritSearchFields(nlohmann::json& requestJson, const nlohmann::json& envelopeJson);
+/** Copy top-level filter fields into one request item when omitted locally. */
+void inheritFilterFields(
+    nlohmann::json& requestJson,
+    nlohmann::json const& envelopeJson);
 
-/** Return true if a JSON object contains any field accepted by interactive search. */
-bool containsInteractiveSearchFields(const nlohmann::json& requestJson);
+/** Return true if an object contains any field belonging to `/filter`. */
+bool containsFilterFields(nlohmann::json const& requestJson);
 
-/** Return true if a JSON object contains fields reserved for REST `/search`. */
-bool containsRestSearchFields(const nlohmann::json& requestJson);
+/** Parse one plain or interactive layer-tile request. */
+ParsedLayerTilesRequest parseLayerTilesRequestJson(
+    nlohmann::json const& requestJson);
 
-/** Parse one layer tile request from the shared HTTP/WS request JSON shape. */
-ParsedLayerTilesRequest parseLayerTilesRequestJson(const nlohmann::json& requestJson);
+/** Parse the shared REST `/filter` envelope definition. */
+FeatureLayerFilterRequest parseRestFilterEnvelopeJson(
+    nlohmann::json const& envelopeJson);
 
-/** Parse the simplified REST `/search` envelope into a reusable search template. */
-FeatureLayerSearchRequest parseRestSearchEnvelopeJson(const nlohmann::json& envelopeJson);
+/** Parse one REST `/filter` source request and attach the shared bundle. */
+ParsedLayerTilesRequest parseRestFilterLayerRequestJson(
+    nlohmann::json const& requestJson,
+    FeatureLayerFilterRequest const& filterTemplate);
 
-/** Parse one REST `/search` source-layer request and attach the shared search template. */
-ParsedLayerTilesRequest parseRestSearchLayerRequestJson(
-    const nlohmann::json& requestJson,
-    const FeatureLayerSearchRequest& searchTemplate);
+/** Parse reconnecting-client string-pool offsets. */
+TileLayerStream::StringPoolOffsetMap parseStringPoolOffsetsJson(
+    nlohmann::json const& offsetsJson);
 
-/** Parse the optional string-pool offset map advertised by a reconnecting client. */
-TileLayerStream::StringPoolOffsetMap parseStringPoolOffsetsJson(const nlohmann::json& offsetsJson);
+/** Deduplicate filter tile IDs while preserving first-seen order. */
+std::vector<TileId> collectFilterTileIds(
+    ParsedLayerTilesRequest const& request);
 
-/** Collapse staged search buckets into one deduplicated tile-id list. */
-std::vector<TileId> collectSearchTileIds(const ParsedLayerTilesRequest& request);
-
-/** Expand a parsed request into concrete service queue keys, preserving priority-tile ordering. */
+/** Expand a plain tile request into concrete scheduler keys. */
 std::vector<MapTileKey> expandLayerTilesRequestKeys(
-    const ParsedLayerTilesRequest& request,
-    LayerType layerType,
-    uint32_t stageCount);
+    ParsedLayerTilesRequest const& request,
+    LayerType layerType);
 
-}  // namespace mapget::detail
+/** Serialize one filter definition into the canonical public JSON shape. */
+nlohmann::json filterRequestToJson(
+    FeatureLayerFilterRequest const& request,
+    bool includeIdentity = true);
+
+} // namespace mapget::detail
