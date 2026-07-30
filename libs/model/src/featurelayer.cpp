@@ -1940,6 +1940,14 @@ ModelNode::Ptr TileFeatureLayer::clone(
 
     using namespace simfil;
     ModelNode::Ptr& newCacheNode = cache[cacheKey];
+    auto cloneSourceDataReferences =
+        [this, &cache, &otherLayer](auto const& source, auto& target)
+        {
+            if (auto refs = source->sourceDataReferences()) {
+                target->setSourceDataReferences(
+                    clone(cache, otherLayer, refs));
+            }
+        };
     switch (otherNode->addr().column()) {
     case Objects: {
         auto resolved = otherLayer->resolve<simfil::Object>(otherNode);
@@ -2011,6 +2019,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
             break;
         }
         newNode->setName(resolved->name());
+        cloneSourceDataReferences(resolved, newNode);
         break;
     }
     case ColumnId::GeometryCollections:
@@ -2095,6 +2104,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
                 newNode->addField(key, clone(cache, otherLayer, value));
                 return true;
             });
+        cloneSourceDataReferences(resolved, newNode);
         break;
     }
     case ColumnId::Validities: {
@@ -2191,6 +2201,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newRelation(
             resolved->name(),
             resolve<FeatureId>(*clone(cache, otherLayer, resolved->target())));
+        newCacheNode = newNode;
         if (resolved->sourceValidityOrNull()) {
             newNode->setSourceValidity(resolve<MultiValidity>(
                 *clone(cache, otherLayer, resolved->sourceValidityOrNull())));
@@ -2199,7 +2210,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
             newNode->setTargetValidity(resolve<MultiValidity>(
                 *clone(cache, otherLayer, resolved->targetValidityOrNull())));
         }
-        newCacheNode = newNode;
+        cloneSourceDataReferences(resolved, newNode);
         break;
     }
     case ColumnId::RelationReferences: {
@@ -2211,9 +2222,17 @@ ModelNode::Ptr TileFeatureLayer::clone(
     }
     case ColumnId::SourceDataReferenceCollections: {
         auto resolved = otherLayer->resolve<SourceDataReferenceCollection>(*otherNode);
-        auto items = std::vector<QualifiedSourceDataReference>(
-            otherLayer->sourceDataReferences_.begin() + resolved->offset_,
-            otherLayer->sourceDataReferences_.begin() + resolved->offset_ + resolved->size_);
+        std::vector<QualifiedSourceDataReference> items;
+        items.reserve(resolved->size());
+        resolved->forEachReference(
+            [this, &items](SourceDataReferenceItem const& ref)
+            {
+                items.push_back(QualifiedSourceDataReference{
+                    .address_ = ref.address(),
+                    .layerId_ = strings()->emplace(ref.layerId()).value(),
+                    .qualifier_ = strings()->emplace(ref.qualifier()).value(),
+                });
+            });
         newCacheNode = newSourceDataReferenceCollection({items.begin(), items.end()});
         break;
     }
@@ -2264,6 +2283,10 @@ void TileFeatureLayer::clone(
     {
         return std::static_pointer_cast<TileFeatureLayer>(nodePtr->model().shared_from_this());
     };
+
+    if (auto refs = otherFeature.sourceDataReferences()) {
+        cloneTarget->setSourceDataReferences(lookupOrClone(refs));
+    }
 
     // Adopt attributes
     if (auto attrs = otherFeature.attributesOrNull()) {

@@ -566,7 +566,7 @@ void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
     mapget::log().warn("  No matching layer configuration found for '{}'", layerName);
 }
 
-std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
+std::vector<LocateCandidate> GridDataSource::locate(const LocateRequest& req) {
     // Extract tileId from the feature ID parts
     std::optional<int64_t> tileId = req.getIntIdPart("tileId");
     if (!tileId) {
@@ -595,14 +595,14 @@ std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
     mapTileKey.layerId_ = layerId;
     mapTileKey.tileId_ = TileId::fromValue(static_cast<int32_t>(*tileId));
 
-    // Create and return the LocateResponse
-    LocateResponse locateResponse(req);
-    locateResponse.tileKey_ = mapTileKey;
-
     mapget::log().debug("GridDataSource::locate() - Found feature '{}' in tile {} layer '{}'",
                        req.typeId_, *tileId, layerId);
 
-    return {locateResponse};
+    return {LocateCandidate(
+        std::move(mapTileKey),
+        formatFeatureIdString(
+            req.typeId_,
+            req.featureId_))};
 }
 
 void GridDataSource::generateBuildings(TileSpatialContext& ctx,

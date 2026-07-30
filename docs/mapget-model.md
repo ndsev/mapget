@@ -111,7 +111,10 @@ Add‑on datasources are registered with `isAddOn` and must share the same `mapI
 - Clients request tiles for the base datasource map ID. When a base feature tile is loaded, the service also fetches the matching tile (same map, layer, and tile ID) from every add‑on datasource.
 - The base tile is re-encoded into a combined string pool so that strings introduced by the add‑on tile can be referenced.
 - Features from the add‑on tile are cloned into the base tile: attributes, attribute layers, geometries, and relations are merged into matching base features; if no match exists, a new feature is created in the base tile.
-- If an add‑on feature uses secondary IDs, the service issues a `locate` call against the base datasource to resolve them to primary IDs before merging.
+- If an add‑on feature uses secondary IDs, the service asks the base datasource
+  for cheap locate candidates, applies their portable selectors to the already
+  loaded base tile, and merges into the resulting primary features. Locate
+  never loads or reconstructs the tile itself.
 - Only feature layers participate in this overlay path; add‑ons cannot introduce standalone maps or layers that are not already present in the base datasource metadata.
 
 Clients see both base and add‑on entries in the `/sources` response (add‑ons are marked `isAddOn`), but the base datasource remains the entry point for tile requests. This mechanism is used by Python LiveSource overlays that attach Road and Lane attribute layers to an existing NDS.Live or NDS.Classic base map.

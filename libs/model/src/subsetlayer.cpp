@@ -1940,7 +1940,7 @@ tl::expected<void, simfil::Error> TileSubsetLayer::write(
     std::ostream& outputStream)
 {
     updateEntryStatistics();
-    setInfo("Filter/Geometry#vertices", numVertices());
+    setInfo("Filter/Geometry/Vertices#count", numVertices());
     if (auto result = TileLayer::write(outputStream); !result) {
         return result;
     }
@@ -2118,18 +2118,18 @@ void TileSubsetLayer::validateOwnedNode(
 
 void TileSubsetLayer::updateEntryStatistics()
 {
-    setInfo("Filter/Channels#channels", channels_.size());
+    setInfo("Filter/Channels#count", channels_.size());
     size_t terminalEntries = 0;
     for (size_t index = 0; index < size(); ++index) {
         terminalEntries += at(index)->entryCount();
     }
-    setInfo("Filter/Entries#terminal", terminalEntries);
-    setInfo("Filter/Entries#features", featureEntries_.size());
+    setInfo("Filter/Entries/Total#count", terminalEntries);
+    setInfo("Filter/Entries/Features#count", featureEntries_.size());
     setInfo(
-        "Filter/Entries#attribute-validities",
+        "Filter/Entries/Attribute-Validities#count",
         attributeValidityEntries_.size());
-    setInfo("Filter/Entries#relations", relationEntries_.size());
-    setInfo("Filter/Entries#groups", groupEntries_.size());
+    setInfo("Filter/Entries/Relations#count", relationEntries_.size());
+    setInfo("Filter/Entries/Groups#count", groupEntries_.size());
 }
 
 tl::expected<void, simfil::Error> TileSubsetLayer::resolve(

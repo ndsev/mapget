@@ -45,6 +45,29 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
 using FeatureLayerFilterBinding =
     std::variant<std::monostate, bool, int64_t, double, std::string>;
 
+/**
+ * Portable selector for resolving a locate candidate inside one complete
+ * feature tile.
+ *
+ * Exactly one form is used:
+ * - `canonicalFeatureId_` performs an exact primary-id lookup.
+ * - `typeId_ + featureFilter_` evaluates a schema-compiled SIMFIL expression
+ *   against every feature of that type. Bindings and the request-local
+ *   `$features` array are available to the expression.
+ */
+struct FeatureLayerSelector
+{
+    std::optional<std::string> canonicalFeatureId_;
+    std::string typeId_;
+    std::optional<std::string> featureFilter_;
+    std::map<std::string, FeatureLayerFilterBinding> bindings_;
+
+    [[nodiscard]] bool isExact() const
+    {
+        return canonicalFeatureId_.has_value();
+    }
+};
+
 /** Initial feature-only point-grid grouping operator. */
 struct FeatureLayerPointGridGroup
 {
@@ -152,6 +175,14 @@ struct FeatureLayerPointGroupMember
     std::optional<std::string> geometryName_;
 };
 
+/** One portable candidate awaiting in-tile relation-target resolution. */
+struct FeatureLayerRelationTargetCandidate
+{
+    MapTileKey tileKey_;
+    FeatureLayerSelector selector_;
+    bool resolved_ = false;
+};
+
 /**
  * One admitted stored relation whose target is local or awaits service-level
  * location and tile resolution.
@@ -166,6 +197,9 @@ struct FeatureLayerRelationDescriptor
     KeyValuePairs targetFeatureId_;
     model_ptr<Feature> target_;
     std::optional<MapTileKey> targetTileKey_;
+    std::vector<FeatureLayerRelationTargetCandidate>
+        targetCandidates_;
+    std::vector<model_ptr<Feature>> targetMatches_;
     size_t rootOrdinal_ = 0;
     bool exactRoot_ = false;
 };
@@ -262,5 +296,17 @@ completeFeatureLayerRelations(
 tl::expected<FeatureLayerFilterResult, simfil::Error> filterFeatureLayer(
     TileFeatureLayer const& sourceLayer,
     FeatureLayerFilterRequest const& request);
+
+/**
+ * Apply one portable locate selector to an already loaded complete tile.
+ *
+ * This function never loads data. It is shared by the service's public
+ * locate path, relation traversal, add-on composition, and remote
+ * datasource candidates.
+ */
+tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
+selectFeatureLayerFeatures(
+    TileFeatureLayer const& sourceLayer,
+    FeatureLayerSelector const& selector);
 
 } // namespace mapget

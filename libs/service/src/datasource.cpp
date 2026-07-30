@@ -106,25 +106,10 @@ std::optional<std::chrono::milliseconds> DataSource::ttl() const
     return ttl_;
 }
 
-std::vector<LocateResponse> DataSource::locate(const LocateRequest& req)
+std::vector<LocateCandidate> DataSource::locate(
+    LocateRequest const&)
 {
     return {};
-}
-
-std::vector<LocateResponse> DataSource::locateCandidates(const LocateRequest& req)
-{
-    return locate(req);
-}
-
-std::vector<model_ptr<Feature>> DataSource::resolveFeatures(
-    LocateRequest const& located,
-    TileFeatureLayer const& tile)
-{
-    auto feature = tile.find(located.typeId_, located.featureId_);
-    if (!feature) {
-        return {};
-    }
-    return {std::move(feature)};
 }
 
 std::optional<AttachmentResponse> DataSource::attachment(

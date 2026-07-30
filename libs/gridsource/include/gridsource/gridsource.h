@@ -310,7 +310,8 @@ public:
     void fill(mapget::TileSourceDataLayer::Ptr const& tile) override {
         throw std::runtime_error("SourceDataLayer not supported by GridDataSource");
     }
-    std::vector<mapget::LocateResponse> locate(mapget::LocateRequest const& req) override;
+    std::vector<mapget::LocateCandidate> locate(
+        mapget::LocateRequest const& req) override;
 
 private:
     gridsource::Config config_;

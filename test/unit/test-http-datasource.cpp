@@ -8,6 +8,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <regex>
@@ -53,6 +54,49 @@ namespace
 constexpr int32_t kHttpTileIdValue = 131073;
 constexpr int32_t kSecondHttpTileIdValue = 131076;
 constexpr int32_t kThirdHttpTileIdValue = 131077;
+constexpr int32_t kRelationSourceTileIdValue =
+    kSecondHttpTileIdValue;
+constexpr int32_t kRelationTargetTileIdValue =
+    kThirdHttpTileIdValue;
+
+class CountingRemoteDataSource final
+    : public RemoteDataSource
+{
+public:
+    using RemoteDataSource::RemoteDataSource;
+
+    TileLayer::Ptr get(
+        MapTileKey const& key,
+        Cache::Ptr& cache,
+        DataSourceInfo const& info,
+        TileLayer::LoadStateCallback callback = {})
+        override
+    {
+        {
+            std::lock_guard lock(mutex_);
+            ++getCalls_[key];
+        }
+        return RemoteDataSource::get(
+            key,
+            cache,
+            info,
+            std::move(callback));
+    }
+
+    [[nodiscard]] size_t getCalls(
+        MapTileKey const& key) const
+    {
+        std::lock_guard lock(mutex_);
+        auto found = getCalls_.find(key);
+        return found == getCalls_.end()
+            ? 0
+            : found->second;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::map<MapTileKey, size_t> getCalls_;
+};
 
 class SyncHttpClient
 {
@@ -610,17 +654,25 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(resp != nullptr);
         REQUIRE(resp->statusCode() == drogon::k200OK);
 
-        LocateResponse responseParsed(nlohmann::json::parse(std::string(resp->body()))[0]);
+        LocateCandidate responseParsed(nlohmann::json::parse(std::string(resp->body()))[0]);
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
         REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
         REQUIRE(responseParsed.tileKey_.tileId_.value() == kHttpTileIdValue);
+        REQUIRE(
+            responseParsed.selector_.canonicalFeatureId_ ==
+            std::optional<std::string>{
+                "Way.Area42.0"});
     }
 
     // Query mapget HTTP service (in-process, started once for entire test binary)
     {
         auto& service = test::httpService();
-        auto remoteDataSource = std::make_shared<RemoteDataSource>("127.0.0.1", dsProc.port());
+        auto remoteDataSource =
+            std::make_shared<
+                CountingRemoteDataSource>(
+                "127.0.0.1",
+                dsProc.port());
         service.add(remoteDataSource);
 
         // The MapTileStream attachment endpoint validates the name against
@@ -720,6 +772,102 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(nonBlockingResult == drogon::ReqResult::Ok);
             REQUIRE(nonBlockingResp != nullptr);
             REQUIRE(nonBlockingResp->statusCode() == drogon::k200OK);
+        }
+
+        // A remote relation target is planned by /locate and materialized only
+        // through the ordinary service tile path. Neither the datasource
+        // server nor RemoteDataSource reconstructs the target for location.
+        {
+            auto const sourceTile =
+                TileId::fromValue(
+                    kRelationSourceTileIdValue);
+            auto const targetTile =
+                TileId::fromValue(
+                    kRelationTargetTileIdValue);
+            auto const sourceKey =
+                MapTileKey{
+                    LayerType::Features,
+                    "Tropico",
+                    "WayLayer",
+                    sourceTile};
+            auto const targetKey =
+                MapTileKey{
+                    LayerType::Features,
+                    "Tropico",
+                    "WayLayer",
+                    targetTile};
+            auto const sourceCallsBefore =
+                remoteDataSource->getCalls(
+                    sourceKey);
+            auto const targetCallsBefore =
+                remoteDataSource->getCalls(
+                    targetKey);
+
+            auto request =
+                std::make_shared<
+                    FeatureLayerFilterTilesRequest>(
+                    "Tropico",
+                    "WayLayer",
+                    std::vector<TileId>{
+                        sourceTile},
+                    FeatureLayerFilterRequest{
+                        .filterId_ =
+                            "remote-relation",
+                        .generation_ = 1,
+                        .channels_ = {
+                            FeatureLayerFilterChannel{
+                                .channelId_ =
+                                    "connected",
+                                .featureFilter_ =
+                                    "typeId == 'Way'",
+                                .scope_ =
+                                    FeatureLayerFilterScope::
+                                        Relation,
+                                .featureTypes_ = {
+                                    "Way"},
+                                .geometryName_ =
+                                    "centerline",
+                                .relation_ =
+                                    FeatureLayerStoredRelationOptions{
+                                        .relationNamePattern_ =
+                                            "connected",
+                                        .recursive_ =
+                                            true,
+                                    },
+                            },
+                        },
+                    });
+
+            std::vector<
+                TileSubsetLayer::Ptr>
+                results;
+            request->onFilterResult(
+                [&](TileSubsetLayer::Ptr layer) {
+                    results.push_back(
+                        std::move(layer));
+                });
+            REQUIRE(service.request(request));
+            request->wait();
+
+            REQUIRE(
+                request->getStatus() ==
+                RequestStatus::Success);
+            REQUIRE(results.size() == 1);
+            REQUIRE(
+                results.front()
+                    ->at(0)
+                    ->relationEntryCount() ==
+                1);
+            REQUIRE(
+                remoteDataSource->getCalls(
+                    sourceKey) -
+                    sourceCallsBefore ==
+                1);
+            REQUIRE(
+                remoteDataSource->getCalls(
+                    targetKey) -
+                    targetCallsBefore ==
+                1);
         }
 
         auto countReceivedTiles = [](auto& client, auto mapId, auto layerId, auto tiles) {

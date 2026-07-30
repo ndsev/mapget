@@ -51,19 +51,58 @@ int main()
         {
             tile->setGlbAttachmentName(
                 "ways.glb");
-            auto f = tile->newFeature("Way", {{"areaId", "Area42"}, {"wayId", 0}});
+            auto const wayId =
+                tile->tileId().value() ==
+                    131076
+                ? int64_t{80}
+                : tile->tileId().value() ==
+                        131077
+                    ? int64_t{81}
+                    : int64_t{0};
+            auto f = tile->newFeature(
+                "Way",
+                {
+                    {"areaId", "Area42"},
+                    {"wayId", wayId}});
             auto g = f->geom()->newGeometry(GeomType::Line);
+            g->setName("centerline");
             g->append({42., 11});
             g->append({42., 12});
+            if (wayId == 80) {
+                f->addRelation(
+                    "connected",
+                    "Way",
+                    {
+                        {"areaId", "Area42"},
+                        {"wayId", int64_t{81}},
+                    });
+            }
         });
     ds.onTileSourceDataRequest([&](const auto&) {});
     ds.onLocateRequest(
-        [&](LocateRequest const& request) -> std::vector<LocateResponse>
+        [&](LocateRequest const& request) ->
+            std::vector<LocateCandidate>
         {
-            LocateResponse response(request);
-            response.tileKey_.layerId_ = "WayLayer";
-            response.tileKey_.tileId_ = TileId::fromValue(131073);
-            return {response};
+            auto const wayId =
+                request.getIntIdPart(
+                    "wayId")
+                    .value_or(0);
+            auto const tileId =
+                wayId == 80
+                ? 131076
+                : wayId == 81
+                    ? 131077
+                    : 131073;
+            return {LocateCandidate(
+                MapTileKey{
+                    LayerType::Features,
+                    "Tropico",
+                    "WayLayer",
+                    TileId::fromValue(
+                        tileId)},
+                fmt::format(
+                    "Way.Area42.{}",
+                    wayId))};
         });
     ds.onAttachmentRequest(
         [](AttachmentRequest const& request)

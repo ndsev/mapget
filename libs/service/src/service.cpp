@@ -2099,8 +2099,17 @@ struct Service::Impl : public Service::Controller
                 {
                     // Note: A single secondary feature ID may resolve to multiple
                     // primary feature IDs. So we keep a vector of aux feature ID info.
-                    std::vector<std::pair<std::string_view, KeyValueViewPairs>> auxFeatureIds = {
-                        {auxFeature->id()->typeId(), auxFeature->id()->keyValuePairs()}};
+                    std::vector<
+                        std::pair<
+                            std::string,
+                            KeyValuePairs>>
+                        auxFeatureIds = {{
+                            std::string(
+                                auxFeature->id()
+                                    ->typeId()),
+                            castToKeyValue(
+                                auxFeature->id()
+                                    ->keyValuePairs())}};
 
                     // Convert the feature reference to multiple direct ones on-demand.
                     // If the ID does not validate as a primary feature id, we assume
@@ -2108,27 +2117,55 @@ struct Service::Impl : public Service::Controller
                     // is required.
                     auto idIsIndirect = !baseTile->layerInfo()->validFeatureId(
                         auxFeatureIds[0].first,
-                        auxFeatureIds[0].second,
+                        castToKeyValueView(
+                            auxFeatureIds[0]
+                                .second),
                         true);
-                    std::vector<LocateResponse> locateResponses;
                     if (idIsIndirect)
                     {
-                        locateResponses = baseDataSource.locate(LocateRequest(
+                        auto candidates =
+                            baseDataSource.locate(
+                                LocateRequest(
                             auxTile->mapId(),
                             std::string(auxFeatureIds[0].first),
-                            castToKeyValue(auxFeatureIds[0].second)));
-                        if (locateResponses.empty()) {
+                            auxFeatureIds[0].second));
+                        if (candidates.empty()) {
                             log().warn("Could not locate indirect aux feature id {}", auxFeature->id()->toString());
                             continue;
                         }
                         auxFeatureIds.clear();
-                        for (auto const& resolution : locateResponses) {
-                            // Do not adopt resolutions which point to a different tile layer.
-                            if (resolution.tileKey_ != baseTile->id())
+                        for (auto const& candidate :
+                             candidates)
+                        {
+                            if (candidate.tileKey_ !=
+                                baseTile->id())
+                            {
                                 continue;
-                            auxFeatureIds.emplace_back(
-                                resolution.typeId_,
-                                castToKeyValueView(resolution.featureId_));
+                            }
+                            auto selected =
+                                resolveLocateCandidate(
+                                    candidate,
+                                    *baseTile);
+                            if (!selected) {
+                                log().warn(
+                                    "Could not evaluate indirect aux feature selector for {}: {}",
+                                    auxFeature->id()
+                                        ->toString(),
+                                    selected.error()
+                                        .message);
+                                continue;
+                            }
+                            for (auto const& feature :
+                                 *selected)
+                            {
+                                auxFeatureIds.emplace_back(
+                                    std::string(
+                                        feature
+                                            ->typeId()),
+                                    castToKeyValue(
+                                        feature->id()
+                                            ->keyValuePairs()));
+                            }
                         }
                     }
 
@@ -2139,7 +2176,8 @@ struct Service::Impl : public Service::Controller
                             auxTile,
                             *auxFeature,
                             auxFeatureType,
-                            auxFeatureKvp);
+                            castToKeyValueView(
+                                auxFeatureKvp));
                     }
                 }
             }
@@ -2477,6 +2515,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 MapTileKey,
                 SourceTileContribution>
                 dynamicContributions_;
+            std::vector<FilterIssue> issues_;
         };
 
         struct PendingRelationOutput
@@ -2490,6 +2529,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
             bool scheduled_ = false;
             bool terminal_ = false;
             TileFeatureLayer::Ptr layer_;
+            std::optional<std::string> failureMessage_;
             std::set<size_t> dependentOutputs_;
         };
 
@@ -2520,7 +2560,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
         std::set<std::string> groupChannelIds;
         std::map<
             std::string,
-            std::vector<LocateResponse>>
+            std::vector<LocateCandidate>>
             relationLocationCache;
         std::mutex relationLocationMutex;
         std::map<
@@ -2893,7 +2933,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     descriptor.targetFeatureId_);
                 auto const locationKey =
                     locateRequest.serialize().dump();
-                std::vector<LocateResponse> locations;
+                std::vector<LocateCandidate> locations;
                 bool locationCached = false;
                 {
                     std::lock_guard lock(
@@ -2914,11 +2954,11 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     // misses may perform duplicate idempotent locate work;
                     // the first normalized value installed wins.
                     auto located =
-                        sourceDataSource->locateCandidates(
+                        sourceDataSource->locate(
                             locateRequest);
                     std::map<
                         std::string,
-                        LocateResponse>
+                        LocateCandidate>
                         unique;
                     for (auto&& location : located) {
                         if (location.tileKey_.layer_ !=
@@ -2932,7 +2972,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                             location.serialize().dump(),
                             std::move(location));
                     }
-                    std::vector<LocateResponse>
+                    std::vector<LocateCandidate>
                         normalized;
                     normalized.reserve(unique.size());
                     for (auto&& [_, location] : unique) {
@@ -2955,45 +2995,92 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                         targetId->toString()));
                     continue;
                 }
-                if (locations.size() != 1) {
-                    addIssue(fmt::format(
-                        "Relation target '{}' resolved ambiguously to {} candidates.",
-                        targetId->toString(),
-                        locations.size()));
-                    continue;
-                }
-
-                auto const& location =
-                    locations.front();
-                descriptor.targetTypeId_ =
-                    location.typeId_;
-                descriptor.targetFeatureId_ =
-                    location.featureId_;
-                descriptor.targetTileKey_ =
-                    location.tileKey_;
-                if (location.tileKey_ == source.id()) {
-                    auto resolved =
-                        sourceDataSource->resolveFeatures(
-                            location,
-                            source);
-                    if (resolved.empty()) {
-                        addIssue(fmt::format(
-                            "Located relation target '{}' was not found in its source tile.",
-                            targetId->toString()));
+                bool selectorFailed = false;
+                for (auto const& location :
+                     locations)
+                {
+                    auto& candidate =
+                        descriptor
+                            .targetCandidates_
+                            .emplace_back(
+                                FeatureLayerRelationTargetCandidate{
+                                    location
+                                        .tileKey_,
+                                    location
+                                        .selector_,
+                                    false});
+                    if (location.tileKey_ !=
+                        source.id())
+                    {
                         continue;
                     }
-                    if (resolved.size() != 1) {
+                    auto selected =
+                        resolveLocateCandidate(
+                            location,
+                            source);
+                    if (!selected) {
                         addIssue(fmt::format(
-                            "Relation target '{}' resolved ambiguously to {} features in its source tile.",
+                            "Could not evaluate relation-target selector for '{}': {}",
                             targetId->toString(),
-                            resolved.size()));
+                            selected.error().message));
+                        selectorFailed = true;
+                        break;
+                    }
+                    candidate.resolved_ = true;
+                    descriptor.targetMatches_.insert(
+                        descriptor
+                            .targetMatches_.end(),
+                        selected->begin(),
+                        selected->end());
+                }
+                if (selectorFailed) {
+                    continue;
+                }
+                if (std::ranges::all_of(
+                        descriptor
+                            .targetCandidates_,
+                        &FeatureLayerRelationTargetCandidate::
+                            resolved_))
+                {
+                    std::map<
+                        std::pair<
+                            MapTileKey,
+                            std::string>,
+                        model_ptr<Feature>>
+                        uniqueMatches;
+                    for (auto const& match :
+                         descriptor
+                             .targetMatches_)
+                    {
+                        uniqueMatches.emplace(
+                            std::make_pair(
+                                MapTileKey(
+                                    match->model()),
+                                match->id()
+                                    ->toString()),
+                            match);
+                    }
+                    if (uniqueMatches.size() != 1) {
+                        addIssue(
+                            uniqueMatches.empty()
+                            ? fmt::format(
+                                  "Located relation target '{}' was not found in its candidate tiles.",
+                                  targetId->toString())
+                            : fmt::format(
+                                  "Relation target '{}' resolved ambiguously to {} features.",
+                                  targetId->toString(),
+                                  uniqueMatches.size()));
                         continue;
                     }
                     descriptor.target_ =
-                        std::move(resolved.front());
+                        uniqueMatches.begin()
+                            ->second;
+                    descriptor.targetTileKey_ =
+                        uniqueMatches.begin()
+                            ->first.first;
                     descriptor.targetTypeId_ =
                         std::string(
-                            descriptor.target_->id()
+                            descriptor.target_
                                 ->typeId());
                     descriptor.targetFeatureId_ =
                         castToKeyValue(
@@ -3217,32 +3304,79 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 for (auto& descriptor :
                      contribution.relationDescriptors_)
                 {
-                    if (descriptor.target_ ||
-                        descriptor.targetTileKey_ !=
-                            std::optional<MapTileKey>{
-                                targetKey})
+                    if (descriptor.target_)
                     {
                         continue;
                     }
-                    auto located = LocateRequest(
-                        request->mapId_,
-                        descriptor.targetTypeId_,
-                        descriptor.targetFeatureId_);
-                    auto resolved =
-                        sourceDataSource->resolveFeatures(
-                            located,
-                            targetLayer);
-                    if (resolved.size() == 1) {
-                        descriptor.target_ =
-                            std::move(resolved.front());
-                        descriptor.targetTypeId_ =
-                            std::string(
-                                descriptor.target_->id()
-                                    ->typeId());
-                        descriptor.targetFeatureId_ =
-                            castToKeyValue(
-                                descriptor.target_->id()
-                                    ->keyValuePairs());
+                    for (auto& candidate :
+                         descriptor
+                             .targetCandidates_)
+                    {
+                        if (candidate.resolved_ ||
+                            candidate.tileKey_ !=
+                                targetKey)
+                        {
+                            continue;
+                        }
+                        auto selected =
+                            selectFeatureLayerFeatures(
+                                targetLayer,
+                                candidate
+                                    .selector_);
+                        if (!selected) {
+                            return tl::unexpected(
+                                selected.error());
+                        }
+                        candidate.resolved_ = true;
+                        descriptor
+                            .targetMatches_
+                            .insert(
+                                descriptor
+                                    .targetMatches_
+                                    .end(),
+                                selected->begin(),
+                                selected->end());
+                    }
+                }
+            }
+            output.dynamicContributions_.erase(
+                targetKey);
+            output.dynamicContributions_.emplace(
+                targetKey,
+                std::move(targetContribution));
+            return {};
+        }
+
+        void markRelationTargetUnavailableInOutput(
+            ReadyOutput& output,
+            MapTileKey const& targetKey,
+            std::string const& failureMessage)
+        {
+            std::map<std::string, uint64_t>
+                affectedByChannel;
+            for (auto& contribution :
+                 output.contributions_)
+            {
+                for (auto& descriptor :
+                     contribution.relationDescriptors_)
+                {
+                    if (descriptor.target_) {
+                        continue;
+                    }
+                    bool affected = false;
+                    for (auto& candidate :
+                         descriptor.targetCandidates_)
+                    {
+                        if (candidate.resolved_ ||
+                            candidate.tileKey_ !=
+                                targetKey)
+                        {
+                            continue;
+                        }
+                        candidate.resolved_ = true;
+                        affected = true;
+                    }
+                    if (!affected) {
                         continue;
                     }
                     auto const channelId =
@@ -3255,32 +3389,21 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                                       .channelIndex_]
                               .channelId_
                         : std::string{};
-                    auto message = resolved.empty()
-                        ? fmt::format(
-                              "Located relation target of type '{}' was not found in tile {}.",
-                              descriptor.targetTypeId_,
-                              targetKey.toString())
-                        : fmt::format(
-                              "Relation target of type '{}' resolved ambiguously to {} features in tile {}.",
-                              descriptor.targetTypeId_,
-                              resolved.size(),
-                              targetKey.toString());
-                    targetContribution.issues_.push_back(
-                        FilterIssue{
-                            channelId,
-                            "<relation-target>",
-                            Scope::Relation,
-                            std::move(message),
-                            1,
-                        });
+                    ++affectedByChannel[channelId];
                 }
             }
-            output.dynamicContributions_.erase(
-                targetKey);
-            output.dynamicContributions_.emplace(
-                targetKey,
-                std::move(targetContribution));
-            return {};
+            for (auto const& [channelId, count] :
+                 affectedByChannel)
+            {
+                output.issues_.push_back(
+                    FilterIssue{
+                        channelId,
+                        "<relation-target>",
+                        Scope::Relation,
+                        failureMessage,
+                        count,
+                    });
+            }
         }
 
         tl::expected<
@@ -3304,12 +3427,18 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                          contribution
                              .relationDescriptors_)
                     {
-                        if (!descriptor.target_ &&
-                            descriptor.targetTileKey_)
+                        if (descriptor.target_) {
+                            continue;
+                        }
+                        for (auto const& candidate :
+                             descriptor
+                                 .targetCandidates_)
                         {
-                            targetKeys.insert(
-                                *descriptor
-                                     .targetTileKey_);
+                            if (!candidate.resolved_) {
+                                targetKeys.insert(
+                                    candidate
+                                        .tileKey_);
+                            }
                         }
                     }
                 }
@@ -3332,22 +3461,29 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                             });
                     }
                     if (targetState->second.terminal_) {
-                        if (!targetState->second.layer_) {
-                            return tl::unexpected(
-                                simfil::Error{
-                                    simfil::Error::InternalError,
-                                    "Terminal relation target tile has no layer.",
-                                });
+                        if (targetState->second.layer_) {
+                            auto resolved =
+                                resolveRelationTargetInOutput(
+                                    ready,
+                                    targetKey,
+                                    *targetState->second
+                                         .layer_);
+                            if (!resolved) {
+                                return tl::unexpected(
+                                    resolved.error());
+                            }
                         }
-                        auto resolved =
-                            resolveRelationTargetInOutput(
+                        else {
+                            markRelationTargetUnavailableInOutput(
                                 ready,
                                 targetKey,
-                                *targetState->second
-                                     .layer_);
-                        if (!resolved) {
-                            return tl::unexpected(
-                                resolved.error());
+                                targetState->second
+                                    .failureMessage_
+                                    .value_or(
+                                        fmt::format(
+                                            "Could not load relation target tile {}.",
+                                            targetKey
+                                                .toString())));
                         }
                         continue;
                     }
@@ -3413,17 +3549,20 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 [self, targetKey](
                     RequestStatus status)
                 {
-                    if (status ==
-                        RequestStatus::Success)
-                    {
-                        return;
-                    }
-                    self->fail(simfil::Error{
-                        simfil::Error::InternalError,
-                        fmt::format(
-                            "Could not load relation target tile {}.",
-                            targetKey.toString()),
-                    });
+                    self
+                        ->completeUnavailableRelationTarget(
+                            targetKey,
+                            status ==
+                                    RequestStatus::
+                                        Success
+                                ? fmt::format(
+                                      "Relation target request completed without tile {}.",
+                                      targetKey
+                                          .toString())
+                                : fmt::format(
+                                      "Could not load relation target tile {}.",
+                                      targetKey
+                                          .toString()));
                 };
             {
                 std::lock_guard lock(
@@ -3437,13 +3576,83 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                         child},
                     clientHeaders))
             {
-                fail(simfil::Error{
-                    simfil::Error::InternalError,
+                completeUnavailableRelationTarget(
+                    targetKey,
                     fmt::format(
                         "Could not schedule relation target tile {}.",
-                        targetKey.toString()),
-                });
+                        targetKey.toString()));
             }
+        }
+
+        void completeUnavailableRelationTarget(
+            MapTileKey const& targetKey,
+            std::string message)
+        {
+            std::vector<ReadyOutput> ready;
+            {
+                std::lock_guard lock(mutex);
+                if (terminal ||
+                    request->isCancelled())
+                {
+                    return;
+                }
+                auto found =
+                    relationTargetTiles.find(
+                        targetKey);
+                if (found ==
+                    relationTargetTiles.end())
+                {
+                    return;
+                }
+                if (found->second.terminal_) {
+                    return;
+                }
+                found->second.terminal_ = true;
+                found->second.failureMessage_ =
+                    std::move(message);
+                for (auto const outputIndex :
+                     found->second
+                         .dependentOutputs_)
+                {
+                    auto pending =
+                        pendingRelationOutputs
+                            .find(outputIndex);
+                    if (pending ==
+                        pendingRelationOutputs.end())
+                    {
+                        continue;
+                    }
+                    markRelationTargetUnavailableInOutput(
+                        pending->second.ready_,
+                        targetKey,
+                        *found->second
+                             .failureMessage_);
+                    pending->second
+                        .pendingTargetTiles_
+                        .erase(targetKey);
+                    if (pending->second
+                            .pendingTargetTiles_
+                            .empty())
+                    {
+                        ready.push_back(
+                            std::move(
+                                pending->second
+                                    .ready_));
+                        pendingRelationOutputs
+                            .erase(pending);
+                        ++readyOutputTiles;
+                    }
+                }
+            }
+            std::ranges::sort(
+                ready,
+                {},
+                &ReadyOutput::outputIndex_);
+            emitCompletedOutputs(
+                std::move(ready));
+            emitProgress(
+                "RelationTargetUnavailable");
+            finishIfComplete();
         }
 
         void collectRelationTarget(
@@ -3483,10 +3692,10 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     };
                 }
                 else if (found->second.terminal_) {
-                    error = simfil::Error{
-                        simfil::Error::InternalError,
-                        "Relation target tile was delivered more than once.",
-                    };
+                    // A request-level failure may race a late child delivery.
+                    // The target already has a terminal contribution, so the
+                    // late value must not fail the entire filter generation.
+                    return;
                 }
                 else {
                     found->second.terminal_ = true;
@@ -3563,6 +3772,25 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 issues;
             std::map<std::string, simfil::Trace> traces;
             simfil::Diagnostics diagnostics;
+
+            for (auto&& issue : ready.issues_) {
+                auto key = std::make_tuple(
+                    issue.channelId_,
+                    issue.expression_,
+                    issue.scope_,
+                    issue.message_);
+                auto [found, inserted] =
+                    issues.emplace(key, issue);
+                if (!inserted) {
+                    auto const remaining =
+                        std::numeric_limits<uint64_t>::max() -
+                        found->second.occurrenceCount_;
+                    found->second.occurrenceCount_ +=
+                        std::min(
+                            remaining,
+                            issue.occurrenceCount_);
+                }
+            }
 
             for (auto& contribution :
                  ready.contributions_)
@@ -3644,9 +3872,132 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     std::move(contribution.traces_));
             }
 
+            if (hasStoredRelations) {
+                std::vector<
+                    FeatureLayerRelationDescriptor>
+                    resolvedDescriptors;
+                resolvedDescriptors.reserve(
+                    relationDescriptors.size());
+                for (auto&& descriptor :
+                     relationDescriptors)
+                {
+                    if (descriptor.target_) {
+                        resolvedDescriptors.push_back(
+                            std::move(descriptor));
+                        continue;
+                    }
+                    if (std::ranges::any_of(
+                            descriptor
+                                .targetCandidates_,
+                            [](auto const& candidate) {
+                                return !candidate
+                                    .resolved_;
+                            }))
+                    {
+                        return tl::unexpected(
+                            simfil::Error{
+                                simfil::Error::InternalError,
+                                "Relation target reached finalization with unresolved locate candidates.",
+                            });
+                    }
+
+                    std::map<
+                        std::pair<
+                            MapTileKey,
+                            std::string>,
+                        model_ptr<Feature>>
+                        uniqueMatches;
+                    for (auto const& match :
+                         descriptor.targetMatches_)
+                    {
+                        uniqueMatches.emplace(
+                            std::make_pair(
+                                MapTileKey(
+                                    match->model()),
+                                match->id()
+                                    ->toString()),
+                            match);
+                    }
+                    if (uniqueMatches.size() == 1) {
+                        auto const& [identity, match] =
+                            *uniqueMatches.begin();
+                        descriptor.target_ = match;
+                        descriptor.targetTileKey_ =
+                            identity.first;
+                        descriptor.targetTypeId_ =
+                            std::string(
+                                match->typeId());
+                        descriptor.targetFeatureId_ =
+                            castToKeyValue(
+                                match->id()
+                                    ->keyValuePairs());
+                        resolvedDescriptors.push_back(
+                            std::move(descriptor));
+                        continue;
+                    }
+
+                    auto const channelId =
+                        descriptor.channelIndex_ <
+                                request->filter_
+                                    .channels_.size()
+                        ? request->filter_
+                              .channels_[
+                                  descriptor
+                                      .channelIndex_]
+                              .channelId_
+                        : std::string{};
+                    auto const targetIdentity =
+                        descriptor.relation_ &&
+                            descriptor.relation_
+                                ->target()
+                        ? descriptor.relation_
+                              ->target()
+                              ->toString()
+                        : formatFeatureIdString(
+                              descriptor
+                                  .targetTypeId_,
+                              descriptor
+                                  .targetFeatureId_);
+                    auto message =
+                        uniqueMatches.empty()
+                        ? fmt::format(
+                              "Located relation target '{}' was not found in its candidate tiles.",
+                              targetIdentity)
+                        : fmt::format(
+                              "Relation target '{}' resolved ambiguously to {} features.",
+                              targetIdentity,
+                              uniqueMatches.size());
+                    auto issue = FilterIssue{
+                        channelId,
+                        "<relation-target>",
+                        Scope::Relation,
+                        std::move(message),
+                        1,
+                    };
+                    auto key = std::make_tuple(
+                        issue.channelId_,
+                        issue.expression_,
+                        issue.scope_,
+                        issue.message_);
+                    auto [found, inserted] =
+                        issues.emplace(
+                            std::move(key),
+                            issue);
+                    if (!inserted) {
+                        ++found->second
+                              .occurrenceCount_;
+                    }
+                }
+                relationDescriptors =
+                    std::move(
+                        resolvedDescriptors);
+            }
+
             ready.layer_->setDependencies(
                 std::move(dependencies));
             if (hasPointGroups) {
+                auto const startedAt =
+                    std::chrono::steady_clock::now();
                 auto completion =
                     completeFeatureLayerPointGroups(
                         *ready.layer_,
@@ -3686,6 +4037,12 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 mergeFilterTraces(
                     traces,
                     std::move(completion->traces_));
+                ready.layer_->setInfo(
+                    "Filter/Process-Groups#ms",
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() -
+                        startedAt)
+                        .count());
             }
             if (hasStoredRelations) {
                 std::vector<MapTileKey>
@@ -3699,6 +4056,8 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                         request->layerId_,
                         output.tileId_);
                 }
+                auto const startedAt =
+                    std::chrono::steady_clock::now();
                 auto completion =
                     completeFeatureLayerRelations(
                         *ready.layer_,
@@ -3740,6 +4099,17 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 mergeFilterTraces(
                     traces,
                     std::move(completion->traces_));
+                auto const priorMilliseconds =
+                    ready.layer_->info().value(
+                        "Filter/Process-Relations#ms",
+                        0.0);
+                ready.layer_->setInfo(
+                    "Filter/Process-Relations#ms",
+                    priorMilliseconds +
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() -
+                            startedAt)
+                            .count());
             }
 
             for (auto&& [key, issue] : issues) {
@@ -3822,6 +4192,8 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     return;
                 }
 
+                auto const filterStartedAt =
+                    std::chrono::steady_clock::now();
                 auto sourceResult =
                     filterFeatureLayerSource(
                         *source,
@@ -3838,11 +4210,21 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     fail(sourceResult.error());
                     return;
                 }
+                if (sourceResult->layer_) {
+                    sourceResult->layer_->setInfo(
+                        "Filter/Process-Entries#ms",
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() -
+                            filterStartedAt)
+                            .count());
+                }
                 if (request->isCancelled()) {
                     finishEvaluationJob();
                     finishIfComplete();
                     return;
                 }
+                auto const relationStartedAt =
+                    std::chrono::steady_clock::now();
                 auto locatedRelations =
                     locateRelationTargets(
                         *source,
@@ -3851,6 +4233,18 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     finishEvaluationJob();
                     fail(locatedRelations.error());
                     return;
+                }
+                if (sourceResult->layer_ &&
+                    !sourceResult
+                         ->relationDescriptors_
+                         .empty())
+                {
+                    sourceResult->layer_->setInfo(
+                        "Filter/Process-Relations#ms",
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() -
+                            relationStartedAt)
+                            .count());
                 }
 
                 auto ready = commitSource(
@@ -4154,53 +4548,228 @@ bool Service::request(
 
 std::vector<LocateResponse> Service::locate(LocateRequest const& req)
 {
-    std::vector<LocateResponse> results;
-    std::vector<std::pair<DataSource::Ptr, DataSourceInfo>> dataSources;
+    struct CandidateGroup
+    {
+        std::string sourceId_;
+        MapTileKey tileKey_;
+        std::vector<LocateCandidate> candidates_;
+    };
+
+    std::vector<CandidateGroup> candidateGroups;
+    std::map<
+        std::pair<std::string, MapTileKey>,
+        size_t>
+        groupIndex;
     {
         std::shared_lock lock(impl_->dataSourcesMutex_);
-        dataSources.assign(impl_->dataSourceInfo_.begin(), impl_->dataSourceInfo_.end());
+        for (auto const& [dataSource, info] :
+             impl_->dataSourceInfo_)
+        {
+            if (info.mapId_ != req.mapId_ ||
+                info.isAddOn_)
+            {
+                continue;
+            }
+            auto sourceId =
+                impl_->dataSourceSourceIds_.find(
+                    dataSource);
+            auto const resolvedSourceId =
+                sourceId !=
+                    impl_->dataSourceSourceIds_.end()
+                ? sourceId->second
+                : std::string{};
+            auto appendCandidates =
+                [&](LocateRequest const&
+                        resolvedRequest)
+                {
+                    for (auto&& candidate :
+                         dataSource->locate(
+                             resolvedRequest))
+                    {
+                        if (candidate.tileKey_.layer_ !=
+                                LayerType::Features ||
+                            candidate.tileKey_.mapId_ !=
+                                req.mapId_ ||
+                            !info.getLayer(
+                                candidate.tileKey_
+                                    .layerId_))
+                        {
+                            log().warn(
+                                "Datasource returned an invalid locate candidate for {}.",
+                                candidate.tileKey_
+                                    .toString());
+                            continue;
+                        }
+                        auto key = std::make_pair(
+                            resolvedSourceId,
+                            candidate.tileKey_);
+                        auto [found, inserted] =
+                            groupIndex.emplace(
+                                key,
+                                candidateGroups
+                                    .size());
+                        if (inserted) {
+                            candidateGroups.push_back(
+                                CandidateGroup{
+                                    resolvedSourceId,
+                                    candidate
+                                        .tileKey_,
+                                    {}});
+                        }
+                        candidateGroups[
+                            found->second]
+                            .candidates_
+                            .push_back(
+                                std::move(
+                                    candidate));
+                    }
+                };
+            if (!req.canonicalFeatureId_) {
+                appendCandidates(req);
+                continue;
+            }
+            for (auto const& [_, layerInfo] :
+                 info.layers_)
+            {
+                if (!layerInfo ||
+                    layerInfo->type_ !=
+                        LayerType::Features)
+                {
+                    continue;
+                }
+                ParsedFeatureId parsed;
+                if (!parseFeatureIdString(
+                        *req.canonicalFeatureId_,
+                        *layerInfo,
+                        parsed))
+                {
+                    continue;
+                }
+                appendCandidates(LocateRequest{
+                    req.mapId_,
+                    std::move(parsed.typeId_),
+                    std::move(
+                        parsed.keyValuePairs_)});
+            }
+        }
     }
 
-    std::set<std::string> seenResults;
-    for (auto const& [ds, info] : dataSources) {
-        if (info.mapId_ != req.mapId_ || info.isAddOn_) {
-            continue;
+    struct LocateState
+    {
+        std::mutex mutex_;
+        std::condition_variable cv_;
+        size_t pending_ = 0;
+        std::vector<LocateResponse> results_;
+        std::set<std::string> seen_;
+    };
+    auto state = std::make_shared<LocateState>();
+    state->pending_ = candidateGroups.size();
+
+    for (auto& group : candidateGroups) {
+        auto child =
+            std::make_shared<LayerTilesRequest>(
+                group.tileKey_.mapId_,
+                group.tileKey_.layerId_,
+                std::vector<TileId>{
+                    group.tileKey_.tileId_});
+        if (!group.sourceId_.empty()) {
+            child->sourceId_ =
+                group.sourceId_;
         }
-        auto appendLocations =
-            [&](LocateRequest const& resolvedRequest) {
-                for (auto const& location : ds->locate(resolvedRequest)) {
-                    auto normalized = location;
-                    normalized.resolvedCanonicalFeatureId_ =
-                        formatFeatureIdString(
-                            normalized.typeId_,
-                            normalized.featureId_);
-                    auto serialized = normalized.serialize().dump();
-                    if (seenResults.insert(serialized).second) {
-                        results.emplace_back(std::move(normalized));
+        child->onFeatureLayer(
+            [state,
+             original = req,
+             group = std::move(group)](
+                TileFeatureLayer::Ptr tile)
+            {
+                if (!tile ||
+                    tile->id() !=
+                        group.tileKey_)
+                {
+                    return;
+                }
+                std::lock_guard lock(
+                    state->mutex_);
+                for (auto const& candidate :
+                     group.candidates_)
+                {
+                    auto selected =
+                        resolveLocateCandidate(
+                            candidate,
+                            *tile);
+                    if (!selected) {
+                        log().warn(
+                            "Could not evaluate locate selector in {}: {}",
+                            tile->id().toString(),
+                            selected.error().message);
+                        continue;
+                    }
+                    for (auto const& feature :
+                         *selected)
+                    {
+                        LocateResponse response(
+                            original);
+                        response.tileKey_ =
+                            tile->id();
+                        response.typeId_ =
+                            std::string(
+                                feature->typeId());
+                        response.featureId_ =
+                            castToKeyValue(
+                                feature->id()
+                                    ->keyValuePairs());
+                        response
+                            .resolvedCanonicalFeatureId_ =
+                            feature->id()
+                                ->toString();
+                        auto serialized =
+                            response.serialize()
+                                .dump();
+                        if (state->seen_.insert(
+                                serialized)
+                                .second)
+                        {
+                            state->results_
+                                .push_back(
+                                    std::move(
+                                        response));
+                        }
                     }
                 }
+            });
+        child->onDone_ =
+            [state](RequestStatus) {
+                std::lock_guard lock(
+                    state->mutex_);
+                if (state->pending_ > 0) {
+                    --state->pending_;
+                }
+                state->cv_.notify_all();
             };
-        if (!req.canonicalFeatureId_) {
-            appendLocations(req);
-            continue;
-        }
-        for (auto const& [_, layerInfo] : info.layers_) {
-            if (!layerInfo || layerInfo->type_ != LayerType::Features) {
-                continue;
-            }
-            ParsedFeatureId parsed;
-            if (!parseFeatureIdString(
-                    *req.canonicalFeatureId_,
-                    *layerInfo,
-                    parsed)) {
-                continue;
-            }
-            appendLocations(LocateRequest{
-                req.mapId_,
-                std::move(parsed.typeId_),
-                std::move(parsed.keyValuePairs_)});
-        }
+        (void) this->request(
+            std::vector<
+                LayerTilesRequest::Ptr>{
+                child});
     }
+
+    std::unique_lock lock(state->mutex_);
+    state->cv_.wait(
+        lock,
+        [&] {
+            return state->pending_ == 0;
+        });
+    auto results =
+        std::move(state->results_);
+    std::ranges::sort(
+        results,
+        [](auto const& left, auto const& right) {
+            return std::tie(
+                       left.tileKey_,
+                       left.resolvedCanonicalFeatureId_) <
+                std::tie(
+                       right.tileKey_,
+                       right.resolvedCanonicalFeatureId_);
+        });
     return results;
 }
 

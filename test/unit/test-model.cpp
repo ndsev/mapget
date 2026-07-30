@@ -797,6 +797,70 @@ TEST_CASE("FeatureLayer stores geometry source-data refs compactly for singleton
     }
 }
 
+TEST_CASE("FeatureLayer clone preserves source-data references",
+          "[test.featurelayer][test.featurelayer.sourcedatarefs]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [{
+            "name": "Way",
+            "uniqueIdCompositions": [[
+                {"partId": "wayId", "datatype": "U32"}
+            ]]
+        }]
+    })"_json);
+    auto sourceStrings = std::make_shared<StringPool>("CloneSourceNode");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "CloneSourceNode",
+        "CloneMap",
+        layerInfo,
+        sourceStrings);
+    auto makeReference = [&](std::string_view qualifier) {
+        QualifiedSourceDataReference ref{
+            .address_ = SourceDataAddress::fromBitPosition(8, 16),
+            .layerId_ = sourceStrings->emplace("SourceLayer").value(),
+            .qualifier_ = sourceStrings->emplace(qualifier).value(),
+        };
+        return source->newSourceDataReferenceCollection({&ref, 1});
+    };
+
+    auto feature = source->newFeature("Way", {{"wayId", 42}});
+    feature->setSourceDataReferences(makeReference("feature"));
+    auto geometry = feature->geom()->newGeometry(GeomType::Line, 2, true);
+    geometry->append({42., 11., 0.});
+    geometry->append({42.1, 11.1, 0.});
+    geometry->setSourceDataReferences(makeReference("geometry"));
+    auto attribute = feature->attributeLayers()
+        ->newLayer("Rules")
+        ->newAttribute("Access");
+    attribute->setSourceDataReferences(makeReference("attribute"));
+    auto relation = source->newRelation(
+        "ConnectedTo",
+        source->newFeatureId("Way", {{"wayId", 43}}));
+    relation->setSourceDataReferences(makeReference("relation"));
+    feature->addRelation(relation);
+
+    auto targetStrings = std::make_shared<StringPool>("CloneTargetNode");
+    targetStrings->emplace("ForceDifferentStringIds").value();
+    auto target = std::make_shared<TileFeatureLayer>(
+        source->tileId(),
+        "CloneTargetNode",
+        "CloneMap",
+        layerInfo,
+        targetStrings);
+    TileFeatureLayer::CloneCache cache;
+    target->clone(
+        cache,
+        source,
+        *feature,
+        feature->id()->typeId(),
+        feature->id()->keyValuePairs());
+
+    REQUIRE(target->toJson().at("features") == source->toJson().at("features"));
+}
+
 TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test.feature.id.optionals]")
 {
     auto layerInfo = LayerInfo::fromJson(R"({

@@ -250,7 +250,7 @@ TEST_CASE(
 
     std::stringstream output;
     REQUIRE(subset->write(output).has_value());
-    REQUIRE(subset->info()["Filter/Geometry#vertices"] == 2);
+    REQUIRE(subset->info()["Filter/Geometry/Vertices#count"] == 2);
     auto bytesString = output.str();
     std::vector<uint8_t> bytes(bytesString.begin(), bytesString.end());
 

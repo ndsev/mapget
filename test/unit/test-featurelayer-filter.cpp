@@ -511,6 +511,12 @@ TEST_CASE(
         firstResult->layer_
             ->resolve<FeatureId>(
                 *group->memberFeatureIds()->at(0))
+            ->addr() ==
+        group->representativeFeatureId()->addr());
+    REQUIRE(
+        firstResult->layer_
+            ->resolve<FeatureId>(
+                *group->memberFeatureIds()->at(0))
             ->toString()
             .ends_with(".41"));
     REQUIRE(

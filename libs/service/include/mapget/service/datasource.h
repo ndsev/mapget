@@ -73,34 +73,15 @@ public:
     virtual void fill(TileSourceDataLayer::Ptr const& sourceData) = 0;
 
     /**
-     * Obtain map tile keys where the feature with the specified ID may be found.
-     * The implementation is completely datasource-specific. Note, that the returned
-     * resulting LocateResponses may have resolved to a different typeId and featureId
-     * than the requested one. This is useful when locate is used to resolve a
-     * secondary to a primary feature ID.
-     */
-    virtual std::vector<LocateResponse> locate(LocateRequest const& req);
-
-    /**
-     * Locate candidate tiles without requiring the candidate feature to be
-     * materialized. The default preserves the existing locate contract.
+     * Plan where and how the requested identity can be resolved.
      *
-     * Datasources whose secondary-id lookup normally needs a complete tile
-     * may override this method with a cheap tile-only answer, then canonicalize
-     * the identity in resolveFeatures() after the ordinary cached tile load.
+     * This method must be cheap, side-effect free, and independent of tile
+     * contents: it must never call fill(), get(), fetch remote tile data, or
+     * perform conversion. The service loads candidate tiles through its
+     * ordinary cache/coalescing path and applies each portable selector.
      */
-    virtual std::vector<LocateResponse> locateCandidates(LocateRequest const& req);
-
-    /**
-     * Resolve one located identity against an already loaded complete tile.
-     *
-     * Zero results mean missing and several results mean ambiguous. The
-     * default performs the ordinary primary-id lookup. Implementations must
-     * not fetch or reconstruct the tile again.
-     */
-    virtual std::vector<model_ptr<Feature>> resolveFeatures(
-        LocateRequest const& located,
-        TileFeatureLayer const& tile);
+    virtual std::vector<LocateCandidate> locate(
+        LocateRequest const& req);
 
     /**
      * Produce or return one named tile attachment.

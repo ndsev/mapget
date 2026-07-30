@@ -138,7 +138,8 @@ RemoteDataSource::get(
     return result;
 }
 
-std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
+std::vector<LocateCandidate> RemoteDataSource::locate(
+    LocateRequest const& req)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
@@ -152,9 +153,6 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
 
     // Check that the response is OK.
     if (resultCode != drogon::ReqResult::Ok || !locateResponse || (int)locateResponse->statusCode() >= 300) {
-        // Forward to base class get(). This will instantiate a
-        // default TileFeatureLayer and call fill(). In our implementation
-        // of fill, we set an error.
         // TODO: Read HTTPLIB_ERROR header, more log output.
         return {};
     }
@@ -166,7 +164,7 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
     }
 
     // Parse the resulting responses.
-    std::vector<LocateResponse> responseVector;
+    std::vector<LocateCandidate> responseVector;
     for (auto const& responseJsonAlternative : responseJson) {
         responseVector.emplace_back(responseJsonAlternative);
     }
@@ -356,7 +354,9 @@ RemoteDataSourceProcess::get(
     return remoteSource_->get(k, cache, info, std::move(loadStateCallback));
 }
 
-std::vector<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)
+std::vector<LocateCandidate>
+RemoteDataSourceProcess::locate(
+    LocateRequest const& req)
 {
     if (!remoteSource_)
         raise("Remote data source is not initialized.");

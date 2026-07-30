@@ -44,7 +44,10 @@ public:
      * must process according to its available data.
      */
     DataSourceServer&
-    onLocateRequest(std::function<std::vector<LocateResponse>(LocateRequest const&)> const&);
+    onLocateRequest(
+        std::function<
+            std::vector<LocateCandidate>(
+                LocateRequest const&)> const&);
 
     /** Set the callback which produces separately transferred tile attachments. */
     DataSourceServer& onAttachmentRequest(

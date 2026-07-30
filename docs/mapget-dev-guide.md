@@ -36,8 +36,17 @@ A `DataSource`:
 
 - returns `DataSourceInfo` from `info()`;
 - fills one complete `TileFeatureLayer` or `TileSourceDataLayer`;
-- may implement `locate()` for secondary IDs;
+- may implement cheap `locate()` planning for secondary IDs;
 - may implement `attachment()` for a named lazy payload.
+
+`DataSource::locate()` returns candidate `MapTileKey`s plus a portable in-tile
+selector: either an exact canonical feature ID or a typed, schema-compiled
+SIMFIL `featureFilter` with scalar bindings. It must be side-effect free and
+must not fetch, fill, or convert a tile. The service loads every candidate
+through the ordinary cache/coalesced scheduler, applies the selector to the
+complete tile, and only then decides missing versus ambiguous. The same
+contract is used by public `/locate`, stored-relation targets, add-on
+composition, and `RemoteDataSource`.
 
 `DataSourceInfo::stringPoolId_` names the serialized string namespace. The
 service catalog separately assigns `sourceId`. Only one primary datasource may

@@ -26,7 +26,10 @@ struct DataSourceServer::Impl
     std::function<void(TileSourceDataLayer::Ptr)> tileSourceDataCallback_ = [](auto&&) {
         throw std::runtime_error("TileSourceDataLayer callback is unset!");
     };
-    std::function<std::vector<LocateResponse>(const LocateRequest&)> locateCallback_;
+    std::function<
+        std::vector<LocateCandidate>(
+            LocateRequest const&)>
+        locateCallback_;
     std::function<std::optional<AttachmentResponse>(
         AttachmentRequest const&)>
         attachmentCallback_;
@@ -58,7 +61,9 @@ DataSourceServer& DataSourceServer::onTileSourceDataRequest(std::function<void(T
 }
 
 DataSourceServer& DataSourceServer::onLocateRequest(
-    const std::function<std::vector<LocateResponse>(const LocateRequest&)>& callback)
+    std::function<
+        std::vector<LocateCandidate>(
+            LocateRequest const&)> const& callback)
 {
     impl_->locateCallback_ = callback;
     return *this;

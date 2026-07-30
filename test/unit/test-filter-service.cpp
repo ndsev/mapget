@@ -269,15 +269,20 @@ public:
         : FilterDataSource("CanonicalLocatePool")
     {}
 
-    std::vector<LocateResponse> locate(
+    std::vector<LocateCandidate> locate(
         LocateRequest const& request) override
     {
         requestedTypeId_ = request.typeId_;
         requestedFeatureId_ = request.featureId_;
-        LocateResponse response(request);
-        response.tileKey_.layerId_ = "Road";
-        response.tileKey_.tileId_ = firstTile();
-        return {response};
+        return {LocateCandidate(
+            MapTileKey{
+                LayerType::Features,
+                "FilterMap",
+                "Road",
+                firstTile()},
+            formatFeatureIdString(
+                request.typeId_,
+                request.featureId_))};
     }
 
     std::string requestedTypeId_;
@@ -413,12 +418,15 @@ class RelationDataSource : public DataSource
 public:
     RelationDataSource(
         TileId first,
-        TileId second)
+        TileId second,
+        std::optional<TileId> failingTile =
+            std::nullopt)
         : info_(
               filterDataSourceInfo(
                   "RelationServicePool")),
           first_(first),
-          second_(second)
+          second_(second),
+          failingTile_(failingTile)
     {}
 
     DataSourceInfo info() override
@@ -432,6 +440,12 @@ public:
             std::lock_guard lock(mutex_);
             requestedTiles_.push_back(
                 tile->tileId());
+        }
+        if (failingTile_ &&
+            tile->tileId() == *failingTile_)
+        {
+            throw std::runtime_error(
+                "synthetic relation target failure");
         }
         if (tile->tileId() != first_ &&
             tile->tileId() != second_)
@@ -487,60 +501,16 @@ public:
             "RelationDataSource does not provide source-data tiles");
     }
 
-    std::vector<LocateResponse> locate(
+    std::vector<LocateCandidate> locate(
         LocateRequest const& request) override
     {
         ++locateCalls_;
         return locateResponse(request);
     }
 
-    std::vector<LocateResponse> locateCandidates(
-        LocateRequest const& request) override
-    {
-        ++candidateCalls_;
-        return locateResponse(request);
-    }
-
-    std::vector<model_ptr<Feature>> resolveFeatures(
-        LocateRequest const& located,
-        TileFeatureLayer const& tile) override
-    {
-        ++resolveCalls_;
-        auto externalRoadId =
-            located.getIntIdPart(
-                "externalRoadId");
-        auto tileId =
-            located.getIntIdPart("tileId");
-        if (!externalRoadId || !tileId) {
-            return DataSource::resolveFeatures(
-                located,
-                tile);
-        }
-        auto feature = tile.find(
-            located.typeId_,
-            KeyValuePairs{
-                {"tileId", *tileId},
-                {"roadId", *externalRoadId},
-            });
-        if (!feature) {
-            return {};
-        }
-        return {std::move(feature)};
-    }
-
     size_t locateCalls() const
     {
         return locateCalls_;
-    }
-
-    size_t candidateCalls() const
-    {
-        return candidateCalls_;
-    }
-
-    size_t resolveCalls() const
-    {
-        return resolveCalls_;
     }
 
     std::vector<TileId> requestedTiles() const
@@ -550,34 +520,44 @@ public:
     }
 
 private:
-    std::vector<LocateResponse> locateResponse(
+    std::vector<LocateCandidate> locateResponse(
         LocateRequest const& request)
     {
         auto tileId =
             request.getIntIdPart("tileId");
+        auto externalRoadId =
+            request.getIntIdPart(
+                "externalRoadId");
         if (!tileId ||
+            !externalRoadId ||
             request.typeId_ != "Road")
         {
             return {};
         }
-        LocateResponse response(request);
-        response.tileKey_ = MapTileKey(
-            LayerType::Features,
-            "FilterMap",
+        return {LocateCandidate(
+            MapTileKey(
+                LayerType::Features,
+                "FilterMap",
+                "Road",
+                TileId::fromValue(
+                    static_cast<int32_t>(
+                        *tileId))),
             "Road",
-            TileId::fromValue(
-                static_cast<int32_t>(*tileId)));
-        return {std::move(response)};
+            "roadId == locateRoadId",
+            {
+                {
+                    "locateRoadId",
+                    *externalRoadId},
+            })};
     }
 
     DataSourceInfo info_;
     TileId first_;
     TileId second_;
+    std::optional<TileId> failingTile_;
     mutable std::mutex mutex_;
     std::vector<TileId> requestedTiles_;
     std::atomic_size_t locateCalls_ = 0;
-    std::atomic_size_t candidateCalls_ = 0;
-    std::atomic_size_t resolveCalls_ = 0;
 };
 
 FeatureLayerFilterRequest filterDefinition()
@@ -955,9 +935,7 @@ TEST_CASE(
                     outputTile == westernTile
                         ? easternTile
                         : westernTile});
-            REQUIRE(dataSource->locateCalls() == 0);
-            REQUIRE(dataSource->candidateCalls() == 1);
-            REQUIRE(dataSource->resolveCalls() == 1);
+            REQUIRE(dataSource->locateCalls() == 1);
             return results.front();
         };
 
@@ -1084,6 +1062,80 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Unavailable relation target tiles produce local issues instead of aborting the filter",
+    "[feature-layer-filter][Service][relation][failure]")
+{
+    auto const westernTile =
+        TileId::fromTileXY(10, 5, 4);
+    auto const easternTile =
+        westernTile.eastNeighbour();
+    Service service(
+        std::make_shared<MemCache>(32),
+        false);
+    auto dataSource =
+        std::make_shared<RelationDataSource>(
+            westernTile,
+            easternTile,
+            easternTile);
+    service.add(dataSource);
+
+    auto request =
+        std::make_shared<
+            FeatureLayerFilterTilesRequest>(
+            "FilterMap",
+            "Road",
+            std::vector<TileId>{westernTile},
+            FeatureLayerFilterRequest{
+                .filterId_ =
+                    "unavailable-relation-target",
+                .generation_ = 1,
+                .channels_ = {
+                    FeatureLayerFilterChannel{
+                        .channelId_ = "connected",
+                        .featureFilter_ =
+                            "typeId == 'Road'",
+                        .entryFilter_ = "$twoway",
+                        .scope_ =
+                            FeatureLayerFilterScope::
+                                Relation,
+                        .featureTypes_ = {"Road"},
+                        .geometryName_ = "relation",
+                        .relation_ =
+                            FeatureLayerStoredRelationOptions{
+                                .relationNamePattern_ =
+                                    "connected",
+                                .recursive_ = true,
+                                .mergeTwoway_ = true,
+                            },
+                    },
+                },
+            });
+    std::vector<TileSubsetLayer::Ptr> results;
+    request->onFilterResult(
+        [&](TileSubsetLayer::Ptr layer) {
+            results.push_back(std::move(layer));
+        });
+
+    REQUIRE(service.request(request));
+    request->wait();
+    REQUIRE(
+        request->getStatus() ==
+        RequestStatus::Success);
+    REQUIRE(results.size() == 1);
+    REQUIRE(
+        results.front()->at(0)
+            ->relationEntryCount() == 0);
+    REQUIRE(
+        std::ranges::any_of(
+            results.front()->issues(),
+            [](FilterIssue const& issue) {
+                return issue.message_.find(
+                    "Could not load relation target tile") !=
+                    std::string::npos;
+            }));
+}
+
+TEST_CASE(
     "Service resolves canonical locate ids through layer compositions",
     "[Service][locate]")
 {
@@ -1093,6 +1145,23 @@ TEST_CASE(
     auto dataSource =
         std::make_shared<CanonicalLocateDataSource>();
     service.add(dataSource);
+
+    auto planned = dataSource->locate(
+        LocateRequest{
+            "FilterMap",
+            "Road",
+            {
+                {
+                    "tileId",
+                    static_cast<int64_t>(
+                        firstTile()
+                            .value())},
+                {"roadId", int64_t{42}},
+            }});
+    REQUIRE(planned.size() == 1);
+    REQUIRE(
+        dataSource->requestedTiles()
+            .empty());
 
     auto const canonicalId =
         fmt::format(
@@ -1123,6 +1192,10 @@ TEST_CASE(
             LayerType::Features,
             "FilterMap",
             "Road",
+            firstTile()});
+    REQUIRE(
+        dataSource->requestedTiles() ==
+        std::vector<TileId>{
             firstTile()});
 }
 

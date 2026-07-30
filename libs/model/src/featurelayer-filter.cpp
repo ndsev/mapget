@@ -723,7 +723,17 @@ tl::expected<bool, EvaluatorFailure> evaluateFilter(
         return tl::unexpected(result.error());
     }
     mergeTraces(traces, std::move(result->traces_));
-    if (diagnostics) {
+    // Raw SIMFIL diagnostics can only be merged when evaluation reused the
+    // same compiled AST. Schema-specific compilation may give one textual
+    // entryFilter a different expression index; those evaluations are still
+    // represented by channel-qualified FilterIssues and must not corrupt the
+    // AST-indexed diagnostic aggregate.
+    if (diagnostics &&
+        (diagnostics->exprIndex_.empty() ||
+         std::ranges::equal(
+             diagnostics->exprIndex_,
+             result->diagnostics_.exprIndex_)))
+    {
         diagnostics->append(result->diagnostics_);
     }
     return filterMatches(result->values_);
@@ -1085,20 +1095,26 @@ void collectStoredRelationDescriptors(
                 targetId->keyValuePairs());
             channel.relationDescriptors_.push_back(
                 FeatureLayerRelationDescriptor{
-                    channelIndex,
-                    current.feature_,
-                    relation,
-                    relationOrdinal,
-                    std::string(targetId->typeId()),
-                    castToKeyValue(
-                        targetId->keyValuePairs()),
-                    localTarget,
-                    localTarget
+                    .channelIndex_ = channelIndex,
+                    .source_ = current.feature_,
+                    .relation_ = relation,
+                    .relationOrdinal_ = relationOrdinal,
+                    .targetTypeId_ =
+                        std::string(
+                            targetId->typeId()),
+                    .targetFeatureId_ =
+                        castToKeyValue(
+                            targetId
+                                ->keyValuePairs()),
+                    .target_ = localTarget,
+                    .targetTileKey_ = localTarget
                         ? std::optional<MapTileKey>{
                               MapTileKey(localTarget->model())}
                         : std::nullopt,
-                    current.rootOrdinal_,
-                    current.exact_,
+                    .rootOrdinal_ =
+                        current.rootOrdinal_,
+                    .exactRoot_ =
+                        current.exact_,
                 });
 
             if (channel.definition_.relation_->recursive_ &&
@@ -2088,6 +2104,12 @@ completeFeatureLayerPointGroups(
 
     IssueAccumulator issues;
     std::map<std::string, simfil::Trace> traces;
+    // All source tiles in one filter namespace use compatible StringIds and
+    // one layer schema. Reuse the schema-installed evaluator across halo
+    // tiles as well as across groups; keying by model address would still
+    // rebuild it up to nine times for every output tile.
+    std::map<std::string, EvaluatorContext>
+        evaluatorsByStringPool;
     size_t entriesAdded = 0;
     auto stableFeatureIdentity =
         [](model_ptr<Feature> const& feature) {
@@ -2142,15 +2164,33 @@ completeFeatureLayerPointGroups(
 
         auto const& representative =
             groupMembers.front();
-        auto evaluatorContext = makeFilterEvaluator(
-            representative.feature_->model(),
-            request.bindings_);
-        if (!evaluatorContext) {
-            return tl::unexpected(
-                evaluatorContext.error());
+        auto const& representativeLayer =
+            representative.feature_->model();
+        auto const evaluatorKey =
+            representativeLayer.stringPoolId();
+        auto evaluatorContext =
+            evaluatorsByStringPool.find(
+                evaluatorKey);
+        if (evaluatorContext ==
+            evaluatorsByStringPool.end())
+        {
+            auto created = makeFilterEvaluator(
+                representativeLayer,
+                request.bindings_);
+            if (!created) {
+                return tl::unexpected(
+                    created.error());
+            }
+            evaluatorContext =
+                evaluatorsByStringPool
+                    .emplace(
+                        evaluatorKey,
+                        std::move(*created))
+                    .first;
         }
-        auto& evaluator =
-            *evaluatorContext->evaluator_;
+        auto& evaluator = *evaluatorContext
+                               ->second
+                               .evaluator_;
 
         std::vector<model_ptr<Feature>> features;
         features.reserve(groupMembers.size());
@@ -2166,7 +2206,8 @@ completeFeatureLayerPointGroups(
                     *representative.feature_));
         addBindings(
             context,
-            evaluatorContext->bindingFields_);
+            evaluatorContext->second
+                .bindingFields_);
         context->set(
             StringPool::OverlayFeaturesStr,
             simfil::Value::field(featureArray));
@@ -2225,18 +2266,29 @@ completeFeatureLayerPointGroups(
                 : std::nullopt);
         geometry->addGeometry(pointGeometry);
 
+        auto representativeId = copyFeatureId(
+            outputLayer,
+            representative.feature_->id());
         std::vector<model_ptr<FeatureId>> memberIds;
         memberIds.reserve(groupMembers.size());
-        for (auto const& member : groupMembers) {
-            memberIds.push_back(copyFeatureId(
-                outputLayer,
-                member.feature_->id()));
+        for (size_t memberIndex = 0;
+             memberIndex < groupMembers.size();
+             ++memberIndex)
+        {
+            // The representative is also the first group member. Reuse its
+            // model node instead of serializing the same FeatureId twice for
+            // every group (especially costly for singleton point groups).
+            memberIds.push_back(
+                memberIndex == 0
+                ? representativeId
+                : copyFeatureId(
+                      outputLayer,
+                      groupMembers[memberIndex]
+                          .feature_->id()));
         }
         outputChannel->newGroupEntry(
             groupKey,
-            copyFeatureId(
-                outputLayer,
-                representative.feature_->id()),
+            representativeId,
             geometry,
             materializeValues(
                 outputLayer,
@@ -2794,6 +2846,90 @@ filterFeatureLayer(
         sourceResult->diagnostics_);
     return FeatureLayerFilterResult{
         std::move(sourceResult->layer_)};
+}
+
+tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
+selectFeatureLayerFeatures(
+    TileFeatureLayer const& sourceLayer,
+    FeatureLayerSelector const& selector)
+{
+    if (selector.canonicalFeatureId_) {
+        if (!selector.typeId_.empty() ||
+            selector.featureFilter_ ||
+            !selector.bindings_.empty())
+        {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                "An exact feature selector cannot also contain a type, filter, or bindings.",
+            });
+        }
+        auto feature =
+            sourceLayer.find(*selector.canonicalFeatureId_);
+        if (!feature) {
+            return std::vector<model_ptr<Feature>>{};
+        }
+        return std::vector<model_ptr<Feature>>{
+            std::move(feature)};
+    }
+
+    if (selector.typeId_.empty() ||
+        !selector.featureFilter_)
+    {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "A filtered feature selector requires both typeId and featureFilter.",
+        });
+    }
+
+    auto evaluatorContext =
+        makeFilterEvaluator(
+            sourceLayer,
+            selector.bindings_);
+    if (!evaluatorContext) {
+        return tl::unexpected(
+            evaluatorContext.error());
+    }
+
+    std::vector<model_ptr<Feature>> allFeatures;
+    allFeatures.reserve(sourceLayer.size());
+    for (auto const& feature : sourceLayer) {
+        allFeatures.push_back(feature);
+    }
+    auto featureArray =
+        simfil::model_ptr<FeatureArrayView>::make(
+            std::move(allFeatures));
+
+    std::vector<model_ptr<Feature>> selected;
+    std::map<std::string, simfil::Trace> ignoredTraces;
+    for (auto const& feature : sourceLayer) {
+        if (feature->typeId() != selector.typeId_) {
+            continue;
+        }
+        auto context =
+            simfil::model_ptr<simfil::OverlayNode>::make(
+                simfil::Value::field(*feature));
+        addBindings(
+            context,
+            evaluatorContext->bindingFields_);
+        context->set(
+            StringPool::OverlayFeaturesStr,
+            simfil::Value::field(featureArray));
+        auto matches = evaluateFilter(
+            *evaluatorContext->evaluator_,
+            selector.featureFilter_,
+            *context,
+            static_cast<simfil::ModelNode const&>(
+                *feature).schema(),
+            ignoredTraces);
+        if (!matches) {
+            return tl::unexpected(
+                matches.error().error_);
+        }
+        if (*matches) {
+            selected.push_back(feature);
+        }
+    }
+    return selected;
 }
 
 } // namespace mapget

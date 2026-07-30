@@ -77,15 +77,21 @@ def main() -> int:
         compound.add_field("answer", 42)
         tile.add_root(compound)
 
-    def locate(request: mapget.LocateRequest) -> list[mapget.LocateResponse]:
-        response = mapget.LocateResponse(request)
-        response.tile_key = mapget.MapTileKey(
+    def locate(request: mapget.LocateRequest) -> list[mapget.LocateCandidate]:
+        tile_key = mapget.MapTileKey(
             mapget.LayerType.FEATURES,
             request.map_id,
             "WayLayer",
             PackedTileId.from_tile_xy(0, 0, 0),
         )
-        return [response]
+        return [
+            mapget.LocateCandidate(
+                tile_key,
+                "Way",
+                "wayId == locateWayId",
+                {"locateWayId": request.get_int_id_part("wayId")},
+            )
+        ]
 
     def on_cache_expired(tile_key: mapget.MapTileKey, expired_at_us: int) -> None:
         cache_expired_calls.append((tile_key.to_string(), expired_at_us))
@@ -133,6 +139,11 @@ def main() -> int:
             {"mapId": "Map", "typeId": "Way", "featureId": ["wayId", 1]},
         )
         assert locate_response[0]["tileId"] == "Features:Map:WayLayer:65536"
+        assert locate_response[0]["selector"] == {
+            "typeId": "Way",
+            "featureFilter": "wayId == locateWayId",
+            "bindings": {"locateWayId": 1},
+        }
 
         _post_json(
             f"{base_url}/cache-expired",

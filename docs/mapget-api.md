@@ -306,8 +306,8 @@ metadata and `info()`, then carries `filterId` and `generation`. It contains:
 - typed `FeatureEntry`, `AttributeValidityEntry`, `RelationEntry`, or
   `GroupEntry` arrays;
 - source dependencies with `MapTileKey` and `sourceFeatureCount`;
-- scalar `Filter/Entries#*` statistics and
-  `Filter/Geometry#vertices` for cheap pre-deserialization accounting;
+- scalar `Filter/Entries/*#count` statistics and
+  `Filter/Geometry/Vertices#count` for cheap pre-deserialization accounting;
 - aggregated issues and SIMFIL traces;
 - optional GLB attachment name.
 
@@ -389,9 +389,11 @@ alias.
 ```
 
 The response contains a parallel `responses` array. Each result includes the
-four-part `tileId` key and, when normalization changed the identity,
-`canonicalFeatureId`. Canonical input is resolved against the ID compositions
-advertised by the layer before datasource dispatch.
+four-part `tileId` key and the resolved `canonicalFeatureId`. Canonical input
+is resolved against the ID compositions
+advertised by the layer before datasource dispatch. Datasources only plan
+candidate tiles and portable selectors; mapget loads candidates through its
+normal cache/coalescing path and returns concrete primary feature identities.
 
 ## `GET /location`
 

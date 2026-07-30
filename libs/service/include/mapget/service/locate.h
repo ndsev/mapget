@@ -1,8 +1,7 @@
 #pragma once
 
-#pragma once
-
 #include "cache.h"
+#include "mapget/model/featurelayer-filter.h"
 
 namespace mapget
 {
@@ -33,8 +32,39 @@ public:
 };
 
 /**
- * Class which models a response object that is returned from
- * the Service::Locate function.
+ * Cheap datasource-produced candidate for a locate request.
+ *
+ * The datasource identifies a possible tile and supplies a portable selector
+ * which mapget applies only after that tile has been loaded through the
+ * ordinary service/cache path. Producing a candidate must not fetch, fill, or
+ * convert tile data.
+ */
+class LocateCandidate
+{
+public:
+    explicit LocateCandidate(nlohmann::json const& j);
+    LocateCandidate(
+        MapTileKey tileKey,
+        FeatureLayerSelector selector);
+    LocateCandidate(
+        MapTileKey tileKey,
+        std::string canonicalFeatureId);
+    LocateCandidate(
+        MapTileKey tileKey,
+        std::string typeId,
+        std::string featureFilter,
+        std::map<
+            std::string,
+            FeatureLayerFilterBinding> bindings = {});
+
+    MapTileKey tileKey_;
+    FeatureLayerSelector selector_;
+
+    [[nodiscard]] nlohmann::json serialize() const;
+};
+
+/**
+ * Canonical response returned by the complete Service::locate operation.
  */
 class LocateResponse : public LocateRequest
 {
@@ -48,5 +78,11 @@ public:
 
     [[nodiscard]] nlohmann::json serialize() const override;
 };
+
+/** Apply a datasource candidate to an already loaded complete feature tile. */
+tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
+resolveLocateCandidate(
+    LocateCandidate const& candidate,
+    TileFeatureLayer const& tile);
 
 }
