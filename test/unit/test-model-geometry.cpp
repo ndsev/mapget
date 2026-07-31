@@ -769,6 +769,77 @@ TEST_CASE("Semantic feature transition validities skip duplicate endpoint points
     REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
 }
 
+TEST_CASE("Semantic feature transition validities extend short endpoint legs", "[validity]") {
+    auto modelPool = makeTile();
+
+    auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 3);
+    fromGeometry->append({0.0, 0.0, 0.0});
+    fromGeometry->append({0.00019, 0.0, 0.0});
+    fromGeometry->append({0.00020, 0.0, 0.0});
+
+    auto toFeature = modelPool->newFeature("Way", {{"wayId", int64_t(2)}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 3);
+    toGeometry->append({0.00020, 0.0, 0.0});
+    toGeometry->append({0.00021, 0.0, 0.0});
+    toGeometry->append({0.00040, 0.0, 0.0});
+
+    auto intersection = modelPool->newFeature("Way", {{"wayId", int64_t(3)}});
+    auto validity = intersection->attributeLayers()
+                        ->newLayer("rules")
+                        ->newAttribute("turn")
+                        ->validity()
+                        ->newFeatureTransition(
+                            fromFeature,
+                            Validity::End,
+                            toFeature,
+                            Validity::Start,
+                            7);
+
+    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    REQUIRE(geometry.geomType_ == GeomType::Line);
+    REQUIRE(geometry.points_.size() == 3);
+    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
+    REQUIRE_THAT(geometry.points_[1].x, Catch::Matchers::WithinAbs(0.00020, 2e-6));
+    REQUIRE_THAT(geometry.points_[1].y, Catch::Matchers::WithinAbs(0.0, 2e-6));
+    REQUIRE_THAT(geometry.points_[2].x, Catch::Matchers::WithinAbs(0.00040, 2e-6));
+    REQUIRE_THAT(geometry.points_[2].y, Catch::Matchers::WithinAbs(0.0, 2e-6));
+}
+
+TEST_CASE("Semantic feature transition validities extrapolate short endpoint links", "[validity]") {
+    auto modelPool = makeTile();
+
+    auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 2);
+    fromGeometry->append({0.0, 0.0, 0.0});
+    fromGeometry->append({0.00020, 0.0, 0.0});
+
+    auto toFeature = modelPool->newFeature("Way", {{"wayId", int64_t(2)}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 2);
+    toGeometry->append({0.00020, 0.0, 0.0});
+    toGeometry->append({0.00021, 0.0, 0.0});
+
+    auto intersection = modelPool->newFeature("Way", {{"wayId", int64_t(3)}});
+    auto validity = intersection->attributeLayers()
+                        ->newLayer("rules")
+                        ->newAttribute("turn")
+                        ->validity()
+                        ->newFeatureTransition(
+                            fromFeature,
+                            Validity::End,
+                            toFeature,
+                            Validity::Start,
+                            7);
+
+    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    REQUIRE(geometry.geomType_ == GeomType::Line);
+    REQUIRE(geometry.points_.size() == 3);
+    REQUIRE(geometry.points_[2].x > 0.00021);
+    REQUIRE(
+        geometry.points_[1].geographicDistanceTo(geometry.points_[2]) >=
+        11.9);
+}
+
 TEST_CASE("Semantic feature transition validities prefer host geometry as midpoint", "[validity]") {
     auto modelPool = makeTile();
 

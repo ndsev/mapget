@@ -125,6 +125,8 @@ struct TransitionSegment
     Point inner_;
 };
 
+constexpr double kMinimumTransitionLegLengthMeters = 12.0;
+
 /** Compare two validity points with a small tolerance to absorb numeric noise. */
 bool pointsCoincide(Point const& left, Point const& right)
 {
@@ -151,28 +153,52 @@ std::optional<TransitionSegment> resolveTransitionSegment(
     auto outerIndex = innerIndex;
     auto const innerPoint = geometry->pointAt(innerIndex);
     if (connectedEnd == Validity::End) {
-        // Transition endpoints may be repeated at the tail, so walk backwards
-        // until the first distinct point to get a visible outgoing segment.
+        // Walk outwards until the leg is visually useful, rather than taking
+        // only a potentially tiny terminal segment. If the complete line is
+        // shorter than the target, retain its furthest distinct point.
         for (auto pointIndex = innerIndex; pointIndex-- > 0;) {
-            if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
-                outerIndex = pointIndex;
+            auto const candidate = geometry->pointAt(pointIndex);
+            if (pointsCoincide(candidate, innerPoint)) {
+                continue;
+            }
+            outerIndex = pointIndex;
+            if (innerPoint.geographicDistanceTo(candidate) >=
+                kMinimumTransitionLegLengthMeters)
+            {
                 break;
             }
         }
     } else {
-        // Likewise, repeated points at the head must be skipped when entering
-        // a transition from the start of a polyline.
+        // Likewise, grow a leg away from a connected start until it reaches
+        // the same visual minimum or the source geometry ends.
         for (auto pointIndex = innerIndex + 1U; pointIndex < numPoints; ++pointIndex) {
-            if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
-                outerIndex = pointIndex;
+            auto const candidate = geometry->pointAt(pointIndex);
+            if (pointsCoincide(candidate, innerPoint)) {
+                continue;
+            }
+            outerIndex = pointIndex;
+            if (innerPoint.geographicDistanceTo(candidate) >=
+                kMinimumTransitionLegLengthMeters)
+            {
                 break;
             }
         }
     }
-    return TransitionSegment{
-        geometry->pointAt(outerIndex),
-        innerPoint,
-    };
+    auto outerPoint = geometry->pointAt(outerIndex);
+    auto const resolvedLength =
+        innerPoint.geographicDistanceTo(outerPoint);
+    if (resolvedLength > 1.0e-6 &&
+        resolvedLength < kMinimumTransitionLegLengthMeters)
+    {
+        // A complete endpoint link can itself be shorter than the visual
+        // minimum. Keep the link's endpoint tangent, but extend it
+        // schematically so transition arrows remain legible.
+        outerPoint = Point{
+            innerPoint +
+            (outerPoint - innerPoint) *
+                (kMinimumTransitionLegLengthMeters / resolvedLength)};
+    }
+    return TransitionSegment{outerPoint, innerPoint};
 }
 
 /** Apply direction semantics to a resolved geometry after the shape has been computed. */
