@@ -464,6 +464,61 @@ uint32_t AttributeValidityEntry::validityCount() const
     return data_->validityCount_;
 }
 
+AttributeValidityEntry::GeometryDescriptionType
+AttributeValidityEntry::geometryDescriptionType() const
+{
+    return data_->geometryDescriptionType_;
+}
+
+bool AttributeValidityEntry::isFeatureTransition() const
+{
+    return geometryDescriptionType() == ValidityData::FeatureTransition;
+}
+
+model_ptr<FeatureId> AttributeValidityEntry::transitionFromFeatureId() const
+{
+    return isFeatureTransition()
+        ? model().resolve<FeatureId>(data_->transitionFromFeatureId_)
+        : model_ptr<FeatureId>{};
+}
+
+model_ptr<FeatureId> AttributeValidityEntry::transitionToFeatureId() const
+{
+    return isFeatureTransition()
+        ? model().resolve<FeatureId>(data_->transitionToFeatureId_)
+        : model_ptr<FeatureId>{};
+}
+
+std::optional<AttributeValidityEntry::TransitionEnd>
+AttributeValidityEntry::transitionFromConnectedEnd() const
+{
+    if (!isFeatureTransition()) {
+        return std::nullopt;
+    }
+    return (data_->transitionConnectedEnds_ & 0x1U) != 0
+        ? ValidityData::End
+        : ValidityData::Start;
+}
+
+std::optional<AttributeValidityEntry::TransitionEnd>
+AttributeValidityEntry::transitionToConnectedEnd() const
+{
+    if (!isFeatureTransition()) {
+        return std::nullopt;
+    }
+    return (data_->transitionConnectedEnds_ & 0x2U) != 0
+        ? ValidityData::End
+        : ValidityData::Start;
+}
+
+std::optional<uint32_t> AttributeValidityEntry::transitionPivotIndex() const
+{
+    return isFeatureTransition() &&
+        data_->transitionPivotIndex_ != InvalidTransitionPivotIndex
+        ? std::optional<uint32_t>{data_->transitionPivotIndex_}
+        : std::nullopt;
+}
+
 nlohmann::json AttributeValidityEntry::toJson() const
 {
     auto result = nlohmann::json::object({
@@ -479,6 +534,20 @@ nlohmann::json AttributeValidityEntry::toJson() const
     if (auto index = attributeIndex()) result["attributeIndex"] = *index;
     if (auto layer = attributeLayer()) result["attributeLayer"] = *layer;
     if (auto name = attributeName()) result["attributeName"] = *name;
+    if (isFeatureTransition()) {
+        auto const from = transitionFromFeatureId();
+        auto const to = transitionToFeatureId();
+        result["geometryDescriptionType"] = "feature-transition";
+        result["transitionFromFeatureId"] = from ? from->toString() : "";
+        result["transitionToFeatureId"] = to ? to->toString() : "";
+        result["transitionFromConnectedEnd"] =
+            transitionFromConnectedEnd() == ValidityData::End ? "end" : "start";
+        result["transitionToConnectedEnd"] =
+            transitionToConnectedEnd() == ValidityData::End ? "end" : "start";
+        if (auto pivot = transitionPivotIndex()) {
+            result["transitionPivotIndex"] = *pivot;
+        }
+    }
     return result;
 }
 
@@ -943,7 +1012,13 @@ model_ptr<AttributeValidityEntry> TileSubsetChannel::newAttributeValidityEntry(
     std::span<simfil::ModelNode::Ptr const> hostValues,
     std::span<simfil::ModelNode::Ptr const> values,
     std::optional<std::string_view> attributeLayer,
-    std::optional<std::string_view> attributeName)
+    std::optional<std::string_view> attributeName,
+    AttributeValidityEntry::GeometryDescriptionType geometryDescriptionType,
+    model_ptr<FeatureId> const& transitionFromFeatureId,
+    AttributeValidityEntry::TransitionEnd transitionFromConnectedEnd,
+    model_ptr<FeatureId> const& transitionToFeatureId,
+    AttributeValidityEntry::TransitionEnd transitionToConnectedEnd,
+    uint32_t transitionPivotIndex)
 {
     if (scope() != Scope::Attribute) {
         raise("Attribute-validity entries are valid only in attribute channels.");
@@ -970,7 +1045,13 @@ model_ptr<AttributeValidityEntry> TileSubsetChannel::newAttributeValidityEntry(
         hostValues,
         values,
         attributeLayer,
-        attributeName);
+        attributeName,
+        geometryDescriptionType,
+        transitionFromFeatureId,
+        transitionFromConnectedEnd,
+        transitionToFeatureId,
+        transitionToConnectedEnd,
+        transitionPivotIndex);
     arrayAt(model(), data_->attributeValidityEntries_)->append(entry);
     model().updateEntryStatistics();
     return entry;
@@ -1673,7 +1754,13 @@ model_ptr<AttributeValidityEntry> TileSubsetLayer::newAttributeValidityEntry(
     std::span<simfil::ModelNode::Ptr const> hostValues,
     std::span<simfil::ModelNode::Ptr const> values,
     std::optional<std::string_view> attributeLayer,
-    std::optional<std::string_view> attributeName)
+    std::optional<std::string_view> attributeName,
+    AttributeValidityEntry::GeometryDescriptionType geometryDescriptionType,
+    model_ptr<FeatureId> const& transitionFromFeatureId,
+    AttributeValidityEntry::TransitionEnd transitionFromConnectedEnd,
+    model_ptr<FeatureId> const& transitionToFeatureId,
+    AttributeValidityEntry::TransitionEnd transitionToConnectedEnd,
+    uint32_t transitionPivotIndex)
 {
     validateOwnedNode(featureId, "attribute-validity feature id");
     validateOwnedNode(geometry, "attribute-validity geometry");
@@ -1682,6 +1769,46 @@ model_ptr<AttributeValidityEntry> TileSubsetLayer::newAttributeValidityEntry(
             "Validity index {} is invalid for count {}.",
             validityIndex,
             validityCount);
+    }
+    simfil::ModelNodeAddress transitionFromAddress;
+    simfil::ModelNodeAddress transitionToAddress;
+    uint8_t transitionConnectedEnds = 0;
+    if (geometryDescriptionType == ValidityData::FeatureTransition) {
+        validateOwnedNode(
+            transitionFromFeatureId,
+            "attribute-validity transition source feature id");
+        validateOwnedNode(
+            transitionToFeatureId,
+            "attribute-validity transition target feature id");
+        if (!transitionFromFeatureId || !transitionToFeatureId ||
+            transitionPivotIndex ==
+                AttributeValidityEntry::InvalidTransitionPivotIndex)
+        {
+            raise(
+                "Feature-transition entries require source/target IDs and a pivot index.");
+        }
+        bool validPivot = false;
+        uint32_t lineCount = 0;
+        geometry->forEachGeometry([&](auto const& candidate) {
+            if (candidate && candidate->geomType() == GeomType::Line) {
+                ++lineCount;
+                validPivot = transitionPivotIndex < candidate->numPoints();
+            }
+            return true;
+        });
+        if (lineCount != 1 || !validPivot) {
+            raise(
+                "Feature-transition entries require one line and an in-range pivot index.");
+        }
+        transitionFromAddress = transitionFromFeatureId->addr();
+        transitionToAddress = transitionToFeatureId->addr();
+        transitionConnectedEnds = static_cast<uint8_t>(
+            static_cast<uint8_t>(transitionFromConnectedEnd) |
+            (static_cast<uint8_t>(transitionToConnectedEnd) << 1U));
+    }
+    else {
+        transitionPivotIndex =
+            AttributeValidityEntry::InvalidTransitionPivotIndex;
     }
     auto hostValueArray = newValueArray(hostValues);
     auto valueArray = newValueArray(values);
@@ -1698,9 +1825,14 @@ model_ptr<AttributeValidityEntry> TileSubsetLayer::newAttributeValidityEntry(
         valueArray->addr(),
         layerAddress,
         nameAddress,
+        transitionFromAddress,
+        transitionToAddress,
         attributeIndex,
         validityIndex,
         validityCount,
+        transitionPivotIndex,
+        geometryDescriptionType,
+        transitionConnectedEnds,
         hasValidity,
     });
     return AttributeValidityEntry(

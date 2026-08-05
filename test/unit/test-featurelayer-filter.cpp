@@ -89,6 +89,47 @@ TileFeatureLayer::Ptr makePointGroupSource(
     return source;
 }
 
+TileFeatureLayer::Ptr makeTransitionFilterSource()
+{
+    auto strings = std::make_shared<StringPool>("FilterPool");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId::fromTileXY(1, 0, 1),
+        strings->stringPoolId_,
+        "FilterMap",
+        filterLayerInfo(),
+        strings);
+    auto newRoad = [&](int64_t id, std::vector<Point> const& points) {
+        auto road = source->newFeature(
+            "Road",
+            {{"tileId", int64_t{1}}, {"roadId", id}});
+        auto geometry = source->newGeometry(GeomType::Line, points.size());
+        for (auto const& point : points) {
+            geometry->append(point);
+        }
+        road->addGeometry(geometry);
+        return road;
+    };
+    auto from = newRoad(1, {{11.0, 48.0, 0.0}, {11.001, 48.0, 0.0}});
+    auto to = newRoad(2, {{11.001, 48.0, 0.0}, {11.001, 48.001, 0.0}});
+    auto host = source->newFeature(
+        "Road",
+        {{"tileId", int64_t{1}}, {"roadId", int64_t{3}}});
+    auto pivot = source->newGeometry(GeomType::Points, 1);
+    pivot->append({11.001, 48.0, 0.0});
+    host->addGeometry(pivot);
+    host->attributeLayers()
+        ->newLayer("rules")
+        ->newAttribute("turn")
+        ->validity()
+        ->newFeatureTransition(
+            from,
+            ValidityData::End,
+            to,
+            ValidityData::Start,
+            7);
+    return source;
+}
+
 TileFeatureLayer::Ptr makeRelationSource()
 {
     auto strings =
@@ -318,6 +359,52 @@ TEST_CASE(
     REQUIRE(populatedEntry);
     REQUIRE(populatedEntry->featureId()->typeId() == "Road");
     REQUIRE(populatedEntry->featureId()->toString() == "Road.1.42");
+}
+
+TEST_CASE(
+    "Feature-layer filter preserves semantic transition metadata",
+    "[feature-layer-filter][transition]")
+{
+    auto result = filterFeatureLayer(
+        *makeTransitionFilterSource(),
+        FeatureLayerFilterRequest{
+            .filterId_ = "transition",
+            .generation_ = 1,
+            .channels_ = {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "transition-rule",
+                    .entryFilter_ = "true",
+                    .scope_ = FeatureLayerFilterScope::Attribute,
+                    .featureTypes_ = {"Road"},
+                    .geometryTypes_ = uint32_t{1}
+                        << static_cast<uint8_t>(GeomType::Line),
+                },
+            },
+        });
+    REQUIRE(result);
+    REQUIRE(result->layer_);
+    auto channel = result->layer_->at(0);
+    REQUIRE(channel->attributeValidityEntryCount() == 1);
+    model_ptr<AttributeValidityEntry> entry;
+    REQUIRE(channel->forEachAttributeValidityEntry([&](auto const& value) {
+        entry = value;
+        return true;
+    }));
+    REQUIRE(entry);
+    REQUIRE(entry->isFeatureTransition());
+    REQUIRE(entry->transitionFromFeatureId()->toString() == "Road.1.1");
+    REQUIRE(entry->transitionToFeatureId()->toString() == "Road.1.2");
+    REQUIRE(entry->transitionFromConnectedEnd() == ValidityData::End);
+    REQUIRE(entry->transitionToConnectedEnd() == ValidityData::Start);
+    REQUIRE(entry->transitionPivotIndex().has_value());
+    model_ptr<Geometry> line;
+    entry->geometry()->forEachGeometry([&](auto const& value) {
+        line = value;
+        return false;
+    });
+    REQUIRE(line);
+    REQUIRE(line->numPoints() >= 5);
+    REQUIRE(*entry->transitionPivotIndex() < line->numPoints());
 }
 
 TEST_CASE(

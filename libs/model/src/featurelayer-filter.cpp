@@ -1268,8 +1268,13 @@ model_ptr<GeometryCollection> copyAttributeGeometry(
     TileSubsetLayer& target,
     AttributeCandidate const& candidate,
     ChannelState const& channel,
-    IssueAccumulator& issues)
+    IssueAccumulator& issues,
+    uint32_t* transitionPivotIndex)
 {
+    if (transitionPivotIndex) {
+        *transitionPivotIndex =
+            AttributeValidityEntry::InvalidTransitionPivotIndex;
+    }
     if (!candidate.hasValidity_ || !candidate.validity_) {
         return copyGeometryCollection(
             target,
@@ -1280,9 +1285,12 @@ model_ptr<GeometryCollection> copyAttributeGeometry(
 
     std::string error;
     try {
+        uint32_t computedTransitionPivotIndex =
+            AttributeValidityEntry::InvalidTransitionPivotIndex;
         auto computed = candidate.validity_->computeGeometry(
             candidate.feature_->geomOrNull(),
-            &error);
+            &error,
+            &computedTransitionPivotIndex);
         if (!error.empty()) {
             issues.add(
                 channel.definition_.channelId_,
@@ -1290,12 +1298,22 @@ model_ptr<GeometryCollection> copyAttributeGeometry(
                 Scope::Attribute,
                 error);
         }
-        return copySelfContainedGeometry(
+        auto copied = copySelfContainedGeometry(
             target,
             computed,
             candidate.validity_->geometryName(),
             channel.definition_.geometryTypes_,
             channel.definition_.geometryName_);
+        bool retainedTransitionLine = false;
+        copied->forEachGeometry([&](auto const& geometry) {
+            retainedTransitionLine =
+                geometry && geometry->geomType() == GeomType::Line;
+            return !retainedTransitionLine;
+        });
+        if (transitionPivotIndex && retainedTransitionLine) {
+            *transitionPivotIndex = computedTransitionPivotIndex;
+        }
+        return copied;
     }
     catch (std::exception const& exception) {
         issues.add(
@@ -1361,9 +1379,50 @@ void materializeChannel(
         auto entryValues = materializeValues(
             target,
             candidate.entryValues_);
+        uint32_t transitionPivotIndex =
+            AttributeValidityEntry::InvalidTransitionPivotIndex;
+        auto geometry = copyAttributeGeometry(
+            target,
+            candidate,
+            channel,
+            issues,
+            &transitionPivotIndex);
+        auto geometryDescriptionType = candidate.hasValidity_ &&
+                candidate.validity_
+            ? candidate.validity_->geometryDescriptionType()
+            : ValidityData::NoGeometry;
+        model_ptr<FeatureId> transitionFromFeatureId;
+        model_ptr<FeatureId> transitionToFeatureId;
+        auto transitionFromConnectedEnd = ValidityData::Start;
+        auto transitionToConnectedEnd = ValidityData::Start;
+        if (geometryDescriptionType == ValidityData::FeatureTransition) {
+            if (transitionPivotIndex !=
+                AttributeValidityEntry::InvalidTransitionPivotIndex)
+            {
+                auto const from =
+                    candidate.validity_->transitionFromFeatureId();
+                auto const to =
+                    candidate.validity_->transitionToFeatureId();
+                auto const fromEnd =
+                    candidate.validity_->transitionFromConnectedEnd();
+                auto const toEnd =
+                    candidate.validity_->transitionToConnectedEnd();
+                if (from && to && fromEnd && toEnd) {
+                    transitionFromFeatureId = copyFeatureId(target, from);
+                    transitionToFeatureId = copyFeatureId(target, to);
+                    transitionFromConnectedEnd = *fromEnd;
+                    transitionToConnectedEnd = *toEnd;
+                }
+            }
+            if (!transitionFromFeatureId || !transitionToFeatureId) {
+                geometryDescriptionType = ValidityData::NoGeometry;
+                transitionPivotIndex =
+                    AttributeValidityEntry::InvalidTransitionPivotIndex;
+            }
+        }
         channel.output_->newAttributeValidityEntry(
             copyFeatureId(target, candidate.feature_->id()),
-            copyAttributeGeometry(target, candidate, channel, issues),
+            geometry,
             candidate.attributeIndex_,
             candidate.hasValidity_,
             candidate.validityIndex_,
@@ -1371,7 +1430,13 @@ void materializeChannel(
             hostValues,
             entryValues,
             candidate.attributeLayer_,
-            candidate.attribute_->name());
+            candidate.attribute_->name(),
+            geometryDescriptionType,
+            transitionFromFeatureId,
+            transitionFromConnectedEnd,
+            transitionToFeatureId,
+            transitionToConnectedEnd,
+            transitionPivotIndex);
     }
 }
 

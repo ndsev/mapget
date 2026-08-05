@@ -42,6 +42,23 @@ model_ptr<GeometryCollection> pointGeometry(
     return collection;
 }
 
+model_ptr<GeometryCollection> transitionGeometry(TileSubsetLayer& layer)
+{
+    auto collection = layer.newGeometryCollection(1, true);
+    auto geometry = layer.newGeometry(GeomType::Line, 5, true);
+    for (auto const& point : {
+             Point{0.0, 0.0, 0.0},
+             Point{1.0, 0.0, 0.0},
+             Point{1.0, 0.0, 0.0},
+             Point{1.0, 0.0, 0.0},
+             Point{1.0, 1.0, 0.0}})
+    {
+        geometry->append(point);
+    }
+    collection->addGeometry(geometry);
+    return collection;
+}
+
 } // namespace
 
 TEST_CASE(
@@ -309,4 +326,68 @@ TEST_CASE(
     reader.read(framedBytes);
     REQUIRE(streamed);
     REQUIRE(streamed->toJson() == subset->toJson());
+}
+
+TEST_CASE(
+    "TileSubsetLayer round-trips semantic transition metadata",
+    "[test.subsetlayer][transition]")
+{
+    auto info = subsetLayerInfo();
+    auto strings = std::make_shared<StringPool>("TransitionSubset");
+    auto subset = std::make_shared<TileSubsetLayer>(
+        TileId::fromWgs84(11.0, 42.0, 13),
+        "TransitionSubset",
+        "TestMap",
+        info,
+        strings);
+    auto host = subset->newFeatureId("Road", {{"roadId", int64_t{3}}});
+    auto from = subset->newFeatureId("Road", {{"roadId", int64_t{1}}});
+    auto to = subset->newFeatureId("Road", {{"roadId", int64_t{2}}});
+    auto channel = subset->newChannel(
+        "transition-rule",
+        Scope::Attribute,
+        1U << static_cast<uint8_t>(GeomType::Line),
+        std::nullopt);
+    auto entry = channel->newAttributeValidityEntry(
+        host,
+        transitionGeometry(*subset),
+        0,
+        true,
+        0,
+        1,
+        {},
+        {},
+        "rules",
+        "turn",
+        ValidityData::FeatureTransition,
+        from,
+        ValidityData::End,
+        to,
+        ValidityData::Start,
+        2);
+    REQUIRE(entry->isFeatureTransition());
+    REQUIRE(entry->transitionFromFeatureId()->toString() == "Road.1");
+    REQUIRE(entry->transitionToFeatureId()->toString() == "Road.2");
+    REQUIRE(entry->transitionFromConnectedEnd() == ValidityData::End);
+    REQUIRE(entry->transitionToConnectedEnd() == ValidityData::Start);
+    REQUIRE(entry->transitionPivotIndex() == 2);
+
+    std::stringstream output;
+    REQUIRE(subset->write(output).has_value());
+    auto const serialized = output.str();
+    auto parsed = std::make_shared<TileSubsetLayer>(
+        std::vector<uint8_t>(serialized.begin(), serialized.end()),
+        [&](auto const&, auto const&) { return info; },
+        [&](auto const&) { return strings; });
+    auto parsedEntry = model_ptr<AttributeValidityEntry>{};
+    REQUIRE_FALSE(parsed->at(0)->forEachAttributeValidityEntry(
+        [&](auto const& candidate) {
+            parsedEntry = candidate;
+            return false;
+        }));
+    REQUIRE(parsedEntry);
+    REQUIRE(parsedEntry->isFeatureTransition());
+    REQUIRE(parsedEntry->transitionFromFeatureId()->toString() == "Road.1");
+    REQUIRE(parsedEntry->transitionToFeatureId()->toString() == "Road.2");
+    REQUIRE(parsedEntry->transitionPivotIndex() == 2);
 }

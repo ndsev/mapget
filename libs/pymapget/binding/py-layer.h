@@ -182,7 +182,30 @@ inline void bindSubsetNodes(py::module_& m)
         })
         .def("validity_count", [](BoundAttributeValidityEntry& self) {
             return self.modelNodePtr_->validityCount();
-        });
+        })
+        .def("geometry_description_type", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->geometryDescriptionType();
+        }, "Return the semantic validity geometry representation retained by this entry.")
+        .def("is_feature_transition", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->isFeatureTransition();
+        }, "Return whether this entry contains complete feature-transition metadata.")
+        .def("transition_from_feature_id", [](BoundAttributeValidityEntry& self) -> py::object {
+            auto id = self.modelNodePtr_->transitionFromFeatureId();
+            return id ? py::cast(BoundFeatureId(id)) : py::none();
+        }, "Return the incoming transition feature ID, or None for non-transition entries.")
+        .def("transition_to_feature_id", [](BoundAttributeValidityEntry& self) -> py::object {
+            auto id = self.modelNodePtr_->transitionToFeatureId();
+            return id ? py::cast(BoundFeatureId(id)) : py::none();
+        }, "Return the outgoing transition feature ID, or None for non-transition entries.")
+        .def("transition_from_connected_end", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->transitionFromConnectedEnd();
+        }, "Return the connected endpoint on the incoming feature, or None.")
+        .def("transition_to_connected_end", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->transitionToConnectedEnd();
+        }, "Return the connected endpoint on the outgoing feature, or None.")
+        .def("transition_pivot_index", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->transitionPivotIndex();
+        }, "Return the line-point index separating incoming and outgoing geometry, or None.");
 
     py::class_<BoundRelationEntry, BoundModelNode>(
         m,

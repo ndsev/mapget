@@ -15,6 +15,7 @@
 #include "featureid.h"
 #include "featuremodellayer.h"
 #include "geometry.h"
+#include "validity-data.h"
 #include "simfil/diagnostics.h"
 #include "simfil/environment.h"
 
@@ -189,11 +190,18 @@ class AttributeValidityEntry : public simfil::MandatoryDerivedModelNodeBase<Tile
 public:
     friend class TileSubsetLayer;
 
+    /** Sentinel used when an attribute candidate has no source-array index. */
     static constexpr uint32_t InvalidAttributeIndex = std::numeric_limits<uint32_t>::max();
+    /** Sentinel used when geometry has no semantic transition split point. */
+    static constexpr uint32_t InvalidTransitionPivotIndex = std::numeric_limits<uint32_t>::max();
+    /** Semantic validity geometry representation retained by the subset entry. */
+    using GeometryDescriptionType = ValidityData::GeometryDescriptionType;
+    /** Connected endpoint of a feature participating in a transition. */
+    using TransitionEnd = ValidityData::TransitionEnd;
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(40);
+        MODEL_COLUMN_TYPE(52);
 
         simfil::ModelNodeAddress featureId_{};
         simfil::ModelNodeAddress geometry_{};
@@ -201,9 +209,14 @@ public:
         simfil::ModelNodeAddress values_{};
         simfil::ModelNodeAddress attributeLayer_{};
         simfil::ModelNodeAddress attributeName_{};
+        simfil::ModelNodeAddress transitionFromFeatureId_{};
+        simfil::ModelNodeAddress transitionToFeatureId_{};
         uint32_t attributeIndex_ = InvalidAttributeIndex;
         uint32_t validityIndex_ = 0;
         uint32_t validityCount_ = 1;
+        uint32_t transitionPivotIndex_ = InvalidTransitionPivotIndex;
+        GeometryDescriptionType geometryDescriptionType_ = ValidityData::NoGeometry;
+        uint8_t transitionConnectedEnds_ = 0;
         bool hasValidity_ = false;
     };
 
@@ -217,6 +230,20 @@ public:
     [[nodiscard]] bool hasValidity() const;
     [[nodiscard]] uint32_t validityIndex() const;
     [[nodiscard]] uint32_t validityCount() const;
+    /** Return the semantic kind represented by the materialized geometry. */
+    [[nodiscard]] GeometryDescriptionType geometryDescriptionType() const;
+    /** Return whether this entry carries complete feature-transition metadata. */
+    [[nodiscard]] bool isFeatureTransition() const;
+    /** Return the incoming feature ID for a semantic transition, if present. */
+    [[nodiscard]] model_ptr<FeatureId> transitionFromFeatureId() const;
+    /** Return the outgoing feature ID for a semantic transition, if present. */
+    [[nodiscard]] model_ptr<FeatureId> transitionToFeatureId() const;
+    /** Return the connected endpoint on the incoming transition feature. */
+    [[nodiscard]] std::optional<TransitionEnd> transitionFromConnectedEnd() const;
+    /** Return the connected endpoint on the outgoing transition feature. */
+    [[nodiscard]] std::optional<TransitionEnd> transitionToConnectedEnd() const;
+    /** Return the line-point index separating incoming and outgoing geometry. */
+    [[nodiscard]] std::optional<uint32_t> transitionPivotIndex() const;
     [[nodiscard]] nlohmann::json toJson() const override;
 
 protected:
@@ -388,6 +415,7 @@ public:
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
         std::span<simfil::ModelNode::Ptr const> values = {});
+    /** Add one attribute candidate, retaining semantic transition metadata when supplied. */
     model_ptr<AttributeValidityEntry> newAttributeValidityEntry(
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
@@ -398,7 +426,17 @@ public:
         std::span<simfil::ModelNode::Ptr const> hostValues = {},
         std::span<simfil::ModelNode::Ptr const> values = {},
         std::optional<std::string_view> attributeLayer = std::nullopt,
-        std::optional<std::string_view> attributeName = std::nullopt);
+        std::optional<std::string_view> attributeName = std::nullopt,
+        AttributeValidityEntry::GeometryDescriptionType geometryDescriptionType =
+            ValidityData::NoGeometry,
+        model_ptr<FeatureId> const& transitionFromFeatureId = {},
+        AttributeValidityEntry::TransitionEnd transitionFromConnectedEnd =
+            ValidityData::Start,
+        model_ptr<FeatureId> const& transitionToFeatureId = {},
+        AttributeValidityEntry::TransitionEnd transitionToConnectedEnd =
+            ValidityData::Start,
+        uint32_t transitionPivotIndex =
+            AttributeValidityEntry::InvalidTransitionPivotIndex);
     model_ptr<RelationEntry> newRelationEntry(
         std::string_view relationId,
         std::string_view name,
@@ -537,6 +575,7 @@ public:
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
         std::span<simfil::ModelNode::Ptr const> values = {});
+    /** Add one attribute candidate, retaining semantic transition metadata when supplied. */
     model_ptr<AttributeValidityEntry> newAttributeValidityEntry(
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
@@ -547,7 +586,17 @@ public:
         std::span<simfil::ModelNode::Ptr const> hostValues = {},
         std::span<simfil::ModelNode::Ptr const> values = {},
         std::optional<std::string_view> attributeLayer = std::nullopt,
-        std::optional<std::string_view> attributeName = std::nullopt);
+        std::optional<std::string_view> attributeName = std::nullopt,
+        AttributeValidityEntry::GeometryDescriptionType geometryDescriptionType =
+            ValidityData::NoGeometry,
+        model_ptr<FeatureId> const& transitionFromFeatureId = {},
+        AttributeValidityEntry::TransitionEnd transitionFromConnectedEnd =
+            ValidityData::Start,
+        model_ptr<FeatureId> const& transitionToFeatureId = {},
+        AttributeValidityEntry::TransitionEnd transitionToConnectedEnd =
+            ValidityData::Start,
+        uint32_t transitionPivotIndex =
+            AttributeValidityEntry::InvalidTransitionPivotIndex);
     model_ptr<RelationEntry> newRelationEntry(
         std::string_view relationId,
         std::string_view name,
