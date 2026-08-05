@@ -19,6 +19,9 @@ namespace mapget {
 class HttpServer
 {
 public:
+    /** Default maximum time allowed for the listener to become ready. */
+    static constexpr uint32_t DefaultStartupWaitMs = 5000;
+
     /**
      * Launch the server in its own thread.
      * Use the stop-function to stop the thread.
@@ -35,7 +38,7 @@ public:
      */
     void go(std::string const& interfaceAddr = "0.0.0.0",
        uint16_t port = 0,
-       uint32_t waitMs = 100);
+       uint32_t waitMs = DefaultStartupWaitMs);
 
     /**
      * Returns true if the server is currently running.

@@ -435,7 +435,9 @@ bool isGetConfigEndpointEnabled_ = true;
 
 struct ServeCommand
 {
+    std::string host_ = "0.0.0.0";
     int port_ = 0;
+    uint32_t waitMs_ = HttpServer::DefaultStartupWaitMs;
     std::vector<std::string> datasourceHosts_;
     std::vector<std::string> datasourceExecutables_;
     std::string cacheType_;
@@ -452,16 +454,28 @@ struct ServeCommand
     bool noLocation_ = false;
     std::string locationDbPath_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
+    ServeStartedCallback startedCallback_;
     CLI::App& app_;
 
-    explicit ServeCommand(CLI::App& app) : app_(app)
+    explicit ServeCommand(CLI::App& app, ServeStartedCallback startedCallback)
+        : startedCallback_(std::move(startedCallback)), app_(app)
     {
         auto serveCmd = app.add_subcommand("serve", "Starts the server.");
+        serveCmd->add_option(
+            "--host",
+            host_,
+            "Local address to bind the server to. Default is 0.0.0.0 (all IPv4 interfaces).")
+            ->default_val(host_);
         serveCmd->add_option(
             "-p,--port",
             port_,
             "Port to start the server on. Default is 0.")
             ->default_val("0");
+        serveCmd->add_option(
+            "--wait-ms",
+            waitMs_,
+            "Maximum milliseconds to wait for the HTTP listener to start.")
+            ->default_val(waitMs_);
         CLI::deprecate_option(serveCmd->add_option(
             "-d,--datasource-host",
             datasourceHosts_,
@@ -542,6 +556,12 @@ struct ServeCommand
 
     void serve()
     {
+        if (host_.empty()) {
+            raise("Host must not be empty.");
+        }
+        if (waitMs_ == 0) {
+            raise("Server startup wait must be at least 1 ms.");
+        }
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
         }
@@ -550,7 +570,7 @@ struct ServeCommand
         }
         setPostConfigEndpointEnabled(allowPostConfigEndpoint_);
         setGetConfigEndpointEnabled(!noGetConfigEndpoint_);
-        log().info("Starting server on port {}.", port_);
+        log().info("Starting server on {}:{}.", host_, port_);
 
         std::shared_ptr<Cache> cache;
         if (cacheType_ == "rocksdb") {
@@ -663,7 +683,10 @@ struct ServeCommand
             }
         }
 
-        srv.go("0.0.0.0", port_);
+        srv.go(host_, port_, waitMs_);
+        if (startedCallback_) {
+            startedCallback_(host_, srv.port());
+        }
         srv.waitForSignal();
     }
 };
@@ -740,7 +763,11 @@ struct FetchCommand
 };
 
 std::string pathToSchema = "";
-int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand, std::function<void(CLI::App&)> additionalCommandLineSetupFun)
+int runFromCommandLine(
+    std::vector<std::string> args,
+    bool requireSubcommand,
+    std::function<void(CLI::App&)> additionalCommandLineSetupFun,
+    ServeStartedCallback serveStartedCallback)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     std::string log_level_;
@@ -767,7 +794,7 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand, st
         mapget::setLogLevel(log_level_, log());
     }
 
-    ServeCommand serveCommand(app);
+    ServeCommand serveCommand(app, std::move(serveStartedCallback));
     FetchCommand fetchCommand(app);
 
     if (additionalCommandLineSetupFun) {

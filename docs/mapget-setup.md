@@ -41,9 +41,14 @@ A minimal example that serves data from a local datasource executable might look
 
 ```bash
 mapget serve \
+  --host 127.0.0.1 \
   --port 8080 \
   --datasource-exe cpp-sample-http-datasource
 ```
+
+`--host` selects the local address on which the HTTP server listens. It defaults to `0.0.0.0`, which exposes the server on every IPv4 interface. Use `--host 127.0.0.1` for a loopback-only service, or provide a specific local IPv4 or IPv6 address to restrict the listener to that interface.
+
+Mapget waits up to 5000 milliseconds for the HTTP listener to become ready. On unusually slow systems, `--wait-ms` can increase this startup-only timeout; it does not affect request timeouts.
 
 In most setups you will instead point mapget at a YAML configuration file which describes your datasources. The `--config` option is shared between all subcommands and accepts the path to such a file:
 
@@ -59,6 +64,7 @@ When `--config` is used, the HTTP service subscribes to the referenced YAML file
 
 ```bash
 mapget serve \
+  --host 127.0.0.1 \
   --port 8080 \
   --webapp /srv/my-ui \
   --static-mount /assets:/srv/assets

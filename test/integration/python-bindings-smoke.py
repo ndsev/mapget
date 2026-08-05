@@ -118,7 +118,7 @@ def main() -> int:
     datasource.on_locate_request(locate)
     datasource.on_cache_expired(on_cache_expired)
 
-    datasource.go("127.0.0.1", 0, 1000)
+    datasource.go("127.0.0.1")
     try:
         base_url = f"http://127.0.0.1:{datasource.port()}"
 

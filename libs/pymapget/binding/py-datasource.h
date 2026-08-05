@@ -459,12 +459,13 @@ void bindDataSourceServer(py::module_& m)
             &DataSourceServer::go,
             py::arg("interfaceAddr") = "0.0.0.0",
             py::arg("port") = 0,
-            py::arg("waitMs") = 100,
+            py::arg("waitMs") = DataSourceServer::DefaultStartupWaitMs,
             R"pbdoc(
             Launch the DataSource server in its own thread. Use the stop-function to
             stop the thread. The server will also be stopped automatically, if the
             DataSource object is destroyed. An exception will be thrown if this
-            instance is already running, or if the server fails to launch within waitMs.
+            instance is already running, or if the server fails to launch within
+            waitMs. The default startup wait is 5000 milliseconds.
         )pbdoc")
         .def(
             "is_running",

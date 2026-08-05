@@ -365,7 +365,9 @@ All of `mapget serve`’s command-line switches can be persisted in the same YAM
 ```yaml
 mapget:
   serve:
+    host: 127.0.0.1             # --host (default 0.0.0.0, all IPv4 interfaces)
     port: 9000                  # --port
+    wait-ms: 5000               # --wait-ms, listener startup timeout
     cache-type: persistent      # --cache-type [memory|persistent|none]
     cache-dir: /var/lib/mapget/cache.db   # --cache-dir (used with persistent cache)
     cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
@@ -382,7 +384,7 @@ http-settings: ...
 sources: ...
 ```
 
-Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
+Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, host `0.0.0.0`, port 0, a 5000 ms startup wait, in-memory cache, GET `/config` enabled, and POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
 
 Datasource editor visibility is controlled by `allow-post-config` and `no-get-config`:
 

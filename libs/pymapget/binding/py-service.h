@@ -37,9 +37,10 @@ void bindHttpService(py::module_& m)
         .def("go", &HttpService::go,
              py::arg("interface") = "0.0.0.0",
              py::arg("port") = 0,
-             py::arg("wait_ms") = 100,
+             py::arg("wait_ms") = HttpService::DefaultStartupWaitMs,
              R"pbdoc(
-                Launch the HttpService server in its own thread.
+                Launch the HttpService server in its own thread. The default
+                startup wait is 5000 milliseconds.
             )pbdoc")
         .def("is_running", &HttpService::isRunning,
              R"pbdoc(

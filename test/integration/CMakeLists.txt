@@ -43,7 +43,7 @@ if (NOT WITH_COVERAGE)
       -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./cpp-sample-http-datasource $DATASOURCE_CPP_PORT"
 
       # Run service
-      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace serve -p $MAPGET_SERVER_PORT -d 127.0.0.1:$DATASOURCE_CPP_PORT -d 127.0.0.1:$DATASOURCE_PY_PORT"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace serve --host 127.0.0.1 --wait-ms 5000 -p $MAPGET_SERVER_PORT -d 127.0.0.1:$DATASOURCE_CPP_PORT -d 127.0.0.1:$DATASOURCE_PY_PORT"
 
       # Request from cpp datasource
       -f "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace fetch -s 127.0.0.1:$MAPGET_SERVER_PORT -m Tropico -l WayLayer -t 65536"
