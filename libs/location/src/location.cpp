@@ -14,8 +14,8 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h>
+#else
+#include <dlfcn.h>
 #endif
 
 #include "mapget/log.h"
@@ -29,6 +29,7 @@ namespace
 
 constexpr uint32_t kHardMaxLimit = 50;
 constexpr std::string_view kSourceName = "geonames-cities5000";
+int kModuleAnchor = 0;
 
 /** Trim leading and trailing ASCII whitespace before building an FTS query. */
 std::string trim(std::string_view value)
@@ -84,27 +85,32 @@ std::string buildFtsPrefixQuery(std::string_view input)
     return query.str();
 }
 
-/** Resolve the directory that contains the current process executable. */
-std::filesystem::path executableDirectory()
+/** Resolve the binary module containing this implementation. */
+std::filesystem::path moduleDirectory()
 {
 #ifdef _WIN32
-    std::wstring buffer(MAX_PATH, L'\0');
-    if (auto size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size())); size > 0) {
-        buffer.resize(size);
-        return std::filesystem::path(buffer).parent_path();
+    HMODULE module = nullptr;
+    auto flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(&kModuleAnchor), &module)) {
+        std::wstring buffer(256, L'\0');
+        while (buffer.size() <= 32768) {
+            auto size = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (size == 0) {
+                break;
+            }
+            // A full buffer means the path was truncated; retry for long
+            // virtual-environment and package installation paths.
+            if (size < buffer.size()) {
+                buffer.resize(size);
+                return std::filesystem::path(buffer).parent_path();
+            }
+            buffer.resize(buffer.size() * 2);
+        }
     }
-#elif defined(__APPLE__)
-    uint32_t size = 0;
-    _NSGetExecutablePath(nullptr, &size);
-    std::string buffer(size, '\0');
-    if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
-        return std::filesystem::weakly_canonical(std::filesystem::path(buffer)).parent_path();
-    }
-#elif defined(__linux__)
-    std::error_code ec;
-    auto path = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec && !path.empty()) {
-        return path.parent_path();
+#else
+    Dl_info info{};
+    if (dladdr(&kModuleAnchor, &info) != 0 && info.dli_fname && *info.dli_fname) {
+        return std::filesystem::path(info.dli_fname).parent_path();
     }
 #endif
     return std::filesystem::current_path();
@@ -275,7 +281,7 @@ std::vector<LocationMatch> SqliteLocationLookup::search(std::string_view name, u
 
 std::filesystem::path defaultLocationDatabasePath()
 {
-    return executableDirectory() / "geonames-cities5000.sqlite";
+    return moduleDirectory() / "geonames-cities5000.sqlite";
 }
 
 }  // namespace mapget

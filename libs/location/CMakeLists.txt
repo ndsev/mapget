@@ -17,7 +17,9 @@ target_link_libraries(mapget-location
   PUBLIC
     mapget-log
     nlohmann_json::nlohmann_json
-    SQLite::SQLite3)
+    SQLite::SQLite3
+  PRIVATE
+    ${CMAKE_DL_LIBS})
 
 if (MSVC)
   target_compile_definitions(mapget-location
@@ -86,6 +88,12 @@ if (MAPGET_BUNDLE_GEONAMES_LOCATION_DB)
       DEPENDS
         "${MAPGET_LOCATION_DB}"
         "${MAPGET_LOCATION_README}")
+
+    # Consumers such as the Python wheel can bundle the generated files without
+    # duplicating knowledge of their deployment paths.
+    set_property(TARGET mapget-location-database PROPERTY
+      MAPGET_LOCATION_DEPLOY_FILES
+      "${MAPGET_LOCATION_DB};${MAPGET_LOCATION_README}")
   else()
     message(WARNING "GeoNames cities5000 data not found; bundled location database target was not created.")
   endif()

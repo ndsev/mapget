@@ -29,6 +29,13 @@ target_compile_features(pymapget
     cxx_std_20)
 
 set(DEPLOY_FILES "${CMAKE_CURRENT_LIST_DIR}/__main__.py")
+if (TARGET mapget-location-database)
+  get_target_property(
+    MAPGET_LOCATION_DEPLOY_FILES
+    mapget-location-database
+    MAPGET_LOCATION_DEPLOY_FILES)
+  list(APPEND DEPLOY_FILES ${MAPGET_LOCATION_DEPLOY_FILES})
+endif()
 
 add_wheel(pymapget
   NAME mapget
@@ -40,3 +47,9 @@ add_wheel(pymapget
   MODULE_DEPENDENCIES ndslive-math
   LICENSE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE"
   DEPLOY_FILES ${DEPLOY_FILES})
+
+if (TARGET mapget-location-database)
+  # The generated database must exist before python-cmake-wheel copies package
+  # resources into its staging directory.
+  add_dependencies(pymapget-copy-files mapget-location-database)
+endif()

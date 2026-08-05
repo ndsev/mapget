@@ -541,7 +541,7 @@ struct ServeCommand
         serveCmd->add_option(
             "--location-db",
             locationDbPath_,
-            "Path to the SQLite location database. Defaults to geonames-cities5000.sqlite next to the executable.");
+            "Path to the SQLite location database. Defaults to the bundled database next to the mapget binary module.");
         serveCmd->add_option(
             "--location-max-limit",
             locationMaxLimit_,

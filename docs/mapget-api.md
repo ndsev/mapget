@@ -399,7 +399,9 @@ normal cache/coalescing path and returns concrete primary feature identities.
 
 `/location?name=munich&limit=10` searches the configured place-name database.
 Results contain `name`, WGS84 `lonLat`, and an `aabb`. The endpoint returns
-`503` when no location database is available.
+`503` when no location database is available. Native deployments and the
+Python wheel bundle the default GeoNames database beside their mapget binary;
+`mapget serve --location-db` can select a different SQLite database.
 
 ## `GET /status` and `GET /status-data`
 
