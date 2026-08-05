@@ -135,10 +135,13 @@ public:
      *   If an error string was passed, then it would be set to an error message.
      * - A vector containing a single point, if the validity resolved to a point geometry.
      * - A vector containing more than one point, if the validity resolved to a poly-line.
+     * For feature transitions, transitionPivotIndex receives the point that
+     * separates the incoming and outgoing road slices when provided.
      */
      SelfContainedGeometry computeGeometry(
          model_ptr<GeometryCollection> geometryCollection,
-         std::string* error=nullptr) const;
+         std::string* error=nullptr,
+         uint32_t* transitionPivotIndex=nullptr) const;
 
 protected:
     using Data = ValidityData;

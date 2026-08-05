@@ -726,15 +726,24 @@ TEST_CASE("Semantic feature transition validities compute transition geometry", 
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
+    REQUIRE(geometry.points_.size() == 5);
+    REQUIRE(pivot == 2);
     REQUIRE(geometry.points_[1] == Point{1.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[2] == Point{1.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[3] == Point{1.0, 0.0, 0.0});
+    REQUIRE_THAT(
+        geometry.points_[0].geographicDistanceTo(geometry.points_[1]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
+    REQUIRE_THAT(
+        geometry.points_[3].geographicDistanceTo(geometry.points_[4]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
 }
 
-TEST_CASE("Semantic feature transition validities skip duplicate endpoint points", "[validity]") {
+TEST_CASE("Semantic feature transition validities ignore duplicate source vertices", "[validity]") {
     auto modelPool = makeTile();
 
     auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
@@ -761,12 +770,18 @@ TEST_CASE("Semantic feature transition validities skip duplicate endpoint points
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[1] == Point{1.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+    REQUIRE(geometry.points_.size() == 5);
+    REQUIRE(pivot == 2);
+    REQUIRE_THAT(
+        geometry.points_[0].geographicDistanceTo(geometry.points_[1]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
+    REQUIRE_THAT(
+        geometry.points_[3].geographicDistanceTo(geometry.points_[4]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
 }
 
 TEST_CASE("Semantic feature transition validities extend short endpoint legs", "[validity]") {
@@ -796,14 +811,26 @@ TEST_CASE("Semantic feature transition validities extend short endpoint legs", "
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
-    REQUIRE_THAT(geometry.points_[1].x, Catch::Matchers::WithinAbs(0.00020, 2e-6));
-    REQUIRE_THAT(geometry.points_[1].y, Catch::Matchers::WithinAbs(0.0, 2e-6));
-    REQUIRE_THAT(geometry.points_[2].x, Catch::Matchers::WithinAbs(0.00040, 2e-6));
-    REQUIRE_THAT(geometry.points_[2].y, Catch::Matchers::WithinAbs(0.0, 2e-6));
+    REQUIRE(geometry.points_.size() == 7);
+    REQUIRE(pivot == 3);
+    REQUIRE(geometry.points_[1] == fromGeometry->pointAt(1));
+    REQUIRE(geometry.points_[2] == fromGeometry->pointAt(2));
+    REQUIRE(geometry.points_[4] == toGeometry->pointAt(0));
+    REQUIRE(geometry.points_[5] == toGeometry->pointAt(1));
+    auto polylineLength = [&](size_t begin, size_t end) {
+        double result = 0.0;
+        for (auto index = begin + 1; index <= end; ++index) {
+            result += geometry.points_[index - 1]
+                .geographicDistanceTo(geometry.points_[index]);
+        }
+        return result;
+    };
+    REQUIRE_THAT(polylineLength(0, pivot - 1), Catch::Matchers::WithinAbs(10.0, 1e-3));
+    REQUIRE_THAT(polylineLength(pivot + 1, geometry.points_.size() - 1), Catch::Matchers::WithinAbs(10.0, 1e-3));
 }
 
 TEST_CASE("Semantic feature transition validities extrapolate short endpoint links", "[validity]") {
@@ -831,13 +858,18 @@ TEST_CASE("Semantic feature transition validities extrapolate short endpoint lin
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[2].x > 0.00021);
+    REQUIRE(geometry.points_.size() == 6);
+    REQUIRE(pivot == 2);
+    REQUIRE(geometry.points_[4] == toGeometry->pointAt(1));
+    REQUIRE(geometry.points_[5].x > toGeometry->pointAt(1).x);
     REQUIRE(
-        geometry.points_[1].geographicDistanceTo(geometry.points_[2]) >=
-        11.9);
+        geometry.points_[3].geographicDistanceTo(geometry.points_[4]) +
+        geometry.points_[4].geographicDistanceTo(geometry.points_[5]) >=
+        9.99);
 }
 
 TEST_CASE("Semantic feature transition validities prefer host geometry as midpoint", "[validity]") {
@@ -868,10 +900,11 @@ TEST_CASE("Semantic feature transition validities prefer host geometry as midpoi
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[1] == Point{1.0, 0.5, 0.0});
-    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+    REQUIRE(geometry.points_.size() == 5);
+    REQUIRE(pivot == 2);
+    REQUIRE(geometry.points_[2] == Point{1.0, 0.5, 0.0});
 }

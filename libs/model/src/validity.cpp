@@ -121,11 +121,13 @@ model_ptr<Geometry> resolveLineGeometry(
 
 struct TransitionSegment
 {
-    Point outer_;
-    Point inner_;
+    // Ordered from the connected endpoint outwards. The final segment may be
+    // an extrapolated endpoint tangent when the complete road is shorter than
+    // the semantic transition-leg length.
+    std::vector<Point> innerToOuter_;
 };
 
-constexpr double kMinimumTransitionLegLengthMeters = 12.0;
+constexpr double kTransitionLegLengthMeters = 10.0;
 
 /** Compare two validity points with a small tolerance to absorb numeric noise. */
 bool pointsCoincide(Point const& left, Point const& right)
@@ -150,55 +152,63 @@ std::optional<TransitionSegment> resolveTransitionSegment(
 
     const auto numPoints = geometry->numPoints();
     const auto innerIndex = connectedEnd == Validity::End ? numPoints - 1U : 0U;
-    auto outerIndex = innerIndex;
-    auto const innerPoint = geometry->pointAt(innerIndex);
+    TransitionSegment result;
+    result.innerToOuter_.push_back(geometry->pointAt(innerIndex));
+
+    double accumulatedMeters = 0.0;
+    auto appendCandidate = [&](Point const& candidate) {
+        auto const& previous = result.innerToOuter_.back();
+        auto const segmentMeters = previous.geographicDistanceTo(candidate);
+        if (segmentMeters <= 1.0e-6) {
+            return false;
+        }
+        auto const remainingMeters =
+            kTransitionLegLengthMeters - accumulatedMeters;
+        if (segmentMeters >= remainingMeters) {
+            result.innerToOuter_.push_back(Point{
+                previous + (candidate - previous) *
+                    (remainingMeters / segmentMeters)});
+            accumulatedMeters = kTransitionLegLengthMeters;
+            return true;
+        }
+        result.innerToOuter_.push_back(candidate);
+        accumulatedMeters += segmentMeters;
+        return false;
+    };
+
     if (connectedEnd == Validity::End) {
-        // Walk outwards until the leg is visually useful, rather than taking
-        // only a potentially tiny terminal segment. If the complete line is
-        // shorter than the target, retain its furthest distinct point.
         for (auto pointIndex = innerIndex; pointIndex-- > 0;) {
-            auto const candidate = geometry->pointAt(pointIndex);
-            if (pointsCoincide(candidate, innerPoint)) {
-                continue;
-            }
-            outerIndex = pointIndex;
-            if (innerPoint.geographicDistanceTo(candidate) >=
-                kMinimumTransitionLegLengthMeters)
-            {
+            if (appendCandidate(geometry->pointAt(pointIndex))) {
                 break;
             }
         }
     } else {
-        // Likewise, grow a leg away from a connected start until it reaches
-        // the same visual minimum or the source geometry ends.
         for (auto pointIndex = innerIndex + 1U; pointIndex < numPoints; ++pointIndex) {
-            auto const candidate = geometry->pointAt(pointIndex);
-            if (pointsCoincide(candidate, innerPoint)) {
-                continue;
-            }
-            outerIndex = pointIndex;
-            if (innerPoint.geographicDistanceTo(candidate) >=
-                kMinimumTransitionLegLengthMeters)
-            {
+            if (appendCandidate(geometry->pointAt(pointIndex))) {
                 break;
             }
         }
     }
-    auto outerPoint = geometry->pointAt(outerIndex);
-    auto const resolvedLength =
-        innerPoint.geographicDistanceTo(outerPoint);
-    if (resolvedLength > 1.0e-6 &&
-        resolvedLength < kMinimumTransitionLegLengthMeters)
+
+    if (accumulatedMeters + 1.0e-6 < kTransitionLegLengthMeters &&
+        result.innerToOuter_.size() >= 2)
     {
-        // A complete endpoint link can itself be shorter than the visual
-        // minimum. Keep the link's endpoint tangent, but extend it
-        // schematically so transition arrows remain legible.
-        outerPoint = Point{
-            innerPoint +
-            (outerPoint - innerPoint) *
-                (kMinimumTransitionLegLengthMeters / resolvedLength)};
+        // Preserve the complete short road, then extend its outer endpoint
+        // tangent by precisely the missing distance. This keeps the real
+        // source shape while guaranteeing a readable ten-metre semantic leg.
+        auto const& previous = result.innerToOuter_[result.innerToOuter_.size() - 2];
+        auto const& outer = result.innerToOuter_.back();
+        auto const tangentMeters = previous.geographicDistanceTo(outer);
+        if (tangentMeters > 1.0e-6) {
+            result.innerToOuter_.push_back(Point{
+                outer + (outer - previous) *
+                    ((kTransitionLegLengthMeters - accumulatedMeters) /
+                     tangentMeters)});
+        }
     }
-    return TransitionSegment{outerPoint, innerPoint};
+    return result.innerToOuter_.size() >= 2
+        ? std::optional<TransitionSegment>{std::move(result)}
+        : std::nullopt;
 }
 
 /** Apply direction semantics to a resolved geometry after the shape has been computed. */
@@ -697,8 +707,12 @@ std::optional<uint32_t> Validity::transitionNumber() const
 
 SelfContainedGeometry Validity::computeGeometry(
     model_ptr<GeometryCollection> geometryCollection,
-    std::string* error) const
+    std::string* error,
+    uint32_t* transitionPivotIndex) const
 {
+    if (transitionPivotIndex) {
+        *transitionPivotIndex = std::numeric_limits<uint32_t>::max();
+    }
     if (geometryDescriptionType() == SimpleGeometry) {
         // Return the self-contained geometry points.
         auto simpleGeom = simpleGeometry();
@@ -759,40 +773,53 @@ SelfContainedGeometry Validity::computeGeometry(
         }
 
         std::vector<Point> points;
-        points.reserve(3);
-        auto appendIfNotDuplicate = [&](Point const& point)
-        {
-            if (points.empty() || !pointsCoincide(points.back(), point)) {
-                points.emplace_back(point);
-            }
-        };
-        // Render the transition as outer-from -> shared transition midpoint -> outer-to.
-        // The midpoint prefers the hosting feature geometry (for example an intersection point)
-        // and otherwise falls back to the connected road endpoints.
-        appendIfNotDuplicate(fromSegment->outer_);
+        points.reserve(
+            fromSegment->innerToOuter_.size() +
+            toSegment->innerToOuter_.size() + 1);
+        // Preserve the exact incoming road slice in traversal order.
+        points.insert(
+            points.end(),
+            fromSegment->innerToOuter_.rbegin(),
+            fromSegment->innerToOuter_.rend());
+
+        // The pivot prefers the hosting feature geometry (for example an
+        // intersection point) and otherwise falls back to the connected road
+        // endpoints. Keep the pivot as an explicit point even if it coincides
+        // with an endpoint: the subset metadata must identify one unambiguous
+        // split between incoming and outgoing road slices.
+        Point pivot;
         bool appendedHostMidpoint = false;
         if (geometryCollection) {
             geometryCollection->forEachGeometry([&](auto&& geom) {
                 if (geom->geomType() != GeomType::Points || geom->numPoints() == 0) {
                     return true;
                 }
-                appendIfNotDuplicate(geom->pointAt(0));
+                pivot = geom->pointAt(0);
                 appendedHostMidpoint = true;
                 return false;
             });
         }
         if (!appendedHostMidpoint) {
-            if (pointsCoincide(fromSegment->inner_, toSegment->inner_)) {
-                appendIfNotDuplicate(fromSegment->inner_);
+            auto const& fromInner = fromSegment->innerToOuter_.front();
+            auto const& toInner = toSegment->innerToOuter_.front();
+            if (pointsCoincide(fromInner, toInner)) {
+                pivot = fromInner;
             } else {
-                appendIfNotDuplicate(Point{
-                    (fromSegment->inner_.x + toSegment->inner_.x) * 0.5,
-                    (fromSegment->inner_.y + toSegment->inner_.y) * 0.5,
-                    (fromSegment->inner_.z + toSegment->inner_.z) * 0.5,
-                });
+                pivot = Point{
+                    (fromInner.x + toInner.x) * 0.5,
+                    (fromInner.y + toInner.y) * 0.5,
+                    (fromInner.z + toInner.z) * 0.5,
+                };
             }
         }
-        appendIfNotDuplicate(toSegment->outer_);
+        if (transitionPivotIndex) {
+            *transitionPivotIndex = static_cast<uint32_t>(points.size());
+        }
+        points.push_back(pivot);
+        points.insert(
+            points.end(),
+            toSegment->innerToOuter_.begin(),
+            toSegment->innerToOuter_.end());
         return {points, {}, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
