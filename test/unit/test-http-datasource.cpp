@@ -8,6 +8,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -136,6 +137,19 @@ public:
         for (auto const& [key, value] : headers) {
             req->addHeader(key, value);
         }
+        req->setBody(std::move(body));
+        return client_->sendRequest(req);
+    }
+
+    /** Sends one plain-text PUT request to exercise writable static mounts. */
+    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> putText(
+        std::string path,
+        std::string body)
+    {
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setMethod(drogon::Put);
+        req->setPath(std::move(path));
+        req->setContentTypeCode(drogon::CT_TEXT_PLAIN);
         req->setBody(std::move(body));
         return client_->sendRequest(req);
     }
@@ -1347,6 +1361,67 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
         service.remove(remoteDataSource);
     }
+}
+
+TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
+{
+    auto& service = test::httpService();
+    REQUIRE(service.isRunning() == true);
+
+    auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_test_static_mount");
+    auto stylesDir = tempDir / "styles";
+    fs::create_directories(stylesDir);
+    auto writableFile = stylesDir / "writable.yaml";
+    auto readOnlyFile = tempDir / "readonly.yaml";
+    {
+        std::ofstream(writableFile) << "before";
+        std::ofstream(readOnlyFile) << "unchanged";
+    }
+
+    auto const readOnlyPrefix = "/test-static";
+    auto const writablePrefix = readOnlyPrefix + std::string("/styles");
+    struct MountGuard {
+        std::string writablePrefix;
+        std::string readOnlyPrefix;
+        fs::path tempDir;
+
+        /** Removes process-global test mounts and their temporary files. */
+        ~MountGuard()
+        {
+            removeStaticMount(writablePrefix);
+            removeStaticMount(readOnlyPrefix);
+            fs::remove_all(tempDir);
+        }
+    } guard{writablePrefix, readOnlyPrefix, tempDir};
+    REQUIRE(ensureStaticMount(readOnlyPrefix, tempDir));
+    REQUIRE(ensureStaticMount(writablePrefix, stylesDir, StaticMountAccess::ReadWrite));
+
+    SyncHttpClient client("127.0.0.1", service.port());
+    auto [writeResult, writeResponse] = client.putText(
+        writablePrefix + std::string("/writable.yaml"),
+        "after");
+    REQUIRE(writeResult == drogon::ReqResult::Ok);
+    REQUIRE(writeResponse != nullptr);
+    REQUIRE(writeResponse->statusCode() == drogon::k200OK);
+
+    std::ifstream updatedFile(writableFile);
+    REQUIRE(std::string(std::istreambuf_iterator<char>(updatedFile), {}) == "after");
+
+    auto [getResult, getResponse] = client.get(writablePrefix + std::string("/writable.yaml"));
+    REQUIRE(getResult == drogon::ReqResult::Ok);
+    REQUIRE(getResponse != nullptr);
+    REQUIRE(getResponse->body() == "after");
+    REQUIRE(getResponse->getHeader("Cache-Control") == "no-store");
+
+    auto [readOnlyResult, readOnlyResponse] = client.putText(
+        readOnlyPrefix + std::string("/readonly.yaml"),
+        "overwritten");
+    REQUIRE(readOnlyResult == drogon::ReqResult::Ok);
+    REQUIRE(readOnlyResponse != nullptr);
+    REQUIRE(readOnlyResponse->statusCode() == drogon::k403Forbidden);
+
+    std::ifstream unchangedFile(readOnlyFile);
+    REQUIRE(std::string(std::istreambuf_iterator<char>(unchangedFile), {}) == "unchanged");
 }
 
 TEST_CASE("Configuration Endpoint Tests", "[Configuration]")

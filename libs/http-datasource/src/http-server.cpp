@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -40,6 +41,7 @@ struct MountPoint
 {
     std::string urlPrefix;
     std::filesystem::path fsRoot;
+    StaticMountAccess access = StaticMountAccess::ReadOnly;
 };
 
 struct RuntimeStaticMountRegistry
@@ -75,7 +77,8 @@ struct RuntimeStaticMountRegistry
 
 [[nodiscard]] std::optional<MountPoint> normalizeMountPoint(
     std::string urlPrefix,
-    std::filesystem::path fsRoot)
+    std::filesystem::path fsRoot,
+    StaticMountAccess access = StaticMountAccess::ReadOnly)
 {
     urlPrefix = normalizeUrlPrefix(std::move(urlPrefix));
 
@@ -94,7 +97,7 @@ struct RuntimeStaticMountRegistry
     if (!isDirectory || ec)
         return std::nullopt;
 
-    return MountPoint{std::move(urlPrefix), std::move(fsRoot)};
+    return MountPoint{std::move(urlPrefix), std::move(fsRoot), access};
 }
 
 [[nodiscard]] std::optional<MountPoint> parseMountPoint(std::string const& pathFromTo)
@@ -167,7 +170,9 @@ struct RuntimeStaticMountRegistry
 [[nodiscard]] std::optional<drogon::HttpResponsePtr> dynamicStaticMountResponse(
     drogon::HttpRequestPtr const& req)
 {
-    if (req->method() != drogon::Get && req->method() != drogon::Head) {
+    if (req->method() != drogon::Get
+        && req->method() != drogon::Head
+        && req->method() != drogon::Put) {
         return std::nullopt;
     }
 
@@ -187,7 +192,35 @@ struct RuntimeStaticMountRegistry
 
     for (auto const& mount : mounts) {
         if (auto localPath = resolveMountedRequestPath(mount, req->path())) {
-            return drogon::HttpResponse::newFileResponse(localPath->string(), "", drogon::CT_NONE, "", req);
+            if (req->method() == drogon::Put) {
+                auto response = drogon::HttpResponse::newHttpResponse();
+                response->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                if (mount.access != StaticMountAccess::ReadWrite) {
+                    response->setStatusCode(drogon::k403Forbidden);
+                    response->setBody("Static mount is read-only.");
+                    return response;
+                }
+
+                std::ofstream output(*localPath, std::ios::binary | std::ios::trunc);
+                auto const body = req->body();
+                output.write(body.data(), static_cast<std::streamsize>(body.size()));
+                output.close();
+                if (!output) {
+                    response->setStatusCode(drogon::k500InternalServerError);
+                    response->setBody("Failed to write static file.");
+                    return response;
+                }
+
+                response->setStatusCode(drogon::k200OK);
+                response->setBody("Static file updated.");
+                return response;
+            }
+            auto response = drogon::HttpResponse::newFileResponse(
+                localPath->string(), "", drogon::CT_NONE, "", req);
+            if (mount.access == StaticMountAccess::ReadWrite) {
+                response->addHeader("Cache-Control", "no-store");
+            }
+            return response;
         }
     }
 
@@ -407,9 +440,12 @@ void HttpServer::printPortToStdOut(bool enabled)
     impl_->printPortToStdout_ = enabled;
 }
 
-bool ensureStaticMount(std::string const& urlPrefix, std::filesystem::path const& filesystemRoot)
+bool ensureStaticMount(
+    std::string const& urlPrefix,
+    std::filesystem::path const& filesystemRoot,
+    StaticMountAccess access)
 {
-    auto mount = normalizeMountPoint(urlPrefix, filesystemRoot);
+    auto mount = normalizeMountPoint(urlPrefix, filesystemRoot, access);
     if (!mount)
         return false;
 
@@ -418,7 +454,7 @@ bool ensureStaticMount(std::string const& urlPrefix, std::filesystem::path const
     for (auto const& existing : registry.mounts) {
         if (existing.urlPrefix != mount->urlPrefix)
             continue;
-        if (existing.fsRoot == mount->fsRoot)
+        if (existing.fsRoot == mount->fsRoot && existing.access == mount->access)
             return true;
         log().warn(
             "Refusing to remount static URL prefix {} from {} to {}.",
@@ -441,7 +477,7 @@ bool ensureStaticMount(std::string const& pathFromTo)
     auto mount = parseMountPoint(pathFromTo);
     if (!mount)
         return false;
-    return ensureStaticMount(mount->urlPrefix, mount->fsRoot);
+    return ensureStaticMount(mount->urlPrefix, mount->fsRoot, StaticMountAccess::ReadOnly);
 }
 
 bool removeStaticMount(std::string const& urlPrefix)

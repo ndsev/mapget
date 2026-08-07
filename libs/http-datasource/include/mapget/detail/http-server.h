@@ -12,6 +12,13 @@ class HttpAppFramework;
 
 namespace mapget {
 
+/** Controls whether a runtime static mount may overwrite existing files through HTTP PUT. */
+enum class StaticMountAccess
+{
+    ReadOnly,
+    ReadWrite
+};
+
 /**
  * Base class for HTTP servers. It allows derived classes to set up
  * their own endpoints via the setup() function.
@@ -102,11 +109,13 @@ private:
  *
  * @param urlPrefix URL path prefix, e.g. `/assets`.
  * @param filesystemRoot Directory to serve under the prefix.
+ * @param access Whether HTTP PUT may overwrite existing files in this mount.
  * @return true when the mount exists or was added successfully.
  */
 bool ensureStaticMount(
     std::string const& urlPrefix,
-    std::filesystem::path const& filesystemRoot);
+    std::filesystem::path const& filesystemRoot,
+    StaticMountAccess access = StaticMountAccess::ReadOnly);
 
 /**
  * Ensure a static mount using the same `[<url-scope>:]<filesystem-path>` syntax
