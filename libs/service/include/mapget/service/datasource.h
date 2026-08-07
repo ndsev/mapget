@@ -93,6 +93,15 @@ public:
     virtual std::optional<AttachmentResponse> attachment(
         AttachmentRequest const& request);
 
+    /**
+     * Estimate memory retained exclusively by this datasource instance.
+     *
+     * Implementations must be cheap, thread-safe, and perform no I/O. They
+     * should exclude service-owned caches, tile models, and metadata snapshots.
+     * The default returns no measurement rather than inventing a value.
+     */
+    [[nodiscard]] virtual std::optional<uint64_t> estimatedRetainedMemoryBytes() const;
+
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
     virtual TileLayer::Ptr get(
         MapTileKey const& k,

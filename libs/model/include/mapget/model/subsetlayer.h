@@ -637,6 +637,9 @@ public:
     tl::expected<void, simfil::Error> write(std::ostream& outputStream) override;
     [[nodiscard]] nlohmann::json toJson() const override;
 
+    /** Report retained subset-model, diagnostics, issue, and dependency capacity. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
+
     [[nodiscard]] size_t size() const;
     [[nodiscard]] model_ptr<TileSubsetChannel> at(size_t index) const;
     bool forEachChannel(

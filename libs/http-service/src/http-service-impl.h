@@ -18,6 +18,9 @@ namespace mapget
 namespace detail
 {
 
+/** Snapshot REST stream pending-buffer ownership and high-water marks. */
+[[nodiscard]] nlohmann::json tilesHttpMetricsSnapshot();
+
 [[nodiscard]] inline AuthHeaders authHeadersFromRequest(const drogon::HttpRequestPtr& req)
 {
     AuthHeaders headers;

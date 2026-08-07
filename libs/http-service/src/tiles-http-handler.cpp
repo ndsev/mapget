@@ -39,6 +39,48 @@ enum class TilesStreamEndpoint
     Filter,
 };
 
+/** Process-wide gauges for REST stream buffers retained between producer and socket drain. */
+struct TilesHttpMetrics
+{
+    std::atomic_uint64_t activeStreams{0};
+    std::atomic_uint64_t pendingBytes{0};
+    std::atomic_uint64_t pendingCapacityBytes{0};
+    std::atomic_uint64_t peakPendingBytes{0};
+    std::atomic_uint64_t peakPendingCapacityBytes{0};
+};
+
+TilesHttpMetrics gTilesHttpMetrics;
+
+/** Update an atomic high-water mark after changing its current gauge. */
+void updatePeak(std::atomic_uint64_t& peak, uint64_t candidate)
+{
+    auto observed = peak.load(std::memory_order_relaxed);
+    while (observed < candidate &&
+           !peak.compare_exchange_weak(
+               observed,
+               candidate,
+               std::memory_order_relaxed)) {
+    }
+}
+
+/** Apply a per-stream replacement to one process-wide current/peak pair. */
+void replaceGauge(
+    std::atomic_uint64_t& current,
+    std::atomic_uint64_t& peak,
+    uint64_t previous,
+    uint64_t replacement)
+{
+    if (replacement >= previous) {
+        auto const updated = current.fetch_add(
+            replacement - previous,
+            std::memory_order_relaxed) + replacement - previous;
+        updatePeak(peak, updated);
+    }
+    else {
+        current.fetch_sub(previous - replacement, std::memory_order_relaxed);
+    }
+}
+
 /**
  * Incremental gzip compressor used by the HTTP streaming endpoint.
  *
@@ -126,6 +168,42 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         requestId_ = nextRequestId++;
         writer_ = std::make_unique<TileLayerStream::Writer>(
             [this](auto&& msg, auto&& /*msgType*/) { appendOutgoingUnlocked(msg); }, stringOffsets_);
+        gTilesHttpMetrics.activeStreams.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /** Remove this stream's final retained buffer capacities from process-wide gauges. */
+    ~TilesStreamState()
+    {
+        replaceGauge(
+            gTilesHttpMetrics.pendingBytes,
+            gTilesHttpMetrics.peakPendingBytes,
+            accountedPendingBytes_,
+            0);
+        replaceGauge(
+            gTilesHttpMetrics.pendingCapacityBytes,
+            gTilesHttpMetrics.peakPendingCapacityBytes,
+            accountedPendingCapacityBytes_,
+            0);
+        gTilesHttpMetrics.activeStreams.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    /** Synchronize this stream's string size/capacity with process-wide metrics. */
+    void refreshPendingMetricsUnlocked()
+    {
+        auto const bytes = static_cast<uint64_t>(pending_.size());
+        auto const capacity = static_cast<uint64_t>(pending_.capacity());
+        replaceGauge(
+            gTilesHttpMetrics.pendingBytes,
+            gTilesHttpMetrics.peakPendingBytes,
+            accountedPendingBytes_,
+            bytes);
+        replaceGauge(
+            gTilesHttpMetrics.pendingCapacityBytes,
+            gTilesHttpMetrics.peakPendingCapacityBytes,
+            accountedPendingCapacityBytes_,
+            capacity);
+        accountedPendingBytes_ = bytes;
+        accountedPendingCapacityBytes_ = capacity;
     }
 
     /** Attach Drogon's stream handle once the async response starts and trigger draining. */
@@ -388,11 +466,13 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                     size_t n = std::min(pending_.size(), maxChunk);
                     chunk.assign(pending_.data(), n);
                     pending_.erase(0, n);
+                    refreshPendingMetricsUnlocked();
                     pendingCapacityChanged_.notify_all();
                 } else {
                     if (allDone_ && compressor_ && !compressionFinished_) {
                         // Completion must wait until zlib has emitted the gzip footer.
                         pending_.append(compressor_->finish());
+                        refreshPendingMetricsUnlocked();
                         compressionFinished_ = true;
                         continue;
                     }
@@ -441,6 +521,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         } else {
             pending_.append(bytes);
         }
+        refreshPendingMetricsUnlocked();
     }
 
     Impl const& impl_;
@@ -455,6 +536,8 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     HttpService::Impl::ResponseType trimResponseType_ = HttpService::Impl::ResponseType::Binary;
 
     std::string pending_;
+    uint64_t accountedPendingBytes_ = 0;
+    uint64_t accountedPendingCapacityBytes_ = 0;
     drogon::ResponseStreamPtr stream_;
     std::unique_ptr<TileLayerStream::Writer> writer_;
     std::vector<LayerTilesRequest::Ptr> requests_;
@@ -686,5 +769,22 @@ void HttpService::Impl::handleFilterRequest(
 {
     handleTilesLikeRequest(req, std::move(callback), true);
 }
+
+namespace detail
+{
+
+nlohmann::json tilesHttpMetricsSnapshot()
+{
+    return {
+        {"active-streams", gTilesHttpMetrics.activeStreams.load(std::memory_order_relaxed)},
+        {"pending-bytes", gTilesHttpMetrics.pendingBytes.load(std::memory_order_relaxed)},
+        {"pending-capacity-bytes", gTilesHttpMetrics.pendingCapacityBytes.load(std::memory_order_relaxed)},
+        {"peak-pending-bytes", gTilesHttpMetrics.peakPendingBytes.load(std::memory_order_relaxed)},
+        {"peak-pending-capacity-bytes", gTilesHttpMetrics.peakPendingCapacityBytes.load(std::memory_order_relaxed)},
+        {"measurement", "std-string-size-capacity"},
+    };
+}
+
+}  // namespace detail
 
 }  // namespace mapget

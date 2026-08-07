@@ -9,6 +9,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mapget/model/featurelayer-filter.h"
@@ -703,6 +704,12 @@ TEST_CASE(
             }) &&
             resultOrder.front() == secondTile();
     }
+    auto const activeMemory = service.getMemoryStatistics();
+    REQUIRE(activeMemory["active-filters"].size() == 1);
+    auto const& filterMemory = activeMemory["active-filters"][0];
+    REQUIRE(filterMemory["filter-id"] == "style:roads");
+    REQUIRE(filterMemory["orchestration"]["current-bytes"].get<uint64_t>() > 0);
+    REQUIRE(filterMemory["output-subset-models"]["peak-bytes"].get<uint64_t>() > 0);
     dataSource->releaseFirst();
     request->wait();
 
@@ -712,6 +719,16 @@ TEST_CASE(
             std::vector<TileId>{secondTile(), firstTile()});
     REQUIRE(dataSource->requestedTiles() ==
             std::vector<TileId>{firstTile(), secondTile()});
+
+    bool trackerReleased = false;
+    for (size_t attempt = 0; attempt < 200; ++attempt) {
+        if (service.getMemoryStatistics()["active-filters"].empty()) {
+            trackerReleased = true;
+            break;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    REQUIRE(trackerReleased);
 }
 
 TEST_CASE(

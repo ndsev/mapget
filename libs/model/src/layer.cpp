@@ -158,6 +158,22 @@ bool MapTileKey::operator!=(const MapTileKey& other) const
     return !(*this == other);
 }
 
+MemoryUsageBreakdown TileLayer::memoryUsage() const
+{
+    MemoryUsageBreakdown result;
+    result.add("object", {sizeof(TileLayer), sizeof(TileLayer)});
+    result.add("string-pool-id", stringMemoryUsage(stringPoolId_));
+    result.add("map-id", stringMemoryUsage(mapId_));
+    if (error_) {
+        result.add("error", stringMemoryUsage(*error_));
+    }
+    result.add("info-json", jsonMemoryUsage(info_));
+    if (legalInfo_) {
+        result.add("legal-info", stringMemoryUsage(*legalInfo_));
+    }
+    return result;
+}
+
 TileLayer::TileLayer(
     const TileId& id,
     std::string stringPoolId,

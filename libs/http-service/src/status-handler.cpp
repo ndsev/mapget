@@ -99,6 +99,34 @@ th { background: #f1f5f9; }
         <span id="error" class="error"></span>
     </div>
 
+    <h2>Memory Accountability</h2>
+    <div class="panel">
+        <table id="memoryOverviewTable">
+            <thead><tr><th>Owner / Control Total</th><th class="number">Current</th><th class="number">Peak</th></tr></thead>
+            <tbody></tbody>
+        </table>
+        <div class="muted" style="margin-top:8px">
+            Mapget/cache values are capacity-based lower bounds. Datasource values are cooperative exclusive estimates.
+            Unattributed RSS includes allocator fragmentation, thread stacks, shared libraries, opaque third-party state, and uninstrumented ownership.
+            Cgroup usage may additionally include page cache and other processes in the same control group.
+        </div>
+    </div>
+    <div class="panel">
+        <h3>Active Filter Ownership</h3>
+        <table id="activeFilterMemoryTable">
+            <thead><tr><th>Filter</th><th>Map / Layer</th><th class="number">Tiles</th><th class="number">Current</th><th class="number">Source Models</th><th class="number">Output Models</th><th class="number">Relation Targets</th><th class="number">Eval Temporaries</th><th class="number">Orchestration</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    <div class="panel">
+        <h3>Datasource-Owned State</h3>
+        <table id="datasourceMemoryTable">
+            <thead><tr><th>Source</th><th>Map</th><th>Status</th><th>Measurement</th><th class="number">Retained</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    <details class="panel"><summary>Raw memory snapshot</summary><pre id="memoryStats" style="margin-top:8px"></pre></details>
+
     <h2>Tiles WebSocket Metrics</h2>
     <div class="panel">
         <table id="wsMetricsTable">
@@ -202,6 +230,7 @@ const state = {
     lastBreakdownJson: "",
     lastArrayArenaSingletonJson: "",
     lastDistributionJson: "",
+    lastMemoryText: "",
 };
 )HTML"
 R"HTML(
@@ -211,6 +240,8 @@ const wsMetricDefinitions = [
     ["active-sessions", "active-sessions", (v) => formatInt(v)],
     ["pending-controller-frames", "pending-controller-frames", (v) => formatInt(v)],
     ["pending-controller-bytes", "pending-controller-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
+    ["pending-controller-allocated-bytes", "pending-controller-allocated-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
+    ["peak-pending-controller-allocated-bytes", "peak-pending-controller-allocated-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
     ["pending-pull-requests", "pending-pull-requests", (v) => formatInt(v)],
     ["total-queued-frames", "total-queued-frames", (v) => formatInt(v)],
     ["total-queued-bytes", "total-queued-bytes", (v) => `${formatInt(v)} (${formatBytes(v)})`],
@@ -273,6 +304,119 @@ function renderWsMetrics(metrics) {
         }
         el.textContent = formatter(metrics[key] ?? 0);
     }
+}
+
+function appendMemoryRow(tbody, label, current, peak = null) {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = label;
+    const currentCell = document.createElement("td");
+    currentCell.className = "number";
+    currentCell.textContent = `${formatInt(current)} (${formatBytes(current)})`;
+    const peakCell = document.createElement("td");
+    peakCell.className = "number";
+    peakCell.textContent = peak === null ? "-" : `${formatInt(peak)} (${formatBytes(peak)})`;
+    tr.append(name, currentCell, peakCell);
+    tbody.appendChild(tr);
+}
+
+function renderMemory(memory) {
+    const overview = qs("#memoryOverviewTable tbody");
+    if (overview) {
+        overview.innerHTML = "";
+        const process = memory.process || {};
+        const cgroup = process.cgroup || {};
+        const allocator = memory.allocator || {};
+        const mapget = memory.mapget || {};
+        const transport = memory.transport || {};
+        const rest = transport["rest-streams"] || {};
+        const interactive = transport.interactive || {};
+        appendMemoryRow(overview, "Process RSS", process["resident-bytes"] || 0, process["resident-peak-bytes"] ?? null);
+        if (cgroup["current-bytes"] !== null && cgroup["current-bytes"] !== undefined) {
+            appendMemoryRow(overview, "Cgroup charged memory", cgroup["current-bytes"], cgroup["peak-bytes"] ?? null);
+        }
+        if (cgroup["limit-bytes"] !== null && cgroup["limit-bytes"] !== undefined) {
+            appendMemoryRow(overview, "Cgroup memory limit", cgroup["limit-bytes"]);
+        }
+        if (allocator["in-use-arena-bytes"] !== undefined) {
+            appendMemoryRow(overview, "Allocator arena bytes in use", allocator["in-use-arena-bytes"]);
+            appendMemoryRow(overview, "Allocator arena bytes free", allocator["free-arena-bytes"] || 0);
+        }
+        appendMemoryRow(overview, "Known/accounted total", memory["known-current-bytes"] || 0);
+        appendMemoryRow(overview, "Mapget metadata, scheduler, filters", mapget["allocated-bytes"] || 0);
+        appendMemoryRow(overview, "Datasource-owned state", memory["datasource-measured-bytes"] || 0);
+        appendMemoryRow(overview, "Cache", memory["cache-current-bytes"] || 0);
+        appendMemoryRow(
+            overview,
+            "REST pending stream buffers",
+            rest["pending-capacity-bytes"] || 0,
+            rest["peak-pending-capacity-bytes"] ?? null);
+        appendMemoryRow(
+            overview,
+            "Interactive pending frame buffers",
+            interactive["pending-controller-allocated-bytes"] || 0,
+            interactive["peak-pending-controller-allocated-bytes"] ?? null);
+        appendMemoryRow(overview, "Unattributed process RSS", memory["unattributed-resident-bytes"] || 0);
+    }
+
+    const filterBody = qs("#activeFilterMemoryTable tbody");
+    if (filterBody) {
+        filterBody.innerHTML = "";
+        const filters = memory["active-filters"] || [];
+        for (const filter of filters) {
+            const tr = document.createElement("tr");
+            const values = [
+                `${filter["filter-id"] || "<unnamed>"} @ ${filter.generation || 0}`,
+                `${filter["map-id"] || ""} / ${filter["layer-id"] || ""}`,
+                formatInt(filter["requested-tiles"] || 0),
+                formatBytes(filter["current-bytes"] || 0),
+                formatBytes(filter["source-tile-models"]?.["current-bytes"] || 0),
+                formatBytes(filter["output-subset-models"]?.["current-bytes"] || 0),
+                formatBytes(filter["relation-target-models"]?.["current-bytes"] || 0),
+                formatBytes(filter["evaluation-temporaries"]?.["current-bytes"] || 0),
+                formatBytes(filter.orchestration?.["current-bytes"] || 0),
+            ];
+            values.forEach((value, index) => {
+                const td = document.createElement("td");
+                td.textContent = value;
+                if (index >= 2) td.className = "number";
+                tr.appendChild(td);
+            });
+            filterBody.appendChild(tr);
+        }
+        if (filters.length === 0) {
+            const tr = document.createElement("tr");
+            const td = document.createElement("td");
+            td.colSpan = 9;
+            td.className = "muted";
+            td.textContent = "No active filter execution owns retained state.";
+            tr.appendChild(td);
+            filterBody.appendChild(tr);
+        }
+    }
+
+    const datasourceBody = qs("#datasourceMemoryTable tbody");
+    if (datasourceBody) {
+        datasourceBody.innerHTML = "";
+        for (const source of memory.datasources || []) {
+            const tr = document.createElement("tr");
+            const values = [
+                source["source-id"] || "<runtime>",
+                source["map-id"] || "",
+                source.status || "",
+                source.measurement || "unavailable",
+                source["retained-bytes"] === undefined ? "-" : formatBytes(source["retained-bytes"]),
+            ];
+            values.forEach((value, index) => {
+                const td = document.createElement("td");
+                td.textContent = value;
+                if (index === 4) td.className = "number";
+                tr.appendChild(td);
+            });
+            datasourceBody.appendChild(tr);
+        }
+    }
+    setPreJsonIfChanged("memoryStats", memory, "lastMemoryText");
 }
 
 function renderByteBreakdownRows(selector, breakdown, totalBytes) {
@@ -461,6 +605,7 @@ async function refreshStatus(force = false) {
         setPreJsonIfChanged("serviceStats", payload.service, "lastServiceText");
         setPreJsonIfChanged("cacheStats", payload.cache, "lastCacheText");
         renderWsMetrics(payload.tilesWebsocket || {});
+        renderMemory(payload.memory || {});
         const service = payload.service || {};
         renderTreeBreakdown(service);
         renderTileDistribution(service);
@@ -512,14 +657,53 @@ void HttpService::Impl::handleStatusDataRequest(
     const bool includeCachedFeatureTreeBytes =
         parseBoolParameter(req, "includeCachedFeatureTreeBytes", false);
 
+    auto serviceMemory = self_.getMemoryStatistics();
+    auto cache = self_.cache()->getStatistics();
+    auto websocket = detail::tilesWebSocketMetricsSnapshot();
+    auto httpStreams = detail::tilesHttpMetricsSnapshot();
+
+    uint64_t cacheBytes = 0;
+    if (auto memory = cache.find("memory"); memory != cache.end() && memory->is_object()) {
+        cacheBytes += memory->value("allocated-bytes", uint64_t{0});
+        if (auto tileBlobs = memory->find("tile-blobs");
+            tileBlobs != memory->end() && tileBlobs->is_object())
+        {
+            cacheBytes += tileBlobs->value("allocated-bytes", uint64_t{0});
+        }
+        cacheBytes += memory->value("sqlite-owned-bytes", uint64_t{0});
+    }
+    auto const transportBytes =
+        websocket.value("pending-controller-allocated-bytes", uint64_t{0}) +
+        httpStreams.value("pending-capacity-bytes", uint64_t{0});
+    auto const knownBytes =
+        serviceMemory.value("known-current-bytes", uint64_t{0}) +
+        cacheBytes + transportBytes;
+    serviceMemory["cache"] = cache.value("memory", nlohmann::json::object());
+    serviceMemory["cache-current-bytes"] = cacheBytes;
+    serviceMemory["transport"] = {
+        {"interactive", websocket},
+        {"rest-streams", httpStreams},
+        {"current-bytes", transportBytes},
+    };
+    serviceMemory["known-current-bytes"] = knownBytes;
+    if (auto process = serviceMemory.find("process");
+        process != serviceMemory.end() && process->contains("resident-bytes"))
+    {
+        auto const resident = (*process)["resident-bytes"].get<uint64_t>();
+        serviceMemory["unattributed-resident-bytes"] =
+            resident > knownBytes ? resident - knownBytes : uint64_t{0};
+    }
+
     const auto payload = nlohmann::json::object({
         {"timestampMs",
          std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::system_clock::now().time_since_epoch())
              .count()},
         {"service", self_.getStatistics(includeCachedFeatureTreeBytes, includeTileSizeDistribution)},
-        {"cache", self_.cache()->getStatistics()},
-        {"tilesWebsocket", detail::tilesWebSocketMetricsSnapshot()},
+        {"cache", std::move(cache)},
+        {"tilesWebsocket", std::move(websocket)},
+        {"tilesHttp", std::move(httpStreams)},
+        {"memory", std::move(serviceMemory)},
     });
 
     auto resp = drogon::HttpResponse::newHttpResponse();

@@ -11,6 +11,8 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/config.h
 
   src/service.cpp
+  src/service-memory.h
+  src/service-memory.cpp
   src/cache.cpp
   src/datasource.cpp
   src/memcache.cpp
@@ -36,6 +38,10 @@ target_link_libraries(mapget-service
     nlohmann_json_schema_validator
   PRIVATE
     picosha2)
+
+if (WIN32)
+  target_link_libraries(mapget-service PRIVATE Psapi)
+endif()
 
 if (MSVC)
   target_compile_definitions(mapget-service

@@ -2186,6 +2186,38 @@ nlohmann::json TileSubsetLayer::toJson() const
     return result;
 }
 
+MemoryUsageBreakdown TileSubsetLayer::memoryUsage() const
+{
+    auto result = TileFeatureModelLayerBase::memoryUsage();
+    result.add("subset-layer-object", {
+        sizeof(TileSubsetLayer) - sizeof(TileFeatureModelLayerBase),
+        sizeof(TileSubsetLayer) - sizeof(TileFeatureModelLayerBase),
+    });
+    result.add("subset.filter-id", stringMemoryUsage(filterId_));
+    result.add("subset.channels", channels_.memory_usage());
+    result.add("subset.feature-entries", featureEntries_.memory_usage());
+    result.add("subset.attribute-validity-entries", attributeValidityEntries_.memory_usage());
+    result.add("subset.relation-entries", relationEntries_.memory_usage());
+    result.add("subset.group-entries", groupEntries_.memory_usage());
+    result.add("subset.traces", traces_.memory_usage());
+    result.add("subset.dependencies", vectorMemoryUsage(dependencies_));
+    for (auto const& dependency : dependencies_) {
+        result.add("subset.dependency-strings", stringMemoryUsage(dependency.sourceTileKey_.mapId_));
+        result.add("subset.dependency-strings", stringMemoryUsage(dependency.sourceTileKey_.layerId_));
+    }
+    result.add("subset.issues", vectorMemoryUsage(issues_));
+    for (auto const& issue : issues_) {
+        result.add("subset.issue-strings", stringMemoryUsage(issue.channelId_));
+        result.add("subset.issue-strings", stringMemoryUsage(issue.expression_));
+        result.add("subset.issue-strings", stringMemoryUsage(issue.message_));
+    }
+    result.add("subset.diagnostics", diagnosticsMemoryUsage(diagnostics_));
+    if (glbAttachmentName_) {
+        result.add("subset.glb-attachment-name", stringMemoryUsage(*glbAttachmentName_));
+    }
+    return result;
+}
+
 size_t TileSubsetLayer::size() const
 {
     return numRoots();

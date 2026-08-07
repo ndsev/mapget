@@ -738,6 +738,30 @@ TEST_CASE("NullCache", "[Cache]")
     testNullCacheImplementation();
 }
 
+TEST_CASE("MemCache reports retained blob capacity", "[Cache][memory]")
+{
+    MemCache cache(8);
+    auto const key = MapTileKey(
+        LayerType::Features,
+        "MemoryMap",
+        "MemoryLayer",
+        TileId::fromTileXY(1, 1, 2));
+    cache.putTileLayerBlob(key, std::string(4096, 'x'));
+
+    auto statistics = cache.getStatistics();
+    auto const& memory = statistics["memory"]["tile-blobs"];
+    REQUIRE(memory["allocated-bytes"].get<uint64_t>() >= 4096);
+    REQUIRE(memory["components"]["serialized-tile-blobs"]["allocated-bytes"].get<uint64_t>() >= 4096);
+    REQUIRE(memory["sampled-peak-allocated-bytes"].get<uint64_t>() >= 4096);
+
+    cache.eraseTileLayerBlob(key);
+    auto const emptyStatistics = cache.getStatistics();
+    REQUIRE(emptyStatistics["memcache-map-size"] == 0);
+    REQUIRE(
+        emptyStatistics["memory"]["tile-blobs"]["sampled-peak-allocated-bytes"]
+            .get<uint64_t>() >= 4096);
+}
+
 TEST_CASE("Cache roundtrips SourceData tile-zero sentinel", "[Cache]")
 {
     auto layerInfo = createMetadataSourceDataLayerInfo();

@@ -2,6 +2,7 @@
 
 #include "info.h"
 #include "tileid.h"
+#include "memory.h"
 
 #include "nlohmann/json.hpp"
 #include "simfil/error.h"
@@ -201,6 +202,14 @@ public:
     /** Serialization */
     virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);
     virtual nlohmann::json toJson() const;
+
+    /**
+     * Report live payload and retained capacity owned by this layer.
+     *
+     * Shared LayerInfo, LayerSchema, and StringPool instances are excluded and
+     * must be counted once by the service which owns those shared resources.
+     */
+    [[nodiscard]] virtual MemoryUsageBreakdown memoryUsage() const;
 
     /**
      * Set a load-state callback. Used by the service to forward state changes.

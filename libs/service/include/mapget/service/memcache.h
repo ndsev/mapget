@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <deque>
 #include <shared_mutex>
+#include <atomic>
 
 namespace mapget
 {
@@ -45,11 +46,16 @@ public:
     nlohmann::json getStatistics() const override;
 
 private:
+    /** Measure all in-memory blob/index ownership while cacheMutex_ is held. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsageLocked() const;
+
     // Cached tile blobs.
     mutable std::shared_mutex cacheMutex_;
     std::unordered_map<std::string, std::string> cachedTiles_;
     std::deque<std::string> fifo_;
     uint32_t maxCachedTiles_ = 0;
+    /** High-water mark across explicit statistics samples. */
+    mutable std::atomic_size_t peakAllocatedBytes_{0};
 };
 
 }

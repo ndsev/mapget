@@ -118,4 +118,9 @@ std::optional<AttachmentResponse> DataSource::attachment(
     return {};
 }
 
+std::optional<uint64_t> DataSource::estimatedRetainedMemoryBytes() const
+{
+    return std::nullopt;
+}
+
 }

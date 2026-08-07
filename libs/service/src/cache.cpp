@@ -74,18 +74,43 @@ nlohmann::json Cache::getStatistics() const {
     int64_t loadedStringPools = 0;
     int64_t stringPoolEntries = 0;
     int64_t stringPoolPayloadBytes = 0;
+    MemoryUsageBreakdown memory;
     {
         std::shared_lock lock(stringPoolCacheMutex_);
         loadedStringPools =
             static_cast<int64_t>(stringPoolPerStringPoolId_.size());
-        for (auto const& [_, pool] : stringPoolPerStringPoolId_) {
+        memory.add("loaded-string-pool-index", {
+            stringPoolPerStringPoolId_.size() *
+                sizeof(decltype(stringPoolPerStringPoolId_)::value_type),
+            stringPoolPerStringPoolId_.size() *
+                (sizeof(decltype(stringPoolPerStringPoolId_)::value_type) + 3 * sizeof(void*)),
+        });
+        for (auto const& [id, pool] : stringPoolPerStringPoolId_) {
+            memory.add("loaded-string-pool-ids", stringMemoryUsage(id));
             if (!pool) {
                 continue;
             }
+            memory.add("loaded-string-pool-objects", {
+                sizeof(simfil::StringPool),
+                sizeof(simfil::StringPool),
+            });
             stringPoolEntries +=
                 static_cast<int64_t>(pool->size());
             stringPoolPayloadBytes +=
                 static_cast<int64_t>(pool->bytes());
+            memory.add("loaded-string-pools", pool->memoryUsage());
+        }
+    }
+    {
+        std::lock_guard lock(stringPoolOffsetMutex_);
+        memory.add("string-pool-offset-index", {
+            stringPoolOffsets_.size() * sizeof(decltype(stringPoolOffsets_)::value_type),
+            stringPoolOffsets_.bucket_count() * sizeof(void*) +
+                stringPoolOffsets_.size() *
+                    (sizeof(decltype(stringPoolOffsets_)::value_type) + 2 * sizeof(void*)),
+        });
+        for (auto const& [id, _] : stringPoolOffsets_) {
+            memory.add("string-pool-offset-ids", stringMemoryUsage(id));
         }
     }
     return {
@@ -93,7 +118,8 @@ nlohmann::json Cache::getStatistics() const {
         {"cache-misses", cacheMisses_.load()},
         {"loaded-string-pools", loadedStringPools},
         {"string-pool-entries", stringPoolEntries},
-        {"string-pool-payload-bytes", stringPoolPayloadBytes}
+        {"string-pool-payload-bytes", stringPoolPayloadBytes},
+        {"memory", memory.toJson()}
     };
 }
 

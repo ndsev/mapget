@@ -313,11 +313,17 @@ public:
     std::vector<mapget::LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
 
+    /** Estimate configuration and cached procedural spatial-context storage. */
+    [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
+
 private:
+    /** Compute immutable generator configuration ownership once during construction. */
+    [[nodiscard]] uint64_t computeStaticRetainedMemoryBytes() const;
     gridsource::Config config_;
     mutable std::mutex contextMutex_;
     mutable std::unordered_map<mapget::TileId, std::shared_ptr<gridsource::TileSpatialContext>> contextCache_;
     static constexpr size_t MAX_CACHED_CONTEXTS = 1000;
+    uint64_t staticRetainedMemoryBytes_ = 0;
 
     // Get or create spatial context for a tile
     std::shared_ptr<gridsource::TileSpatialContext> getOrCreateContext(mapget::TileId tileId) const;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <compare>
 #include <cstddef>
 #include <functional>
@@ -8,6 +9,7 @@
 #include <string_view>
 
 #include "featurelayer.h"
+#include "mapget/model/memory.h"
 
 #include "simfil/error.h"
 #include "tl/expected.hpp"
@@ -171,6 +173,28 @@ struct SimfilExpressionCache
     simfil::Environment& environment()
     {
         return *env_;
+    }
+
+    /**
+     * Estimate retained cache keys and AST owner nodes.
+     *
+     * AST-internal allocations and Environment registries are intentionally
+     * left to the process-level unclassified remainder.
+     */
+    [[nodiscard]] simfil::MemoryUsage memoryUsage() const
+    {
+        std::shared_lock lock(mtx_);
+        simfil::MemoryUsage result{
+            cache_.size() * sizeof(decltype(cache_)::value_type),
+            cache_.size() *
+                (sizeof(decltype(cache_)::value_type) + 3 * sizeof(void*)),
+        };
+        for (auto const& [key, _] : cache_) {
+            result.logicalBytes += key.query.size();
+            result.allocatedBytes += key.query.capacity() + 1;
+        }
+        result.allocatedBytes = std::max(result.logicalBytes, result.allocatedBytes);
+        return result;
     }
 
     mutable std::shared_mutex mtx_;

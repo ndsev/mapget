@@ -532,6 +532,14 @@ public:
         bool includeCachedFeatureTreeBytes,
         bool includeTileSizeDistribution) const;
 
+    /**
+     * Snapshot process controls and capacity-based mapget ownership estimates.
+     *
+     * Values below `mapget` are additive lower bounds unless explicitly marked
+     * inclusive. Datasource values are cooperative self-reported estimates.
+     */
+    [[nodiscard]] nlohmann::json getMemoryStatistics() const;
+
     /** Get the Cache which this service was constructed with. */
     [[nodiscard]] Cache::Ptr cache();
 

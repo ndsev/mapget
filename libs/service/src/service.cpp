@@ -3,6 +3,7 @@
 #include "fmt/format.h"
 #include "locate.h"
 #include "config.h"
+#include "service-memory.h"
 #include "mapget/log.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/featurelayer.h"
@@ -27,10 +28,7 @@
 #include <regex>
 #include <unordered_map>
 #include <utility>
-
-#ifdef __linux__
-#include <malloc.h>
-#endif
+#include <unordered_set>
 
 #include "simfil/types.h"
 
@@ -38,6 +36,10 @@ namespace mapget
 {
 
 namespace {
+
+using detail::FilterMemoryTracker;
+using detail::dataSourceDescriptorMemoryUsage;
+using detail::dataSourceInfoContainerMemoryUsage;
 
 bool isDataSourceDescriptorEnabled(YAML::Node const& descriptor)
 {
@@ -591,6 +593,7 @@ struct Service::Controller
     std::optional<std::chrono::milliseconds> defaultTtl_; // Default TTL applied when datasource does not override
     std::list<LayerTilesRequest::Ptr> requests_;       // List of requests currently being processed
     std::list<FilterEvalWork> filterEvalJobs_; // Derived filter jobs scheduled after source tiles are loaded.
+    std::vector<std::weak_ptr<FilterMemoryTracker>> filterMemoryTrackers_; // Active filter ownership gauges.
     std::map<std::string, uint64_t> mapEpochs_; // Invalidates late work after source-composition changes.
     std::condition_variable jobsAvailable_;  // Condition variable to signal job availability
     std::condition_variable filterJobsAvailable_; // Signals CPU-only derived evaluation work.
@@ -1256,6 +1259,8 @@ struct Service::Worker
 struct Service::Impl : public Service::Controller
 {
     std::map<DataSource::Ptr, DataSourceInfo> dataSourceInfo_;
+    std::map<DataSource::Ptr, simfil::MemoryUsage> dataSourceInfoMemory_;
+    std::map<DataSource::Ptr, simfil::MemoryUsage> workerInfoMemory_;
     std::map<DataSource::Ptr, std::string> dataSourceSourceIds_;
     std::map<DataSource::Ptr, std::vector<Worker::Ptr>> dataSourceWorkers_;
     std::list<DataSource::Ptr> addOnDataSources_;
@@ -1265,6 +1270,7 @@ struct Service::Impl : public Service::Controller
     std::vector<DataSource::Ptr> dataSourcesFromConfig_;
     size_t dataSourceConstructionFailed_ = 0;
     std::vector<DataSourceCatalogEntry> sourceCatalog_;
+    std::map<uint32_t, simfil::MemoryUsage> sourceCatalogInfoMemory_;
     uint64_t sourceCatalogGeneration_ = 0;
     uint64_t sourceCatalogRevision_ = 0;
     uint64_t nextRuntimeSourceId_ = 0;
@@ -1353,6 +1359,8 @@ struct Service::Impl : public Service::Controller
             }
             dataSourceWorkers_.clear();
             dataSourceInfo_.clear();
+            dataSourceInfoMemory_.clear();
+            workerInfoMemory_.clear();
             dataSourceSourceIds_.clear();
             addOnDataSources_.clear();
             dataSourcesFromConfig_.clear();
@@ -1581,6 +1589,14 @@ struct Service::Impl : public Service::Controller
             it->progress.reset();
             it->dataSource = std::move(dataSource);
             it->info = cloneDataSourceInfo(info);
+            auto catalogInfoMemory = it->info->memoryUsage().total();
+            // DataSourceInfo itself lives inline in the catalog entry's
+            // optional; the entry vector already accounts that object storage.
+            catalogInfoMemory.logicalBytes -=
+                std::min(catalogInfoMemory.logicalBytes, sizeof(DataSourceInfo));
+            catalogInfoMemory.allocatedBytes -=
+                std::min(catalogInfoMemory.allocatedBytes, sizeof(DataSourceInfo));
+            sourceCatalogInfoMemory_[configIndex] = catalogInfoMemory;
             dataSourcesFromConfig_.push_back(it->dataSource);
             change = markSourceCatalogChangedLocked("status", &*it);
             changed = true;
@@ -1704,6 +1720,7 @@ struct Service::Impl : public Service::Controller
             previousDataSources.swap(dataSourcesFromConfig_);
             dataSourceConstructionFailed_ = 0;
             sourceCatalog_.clear();
+            sourceCatalogInfoMemory_.clear();
             sourceConfigStatus_ = "ok";
             sourceConfigStatusMessage_.clear();
             generation = ++sourceCatalogGeneration_;
@@ -1753,6 +1770,8 @@ struct Service::Impl : public Service::Controller
         }
 
         auto info = cloneDataSourceInfo(dataSource->info());
+        auto const infoMemory = info.memoryUsage().total();
+        auto const workerInfoMemory = dataSourceInfoContainerMemoryUsage(info);
         std::unique_lock lock(dataSourcesMutex_);
 
         if (info.stringPoolId_.empty()) {
@@ -1796,6 +1815,7 @@ struct Service::Impl : public Service::Controller
         }
 
         dataSourceInfo_[dataSource] = info;
+        dataSourceInfoMemory_[dataSource] = infoMemory;
         dataSourceSourceIds_[dataSource] =
             std::move(effectiveSourceId);
 
@@ -1819,6 +1839,10 @@ struct Service::Impl : public Service::Controller
                 dataSource,
                 info,
                 *this));
+        workerInfoMemory_[dataSource] = {
+            workerInfoMemory.logicalBytes * workers.size(),
+            workerInfoMemory.allocatedBytes * workers.size(),
+        };
 
         if (publishCatalogChange) {
             auto change = markSourceCatalogChangedLocked("added");
@@ -1843,6 +1867,8 @@ struct Service::Impl : public Service::Controller
                     info->second.mapId_;
             }
             dataSourceInfo_.erase(dataSource);
+            dataSourceInfoMemory_.erase(dataSource);
+            workerInfoMemory_.erase(dataSource);
             dataSourceSourceIds_.erase(dataSource);
             addOnDataSources_.remove(dataSource);
             if (publishCatalogChange) {
@@ -2498,6 +2524,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 contributions_;
             size_t missingContributions_ = 0;
             bool takenForCompletion_ = false;
+            uint64_t wipSubsetBytes_ = 0;
         };
 
         struct DependentOutputSlot
@@ -2510,6 +2537,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
         {
             size_t outputIndex_ = 0;
             TileSubsetLayer::Ptr layer_;
+            uint64_t layerBytes_ = 0;
             std::vector<SourceTileContribution> contributions_;
             std::map<
                 MapTileKey,
@@ -2581,6 +2609,204 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
         std::atomic_size_t progressEventCount = 0;
         bool childRequestDone = false;
         bool terminal = false;
+        std::shared_ptr<FilterMemoryTracker> memory;
+
+        ~FilterExecutionState()
+        {
+            // No request-owned model remains once every callback has released
+            // this execution state. Peaks intentionally survive in the tracker.
+            if (memory) {
+                memory->sourceTileModels.set(0);
+                memory->outputSubsetModels.set(0);
+                memory->relationTargetModels.set(0);
+                memory->evaluationTemporaries.set(0);
+                memory->orchestration.set(0);
+            }
+        }
+
+        /** Recompute a conservative lower bound for request orchestration containers. */
+        [[nodiscard]] uint64_t orchestrationBytesLocked() const
+        {
+            MemoryUsageBreakdown usage;
+            usage.add("state", {sizeof(FilterExecutionState), sizeof(FilterExecutionState)});
+            usage.add("request", {
+                sizeof(FeatureLayerFilterTilesRequest),
+                sizeof(FeatureLayerFilterTilesRequest),
+            });
+            usage.add("request-strings", stringMemoryUsage(request->mapId_));
+            usage.add("request-strings", stringMemoryUsage(request->layerId_));
+            if (request->sourceId_) {
+                usage.add("request-strings", stringMemoryUsage(*request->sourceId_));
+            }
+            usage.add("requested-tile-ids", vectorMemoryUsage(request->tileIds_));
+            usage.add("priority-tile-index", {
+                request->priorityTileIds_.size() * sizeof(TileId),
+                request->priorityTileIds_.size() * (sizeof(TileId) + 3 * sizeof(void*)),
+            });
+            usage.add("exact-roots", vectorMemoryUsage(request->exactRoots_));
+            for (auto const& root : request->exactRoots_) {
+                usage.add("exact-root-strings", stringMemoryUsage(root.typeId_));
+                usage.add("exact-root-strings", stringMemoryUsage(root.canonicalFeatureId_));
+                for (auto const& [key, value] : root.featureId_) {
+                    usage.add("exact-root-strings", stringMemoryUsage(key));
+                    if (auto string = std::get_if<std::string>(&value)) {
+                        usage.add("exact-root-strings", stringMemoryUsage(*string));
+                    }
+                }
+            }
+            usage.add("filter-id", stringMemoryUsage(request->filter_.filterId_));
+            usage.add("filter-channels", vectorMemoryUsage(request->filter_.channels_));
+            for (auto const& channel : request->filter_.channels_) {
+                usage.add("filter-channel-strings", stringMemoryUsage(channel.channelId_));
+                if (channel.featureFilter_) {
+                    usage.add("filter-channel-strings", stringMemoryUsage(*channel.featureFilter_));
+                }
+                if (channel.entryFilter_) {
+                    usage.add("filter-channel-strings", stringMemoryUsage(*channel.entryFilter_));
+                }
+                if (channel.geometryName_) {
+                    usage.add("filter-channel-strings", stringMemoryUsage(*channel.geometryName_));
+                }
+                if (channel.relation_ && channel.relation_->relationNamePattern_) {
+                    usage.add("filter-channel-strings", stringMemoryUsage(*channel.relation_->relationNamePattern_));
+                }
+                usage.add("filter-feature-types", stringVectorMemoryUsage(channel.featureTypes_));
+                usage.add("filter-feature-fields", stringVectorMemoryUsage(channel.featureFields_));
+                usage.add("filter-entry-fields", stringVectorMemoryUsage(channel.entryFields_));
+            }
+            usage.add("filter-bindings", {
+                request->filter_.bindings_.size() *
+                    sizeof(decltype(request->filter_.bindings_)::value_type),
+                request->filter_.bindings_.size() *
+                    (sizeof(decltype(request->filter_.bindings_)::value_type) + 3 * sizeof(void*)),
+            });
+            for (auto const& [name, value] : request->filter_.bindings_) {
+                usage.add("filter-binding-strings", stringMemoryUsage(name));
+                if (auto string = std::get_if<std::string>(&value)) {
+                    usage.add("filter-binding-strings", stringMemoryUsage(*string));
+                }
+            }
+            usage.add("source-tile-ids", vectorMemoryUsage(sourceTileIds));
+            usage.add("source-index", {
+                sourceIndexByTile.size() * sizeof(decltype(sourceIndexByTile)::value_type),
+                sourceIndexByTile.size() *
+                    (sizeof(decltype(sourceIndexByTile)::value_type) + 3 * sizeof(void*)),
+            });
+            usage.add("output-index", {
+                outputIndexByTile.size() * sizeof(decltype(outputIndexByTile)::value_type),
+                outputIndexByTile.size() *
+                    (sizeof(decltype(outputIndexByTile)::value_type) + 3 * sizeof(void*)),
+            });
+            usage.add("outputs", vectorMemoryUsage(outputs));
+            for (auto const& output : outputs) {
+                usage.add("output-source-ids", vectorMemoryUsage(output.sourceTileIds_));
+                usage.add("output-contributions", vectorMemoryUsage(output.contributions_));
+                for (auto const& contribution : output.contributions_) {
+                    if (!contribution) {
+                        continue;
+                    }
+                    usage.add("point-group-members", vectorMemoryUsage(contribution->pointGroupMembers_));
+                    usage.add("relation-descriptors", vectorMemoryUsage(contribution->relationDescriptors_));
+                    usage.add("issues", vectorMemoryUsage(contribution->issues_));
+                    for (auto const& issue : contribution->issues_) {
+                        usage.add("issue-strings", stringMemoryUsage(issue.channelId_));
+                        usage.add("issue-strings", stringMemoryUsage(issue.expression_));
+                        usage.add("issue-strings", stringMemoryUsage(issue.message_));
+                    }
+                    usage.add("diagnostics", diagnosticsMemoryUsage(contribution->diagnostics_));
+                    usage.add("trace-index", {
+                        contribution->traces_.size() * sizeof(decltype(contribution->traces_)::value_type),
+                        contribution->traces_.size() *
+                            (sizeof(decltype(contribution->traces_)::value_type) + 3 * sizeof(void*)),
+                    });
+                    for (auto const& [name, _] : contribution->traces_) {
+                        usage.add("trace-names", stringMemoryUsage(name));
+                    }
+                }
+            }
+            usage.add("dependent-output-lists", vectorMemoryUsage(dependentOutputsBySource));
+            for (auto const& dependents : dependentOutputsBySource) {
+                usage.add("dependent-output-slots", vectorMemoryUsage(dependents));
+            }
+            usage.add("received-source-flags", {
+                (receivedSourceTiles.size() + 7) / 8,
+                (receivedSourceTiles.capacity() + 7) / 8,
+            });
+            usage.add("committed-source-flags", {
+                (committedSourceTiles.size() + 7) / 8,
+                (committedSourceTiles.capacity() + 7) / 8,
+            });
+            usage.add("group-channel-index", {
+                groupChannelIds.size() * sizeof(decltype(groupChannelIds)::value_type),
+                groupChannelIds.size() *
+                    (sizeof(decltype(groupChannelIds)::value_type) + 3 * sizeof(void*)),
+            });
+            for (auto const& id : groupChannelIds) {
+                usage.add("group-channel-ids", stringMemoryUsage(id));
+            }
+            usage.add("pending-relation-outputs", {
+                pendingRelationOutputs.size() * sizeof(decltype(pendingRelationOutputs)::value_type),
+                pendingRelationOutputs.size() *
+                    (sizeof(decltype(pendingRelationOutputs)::value_type) + 3 * sizeof(void*)),
+            });
+            usage.add("relation-target-tiles", {
+                relationTargetTiles.size() * sizeof(decltype(relationTargetTiles)::value_type),
+                relationTargetTiles.size() *
+                    (sizeof(decltype(relationTargetTiles)::value_type) + 3 * sizeof(void*)),
+            });
+            for (auto const& [_, target] : relationTargetTiles) {
+                usage.add("relation-target-dependents", {
+                    target.dependentOutputs_.size() * sizeof(size_t),
+                    target.dependentOutputs_.size() *
+                        (sizeof(size_t) + 3 * sizeof(void*)),
+                });
+                if (target.failureMessage_) {
+                    usage.add("relation-target-errors", stringMemoryUsage(*target.failureMessage_));
+                }
+            }
+            return usage.total().allocatedBytes;
+        }
+
+        /** Measure source-local vectors that exist between SIMFIL evaluation and state commit. */
+        [[nodiscard]] static uint64_t sourceResultAuxiliaryBytes(
+            FeatureLayerFilterSourceResult const& result)
+        {
+            MemoryUsageBreakdown usage;
+            usage.add("point-group-members", vectorMemoryUsage(result.pointGroupMembers_));
+            for (auto const& member : result.pointGroupMembers_) {
+                if (member.geometryName_) {
+                    usage.add("point-group-geometry-names", stringMemoryUsage(*member.geometryName_));
+                }
+            }
+            usage.add("relation-descriptors", vectorMemoryUsage(result.relationDescriptors_));
+            for (auto const& descriptor : result.relationDescriptors_) {
+                usage.add("relation-target-types", stringMemoryUsage(descriptor.targetTypeId_));
+                for (auto const& [key, value] : descriptor.targetFeatureId_) {
+                    usage.add("relation-target-id-strings", stringMemoryUsage(key));
+                    if (auto string = std::get_if<std::string>(&value)) {
+                        usage.add("relation-target-id-strings", stringMemoryUsage(*string));
+                    }
+                }
+                usage.add("relation-candidates", vectorMemoryUsage(descriptor.targetCandidates_));
+                usage.add("relation-matches", vectorMemoryUsage(descriptor.targetMatches_));
+            }
+            usage.add("issues", vectorMemoryUsage(result.issues_));
+            for (auto const& issue : result.issues_) {
+                usage.add("issue-strings", stringMemoryUsage(issue.channelId_));
+                usage.add("issue-strings", stringMemoryUsage(issue.expression_));
+                usage.add("issue-strings", stringMemoryUsage(issue.message_));
+            }
+            usage.add("diagnostics", diagnosticsMemoryUsage(result.diagnostics_));
+            usage.add("trace-index", {
+                result.traces_.size() * sizeof(decltype(result.traces_)::value_type),
+                result.traces_.size() *
+                    (sizeof(decltype(result.traces_)::value_type) + 3 * sizeof(void*)),
+            });
+            for (auto const& [name, _] : result.traces_) {
+                usage.add("trace-names", stringMemoryUsage(name));
+            }
+            return usage.total().allocatedBytes;
+        }
 
         void configure(
             std::vector<TileId> const& outputTileIds,
@@ -2835,24 +3061,29 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
             // completion creates an unnecessary request-wide head-of-line
             // barrier and retains complete source models while idle.
             auto self = shared_from_this();
+            auto const sourceBytes = layer->memoryUsage().total().allocatedBytes;
+            memory->sourceTileModels.add(sourceBytes);
             impl->enqueueFilterEvalJob(
                 sourceInfo.mapId_,
                 request,
                 [self,
                  sourceIndex,
+                 sourceBytes,
                  source = std::move(layer)]() mutable {
                     self->evaluate(
                         sourceIndex,
+                        sourceBytes,
                         std::move(source));
                 },
-                [self]() {
-                    self->discardEvaluationJob();
+                [self, sourceBytes]() {
+                    self->discardEvaluationJob(sourceBytes);
                 });
             emitProgress("SourceTileLoaded");
         }
 
-        void discardEvaluationJob()
+        void discardEvaluationJob(uint64_t sourceBytes)
         {
+            memory->sourceTileModels.subtract(sourceBytes);
             {
                 std::lock_guard lock(mutex);
                 if (pendingEvaluationJobs > 0) {
@@ -3099,6 +3330,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
         commitSource(
             size_t sourceIndex,
             TileFeatureLayer const& source,
+            uint64_t outputModelBytes,
             FeatureLayerFilterSourceResult result)
         {
             std::map<
@@ -3167,6 +3399,8 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     outputs[outputForSource->second]
                         .wipSubset_ =
                         std::move(result.layer_);
+                    outputs[outputForSource->second]
+                        .wipSubsetBytes_ = outputModelBytes;
                 }
                 else if (result.layer_) {
                     return tl::unexpected(simfil::Error{
@@ -3240,6 +3474,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                         ReadyOutput item{
                             dependent.outputIndex_,
                             std::move(output.wipSubset_),
+                            output.wipSubsetBytes_,
                             {},
                         };
                         item.contributions_.reserve(
@@ -3700,6 +3935,8 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 else {
                     found->second.terminal_ = true;
                     found->second.layer_ = layer;
+                    memory->relationTargetModels.add(
+                        layer->memoryUsage().total().allocatedBytes);
                     for (auto const outputIndex :
                          found->second
                              .dependentOutputs_)
@@ -4132,8 +4369,17 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
             if (request->isCancelled()) {
                 return size_t{0};
             }
+            auto const finalLayerBytes =
+                ready.layer_->memoryUsage().total().allocatedBytes;
+            if (finalLayerBytes > ready.layerBytes_) {
+                memory->outputSubsetModels.add(finalLayerBytes - ready.layerBytes_);
+            }
+            else {
+                memory->outputSubsetModels.subtract(ready.layerBytes_ - finalLayerBytes);
+            }
             request->notifyResult(
                 std::move(ready.layer_));
+            memory->outputSubsetModels.subtract(finalLayerBytes);
             return entryCount;
         }
 
@@ -4170,9 +4416,36 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
 
         void evaluate(
             size_t sourceIndex,
+            uint64_t sourceBytes,
             TileFeatureLayer::Ptr source)
         {
             bool evaluationJobPending = true;
+            uint64_t trackedOutputModelBytes = 0;
+            uint64_t trackedTemporaryBytes = 0;
+            bool outputModelTransferred = false;
+            auto releaseUntransferredOutputModel = [&]() {
+                if (!outputModelTransferred && trackedOutputModelBytes) {
+                    memory->outputSubsetModels.subtract(trackedOutputModelBytes);
+                    trackedOutputModelBytes = 0;
+                }
+            };
+            auto releaseTemporary = [&]() {
+                if (trackedTemporaryBytes) {
+                    memory->evaluationTemporaries.subtract(trackedTemporaryBytes);
+                    trackedTemporaryBytes = 0;
+                }
+            };
+            auto replaceTemporary = [&](uint64_t replacement) {
+                if (replacement >= trackedTemporaryBytes) {
+                    memory->evaluationTemporaries.add(
+                        replacement - trackedTemporaryBytes);
+                }
+                else {
+                    memory->evaluationTemporaries.subtract(
+                        trackedTemporaryBytes - replacement);
+                }
+                trackedTemporaryBytes = replacement;
+            };
             auto finishEvaluationJob = [&]() {
                 if (!evaluationJobPending) {
                     return;
@@ -4183,6 +4456,7 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                         --pendingEvaluationJobs;
                     }
                 }
+                memory->sourceTileModels.subtract(sourceBytes);
                 evaluationJobPending = false;
             };
             try {
@@ -4210,6 +4484,13 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                     fail(sourceResult.error());
                     return;
                 }
+                replaceTemporary(sourceResultAuxiliaryBytes(*sourceResult));
+                trackedOutputModelBytes = sourceResult->layer_
+                    ? sourceResult->layer_->memoryUsage().total().allocatedBytes
+                    : uint64_t{0};
+                if (trackedOutputModelBytes) {
+                    memory->outputSubsetModels.add(trackedOutputModelBytes);
+                }
                 if (sourceResult->layer_) {
                     sourceResult->layer_->setInfo(
                         "Filter/Process-Entries#ms",
@@ -4219,6 +4500,8 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                             .count());
                 }
                 if (request->isCancelled()) {
+                    releaseTemporary();
+                    releaseUntransferredOutputModel();
                     finishEvaluationJob();
                     finishIfComplete();
                     return;
@@ -4230,10 +4513,15 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                         *source,
                         *sourceResult);
                 if (!locatedRelations) {
+                    releaseTemporary();
+                    releaseUntransferredOutputModel();
                     finishEvaluationJob();
                     fail(locatedRelations.error());
                     return;
                 }
+                // Relation discovery appends candidates to the source result;
+                // refresh the sampled capacity before ownership is committed.
+                replaceTemporary(sourceResultAuxiliaryBytes(*sourceResult));
                 if (sourceResult->layer_ &&
                     !sourceResult
                          ->relationDescriptors_
@@ -4250,12 +4538,17 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 auto ready = commitSource(
                     sourceIndex,
                     *source,
+                    trackedOutputModelBytes,
                     std::move(*sourceResult));
                 if (!ready) {
+                    releaseTemporary();
+                    releaseUntransferredOutputModel();
                     finishEvaluationJob();
                     fail(ready.error());
                     return;
                 }
+                outputModelTransferred = trackedOutputModelBytes != 0;
+                releaseTemporary();
                 emitProgress("SourceTileEvaluated");
 
                 auto prepared =
@@ -4284,6 +4577,8 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
                 finishIfComplete();
             }
             catch (std::exception const& exception) {
+                releaseTemporary();
+                releaseUntransferredOutputModel();
                 finishEvaluationJob();
                 auto const sourceTileId =
                     source ? source->tileId() : TileId{};
@@ -4328,9 +4623,27 @@ bool Service::request(FeatureLayerFilterTilesRequest::Ptr const& request, std::o
     state->hasPointGroups = hasPointGroups;
     state->hasStoredRelations = hasStoredRelations;
     state->outputLevel = request->tileIds_.front().level();
+    state->memory = std::make_shared<FilterMemoryTracker>();
+    state->memory->mapId = request->mapId_;
+    state->memory->layerId = request->layerId_;
+    state->memory->filterId = request->filter_.filterId_;
+    state->memory->generation = request->filter_.generation_;
+    state->memory->requestedTiles = request->tileIds_.size();
     state->configure(
         request->tileIds_,
         tileIdsToProcess);
+    state->memory->sampleOrchestration = [weakState = std::weak_ptr<FilterExecutionState>{state}] {
+        auto active = weakState.lock();
+        if (!active) {
+            return uint64_t{0};
+        }
+        std::lock_guard lock(active->mutex);
+        return active->orchestrationBytesLocked();
+    };
+    {
+        std::lock_guard lock(impl_->jobsMutex_);
+        impl_->filterMemoryTrackers_.push_back(state->memory);
+    }
 
     childRequest->onFeatureLayer(
         [state](TileFeatureLayer::Ptr layer) {
@@ -5065,16 +5378,9 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
         }}
     };
 
-#ifdef __linux__
-    auto const allocator = mallinfo2();
-    result["allocator"] = nlohmann::json{
-        {"arena-bytes", allocator.arena},
-        {"free-arena-bytes", allocator.fordblks},
-        {"in-use-arena-bytes", allocator.uordblks},
-        {"mmap-bytes", allocator.hblkhd},
-        {"releasable-top-bytes", allocator.keepcost},
-    };
-#endif
+    if (auto allocator = detail::allocatorMemoryStatistics(); !allocator.is_null()) {
+        result["allocator"] = std::move(allocator);
+    }
 
     if (!includeCachedFeatureTreeBytes && !includeTileSizeDistribution) {
         return result;
@@ -5205,6 +5511,273 @@ nlohmann::json Service::getStatistics(bool includeCachedFeatureTreeBytes, bool i
         result["cached-feature-tile-size-distribution"] = buildTileSizeDistribution(std::move(tileSizes));
     }
 
+    return result;
+}
+
+nlohmann::json Service::getMemoryStatistics() const
+{
+    MemoryUsageBreakdown metadata;
+    MemoryUsageBreakdown catalog;
+    MemoryUsageBreakdown scheduler;
+    MemoryUsageBreakdown telemetry;
+
+    struct DataSourceMemoryCandidate
+    {
+        DataSource::Ptr dataSource;
+        std::string sourceId;
+        std::string mapId;
+        std::string status;
+    };
+    std::vector<DataSourceMemoryCandidate> dataSourceCandidates;
+    {
+        std::shared_lock lock(impl_->dataSourcesMutex_);
+        for (auto const& [dataSource, usage] : impl_->dataSourceInfoMemory_) {
+            metadata.add("canonical-snapshots", usage);
+        }
+        for (auto const& [dataSource, usage] : impl_->workerInfoMemory_) {
+            metadata.add("worker-snapshot-containers", usage);
+        }
+        for (auto const& [_, usage] : impl_->sourceCatalogInfoMemory_) {
+            metadata.add("catalog-snapshots", usage);
+        }
+
+        catalog.add("entries", vectorMemoryUsage(impl_->sourceCatalog_));
+        std::unordered_set<DataSource const*> catalogDataSources;
+        for (auto const& entry : impl_->sourceCatalog_) {
+            catalog.add("descriptors", dataSourceDescriptorMemoryUsage(entry.descriptor));
+            catalog.add("status-messages", stringMemoryUsage(entry.statusMessage));
+            auto status = std::string("initializing");
+            if (entry.status == DataSourceCatalogStatus::Ready) {
+                status = "ready";
+            }
+            else if (entry.status == DataSourceCatalogStatus::Failed) {
+                status = "failed";
+            }
+            dataSourceCandidates.push_back({
+                entry.dataSource,
+                entry.descriptor.sourceId,
+                entry.info ? entry.info->mapId_ : entry.descriptor.displayName,
+                std::move(status),
+            });
+            if (entry.dataSource) {
+                catalogDataSources.insert(entry.dataSource.get());
+            }
+        }
+        for (auto const& [dataSource, info] : impl_->dataSourceInfo_) {
+            if (catalogDataSources.contains(dataSource.get())) {
+                continue;
+            }
+            auto sourceId = impl_->dataSourceSourceIds_.find(dataSource);
+            dataSourceCandidates.push_back({
+                dataSource,
+                sourceId == impl_->dataSourceSourceIds_.end() ? std::string{} : sourceId->second,
+                info.mapId_,
+                "ready",
+            });
+        }
+
+        catalog.add("source-id-index", {
+            impl_->dataSourceSourceIds_.size() *
+                sizeof(decltype(impl_->dataSourceSourceIds_)::value_type),
+            impl_->dataSourceSourceIds_.size() *
+                (sizeof(decltype(impl_->dataSourceSourceIds_)::value_type) + 3 * sizeof(void*)),
+        });
+        for (auto const& [_, sourceId] : impl_->dataSourceSourceIds_) {
+            catalog.add("source-ids", stringMemoryUsage(sourceId));
+        }
+        catalog.add("config-status", stringMemoryUsage(impl_->sourceConfigStatus_));
+        catalog.add("config-status-message", stringMemoryUsage(impl_->sourceConfigStatusMessage_));
+        catalog.add("construction-threads", vectorMemoryUsage(impl_->dataSourceConstructionThreads_));
+        catalog.add("config-datasource-handles", vectorMemoryUsage(impl_->dataSourcesFromConfig_));
+        catalog.add("add-on-handles", {
+            impl_->addOnDataSources_.size() * sizeof(DataSource::Ptr),
+            impl_->addOnDataSources_.size() *
+                (sizeof(DataSource::Ptr) + 2 * sizeof(void*)),
+        });
+
+        for (auto const& [_, workers] : impl_->dataSourceWorkers_) {
+            metadata.add("worker-handles", vectorMemoryUsage(workers));
+            metadata.add("worker-objects", {
+                workers.size() * (sizeof(Worker) - sizeof(DataSourceInfo)),
+                workers.size() * (sizeof(Worker) - sizeof(DataSourceInfo)),
+            });
+        }
+    }
+
+    auto accountMapTileKey = [](MemoryUsageBreakdown& target, MapTileKey const& key) {
+        target.add("map-tile-key-strings", stringMemoryUsage(key.mapId_));
+        target.add("map-tile-key-strings", stringMemoryUsage(key.layerId_));
+    };
+    auto accountLayerRequest = [&](LayerTilesRequest const& request) {
+        scheduler.add("request-objects", {
+            sizeof(LayerTilesRequest),
+            sizeof(LayerTilesRequest),
+        });
+        scheduler.add("request-strings", stringMemoryUsage(request.mapId_));
+        scheduler.add("request-strings", stringMemoryUsage(request.layerId_));
+        if (request.sourceId_) {
+            scheduler.add("request-strings", stringMemoryUsage(*request.sourceId_));
+        }
+        scheduler.add("request-tile-ids", vectorMemoryUsage(request.tileIds_));
+        scheduler.add("priority-tile-index", {
+            request.priorityTileIds_.size() * sizeof(TileId),
+            request.priorityTileIds_.size() * (sizeof(TileId) + 3 * sizeof(void*)),
+        });
+        scheduler.add("resolved-tile-keys", vectorMemoryUsage(request.resolvedTileKeys_));
+        for (auto const& key : request.resolvedTileKeys_) {
+            accountMapTileKey(scheduler, key);
+        }
+        scheduler.add("not-started-tile-index", {
+            request.tileKeysNotStarted_.size() * sizeof(MapTileKey),
+            request.tileKeysNotStarted_.size() * (sizeof(MapTileKey) + 3 * sizeof(void*)),
+        });
+        for (auto const& key : request.tileKeysNotStarted_) {
+            accountMapTileKey(scheduler, key);
+        }
+        scheduler.add("feature-id-restrictions", {
+            request.featureIdsByTile_.size() *
+                sizeof(decltype(request.featureIdsByTile_)::value_type),
+            request.featureIdsByTile_.size() *
+                (sizeof(decltype(request.featureIdsByTile_)::value_type) + 3 * sizeof(void*)),
+        });
+        for (auto const& [_, ids] : request.featureIdsByTile_) {
+            scheduler.add("feature-id-vectors", stringVectorMemoryUsage(ids));
+        }
+    };
+
+    std::vector<std::shared_ptr<FilterMemoryTracker>> filterTrackers;
+    {
+        std::unique_lock lock(impl_->jobsMutex_);
+        scheduler.add("request-list", {
+            impl_->requests_.size() * sizeof(LayerTilesRequest::Ptr),
+            impl_->requests_.size() *
+                (sizeof(LayerTilesRequest::Ptr) + 2 * sizeof(void*)),
+        });
+        std::unordered_set<LayerTilesRequest const*> measuredRequests;
+        for (auto const& request : impl_->requests_) {
+            if (request && measuredRequests.insert(request.get()).second) {
+                accountLayerRequest(*request);
+            }
+        }
+        scheduler.add("in-flight-job-index", {
+            impl_->jobsInProgress_.size() *
+                sizeof(decltype(impl_->jobsInProgress_)::value_type),
+            impl_->jobsInProgress_.size() *
+                (sizeof(decltype(impl_->jobsInProgress_)::value_type) + 3 * sizeof(void*)),
+        });
+        for (auto const& [key, job] : impl_->jobsInProgress_) {
+            accountMapTileKey(scheduler, key);
+            if (!job) {
+                continue;
+            }
+            scheduler.add("in-flight-job-objects", {sizeof(Controller::Job), sizeof(Controller::Job)});
+            accountMapTileKey(scheduler, job->tileKey);
+            scheduler.add("job-waiters", vectorMemoryUsage(job->waitingRequests));
+            for (auto const& request : job->waitingRequests) {
+                if (request && measuredRequests.insert(request.get()).second) {
+                    accountLayerRequest(*request);
+                }
+            }
+        }
+        scheduler.add("filter-job-list", {
+            impl_->filterEvalJobs_.size() * sizeof(Controller::FilterEvalWork),
+            impl_->filterEvalJobs_.size() *
+                (sizeof(Controller::FilterEvalWork) + 2 * sizeof(void*)),
+        });
+        for (auto const& work : impl_->filterEvalJobs_) {
+            scheduler.add("filter-job-map-ids", stringMemoryUsage(work.mapId));
+        }
+        scheduler.add("filter-worker-handles", vectorMemoryUsage(impl_->filterEvalWorkers_));
+        scheduler.add("map-epochs", {
+            impl_->mapEpochs_.size() * sizeof(decltype(impl_->mapEpochs_)::value_type),
+            impl_->mapEpochs_.size() *
+                (sizeof(decltype(impl_->mapEpochs_)::value_type) + 3 * sizeof(void*)),
+        });
+        for (auto const& [mapId, _] : impl_->mapEpochs_) {
+            scheduler.add("map-epoch-ids", stringMemoryUsage(mapId));
+        }
+
+        auto tracker = impl_->filterMemoryTrackers_.begin();
+        while (tracker != impl_->filterMemoryTrackers_.end()) {
+            auto active = tracker->lock();
+            if (!active) {
+                tracker = impl_->filterMemoryTrackers_.erase(tracker);
+                continue;
+            }
+            filterTrackers.push_back(std::move(active));
+            ++tracker;
+        }
+        telemetry.add("filter-tracker-handles", vectorMemoryUsage(impl_->filterMemoryTrackers_));
+    }
+
+    // Sampling may briefly acquire a filter execution mutex, so never do it
+    // while holding the scheduler mutex used to publish completed work.
+    auto activeFilters = nlohmann::json::array();
+    uint64_t activeFilterBytes = 0;
+    for (auto const& tracker : filterTrackers) {
+        auto snapshot = tracker->toJson();
+        activeFilterBytes += snapshot.value("current-bytes", uint64_t{0});
+        activeFilters.push_back(std::move(snapshot));
+    }
+    telemetry.add("active-filter-owned", {0, activeFilterBytes});
+
+    auto dataSources = nlohmann::json::array();
+    uint64_t measuredDataSourceBytes = 0;
+    for (auto const& candidate : dataSourceCandidates) {
+        auto row = nlohmann::json{
+            {"source-id", candidate.sourceId},
+            {"map-id", candidate.mapId},
+            {"status", candidate.status},
+            {"measurement", "unavailable"},
+        };
+        if (candidate.dataSource) {
+            try {
+                if (auto bytes = candidate.dataSource->estimatedRetainedMemoryBytes()) {
+                    row["retained-bytes"] = *bytes;
+                    row["measurement"] = "datasource-estimate";
+                    measuredDataSourceBytes += *bytes;
+                }
+            }
+            catch (std::exception const& error) {
+                row["measurement"] = "error";
+                row["error"] = error.what();
+            }
+            catch (...) {
+                row["measurement"] = "error";
+                row["error"] = "Datasource memory estimator threw a non-standard exception.";
+            }
+        }
+        dataSources.push_back(std::move(row));
+    }
+
+    MemoryUsageBreakdown mapgetOwned;
+    mapgetOwned.merge("metadata", metadata);
+    mapgetOwned.merge("catalog", catalog);
+    mapgetOwned.merge("scheduler", scheduler);
+    mapgetOwned.merge("telemetry", telemetry);
+    auto result = nlohmann::json{
+        {"process", detail::processMemoryStatistics()},
+        {"mapget", mapgetOwned.toJson()},
+        {"active-filters", std::move(activeFilters)},
+        {"datasources", std::move(dataSources)},
+        {"datasource-measured-bytes", measuredDataSourceBytes},
+        {"quality", {
+            {"mapget", "capacity-lower-bound"},
+            {"datasources", "cooperative-exclusive-estimate"},
+            {"allocator-bookkeeping-included", false},
+        }},
+    };
+    if (auto allocator = detail::allocatorMemoryStatistics(); !allocator.is_null()) {
+        result["allocator"] = std::move(allocator);
+    }
+    auto const knownBytes =
+        mapgetOwned.total().allocatedBytes + measuredDataSourceBytes;
+    result["known-current-bytes"] = knownBytes;
+    if (result["process"].contains("resident-bytes")) {
+        auto const resident = result["process"]["resident-bytes"].get<uint64_t>();
+        result["unattributed-resident-bytes"] =
+            resident > knownBytes ? resident - knownBytes : uint64_t{0};
+    }
     return result;
 }
 

@@ -59,6 +59,18 @@ struct NamedTestDataSource : public DataSource
     std::string mapId_;
 };
 
+struct MemoryReportingDataSource : public NamedTestDataSource
+{
+    MemoryReportingDataSource()
+        : NamedTestDataSource("MemoryReportingMap")
+    {}
+
+    [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override
+    {
+        return 123456;
+    }
+};
+
 void syncFile(const fs::path& path)
 {
     log().trace("Syncing file: {}", path.string());
@@ -281,6 +293,23 @@ sources:
 
     fs::remove_all(tempDir);
     DataSourceConfigService::get().end();
+}
+
+TEST_CASE("Service memory snapshot includes cooperative datasource ownership", "[Service][memory]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto dataSource = std::make_shared<MemoryReportingDataSource>();
+    service.add(dataSource);
+
+    auto const memory = service.getMemoryStatistics();
+    REQUIRE(memory["mapget"]["allocated-bytes"].get<uint64_t>() > 0);
+    REQUIRE(memory["datasource-measured-bytes"] == 123456);
+    REQUIRE(memory["known-current-bytes"].get<uint64_t>() >= 123456);
+    REQUIRE(memory["datasources"].size() == 1);
+    REQUIRE(memory["datasources"][0]["map-id"] == "MemoryReportingMap");
+    REQUIRE(memory["datasources"][0]["measurement"] == "datasource-estimate");
+    REQUIRE(memory["datasources"][0]["retained-bytes"] == 123456);
+    REQUIRE(memory["process"].contains("measurement"));
 }
 
 TEST_CASE("Datasource catalog display names are generic and display-only", "[DataSourceConfig]")

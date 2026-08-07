@@ -10,6 +10,7 @@
 #include "sfl/small_vector.hpp"
 #include <variant>
 #include "tileid.h"
+#include "memory.h"
 
 namespace mapget
 {
@@ -383,6 +384,9 @@ struct LayerInfo
 
     /** Serialize LayerInfo to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
+
+    /** Report retained layer metadata and compiled schema capacity. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 };
 
 /**
@@ -464,6 +468,9 @@ struct DataSourceInfo
 
     /** Serialize DataSourceInfo to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
+
+    /** Report retained datasource metadata, layer metadata, and schema capacity. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 };
 
 }  // End of namespace mapget

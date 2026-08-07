@@ -287,6 +287,9 @@ public:
     /** Report serialized size stats for feature-layer data and model-pool columns. */
     [[nodiscard]] nlohmann::json serializationSizeStats() const;
 
+    /** Report retained feature-model capacity without counting shared metadata. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
+
     /** Access number of stored features */
     size_t size() const;
 

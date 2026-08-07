@@ -455,6 +455,7 @@ GridDataSource::GridDataSource(const YAML::Node& config) {
         intersectionLayer.geometry.type = GeometryType::Point;
         config_.layers.push_back(intersectionLayer);
     }
+    staticRetainedMemoryBytes_ = computeStaticRetainedMemoryBytes();
 }
 
 DataSourceInfo GridDataSource::info() {
@@ -503,6 +504,78 @@ DataSourceInfo GridDataSource::info() {
     }
 
     return DataSourceInfo::fromJson(info);
+}
+
+std::optional<uint64_t> GridDataSource::estimatedRetainedMemoryBytes() const
+{
+    MemoryUsageBreakdown dynamicMemory;
+    std::lock_guard lock(contextMutex_);
+    dynamicMemory.add("context-index", {
+        contextCache_.size() * sizeof(decltype(contextCache_)::value_type),
+        contextCache_.bucket_count() * sizeof(void*) +
+            contextCache_.size() *
+                (sizeof(decltype(contextCache_)::value_type) + 2 * sizeof(void*)),
+    });
+    dynamicMemory.add("context-objects", {
+        contextCache_.size() * sizeof(TileSpatialContext),
+        contextCache_.size() * sizeof(TileSpatialContext),
+    });
+    // Context vectors are populated outside contextMutex_. Reading their
+    // capacities here would race generation; process RSS keeps that mutable
+    // payload visible in the unattributed remainder without making /status unsafe.
+    return staticRetainedMemoryBytes_ + dynamicMemory.total().allocatedBytes;
+}
+
+uint64_t GridDataSource::computeStaticRetainedMemoryBytes() const
+{
+    MemoryUsageBreakdown memory;
+    memory.add("object", {sizeof(GridDataSource), sizeof(GridDataSource)});
+    memory.add("config-map-id", stringMemoryUsage(config_.mapId));
+    memory.add("config-layers", vectorMemoryUsage(config_.layers));
+
+    auto addAttribute = [&](AttributeConfig const& attribute) {
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.name));
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.templateStr));
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.formula));
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.fixedValue));
+        memory.add("config-attribute-string-values", stringVectorMemoryUsage(attribute.stringValues));
+        memory.add("config-attribute-weights", vectorMemoryUsage(attribute.weights));
+        memory.add("config-attribute-zones", vectorMemoryUsage(attribute.zones));
+        memory.add("config-attribute-zone-distances", vectorMemoryUsage(attribute.zoneDistances));
+    };
+    for (auto const& layer : config_.layers) {
+        memory.add("config-layer-strings", stringMemoryUsage(layer.name));
+        memory.add("config-layer-strings", stringMemoryUsage(layer.featureType));
+        memory.add("config-geometry-size-range", vectorMemoryUsage(layer.geometry.sizeRange));
+        memory.add("config-geometry-aspect-ratio", vectorMemoryUsage(layer.geometry.aspectRatio));
+        memory.add("config-top-attributes", vectorMemoryUsage(layer.topAttributes));
+        for (auto const& attribute : layer.topAttributes) {
+            addAttribute(attribute);
+        }
+        memory.add("config-attribute-layers", vectorMemoryUsage(layer.layeredAttributes));
+        for (auto const& attributeLayer : layer.layeredAttributes) {
+            memory.add("config-attribute-layer-names", stringMemoryUsage(attributeLayer.layerName));
+            memory.add("config-layered-attributes", vectorMemoryUsage(attributeLayer.attributes));
+            for (auto const& attribute : attributeLayer.attributes) {
+                memory.add("config-layered-attribute-strings", stringMemoryUsage(attribute.name));
+                memory.add("config-layered-attribute-strings", stringMemoryUsage(attribute.validityType));
+                memory.add("config-layered-attribute-fields", vectorMemoryUsage(attribute.fields));
+                for (auto const& field : attribute.fields) {
+                    addAttribute(field);
+                }
+            }
+        }
+        memory.add("config-relations", vectorMemoryUsage(layer.relations));
+        for (auto const& relation : layer.relations) {
+            memory.add("config-relation-strings", stringMemoryUsage(relation.name));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.targetLayer));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.targetType));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.cardinality));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.validityType));
+        }
+    }
+
+    return memory.total().allocatedBytes;
 }
 
 std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(TileId tileId) const {

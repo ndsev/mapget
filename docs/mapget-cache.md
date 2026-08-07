@@ -37,5 +37,10 @@ The easiest way to see how the cache behaves is to call `GET /status` on the run
 
 - Global service information such as the number of active datasources and worker threads.
 - Cache statistics, including `cache-hits`, `cache-misses` and the number of loaded string pools.
+- Capacity-oriented memory for loaded string pools and the cache backend.
 
-When the in‑memory cache is used, additional fields show the current number of cached tiles and the size of the FIFO queue. These values provide a quick indication of whether the chosen cache size is appropriate for the workload.
+When the in‑memory cache is used, additional fields show the current number of
+cached tiles, FIFO size, retained blob/index capacity, and its sampled peak.
+The SQLite backend reports page-cache, schema, and prepared-statement memory
+from SQLite's own counters. These values provide a quick indication of whether
+the chosen cache size is appropriate for the workload.

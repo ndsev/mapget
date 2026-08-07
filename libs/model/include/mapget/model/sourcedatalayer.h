@@ -69,6 +69,9 @@ public:
     tl::expected<void, simfil::Error> write(std::ostream&) override;
     nlohmann::json toJson() const override;
 
+    /** Report retained source-data model capacity without shared metadata. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
+
     tl::expected<void, simfil::Error>
     setStrings(std::shared_ptr<simfil::StringPool> const& newDict) override;
 

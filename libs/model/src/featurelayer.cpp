@@ -1788,6 +1788,30 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     };
 }
 
+MemoryUsageBreakdown TileFeatureLayer::memoryUsage() const
+{
+    auto result = TileFeatureModelLayerBase::memoryUsage();
+    result.add("feature-layer-object", {
+        sizeof(TileFeatureLayer) - sizeof(TileFeatureModelLayerBase),
+        sizeof(TileFeatureLayer) - sizeof(TileFeatureModelLayerBase),
+    });
+    result.add("feature-layer-impl", {sizeof(Impl), sizeof(Impl)});
+    result.add("feature-layer.features", impl_->features_.memory_usage());
+    result.add("feature-layer.complex-data", impl_->complexFeatureData_.memory_usage());
+    result.add("feature-layer.complex-data-refs", impl_->complexFeatureDataRefs_.memory_usage());
+    result.add("feature-layer.attributes", impl_->attributes_.memory_usage());
+    result.add("feature-layer.validities", impl_->validities_.memory_usage());
+    result.add("feature-layer.attribute-layers", impl_->attrLayers_.memory_usage());
+    result.add("feature-layer.attribute-layer-lists", impl_->attrLayerLists_.memory_usage());
+    result.add("feature-layer.relations", impl_->relations_.memory_usage());
+    result.add("feature-layer.feature-hash-index", impl_->featureHashIndex_.memory_usage());
+    if (impl_->glbAttachmentName_) {
+        result.add("feature-layer.glb-attachment-name", stringMemoryUsage(*impl_->glbAttachmentName_));
+    }
+    result.add("feature-layer.expression-cache", impl_->expressionCache_.memoryUsage());
+    return result;
+}
+
 size_t TileFeatureLayer::size() const
 {
     return numRoots();

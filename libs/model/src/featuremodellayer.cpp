@@ -167,6 +167,39 @@ model_ptr<Object> TileFeatureModelLayerBase::getIdPrefix() const
     return {};
 }
 
+MemoryUsageBreakdown TileFeatureModelLayerBase::memoryUsage() const
+{
+    auto result = TileLayer::memoryUsage();
+    result.add("feature-model-base-object", {
+        sizeof(TileFeatureModelLayerBase) - sizeof(TileLayer),
+        sizeof(TileFeatureModelLayerBase) - sizeof(TileLayer),
+    });
+
+    auto const model = ModelPool::memoryUsageStats();
+    result.add("model-pool.implementation", model.implementation);
+    result.add("model-pool.roots", model.roots);
+    result.add("model-pool.int64", model.int64Values);
+    result.add("model-pool.double", model.doubleValues);
+    result.add("model-pool.string-data", model.stringData);
+    result.add("model-pool.string-ranges", model.stringRanges);
+    result.add("model-pool.byte-array-ranges", model.byteArrayRanges);
+    result.add("model-pool.object-members", model.objectMembers);
+    result.add("model-pool.object-schemas", model.objectSchemas);
+    result.add("model-pool.array-members", model.arrayMembers);
+    result.add("model-pool.array-schemas", model.arraySchemas);
+
+    result.add("common.feature-ids", featureIds_.memory_usage());
+    result.add("common.geometry-source-data-references", geomSourceDataRefs_.memory_usage());
+    result.add("common.geometry-name-indices", geomNameIndices_.memory_usage());
+    result.add("common.geometry-views", geomViews_.memory_usage());
+    result.add("common.polygon-ring-start-refs", polygonRingStartRefs_.memory_usage());
+    result.add("common.source-data-references", sourceDataReferences_.memory_usage());
+    result.add("common.point-buffers", pointBuffers_.memory_usage());
+    result.add("common.polygon-ring-starts", polygonRingStarts_.memory_usage());
+    result.add("common.geometry-names", stringVectorMemoryUsage(geometryNames_));
+    return result;
+}
+
 model_ptr<FeatureId> TileFeatureModelLayerBase::resolveFeatureIdNode(simfil::ModelNode const&) const
 {
     raise("Cannot cast this node to a FeatureId.");

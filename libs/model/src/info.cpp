@@ -574,6 +574,36 @@ nlohmann::json LayerInfo::toJson() const
     return result;
 }
 
+MemoryUsageBreakdown LayerInfo::memoryUsage() const
+{
+    MemoryUsageBreakdown result;
+    result.add("object", {sizeof(LayerInfo), sizeof(LayerInfo)});
+    result.add("layer-id", stringMemoryUsage(layerId_));
+    result.add("feature-types", vectorMemoryUsage(featureTypes_));
+    for (auto const& featureType : featureTypes_) {
+        result.add("feature-type-names", stringMemoryUsage(featureType.name_));
+        result.add("id-compositions", vectorMemoryUsage(featureType.uniqueIdCompositions_));
+        for (auto const& composition : featureType.uniqueIdCompositions_) {
+            result.add("id-parts", vectorMemoryUsage(composition));
+            for (auto const& part : composition) {
+                result.add("id-part-strings", stringMemoryUsage(part.idPartLabel_));
+                result.add("id-part-strings", stringMemoryUsage(part.description_));
+            }
+        }
+    }
+    result.add("zoom-levels", vectorMemoryUsage(zoomLevels_));
+    result.add("coverage", vectorMemoryUsage(coverage_));
+    for (auto const& coverage : coverage_) {
+        auto const logicalBytes = (coverage.filled_.size() + 7) / 8;
+        auto const allocatedBytes = (coverage.filled_.capacity() + 7) / 8;
+        result.add("coverage-bits", {logicalBytes, allocatedBytes});
+    }
+    if (featureModelSchema_) {
+        result.merge("schema", featureModelSchema_->memoryUsage());
+    }
+    return result;
+}
+
 std::shared_ptr<LayerSchema const> LayerInfo::layerSchema() const
 {
     return featureModelSchema_;
@@ -708,6 +738,27 @@ nlohmann::json DataSourceInfo::toJson() const
         {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
         {"protocolVersion", effectiveDataSourceProtocolVersion(protocolVersion_).toJson()}};
+}
+
+MemoryUsageBreakdown DataSourceInfo::memoryUsage() const
+{
+    MemoryUsageBreakdown result;
+    result.add("object", {sizeof(DataSourceInfo), sizeof(DataSourceInfo)});
+    result.add("string-pool-id", stringMemoryUsage(stringPoolId_));
+    result.add("map-id", stringMemoryUsage(mapId_));
+    result.add("layers-index", {
+        layers_.size() * sizeof(decltype(layers_)::value_type),
+        layers_.bucket_count() * sizeof(void*) +
+            layers_.size() * (sizeof(decltype(layers_)::value_type) + 2 * sizeof(void*)),
+    });
+    for (auto const& [layerId, layer] : layers_) {
+        result.add("layer-index-keys", stringMemoryUsage(layerId));
+        if (layer) {
+            result.merge("layer." + layerId, layer->memoryUsage());
+        }
+    }
+    result.add("extra-json", jsonMemoryUsage(extraJsonAttachment_));
+    return result;
 }
 
 void DataSourceInfo::validateIdentifiers() const

@@ -1,4 +1,5 @@
 #include <sqlite3.h>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <chrono>
@@ -387,6 +388,52 @@ void SQLiteCache::putStringPoolBlob(std::string_view const& sourceStringPoolId, 
     if (rc != SQLITE_DONE) {
         raise(fmt::format("Error writing to database: {}", sqlite3_errmsg(db_)));
     }
+}
+
+nlohmann::json SQLiteCache::getStatistics() const
+{
+    auto result = Cache::getStatistics();
+    std::lock_guard lock(dbMutex_);
+    auto readByteStatus = [this](int operation) {
+        int current = 0;
+        int peak = 0;
+        if (sqlite3_db_status(db_, operation, &current, &peak, 0) != SQLITE_OK) {
+            return nlohmann::json::object();
+        }
+        return nlohmann::json{
+            {"current-bytes", current},
+            {"peak-bytes", peak},
+        };
+    };
+    auto const pageCache = readByteStatus(SQLITE_DBSTATUS_CACHE_USED);
+    auto const schema = readByteStatus(SQLITE_DBSTATUS_SCHEMA_USED);
+    auto const statements = readByteStatus(SQLITE_DBSTATUS_STMT_USED);
+    int lookasideCurrent = 0;
+    int lookasidePeak = 0;
+    sqlite3_db_status(
+        db_,
+        SQLITE_DBSTATUS_LOOKASIDE_USED,
+        &lookasideCurrent,
+        &lookasidePeak,
+        0);
+
+    result["sqlite"] = {
+        {"page-cache", pageCache},
+        {"schema", schema},
+        {"prepared-statements", statements},
+        {"lookaside", {
+            {"current-slots", lookasideCurrent},
+            {"peak-slots", lookasidePeak},
+        }},
+        {"database-path", dbPath_},
+    };
+    auto const sqliteBytes =
+        pageCache.value("current-bytes", uint64_t{0}) +
+        schema.value("current-bytes", uint64_t{0}) +
+        statements.value("current-bytes", uint64_t{0});
+    result["memory"]["sqlite-owned-bytes"] = sqliteBytes;
+    result["memory"]["sqlite-measurement"] = "sqlite-db-status";
+    return result;
 }
 
 }  // namespace mapget

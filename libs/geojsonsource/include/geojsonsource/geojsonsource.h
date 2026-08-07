@@ -130,10 +130,15 @@ public:
     void fill(mapget::TileFeatureLayer::Ptr const&) override;
     void fill(mapget::TileSourceDataLayer::Ptr const&) override;
 
+    /** Estimate immutable manifest, coverage, path, and metadata storage. */
+    [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
+
     [[nodiscard]] bool hasManifest() const { return hasManifest_; }
     [[nodiscard]] const Manifest& manifest() const { return manifest_; }
 
 private:
+    /** Compute immutable ownership once construction has finalized all indexes. */
+    [[nodiscard]] uint64_t computeRetainedMemoryBytes() const;
     [[nodiscard]] bool parseManifest();
     void initFromManifest();
     void initFromDirectory();
@@ -150,6 +155,7 @@ private:
     Manifest manifest_;
     std::unordered_map<TileLayerKey, std::string, TileLayerKeyHash> tileLayerToFile_;
     std::unordered_map<std::string, std::unordered_set<int32_t>> layerCoverage_;
+    uint64_t retainedMemoryBytes_ = 0;
 };
 
 /**
@@ -165,7 +171,12 @@ public:
     void fill(mapget::TileFeatureLayer::Ptr const&) override;
     void fill(mapget::TileSourceDataLayer::Ptr const&) override;
 
+    /** Estimate endpoint configuration and datasource metadata storage. */
+    [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
+
 private:
+    /** Compute immutable endpoint/configuration ownership once during construction. */
+    [[nodiscard]] uint64_t computeBaselineRetainedMemoryBytes() const;
     [[nodiscard]] std::string renderTileUrl(int32_t tileId, std::string_view layerId) const;
     [[nodiscard]] std::string fetchTileBody(int32_t tileId, std::string_view layerId) const;
 
@@ -177,6 +188,7 @@ private:
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    uint64_t baselineRetainedMemoryBytes_ = 0;
 };
 
 }  // namespace mapget::geojsonsource

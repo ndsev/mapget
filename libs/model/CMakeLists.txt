@@ -3,6 +3,7 @@ project(mapget-model CXX)
 add_library(mapget-model STATIC
   include/mapget/model/stringpool.h
   include/mapget/model/layer.h
+  include/mapget/model/memory.h
   include/mapget/model/featuremodellayer.h
   include/mapget/model/featurelayer.h
   include/mapget/model/subsetlayer.h
@@ -34,6 +35,7 @@ add_library(mapget-model STATIC
 
   src/stringpool.cpp
   src/layer.cpp
+  src/memory.cpp
   src/featuremodellayer.cpp
   src/featurelayer.cpp
   src/subsetlayer.cpp

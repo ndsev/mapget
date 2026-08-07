@@ -155,6 +155,33 @@ nlohmann::json TileSourceDataLayer::toJson() const
     return ModelPool::toJson();
 }
 
+MemoryUsageBreakdown TileSourceDataLayer::memoryUsage() const
+{
+    auto result = TileLayer::memoryUsage();
+    result.add("source-data-layer-object", {
+        sizeof(TileSourceDataLayer) - sizeof(TileLayer),
+        sizeof(TileSourceDataLayer) - sizeof(TileLayer),
+    });
+    result.add("source-data-layer-impl", {sizeof(Impl), sizeof(Impl)});
+
+    auto const model = ModelPool::memoryUsageStats();
+    result.add("model-pool.implementation", model.implementation);
+    result.add("model-pool.roots", model.roots);
+    result.add("model-pool.int64", model.int64Values);
+    result.add("model-pool.double", model.doubleValues);
+    result.add("model-pool.string-data", model.stringData);
+    result.add("model-pool.string-ranges", model.stringRanges);
+    result.add("model-pool.byte-array-ranges", model.byteArrayRanges);
+    result.add("model-pool.object-members", model.objectMembers);
+    result.add("model-pool.object-schemas", model.objectSchemas);
+    result.add("model-pool.array-members", model.arrayMembers);
+    result.add("model-pool.array-schemas", model.arraySchemas);
+    result.add("source-data.compounds", impl_->compounds_.memory_usage());
+    result.add("source-data.address-scope-flags", impl_->addressScopeFlags_.memory_usage());
+    result.add("source-data.expression-cache", impl_->expressionCache_.memoryUsage());
+    return result;
+}
+
 tl::expected<void, simfil::Error>
 TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {

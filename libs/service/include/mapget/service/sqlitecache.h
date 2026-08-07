@@ -30,6 +30,9 @@ public:
     std::optional<std::string> getStringPoolBlob(std::string_view const& sourceStringPoolId) override;
     void putStringPoolBlob(std::string_view const& sourceStringPoolId, std::string const& v) override;
 
+    /** Add SQLite page-cache/schema/statement memory counters to generic cache statistics. */
+    [[nodiscard]] nlohmann::json getStatistics() const override;
+
 private:
     void initDatabase();
     void executeSQL(const std::string& sql);

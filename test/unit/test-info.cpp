@@ -824,3 +824,20 @@ TEST_CASE("InfoFromJson", "[DataSourceInfo]")
     // Attempting to deserialize should throw an exception because "mapId" is missing.
     REQUIRE_THROWS_AS(DataSourceInfo::fromJson(j), std::runtime_error);
 }
+
+TEST_CASE("Model metadata reports retained schema capacity", "[DataSourceInfo][memory]")
+{
+    auto layer = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto const layerMemory = layer->memoryUsage();
+    REQUIRE(layerMemory.total().allocatedBytes > sizeof(LayerInfo));
+    REQUIRE(layerMemory.components.contains("schema.object"));
+
+    auto info = DataSourceInfo::fromJson(nlohmann::json{
+        {"stringPoolId", "MemoryPool"},
+        {"mapId", "MemoryMap"},
+        {"layers", {{"MemoryLayer", layer->toJson()}}},
+    });
+    auto const infoMemory = info.memoryUsage();
+    REQUIRE(infoMemory.total().allocatedBytes > sizeof(DataSourceInfo));
+    REQUIRE(infoMemory.toJson()["quality"] == "capacity-lower-bound");
+}

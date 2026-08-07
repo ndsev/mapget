@@ -10,6 +10,7 @@
 #include "mapget/model/info.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
+#include "mapget/model/memory.h"
 
 namespace mapget
 {
@@ -91,7 +92,7 @@ protected:
     simfil::StringId cachedStringPoolOffset(std::string const& stringPoolId);
 
     // Mutex for stringPoolOffsets_
-    std::mutex stringPoolOffsetMutex_;
+    mutable std::mutex stringPoolOffsetMutex_;
     TileLayerStream::StringPoolOffsetMap stringPoolOffsets_;
 
     // Statistics

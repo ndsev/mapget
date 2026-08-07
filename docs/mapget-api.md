@@ -410,6 +410,27 @@ and contains service/cache metrics, datasource construction state, and
 interactive queue/pull statistics. Heavy tile-size calculations can be
 enabled with `includeTileSizeDistribution=true`.
 
+The `memory` object reconciles process-level memory with explicitly owned
+mapget state:
+
+- `process` reports RSS/peak RSS and platform-specific process or cgroup
+  controls where available;
+- `mapget` breaks down retained metadata, catalog, scheduler, active-filter,
+  and telemetry capacity;
+- `active-filters` attributes source models, output models, relation targets,
+  evaluation temporaries, and orchestration state to individual filter jobs;
+- `datasources` contains each datasource's optional cooperative retained-state
+  estimate;
+- `cache` and `transport` account loaded string pools, serialized tile blobs,
+  SQLite-owned state, and queued REST/interactive response buffers;
+- `unattributed-resident-bytes` is the remaining RSS after known current
+  ownership is subtracted.
+
+Container values are capacity-based lower bounds rather than allocator-exact
+measurements. The unattributed remainder intentionally includes allocator
+fragmentation, thread stacks, shared libraries, opaque third-party internals,
+and datasource implementations which do not provide an estimate.
+
 ## `/config`
 
 <!-- --8<-- [start:config-endpoints] -->

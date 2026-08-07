@@ -58,6 +58,8 @@ struct TilesWsMetrics
     std::atomic<int64_t> totalPullRequests{0};
     std::atomic<int64_t> totalPullTimeouts{0};
     std::atomic<int64_t> totalPullSessionMisses{0};
+    std::atomic<int64_t> pendingAllocatedBytes{0};
+    std::atomic<int64_t> peakPendingAllocatedBytes{0};
 };
 
 TilesWsMetrics gTilesWsMetrics;
@@ -572,6 +574,7 @@ private:
         std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
         std::optional<MapTileKey> requestedTileKey;
         int64_t priorityRank = LOWEST_TILE_PRIORITY;
+        uint64_t trackedCapacityBytes = 0;
     };
 
     /** Batched writer output captured while serializing one tile layer. */
@@ -983,9 +986,21 @@ private:
     }
 
     /** Mark a frame as queued so request updates can avoid duplicate backend fetches. */
-    void trackQueuedFrameLocked(const OutgoingFrame& frame)
+    void trackQueuedFrameLocked(OutgoingFrame& frame)
     {
         queuedOutgoingBytes_ += frame.bytes.size();
+        frame.trackedCapacityBytes = frame.bytes.capacity();
+        auto const allocated = static_cast<int64_t>(frame.trackedCapacityBytes);
+        auto const current = gTilesWsMetrics.pendingAllocatedBytes.fetch_add(
+            allocated,
+            std::memory_order_relaxed) + allocated;
+        auto peak = gTilesWsMetrics.peakPendingAllocatedBytes.load(std::memory_order_relaxed);
+        while (peak < current &&
+               !gTilesWsMetrics.peakPendingAllocatedBytes.compare_exchange_weak(
+                   peak,
+                   current,
+                   std::memory_order_relaxed)) {
+        }
         if (frame.requestedTileKey) {
             incrementFrameRefCount(queuedTileFrameRefCount_, *frame.requestedTileKey);
         }
@@ -996,6 +1011,9 @@ private:
     {
         const auto frameBytes = frame.bytes.size();
         queuedOutgoingBytes_ = frameBytes > queuedOutgoingBytes_ ? 0 : queuedOutgoingBytes_ - frameBytes;
+        gTilesWsMetrics.pendingAllocatedBytes.fetch_sub(
+            static_cast<int64_t>(frame.trackedCapacityBytes),
+            std::memory_order_relaxed);
         if (frame.requestedTileKey) {
             decrementFrameRefCount(queuedTileFrameRefCount_, *frame.requestedTileKey);
         }
@@ -2011,6 +2029,8 @@ nlohmann::json tilesWebSocketMetricsSnapshotImpl()
         {"active-sessions", nonNegative(gTilesWsMetrics.activeSessions)},
         {"pending-controller-frames", pendingControllerFrames},
         {"pending-controller-bytes", pendingControllerBytes},
+        {"pending-controller-allocated-bytes", nonNegative(gTilesWsMetrics.pendingAllocatedBytes)},
+        {"peak-pending-controller-allocated-bytes", nonNegative(gTilesWsMetrics.peakPendingAllocatedBytes)},
         {"pending-pull-requests", pendingPullRequests},
         {"total-queued-frames", nonNegative(gTilesWsMetrics.totalQueuedFrames)},
         {"total-queued-bytes", nonNegative(gTilesWsMetrics.totalQueuedBytes)},

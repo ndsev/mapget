@@ -227,6 +227,9 @@ public:
     /** Access layer-wide geometry anchor used for anchor-relative vertex encoding. */
     [[nodiscard]] virtual Point geometryAnchor() const = 0;
 
+    /** Report base-layer, generic model-pool, feature-id, and geometry storage. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
+
 protected:
     TileFeatureModelLayerBase(
         TileId tileId,
