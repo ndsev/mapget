@@ -7,8 +7,7 @@ namespace mapget
 namespace
 {
 
-FeatureLayerFilterBinding parseBinding(
-    nlohmann::json const& value)
+FeatureLayerFilterBinding parseBinding(nlohmann::json const& value)
 {
     if (value.is_null()) {
         return std::monostate{};
@@ -29,16 +28,13 @@ FeatureLayerFilterBinding parseBinding(
         "Locate selector bindings must be null, boolean, numeric, or string scalars.");
 }
 
-nlohmann::json bindingToJson(
-    FeatureLayerFilterBinding const& binding)
+nlohmann::json bindingToJson(FeatureLayerFilterBinding const& binding)
 {
     return std::visit(
-        [](auto const& value) -> nlohmann::json {
-            using Value =
-                std::decay_t<decltype(value)>;
-            if constexpr (
-                std::is_same_v<Value, std::monostate>)
-            {
+        [](auto const& value) -> nlohmann::json
+        {
+            using Value = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Value, std::monostate>) {
                 return nullptr;
             }
             else {
@@ -48,33 +44,25 @@ nlohmann::json bindingToJson(
         binding);
 }
 
-void validateSelector(
-    FeatureLayerSelector const& selector)
+void validateSelector(FeatureLayerSelector const& selector)
 {
     if (selector.canonicalFeatureId_) {
         if (selector.canonicalFeatureId_->empty()) {
-            throw std::invalid_argument(
-                "Locate selector canonicalFeatureId must not be empty.");
+            throw std::invalid_argument("Locate selector canonicalFeatureId must not be empty.");
         }
-        if (!selector.typeId_.empty() ||
-            selector.featureFilter_ ||
-            !selector.bindings_.empty())
-        {
+        if (!selector.typeId_.empty() || selector.featureFilter_ || !selector.bindings_.empty()) {
             throw std::invalid_argument(
                 "An exact locate selector cannot also contain typeId, featureFilter, or bindings.");
         }
         return;
     }
-    if (selector.typeId_.empty() ||
-        !selector.featureFilter_ ||
-        selector.featureFilter_->empty())
-    {
+    if (selector.typeId_.empty() || !selector.featureFilter_ || selector.featureFilter_->empty()) {
         throw std::invalid_argument(
             "A filtered locate selector requires non-empty typeId and featureFilter.");
     }
 }
 
-} // namespace
+}  // namespace
 
 LocateRequest::LocateRequest(const nlohmann::json& j)
 {
@@ -104,9 +92,10 @@ LocateRequest::LocateRequest(const nlohmann::json& j)
     }
 }
 
-LocateRequest::LocateRequest(std::string mapId, std::string typeId, KeyValuePairs featureId) :
-    mapId_(std::move(mapId)), typeId_(std::move(typeId)), featureId_(std::move(featureId))
-{}
+LocateRequest::LocateRequest(std::string mapId, std::string typeId, KeyValuePairs featureId)
+    : mapId_(std::move(mapId)), typeId_(std::move(typeId)), featureId_(std::move(featureId))
+{
+}
 
 nlohmann::json LocateRequest::serialize() const
 {
@@ -119,9 +108,7 @@ nlohmann::json LocateRequest::serialize() const
     nlohmann::json featureId = nlohmann::json::array();
     for (auto const& [k, v] : featureId_) {
         featureId.emplace_back(k);
-        std::visit([&featureId](auto&& vv){
-            featureId.emplace_back(vv);
-        }, v);
+        std::visit([&featureId](auto&& vv) { featureId.emplace_back(vv); }, v);
     }
     return nlohmann::json::object({
         {"mapId", mapId_},
@@ -142,8 +129,7 @@ LocateResponse::LocateResponse(const nlohmann::json& j) : LocateRequest(j)
         tileKey_ = MapTileKey(j["tileId"].get<std::string>());
     }
     if (j.contains("canonicalFeatureId")) {
-        resolvedCanonicalFeatureId_ =
-            j["canonicalFeatureId"].get<std::string>();
+        resolvedCanonicalFeatureId_ = j["canonicalFeatureId"].get<std::string>();
     }
 }
 
@@ -152,8 +138,7 @@ nlohmann::json LocateResponse::serialize() const
     auto result = LocateRequest::serialize();
     result["tileId"] = tileKey_.toString();
     if (resolvedCanonicalFeatureId_) {
-        result["canonicalFeatureId"] =
-            *resolvedCanonicalFeatureId_;
+        result["canonicalFeatureId"] = *resolvedCanonicalFeatureId_;
     }
     return result;
 }
@@ -187,130 +172,96 @@ void LocateRequest::setFeatureId(const KeyValueViewPairs& kvp)
     // Convert KeyValueViewPairs to KeyValuePairs
     featureId_.clear();
     for (auto const& [k, v] : kvp) {
-        std::visit([this, &k](auto&& vv){
-            if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string_view>)
-                featureId_.emplace_back(k, std::string(vv));
-            else
-                featureId_.emplace_back(k, vv);
-        }, v);
+        std::visit(
+            [this, &k](auto&& vv)
+            {
+                if constexpr (std::is_same_v<std::decay_t<decltype(vv)>, std::string_view>)
+                    featureId_.emplace_back(k, std::string(vv));
+                else
+                    featureId_.emplace_back(k, vv);
+            },
+            v);
     }
 }
 
-LocateCandidate::LocateCandidate(
-    nlohmann::json const& j)
+LocateCandidate::LocateCandidate(nlohmann::json const& j)
 {
-    if (!j.contains("tileId") ||
-        !j.at("tileId").is_string() ||
-        !j.contains("selector") ||
+    if (!j.contains("tileId") || !j.at("tileId").is_string() || !j.contains("selector") ||
         !j.at("selector").is_object())
     {
-        throw std::invalid_argument(
-            "LocateCandidate requires tileId and selector.");
+        throw std::invalid_argument("LocateCandidate requires tileId and selector.");
     }
-    tileKey_ =
-        MapTileKey(j.at("tileId").get<std::string>());
+    tileKey_ = MapTileKey(j.at("tileId").get<std::string>());
     auto const& selector = j.at("selector");
-    if (auto exact =
-            selector.find("canonicalFeatureId");
-        exact != selector.end())
-    {
+    if (auto exact = selector.find("canonicalFeatureId"); exact != selector.end()) {
         if (!exact->is_string()) {
-            throw std::invalid_argument(
-                "Locate selector canonicalFeatureId must be a string.");
+            throw std::invalid_argument("Locate selector canonicalFeatureId must be a string.");
         }
-        selector_.canonicalFeatureId_ =
-            exact->get<std::string>();
+        selector_.canonicalFeatureId_ = exact->get<std::string>();
     }
-    if (auto type = selector.find("typeId");
-        type != selector.end())
-    {
+    if (auto type = selector.find("typeId"); type != selector.end()) {
         if (!type->is_string()) {
-            throw std::invalid_argument(
-                "Locate selector typeId must be a string.");
+            throw std::invalid_argument("Locate selector typeId must be a string.");
         }
         selector_.typeId_ = type->get<std::string>();
     }
-    if (auto filter =
-            selector.find("featureFilter");
-        filter != selector.end())
-    {
+    if (auto filter = selector.find("featureFilter"); filter != selector.end()) {
         if (!filter->is_string()) {
-            throw std::invalid_argument(
-                "Locate selector featureFilter must be a string.");
+            throw std::invalid_argument("Locate selector featureFilter must be a string.");
         }
-        selector_.featureFilter_ =
-            filter->get<std::string>();
+        selector_.featureFilter_ = filter->get<std::string>();
     }
-    if (auto bindings = selector.find("bindings");
-        bindings != selector.end())
-    {
+    if (auto bindings = selector.find("bindings"); bindings != selector.end()) {
         if (!bindings->is_object()) {
-            throw std::invalid_argument(
-                "Locate selector bindings must be an object.");
+            throw std::invalid_argument("Locate selector bindings must be an object.");
         }
         for (auto const& item : bindings->items()) {
-            selector_.bindings_.emplace(
-                item.key(),
-                parseBinding(item.value()));
+            selector_.bindings_.emplace(item.key(), parseBinding(item.value()));
         }
     }
     validateSelector(selector_);
 }
 
-LocateCandidate::LocateCandidate(
-    MapTileKey tileKey,
-    FeatureLayerSelector selector)
-    : tileKey_(std::move(tileKey)),
-      selector_(std::move(selector))
+LocateCandidate::LocateCandidate(MapTileKey tileKey, FeatureLayerSelector selector)
+    : tileKey_(std::move(tileKey)), selector_(std::move(selector))
 {
     validateSelector(selector_);
 }
 
-LocateCandidate::LocateCandidate(
-    MapTileKey tileKey,
-    std::string canonicalFeatureId)
+LocateCandidate::LocateCandidate(MapTileKey tileKey, std::string canonicalFeatureId)
     : LocateCandidate(
           std::move(tileKey),
-          FeatureLayerSelector{
-              .canonicalFeatureId_ =
-                  std::move(canonicalFeatureId)})
-{}
+          FeatureLayerSelector{.canonicalFeatureId_ = std::move(canonicalFeatureId)})
+{
+}
 
 LocateCandidate::LocateCandidate(
     MapTileKey tileKey,
     std::string typeId,
     std::string featureFilter,
-    std::map<
-        std::string,
-        FeatureLayerFilterBinding> bindings)
+    std::map<std::string, FeatureLayerFilterBinding> bindings)
     : LocateCandidate(
           std::move(tileKey),
           FeatureLayerSelector{
               .typeId_ = std::move(typeId),
-              .featureFilter_ =
-                  std::move(featureFilter),
+              .featureFilter_ = std::move(featureFilter),
               .bindings_ = std::move(bindings)})
-{}
+{
+}
 
 nlohmann::json LocateCandidate::serialize() const
 {
     auto selector = nlohmann::json::object();
     if (selector_.canonicalFeatureId_) {
-        selector["canonicalFeatureId"] =
-            *selector_.canonicalFeatureId_;
+        selector["canonicalFeatureId"] = *selector_.canonicalFeatureId_;
     }
     else {
         selector["typeId"] = selector_.typeId_;
-        selector["featureFilter"] =
-            *selector_.featureFilter_;
+        selector["featureFilter"] = *selector_.featureFilter_;
         if (!selector_.bindings_.empty()) {
-            selector["bindings"] =
-                nlohmann::json::object();
-            for (auto const& [name, binding] :
-                 selector_.bindings_)
-            {
-                selector["bindings"][name] =
-                    bindingToJson(binding);
+            selector["bindings"] = nlohmann::json::object();
+            for (auto const& [name, binding] : selector_.bindings_) {
+                selector["bindings"][name] = bindingToJson(binding);
             }
         }
     }
@@ -321,9 +272,7 @@ nlohmann::json LocateCandidate::serialize() const
 }
 
 tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
-resolveLocateCandidate(
-    LocateCandidate const& candidate,
-    TileFeatureLayer const& tile)
+resolveLocateCandidate(LocateCandidate const& candidate, TileFeatureLayer const& tile)
 {
     if (candidate.tileKey_ != tile.id()) {
         return tl::unexpected(simfil::Error{
@@ -331,9 +280,7 @@ resolveLocateCandidate(
             "Locate candidate was applied to a different tile.",
         });
     }
-    return selectFeatureLayerFeatures(
-        tile,
-        candidate.selector_);
+    return tile.find(candidate.selector_);
 }
 
 }  // namespace mapget

@@ -6,9 +6,9 @@
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatalayer.h"
 
-#include <regex>
-#include <optional>
 #include <chrono>
+#include <optional>
+#include <regex>
 
 namespace mapget
 {
@@ -35,10 +35,8 @@ struct AttachmentRequest
 struct AttachmentResponse
 {
     std::string name_;
-    std::string mimeType_ =
-        "application/octet-stream";
-    std::shared_ptr<
-        std::vector<uint8_t> const> bytes_;
+    std::string mimeType_ = "application/octet-stream";
+    std::shared_ptr<std::vector<uint8_t> const> bytes_;
     std::optional<std::string> etag_;
 };
 
@@ -54,15 +52,18 @@ public:
 
     /**
      * Method which is called by a service to determine which map layers
-     * can be served by this DataSource, and how many layers this
-     * data source can process in parallel (i.e. how many threads may
-     * run this->fill(...) in parallel).
+     * can be served by this DataSource, and how many concurrent jobs this
+     * primary datasource can process. The service enforces this limit
+     * independently of its global worker count. Add-on fills remain nested in
+     * their matching primary tile job and therefore share its concurrency.
      */
     virtual DataSourceInfo info() = 0;
 
     /**
-     * Methods which get called up to DataSourceInfo::maxParallelJobs_
-     * times in parallel to satisfy data requests for a mapget Service.
+     * Methods which get called up to DataSourceInfo::maxParallelJobs_ times in
+     * parallel for a primary datasource by the service's homogeneous worker
+     * pool. Add-on implementations must tolerate the matching primary source's
+     * concurrency because their fills are composed inside those jobs.
      * @param featureTile A TileFeatureLayer object which this data source
      *  should fill according the available data. If any error occurs
      *  while doing so, the data source may use TileLayer::setError.
@@ -80,8 +81,7 @@ public:
      * perform conversion. The service loads candidate tiles through its
      * ordinary cache/coalescing path and applies each portable selector.
      */
-    virtual std::vector<LocateCandidate> locate(
-        LocateRequest const& req);
+    virtual std::vector<LocateCandidate> locate(LocateRequest const& req);
 
     /**
      * Produce or return one named tile attachment.
@@ -90,8 +90,7 @@ public:
      * produced during fill() or construct them lazily. The returned name must
      * equal the requested name.
      */
-    virtual std::optional<AttachmentResponse> attachment(
-        AttachmentRequest const& request);
+    virtual std::optional<AttachmentResponse> attachment(AttachmentRequest const& request);
 
     /**
      * Estimate memory retained exclusively by this datasource instance.
@@ -103,8 +102,8 @@ public:
     [[nodiscard]] virtual std::optional<uint64_t> estimatedRetainedMemoryBytes() const;
 
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
-    virtual TileLayer::Ptr get(
-        MapTileKey const& k,
+    virtual TileLayer::Ptr
+    get(MapTileKey const& k,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
         TileLayer::LoadStateCallback loadStateCallback = {});
@@ -128,19 +127,23 @@ public:
     [[nodiscard]] std::optional<std::chrono::milliseconds> ttl() const;
 
     /** Called when a cached tile was present but expired. Default no-op. */
-    virtual void onCacheExpired(const MapTileKey& /*tileKey*/, std::chrono::system_clock::time_point /*expiredAt*/)
+    virtual void onCacheExpired(
+        const MapTileKey& /*tileKey*/,
+        std::chrono::system_clock::time_point /*expiredAt*/)
     {
         // Nothing to do.
     }
 
 protected:
-    static StringId cachedStringPoolOffset(std::string const& stringPoolId, Cache::Ptr const& cache);
+    static StringId
+    cachedStringPoolOffset(std::string const& stringPoolId, Cache::Ptr const& cache);
 
-    /** Map of authorization header-regex pairs which can be entered into the datasource YAML config. */
+    /** Map of authorization header-regex pairs which can be entered into the datasource YAML
+     * config. */
     std::unordered_map<std::string, std::regex> authHeaderAlternatives_;
 
     /** TTL fallback applied to generated tiles (0 = infinite, unset = use service default). */
     std::optional<std::chrono::milliseconds> ttl_;
 };
 
-}
+}  // namespace mapget

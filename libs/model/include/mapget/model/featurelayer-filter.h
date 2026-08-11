@@ -1,8 +1,8 @@
 #pragma once
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
-#include <compare>
 #include <functional>
 #include <map>
 #include <optional>
@@ -42,8 +42,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
     })
 
 /** Scalar request binding available as both a SIMFIL constant and overlay field. */
-using FeatureLayerFilterBinding =
-    std::variant<std::monostate, bool, int64_t, double, std::string>;
+using FeatureLayerFilterBinding = std::variant<std::monostate, bool, int64_t, double, std::string>;
 
 /**
  * Portable selector for resolving a locate candidate inside one complete
@@ -62,10 +61,8 @@ struct FeatureLayerSelector
     std::optional<std::string> featureFilter_;
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
 
-    [[nodiscard]] bool isExact() const
-    {
-        return canonicalFeatureId_.has_value();
-    }
+    /** Return whether this selector uses canonical identity instead of SIMFIL. */
+    [[nodiscard]] bool isExact() const { return canonicalFeatureId_.has_value(); }
 };
 
 /** Initial feature-only point-grid grouping operator. */
@@ -121,15 +118,6 @@ struct FeatureLayerFilterChannel
     std::optional<FeatureLayerStoredRelationOptions> relation_;
 };
 
-/** Shared definition evaluated over one source tile or coordinated tile set. */
-struct FeatureLayerFilterRequest
-{
-    std::string filterId_;
-    uint64_t generation_ = 0;
-    std::vector<FeatureLayerFilterChannel> channels_;
-    std::map<std::string, FeatureLayerFilterBinding> bindings_;
-};
-
 /** One exact relation-traversal root, retained in stable request order. */
 struct FeatureLayerFilterRoot
 {
@@ -154,8 +142,7 @@ struct FeatureLayerPointGroupKey
     int64_t y_ = 0;
     int64_t z_ = 0;
 
-    auto operator<=>(FeatureLayerPointGroupKey const&) const =
-        default;
+    auto operator<=>(FeatureLayerPointGroupKey const&) const = default;
 };
 
 /**
@@ -197,8 +184,7 @@ struct FeatureLayerRelationDescriptor
     KeyValuePairs targetFeatureId_;
     model_ptr<Feature> target_;
     std::optional<MapTileKey> targetTileKey_;
-    std::vector<FeatureLayerRelationTargetCandidate>
-        targetCandidates_;
+    std::vector<FeatureLayerRelationTargetCandidate> targetCandidates_;
     std::vector<model_ptr<Feature>> targetMatches_;
     size_t rootOrdinal_ = 0;
     bool exactRoot_ = false;
@@ -239,74 +225,61 @@ struct FeatureLayerRelationCompletion
 };
 
 /** Optional cheap cancellation probe used by service-owned long traversals. */
-using FeatureLayerFilterCancellationCheck =
-    std::function<bool()>;
+using FeatureLayerFilterCancellationCheck = std::function<bool()>;
 
 /**
- * Scan one source tile in source-major order.
+ * Shared filter definition evaluated over one source tile or coordinated tile set.
  *
- * Set `materializeOutput` exactly for requested output tiles. Halo-only scans
- * evaluate only coordinated operators and do not allocate a subset layer.
+ * These methods operate only on already-loaded models. Cross-tile loading,
+ * scheduling, and publication remain service responsibilities.
  */
-tl::expected<FeatureLayerFilterSourceResult, simfil::Error>
-filterFeatureLayerSource(
-    TileFeatureLayer const& sourceLayer,
-    FeatureLayerFilterRequest const& request,
-    bool materializeOutput,
-    std::span<FeatureLayerFilterRoot const> exactRoots = {},
-    FeatureLayerFilterCancellationCheck const&
-        cancellationCheck = {});
+struct FeatureLayerFilterRequest
+{
+    std::string filterId_;
+    uint64_t generation_ = 0;
+    std::vector<FeatureLayerFilterChannel> channels_;
+    std::map<std::string, FeatureLayerFilterBinding> bindings_;
 
-/**
- * Deterministically merge and materialize completed point-grid groups into an
- * output layer whose channel roots were created by filterFeatureLayerSource().
- */
-tl::expected<FeatureLayerPointGroupCompletion, simfil::Error>
-completeFeatureLayerPointGroups(
-    TileSubsetLayer& outputLayer,
-    FeatureLayerFilterRequest const& request,
-    std::span<FeatureLayerPointGroupMember const> members,
-    FeatureLayerFilterCancellationCheck const&
-        cancellationCheck = {});
+    /**
+     * Scan one source tile in source-major order.
+     *
+     * Set `materializeOutput` for requested output tiles. Halo-only scans
+     * evaluate coordinated operators without allocating a subset layer.
+     */
+    [[nodiscard]] tl::expected<FeatureLayerFilterSourceResult, simfil::Error> filterSource(
+        TileFeatureLayer const& sourceLayer,
+        bool materializeOutput,
+        std::span<FeatureLayerFilterRoot const> exactRoots = {},
+        FeatureLayerFilterCancellationCheck const& cancellationCheck = {}) const;
 
-/**
- * Pair, filter, and materialize fully resolved stored-relation descriptors.
- *
- * `requestedOutputKeys` is used only for permanent generic twoway ownership.
- * Exact-root traversal retains origin-output ownership; when both endpoints
- * are explicit roots, the first root in request order owns a merged pair.
- */
-tl::expected<FeatureLayerRelationCompletion, simfil::Error>
-completeFeatureLayerRelations(
-    TileSubsetLayer& outputLayer,
-    FeatureLayerFilterRequest const& request,
-    std::span<FeatureLayerRelationDescriptor const> descriptors,
-    std::span<MapTileKey const> requestedOutputKeys,
-    std::span<FeatureLayerFilterRoot const> exactRoots = {},
-    FeatureLayerFilterCancellationCheck const&
-        cancellationCheck = {});
+    /** Materialize completed point-grid groups into an output created by filterSource(). */
+    [[nodiscard]] tl::expected<FeatureLayerPointGroupCompletion, simfil::Error> completePointGroups(
+        TileSubsetLayer& outputLayer,
+        std::span<FeatureLayerPointGroupMember const> members,
+        FeatureLayerFilterCancellationCheck const& cancellationCheck = {}) const;
 
-/**
- * Evaluate all source-local feature and attribute channels in one source pass.
- *
- * Point grouping and stored relations use the same request types but require
- * request-wide service coordination and are rejected by this source-local
- * entry point.
- */
-tl::expected<FeatureLayerFilterResult, simfil::Error> filterFeatureLayer(
-    TileFeatureLayer const& sourceLayer,
-    FeatureLayerFilterRequest const& request);
+    /**
+     * Pair, filter, and materialize fully resolved stored-relation descriptors.
+     *
+     * `requestedOutputKeys` controls permanent generic two-way ownership.
+     * Exact-root traversal retains origin-output ownership; the first explicit
+     * root owns a pair when both endpoints are roots.
+     */
+    [[nodiscard]] tl::expected<FeatureLayerRelationCompletion, simfil::Error> completeRelations(
+        TileSubsetLayer& outputLayer,
+        std::span<FeatureLayerRelationDescriptor const> descriptors,
+        std::span<MapTileKey const> requestedOutputKeys,
+        std::span<FeatureLayerFilterRoot const> exactRoots = {},
+        FeatureLayerFilterCancellationCheck const& cancellationCheck = {}) const;
 
-/**
- * Apply one portable locate selector to an already loaded complete tile.
- *
- * This function never loads data. It is shared by the service's public
- * locate path, relation traversal, add-on composition, and remote
- * datasource candidates.
- */
-tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
-selectFeatureLayerFeatures(
-    TileFeatureLayer const& sourceLayer,
-    FeatureLayerSelector const& selector);
+    /**
+     * Evaluate source-local feature and attribute channels in one source pass.
+     *
+     * Point grouping and stored relations require service coordination and are
+     * rejected by this convenience operation.
+     */
+    [[nodiscard]] tl::expected<FeatureLayerFilterResult, simfil::Error>
+    filter(TileFeatureLayer const& sourceLayer) const;
+};
 
-} // namespace mapget
+}  // namespace mapget

@@ -72,10 +72,6 @@ struct FilterMemoryTracker
 /** Collect allocator counters when the platform exposes them. */
 [[nodiscard]] nlohmann::json allocatorMemoryStatistics();
 
-/** Measure one DataSourceInfo value without following shared LayerInfo pointers. */
-[[nodiscard]] simfil::MemoryUsage dataSourceInfoContainerMemoryUsage(
-    DataSourceInfo const& info);
-
 /** Measure cheap catalog descriptor fields; std::regex implementation state is opaque. */
 [[nodiscard]] simfil::MemoryUsage dataSourceDescriptorMemoryUsage(
     DataSourceDescriptor const& descriptor);

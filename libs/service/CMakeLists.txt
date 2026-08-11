@@ -11,8 +11,20 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/config.h
 
   src/service.cpp
+  src/service-datasources.h
+  src/service-datasources.cpp
+  src/service-filter.h
+  src/service-filter.cpp
+  src/service-impl.h
+  src/service-locate.h
+  src/service-locate.cpp
   src/service-memory.h
   src/service-memory.cpp
+  src/service-scheduler.h
+  src/service-scheduler.cpp
+  src/service-statistics.cpp
+  src/service-tiles.h
+  src/service-tiles.cpp
   src/cache.cpp
   src/datasource.cpp
   src/memcache.cpp

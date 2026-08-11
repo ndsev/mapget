@@ -102,9 +102,19 @@ The principal service requests are:
 - `AttachmentRequest`;
 - `LocateRequest`.
 
-Complete source jobs are processed in request order. A worker claims the next
-`MapTileKey`, coalesces through `jobsInProgress_`, reads the cache or invokes
-the datasource, caches the complete result, and notifies every waiter.
+`Service::Impl` composes a ready-source registry and one global
+`ServiceScheduler`. All workers are homogeneous: each can execute a
+datasource-affine `TileLoadJob` or a CPU-only `FilterEvaluationJob`. A source's
+`maxParallelJobs` is a permit limit for each primary datasource inside the
+scheduler rather than a number of dedicated threads. Add-ons remain nested in
+the matching primary tile job and share its concurrency. The service-wide
+worker cap is configurable with `--worker-count`; its default is
+`clamp(2 * hardware_concurrency, 16, 32)`.
+
+Complete source jobs are admitted in request order and sources are considered
+round-robin. A worker claims the next `MapTileKey`, coalesces through the
+in-flight tile index, reads the cache or invokes the datasource, caches the
+complete result, and notifies every waiter.
 `priorityTileIds` promotes keys already in the request. It does not add
 coverage or change data semantics.
 
@@ -114,8 +124,16 @@ every waiter. A catch path which only logs is a request leak.
 ### Filter evaluation
 
 `featurelayer-filter.cpp` owns source-local evaluation and deterministic final
-materialization. `service.cpp` owns ordered source scheduling, request-wide
-operators, cancellation, and publication.
+materialization. `service-filter.cpp` owns the filter request API plus
+`FilterRequestExecution`, including request-wide operators, cancellation, and
+publication. The rest of the service implementation is split by ownership:
+
+- `service-datasources.cpp`: ready registry and config-backed catalog lifecycle;
+- `service-scheduler.cpp`: global workers, datasource permits, coalescing, and invalidation;
+- `service-tiles.cpp`: ordinary tile request methods, tile jobs, add-on composition, and attachments;
+- `service-locate.cpp`: locate candidate planning and result assembly;
+- `service-statistics.cpp`: service and memory-accountability snapshots;
+- `service.cpp`: the thin public `Service` facade.
 
 ```mermaid
 flowchart LR
@@ -188,8 +206,8 @@ interactive envelope `requestId` to suppress stale status messages.
 
 ### Construction and cancellation
 
-One `OutputTileState` may own a WIP `TileSubsetLayer`. The output's own source
-worker writes local rows. Halo/relation workers publish descriptors or source
+One `OutputTileState` may own a WIP `TileSubsetLayer`. Its evaluation job
+writes local rows. Halo/relation jobs publish descriptors or source
 model pointers, never model nodes allocated in arbitrary pools. The last
 terminal dependency takes exclusive ownership, appends deterministic
 cross-tile rows, and serializes.
@@ -200,8 +218,8 @@ in-flight writers return.
 
 ## HTTP service
 
-`HttpService` derives from `Service`. Drogon owns network event loops; mapget
-workers own blocking datasource and evaluation work.
+`HttpService` derives from `Service`. Drogon owns network event loops; mapget's
+bounded homogeneous workers own blocking datasource and evaluation work.
 
 - `tiles-http-handler.cpp`: stateless `/tiles` and `/filter`, response
   negotiation, JSONL/binary streaming, gzip, and backpressure.

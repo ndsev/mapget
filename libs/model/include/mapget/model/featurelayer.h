@@ -1,36 +1,38 @@
 #pragma once
 
+#include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
-#include <optional>
-#include <mutex>
 #include <utility>
 #include <vector>
 
 #include "tl/expected.hpp"
 
-#include "simfil/simfil.h"
 #include "simfil/environment.h"
 #include "simfil/model/model.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
+#include "simfil/simfil.h"
 
-#include "stringpool.h"
-#include "layer.h"
-#include "sourceinfo.h"
-#include "geojson-import.h"
-#include "layerschema.h"
-#include "featuremodellayer.h"
-#include "feature.h"
 #include "attrlayer.h"
-#include "relation.h"
+#include "feature.h"
+#include "featuremodellayer.h"
+#include "geojson-import.h"
 #include "geometry.h"
-#include "sourcedatareference.h"
-#include "pointnode.h"
+#include "layer.h"
+#include "layerschema.h"
 #include "nlohmann/json.hpp"
+#include "pointnode.h"
+#include "relation.h"
+#include "sourcedatareference.h"
+#include "sourceinfo.h"
+#include "stringpool.h"
 
 namespace mapget
 {
+
+struct FeatureLayerSelector;
 
 /**
  * The TileFeatureLayer class represents a specific map layer
@@ -39,7 +41,7 @@ namespace mapget
  */
 class TileFeatureLayer : public TileFeatureModelLayerBase
 {
-    template<class, class, class>
+    template <class, class, class>
     friend class MergedArrayView;
     friend class Feature;
     friend class Relation;
@@ -48,11 +50,9 @@ class TileFeatureLayer : public TileFeatureModelLayerBase
     friend class AttributeLayer;
     friend class AttributeLayerList;
     friend class Validity;
-    template<typename Target>
-    friend model_ptr<Target> resolveInternal(
-        simfil::res::tag<Target>,
-        TileFeatureLayer const&,
-        simfil::ModelNode const&);
+    template <typename Target>
+    friend model_ptr<Target>
+    resolveInternal(simfil::res::tag<Target>, TileFeatureLayer const&, simfil::ModelNode const&);
 
 public:
     // Keep ModelPool::resolve<T> overloads visible alongside the override below.
@@ -113,8 +113,7 @@ public:
     TileFeatureLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter
-    );
+        StringPoolResolveFun const& stringPoolGetter);
 
     /**
      * Get/Set common id prefix for all features in this layer.
@@ -137,8 +136,8 @@ public:
      * according to the requirements of typeId. Do not include the tile feature
      * prefix. If empty, an error will be thrown.
      */
-    model_ptr<Feature> newFeature(
-        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
+    model_ptr<Feature>
+    newFeature(std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
 
     /**
      * Create a new feature id. Use this function to create a reference to another
@@ -157,9 +156,8 @@ public:
      * feature, which may also have optional source/target validity geometry.
      * Relations must be stored in the feature's special relations-list.
      */
-    model_ptr<Relation> newRelation(
-        std::string_view const& name,
-        model_ptr<FeatureId> const& target);
+    model_ptr<Relation>
+    newRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
 
     /**
      * Create a lightweight reference to a canonical relation. The reference can
@@ -171,35 +169,40 @@ public:
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */
-    model_ptr<Attribute> newAttribute(
-        std::string_view const& name,
-        size_t initialCapacity=8,
-        bool fixedSize=false);
+    model_ptr<Attribute>
+    newAttribute(std::string_view const& name, size_t initialCapacity = 8, bool fixedSize = false);
 
     /**
      * Create a new attribute layer, which may be inserted into a feature.
      */
-    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8, bool fixedSize=false);
+    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity = 8, bool fixedSize = false);
 
     /**
      * Create a new geometry collection.
      */
-    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=2, bool fixedSize=false) override;
+    model_ptr<GeometryCollection>
+    newGeometryCollection(size_t initialCapacity = 2, bool fixedSize = false) override;
 
     /**
      * Create a new geometry.
      */
-    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=2, bool fixedSize=false) override;
+    model_ptr<Geometry>
+    newGeometry(GeomType geomType, size_t initialCapacity = 2, bool fixedSize = false) override;
 
     /**
      * Create a new geometry view.
      */
-    model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base) override;
+    model_ptr<Geometry> newGeometryView(
+        GeomType geomType,
+        uint32_t offset,
+        uint32_t size,
+        const model_ptr<Geometry>& base) override;
 
     /**
      * Create a new list of qualified source-data references.
      */
-    model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list) override;
+    model_ptr<SourceDataReferenceCollection>
+    newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list) override;
 
     /**
      * Create a new validity.
@@ -209,7 +212,8 @@ public:
     /**
      * Create a new validity collection.
      */
-    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 2, bool fixedSize=false);
+    model_ptr<MultiValidity>
+    newValidityCollection(size_t initialCapacity = 2, bool fixedSize = false);
 
     /**
      * Upgrade one compact simple-validity occurrence in-place to full storage.
@@ -243,6 +247,7 @@ public:
         using difference_type = std::ptrdiff_t;
         using pointer = value_type*;
         using reference = value_type&;
+
     private:
         TileFeatureLayer const& layer_;
         size_t i_ = 0;
@@ -256,13 +261,13 @@ public:
     Iterator end() const;
 
     /** (De-)Serialization */
-    tl::expected<void, simfil::Error>
-    write(std::ostream& outputStream) override;
+    tl::expected<void, simfil::Error> write(std::ostream& outputStream) override;
 
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
 
-    /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo. */
+    /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo.
+     */
     void validateSchema() const;
 
     /** Return the layer schema attached through this tile's LayerInfo, if available. */
@@ -305,8 +310,13 @@ public:
 
     /** Access feature through its id. */
     model_ptr<Feature> find(std::string_view const& featureId) const;
-    model_ptr<Feature> find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
+    model_ptr<Feature>
+    find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
+
+    /** Apply a portable exact or filtered selector to this already-loaded tile. */
+    [[nodiscard]] tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
+    find(FeatureLayerSelector const& selector) const;
 
     /**
      * Evaluate a (potentially cached) simfil query on this pool
@@ -318,7 +328,8 @@ public:
      *                      available, this enables schema-backed shorthand
      *                      rewrites. Without schema metadata it has no effect.
      */
-    struct QueryResult {
+    struct QueryResult
+    {
         // The list of values resulting from the query evaluation.
         std::vector<simfil::Value> values;
 
@@ -330,8 +341,11 @@ public:
         // generated during query evaluation.
         simfil::Diagnostics diagnostics;
     };
-    tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
-    evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
+    tl::expected<TileFeatureLayer::QueryResult, simfil::Error> evaluate(
+        std::string_view query,
+        ModelNode const& node,
+        bool anyMode = true,
+        bool autoWildcard = true);
 
     tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
     evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
@@ -339,15 +353,20 @@ public:
     /**
      * Get auto-completion candidates at `point` of a query.
      */
-    tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
-    complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts);
+    tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error> complete(
+        std::string_view query,
+        int point,
+        ModelNode const& node,
+        simfil::CompletionOptions const& opts);
 
     /**
      * Collect query diagnostics for an evaluated query.
      * If the query has not yet been evaluated it gets compiled.
      */
-    tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
-    collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode = true);
+    tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error> collectQueryDiagnostics(
+        std::string_view query,
+        const simfil::Diagnostics& diag,
+        bool anyMode = true);
 
     /**
      * Change the string pool of this model to a different one.
@@ -382,9 +401,7 @@ public:
 
     using ColumnId = TileFeatureModelLayerBase::ColumnId;
 
-    
 protected:
-
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
 
@@ -407,15 +424,19 @@ protected:
     /**
      * Create a new attribute layer collection.
      */
-    model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8, bool fixedSize=false);
+    model_ptr<AttributeLayerList>
+    newAttributeLayers(size_t initialCapacity = 8, bool fixedSize = false);
 
     /**
      * Generic node resolution overload.
      */
-    tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
+    tl::expected<void, simfil::Error>
+    resolve(const simfil::ModelNode& n, const ResolveFn& cb) const override;
 
-    [[nodiscard]] model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<FeatureId>
+    resolveFeatureIdNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<PointNode>
+    resolvePointNode(simfil::ModelNode const& node) const override;
 
     [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;
     [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
@@ -426,10 +447,10 @@ protected:
 };
 
 // Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).
-template<typename Target>
+template <typename Target>
 simfil::model_ptr<Target> resolveInternal(
     simfil::res::tag<Target>,
     TileFeatureLayer const& model,
     simfil::ModelNode const& node);
 
-}
+}  // namespace mapget

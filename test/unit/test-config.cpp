@@ -310,6 +310,21 @@ TEST_CASE("Service memory snapshot includes cooperative datasource ownership", "
     REQUIRE(memory["datasources"][0]["measurement"] == "datasource-estimate");
     REQUIRE(memory["datasources"][0]["retained-bytes"] == 123456);
     REQUIRE(memory["process"].contains("measurement"));
+    REQUIRE_FALSE(
+        memory["mapget"]["components"].contains(
+            "metadata.catalog-snapshots"));
+    REQUIRE_FALSE(
+        memory["mapget"]["components"].contains(
+            "metadata.worker-snapshot-containers"));
+
+    auto const firstCatalog = service.sourceCatalog();
+    auto const secondCatalog = service.sourceCatalog();
+    REQUIRE(firstCatalog.sources.size() == 1);
+    REQUIRE(secondCatalog.sources.size() == 1);
+    REQUIRE(firstCatalog.sources[0].info);
+    REQUIRE(
+        firstCatalog.sources[0].info ==
+        secondCatalog.sources[0].info);
 }
 
 TEST_CASE("Datasource catalog display names are generic and display-only", "[DataSourceConfig]")
@@ -431,7 +446,7 @@ sources:
     REQUIRE(catalog.sources[0].statusMessage == "Waiting for test release.");
     REQUIRE(catalog.sources[0].progress == std::optional<float>{25.0f});
     REQUIRE(catalog.sources[1].statusMessage == "Intentional test failure.");
-    REQUIRE(catalog.sources[2].info.has_value());
+    REQUIRE(catalog.sources[2].info);
     REQUIRE(catalog.sources[2].info->mapId_ == "FastMap");
 
     auto readyInfos = service.info();
@@ -457,7 +472,7 @@ sources:
     auto blockingCatalog = blockingCatalogFuture.get();
     REQUIRE(blockingCatalog.sources.size() == 3);
     REQUIRE(blockingCatalog.sources[0].status == DataSourceCatalogStatus::Ready);
-    REQUIRE(catalog.sources[0].info.has_value());
+    REQUIRE(catalog.sources[0].info);
     REQUIRE(catalog.sources[0].info->mapId_ == "SlowMap");
     REQUIRE(service.info().size() == 2);
     {

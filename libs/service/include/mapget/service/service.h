@@ -4,29 +4,40 @@
 #include "config.h"
 #include "datasource.h"
 #include "mapget/model/featurelayer-filter.h"
-#include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/layer.h"
+#include "mapget/model/sourcedatalayer.h"
 #include "memcache.h"
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
-#include <utility>
-#include <chrono>
-#include <map>
 #include <set>
+#include <utility>
 #include <vector>
-#include <atomic>
 
 namespace mapget
 {
 
+namespace detail
+{
+class AttachmentRequestExecution;
+class FilterEvaluationJob;
+class FilterRequestExecution;
+class LocateRequestExecution;
+class ServiceScheduler;
+class TileLoadJob;
+}  // namespace detail
+
 enum class RequestStatus {
     Open = 0x0,
-    Success = 0x1, /** The request has been fully satisfied. */
+    Success = 0x1,      /** The request has been fully satisfied. */
     NoDataSource = 0x2, /** No data source could provide the requested map + layer. */
     Unauthorized = 0x3, /** The user is not authorized to access the requested data source. */
-    Aborted = 0x4 /** Canceled, e.g. because a bundled request cannot be fulfilled. */
+    Aborted = 0x4       /** Canceled, e.g. because a bundled request cannot be fulfilled. */
 };
 
 enum class NoDataSourceReason {
@@ -49,7 +60,8 @@ enum class DataSourceCatalogStatus {
 };
 
 /** Service-owned datasource catalog row used by `/sources` and interactive invalidation. */
-struct DataSourceCatalogEntry {
+struct DataSourceCatalogEntry
+{
     /** Cheap static config facts available before construction. */
     DataSourceDescriptor descriptor;
 
@@ -65,12 +77,13 @@ struct DataSourceCatalogEntry {
     /** Ready datasource instance; needed for worker registration and config reload/removal. */
     DataSource::Ptr dataSource;
 
-    /** Frozen ready metadata for ordered `/sources` serialization without repeated `info()` calls. */
-    std::optional<DataSourceInfo> info;
+    /** Shared immutable metadata snapshot used by workers and ordered `/sources` serialization. */
+    std::shared_ptr<DataSourceInfo const> info;
 };
 
 /** Lightweight per-source delta embedded into interactive catalog-change messages. */
-struct DataSourceCatalogSourceUpdate {
+struct DataSourceCatalogSourceUpdate
+{
     /** Static config facts; `configIndex` identifies the row and auth rules scope visibility. */
     DataSourceDescriptor descriptor;
 
@@ -88,11 +101,13 @@ struct DataSourceCatalogSourceUpdate {
 };
 
 /** Ordered datasource catalog snapshot for one authorized caller. */
-struct DataSourceCatalogSnapshot {
+struct DataSourceCatalogSnapshot
+{
     /** Monotonic catalog revision used for ETag generation and WebSocket invalidation. */
     uint64_t revision = 0;
 
-    /** Global config status (`ok` or `error`) because parse failures are not tied to one source row. */
+    /** Global config status (`ok` or `error`) because parse failures are not tied to one source
+     * row. */
     std::string configStatus = "ok";
 
     /** Human-readable config parse/validation error; empty when `configStatus == "ok"`. */
@@ -103,7 +118,8 @@ struct DataSourceCatalogSnapshot {
 };
 
 /** Lightweight notification emitted whenever the datasource catalog changes. */
-struct DataSourceCatalogChange {
+struct DataSourceCatalogChange
+{
     /** Revision after the change was applied. */
     uint64_t revision = 0;
 
@@ -114,7 +130,8 @@ struct DataSourceCatalogChange {
     std::optional<DataSourceCatalogSourceUpdate> sourceUpdate;
 };
 
-struct LayerRequestContext {
+struct LayerRequestContext
+{
     RequestStatus status_ = RequestStatus::NoDataSource;
     NoDataSourceReason noDataSourceReason_ = NoDataSourceReason::MissingMapOrLayer;
     LayerType layerType_ = LayerType::Features;
@@ -128,8 +145,7 @@ struct LayerRequestContext {
  */
 struct AttachmentResult
 {
-    RequestStatus status_ =
-        RequestStatus::NoDataSource;
+    RequestStatus status_ = RequestStatus::NoDataSource;
     std::optional<AttachmentResponse> response_;
 };
 
@@ -142,15 +158,17 @@ class LayerTilesRequest
 {
     friend class Service;
     friend class HttpClient;
+    friend class detail::AttachmentRequestExecution;
+    friend class detail::FilterRequestExecution;
+    friend class detail::LocateRequestExecution;
+    friend class detail::ServiceScheduler;
+    friend class detail::TileLoadJob;
 
 public:
     using Ptr = std::shared_ptr<LayerTilesRequest>;
 
     /** Construct a request for tiles with the relevant parameters. */
-    LayerTilesRequest(
-        std::string mapId,
-        std::string layerId,
-        std::vector<TileId> tiles);
+    LayerTilesRequest(std::string mapId, std::string layerId, std::vector<TileId> tiles);
 
     /** Construct a request with foreground tile IDs prioritized for scheduling. */
     LayerTilesRequest(
@@ -203,16 +221,28 @@ public:
      * The callback function which is called when all tiles have been processed.
      */
     template <class Fun>
-    LayerTilesRequest& onFeatureLayer(Fun&& callback) { onFeatureLayer_ = std::forward<Fun>(callback); return *this; }
+    LayerTilesRequest& onFeatureLayer(Fun&& callback)
+    {
+        onFeatureLayer_ = std::forward<Fun>(callback);
+        return *this;
+    }
 
     template <class Fun>
-    LayerTilesRequest& onSourceDataLayer(Fun&& callback) { onSourceDataLayer_ = std::forward<Fun>(callback); return *this; }
+    LayerTilesRequest& onSourceDataLayer(Fun&& callback)
+    {
+        onSourceDataLayer_ = std::forward<Fun>(callback);
+        return *this;
+    }
 
     /**
      * Callback for per-tile load-state changes.
      */
     template <class Fun>
-    LayerTilesRequest& onLayerLoadStateChanged(Fun&& callback) { onLoadStateChanged_ = std::forward<Fun>(callback); return *this; }
+    LayerTilesRequest& onLayerLoadStateChanged(Fun&& callback)
+    {
+        onLoadStateChanged_ = std::forward<Fun>(callback);
+        return *this;
+    }
 
 protected:
     virtual void notifyResult(TileLayer::Ptr);
@@ -261,6 +291,9 @@ class FeatureLayerFilterTilesRequest
 {
     friend class Service;
     friend class HttpClient;
+    friend class detail::FilterEvaluationJob;
+    friend class detail::FilterRequestExecution;
+    friend class detail::ServiceScheduler;
 
 public:
     using Ptr = std::shared_ptr<FeatureLayerFilterTilesRequest>;
@@ -353,8 +386,10 @@ private:
 /**
  * Class which serves to unify multiple data sources for multiple maps,
  * and a cache which may store/restore the output of any of these sources.
- * The service maintains a number of worker threads for each source, depending
- * on the source's maxParallelJobs_.
+ * The service runs tile loading and derived model work on one homogeneous,
+ * bounded worker pool. Each primary datasource's maxParallelJobs_ remains an
+ * independent concurrency limit; add-ons execute within their primary tile
+ * jobs without reserving another worker.
  */
 class Service
 {
@@ -379,6 +414,14 @@ public:
     };
 
     /**
+     * Choose the default global worker cap from the available CPU count.
+     *
+     * The floor keeps slow or blocking datasources from starving unrelated
+     * CPU work, while the ceiling bounds thread-stack and scheduler overhead.
+     */
+    [[nodiscard]] static size_t defaultWorkerCount() noexcept;
+
+    /**
      * Construct a service with a shared Cache instance. Note: The Cache must not
      * be null. For a simple default cache implementation, you can use the
      * MemCache.
@@ -387,20 +430,22 @@ public:
      *  backends based on a subscription to the YAML datasource config file.
      * @param defaultTtl Default time-to-live for tiles returned by the service. May be
      *  overridden by datasource or tile-specific TTL.
+     * @param workerCount Maximum number of tile-loading and derived-evaluation
+     *  jobs that may execute concurrently across the whole service.
      */
     explicit Service(
         Cache::Ptr cache = std::make_shared<MemCache>(),
         bool useDataSourceConfig = false,
-        std::optional<std::chrono::milliseconds> defaultTtl = std::chrono::milliseconds{0});
+        std::optional<std::chrono::milliseconds> defaultTtl = std::chrono::milliseconds{0},
+        size_t workerCount = defaultWorkerCount());
 
-    /** Destructor. Stops all workers of the present data sources. */
+    /** Destructor. Stops the global worker pool and datasource construction threads. */
     ~Service();
 
     /**
-     * Add a data source. Worker threads will be launched as needed,
-     * and incoming/present requests for the data source will start to be
-     * processed. Note, that the map layer versions for all layers of the
-     * given source must be compatible with present one's, if existing.
+     * Add a data source. Incoming and queued requests for the data source will
+     * become eligible for the global worker pool. Note, that the map layer versions for all layers
+     * of the given source must be compatible with present one's, if existing.
      *
      * Thread safety: This method should not be called in parallel with itself or remove().
      */
@@ -423,7 +468,9 @@ public:
      * @return false if the requested map+layer is not available
      * from any connected DataSource, true otherwise.
      */
-    bool request(std::vector<LayerTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
+    bool request(
+        std::vector<LayerTilesRequest::Ptr> const& requests,
+        std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
      * Request server-side filtering over source feature tiles.
@@ -431,10 +478,14 @@ public:
      * The returned binary chunks are TileSubsetLayer instances produced
      * via FeatureLayerFilterTilesRequest::onFilterResult.
      */
-    bool request(FeatureLayerFilterTilesRequest::Ptr const& request, std::optional<AuthHeaders> const& clientHeaders = {});
+    bool request(
+        FeatureLayerFilterTilesRequest::Ptr const& request,
+        std::optional<AuthHeaders> const& clientHeaders = {});
 
     /** Request multiple server-side filter bundles. */
-    bool request(std::vector<FeatureLayerFilterTilesRequest::Ptr> const& requests, std::optional<AuthHeaders> const& clientHeaders = {});
+    bool request(
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> const& requests,
+        std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
      * Load the source feature tile through the ordinary scheduler/cache path,
@@ -484,13 +535,16 @@ public:
     /** Current datasource catalog revision without cloning catalog metadata. */
     [[nodiscard]] uint64_t sourceCatalogRevision() const;
 
-    /** True if an interactive client may receive the optional source delta in this catalog change. */
+    /** True if an interactive client may receive the optional source delta in this catalog change.
+     */
     [[nodiscard]] bool isSourceCatalogChangeVisible(
         DataSourceCatalogChange const& change,
         std::optional<AuthHeaders> const& clientHeaders = {}) const;
 
-    /** Subscribe to datasource catalog changes such as config reloads or startup status transitions. */
-    [[nodiscard]] DataSourceCatalogSubscription subscribeToSourceCatalogChanges(DataSourceCatalogCallback callback);
+    /** Subscribe to datasource catalog changes such as config reloads or startup status
+     * transitions. */
+    [[nodiscard]] DataSourceCatalogSubscription
+    subscribeToSourceCatalogChanges(DataSourceCatalogCallback callback);
 
     /**
      * Checks if any DataSource can serve the requested map+layer combination,
@@ -515,9 +569,10 @@ public:
     /**
      * Get Statistics about the operation of this service.
      * Returns the following values:
-     * - `workers`: Number of active workers.
+     * - `workers`: Configured and currently running global worker counts.
      * - `datasources`: Number of active data sources.
      * - `active-requests`: Number of in-flight requests.
+     * - `filter-evaluation`: Queued and running derived filter jobs.
      */
     [[nodiscard]] nlohmann::json getStatistics() const;
 
@@ -528,9 +583,8 @@ public:
      * - includeTileSizeDistribution: Build cached feature-tile size histogram
      *   and percentiles.
      */
-    [[nodiscard]] nlohmann::json getStatistics(
-        bool includeCachedFeatureTreeBytes,
-        bool includeTileSizeDistribution) const;
+    [[nodiscard]] nlohmann::json
+    getStatistics(bool includeCachedFeatureTreeBytes, bool includeTileSizeDistribution) const;
 
     /**
      * Snapshot process controls and capacity-based mapget ownership estimates.
@@ -545,9 +599,10 @@ public:
 
 private:
     struct Impl;
-    struct Worker;
-    struct Controller;
     std::unique_ptr<Impl> impl_;
+
+    friend class detail::FilterRequestExecution;
+    friend class detail::LocateRequestExecution;
 };
 
 }  // namespace mapget

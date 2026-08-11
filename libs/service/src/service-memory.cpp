@@ -289,25 +289,6 @@ nlohmann::json allocatorMemoryStatistics()
 #endif
 }
 
-simfil::MemoryUsage dataSourceInfoContainerMemoryUsage(DataSourceInfo const& info)
-{
-    MemoryUsageBreakdown usage;
-    usage.add("object", {sizeof(DataSourceInfo), sizeof(DataSourceInfo)});
-    usage.add("string-pool-id", stringMemoryUsage(info.stringPoolId_));
-    usage.add("map-id", stringMemoryUsage(info.mapId_));
-    usage.add("layer-index", {
-        info.layers_.size() * sizeof(decltype(info.layers_)::value_type),
-        info.layers_.bucket_count() * sizeof(void*) +
-            info.layers_.size() *
-                (sizeof(decltype(info.layers_)::value_type) + 2 * sizeof(void*)),
-    });
-    for (auto const& [layerId, _] : info.layers_) {
-        usage.add("layer-ids", stringMemoryUsage(layerId));
-    }
-    usage.add("extra-json", jsonMemoryUsage(info.extraJsonAttachment_));
-    return usage.total();
-}
-
 simfil::MemoryUsage dataSourceDescriptorMemoryUsage(DataSourceDescriptor const& descriptor)
 {
     MemoryUsageBreakdown usage;
