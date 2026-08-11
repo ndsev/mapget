@@ -15,6 +15,8 @@ add_library(mapget-http-service STATIC
   src/locate-handler.cpp
   src/sources-handler.cpp
   src/status-handler.cpp
+  src/status-page.h
+  src/status-page.cpp
   src/tiles-request-json.h
   src/tiles-request-json.cpp
   src/tiles-http-handler.cpp

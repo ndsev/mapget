@@ -403,15 +403,24 @@ Results contain `name`, WGS84 `lonLat`, and an `aabb`. The endpoint returns
 Python wheel bundle the default GeoNames database beside their mapget binary;
 `mapget serve --location-db` can select a different SQLite database.
 
-## `GET /status` and `GET /status-data`
+## `GET /status`, `GET /status-data`, and `POST /status-data/cache-report`
 
-`/status` is a development HTML dashboard. `/status-data` is its JSON source
-and contains service/cache metrics, datasource construction state, and
-interactive queue/pull statistics. Heavy tile-size calculations can be
-enabled with `includeTileSizeDistribution=true`.
+`/status` is the operational HTML dashboard. Its live tabs poll
+`GET /status-data`, which contains service/cache metrics, datasource
+construction state, memory ownership, and interactive queue/pull statistics.
+The live endpoint deliberately never parses cached feature tiles.
 
-The `memory` object reconciles process-level memory with explicitly owned
-mapget state:
+`POST /status-data/cache-report` explicitly generates one point-in-time cache
+report. It returns `featureTree` storage measurements and a
+`tileSizeDistribution`, together with `generatedAtMs`, `durationMs`, and the
+cache counters captured for that report. Cache reports are serialized,
+concurrent callers share an active run, and the blocking traversal executes
+outside Drogon's HTTP event loop. The dashboard retains the result in the
+browser until the customer regenerates or reloads it; automatic refreshes do
+not repeat the analysis.
+
+The `memory` object presents process residency, allocator state, and
+explicitly owned mapget state as distinct measurement domains:
 
 - `process` reports RSS/peak RSS and platform-specific process or cgroup
   controls where available;
@@ -423,13 +432,17 @@ mapget state:
   estimate;
 - `cache` and `transport` account loaded string pools, serialized tile blobs,
   SQLite-owned state, and queued REST/interactive response buffers;
-- `unattributed-resident-bytes` is the remaining RSS after known current
-  ownership is subtracted.
+- `allocator-trim` reports whether periodic glibc heap trimming is supported
+  and enabled, its period, attempt/success counters, and the most recent
+  duration and free-arena samples;
+- `reconciliation` contains diagnostic differences between allocator-live
+  bytes, anonymous RSS, file/shared RSS, and known ownership estimates.
 
 Container values are capacity-based lower bounds rather than allocator-exact
-measurements. The unattributed remainder intentionally includes allocator
-fragmentation, thread stacks, shared libraries, opaque third-party internals,
-and datasource implementations which do not provide an estimate.
+measurements. They must not be added directly to RSS rows. The reconciliation
+residuals can indicate allocator fragmentation, thread stacks, opaque mappings,
+or missing ownership instrumentation, but they do not identify leaks by
+themselves.
 
 ## `/config`
 

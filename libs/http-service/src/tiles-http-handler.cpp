@@ -289,11 +289,9 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             responseType_ = jsonlMimeType;
 
         if (responseType_ == binaryMimeType) {
-            trimResponseType_ = HttpService::Impl::ResponseType::Binary;
             return true;
         }
         if (responseType_ == jsonlMimeType) {
-            trimResponseType_ = HttpService::Impl::ResponseType::Json;
             return true;
         }
 
@@ -501,7 +499,6 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             if (done) {
                 if (streamToClose)
                     streamToClose->close();
-                impl_.tryMemoryTrim(trimResponseType_);
                 return;
             }
             if (scheduleAgain)
@@ -533,7 +530,6 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     uint64_t requestId_ = 0;
 
     std::string responseType_;
-    HttpService::Impl::ResponseType trimResponseType_ = HttpService::Impl::ResponseType::Binary;
 
     std::string pending_;
     uint64_t accountedPendingBytes_ = 0;

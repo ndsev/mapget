@@ -786,6 +786,60 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(nonBlockingResult == drogon::ReqResult::Ok);
             REQUIRE(nonBlockingResp != nullptr);
             REQUIRE(nonBlockingResp->statusCode() == drogon::k200OK);
+
+            auto [statusResult, statusResp] = serviceClient.get("/status-data");
+            REQUIRE(statusResult == drogon::ReqResult::Ok);
+            REQUIRE(statusResp != nullptr);
+            REQUIRE(statusResp->statusCode() == drogon::k200OK);
+            auto const status = nlohmann::json::parse(std::string(statusResp->body()));
+            REQUIRE_FALSE(status["service"].contains("cached-feature-tree-bytes"));
+            REQUIRE_FALSE(status["service"].contains("cached-feature-tile-size-distribution"));
+            REQUIRE_FALSE(status["memory"].contains("unattributed-resident-bytes"));
+            auto const& reconciliation = status["memory"]["reconciliation"];
+            REQUIRE(reconciliation["measurement"] == "diagnostic-residuals");
+            REQUIRE(
+                reconciliation["known-ownership-bytes"] ==
+                status["memory"]["known-current-bytes"]);
+            auto const& trim = status["memory"]["allocator-trim"];
+            REQUIRE(trim.contains("attempts"));
+            REQUIRE(trim.contains("successful-trims"));
+            REQUIRE(trim.contains("last-duration-microseconds"));
+            REQUIRE(trim.contains("last-free-arena-before-bytes"));
+            REQUIRE(trim.contains("last-free-arena-after-bytes"));
+#if defined(__linux__) && defined(__GLIBC__)
+            REQUIRE(trim["supported"] == true);
+            REQUIRE(trim["enabled"] == true);
+            REQUIRE(trim["period-seconds"] == 10);
+#else
+            REQUIRE(trim["supported"] == false);
+            REQUIRE(trim["enabled"] == false);
+            REQUIRE(trim["period-seconds"] == 0);
+#endif
+
+            auto [pageResult, pageResp] = serviceClient.get("/status");
+            REQUIRE(pageResult == drogon::ReqResult::Ok);
+            REQUIRE(pageResp != nullptr);
+            REQUIRE(pageResp->statusCode() == drogon::k200OK);
+            auto const page = std::string(pageResp->body());
+            REQUIRE(page.find("Cache Report") != std::string::npos);
+            REQUIRE(page.find("/status-data/cache-report") != std::string::npos);
+            REQUIRE(page.find("includeTileSizeDistribution") == std::string::npos);
+            REQUIRE(page.find("color-scheme: dark") != std::string::npos);
+            REQUIRE(page.find("info-bubble") != std::string::npos);
+            REQUIRE(page.find("Unattributed process RSS") == std::string::npos);
+
+            auto [reportResult, reportResp] = serviceClient.postJson(
+                "/status-data/cache-report",
+                "{}");
+            REQUIRE(reportResult == drogon::ReqResult::Ok);
+            REQUIRE(reportResp != nullptr);
+            REQUIRE(reportResp->statusCode() == drogon::k200OK);
+            auto const report = nlohmann::json::parse(std::string(reportResp->body()));
+            REQUIRE(report.contains("generatedAtMs"));
+            REQUIRE(report.contains("durationMs"));
+            REQUIRE(report["featureTree"].is_object());
+            REQUIRE(report["tileSizeDistribution"].is_object());
+            REQUIRE(report["featureTree"]["tile-count"].get<uint64_t>() > 0);
         }
 
         // A remote relation target is planned by /locate and materialized only

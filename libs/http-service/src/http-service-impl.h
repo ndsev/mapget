@@ -7,10 +7,15 @@
 #include <drogon/HttpResponse.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <fstream>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace mapget
 {
@@ -38,14 +43,35 @@ struct HttpService::Impl
     HttpServiceConfig config_;
     /** Lookup backend used by GET /location when location search is enabled. */
     std::unique_ptr<SqliteLocationLookup> locationLookup_;
-    mutable std::atomic<uint64_t> binaryRequestCounter_{0};
-    mutable std::atomic<uint64_t> jsonRequestCounter_{0};
+
+    /** Interruptible wait state for the allocator-maintenance worker. */
+    std::mutex memoryTrimMutex_;
+    std::condition_variable memoryTrimCv_;
+    bool stopMemoryTrim_ = false;
+    std::thread memoryTrimThread_;
+
+    /** Lock-free diagnostics published after each periodic trim attempt. */
+    std::atomic<uint64_t> memoryTrimAttempts_{0};
+    std::atomic<uint64_t> memoryTrimSuccesses_{0};
+    std::atomic<uint64_t> memoryTrimLastDurationMicros_{0};
+    std::atomic<uint64_t> memoryTrimLastFreeArenaBefore_{0};
+    std::atomic<uint64_t> memoryTrimLastFreeArenaAfter_{0};
+
+    /** Serialized request state for explicit, expensive cache reports. */
+    std::mutex statusCacheReportMutex_;
+    std::condition_variable statusCacheReportCv_;
+    bool stopStatusCacheReport_ = false;
+    std::thread statusCacheReportThread_;
+    std::vector<std::function<void(const drogon::HttpResponsePtr&)>> statusCacheReportCallbacks_;
 
     explicit Impl(HttpService& self, const HttpServiceConfig& config);
+    ~Impl();
 
-    enum class ResponseType { Binary, Json };
+    /** Wait for each configured period and trim outside Drogon's event loop. */
+    void runMemoryTrimLoop();
 
-    void tryMemoryTrim(ResponseType responseType) const;
+    /** Return periodic allocator-maintenance state for `/status-data`. */
+    [[nodiscard]] nlohmann::json memoryTrimStatistics() const;
 
     struct TilesStreamState;
 
@@ -71,13 +97,23 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    /** Serve the self-contained operational status dashboard. */
     void handleStatusRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    /** Return the lightweight live metrics consumed by the status dashboard. */
     void handleStatusDataRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
+
+    /** Generate one detailed cache report outside Drogon's event loop. */
+    void handleStatusCacheReportRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
+    /** Coalesce report callers and serialize expensive cache traversal. */
+    void runStatusCacheReportLoop();
 
     void handleLocateRequest(
         const drogon::HttpRequestPtr& req,

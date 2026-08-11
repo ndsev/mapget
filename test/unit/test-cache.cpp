@@ -762,6 +762,55 @@ TEST_CASE("MemCache reports retained blob capacity", "[Cache][memory]")
             .get<uint64_t>() >= 4096);
 }
 
+TEST_CASE("MemCache enforces serialized byte budget", "[Cache][memory]")
+{
+    REQUIRE(
+        MemCache::defaultMaxCachedBytes(1024) ==
+        512ULL * 1024ULL * 1024ULL);
+
+    MemCache cache(8, 10);
+    auto makeKey = [](uint32_t x) {
+        return MapTileKey(
+            LayerType::Features,
+            "BudgetMap",
+            "BudgetLayer",
+            TileId::fromTileXY(x, 1, 3));
+    };
+    auto const first = makeKey(1);
+    auto const second = makeKey(2);
+    auto const oversized = makeKey(3);
+
+    cache.putTileLayerBlob(first, "123456");
+    cache.putTileLayerBlob(second, "abcdef");
+    REQUIRE_FALSE(cache.getTileLayerBlob(first));
+    REQUIRE(cache.getTileLayerBlob(second) == "abcdef");
+
+    // Oversized entries are skipped without evicting useful retained data.
+    cache.putTileLayerBlob(oversized, "01234567890");
+    REQUIRE_FALSE(cache.getTileLayerBlob(oversized));
+    REQUIRE(cache.getTileLayerBlob(second) == "abcdef");
+
+    auto const statistics = cache.getStatistics();
+    REQUIRE(statistics["memcache-tile-bytes"] == 6);
+    REQUIRE(statistics["memcache-max-tiles"] == 8);
+    REQUIRE(statistics["memcache-max-bytes"] == 10);
+}
+
+TEST_CASE("MemCache zero limits are unlimited", "[Cache][memory]")
+{
+    MemCache cache(0, 0);
+    for (uint32_t x = 0; x < 3; ++x) {
+        cache.putTileLayerBlob(
+            MapTileKey(
+                LayerType::Features,
+                "UnlimitedMap",
+                "UnlimitedLayer",
+                TileId::fromTileXY(x, 1, 3)),
+            std::string(32, static_cast<char>('a' + x)));
+    }
+    REQUIRE(cache.getStatistics()["memcache-map-size"] == 3);
+}
+
 TEST_CASE("Cache roundtrips SourceData tile-zero sentinel", "[Cache]")
 {
     auto layerInfo = createMetadataSourceDataLayerInfo();

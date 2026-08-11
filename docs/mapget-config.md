@@ -368,6 +368,7 @@ mapget:
     host: 127.0.0.1             # --host (default 0.0.0.0, all IPv4 interfaces)
     port: 9000                  # --port
     wait-ms: 5000               # --wait-ms, listener startup timeout
+    worker-count: 32            # --worker-count, global service job cap
     cache-type: persistent      # --cache-type [memory|persistent|none]
     cache-dir: /var/lib/mapget/cache.db   # --cache-dir (used with persistent cache)
     cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
@@ -377,14 +378,31 @@ mapget:
     webapp: /srv/my-ui          # --webapp, one application document root
     static-mount:               # --static-mount, additional static aliases
       - /assets:/srv/assets
-    memory-trim-binary-interval: 100  # --memory-trim-binary-interval
-    memory-trim-json-interval: 0      # --memory-trim-json-interval
+    memory-trim-period-seconds: 10    # --memory-trim-period-seconds (0 disables)
 
 http-settings: ...
 sources: ...
 ```
 
 Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, host `0.0.0.0`, port 0, a 5000 ms startup wait, in-memory cache, GET `/config` enabled, and POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
+
+`worker-count` bounds all concurrently executing tile-load and derived filter
+jobs across the service. Every worker is homogeneous; an idle datasource does
+not reserve threads. `DataSourceInfo.maxParallelJobs` remains a separate
+per-primary-datasource permit limit; add-ons run inside their matching primary
+tile job. The default is twice the detected hardware thread count, clamped to
+the inclusive range 16 through 32.
+
+When `cache-max-bytes` is omitted, the in-memory cache derives its byte budget
+as `cache-max-tiles * 512 KiB`. The default `1024` tile limit therefore retains
+at most `512 MiB` of serialized tile payloads. Index and allocator overhead are
+reported separately and are not part of that payload budget.
+
+On Linux with glibc, mapget trims unused allocator pages from a dedicated
+maintenance thread every 10 seconds by default. Set
+`memory-trim-period-seconds` to `0` to disable it. Other platforms do not
+currently use an allocator-maintenance implementation in mapget, so the
+default there is disabled.
 
 Datasource editor visibility is controlled by `allow-post-config` and `no-get-config`:
 
