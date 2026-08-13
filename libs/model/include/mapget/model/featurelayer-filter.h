@@ -237,6 +237,8 @@ struct FeatureLayerFilterRequest
 {
     std::string filterId_;
     uint64_t generation_ = 0;
+    /** Per-tile transport version; semantic filter identity remains generation_. */
+    uint64_t deliveryEpoch_ = 0;
     std::vector<FeatureLayerFilterChannel> channels_;
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
 

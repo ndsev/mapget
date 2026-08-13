@@ -203,6 +203,13 @@ FilterRequestExecution::~FilterRequestExecution()
     }
     usage.add("requested-tile-ids", vectorMemoryUsage(request->tileIds_));
     usage.add(
+        "delivery-epochs",
+        {
+            request->deliveryEpochs_.size() * sizeof(std::pair<TileId const, uint64_t>),
+            request->deliveryEpochs_.size() *
+                (sizeof(std::pair<TileId const, uint64_t>) + 3 * sizeof(void*)),
+        });
+    usage.add(
         "priority-tile-index",
         {
             request->priorityTileIds_.size() * sizeof(TileId),
@@ -849,6 +856,14 @@ FilterRequestExecution::commitSource(
                 std::move(issues),
                 result.traces_,
                 std::move(contributionDiagnostics),
+                source.ttl() && source.ttl()->count() > 0 ?
+                    std::optional<SourceTileContribution::Lifetime>{
+                        SourceTileContribution::Lifetime{
+                            MapTileKey(source),
+                            source.timestamp(),
+                            *source.ttl(),
+                        }} :
+                    std::nullopt,
             });
             --output.missingContributions_;
             if (output.missingContributions_ == 0) {
@@ -906,6 +921,15 @@ tl::expected<void, simfil::Error> FilterRequestExecution::resolveRelationTargetI
         {},
         {},
         {},
+        {},
+        targetLayer.ttl() && targetLayer.ttl()->count() > 0 ?
+            std::optional<SourceTileContribution::Lifetime>{
+                SourceTileContribution::Lifetime{
+                    targetKey,
+                    targetLayer.timestamp(),
+                    *targetLayer.ttl(),
+                }} :
+            std::nullopt,
     };
 
     for (auto& contribution : output.contributions_) {
@@ -1202,6 +1226,18 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
     std::map<std::tuple<std::string, std::string, Scope, std::string>, FilterIssue> issues;
     std::map<std::string, simfil::Trace> traces;
     simfil::Diagnostics diagnostics;
+    std::optional<SourceTileContribution::Lifetime> limitingLifetime;
+    auto includeLifetime = [&](auto const& contribution)
+    {
+        if (contribution.lifetime_ &&
+            (!limitingLifetime ||
+             contribution.lifetime_->expiresAt() < limitingLifetime->expiresAt() ||
+             (contribution.lifetime_->expiresAt() == limitingLifetime->expiresAt() &&
+              contribution.lifetime_->sourceKey_ < limitingLifetime->sourceKey_)))
+        {
+            limitingLifetime = contribution.lifetime_;
+        }
+    };
 
     for (auto&& issue : ready.issues_) {
         auto key =
@@ -1215,6 +1251,7 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
     }
 
     for (auto& contribution : ready.contributions_) {
+        includeLifetime(contribution);
         dependencies.push_back(std::move(contribution.dependency_));
         members.insert(
             members.end(),
@@ -1243,6 +1280,7 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
         }
     }
     for (auto& [_, contribution] : ready.dynamicContributions_) {
+        includeLifetime(contribution);
         dependencies.push_back(std::move(contribution.dependency_));
         for (auto&& issue : contribution.issues_) {
             auto key =
@@ -1322,6 +1360,16 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
         relationDescriptors = std::move(resolvedDescriptors);
     }
 
+    if (limitingLifetime) {
+        // Preserve the limiting source's original positive TTL pair. Deriving a
+        // duration from the output timestamp could turn an already-expired
+        // dependency into a negative TTL, which means non-expiring on the wire.
+        ready.layer_->setTimestamp(limitingLifetime->timestamp_);
+        ready.layer_->setTtl(limitingLifetime->ttl_);
+    }
+    else {
+        ready.layer_->setTtl(std::nullopt);
+    }
     ready.layer_->setDependencies(std::move(dependencies));
     if (hasPointGroups) {
         auto const startedAt = std::chrono::steady_clock::now();
@@ -1505,7 +1553,13 @@ void FilterRequestExecution::evaluate(
         }
 
         auto const filterStartedAt = std::chrono::steady_clock::now();
-        auto sourceResult = request->filter_.filterSource(
+        auto effectiveFilter = request->filter_;
+        if (auto const deliveryEpoch = request->deliveryEpochs_.find(source->tileId());
+            deliveryEpoch != request->deliveryEpochs_.end())
+        {
+            effectiveFilter.deliveryEpoch_ = deliveryEpoch->second;
+        }
+        auto sourceResult = effectiveFilter.filterSource(
             *source,
             outputIndexByTile.contains(source->tileId()),
             request->exactRoots_,

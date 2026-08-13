@@ -459,7 +459,10 @@ additional terminal rows.
 
 Each subset also carries:
 
-- `filterId + generation` transport identity;
+- `filterId + generation` semantic identity plus a per-output
+  `deliveryEpoch` transport version;
+- the timestamp and positive TTL pair of the finite-lifetime source
+  dependency with the earliest absolute expiry, when one exists;
 - source dependencies and `sourceFeatureCount`;
 - inherited source `info()` statistics plus subset-owned terminal-entry and
   stored-geometry vertex counts;

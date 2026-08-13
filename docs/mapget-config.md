@@ -375,6 +375,9 @@ mapget:
     clear-cache: false          # --clear-cache
     allow-post-config: true     # --allow-post-config (enables POST /config)
     no-get-config: false        # --no-get-config (hides datasource model in GET /config)
+    allow-cache-reset: true     # --allow-cache-reset (enables guarded POST /cache/reset)
+    cache-reset-auth-header:    # repeatable --cache-reset-auth-header HEADER=REGEX
+      - 'X-User-Role=^cache-admin$'
     webapp: /srv/my-ui          # --webapp, one application document root
     static-mount:               # --static-mount, additional static aliases
       - /assets:/srv/assets
@@ -403,6 +406,18 @@ maintenance thread every 10 seconds by default. Set
 `memory-trim-period-seconds` to `0` to disable it. Other platforms do not
 currently use an allocator-maintenance implementation in mapget, so the
 default there is disabled.
+
+Cache reset is disabled by default. Enabling it without at least one valid
+`cache-reset-auth-header` entry fails startup. Each entry is split at the first
+`=` into an HTTP header name and regular expression, so expressions may contain
+additional equals signs. Header names are case-insensitive, values use full
+regular-expression matching, and alternatives are ORed. The reset request must
+also satisfy the selected map's normal datasource `auth-header` restriction.
+
+Use this gate only behind a trusted authentication proxy. The proxy must strip
+client-supplied copies of the identity header, inject its authenticated value,
+and forward the same identity context to `/config`, `/sources`,
+`/cache/reset`, and the tile endpoints.
 
 Datasource editor visibility is controlled by `allow-post-config` and `no-get-config`:
 

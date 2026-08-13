@@ -75,12 +75,22 @@ private:
     /** Source-local output retained until every dependent output is complete. */
     struct SourceTileContribution
     {
+        struct Lifetime
+        {
+            MapTileKey sourceKey_;
+            std::chrono::system_clock::time_point timestamp_;
+            std::chrono::milliseconds ttl_;
+
+            [[nodiscard]] auto expiresAt() const { return timestamp_ + ttl_; }
+        };
+
         TileSubsetDependency dependency_;
         std::vector<FeatureLayerPointGroupMember> pointGroupMembers_;
         std::vector<FeatureLayerRelationDescriptor> relationDescriptors_;
         std::vector<FilterIssue> issues_;
         std::map<std::string, simfil::Trace> traces_;
         simfil::Diagnostics diagnostics_;
+        std::optional<Lifetime> lifetime_;
     };
 
     /** Mutable assembly state for one requested output tile. */

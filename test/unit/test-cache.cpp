@@ -738,6 +738,64 @@ TEST_CASE("NullCache", "[Cache]")
     testNullCacheImplementation();
 }
 
+TEST_CASE("Map cache invalidation uses exact map identity", "[Cache][invalidation]")
+{
+    auto verify = [](Cache& cache) {
+        auto const targetFeature = MapTileKey(
+            LayerType::Features,
+            "Reset/Map%25",
+            "FeatureLayer",
+            TileId::fromTileXY(1, 1, 2));
+        auto const targetSourceData = MapTileKey(
+            LayerType::SourceData,
+            "Reset/Map%25",
+            "SourceLayer",
+            TileId::fromTileXY(2, 1, 2));
+        auto const similarlyNamedMap = MapTileKey(
+            LayerType::Features,
+            "ResetMap-copy",
+            "FeatureLayer",
+            TileId::fromTileXY(1, 1, 2));
+        auto const otherMap = MapTileKey(
+            LayerType::Features,
+            "OtherMap",
+            "FeatureLayer",
+            TileId::fromTileXY(1, 1, 2));
+
+        cache.putTileLayerBlob(targetFeature, "target-feature");
+        cache.putTileLayerBlob(targetSourceData, "target-source-data");
+        cache.putTileLayerBlob(similarlyNamedMap, "similar");
+        cache.putTileLayerBlob(otherMap, "other");
+        cache.putStringPoolBlob("ResetPool", "pool");
+        auto const stringPoolBefore =
+            cache.getStringPoolBlob("ResetPool");
+
+        cache.invalidateMap("Reset/Map%25");
+
+        REQUIRE_FALSE(cache.getTileLayerBlob(targetFeature));
+        REQUIRE_FALSE(cache.getTileLayerBlob(targetSourceData));
+        REQUIRE(cache.getTileLayerBlob(similarlyNamedMap) == "similar");
+        REQUIRE(cache.getTileLayerBlob(otherMap) == "other");
+        REQUIRE(cache.getStringPoolBlob("ResetPool") == stringPoolBefore);
+    };
+
+    SECTION("Memory cache")
+    {
+        MemCache cache(16);
+        verify(cache);
+    }
+
+    SECTION("SQLite cache")
+    {
+        auto path = createTempCachePath("sqlite-map-invalidation-");
+        {
+            SQLiteCache cache(16, path.string(), true);
+            verify(cache);
+        }
+        std::filesystem::remove(path);
+    }
+}
+
 TEST_CASE("MemCache reports retained blob capacity", "[Cache][memory]")
 {
     MemCache cache(8);

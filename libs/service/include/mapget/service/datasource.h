@@ -18,6 +18,20 @@ namespace mapget
  */
 using AuthHeaders = std::unordered_map<std::string, std::string>;
 
+/** Header-name to full-match regular-expression alternatives used by auth gates. */
+using AuthHeaderRegexMap = std::unordered_map<std::string, std::regex>;
+
+/** Add one case-insensitive header-name alternative. Returns false for a duplicate name. */
+bool addAuthHeaderRegexMatchOption(
+    AuthHeaderRegexMap& alternatives,
+    std::string header,
+    std::regex re);
+
+/** True when the gate is unrestricted or at least one configured header fully matches. */
+[[nodiscard]] bool authHeadersMatch(
+    AuthHeaderRegexMap const& alternatives,
+    AuthHeaders const& clientHeaders);
+
 /**
  * Request for one named binary attachment belonging to a feature tile.
  *
@@ -138,9 +152,8 @@ protected:
     static StringId
     cachedStringPoolOffset(std::string const& stringPoolId, Cache::Ptr const& cache);
 
-    /** Map of authorization header-regex pairs which can be entered into the datasource YAML
-     * config. */
-    std::unordered_map<std::string, std::regex> authHeaderAlternatives_;
+    /** Map of authorization header-regex pairs which can be entered into the datasource YAML config. */
+    AuthHeaderRegexMap authHeaderAlternatives_;
 
     /** TTL fallback applied to generated tiles (0 = infinite, unset = use service default). */
     std::optional<std::chrono::milliseconds> ttl_;

@@ -22,6 +22,8 @@ struct ParsedLayerTilesRequest
     std::optional<std::string> sourceId;
     std::vector<TileId> tileIds;
     std::vector<TileId> priorityTileIds;
+    /** Explicit reconnect/resume overrides; omitted tiles use or retain deliveryEpoch_. */
+    std::map<TileId, uint64_t> deliveryEpochs;
     std::map<TileId, std::vector<std::string>> featureIdsByTile;
     std::vector<FeatureLayerFilterRoot> exactRoots;
     std::optional<FeatureLayerFilterRequest> filterRequest;

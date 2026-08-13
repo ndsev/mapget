@@ -3,6 +3,7 @@
 #include <catch2/catch_session.hpp>
 
 #include <mutex>
+#include <regex>
 
 #include "mapget/log.h"
 #include "test-http-service-fixture.h"
@@ -23,7 +24,17 @@ HttpService& httpService()
 
     if (!servicePtr) {
         // Intentionally leaked to avoid destructor ordering issues at process shutdown.
-        servicePtr = new HttpService();
+        HttpServiceConfig config;
+        config.cacheResetEnabled = true;
+        config.cacheResetAuthHeaderAlternatives.emplace(
+            "x-cache-role",
+            std::regex("^resetter$"));
+        config.cacheResetAuthHeaderAlternatives.emplace(
+            "x-cache-group",
+            std::regex("^operators$"));
+        servicePtr = new HttpService(
+            std::make_shared<MemCache>(),
+            config);
         servicePtr->go("127.0.0.1", 0, 5000);
     }
 
@@ -47,4 +58,3 @@ int main(int argc, char* argv[])
     mapget::test::shutdownHttpService();
     return result;
 }
-

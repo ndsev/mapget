@@ -192,36 +192,57 @@ drogon::HttpResponsePtr HttpService::Impl::openConfigFile(std::ifstream& configF
 }
 
 void HttpService::Impl::handleGetConfigRequest(
-    const drogon::HttpRequestPtr& /*req*/,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
     auto& configService = DataSourceConfigService::get();
+    auto const cacheResetAvailable =
+        config_.cacheResetEnabled &&
+        authHeadersMatch(
+            config_.cacheResetAuthHeaderAlternatives,
+            detail::authHeadersFromRequest(req));
+    auto respond = [&](nlohmann::json payload) {
+        if (!payload.contains("capabilities") ||
+            !payload["capabilities"].is_object())
+        {
+            payload["capabilities"] =
+                nlohmann::json::object();
+        }
+        payload["capabilities"]["cacheReset"] =
+            cacheResetAvailable;
+        auto response = jsonResponse(
+            std::move(payload));
+        response->addHeader(
+            "Cache-Control",
+            "private, no-store");
+        callback(std::move(response));
+    };
 
     if (!isGetConfigEndpointEnabled()) {
         const bool readOnly = !isPostConfigEndpointEnabled();
-        callback(jsonResponse(buildUnavailableConfigResponse(
+        respond(buildUnavailableConfigResponse(
             kUnavailableReasonGetConfigDisabled,
             loadConfigYamlForPublicSections(),
             readOnly,
-            !readOnly)));
+            !readOnly));
         return;
     }
 
     auto configFilePath = configService.getConfigFilePath();
     if (!configFilePath.has_value()) {
-        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigPathUnset)));
+        respond(buildUnavailableConfigResponse(kUnavailableReasonConfigPathUnset));
         return;
     }
 
     std::filesystem::path path = *configFilePath;
     if (!std::filesystem::exists(path)) {
-        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigFileMissing)));
+        respond(buildUnavailableConfigResponse(kUnavailableReasonConfigFileMissing));
         return;
     }
 
     std::ifstream configFile(*configFilePath);
     if (!configFile) {
-        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigFileOpenFailed)));
+        respond(buildUnavailableConfigResponse(kUnavailableReasonConfigFileOpenFailed));
         return;
     }
 
@@ -248,19 +269,19 @@ void HttpService::Impl::handleGetConfigRequest(
             combinedJson[name] = std::move(value);
         }
 
-        callback(jsonResponse(std::move(combinedJson)));
+        respond(std::move(combinedJson));
     }
     catch (const std::invalid_argument& validationError) {
         log().warn("GET /config validation failed: {}", validationError.what());
-        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigValidationFailed)));
+        respond(buildUnavailableConfigResponse(kUnavailableReasonConfigValidationFailed));
     }
     catch (const YAML::Exception& yamlError) {
         log().warn("GET /config parse failed: {}", yamlError.what());
-        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed)));
+        respond(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed));
     }
     catch (const std::exception& e) {
         log().warn("GET /config failed: {}", e.what());
-        callback(jsonResponse(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed)));
+        respond(buildUnavailableConfigResponse(kUnavailableReasonConfigParseFailed));
     }
 }
 

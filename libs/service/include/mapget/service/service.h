@@ -343,6 +343,9 @@ public:
     /** Ordered channel bundle, scalar bindings, and transport identity. */
     FeatureLayerFilterRequest filter_;
 
+    /** Per-output delivery versions, used when one subscription renews tiles independently. */
+    std::map<TileId, uint64_t> deliveryEpochs_;
+
     /** Optional exact relation roots grouped by their requested origin tile. */
     std::vector<FeatureLayerFilterRoot> exactRoots_;
 
@@ -565,6 +568,15 @@ public:
         std::string const& layerId,
         std::optional<AuthHeaders> const& clientHeaders,
         std::optional<std::string> const& sourceId = {}) const;
+
+    /**
+     * Abort stale work and clear every cached tile layer for one ready primary map.
+     * If headers are supplied, the map's ordinary datasource authorization also applies.
+     * Returns false when no matching authorized primary map is currently ready.
+     */
+    [[nodiscard]] bool resetMapCache(
+        std::string const& mapId,
+        std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
      * Get Statistics about the operation of this service.

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -9,10 +10,10 @@
 #include "mapget/model/subsetlayer.h"
 
 using namespace mapget;
+using namespace std::chrono_literals;
 
 namespace
 {
-
 std::shared_ptr<LayerInfo> subsetLayerInfo()
 {
     return LayerInfo::fromJson(R"({
@@ -76,6 +77,9 @@ TEST_CASE(
         info,
         strings);
     source->setInfo("Load/Backend#us", 42);
+    source->setTimestamp(
+        std::chrono::system_clock::time_point{1'725'000'000s});
+    source->setTtl(4500ms);
 
     auto subset = std::make_shared<TileSubsetLayer>(
         tileId,
@@ -84,7 +88,8 @@ TEST_CASE(
         info,
         strings,
         "styled-roads",
-        7);
+        7,
+        12);
     subset->adoptSourceInfo(*source);
     subset->setGlbAttachmentName("road-mesh");
 
@@ -214,6 +219,9 @@ TEST_CASE(
 
     REQUIRE(subset->filterId() == "styled-roads");
     REQUIRE(subset->generation() == 7);
+    REQUIRE(subset->deliveryEpoch() == 12);
+    REQUIRE(subset->timestamp() == source->timestamp());
+    REQUIRE(subset->ttl() == source->ttl());
     REQUIRE(subset->size() == 4);
     REQUIRE(subset->info()["Load/Backend#us"] == 42);
     REQUIRE(subset->localSourceFeatureCount() == 11);
@@ -278,6 +286,7 @@ TEST_CASE(
         &identityBytes);
     REQUIRE(identity.filterId_ == "styled-roads");
     REQUIRE(identity.generation_ == 7);
+    REQUIRE(identity.deliveryEpoch_ == 12);
     REQUIRE(identityBytes > 0);
     REQUIRE(identityBytes < bytes.size());
 
@@ -299,6 +308,9 @@ TEST_CASE(
         [&](auto const&) { return strings; });
     REQUIRE(parsed->filterId() == subset->filterId());
     REQUIRE(parsed->generation() == subset->generation());
+    REQUIRE(parsed->deliveryEpoch() == subset->deliveryEpoch());
+    REQUIRE(parsed->timestamp() == source->timestamp());
+    REQUIRE(parsed->ttl() == source->ttl());
     REQUIRE(parsed->toJson() == subset->toJson());
     REQUIRE(parsed->at(2)->scope() == Scope::Relation);
     REQUIRE(parsed->at(2)->featureEntryCount() == 2);

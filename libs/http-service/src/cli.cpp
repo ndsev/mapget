@@ -22,6 +22,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,6 +40,80 @@ namespace mapget
 
 namespace
 {
+
+[[nodiscard]] bool isHttpHeaderTokenChar(unsigned char character)
+{
+    if (character > 0x7f) {
+        return false;
+    }
+    if (std::isalnum(character)) {
+        return true;
+    }
+    switch (character) {
+    case '!':
+    case '#':
+    case '$':
+    case '%':
+    case '&':
+    case '\'':
+    case '*':
+    case '+':
+    case '-':
+    case '.':
+    case '^':
+    case '_':
+    case 0x60:
+    case '|':
+    case '~':
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] AuthHeaderRegexMap parseCacheResetAuthHeaderAlternatives(
+    std::vector<std::string> const& configuredAlternatives)
+{
+    AuthHeaderRegexMap alternatives;
+    for (auto const& configured : configuredAlternatives) {
+        auto const separator = configured.find('=');
+        if (separator == std::string::npos || separator == 0) {
+            raise(
+                "Each --cache-reset-auth-header value must use HEADER=REGEX syntax.");
+        }
+
+        auto header = configured.substr(0, separator);
+        if (!std::ranges::all_of(
+                header,
+                [](unsigned char character) {
+                    return isHttpHeaderTokenChar(character);
+                }))
+        {
+            raise(fmt::format(
+                "Invalid cache-reset auth header name: {}.",
+                header));
+        }
+
+        try {
+            if (!addAuthHeaderRegexMatchOption(
+                    alternatives,
+                    header,
+                    std::regex(configured.substr(separator + 1))))
+            {
+                raise(fmt::format(
+                    "Duplicate cache-reset auth header name: {}.",
+                    header));
+            }
+        }
+        catch (std::regex_error const& error) {
+            raise(fmt::format(
+                "Invalid regular expression for cache-reset auth header {}: {}",
+                header,
+                error.what()));
+        }
+    }
+    return alternatives;
+}
 
 nlohmann::json dataSourceHostSchema()
 {
@@ -451,6 +526,8 @@ struct ServeCommand
     bool clearCache_ = false;
     bool allowPostConfigEndpoint_ = false;
     bool noGetConfigEndpoint_ = false;
+    bool allowCacheReset_ = false;
+    std::vector<std::string> cacheResetAuthHeaders_;
     std::string webapp_;
     std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
@@ -552,6 +629,15 @@ struct ServeCommand
             "--no-get-config",
             noGetConfigEndpoint_,
             "Disable the GET /config datasource model endpoint.");
+        serveCmd->add_flag(
+            "--allow-cache-reset",
+            allowCacheReset_,
+            "Allow the guarded POST /cache/reset endpoint.");
+        serveCmd->add_option(
+            "--cache-reset-auth-header",
+            cacheResetAuthHeaders_,
+            "Required HEADER=REGEX authorization alternative for cache reset. Can be specified "
+            "multiple times.");
         serveCmd
             ->add_option(
                 "--memory-trim-period-seconds",
@@ -595,6 +681,15 @@ struct ServeCommand
         }
         if (locationMaxLimit_ < 1) {
             raise("Location max limit must be at least 1.");
+        }
+        auto cacheResetAuthHeaderAlternatives =
+            parseCacheResetAuthHeaderAlternatives(
+                cacheResetAuthHeaders_);
+        if (allowCacheReset_ &&
+            cacheResetAuthHeaderAlternatives.empty())
+        {
+            raise(
+                "--allow-cache-reset requires at least one --cache-reset-auth-header value.");
         }
         setPostConfigEndpointEnabled(allowPostConfigEndpoint_);
         setGetConfigEndpointEnabled(!noGetConfigEndpoint_);
@@ -645,6 +740,9 @@ struct ServeCommand
             std::chrono::seconds(ttlSeconds_));
         httpConfig.workerCount = workerCount_;
         httpConfig.memoryTrimPeriod = std::chrono::seconds(memoryTrimPeriodSeconds_);
+        httpConfig.cacheResetEnabled = allowCacheReset_;
+        httpConfig.cacheResetAuthHeaderAlternatives =
+            std::move(cacheResetAuthHeaderAlternatives);
         httpConfig.locationLookupEnabled = !noLocation_;
         httpConfig.locationResultMaxLimit = static_cast<uint32_t>(locationMaxLimit_);
         if (!locationDbPath_.empty()) {

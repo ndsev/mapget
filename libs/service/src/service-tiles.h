@@ -49,6 +49,7 @@ void loadAddOnTiles(
     TileFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
     DataSourceRegistry const& dataSources,
-    Cache::Ptr& cache);
+    Cache::Ptr& cache,
+    std::optional<std::chrono::milliseconds> const& defaultTtl);
 
 }  // namespace mapget::detail

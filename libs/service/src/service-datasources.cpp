@@ -33,22 +33,10 @@ bool isDescriptorAuthorized(
     DataSourceDescriptor const& descriptor,
     std::optional<AuthHeaders> const& clientHeaders)
 {
-    if (!clientHeaders || descriptor.authHeaderAlternatives.empty()) {
+    if (!clientHeaders) {
         return true;
     }
-    for (auto const& [header, value] : *clientHeaders) {
-        auto normalizedHeader = header;
-        std::ranges::transform(
-            normalizedHeader,
-            normalizedHeader.begin(),
-            [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
-        auto const pattern = descriptor.authHeaderAlternatives.find(normalizedHeader);
-        if (pattern != descriptor.authHeaderAlternatives.end() &&
-            std::regex_match(value, pattern->second)) {
-            return true;
-        }
-    }
-    return false;
+    return authHeadersMatch(descriptor.authHeaderAlternatives, *clientHeaders);
 }
 
 /** Drop non-finite progress and clamp reported percentages to the wire range. */
@@ -888,6 +876,23 @@ LayerRequestContext Service::Impl::resolveLayerRequest(
         }
     }
     return result;
+}
+
+bool Service::Impl::resetMapCache(
+    std::string const& mapId,
+    std::optional<AuthHeaders> const& clientHeaders)
+{
+    for (auto const& source : dataSources_.snapshot()) {
+        if (source->info->isAddOn_ || source->info->mapId_ != mapId) {
+            continue;
+        }
+        if (clientHeaders && !source->dataSource->isDataSourceAuthorized(*clientHeaders)) {
+            continue;
+        }
+        scheduler_.invalidateMap(mapId);
+        return true;
+    }
+    return false;
 }
 
 }  // namespace mapget

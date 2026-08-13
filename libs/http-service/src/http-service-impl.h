@@ -126,11 +126,16 @@ struct HttpService::Impl
 
     static drogon::HttpResponsePtr openConfigFile(std::ifstream& configFile);
 
-    static void handleGetConfigRequest(
+    void handleGetConfigRequest(
         const drogon::HttpRequestPtr& req,
-        std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
     void handlePostConfigRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
+
+    /** Handle the guarded, map-scoped tile-cache reset endpoint. */
+    void handleCacheResetRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 };

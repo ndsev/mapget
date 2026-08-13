@@ -47,10 +47,16 @@ enum class ClientRequestUpdateMode
 /** Normalize an existing map tile key so request matching ignores source layer type. */
 [[nodiscard]] MapTileKey makeCanonicalRequestedTileKey(MapTileKey key);
 
-/** Stable queue key derived from one filter subscription identity. */
-[[nodiscard]] std::string filterRequestKey(
+/** Stable logical key derived from one filter subscription generation. */
+[[nodiscard]] std::string filterSubscriptionKey(
     std::string_view filterId,
     uint64_t generation);
+
+/** Stable queue key derived from one exact per-tile delivery identity. */
+[[nodiscard]] std::string filterRequestKey(
+    std::string_view filterId,
+    uint64_t generation,
+    uint64_t deliveryEpoch);
 
 /** Decorate queue keys so subset frames do not collide with source tile frames. */
 [[nodiscard]] MapTileKey makeFilterRequestedTileKey(
@@ -62,7 +68,7 @@ enum class ClientRequestUpdateMode
     MapTileKey key,
     std::optional<std::string_view> filterRequestKey);
 
-/** Extract `filterId + generation` from a TileSubsetLayer. */
+/** Extract `filterId + generation + deliveryEpoch` from a TileSubsetLayer. */
 [[nodiscard]] std::optional<std::string> filterRequestKey(
     TileLayer::Ptr const& layer);
 

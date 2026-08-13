@@ -211,4 +211,11 @@ LayerRequestContext Service::resolveLayerRequest(
     return impl_->resolveLayerRequest(mapId, layerId, clientHeaders, sourceId);
 }
 
+bool Service::resetMapCache(
+    std::string const& mapId,
+    std::optional<AuthHeaders> const& clientHeaders)
+{
+    return impl_->resetMapCache(mapId, clientHeaders);
+}
+
 }  // namespace mapget

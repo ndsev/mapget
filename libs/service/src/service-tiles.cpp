@@ -4,8 +4,56 @@
 #include "mapget/log.h"
 #include "service-impl.h"
 
+#include <tuple>
+
 namespace mapget::detail
 {
+namespace
+{
+
+void applyTtlFallback(
+    TileLayer& tile,
+    DataSource& dataSource,
+    std::optional<std::chrono::milliseconds> const& defaultTtl)
+{
+    if (tile.ttl()) {
+        return;
+    }
+    auto fallback = dataSource.ttl();
+    if (!fallback) {
+        fallback = defaultTtl;
+    }
+    if (fallback) {
+        tile.setTtl(fallback);
+    }
+}
+
+void includeLifetime(TileFeatureLayer& composite, TileFeatureLayer const& contributor)
+{
+    auto const contributorTtl = contributor.ttl();
+    if (!contributorTtl || contributorTtl->count() <= 0) {
+        return;
+    }
+    auto const compositeTtl = composite.ttl();
+    auto const contributorOrder = std::tuple{
+        contributor.timestamp() + *contributorTtl,
+        contributor.timestamp(),
+        contributor.stringPoolId(),
+    };
+    auto const compositeOrder = compositeTtl && compositeTtl->count() > 0 ?
+        std::optional{std::tuple{
+            composite.timestamp() + *compositeTtl,
+            composite.timestamp(),
+            composite.stringPoolId(),
+        }} :
+        std::nullopt;
+    if (!compositeOrder || contributorOrder < *compositeOrder) {
+        composite.setTimestamp(contributor.timestamp());
+        composite.setTtl(*contributorTtl);
+    }
+}
+
+}  // namespace
 
 TileLoadJob::TileLoadJob(
     ServiceScheduler& scheduler,
@@ -36,22 +84,15 @@ void TileLoadJob::run() noexcept
             raise("DataSource::get() returned null.");
         }
 
+        applyTtlFallback(*layer, *source_->source->dataSource, scheduler_.defaultTtl_);
+
         if (layer->layerInfo()->type_ == LayerType::Features) {
             loadAddOnTiles(
                 std::static_pointer_cast<TileFeatureLayer>(layer),
                 *source_->source,
                 scheduler_.dataSources_,
-                scheduler_.cache_);
-        }
-
-        if (!layer->ttl()) {
-            auto ttl = source_->source->dataSource->ttl();
-            if (!ttl) {
-                ttl = scheduler_.defaultTtl_;
-            }
-            if (ttl) {
-                layer->setTtl(ttl);
-            }
+                scheduler_.cache_,
+                scheduler_.defaultTtl_);
         }
 
         scheduler_.completeTileJob(*state_, layer);
@@ -96,7 +137,8 @@ void loadAddOnTiles(
     TileFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
     DataSourceRegistry const& dataSources,
-    Cache::Ptr& cache)
+    Cache::Ptr& cache,
+    std::optional<std::chrono::milliseconds> const& defaultTtl)
 {
     for (auto const& addOn : dataSources.addOnSources()) {
         if (addOn->info->mapId_ != baseTile->mapId()) {
@@ -120,6 +162,8 @@ void loadAddOnTiles(
             continue;
         }
         auto addOnTile = std::static_pointer_cast<TileFeatureLayer>(loaded);
+        applyTtlFallback(*addOnTile, *addOn->dataSource, defaultTtl);
+        includeLifetime(*baseTile, *addOnTile);
 
         // Add-on strings must be cloned into a writable namespace shared by
         // both models; datasource-owned pools remain authoritative and frozen.

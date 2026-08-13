@@ -32,6 +32,25 @@ the on-disk database.
 
 Cache hits and misses are decided per tile: if a tile for the requested map, layer and tile ID exists in the cache, the service returns it immediately; otherwise the corresponding datasource is asked to produce the tile and the result is inserted into the cache.
 
+## Resetting one map at runtime
+
+Administrators can opt into the guarded `POST /cache/reset` endpoint with
+`--allow-cache-reset` and one or more `--cache-reset-auth-header HEADER=REGEX`
+options. The endpoint accepts `{"mapId":"Example/Map"}` and clears Feature and
+SourceData entries for that exact map ID across every layer and tile. It keeps
+string-pool dictionaries and every other map's entries.
+
+The reset crosses the service scheduler boundary: queued requests for the map
+are aborted, and work that started before the reset cannot publish a stale tile
+afterward. Consequently, the next ordinary request misses mapget's tile cache
+and performs datasource conversion again.
+
+This guarantee stops at the mapget cache boundary. A datasource may retain its
+own network, decode, raw-source, or negative-result cache, and another mapget
+replica is unaffected. The generic implementation scans cached tile keys and
+erases matches individually, so use the operation as an infrequent
+administrative action rather than a high-rate invalidation API.
+
 ## String pools and binary caching
 
 When the cache is used with binary streaming, mapget stores not only tile blobs but also the shared string pools that describe field names. Each datasource node has its own string pool, which is cached alongside the tile data. This allows subsequent binary responses to reuse string IDs and avoid resending the full field name dictionary on every request.

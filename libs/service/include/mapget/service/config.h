@@ -57,7 +57,7 @@ struct DataSourceDescriptor {
     bool addOn = false;
 
     /** Preserves current `/sources` authorization behavior before a ready DataSource exists. */
-    std::unordered_map<std::string, std::regex> authHeaderAlternatives;
+    AuthHeaderRegexMap authHeaderAlternatives;
 };
 
 

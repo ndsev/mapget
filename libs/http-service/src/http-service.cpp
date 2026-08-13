@@ -96,13 +96,20 @@ void HttpService::setup(drogon::HttpAppFramework& app)
         {drogon::Get});
 
     app.registerHandler(
+        "/cache/reset",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            impl_->handleCacheResetRequest(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    app.registerHandler(
         "/config",
         [this](
             const drogon::HttpRequestPtr& req,
             std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         {
             if (req->method() == drogon::Get) {
-                Impl::handleGetConfigRequest(req, std::move(callback));
+                impl_->handleGetConfigRequest(req, std::move(callback));
                 return;
             }
             if (req->method() == drogon::Post) {

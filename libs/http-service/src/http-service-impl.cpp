@@ -2,6 +2,8 @@
 
 #include "mapget/log.h"
 
+#include <stdexcept>
+
 #if defined(__linux__) && defined(__GLIBC__)
 #include <malloc.h>
 #endif
@@ -11,6 +13,20 @@ namespace mapget
 
 HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config)
 {
+    AuthHeaderRegexMap normalizedCacheResetAlternatives;
+    for (auto const& [header, pattern] : config_.cacheResetAuthHeaderAlternatives) {
+        if (!addAuthHeaderRegexMatchOption(normalizedCacheResetAlternatives, header, pattern)) {
+            throw std::invalid_argument(
+                "Cache-reset auth-header names must be unique ignoring case.");
+        }
+    }
+    config_.cacheResetAuthHeaderAlternatives = std::move(normalizedCacheResetAlternatives);
+
+    if (config_.cacheResetEnabled && config_.cacheResetAuthHeaderAlternatives.empty()) {
+        throw std::invalid_argument(
+            "POST /cache/reset requires at least one cache-reset auth-header gate.");
+    }
+
     if (config_.locationLookupEnabled) {
         auto locationDbPath = config_.locationDatabasePath.value_or(defaultLocationDatabasePath());
         locationLookup_ = std::make_unique<SqliteLocationLookup>(locationDbPath);

@@ -236,7 +236,7 @@ The group context is rooted at the deterministic representative feature and
 adds `$features`, a direct array of participating feature model pointers.
 `GroupEntry` contains representative geometry, representative feature ID, all
 member IDs, the stable cell key, and projected values. Attribute grouping and
-multi-input grouping are not supported in protocol 3.0.
+multi-input grouping are not supported in protocol 3.1.
 
 ### Stored relations
 
@@ -299,8 +299,11 @@ An alternating key/value ID array plus `typeId` is also accepted.
 
 ### Result contract
 
-Each output `TileSubsetLayer` inherits the source tile's ordinary `TileLayer`
-metadata and `info()`, then carries `filterId` and `generation`. It contains:
+Each output `TileSubsetLayer` carries `filterId`, `generation`, and a
+per-output `deliveryEpoch`. Its lifetime is the original timestamp/positive
+TTL pair of the contributing local, halo, or relation-source tile with the
+earliest absolute expiry. If none has a positive TTL, the subset does not
+expire. It also inherits source `info()` and contains:
 
 - ordered channels and their concrete scope/field schemas;
 - typed `FeatureEntry`, `AttributeValidityEntry`, `RelationEntry`, or
@@ -315,7 +318,9 @@ Definition/root changes and forced refreshes advance the interactive
 generation. Ordinary coverage amendments retain it so overlapping values are
 not refetched. A frame is accepted only while its output tile remains in
 current coverage; removing and later re-adding a tile may produce another
-value with the same semantic `(filterId, generation, output MapTileKey)`.
+value in the same semantic `(filterId, generation, output MapTileKey)` slot.
+`deliveryEpoch` distinguishes successive deliveries without changing that
+semantic generation.
 
 ## `GET /attachment`
 
@@ -340,11 +345,37 @@ attachment cache in the initial implementation.
 the binary frames so a client can apply explicit backpressure.
 
 An interactive message contains `requests`, `filterId`, `generation`,
-`channels`, optional `bindings`, and optional `stringPoolOffsets`. The filter
-definition may be on the envelope and is inherited by each request.
+`deliveryEpoch`, `channels`, optional `bindings`, optional per-tile
+`deliveryEpochs`, and optional `stringPoolOffsets`. The filter definition may
+be on the envelope and is inherited by each request.
 Sending another message replaces the active logical request on that
 connection; processing preserves request tile order, while result arrival
 order may differ.
+
+Expired outputs use a sparse operation instead of replacing the full
+subscription:
+
+```json
+{
+  "renewals": [{
+    "mapId": "Tropico",
+    "layerId": "Display",
+    "filterId": "view-7",
+    "generation": 4,
+    "deliveryEpoch": 9,
+    "tileIds": [545554572, 545554573]
+  }]
+}
+```
+
+The server validates the subscription against its last full snapshot and
+reuses that snapshot's definition, source, and roots. Only listed tiles whose
+epoch advances are evaluated; unrelated requests, status, and progress remain
+active. A late older delivery remains valid while the newer epoch is merely
+requested. It becomes stale only after a newer subset for that same semantic
+output slot has actually been delivered. Renewal work is split into bounded
+batches, so large user-configured tile coverage is queued rather than rejected
+or copied into every TTL operation.
 
 Server control messages are binary VTLV frames:
 
@@ -444,6 +475,32 @@ residuals can indicate allocator fragmentation, thread stacks, opaque mappings,
 or missing ownership instrumentation, but they do not identify leaks by
 themselves.
 
+## `/cache/reset`
+
+`POST /cache/reset` clears every cached Feature and SourceData tile for one
+exact map ID. The JSON request body is:
+
+```json
+{"mapId": "Example/Map"}
+```
+
+The endpoint is disabled by default. It is available only when mapget starts
+with `--allow-cache-reset` and at least one
+`--cache-reset-auth-header HEADER=REGEX` gate. A request must satisfy that global gate and the target
+map's ordinary datasource `auth-header` gate. Header names are matched without
+case sensitivity, values use full regular-expression matching, and multiple
+configured alternatives are ORed.
+
+A successful reset returns `204 No Content` after the cache and scheduler
+boundary has been crossed. Invalid input returns `400`, a disabled or failed
+global gate returns `403`, an unknown or caller-inaccessible ready primary map
+returns `404`, and an invalidation failure returns `500`. Feature checks happen
+before map lookup so an unauthorized caller cannot use the endpoint to probe
+configured map IDs.
+
+The operation is local to this mapget process. It does not clear datasource-
+internal caches or notify other browser sessions.
+
 ## `/config`
 
 <!-- --8<-- [start:config-endpoints] -->
@@ -454,6 +511,7 @@ themselves.
 - `model`: the current editable datasource portion of YAML;
 - `readOnly`;
 - `datasourceConfigUnavailable` and its stable reason;
+- caller-specific server capabilities such as `capabilities.cacheReset`;
 - read-only public sections registered by the embedding application.
 
 Sensitive password/API-key fields are represented by stable masked tokens.
@@ -466,5 +524,8 @@ Unavailable reasons include `getConfigDisabled`, `configPathUnset`,
 preserves real secrets when their masked tokens are posted, writes the
 datasource-model portion, preserves unknown/public top-level YAML sections,
 and reloads the catalog.
+
+Because capabilities can vary with request headers, `GET /config` responses
+include `Cache-Control: private, no-store`.
 
 <!-- --8<-- [end:config-endpoints] -->

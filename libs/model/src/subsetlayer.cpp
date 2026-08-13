@@ -1259,11 +1259,13 @@ TileSubsetLayer::TileSubsetLayer(
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& strings,
     std::string filterId,
-    uint64_t generation)
+    uint64_t generation,
+    uint64_t deliveryEpoch)
     : TileFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
       geometryAnchor_(tileId.centerWgs84()),
       filterId_(std::move(filterId)),
-      generation_(generation)
+      generation_(generation),
+      deliveryEpoch_(deliveryEpoch)
 {
 }
 
@@ -1288,6 +1290,7 @@ TileSubsetLayer::TileSubsetLayer(
 
     serializer.text1b(filterId_, std::numeric_limits<uint32_t>::max());
     serializer.value8b(generation_);
+    serializer.value8b(deliveryEpoch_);
     serializer.value8b(geometryAnchor_.x);
     serializer.value8b(geometryAnchor_.y);
     serializer.value8b(geometryAnchor_.z);
@@ -1376,6 +1379,7 @@ FilterIdentity TileSubsetLayer::readFilterIdentity(
     FilterIdentity result;
     serializer.text1b(result.filterId_, std::numeric_limits<uint32_t>::max());
     serializer.value8b(result.generation_);
+    serializer.value8b(result.deliveryEpoch_);
     if (serializer.adapter().error() != bitsery::ReaderError::NoError) {
         raise("Failed to read TileSubsetLayer identity.");
     }
@@ -1471,8 +1475,15 @@ uint64_t TileSubsetLayer::generation() const
     return generation_;
 }
 
+uint64_t TileSubsetLayer::deliveryEpoch() const
+{
+    return deliveryEpoch_;
+}
+
 void TileSubsetLayer::adoptSourceInfo(TileFeatureLayer const& source)
 {
+    setTimestamp(source.timestamp());
+    setTtl(source.ttl());
     setInfo(source.info());
 }
 
@@ -2079,6 +2090,7 @@ tl::expected<void, simfil::Error> TileSubsetLayer::write(
     bitsery::Serializer<bitsery::OutputStreamAdapter> serializer(outputStream);
     serializer.text1b(filterId_, std::numeric_limits<uint32_t>::max());
     serializer.value8b(generation_);
+    serializer.value8b(deliveryEpoch_);
     serializer.value8b(geometryAnchor_.x);
     serializer.value8b(geometryAnchor_.y);
     serializer.value8b(geometryAnchor_.z);
@@ -2141,6 +2153,7 @@ nlohmann::json TileSubsetLayer::toJson() const
         {"mapgetLayerId", layerInfo_->layerId_},
         {"filterId", filterId_},
         {"generation", generation_},
+        {"deliveryEpoch", deliveryEpoch_},
         {"geometryAnchor", {
             geometryAnchor_.x,
             geometryAnchor_.y,

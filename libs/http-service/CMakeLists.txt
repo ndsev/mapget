@@ -9,6 +9,7 @@ add_library(mapget-http-service STATIC
   src/http-service-impl.h
   src/http-service-impl.cpp
   src/attachment-handler.cpp
+  src/cache-reset-handler.cpp
   src/config-handler.cpp
   src/http-client.cpp
   src/location-handler.cpp

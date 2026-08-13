@@ -190,6 +190,89 @@ private:
     std::string revision_;
 };
 
+class LifetimeFilterDataSource : public FilterDataSource
+{
+public:
+    LifetimeFilterDataSource(
+        std::string stringPoolId,
+        std::chrono::system_clock::time_point timestamp,
+        std::chrono::milliseconds ttl,
+        bool addOn = false)
+        : FilterDataSource(std::move(stringPoolId), addOn),
+          timestamp_(timestamp),
+          ttl_(ttl)
+    {}
+
+    void fill(TileFeatureLayer::Ptr const& tile) override
+    {
+        FilterDataSource::fill(tile);
+        tile->setTimestamp(timestamp_);
+        tile->setTtl(ttl_);
+    }
+
+private:
+    std::chrono::system_clock::time_point timestamp_;
+    std::chrono::milliseconds ttl_;
+};
+
+class BlockingResetDataSource : public FilterDataSource
+{
+public:
+    BlockingResetDataSource()
+        : FilterDataSource("BlockingResetPool")
+    {}
+
+    void fill(TileFeatureLayer::Ptr const& tile) override
+    {
+        auto const fillNumber =
+            fillCount_.fetch_add(1) + 1;
+        FilterDataSource::fill(tile);
+        if (fillNumber == 1) {
+            std::unique_lock lock(mutex_);
+            firstStarted_ = true;
+            changed_.notify_all();
+            changed_.wait(lock, [&] {
+                return releaseFirst_;
+            });
+            tile->setInfo("Producer/revision", "stale");
+            return;
+        }
+        tile->setInfo("Producer/revision", "fresh");
+    }
+
+    [[nodiscard]] bool waitForFirstStart()
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(
+            lock,
+            std::chrono::seconds(5),
+            [&] {
+                return firstStarted_;
+            });
+    }
+
+    void releaseFirst()
+    {
+        {
+            std::lock_guard lock(mutex_);
+            releaseFirst_ = true;
+        }
+        changed_.notify_all();
+    }
+
+    [[nodiscard]] size_t fillCount() const
+    {
+        return fillCount_;
+    }
+
+private:
+    std::atomic_size_t fillCount_ = 0;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    bool firstStarted_ = false;
+    bool releaseFirst_ = false;
+};
+
 class OutOfOrderFilterDataSource : public FilterDataSource
 {
 public:
@@ -342,12 +425,14 @@ public:
         TileId westernTile,
         TileId easternTile,
         Point westernPoint,
-        Point easternPoint)
+        Point easternPoint,
+        std::optional<TileId> limitingLifetimeTile = std::nullopt)
         : info_(filterDataSourceInfo("PointGroupPool")),
           westernTile_(westernTile),
           easternTile_(easternTile),
           westernPoint_(westernPoint),
-          easternPoint_(easternPoint)
+          easternPoint_(easternPoint),
+          limitingLifetimeTile_(limitingLifetimeTile)
     {}
 
     DataSourceInfo info() override
@@ -360,6 +445,15 @@ public:
         {
             std::lock_guard lock(mutex_);
             requestedTiles_.push_back(tile->tileId());
+        }
+        if (limitingLifetimeTile_) {
+            tile->setTimestamp(
+                std::chrono::system_clock::time_point{
+                    std::chrono::seconds{4'000'000'000}});
+            tile->setTtl(
+                tile->tileId() == *limitingLifetimeTile_
+                    ? std::chrono::milliseconds{1250}
+                    : std::chrono::seconds{10});
         }
         std::optional<Point> point;
         if (tile->tileId() == westernTile_) {
@@ -410,6 +504,7 @@ private:
     TileId easternTile_;
     Point westernPoint_;
     Point easternPoint_;
+    std::optional<TileId> limitingLifetimeTile_;
     mutable std::mutex mutex_;
     std::vector<TileId> requestedTiles_;
 };
@@ -421,13 +516,16 @@ public:
         TileId first,
         TileId second,
         std::optional<TileId> failingTile =
+            std::nullopt,
+        std::optional<TileId> limitingLifetimeTile =
             std::nullopt)
         : info_(
               filterDataSourceInfo(
                   "RelationServicePool")),
           first_(first),
           second_(second),
-          failingTile_(failingTile)
+          failingTile_(failingTile),
+          limitingLifetimeTile_(limitingLifetimeTile)
     {}
 
     DataSourceInfo info() override
@@ -441,6 +539,15 @@ public:
             std::lock_guard lock(mutex_);
             requestedTiles_.push_back(
                 tile->tileId());
+        }
+        if (limitingLifetimeTile_) {
+            tile->setTimestamp(
+                std::chrono::system_clock::time_point{
+                    std::chrono::seconds{4'000'000'000}});
+            tile->setTtl(
+                tile->tileId() == *limitingLifetimeTile_
+                    ? std::chrono::milliseconds{900}
+                    : std::chrono::seconds{10});
         }
         if (failingTile_ &&
             tile->tileId() == *failingTile_)
@@ -556,6 +663,7 @@ private:
     TileId first_;
     TileId second_;
     std::optional<TileId> failingTile_;
+    std::optional<TileId> limitingLifetimeTile_;
     mutable std::mutex mutex_;
     std::vector<TileId> requestedTiles_;
     std::atomic_size_t locateCalls_ = 0;
@@ -607,6 +715,10 @@ TEST_CASE(
             "Road",
             std::vector<TileId>{firstTile(), secondTile()},
             filterDefinition());
+    request->deliveryEpochs_ = {
+        {firstTile(), 11},
+        {secondTile(), 12},
+    };
 
     std::vector<TileSubsetLayer::Ptr> results;
     std::vector<nlohmann::json> statuses;
@@ -629,6 +741,9 @@ TEST_CASE(
     for (auto const& subset : results) {
         REQUIRE(subset->filterId() == "style:roads");
         REQUIRE(subset->generation() == 4);
+        REQUIRE(
+            subset->deliveryEpoch() ==
+            (subset->tileId() == firstTile() ? 11 : 12));
         REQUIRE(subset->stringPoolId() ==
                 "FilterServicePool");
         REQUIRE(subset->size() == 2);
@@ -646,6 +761,7 @@ TEST_CASE(
         REQUIRE(
             subset->info()["Producer/backend"] ==
             "synthetic");
+        REQUIRE_FALSE(subset->ttl());
     }
     REQUIRE_FALSE(statuses.empty());
     // Small requests need only their immediate Open and exact terminal
@@ -732,6 +848,46 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Add-on composition keeps the earliest finite source lifetime",
+    "[Service][add-on][ttl]")
+{
+    auto const baseTimestamp =
+        std::chrono::system_clock::time_point{
+            std::chrono::seconds{4'000'000'000}};
+    auto const addOnTimestamp = baseTimestamp +
+        std::chrono::seconds{1};
+    Service service(std::make_shared<MemCache>(32), false);
+    service.add(std::make_shared<LifetimeFilterDataSource>(
+        "BaseLifetimePool",
+        baseTimestamp,
+        std::chrono::seconds{10}));
+    service.add(std::make_shared<LifetimeFilterDataSource>(
+        "AddOnLifetimePool",
+        addOnTimestamp,
+        std::chrono::seconds{2},
+        true));
+
+    auto request = std::make_shared<LayerTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<TileId>{firstTile()});
+    TileFeatureLayer::Ptr result;
+    request->onFeatureLayer(
+        [&](TileFeatureLayer::Ptr layer) {
+            result = std::move(layer);
+        });
+
+    REQUIRE(service.request(
+        std::vector<LayerTilesRequest::Ptr>{request}));
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(result);
+    REQUIRE(result->timestamp() == addOnTimestamp);
+    REQUIRE(result->ttl() == std::chrono::seconds{2});
+}
+
+TEST_CASE(
     "Service scans one source union and assigns cross-tile point groups canonically",
     "[feature-layer-filter][Service][point-group]")
 {
@@ -748,7 +904,8 @@ TEST_CASE(
             westernTile,
             easternTile,
             Point{boundary - 0.25, latitude, 0.0},
-            Point{boundary + 0.25, latitude, 0.0});
+            Point{boundary + 0.25, latitude, 0.0},
+            westernTile.neighbour(-1, 0));
 
     Service service(
         std::make_shared<MemCache>(64),
@@ -831,6 +988,13 @@ TEST_CASE(
     }
     REQUIRE(westernResult);
     REQUIRE(easternResult);
+    auto const expectedTimestamp =
+        std::chrono::system_clock::time_point{
+            std::chrono::seconds{4'000'000'000}};
+    REQUIRE(westernResult->timestamp() == expectedTimestamp);
+    REQUIRE(westernResult->ttl() == std::chrono::milliseconds{1250});
+    REQUIRE(easternResult->timestamp() == expectedTimestamp);
+    REQUIRE(easternResult->ttl() == std::chrono::seconds{10});
     REQUIRE(
         westernResult->at(0)->groupEntryCount() ==
         0);
@@ -901,6 +1065,8 @@ TEST_CASE(
                 std::make_shared<
                     RelationDataSource>(
                     westernTile,
+                    easternTile,
+                    std::nullopt,
                     easternTile);
             service.add(dataSource);
             auto request =
@@ -958,6 +1124,11 @@ TEST_CASE(
 
     auto western = execute(westernTile);
     REQUIRE(western->dependencies().size() == 2);
+    REQUIRE(
+        western->timestamp() ==
+        std::chrono::system_clock::time_point{
+            std::chrono::seconds{4'000'000'000}});
+    REQUIRE(western->ttl() == std::chrono::milliseconds{900});
     REQUIRE(
         western->at(0)->relationEntryCount() ==
         1);
@@ -1337,6 +1508,111 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Explicit map cache reset reloads only an authorized ready primary map",
+    "[Service][Cache][authorization]")
+{
+    auto cache = std::make_shared<MemCache>(32);
+    Service service(cache, false);
+    auto source =
+        std::make_shared<FilterDataSource>(
+            "ExplicitResetPool");
+    source->requireAuthHeaderRegexMatchOption(
+        "X-USER-ROLE",
+        std::regex("^resetter$"));
+    service.add(source);
+
+    auto load = [&] {
+        auto request =
+            std::make_shared<LayerTilesRequest>(
+                "FilterMap",
+                "Road",
+                std::vector<TileId>{firstTile()});
+        REQUIRE(service.request(
+            std::vector<LayerTilesRequest::Ptr>{request},
+            AuthHeaders{{"X-User-Role", "resetter"}}));
+        request->wait();
+        REQUIRE(
+            request->getStatus() ==
+            RequestStatus::Success);
+    };
+
+    load();
+    load();
+    REQUIRE(source->requestedTiles().size() == 1);
+    REQUIRE_FALSE(service.resetMapCache(
+        "UnknownMap",
+        AuthHeaders{{"X-User-Role", "resetter"}}));
+    REQUIRE_FALSE(service.resetMapCache(
+        "FilterMap",
+        AuthHeaders{}));
+    REQUIRE(service.resetMapCache(
+        "FilterMap",
+        AuthHeaders{{"x-user-role", "resetter"}}));
+
+    load();
+    REQUIRE(source->requestedTiles().size() == 2);
+}
+
+TEST_CASE(
+    "Explicit map cache reset rejects stale in-flight publication",
+    "[Service][Cache][concurrency]")
+{
+    Service service(std::make_shared<MemCache>(32), false);
+    auto source =
+        std::make_shared<BlockingResetDataSource>();
+    service.add(source);
+
+    auto staleRequest =
+        std::make_shared<LayerTilesRequest>(
+            "FilterMap",
+            "Road",
+            std::vector<TileId>{firstTile()});
+    REQUIRE(service.request(
+        std::vector<LayerTilesRequest::Ptr>{
+            staleRequest}));
+
+    auto const firstStarted =
+        source->waitForFirstStart();
+    auto const resetSucceeded =
+        firstStarted &&
+        service.resetMapCache("FilterMap");
+    source->releaseFirst();
+    REQUIRE(firstStarted);
+    REQUIRE(resetSucceeded);
+    REQUIRE(
+        staleRequest->getStatus() ==
+        RequestStatus::Aborted);
+
+    auto loadRevision = [&] {
+        auto request =
+            std::make_shared<LayerTilesRequest>(
+                "FilterMap",
+                "Road",
+                std::vector<TileId>{firstTile()});
+        std::string revision;
+        request->onFeatureLayer(
+            [&](TileFeatureLayer::Ptr layer) {
+                revision = layer->info()
+                    .at("Producer/revision")
+                    .get<std::string>();
+            });
+        REQUIRE(service.request(
+            std::vector<LayerTilesRequest::Ptr>{
+                request}));
+        request->wait();
+        REQUIRE(
+            request->getStatus() ==
+            RequestStatus::Success);
+        return revision;
+    };
+
+    REQUIRE(loadRevision() == "fresh");
+    REQUIRE(source->fillCount() == 2);
+    REQUIRE(loadRevision() == "fresh");
+    REQUIRE(source->fillCount() == 2);
+}
+
+TEST_CASE(
     "Datasource failures terminally abort filter requests and clear in-flight work",
     "[feature-layer-filter][Service][failure]")
 {
@@ -1371,6 +1647,7 @@ TEST_CASE(
     nlohmann::json envelope = {
         {"filterId", "styled-layer:17"},
         {"generation", 8},
+        {"deliveryEpoch", 1},
         {"channels", {
             {
                 {"channelId", "roads"},
@@ -1410,6 +1687,12 @@ TEST_CASE(
             secondTile().value(),
             firstTile().value(),
         }},
+        {"deliveryEpochs", {
+            {
+                {"tileId", firstTile().value()},
+                {"epoch", 5},
+            },
+        }},
         {"roots", {
             {
                 {"tileId", firstTile().value()},
@@ -1440,6 +1723,8 @@ TEST_CASE(
     REQUIRE(parsed.filterRequest->filterId_ ==
             "styled-layer:17");
     REQUIRE(parsed.filterRequest->generation_ == 8);
+    REQUIRE(parsed.filterRequest->deliveryEpoch_ == 1);
+    REQUIRE(parsed.deliveryEpochs.at(firstTile()) == 5);
     REQUIRE(parsed.filterRequest->channels_.size() == 2);
     auto const& feature =
         parsed.filterRequest->channels_[0];
@@ -1466,6 +1751,7 @@ TEST_CASE(
     REQUIRE(serialized["filterId"] ==
             "styled-layer:17");
     REQUIRE(serialized["generation"] == 8);
+    REQUIRE(serialized["deliveryEpoch"] == 1);
     REQUIRE(serialized["channels"].size() == 2);
     REQUIRE(
         serialized["channels"][1]["geometryName"] ==

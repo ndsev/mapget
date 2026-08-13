@@ -200,9 +200,13 @@ source feature.
 
 Request order controls processing. Output stream order may differ.
 `filterId + generation + output MapTileKey` identifies a semantic output
-slot; there is no content/request fingerprint. Viewport coverage amendments
-retain the generation, reject frames outside current coverage, and rely on the
-interactive envelope `requestId` to suppress stale status messages.
+slot. `deliveryEpoch` versions deliveries within that slot without changing
+the semantic generation. Viewport coverage amendments retain the generation,
+reject frames outside current coverage, and rely on the interactive envelope
+`requestId` to suppress stale status messages. A sparse TTL renewal advances
+the epoch only for due output tiles. The previous epoch remains admissible
+until the newer subset is delivered; after that, older deliveries for the
+same slot are suppressed.
 
 ### Construction and cancellation
 
@@ -236,6 +240,13 @@ Small endpoints such as `/sources`, `/location`, `/locate`, `/status`,
 An interactive replacement aborts obsolete backend work and suppresses queued
 stale subset frames. Removing and later re-adding an output tile in the same
 semantic generation may produce a new value for that tile.
+
+Sparse `{ "renewals": [...] }` control messages are different from a full
+replacement. They reuse the authoritative registered filter definition and
+roots, advance only listed per-output delivery epochs, and neither reset full
+request completion nor abort unrelated work. Renewal entries and envelopes
+are deliberately bounded; clients split arbitrarily large active coverage
+into queued batches rather than imposing a total subscription limit.
 
 ## Binary streaming and string pools
 

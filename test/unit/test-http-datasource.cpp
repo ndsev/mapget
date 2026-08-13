@@ -178,7 +178,16 @@ public:
                       setError("Unexpected tile layer type");
                       return;
                   }
+                  if (auto subset =
+                          std::dynamic_pointer_cast<TileSubsetLayer>(tile))
+                  {
+                      std::lock_guard lock(mutex_);
+                      receivedSubsets_.emplace_back(
+                          subset->tileId(),
+                          subset->deliveryEpoch());
+                  }
                   receivedTileCount_.fetch_add(1, std::memory_order_relaxed);
+                  cv_.notify_all();
               })
     {
         loopThread_ = std::make_unique<trantor::EventLoopThread>("MapgetTestWsClient");
@@ -327,6 +336,66 @@ public:
 
     void resetTileCount() { receivedTileCount_.store(0, std::memory_order_relaxed); }
 
+    void resetReceivedSubsets()
+    {
+        std::lock_guard lock(mutex_);
+        receivedSubsets_.clear();
+    }
+
+    [[nodiscard]] std::vector<std::pair<TileId, uint64_t>> receivedSubsets() const
+    {
+        std::lock_guard lock(mutex_);
+        return receivedSubsets_;
+    }
+
+    [[nodiscard]] bool waitForTileCount(
+        int expected,
+        std::chrono::milliseconds timeout)
+    {
+        auto const deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (receivedTileCount() >= expected || !error().empty()) {
+                return receivedTileCount() >= expected;
+            }
+            auto const clientId = clientId_.load(std::memory_order_relaxed);
+            if (clientId <= 0) {
+                std::unique_lock lock(mutex_);
+                cv_.wait_for(lock, std::chrono::milliseconds(20));
+                continue;
+            }
+            auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            auto const waitMs = std::clamp<int64_t>(remaining.count(), 1, 100);
+            auto const [result, resp] = pullClient_.get(fmt::format(
+                "{}?clientId={}&waitMs={}&maxBytes={}",
+                pullPath_,
+                clientId,
+                waitMs,
+                64 * 1024 * 1024));
+            if (result != drogon::ReqResult::Ok || !resp) {
+                setError("Failed to pull renewed tile frame");
+                return false;
+            }
+            if (resp->statusCode() == drogon::k200OK) {
+                try {
+                    std::lock_guard readerLock(readerMutex_);
+                    reader_.read(std::string(resp->body()));
+                }
+                catch (std::exception const& e) {
+                    setError(std::string("Failed to parse renewed tile stream: ") + e.what());
+                    return false;
+                }
+            }
+            else if (resp->statusCode() != drogon::k204NoContent) {
+                setError(fmt::format(
+                    "Unexpected renewal pull response status: {}",
+                    static_cast<int>(resp->statusCode())));
+                return false;
+            }
+        }
+        return receivedTileCount() >= expected;
+    }
+
     [[nodiscard]] bool waitForStatus(std::chrono::milliseconds timeout)
     {
         std::unique_lock lock(mutex_);
@@ -426,6 +495,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::optional<nlohmann::json> lastStatus_;
+    std::vector<std::pair<TileId, uint64_t>> receivedSubsets_;
     std::string error_;
     std::mutex readerMutex_;
     std::atomic_int receivedTileCount_{0};
@@ -1393,6 +1463,96 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 wsClient.stop();
             }
 
+            // Sparse delivery epochs re-evaluate only due output IDs and are
+            // idempotent without replacing the full subscription snapshot.
+            {
+                WsTilesClient wsClient(
+                    service.port(),
+                    layerInfo,
+                    false);
+                REQUIRE(wsClient.connect(true));
+                auto conn = requireConnected(wsClient);
+                auto const channels = nlohmann::json::array({
+                    nlohmann::json::object({
+                        {"channelId", "ways"},
+                        {"scope", "feature"},
+                        {"entryFilter", "typeId == 'Way'"},
+                        {"featureTypes", nlohmann::json::array({"Way"})},
+                    }),
+                });
+                auto const fullRequest = nlohmann::json::object({
+                    {"filterId", "ttl-renewal"},
+                    {"generation", 7},
+                    {"deliveryEpoch", 1},
+                    {"channels", channels},
+                    {"requests", nlohmann::json::array({
+                        nlohmann::json::object({
+                            {"mapId", "Tropico"},
+                            {"layerId", "WayLayer"},
+                            {"tileIds", nlohmann::json::array({
+                                kHttpTileIdValue,
+                                kSecondHttpTileIdValue,
+                            })},
+                        }),
+                    })},
+                });
+                conn->send(
+                    fullRequest.dump(),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                REQUIRE(wsClient.receivedTileCount() == 2);
+
+                auto sendRenewal = [&](uint64_t epoch) {
+                    auto const renewal = nlohmann::json::object({
+                        {"mapId", "Tropico"},
+                        {"layerId", "WayLayer"},
+                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
+                        {"filterId", "ttl-renewal"},
+                        {"generation", 7},
+                        {"deliveryEpoch", epoch},
+                        {"channels", channels},
+                    });
+                    conn->send(
+                        nlohmann::json::object({
+                            {"renewals", nlohmann::json::array({renewal})},
+                        }).dump(),
+                        drogon::WebSocketMessageType::Text);
+                };
+
+                wsClient.resetTileCount();
+                wsClient.resetReceivedSubsets();
+                sendRenewal(2);
+                REQUIRE(wsClient.waitForTileCount(
+                    1,
+                    std::chrono::seconds(10)));
+                REQUIRE(
+                    wsClient.receivedSubsets() ==
+                    std::vector<std::pair<TileId, uint64_t>>{{
+                        TileId::fromValue(kHttpTileIdValue),
+                        2,
+                    }});
+
+                for (auto const ignoredEpoch : {uint64_t{2}, uint64_t{1}}) {
+                    wsClient.resetTileCount();
+                    wsClient.resetReceivedSubsets();
+                    sendRenewal(ignoredEpoch);
+                    REQUIRE_FALSE(wsClient.waitForTileCount(
+                        1,
+                        std::chrono::milliseconds(250)));
+                    REQUIRE(wsClient.receivedSubsets().empty());
+                }
+
+                wsClient.resetTileCount();
+                wsClient.resetReceivedSubsets();
+                sendRenewal(3);
+                REQUIRE(wsClient.waitForTileCount(
+                    1,
+                    std::chrono::seconds(10)));
+                REQUIRE(
+                    wsClient.receivedSubsets().front().second == 3);
+                wsClient.stop();
+            }
+
             // WebSocket tiles: staged bucket requests are rejected after the protocol-3 cutover.
             {
                 auto req = nlohmann::json::object({
@@ -1411,10 +1571,138 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(status["message"].get<std::string>().find("tileIdsByNextStage") !=
                         std::string::npos);
             }
+
+            // Reset authorization is layered, and the next ordinary request
+            // must miss the cleared service cache and reach the datasource.
+            {
+                SyncHttpClient resetClient(
+                    "127.0.0.1",
+                    service.port());
+                auto const resetTile =
+                    TileId::fromValue(131079);
+                auto const resetKey = MapTileKey(
+                    LayerType::Features,
+                    "Tropico",
+                    "WayLayer",
+                    resetTile);
+                auto loadResetTile = [&] {
+                    auto [request, receivedTileCount] =
+                        countReceivedTiles(
+                            goodClient,
+                            "Tropico",
+                            "WayLayer",
+                            std::vector<TileId>{resetTile});
+                    REQUIRE(
+                        request->getStatus() ==
+                        RequestStatus::Success);
+                    REQUIRE(receivedTileCount == 1);
+                };
+
+                auto const callsBefore =
+                    remoteDataSource->getCalls(resetKey);
+                loadResetTile();
+                auto const callsAfterWarm =
+                    remoteDataSource->getCalls(resetKey);
+                REQUIRE(callsAfterWarm == callsBefore + 1);
+                loadResetTile();
+                REQUIRE(
+                    remoteDataSource->getCalls(resetKey) ==
+                    callsAfterWarm);
+
+                auto [missingGateResult, missingGate] =
+                    resetClient.postJson(
+                        "/cache/reset",
+                        R"({"mapId":"Tropico"})",
+                        {{"X-USER-ROLE", "Tropico-Viewer"}});
+                REQUIRE(missingGateResult == drogon::ReqResult::Ok);
+                REQUIRE(missingGate->statusCode() == drogon::k403Forbidden);
+
+                auto [wrongGateResult, wrongGate] =
+                    resetClient.postJson(
+                        "/cache/reset",
+                        R"({"mapId":"Tropico"})",
+                        {
+                            {"X-CACHE-ROLE", "resetter-extra"},
+                            {"X-USER-ROLE", "Tropico-Viewer"},
+                        });
+                REQUIRE(wrongGateResult == drogon::ReqResult::Ok);
+                REQUIRE(wrongGate->statusCode() == drogon::k403Forbidden);
+
+                auto [missingMapAuthResult, missingMapAuth] =
+                    resetClient.postJson(
+                        "/cache/reset",
+                        R"({"mapId":"Tropico"})",
+                        {{"X-CACHE-ROLE", "resetter"}});
+                REQUIRE(missingMapAuthResult == drogon::ReqResult::Ok);
+                REQUIRE(missingMapAuth->statusCode() == drogon::k404NotFound);
+
+                auto const resetHeaders =
+                    std::vector<std::pair<std::string, std::string>>{
+                        {"X-CACHE-ROLE", "resetter"},
+                        {"X-USER-ROLE", "Tropico-Viewer"},
+                    };
+                auto [malformedResult, malformed] =
+                    resetClient.postJson(
+                        "/cache/reset",
+                        R"({"mapId":42})",
+                        resetHeaders);
+                REQUIRE(malformedResult == drogon::ReqResult::Ok);
+                REQUIRE(malformed->statusCode() == drogon::k400BadRequest);
+
+                auto [unknownResult, unknown] =
+                    resetClient.postJson(
+                        "/cache/reset",
+                        R"({"mapId":"UnknownMap"})",
+                        resetHeaders);
+                REQUIRE(unknownResult == drogon::ReqResult::Ok);
+                REQUIRE(unknown->statusCode() == drogon::k404NotFound);
+
+                auto [resetResult, resetResponse] =
+                    resetClient.postJson(
+                        "/cache/reset",
+                        R"({"mapId":"Tropico"})",
+                        resetHeaders);
+                REQUIRE(resetResult == drogon::ReqResult::Ok);
+                REQUIRE(resetResponse->statusCode() == drogon::k204NoContent);
+
+                loadResetTile();
+                REQUIRE(
+                    remoteDataSource->getCalls(resetKey) ==
+                    callsAfterWarm + 1);
+
+                auto [alternativeResult, alternativeResponse] =
+                    resetClient.postJson(
+                        "/cache/reset",
+                        R"({"mapId":"Tropico"})",
+                        {
+                            {"x-cache-group", "operators"},
+                            {"x-user-role", "Tropico-Viewer"},
+                        });
+                REQUIRE(alternativeResult == drogon::ReqResult::Ok);
+                REQUIRE(alternativeResponse->statusCode() == drogon::k204NoContent);
+            }
         }
 
         service.remove(remoteDataSource);
     }
+}
+
+TEST_CASE("Cache reset configuration fails closed", "[Configuration][Cache]")
+{
+    HttpServiceConfig enabledWithoutGate;
+    enabledWithoutGate.cacheResetEnabled = true;
+
+    REQUIRE_THROWS_AS(
+        HttpService(
+            std::make_shared<MemCache>(),
+            enabledWithoutGate),
+        std::invalid_argument);
+
+    HttpServiceConfig disabledByDefault;
+    REQUIRE_NOTHROW(
+        HttpService(
+            std::make_shared<MemCache>(),
+            disabledByDefault));
 }
 
 TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
@@ -1542,11 +1830,12 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     };
 
-    auto getConfigPayload = [&]() {
-        auto [result, res] = cli.get("/config");
+    auto getConfigPayload = [&](std::vector<std::pair<std::string, std::string>> headers = {}) {
+        auto [result, res] = cli.get("/config", std::move(headers));
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
         REQUIRE(res->statusCode() == drogon::k200OK);
+        REQUIRE(res->getHeader("Cache-Control") == "private, no-store");
         return nlohmann::json::parse(std::string(res->body()));
     };
 
@@ -1646,6 +1935,17 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(clientSecretToken.starts_with("MASKED:"));
         REQUIRE(passwordToken != apiKeyToken);
         REQUIRE(apiKeyToken != clientSecretToken);
+    }
+
+    SECTION("Get Configuration - Cache reset capability is caller specific")
+    {
+        auto unavailable = getConfigPayload();
+        REQUIRE(unavailable["capabilities"]["cacheReset"] == false);
+
+        auto available = getConfigPayload({
+            {"X-CACHE-ROLE", "resetter"},
+        });
+        REQUIRE(available["capabilities"]["cacheReset"] == true);
     }
 
     SECTION("Get Configuration - Public section serializer exceptions are tolerated")

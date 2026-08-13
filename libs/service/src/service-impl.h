@@ -103,6 +103,11 @@ struct Service::Impl
         std::optional<AuthHeaders> const& clientHeaders,
         std::optional<std::string> const& sourceId = {}) const;
 
+    /** Invalidate one ready primary map after applying optional datasource authorization. */
+    [[nodiscard]] bool resetMapCache(
+        std::string const& mapId,
+        std::optional<AuthHeaders> const& clientHeaders);
+
     /** Assemble lightweight and optional expensive service statistics. */
     [[nodiscard]] nlohmann::json
     statistics(bool includeCachedFeatureTreeBytes, bool includeTileSizeDistribution) const;

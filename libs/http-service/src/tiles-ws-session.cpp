@@ -87,6 +87,8 @@ constexpr int64_t MAX_PULL_WAIT_MS = 30000;
 constexpr int64_t MAX_PULL_BATCH_BYTES = 64 * 1024 * 1024;
 constexpr size_t MAX_QUEUED_OUTGOING_FRAMES = 4096;
 constexpr size_t MAX_QUEUED_OUTGOING_BYTES = 256 * 1024 * 1024;
+constexpr size_t MAX_SPARSE_RENEWAL_TILES_PER_ENTRY = 512;
+constexpr size_t MAX_SPARSE_RENEWAL_TILES_PER_ENVELOPE = 2048;
 constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
 
@@ -316,6 +318,10 @@ public:
     /** Parse a possibly chunked request message and apply each chunk immediately. */
     void updateFromClientRequestMessage(const nlohmann::json& j, uint64_t requestId)
     {
+        if (j.contains("renewals")) {
+            renewFromClientRequest(j);
+            return;
+        }
         ClientRequestChunk chunk;
         try {
             chunk = parseClientRequestChunk(j);
@@ -436,6 +442,15 @@ public:
         std::vector<RequestStatus> nextRequestStatuses;
         std::set<MapTileKey> desiredTileKeys;
         std::map<MapTileKey, int64_t> nextTilePriorityRanks;
+        FilterDeliveryEpochState nextFilterDeliveryEpochs;
+        FilterAdmissibleEpochState nextFilterAdmissibleEpochs;
+        FilterRegistrationState nextFilterRegistrations;
+        if (updateMode == ClientRequestUpdateMode::Append) {
+            std::lock_guard lock(mutex_);
+            nextFilterDeliveryEpochs = filterDeliveryEpochs_;
+            nextFilterAdmissibleEpochs = filterAdmissibleEpochs_;
+            nextFilterRegistrations = filterRegistrations_;
+        }
 
         try {
             nextRequestInfos.reserve(requestsIt->size());
@@ -445,6 +460,15 @@ public:
                 auto effectiveRequestJson = requestsIt->at(index);
                 detail::inheritFilterFields(effectiveRequestJson, j);
                 auto parsedRequest = detail::parseLayerTilesRequestJson(effectiveRequestJson);
+                if (parsedRequest.filterRequest) {
+                    registerFilterRequest(
+                        parsedRequest,
+                        nextFilterRegistrations);
+                    reconcileFilterDeliveryEpochs(
+                        parsedRequest,
+                        nextFilterDeliveryEpochs,
+                        nextFilterAdmissibleEpochs);
+                }
                 auto layerContext = service_.resolveLayerRequest(
                     parsedRequest.mapId,
                     parsedRequest.layerId,
@@ -457,7 +481,11 @@ public:
                     .noDataSourceReason = layerContext.noDataSourceReason_,
                 });
                 nextRequestStatuses.push_back(RequestStatus::Success);
-                addDesiredTileKeys(parsedRequest, desiredTileKeys, nextTilePriorityRanks);
+                addDesiredTileKeys(
+                    parsedRequest,
+                    nextFilterAdmissibleEpochs,
+                    desiredTileKeys,
+                    nextTilePriorityRanks);
 
                 const auto statusIndex = requestIndexBase + index;
                 if (parsedRequest.filterRequest) {
@@ -494,7 +522,10 @@ public:
                     nextRequestInfos,
                     nextRequestStatuses,
                     desiredTileKeys,
-                    nextTilePriorityRanks);
+                    nextTilePriorityRanks,
+                    nextFilterDeliveryEpochs,
+                    nextFilterAdmissibleEpochs,
+                    nextFilterRegistrations);
             } else {
                 replaceActiveRequestStateLocked(
                     requestId,
@@ -504,6 +535,9 @@ public:
                     nextRequestStatuses,
                     desiredTileKeys,
                     nextTilePriorityRanks,
+                    nextFilterDeliveryEpochs,
+                    nextFilterAdmissibleEpochs,
+                    nextFilterRegistrations,
                     replacedRequests,
                     replacedFilterRequests);
             }
@@ -517,6 +551,168 @@ public:
         queueRequestContextMessage();
         submitBackendRequests(serviceRequests, filterServiceRequests);
         queueStatusMessage({});
+    }
+
+    /** Apply sparse per-tile renewals without replacing or aborting unrelated subscription work. */
+    void renewFromClientRequest(nlohmann::json const& envelope)
+    {
+        auto renewals = envelope.find("renewals");
+        if (renewals == envelope.end() || !renewals->is_array()) {
+            queueStatusMessage("Missing or invalid 'renewals' array");
+            return;
+        }
+
+        std::vector<detail::ParsedLayerTilesRequest> accepted;
+        try {
+            accepted.reserve(renewals->size());
+            size_t acceptedTileCount = 0;
+            for (auto const& renewalJson : *renewals) {
+                auto effectiveJson = renewalJson;
+                detail::inheritFilterFields(effectiveJson, envelope);
+                auto parsed = detail::parseLayerTilesRequestJson(effectiveJson);
+                if (!parsed.filterRequest) {
+                    throw std::runtime_error(
+                        "renewal entries require a filter definition");
+                }
+                auto const renewalTileCount = collectFilterTileIds(parsed).size();
+                if (renewalTileCount > MAX_SPARSE_RENEWAL_TILES_PER_ENTRY) {
+                    throw std::runtime_error(fmt::format(
+                        "renewal entry has {} tiles; maximum is {}",
+                        renewalTileCount,
+                        MAX_SPARSE_RENEWAL_TILES_PER_ENTRY));
+                }
+                if (acceptedTileCount >
+                    MAX_SPARSE_RENEWAL_TILES_PER_ENVELOPE - renewalTileCount)
+                {
+                    throw std::runtime_error(fmt::format(
+                        "renewal envelope has more than {} tiles",
+                        MAX_SPARSE_RENEWAL_TILES_PER_ENVELOPE));
+                }
+                acceptedTileCount += renewalTileCount;
+                accepted.push_back(std::move(parsed));
+            }
+        }
+        catch (std::exception const& e) {
+            queueStatusMessage(fmt::format(
+                "Invalid filter renewal JSON: {}",
+                e.what()));
+            return;
+        }
+
+        {
+            std::lock_guard lock(mutex_);
+            for (auto& renewal : accepted) {
+                auto const subscriptionKey = detail::filterSubscriptionKey(
+                    renewal.filterRequest->filterId_,
+                    renewal.filterRequest->generation_);
+                auto subscription = filterDeliveryEpochs_.find(subscriptionKey);
+                auto const registration =
+                    filterRegistrations_.find(subscriptionKey);
+                std::vector<TileId> acceptedTileIds;
+                std::map<TileId, uint64_t> acceptedEpochs;
+                if (subscription == filterDeliveryEpochs_.end() ||
+                    registration == filterRegistrations_.end() ||
+                    renewal.mapId != registration->second.mapId ||
+                    renewal.layerId != registration->second.layerId ||
+                    renewal.sourceId != registration->second.sourceId)
+                {
+                    renewal.tileIds.clear();
+                    renewal.deliveryEpochs.clear();
+                    continue;
+                }
+                // Definition and roots are authoritative full-snapshot state.
+                // A sparse operation may advance delivery identity, not mutate
+                // the semantic filter or its authorization-scoped source.
+                auto const requestedDefaultEpoch =
+                    renewal.filterRequest->deliveryEpoch_;
+                renewal.filterRequest = registration->second.definition;
+                renewal.filterRequest->deliveryEpoch_ =
+                    requestedDefaultEpoch;
+                renewal.exactRoots.clear();
+                for (auto const& tileId : collectFilterTileIds(renewal)) {
+                    auto const canonicalKey = makeCanonicalRequestedTileKey(
+                        renewal.mapId,
+                        renewal.layerId,
+                        tileId);
+                    auto currentEpoch = subscription->second.find(canonicalKey);
+                    if (currentEpoch == subscription->second.end()) {
+                        continue;
+                    }
+                    auto const explicitEpoch = renewal.deliveryEpochs.find(tileId);
+                    auto const requestedEpoch =
+                        explicitEpoch != renewal.deliveryEpochs.end()
+                        ? explicitEpoch->second
+                        : renewal.filterRequest->deliveryEpoch_;
+                    if (requestedEpoch <= currentEpoch->second) {
+                        continue;
+                    }
+
+                    auto const oldFilterKey = detail::filterRequestKey(
+                        renewal.filterRequest->filterId_,
+                        renewal.filterRequest->generation_,
+                        currentEpoch->second);
+                    auto const newFilterKey = detail::filterRequestKey(
+                        renewal.filterRequest->filterId_,
+                        renewal.filterRequest->generation_,
+                        requestedEpoch);
+                    auto const oldRequestedKey = makeRequestedTileKey(
+                        canonicalKey,
+                        std::optional<std::string_view>(oldFilterKey));
+                    auto const newRequestedKey = makeRequestedTileKey(
+                        canonicalKey,
+                        std::optional<std::string_view>(newFilterKey));
+                    auto const rank = tilePriorityRankLocked(oldRequestedKey);
+                    // Keep the previous epoch admissible while the renewal is
+                    // merely in flight. It is retired only when the newer
+                    // subset itself reaches onTileLayer().
+                    desiredTileKeys_.insert(newRequestedKey);
+                    tilePriorityRanks_[newRequestedKey] = rank;
+                    filterAdmissibleEpochs_[subscriptionKey][canonicalKey].insert(
+                        requestedEpoch);
+                    currentEpoch->second = requestedEpoch;
+                    acceptedTileIds.push_back(tileId);
+                    acceptedEpochs.emplace(tileId, requestedEpoch);
+                    if (auto const roots =
+                            registration->second.rootsByTile.find(tileId);
+                        roots != registration->second.rootsByTile.end())
+                    {
+                        renewal.exactRoots.insert(
+                            renewal.exactRoots.end(),
+                            roots->second.begin(),
+                            roots->second.end());
+                    }
+                }
+                renewal.tileIds = std::move(acceptedTileIds);
+                renewal.deliveryEpochs = std::move(acceptedEpochs);
+                renewal.priorityTileIds = prioritiesWithin(
+                    renewal.tileIds,
+                    renewal.priorityTileIds);
+            }
+            filterOutgoingByDesiredLocked();
+            reprioritizeOutgoingLocked();
+        }
+
+        std::vector<FeatureLayerFilterTilesRequest::Ptr> serviceRequests;
+        for (auto const& renewal : accepted) {
+            if (renewal.tileIds.empty()) {
+                continue;
+            }
+            auto request = makeRenewalBackendRequest(renewal);
+            if (request) {
+                serviceRequests.push_back(std::move(request));
+            }
+        }
+        if (serviceRequests.empty()) {
+            return;
+        }
+        {
+            std::lock_guard lock(mutex_);
+            activeFilterRequests_.insert(
+                activeFilterRequests_.end(),
+                serviceRequests.begin(),
+                serviceRequests.end());
+        }
+        submitBackendRequests({}, serviceRequests);
     }
 
     /** Cancel current requests, clear queued frames, and emit a terminal status. */
@@ -558,6 +754,22 @@ public:
     }
 
 private:
+    using FilterDeliveryEpochState =
+        std::map<std::string, std::map<MapTileKey, uint64_t>>;
+    using FilterAdmissibleEpochState =
+        std::map<std::string, std::map<MapTileKey, std::set<uint64_t>>>;
+
+    struct FilterRegistration
+    {
+        std::string mapId;
+        std::string layerId;
+        std::optional<std::string> sourceId;
+        FeatureLayerFilterRequest definition;
+        std::map<TileId, std::vector<FeatureLayerFilterRoot>> rootsByTile;
+    };
+    using FilterRegistrationState =
+        std::map<std::string, FilterRegistration>;
+
     /** Lightweight metadata emitted in status payloads for each logical request. */
     struct RequestInfo
     {
@@ -621,6 +833,106 @@ private:
         return std::nullopt;
     }
 
+    /** Register one immutable filter definition while accumulating chunk-local exact roots. */
+    void registerFilterRequest(
+        detail::ParsedLayerTilesRequest const& request,
+        FilterRegistrationState& nextState)
+    {
+        if (!request.filterRequest) {
+            return;
+        }
+        auto const subscriptionKey = detail::filterSubscriptionKey(
+            request.filterRequest->filterId_,
+            request.filterRequest->generation_);
+        auto [registration, inserted] = nextState.try_emplace(
+            subscriptionKey,
+            FilterRegistration{
+                request.mapId,
+                request.layerId,
+                request.sourceId,
+                *request.filterRequest,
+                {}});
+        if (!inserted) {
+            auto const sameDefinition =
+                detail::filterRequestToJson(
+                    registration->second.definition,
+                    false) ==
+                detail::filterRequestToJson(
+                    *request.filterRequest,
+                    false);
+            if (registration->second.mapId != request.mapId ||
+                registration->second.layerId != request.layerId ||
+                registration->second.sourceId != request.sourceId ||
+                !sameDefinition)
+            {
+                throw std::runtime_error(
+                    "one filter subscription generation must use one map, layer, source, and definition");
+            }
+        }
+        for (auto const& root : request.exactRoots) {
+            registration->second.rootsByTile[root.tileId_].push_back(root);
+        }
+    }
+
+    /** Preserve overlap epochs across complete coverage replacement and apply explicit resume overrides. */
+    void reconcileFilterDeliveryEpochs(
+        detail::ParsedLayerTilesRequest& request,
+        FilterDeliveryEpochState& nextState,
+        FilterAdmissibleEpochState& nextAdmissibleState)
+    {
+        if (!request.filterRequest) {
+            return;
+        }
+        auto const subscriptionKey = detail::filterSubscriptionKey(
+            request.filterRequest->filterId_,
+            request.filterRequest->generation_);
+        std::lock_guard lock(mutex_);
+        auto const previousSubscription =
+            filterDeliveryEpochs_.find(subscriptionKey);
+        auto const previousAdmissibleSubscription =
+            filterAdmissibleEpochs_.find(subscriptionKey);
+        auto& nextSubscription = nextState[subscriptionKey];
+        auto& nextAdmissibleSubscription =
+            nextAdmissibleState[subscriptionKey];
+        for (auto const& tileId : collectFilterTileIds(request)) {
+            auto const tileKey = makeCanonicalRequestedTileKey(
+                request.mapId,
+                request.layerId,
+                tileId);
+            auto epoch = request.filterRequest->deliveryEpoch_;
+            auto const explicitEpoch = request.deliveryEpochs.find(tileId);
+            if (explicitEpoch != request.deliveryEpochs.end()) {
+                epoch = explicitEpoch->second;
+            }
+            if (previousSubscription != filterDeliveryEpochs_.end()) {
+                auto const previousEpoch =
+                    previousSubscription->second.find(tileKey);
+                if (previousEpoch != previousSubscription->second.end()) {
+                    epoch = explicitEpoch != request.deliveryEpochs.end()
+                        ? std::max(epoch, previousEpoch->second)
+                        : previousEpoch->second;
+                }
+            }
+            request.deliveryEpochs[tileId] = epoch;
+            nextSubscription[tileKey] = epoch;
+            auto& admissibleEpochs = nextAdmissibleSubscription[tileKey];
+            if (previousAdmissibleSubscription !=
+                filterAdmissibleEpochs_.end())
+            {
+                auto const previousAdmissibleEpochs =
+                    previousAdmissibleSubscription->second.find(tileKey);
+                if (previousAdmissibleEpochs !=
+                    previousAdmissibleSubscription->second.end())
+                {
+                    admissibleEpochs.insert(
+                        previousAdmissibleEpochs->second.begin(),
+                        previousAdmissibleEpochs->second.end());
+                }
+            }
+            admissibleEpochs.insert(epoch);
+        }
+    }
+
     /** Add one requested tile key to the next desired-set and preserve its first priority rank. */
     void addDesiredTileKey(
         MapTileKey requestedTileKey,
@@ -637,26 +949,51 @@ private:
     /** Compute all queue keys expected by one parsed request and their layer-local priorities. */
     void addDesiredTileKeys(
         const detail::ParsedLayerTilesRequest& request,
+        FilterAdmissibleEpochState const& filterAdmissibleEpochs,
         std::set<MapTileKey>& desiredTileKeys,
         std::map<MapTileKey, int64_t>& tilePriorityRanks) const
     {
         int64_t nextPriorityRank = 0;
         if (request.filterRequest) {
-            auto const key = detail::filterRequestKey(
+            auto const subscriptionKey = detail::filterSubscriptionKey(
                 request.filterRequest->filterId_,
                 request.filterRequest->generation_);
+            auto const subscription =
+                filterAdmissibleEpochs.find(subscriptionKey);
             for (auto const& tileId : collectFilterTileIds(request)) {
-                addDesiredTileKey(
-                    makeRequestedTileKey(
-                        MapTileKey(
-                            REQUEST_TILE_LAYER_TYPE,
-                            request.mapId,
-                            request.layerId,
-                            tileId),
-                        std::optional<std::string_view>(key)),
-                    desiredTileKeys,
-                    tilePriorityRanks,
-                    nextPriorityRank);
+                auto const requestedEpoch = request.deliveryEpochs.contains(tileId)
+                    ? request.deliveryEpochs.at(tileId)
+                    : request.filterRequest->deliveryEpoch_;
+                auto const canonicalKey = MapTileKey(
+                    REQUEST_TILE_LAYER_TYPE,
+                    request.mapId,
+                    request.layerId,
+                    tileId);
+                auto const tilePriorityRank = nextPriorityRank++;
+                auto const addEpoch = [&](uint64_t epoch) {
+                    auto const key = detail::filterRequestKey(
+                        request.filterRequest->filterId_,
+                        request.filterRequest->generation_,
+                        epoch);
+                    auto requestedKey = makeRequestedTileKey(
+                        canonicalKey,
+                        std::optional<std::string_view>(key));
+                    desiredTileKeys.insert(requestedKey);
+                    tilePriorityRanks.emplace(
+                        std::move(requestedKey),
+                        tilePriorityRank);
+                };
+                if (subscription != filterAdmissibleEpochs.end()) {
+                    auto const admissible =
+                        subscription->second.find(canonicalKey);
+                    if (admissible != subscription->second.end()) {
+                        for (auto const epoch : admissible->second) {
+                            addEpoch(epoch);
+                        }
+                        continue;
+                    }
+                }
+                addEpoch(requestedEpoch);
             }
             return;
         }
@@ -675,12 +1012,18 @@ private:
 
     /** Return filter tile ids whose result frames are not already queued for this session. */
     [[nodiscard]] std::vector<TileId> filterTileIdsMissingFromQueue(
-        const detail::ParsedLayerTilesRequest& request,
-        std::string_view filterRequestKey)
+        const detail::ParsedLayerTilesRequest& request)
     {
         std::vector<TileId> tileIdsToFilter;
         std::lock_guard lock(mutex_);
         for (auto const& tileId : collectFilterTileIds(request)) {
+            auto const epoch = request.deliveryEpochs.contains(tileId)
+                ? request.deliveryEpochs.at(tileId)
+                : request.filterRequest->deliveryEpoch_;
+            auto const filterRequestKey = detail::filterRequestKey(
+                request.filterRequest->filterId_,
+                request.filterRequest->generation_,
+                epoch);
             auto requestedTileKey = makeRequestedTileKey(
                 MapTileKey(
                     REQUEST_TILE_LAYER_TYPE,
@@ -768,11 +1111,8 @@ private:
         }
 
         auto filterRequest = *parsedRequest.filterRequest;
-        auto const key = detail::filterRequestKey(
-            filterRequest.filterId_,
-            filterRequest.generation_);
         auto tileIdsToFilter =
-            filterTileIdsMissingFromQueue(parsedRequest, key);
+            filterTileIdsMissingFromQueue(parsedRequest);
         if (tileIdsToFilter.empty()) {
             return {};
         }
@@ -790,6 +1130,13 @@ private:
             std::move(filterRequest),
             priorityTileIds);
         request->sourceId_ = parsedRequest.sourceId;
+        for (auto const& tileId : request->tileIds_) {
+            auto const epoch = parsedRequest.deliveryEpochs.find(tileId);
+            request->deliveryEpochs_[tileId] =
+                epoch != parsedRequest.deliveryEpochs.end()
+                ? epoch->second
+                : request->filter_.deliveryEpoch_;
+        }
         request->exactRoots_ = parsedRequest.exactRoots;
         std::erase_if(
             request->exactRoots_,
@@ -797,6 +1144,41 @@ private:
                 return !missingTileIds.contains(root.tileId_);
             });
         attachFilterRequestCallbacks(request, expectedRequestId, statusIndex);
+        return request;
+    }
+
+    /** Build one sparse renewal request; its completion never changes full-request status. */
+    [[nodiscard]] FeatureLayerFilterTilesRequest::Ptr makeRenewalBackendRequest(
+        detail::ParsedLayerTilesRequest const& renewal)
+    {
+        if (!renewal.filterRequest || renewal.tileIds.empty()) {
+            return {};
+        }
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            renewal.mapId,
+            renewal.layerId,
+            renewal.tileIds,
+            *renewal.filterRequest,
+            renewal.priorityTileIds);
+        request->sourceId_ = renewal.sourceId;
+        request->exactRoots_ = renewal.exactRoots;
+        request->deliveryEpochs_ = renewal.deliveryEpochs;
+
+        auto const weak = weak_from_this();
+        auto const weakRequest =
+            std::weak_ptr<FeatureLayerFilterTilesRequest>(request);
+        request->onFilterResult([weak](TileSubsetLayer::Ptr layer) {
+            if (auto self = weak.lock()) {
+                self->onTileLayer(std::move(layer));
+            }
+        });
+        request->onDone_ = [weak, weakRequest](RequestStatus) {
+            if (auto self = weak.lock()) {
+                if (auto completed = weakRequest.lock()) {
+                    self->onRenewalRequestDone(completed);
+                }
+            }
+        };
         return request;
     }
 
@@ -874,7 +1256,10 @@ private:
         std::vector<RequestInfo>& nextRequestInfos,
         std::vector<RequestStatus>& nextRequestStatuses,
         const std::set<MapTileKey>& desiredTileKeys,
-        const std::map<MapTileKey, int64_t>& tilePriorityRanks)
+        const std::map<MapTileKey, int64_t>& tilePriorityRanks,
+        FilterDeliveryEpochState const& filterDeliveryEpochs,
+        FilterAdmissibleEpochState const& filterAdmissibleEpochs,
+        FilterRegistrationState const& filterRegistrations)
     {
         for (auto& request : nextActiveRequests) {
             activeRequests_.push_back(std::move(request));
@@ -889,6 +1274,9 @@ private:
             requestStatuses_.push_back(status);
         }
         desiredTileKeys_.insert(desiredTileKeys.begin(), desiredTileKeys.end());
+        filterDeliveryEpochs_ = filterDeliveryEpochs;
+        filterAdmissibleEpochs_ = filterAdmissibleEpochs;
+        filterRegistrations_ = filterRegistrations;
         for (auto const& [tileKey, priorityRank] : tilePriorityRanks) {
             tilePriorityRanks_.emplace(tileKey, priorityRank);
         }
@@ -903,6 +1291,9 @@ private:
         std::vector<RequestStatus>& nextRequestStatuses,
         std::set<MapTileKey>& desiredTileKeys,
         std::map<MapTileKey, int64_t>& tilePriorityRanks,
+        FilterDeliveryEpochState& filterDeliveryEpochs,
+        FilterAdmissibleEpochState& filterAdmissibleEpochs,
+        FilterRegistrationState& filterRegistrations,
         std::vector<LayerTilesRequest::Ptr>& replacedRequests,
         std::vector<FeatureLayerFilterTilesRequest::Ptr>& replacedFilterRequests)
     {
@@ -914,6 +1305,9 @@ private:
         requestInfos_ = std::move(nextRequestInfos);
         requestStatuses_ = std::move(nextRequestStatuses);
         desiredTileKeys_ = std::move(desiredTileKeys);
+        filterDeliveryEpochs_ = std::move(filterDeliveryEpochs);
+        filterAdmissibleEpochs_ = std::move(filterAdmissibleEpochs);
+        filterRegistrations_ = std::move(filterRegistrations);
         tilePriorityRanks_ = std::move(tilePriorityRanks);
         for (auto it = forwardedTileKeys_.begin();
              it != forwardedTileKeys_.end();)
@@ -1138,6 +1532,53 @@ private:
         }
 
         return std::nullopt;
+    }
+
+    /** Retire older admissible epochs only after the newest requested subset has arrived. */
+    void retireOlderFilterEpochsLocked(
+        TileSubsetLayer const& subset,
+        MapTileKey const& newestRequestedKey)
+    {
+        auto const subscriptionKey = detail::filterSubscriptionKey(
+            subset.filterId(),
+            subset.generation());
+        auto subscription = filterDeliveryEpochs_.find(subscriptionKey);
+        auto const canonicalKey = makeCanonicalRequestedTileKey(subset.id());
+        if (subscription == filterDeliveryEpochs_.end()) {
+            return;
+        }
+        auto const requestedEpoch = subscription->second.find(canonicalKey);
+        if (requestedEpoch == subscription->second.end() ||
+            requestedEpoch->second != subset.deliveryEpoch()) {
+            return;
+        }
+        auto admissibleSubscription =
+            filterAdmissibleEpochs_.find(subscriptionKey);
+        if (admissibleSubscription != filterAdmissibleEpochs_.end()) {
+            auto admissibleEpochs =
+                admissibleSubscription->second.find(canonicalKey);
+            if (admissibleEpochs != admissibleSubscription->second.end()) {
+                admissibleEpochs->second = {subset.deliveryEpoch()};
+            }
+        }
+
+        auto const prefix = canonicalKey.layerId_ +
+            "#filter:" + subscriptionKey + ":";
+        for (auto it = desiredTileKeys_.begin();
+             it != desiredTileKeys_.end();)
+        {
+            if (*it != newestRequestedKey &&
+                it->mapId_ == canonicalKey.mapId_ &&
+                it->tileId_ == canonicalKey.tileId_ &&
+                it->layerId_.starts_with(prefix))
+            {
+                tilePriorityRanks_.erase(*it);
+                it = desiredTileKeys_.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
     }
 
     /** Complete all currently pending pull waiters with one terminal status. */
@@ -1436,6 +1877,13 @@ private:
                 if (!requestedTileKey.has_value()) {
                     return;
                 }
+                if (auto subset =
+                        std::dynamic_pointer_cast<TileSubsetLayer>(layer))
+                {
+                    retireOlderFilterEpochsLocked(
+                        *subset,
+                        *requestedTileKey);
+                }
                 if (queuedTileFrameRefCount_.find(*requestedTileKey) !=
                         queuedTileFrameRefCount_.end() ||
                     forwardedTileKeys_.find(*requestedTileKey) !=
@@ -1565,6 +2013,23 @@ private:
         if (shouldEmit) {
             queueStatusMessage({});
         }
+    }
+
+    /** Forget terminal sparse work without mutating the full subscription's status array. */
+    void onRenewalRequestDone(
+        FeatureLayerFilterTilesRequest::Ptr const& completedRequest)
+    {
+        std::lock_guard lock(mutex_);
+        activeFilterRequests_.erase(
+            std::remove_if(
+                activeFilterRequests_.begin(),
+                activeFilterRequests_.end(),
+                [&](FeatureLayerFilterTilesRequest::Ptr const& request) {
+                    return !request ||
+                        request == completedRequest ||
+                        request->isDone();
+                }),
+            activeFilterRequests_.end());
     }
 
     /** Send an already encoded control payload on Drogon's event loop. */
@@ -1756,6 +2221,9 @@ private:
     std::vector<RequestStatus> requestStatuses_;
     std::vector<LayerTilesRequest::Ptr> activeRequests_;
     std::vector<FeatureLayerFilterTilesRequest::Ptr> activeFilterRequests_;
+    FilterDeliveryEpochState filterDeliveryEpochs_;
+    FilterAdmissibleEpochState filterAdmissibleEpochs_;
+    FilterRegistrationState filterRegistrations_;
     std::set<MapTileKey> desiredTileKeys_;
     std::map<MapTileKey, int64_t> tilePriorityRanks_;
     std::map<MapTileKey, int64_t> queuedTileFrameRefCount_;

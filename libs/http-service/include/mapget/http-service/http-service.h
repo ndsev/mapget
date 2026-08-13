@@ -24,6 +24,10 @@ struct HttpServiceConfig
     std::chrono::milliseconds defaultTtl{0};
     /** Maximum number of jobs executing across the homogeneous service worker pool. */
     size_t workerCount = Service::defaultWorkerCount();
+    /** Enable POST /cache/reset. Disabled by default. */
+    bool cacheResetEnabled = false;
+    /** Global caller gate for cache reset; required whenever the endpoint is enabled. */
+    AuthHeaderRegexMap cacheResetAuthHeaderAlternatives;
     /** Enable the /location endpoint and initialize the configured lookup backend. */
     bool locationLookupEnabled = true;
     /** Optional SQLite database path for /location; defaults beside the mapget binary module. */

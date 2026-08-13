@@ -103,8 +103,11 @@ public:
      *   - Replaced geometry stage bytes with layer-local semantic name indices.
      *   - Renamed datasource node identity to string-pool identity.
      *   - Replaced TileSearchResultLayer with multi-channel TileSubsetLayer.
+     * - Version 3.1:
+     *   + Added per-output delivery epochs to TileSubsetLayer so sparse TTL
+     *     renewals can coexist with older in-flight deliveries.
      */
-    static constexpr Version CurrentProtocolVersion{3, 0, 0};
+    static constexpr Version CurrentProtocolVersion{3, 1, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

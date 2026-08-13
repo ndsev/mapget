@@ -11,6 +11,48 @@
 namespace mapget
 {
 
+bool addAuthHeaderRegexMatchOption(
+    AuthHeaderRegexMap& alternatives,
+    std::string header,
+    std::regex re)
+{
+    std::ranges::transform(
+        header,
+        header.begin(),
+        [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+    return alternatives.emplace(
+        std::move(header),
+        std::move(re)).second;
+}
+
+bool authHeadersMatch(
+    AuthHeaderRegexMap const& alternatives,
+    AuthHeaders const& clientHeaders)
+{
+    if (alternatives.empty()) {
+        return true;
+    }
+
+    for (auto const& [name, value] : clientHeaders) {
+        auto normalizedName = name;
+        std::ranges::transform(
+            normalizedName,
+            normalizedName.begin(),
+            [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+        auto pattern = alternatives.find(normalizedName);
+        if (pattern != alternatives.end() &&
+            std::regex_match(value, pattern->second))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 TileLayer::Ptr DataSource::get(
     const MapTileKey& k,
     Cache::Ptr& cache,
@@ -67,28 +109,18 @@ TileLayer::Ptr DataSource::get(
 
 void DataSource::requireAuthHeaderRegexMatchOption(std::string header, std::regex re)
 {
-    std::ranges::transform(header, header.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-    authHeaderAlternatives_.insert({std::move(header), std::move(re)});
+    addAuthHeaderRegexMatchOption(
+        authHeaderAlternatives_,
+        std::move(header),
+        std::move(re));
 }
 
 bool DataSource::isDataSourceAuthorized(
     AuthHeaders const& clientHeaders) const
 {
-    if (authHeaderAlternatives_.empty())
-        return true;
-
-    for (auto const& [k, v] : clientHeaders) {
-        auto key = k;
-        std::ranges::transform(key, key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-        auto authHeaderPatternIt = authHeaderAlternatives_.find(key);
-        if (authHeaderPatternIt != authHeaderAlternatives_.end()) {
-            if (std::regex_match(v, authHeaderPatternIt->second)) {
-                return true;
-            }
-        }
-    }
-
-    return false;
+    return authHeadersMatch(
+        authHeaderAlternatives_,
+        clientHeaders);
 }
 
 StringId DataSource::cachedStringPoolOffset(const std::string& stringPoolId, Cache::Ptr const& cache)
