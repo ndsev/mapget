@@ -37,6 +37,8 @@ struct ValidityData
         OffsetPointValidity = 2,
         OffsetRangeValidity = 3,
         FeatureTransition = 4,
+        AttrPointIndexValidity = 5,
+        AttrPointIndexRangeValidity = 6,
     };
     enum GeometryOffsetType : uint8_t {
         InvalidOffsetType = 0,
@@ -64,12 +66,27 @@ struct ValidityData
         uint8_t connectedEnds_ = 0;
     };
 
+    /** Persisted reference to one logical position in a shared AttrPointSequence. */
+    struct AttrPointIndexDescription {
+        simfil::ModelNodeAddress sequence_;
+        uint32_t index_ = 0;
+    };
+
+    /** Persisted inclusive range in a shared AttrPointSequence. */
+    struct AttrPointIndexRangeDescription {
+        simfil::ModelNodeAddress sequence_;
+        uint32_t start_ = 0;
+        uint32_t end_ = 0;
+    };
+
     union GeometryDescription {
         GeometryDescription() : simpleGeometry_() {}
         simfil::ModelNodeAddress simpleGeometry_;
         Range range_;
         Point point_;
         FeatureTransitionDescription featureTransition_;
+        AttrPointIndexDescription attrPointIndex_;
+        AttrPointIndexRangeDescription attrPointIndexRange_;
     };
 
     Direction direction_ = Empty;

@@ -197,32 +197,6 @@ model_ptr<Array> arrayAt(TileSubsetLayer const& layer, simfil::ArrayIndex index)
     });
 }
 
-template<typename Entry>
-bool forEachTypedEntry(
-    TileSubsetLayer const& layer,
-    simfil::ArrayIndex arrayIndex,
-    std::function<bool(model_ptr<Entry> const&)> const& callback)
-{
-    if (!callback) {
-        return true;
-    }
-    auto entries = arrayAt(layer, arrayIndex);
-    if (!entries) {
-        return true;
-    }
-    for (uint32_t index = 0; index < entries->size(); ++index) {
-        auto node = entries->at(index);
-        if (!node) {
-            continue;
-        }
-        auto entry = layer.resolve<Entry>(*node);
-        if (!callback(entry)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 std::string nodeStringValue(simfil::ModelNode::Ptr const& node)
 {
     if (!node) {
@@ -1130,25 +1104,25 @@ model_ptr<GroupEntry> TileSubsetChannel::newGroupEntry(
 bool TileSubsetChannel::forEachFeatureEntry(
     std::function<bool(model_ptr<FeatureEntry> const&)> const& callback) const
 {
-    return forEachTypedEntry(model(), data_->featureEntries_, callback);
+    return model().forEachEntry(data_->featureEntries_, callback);
 }
 
 bool TileSubsetChannel::forEachAttributeValidityEntry(
     std::function<bool(model_ptr<AttributeValidityEntry> const&)> const& callback) const
 {
-    return forEachTypedEntry(model(), data_->attributeValidityEntries_, callback);
+    return model().forEachEntry(data_->attributeValidityEntries_, callback);
 }
 
 bool TileSubsetChannel::forEachRelationEntry(
     std::function<bool(model_ptr<RelationEntry> const&)> const& callback) const
 {
-    return forEachTypedEntry(model(), data_->relationEntries_, callback);
+    return model().forEachEntry(data_->relationEntries_, callback);
 }
 
 bool TileSubsetChannel::forEachGroupEntry(
     std::function<bool(model_ptr<GroupEntry> const&)> const& callback) const
 {
-    return forEachTypedEntry(model(), data_->groupEntries_, callback);
+    return model().forEachEntry(data_->groupEntries_, callback);
 }
 
 nlohmann::json TileSubsetChannel::toJson() const
@@ -1649,7 +1623,10 @@ simfil::ModelNode::Ptr TileSubsetLayer::materializeValue(
 model_ptr<Array> TileSubsetLayer::newValueArray(
     std::span<simfil::ModelNode::Ptr const> values)
 {
-    auto array = newArray(std::max<size_t>(1, values.size()), true);
+    if (values.empty()) {
+        return sharedEmptyArray();
+    }
+    auto array = newArray(values.size(), true);
     for (auto const& value : values) {
         if (!value) {
             array->append(resolve<simfil::ModelNode>(
@@ -1666,11 +1643,22 @@ model_ptr<Array> TileSubsetLayer::newValueArray(
 model_ptr<Array> TileSubsetLayer::newStringArray(
     std::span<std::string const> values)
 {
-    auto array = newArray(std::max<size_t>(1, values.size()), true);
+    if (values.empty()) {
+        return sharedEmptyArray();
+    }
+    auto array = newArray(values.size(), true);
     for (auto const& value : values) {
         array->append(newValue(value));
     }
     return array;
+}
+
+model_ptr<Array> TileSubsetLayer::sharedEmptyArray()
+{
+    if (!sharedEmptyArrayAddress_) {
+        sharedEmptyArrayAddress_ = newArray(1, true)->addr();
+    }
+    return resolve<Array>(sharedEmptyArrayAddress_);
 }
 
 model_ptr<TileSubsetChannel> TileSubsetLayer::newChannel(

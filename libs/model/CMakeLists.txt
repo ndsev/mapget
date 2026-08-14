@@ -14,6 +14,7 @@ add_library(mapget-model STATIC
   include/mapget/model/info.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
+  include/mapget/model/attrpoint.h
   include/mapget/model/attrlayer.h
   include/mapget/model/tileid.h
   include/mapget/model/featureid.h
@@ -46,6 +47,7 @@ add_library(mapget-model STATIC
   src/info.cpp
   src/feature.cpp
   src/attr.cpp
+  src/attrpoint.cpp
   src/attrlayer.cpp
   src/featureid.cpp
   src/relation.cpp

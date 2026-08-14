@@ -2,6 +2,7 @@
 
 #include "mapget/model/attr.h"
 #include "mapget/model/attrlayer.h"
+#include "mapget/model/attrpoint.h"
 #include "mapget/model/feature.h"
 #include "mapget/model/featureid.h"
 #include "mapget/model/featurelayer.h"
@@ -29,6 +30,8 @@ namespace mapget
 
 namespace
 {
+using AttrPointSequenceRegistry = std::vector<model_ptr<AttrPointSequence>>;
+
 /** Raise a consistently prefixed import error. */
 [[noreturn]] void raiseImport(std::string const& message)
 {
@@ -109,6 +112,35 @@ namespace
         json.at(0).get<double>(),
         json.at(1).get<double>(),
         json.size() >= 3 ? json.at(2).get<double>() : 0.0};
+}
+
+/** Resolve a compact `$mapgetAttrPointSequence` token against imported definitions. */
+[[nodiscard]] model_ptr<AttrPointSequence> importAttrPointSequenceReference(
+    nlohmann::json const& json,
+    AttrPointSequenceRegistry const& sequences)
+{
+    if (!json.is_object() || json.size() != 1 ||
+        !json.contains("$mapgetAttrPointSequence") ||
+        !json.at("$mapgetAttrPointSequence").is_number_integer())
+    {
+        raiseImport(
+            "AttrPointSequence reference must be encoded as "
+            "{'$mapgetAttrPointSequence': <non-negative integer>}.");
+    }
+    auto const encodedIndex = json.at("$mapgetAttrPointSequence").get<int64_t>();
+    if (encodedIndex < 0 ||
+        static_cast<uint64_t>(encodedIndex) > std::numeric_limits<uint32_t>::max())
+    {
+        raiseImport("AttrPointSequence reference index is outside uint32 range.");
+    }
+    auto const index = static_cast<uint32_t>(encodedIndex);
+    if (index >= sequences.size()) {
+        raiseImport(fmt::format(
+            "AttrPointSequence reference {} is out of range ({} definitions).",
+            index,
+            sequences.size()));
+    }
+    return sequences[index];
 }
 
 /** Decode a JSON scalar into the storage type expected by an id-part definition. */
@@ -732,7 +764,8 @@ void importValidityCollection(
     model_ptr<Feature> hostFeature,
     model_ptr<MultiValidity> collection,
     nlohmann::json const& json,
-    GeoJsonImportOptions const& options)
+    GeoJsonImportOptions const& options,
+    AttrPointSequenceRegistry const& attrPointSequences)
 {
     auto values = json.is_array() ? json : nlohmann::json::array({json});
     for (auto const& value : values) {
@@ -778,6 +811,40 @@ void importValidityCollection(
 
         if (value.contains("geometry")) {
             validity->setSimpleGeometry(importStandaloneGeometry(tile, value.at("geometry"), options));
+            collection->append(validity);
+            continue;
+        }
+
+
+        if (value.contains("attrPointIndex")) {
+            auto const& indexJson = value.at("attrPointIndex");
+            if (!indexJson.is_object() || !indexJson.contains("sequence") ||
+                !indexJson.contains("index"))
+            {
+                raiseImport("attrPointIndex must define sequence and index fields.");
+            }
+            validity->setAttrPointIndex(
+                importAttrPointSequenceReference(
+                    indexJson.at("sequence"),
+                    attrPointSequences),
+                indexJson.at("index").get<uint32_t>());
+            collection->append(validity);
+            continue;
+        }
+
+        if (value.contains("attrPointIndexRange")) {
+            auto const& rangeJson = value.at("attrPointIndexRange");
+            if (!rangeJson.is_object() || !rangeJson.contains("sequence") ||
+                !rangeJson.contains("start") || !rangeJson.contains("end"))
+            {
+                raiseImport("attrPointIndexRange must define sequence, start, and end fields.");
+            }
+            validity->setAttrPointIndexRange(
+                importAttrPointSequenceReference(
+                    rangeJson.at("sequence"),
+                    attrPointSequences),
+                rangeJson.at("start").get<uint32_t>(),
+                rangeJson.at("end").get<uint32_t>());
             collection->append(validity);
             continue;
         }
@@ -993,7 +1060,8 @@ void importRelation(
     TileFeatureLayer& tile,
     model_ptr<Feature> feature,
     nlohmann::json const& relationJson,
-    GeoJsonImportOptions const& options)
+    GeoJsonImportOptions const& options,
+    AttrPointSequenceRegistry const& attrPointSequences)
 {
     if (!relationJson.is_object()) {
         raiseImport("Every relation must be encoded as an object.");
@@ -1012,13 +1080,138 @@ void importRelation(
         }
     }
     if (relationJson.contains("sourceValidity")) {
-        importValidityCollection(tile, feature, relation->sourceValidity(), relationJson.at("sourceValidity"), options);
+        importValidityCollection(
+            tile,
+            feature,
+            relation->sourceValidity(),
+            relationJson.at("sourceValidity"),
+            options,
+            attrPointSequences);
     }
     if (relationJson.contains("targetValidity")) {
-        importValidityCollection(tile, feature, relation->targetValidity(), relationJson.at("targetValidity"), options);
+        importValidityCollection(
+            tile,
+            feature,
+            relation->targetValidity(),
+            relationJson.at("targetValidity"),
+            options,
+            attrPointSequences);
     }
 
     feature->addRelation(relation);
+}
+
+/** Resolve one geometry by stable feature-local ordinal. */
+[[nodiscard]] model_ptr<Geometry> featureGeometryAt(
+    model_ptr<Feature> const& feature,
+    uint32_t geometryIndex)
+{
+    auto geometries = feature->geomOrNull();
+    if (!geometries) {
+        raiseImport(fmt::format(
+            "AttrPointSequence host feature '{}' has no geometry.",
+            feature->id()->toString()));
+    }
+
+    uint32_t currentIndex = 0;
+    model_ptr<Geometry> result;
+    geometries->forEachGeometry([&](model_ptr<Geometry> const& geometry) {
+        if (currentIndex == geometryIndex) {
+            result = geometry;
+            return false;
+        }
+        ++currentIndex;
+        return true;
+    });
+    if (!result) {
+        raiseImport(fmt::format(
+            "AttrPointSequence geometryIndex {} is out of range for feature '{}'.",
+            geometryIndex,
+            feature->id()->toString()));
+    }
+    return result;
+}
+
+/** Import shared AttrPointSequence definitions after every host feature exists. */
+[[nodiscard]] AttrPointSequenceRegistry importAttrPointSequences(
+    TileFeatureLayer& tile,
+    nlohmann::json const& geoJson)
+{
+    AttrPointSequenceRegistry result;
+    auto const definitions = geoJson.find("attrPointSequences");
+    if (definitions == geoJson.end()) {
+        return result;
+    }
+    if (!definitions->is_array()) {
+        raiseImport("attrPointSequences must be an array.");
+    }
+
+    result.reserve(definitions->size());
+    for (auto const& sequenceJson : *definitions) {
+        if (!sequenceJson.is_object() || !sequenceJson.contains("id") ||
+            !sequenceJson.contains("featureId") ||
+            !sequenceJson.contains("geometryIndex") ||
+            !sequenceJson.contains("attrPoints"))
+        {
+            raiseImport(
+                "Every AttrPointSequence must define id, featureId, geometryIndex, and attrPoints.");
+        }
+        auto const expectedId = static_cast<uint32_t>(result.size());
+        if (sequenceJson.at("id").get<uint32_t>() != expectedId) {
+            raiseImport(fmt::format(
+                "AttrPointSequence id {} is not the expected contiguous id {}.",
+                sequenceJson.at("id").dump(),
+                expectedId));
+        }
+        if (!sequenceJson.at("featureId").is_string()) {
+            raiseImport("AttrPointSequence featureId must identify a local feature by string ID.");
+        }
+        auto feature = tile.find(sequenceJson.at("featureId").get<std::string>());
+        if (!feature) {
+            raiseImport(fmt::format(
+                "AttrPointSequence references missing feature '{}'.",
+                sequenceJson.at("featureId").get<std::string>()));
+        }
+        auto geometry = featureGeometryAt(
+            feature,
+            sequenceJson.at("geometryIndex").get<uint32_t>());
+        if (auto geometryName = sequenceJson.find("geometryName");
+            geometryName != sequenceJson.end())
+        {
+            if (!geometryName->is_string() || geometry->name() != geometryName->get<std::string>()) {
+                raiseImport("AttrPointSequence geometryName does not match its referenced geometry.");
+            }
+        }
+
+        auto sequence = tile.newAttrPointSequence(feature, geometry);
+        if (!sequenceJson.at("attrPoints").is_array()) {
+            raiseImport("AttrPointSequence attrPoints must be an array.");
+        }
+        for (auto const& pointJson : sequenceJson.at("attrPoints")) {
+            if (!pointJson.is_object() || !pointJson.contains("index") ||
+                !pointJson.contains("point"))
+            {
+                raiseImport("Every AttrPoint must define index and point fields.");
+            }
+            model_ptr<SourceDataReferenceCollection> pointSourceData;
+            if (auto sourceDataJson = findSourceDataJson(pointJson)) {
+                if (auto refs = importSourceDataReferences(tile, *sourceDataJson)) {
+                    pointSourceData = *refs;
+                }
+            }
+            sequence->appendAttrPoint(
+                pointJson.at("index").get<uint32_t>(),
+                pointFromCoordinateJson(pointJson.at("point")),
+                pointSourceData);
+        }
+        if (auto sourceDataJson = findSourceDataJson(sequenceJson)) {
+            if (auto refs = importSourceDataReferences(tile, *sourceDataJson)) {
+                sequence->setSourceDataReferences(*refs);
+            }
+        }
+        result.push_back(sequence);
+    }
+    return result;
 }
 
 /** Determine the target feature type for one imported feature. */
@@ -1185,13 +1378,22 @@ void importGeoJson(
         }
     }
 
+    // Shared interwoven domains must exist before relation or attribute
+    // validities resolve their compact sequence references.
+    auto attrPointSequences = importAttrPointSequences(tile, geoJson);
+
     // Relations are imported last for the same reason: all target ids must already be present.
     for (auto& deferred : deferredRelations) {
         if (!deferred.relationJson_.is_array()) {
             raiseImport("Feature relations must be encoded as an array.");
         }
         for (auto const& relationJson : deferred.relationJson_) {
-            importRelation(tile, deferred.feature_, relationJson, options);
+            importRelation(
+                tile,
+                deferred.feature_,
+                relationJson,
+                options,
+                attrPointSequences);
         }
     }
 
@@ -1208,7 +1410,8 @@ void importGeoJson(
             deferred.hostFeature_,
             deferred.attribute_->validity(),
             deferred.validityJson_,
-            options);
+            options,
+            attrPointSequences);
     }
 }
 

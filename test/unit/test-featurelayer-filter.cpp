@@ -226,6 +226,8 @@ TEST_CASE(
             return true;
         }));
     REQUIRE(attributeEntry);
+    REQUIRE(attributeEntry->featureId()->addr().value_ ==
+        featureEntry->featureId()->addr().value_);
     REQUIRE_FALSE(attributeEntry->hasValidity());
     REQUIRE(attributeEntry->validityIndex() == 0);
     REQUIRE(attributeEntry->validityCount() == 1);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "attrpoint.h"
 #include "geometry.h"
 #include "sourcedatareference.h"
 #include "validity-data.h"
@@ -11,6 +12,83 @@ class Geometry;
 class Feature;
 class FeatureId;
 
+/** Logical position in one shared interwoven AttrPointSequence. */
+class AttrPointIndex final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+{
+    friend class TileFeatureLayer;
+
+public:
+    /** Return the shared sequence defining this logical index. */
+    [[nodiscard]] model_ptr<AttrPointSequence> sequence() const;
+
+    /** Return the zero-based logical index. */
+    [[nodiscard]] uint32_t index() const;
+
+    /** Serialize the compact sequence reference and logical index. */
+    [[nodiscard]] nlohmann::json toJson() const override;
+
+    explicit AttrPointIndex(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+    {
+    }
+
+    AttrPointIndex(
+        simfil::ModelConstPtr model,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+
+    AttrPointIndex() = delete;
+
+protected:
+    /** Expose object semantics to SIMFIL and generic inspection. */
+    [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr at(int64_t fieldIndex) const override;
+    [[nodiscard]] simfil::ModelNode::Ptr get(simfil::StringId const& field) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t fieldIndex) const override;
+    [[nodiscard]] uint32_t size() const override;
+    bool iterate(IterCallback const& callback) const override;
+};
+
+/** Inclusive logical range in one shared interwoven AttrPointSequence. */
+class AttrPointIndexRange final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+{
+    friend class TileFeatureLayer;
+
+public:
+    /** Return the shared sequence defining this logical range. */
+    [[nodiscard]] model_ptr<AttrPointSequence> sequence() const;
+
+    /** Return the inclusive start index. */
+    [[nodiscard]] uint32_t start() const;
+
+    /** Return the inclusive end index. */
+    [[nodiscard]] uint32_t end() const;
+
+    /** Serialize the compact sequence reference and inclusive endpoints. */
+    [[nodiscard]] nlohmann::json toJson() const override;
+
+    explicit AttrPointIndexRange(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+    {
+    }
+
+    AttrPointIndexRange(
+        simfil::ModelConstPtr model,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+
+    AttrPointIndexRange() = delete;
+
+protected:
+    /** Expose object semantics to SIMFIL and generic inspection. */
+    [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr at(int64_t fieldIndex) const override;
+    [[nodiscard]] simfil::ModelNode::Ptr get(simfil::StringId const& field) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t fieldIndex) const override;
+    [[nodiscard]] uint32_t size() const override;
+    bool iterate(IterCallback const& callback) const override;
+};
+
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
  */
@@ -18,6 +96,8 @@ class Validity : public simfil::ProceduralObject<7, Validity, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class PointNode;
+    friend class AttrPointIndex;
+    friend class AttrPointIndexRange;
 
 public:
     using Direction = ValidityData::Direction;
@@ -37,6 +117,8 @@ public:
     static constexpr GeometryDescriptionType OffsetPointValidity = ValidityData::OffsetPointValidity;
     static constexpr GeometryDescriptionType OffsetRangeValidity = ValidityData::OffsetRangeValidity;
     static constexpr GeometryDescriptionType FeatureTransition = ValidityData::FeatureTransition;
+    static constexpr GeometryDescriptionType AttrPointIndexValidity = ValidityData::AttrPointIndexValidity;
+    static constexpr GeometryDescriptionType AttrPointIndexRangeValidity = ValidityData::AttrPointIndexRangeValidity;
 
     static constexpr GeometryOffsetType InvalidOffsetType = ValidityData::InvalidOffsetType;
     static constexpr GeometryOffsetType GeoPosOffset = ValidityData::GeoPosOffset;
@@ -86,6 +168,17 @@ public:
     void setOffsetRange(Point start, Point end);
     void setOffsetRange(GeometryOffsetType offsetType, double start, double end);
     [[nodiscard]] std::optional<std::pair<Point, Point>> offsetRange() const;
+
+    /** Set/get one logical position in a shared interwoven AttrPointSequence. */
+    void setAttrPointIndex(model_ptr<AttrPointSequence> const& sequence, uint32_t index);
+    [[nodiscard]] model_ptr<AttrPointIndex> attrPointIndex() const;
+
+    /** Set/get one inclusive logical range in a shared interwoven AttrPointSequence. */
+    void setAttrPointIndexRange(
+        model_ptr<AttrPointSequence> const& sequence,
+        uint32_t start,
+        uint32_t end);
+    [[nodiscard]] model_ptr<AttrPointIndexRange> attrPointIndexRange() const;
 
     /**
      * Get or set a simple geometry for the validity.
@@ -196,6 +289,19 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
         Point start,
         Point end,
         std::optional<std::string_view> geometryName = std::nullopt,
+        Validity::Direction direction = Validity::Empty);
+
+    /** Append one logical position in a shared interwoven AttrPointSequence. */
+    model_ptr<Validity> newAttrPointIndex(
+        model_ptr<AttrPointSequence> const& sequence,
+        uint32_t index,
+        Validity::Direction direction = Validity::Empty);
+
+    /** Append one inclusive logical range in a shared interwoven AttrPointSequence. */
+    model_ptr<Validity> newAttrPointIndexRange(
+        model_ptr<AttrPointSequence> const& sequence,
+        uint32_t start,
+        uint32_t end,
         Validity::Direction direction = Validity::Empty);
 
     /**

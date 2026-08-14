@@ -660,9 +660,34 @@ protected:
         ResolveFn const& callback) const override;
 
 private:
+    /** Visit one typed terminal column without constructing intermediary generic nodes. */
+    template<typename Entry>
+    bool forEachEntry(
+        simfil::ArrayIndex arrayIndex,
+        std::function<bool(model_ptr<Entry> const&)> const& callback) const
+    {
+        if (!callback || arrayIndex == simfil::InvalidArrayIndex) {
+            return true;
+        }
+        auto const& entries = arrayMemberStorage();
+        auto const count = entries.size(arrayIndex);
+        for (uint32_t index = 0; index < count; ++index) {
+            auto address = entries.at(arrayIndex, index);
+            if (!address) {
+                continue;
+            }
+            if (!callback(resolve<Entry>(address->get()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] model_ptr<Array> newValueArray(
         std::span<simfil::ModelNode::Ptr const> values);
     [[nodiscard]] model_ptr<Array> newStringArray(std::span<std::string const> values);
+    /** Reuse one immutable empty array for every empty projected row and schema. */
+    [[nodiscard]] model_ptr<Array> sharedEmptyArray();
     [[nodiscard]] static std::string nodeString(simfil::ModelNode::Ptr const& node);
     void validateOwnedNode(simfil::ModelNode::Ptr const& node, std::string_view role) const;
     void updateEntryStatistics();
@@ -675,6 +700,7 @@ private:
     std::vector<FilterIssue> issues_;
     std::optional<std::string> glbAttachmentName_;
     simfil::Diagnostics diagnostics_;
+    simfil::ModelNodeAddress sharedEmptyArrayAddress_{};
 
     simfil::ModelColumn<TileSubsetChannel::Data, simfil::detail::ColumnPageSize / 2> channels_;
     simfil::ModelColumn<FeatureEntry::Data, simfil::detail::ColumnPageSize / 2> featureEntries_;

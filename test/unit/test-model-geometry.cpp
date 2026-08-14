@@ -206,9 +206,33 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
         REQUIRE(view->pointAt(1).x == .5);
         REQUIRE_THROWS(view->pointAt(2));
 
+        std::vector<Point> viewPoints;
+        REQUIRE(view->forEachPoint([&](Point&& point) {
+            viewPoints.push_back(std::move(point));
+            return true;
+        }));
+        REQUIRE(viewPoints == std::vector<Point>{
+            {.25, .25, .25},
+            {.5, .5, .5},
+        });
+
         auto subview = model_pool->newGeometryView(GeomType::Points, 1, 1, view);
         REQUIRE(subview->pointAt(0).x == .5);
         REQUIRE_THROWS(subview->pointAt(1));
+
+        std::vector<Point> subviewPoints;
+        REQUIRE(subview->forEachPoint([&](Point&& point) {
+            subviewPoints.push_back(std::move(point));
+            return true;
+        }));
+        REQUIRE(subviewPoints == std::vector<Point>{{.5, .5, .5}});
+
+        size_t visited = 0U;
+        REQUIRE_FALSE(point_geom->forEachPoint([&](Point&&) {
+            ++visited;
+            return false;
+        }));
+        REQUIRE(visited == 1U);
     }
 }
 
@@ -281,6 +305,87 @@ TEST_CASE("Semantic geometry names roundtrip independently of presentation", "[g
             return true;
         });
     REQUIRE(names == std::vector<std::optional<std::string>>{std::nullopt, "ADAS"});
+}
+
+TEST_CASE("AttrPointSequence preserves interwoven validity semantics", "[validity][attr-point]")
+{
+    auto tile = makeTile();
+    auto feature = tile->newFeature("Way", {{"wayId", 77}});
+    auto geometry = feature->geom()->newGeometry(GeomType::Line, 3, true);
+    geometry->append({10.0, 20.0, 0.0});
+    geometry->append({11.0, 20.0, 0.0});
+    geometry->append({12.0, 20.0, 0.0});
+    geometry->setName("centerline");
+
+    auto sequence = tile->newAttrPointSequence(feature, geometry);
+    sequence->appendAttrPoint(1, {10.25, 20.0, 0.0});
+    sequence->appendAttrPoint(3, {11.5, 20.0, 0.0});
+
+    REQUIRE(sequence->attrPointCount() == 2);
+    REQUIRE(sequence->positionCount() == 5);
+    REQUIRE(sequence->geometryIndex() == 0);
+    REQUIRE(sequence->pointAt(0) == geometry->pointAt(0));
+    REQUIRE(sequence->pointAt(1) == Point{10.25, 20.0, 0.0});
+    REQUIRE(sequence->pointAt(2) == geometry->pointAt(1));
+    REQUIRE(sequence->pointAt(3) == Point{11.5, 20.0, 0.0});
+    REQUIRE(sequence->pointAt(4) == geometry->pointAt(2));
+    REQUIRE(sequence->isAttrPoint(1));
+    REQUIRE_FALSE(sequence->isAttrPoint(2));
+
+    auto attribute = feature->attributeLayers()
+                         ->newLayer("rules")
+                         ->newAttribute("speedLimit");
+    auto pointValidity = attribute->validity()->newAttrPointIndex(
+        sequence,
+        1,
+        Validity::Positive);
+    auto rangeValidity = attribute->validity()->newAttrPointIndexRange(
+        sequence,
+        1,
+        3,
+        Validity::Negative);
+    REQUIRE_THROWS(attribute->validity()->newAttrPointIndexRange(
+        sequence,
+        3,
+        1));
+
+    auto pointGeometry = pointValidity->computeGeometry(feature->geomOrNull());
+    REQUIRE(pointGeometry.geomType_ == GeomType::Points);
+    REQUIRE(pointGeometry.points_ == std::vector<Point>{{10.25, 20.0, 0.0}});
+
+    auto rangeGeometry = rangeValidity->computeGeometry(feature->geomOrNull());
+    REQUIRE(rangeGeometry.geomType_ == GeomType::Line);
+    REQUIRE(rangeGeometry.points_ == std::vector<Point>{
+        {11.5, 20.0, 0.0},
+        {11.0, 20.0, 0.0},
+        {10.25, 20.0, 0.0},
+    });
+
+    auto const json = tile->toJson();
+    REQUIRE(json["attrPointSequences"].size() == 1);
+    REQUIRE(json["attrPointSequences"][0]["featureId"] == feature->id()->toString());
+    REQUIRE(json["attrPointSequences"][0]["geometryIndex"] == 0);
+    REQUIRE(json["attrPointSequences"][0]["geometryName"] == "centerline");
+    REQUIRE(json["attrPointSequences"][0]["attrPoints"].size() == 2);
+    auto const& validityJson =
+        json["features"][0]["properties"]["layer"]["rules"]["speedLimit"]["validity"];
+    REQUIRE(validityJson[0]["attrPointIndex"]["sequence"]["$mapgetAttrPointSequence"] == 0);
+    REQUIRE(validityJson[0]["attrPointIndex"]["index"] == 1);
+    REQUIRE(validityJson[1]["attrPointIndexRange"]["start"] == 1);
+    REQUIRE(validityJson[1]["attrPointIndexRange"]["end"] == 3);
+
+    std::stringstream bytes;
+    REQUIRE(tile->write(bytes));
+    auto const serialized = bytes.str();
+    auto roundtripped = std::make_shared<TileFeatureLayer>(
+        std::vector<uint8_t>(serialized.begin(), serialized.end()),
+        [&](auto&&, auto&&) { return tile->layerInfo(); },
+        [&](auto&&) { return tile->strings(); });
+
+    REQUIRE(roundtripped->toJson() == json);
+    auto roundtrippedSequence = roundtripped->attrPointSequenceAt(0);
+    REQUIRE(roundtrippedSequence->positionCount() == 5);
+    REQUIRE(roundtrippedSequence->pointAt(3) == Point{11.5, 20.0, 0.0});
 }
 
 TEST_CASE("A layer supports all 255 compact geometry-name indices", "[geometry][name]")

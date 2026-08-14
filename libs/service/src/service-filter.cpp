@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <set>
@@ -427,21 +428,39 @@ void FilterRequestExecution::configure(
         auto const outputTileId = outputTileIds[outputIndex];
         outputIndexByTile.emplace(outputTileId, outputIndex);
 
-        std::set<TileId> dependencyMembership{outputTileId};
-        if (hasPointGroups) {
-            for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
-                for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
-                    dependencyMembership.insert(outputTileId.neighbour(offsetX, offsetY));
-                }
-            }
-        }
-
         OutputTileState output;
         output.tileId_ = outputTileId;
-        for (auto const& sourceTileId : sourceTileIds) {
-            if (dependencyMembership.contains(sourceTileId)) {
+        if (hasPointGroups) {
+            std::vector<std::pair<size_t, TileId>> dependenciesBySourceIndex;
+            dependenciesBySourceIndex.reserve(9);
+            for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
+                for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
+                    auto const sourceTileId = outputTileId.neighbour(offsetX, offsetY);
+                    // Sorting nine direct lookups by source index preserves
+                    // processing order without scanning the complete source
+                    // union once for every output.
+                    dependenciesBySourceIndex.emplace_back(
+                        sourceIndexByTile.at(sourceTileId),
+                        sourceTileId);
+                }
+            }
+            std::ranges::sort(
+                dependenciesBySourceIndex,
+                {},
+                [](auto const& dependency) { return dependency.first; });
+            std::optional<size_t> previousSourceIndex;
+            output.sourceTileIds_.reserve(dependenciesBySourceIndex.size());
+            for (auto const& [sourceIndex, sourceTileId] : dependenciesBySourceIndex) {
+                // Wrapped neighbours coincide at the lowest tile levels.
+                if (previousSourceIndex == sourceIndex) {
+                    continue;
+                }
+                previousSourceIndex = sourceIndex;
                 output.sourceTileIds_.push_back(sourceTileId);
             }
+        }
+        else {
+            output.sourceTileIds_.push_back(outputTileId);
         }
         output.contributions_.resize(output.sourceTileIds_.size());
         output.missingContributions_ = output.sourceTileIds_.size();
@@ -890,6 +909,11 @@ FilterRequestExecution::commitSource(
                     }
                     item.contributions_.push_back(std::move(*contribution));
                 }
+                // A completed output receives no further source writes. Drop
+                // its fixed dependency storage instead of retaining every
+                // moved-from slot until the whole viewport has completed.
+                decltype(output.sourceTileIds_){}.swap(output.sourceTileIds_);
+                decltype(output.contributions_){}.swap(output.contributions_);
                 ready.push_back(std::move(item));
             }
         }
@@ -1868,8 +1892,8 @@ bool detail::FilterRequestExecution::start(
         return false;
     }
 
-    std::vector<TileId> tileIdsToProcess = request->tileIds_;
-    std::set<TileId> sourceTileMembership(tileIdsToProcess.begin(), tileIdsToProcess.end());
+    std::vector<TileId> tileIdsToProcess;
+    auto prioritySourceMembership = request->priorityTileIds_;
     if (hasPointGroups) {
         auto const level = request->tileIds_.front().level();
         for (auto const& tileId : request->tileIds_) {
@@ -1901,15 +1925,30 @@ bool detail::FilterRequestExecution::start(
             }
         }
 
-        // Requested outputs remain first. Halo-only source tiles are appended
-        // in first-needed order, never promoted ahead of another output.
+        std::set<TileId> sourceTileMembership;
+        tileIdsToProcess.reserve(request->tileIds_.size());
+
+        // Traverse outputs in caller order and insert every source at its
+        // first point of need. Appending all halo sources after all outputs
+        // retains a viewport-sized set of mutable subset models while sparse
+        // coverage waits for dependencies that are scheduled only at the end.
         for (auto const& outputTileId : request->tileIds_) {
+            if (sourceTileMembership.insert(outputTileId).second) {
+                tileIdsToProcess.push_back(outputTileId);
+            }
+            auto const priorityOutput = request->priorityTileIds_.contains(outputTileId);
             for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
                 for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
                     if (offsetX == 0 && offsetY == 0) {
                         continue;
                     }
                     auto const sourceTileId = outputTileId.neighbour(offsetX, offsetY);
+                    if (priorityOutput) {
+                        // A prioritized output cannot complete before its
+                        // complete source halo, so its dependencies inherit
+                        // the same internal scheduling priority.
+                        prioritySourceMembership.insert(sourceTileId);
+                    }
                     if (sourceTileMembership.insert(sourceTileId).second) {
                         tileIdsToProcess.push_back(sourceTileId);
                     }
@@ -1917,12 +1956,22 @@ bool detail::FilterRequestExecution::start(
             }
         }
     }
+    else {
+        tileIdsToProcess = request->tileIds_;
+    }
+
+    std::vector<TileId> prioritySourceTileIds;
+    prioritySourceTileIds.reserve(prioritySourceMembership.size());
+    std::ranges::copy_if(
+        tileIdsToProcess,
+        std::back_inserter(prioritySourceTileIds),
+        [&](auto const& tileId) { return prioritySourceMembership.contains(tileId); });
 
     auto childRequest = std::make_shared<LayerTilesRequest>(
         request->mapId_,
         request->layerId_,
         tileIdsToProcess,
-        std::vector<TileId>(request->priorityTileIds_.begin(), request->priorityTileIds_.end()));
+        prioritySourceTileIds);
     childRequest->sourceId_ = request->sourceId_;
     {
         std::lock_guard lock(request->childRequestsMutex_);

@@ -9,6 +9,7 @@
 #include <regex>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 #include "fmt/format.h"
@@ -1124,9 +1125,60 @@ model_ptr<GeometryCollection> copyAttributeGeometry(
     }
 }
 
-model_ptr<FeatureId> copyFeatureId(TileSubsetLayer& target, model_ptr<FeatureId> const& source)
+struct FeatureIdCacheKey
 {
-    return target.newFeatureId(source->typeId(), source->keyValuePairs(), source->externalMapId());
+    simfil::Model const* model = nullptr;
+    uint32_t address = 0;
+
+    bool operator==(FeatureIdCacheKey const&) const = default;
+};
+
+struct FeatureIdCacheKeyHash
+{
+    size_t operator()(FeatureIdCacheKey const& key) const noexcept
+    {
+        auto result = std::hash<simfil::Model const*>{}(key.model);
+        result ^= std::hash<uint32_t>{}(key.address) +
+            0x9e3779b9U + (result << 6U) + (result >> 2U);
+        return result;
+    }
+};
+
+using FeatureIdCache = std::unordered_map<
+    FeatureIdCacheKey,
+    model_ptr<FeatureId>,
+    FeatureIdCacheKeyHash>;
+
+model_ptr<FeatureId> copyFeatureId(
+    TileSubsetLayer& target,
+    model_ptr<FeatureId> const& source)
+{
+    return source
+        ? target.newFeatureId(
+              source->typeId(),
+              source->keyValuePairs(),
+              source->externalMapId())
+        : model_ptr<FeatureId>{};
+}
+
+model_ptr<FeatureId> copyFeatureId(
+    TileSubsetLayer& target,
+    model_ptr<FeatureId> const& source,
+    FeatureIdCache& cache)
+{
+    if (!source) {
+        return {};
+    }
+    auto const key = FeatureIdCacheKey{
+        source->owningModel().get(),
+        source->addr().value_,
+    };
+    if (auto found = cache.find(key); found != cache.end()) {
+        return found->second;
+    }
+    auto copied = copyFeatureId(target, source);
+    cache.emplace(key, copied);
+    return copied;
 }
 
 std::vector<simfil::ModelNode::Ptr>
@@ -1140,7 +1192,11 @@ materializeValues(TileSubsetLayer& target, std::vector<simfil::Value> const& val
     return result;
 }
 
-void materializeChannel(TileSubsetLayer& target, ChannelState& channel, IssueAccumulator& issues)
+void materializeChannel(
+    TileSubsetLayer& target,
+    ChannelState& channel,
+    IssueAccumulator& issues,
+    FeatureIdCache& featureIds)
 {
     if (channel.filterCompilationFailed_) {
         return;
@@ -1149,7 +1205,7 @@ void materializeChannel(TileSubsetLayer& target, ChannelState& channel, IssueAcc
     for (auto const& candidate : channel.featureCandidates_) {
         auto values = materializeValues(target, candidate.featureValues_);
         channel.output_->newFeatureEntry(
-            copyFeatureId(target, candidate.feature_->id()),
+            copyFeatureId(target, candidate.feature_->id(), featureIds),
             copyGeometryCollection(
                 target,
                 candidate.feature_->geomOrNull(),
@@ -1178,8 +1234,8 @@ void materializeChannel(TileSubsetLayer& target, ChannelState& channel, IssueAcc
                 auto const fromEnd = candidate.validity_->transitionFromConnectedEnd();
                 auto const toEnd = candidate.validity_->transitionToConnectedEnd();
                 if (from && to && fromEnd && toEnd) {
-                    transitionFromFeatureId = copyFeatureId(target, from);
-                    transitionToFeatureId = copyFeatureId(target, to);
+                    transitionFromFeatureId = copyFeatureId(target, from, featureIds);
+                    transitionToFeatureId = copyFeatureId(target, to, featureIds);
                     transitionFromConnectedEnd = *fromEnd;
                     transitionToConnectedEnd = *toEnd;
                 }
@@ -1190,7 +1246,7 @@ void materializeChannel(TileSubsetLayer& target, ChannelState& channel, IssueAcc
             }
         }
         channel.output_->newAttributeValidityEntry(
-            copyFeatureId(target, candidate.feature_->id()),
+            copyFeatureId(target, candidate.feature_->id(), featureIds),
             geometry,
             candidate.attributeIndex_,
             candidate.hasValidity_,
@@ -1741,13 +1797,18 @@ tl::expected<FeatureLayerFilterSourceResult, simfil::Error> FeatureLayerFilterRe
 
     std::vector<FeatureLayerPointGroupMember> pointGroupMembers;
     std::vector<FeatureLayerRelationDescriptor> relationDescriptors;
+    FeatureIdCache featureIds;
     for (size_t channelIndex = 0; channelIndex < channels.size(); ++channelIndex) {
         auto& channel = channels[channelIndex];
         if (materializeOutput && channel.definition_.scope_ == FeatureLayerFilterScope::Relation) {
             collectStoredRelationDescriptors(sourceLayer, channelIndex, channel, issues);
         }
         if (resultLayer) {
-            materializeChannel(*resultLayer, channel, issues);
+            materializeChannel(
+                *resultLayer,
+                channel,
+                issues,
+                featureIds);
         }
         pointGroupMembers.insert(
             pointGroupMembers.end(),

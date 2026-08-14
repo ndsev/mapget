@@ -96,6 +96,15 @@ StringPool::StringPool(const std::string_view& stringPoolId) : stringPoolId_(str
     addStaticKey(SourceFeatureCountStr, "sourceFeatureCount");
     addStaticKey(OverlayAttributeIndexStr, "$attributeIndex");
     addStaticKey(OverlayRelationIndexStr, "$relationIndex");
+    addStaticKey(AttrPointSequencesStr, "attrPointSequences");
+    addStaticKey(AttrPointsStr, "attrPoints");
+    addStaticKey(AttrPointIndexStr, "attrPointIndex");
+    addStaticKey(AttrPointIndexRangeStr, "attrPointIndexRange");
+    addStaticKey(MapgetAttrPointSequenceStr, "$mapgetAttrPointSequence");
+    addStaticKey(SequenceStr, "sequence");
+    addStaticKey(IndexStr, "index");
+    addStaticKey(GeometryIndexStr, "geometryIndex");
+    addStaticKey(PositionCountStr, "positionCount");
 }
 
 tl::expected<void, simfil::Error>

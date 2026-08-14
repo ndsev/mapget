@@ -181,6 +181,15 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
         *tile,
         {{10, 20, "road-src", "centerline"}}));
 
+    auto attrPointSequence = tile->newAttrPointSequence(roadA, roadALine);
+    attrPointSequence->appendAttrPoint(
+        1,
+        {11.305, 48.005, 0.0},
+        makeSourceDataRefs(*tile, {{22, 7, "road-src", "attribute-point"}}));
+    attrPointSequence->setSourceDataReferences(makeSourceDataRefs(
+        *tile,
+        {{20, 30, "road-src", "attribute-point-list"}}));
+
     auto roadAMesh = roadA->geom()->newGeometry(GeomType::Mesh, 3, true);
     roadAMesh->append({11.3, 48.0, 0.0});
     roadAMesh->append({11.3, 48.002, 0.0});
@@ -228,6 +237,14 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
     auto clearance = restrictions->newAttribute("clearance");
     requireExpectedOk(clearance->addField("value", double{3.5}));
     clearance->validity()->newFeatureId(externalRoadReference, Validity::Negative);
+
+    auto speed = restrictions->newAttribute("speed");
+    requireExpectedOk(speed->addField("value", int64_t{30}));
+    speed->validity()->newAttrPointIndexRange(
+        attrPointSequence,
+        1,
+        2,
+        Validity::Positive);
 
     auto relation = tile->newRelation(
         "connectedTo",

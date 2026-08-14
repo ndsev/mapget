@@ -738,6 +738,30 @@ void bindTileLayer(py::module_& m)
             Create a new geometry of the given type.
         )pbdoc")
         .def(
+            "new_attr_point_sequence",
+            [](TileFeatureLayer& self,
+               BoundFeature const& feature,
+               BoundGeometry const& geometry)
+            {
+                return BoundAttrPointSequence(self.newAttrPointSequence(
+                    feature.modelNodePtr_,
+                    geometry.modelNodePtr_));
+            },
+            py::arg("feature"),
+            py::arg("geometry"),
+            "Create a shared interwoven sequence over one feature geometry.")
+        .def(
+            "num_attr_point_sequences",
+            [](TileFeatureLayer const& self)
+            { return self.numAttrPointSequences(); },
+            "Return the number of shared AttrPointSequence definitions.")
+        .def(
+            "attr_point_sequence_at",
+            [](TileFeatureLayer const& self, uint32_t index)
+            { return BoundAttrPointSequence(self.attrPointSequenceAt(index)); },
+            py::arg("index"),
+            "Return one shared AttrPointSequence by tile-local index.")
+        .def(
             "new_relation",
             [](TileFeatureLayer& self, std::string_view const& name, BoundFeatureId const& target)
             { return BoundRelation(self.newRelation(name, target.modelNodePtr_)); },

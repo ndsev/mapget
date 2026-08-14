@@ -106,7 +106,16 @@ struct StringPool : public simfil::StringPool
         GenerationStr,
         SourceFeatureCountStr,
         OverlayAttributeIndexStr,
-        OverlayRelationIndexStr
+        OverlayRelationIndexStr,
+        AttrPointSequencesStr,
+        AttrPointsStr,
+        AttrPointIndexStr,
+        AttrPointIndexRangeStr,
+        MapgetAttrPointSequenceStr,
+        SequenceStr,
+        IndexStr,
+        GeometryIndexStr,
+        PositionCountStr
     };
 
     explicit StringPool(const std::string_view& stringPoolId);

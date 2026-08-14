@@ -106,8 +106,11 @@ public:
      * - Version 3.1:
      *   + Added per-output delivery epochs to TileSubsetLayer so sparse TTL
      *     renewals can coexist with older in-flight deliveries.
+     * - Version 3.2:
+     *   + Added shared AttrPointSequence definitions and AttrPoint index/range
+     *     validity descriptions.
      */
-    static constexpr Version CurrentProtocolVersion{3, 1, 0};
+    static constexpr Version CurrentProtocolVersion{3, 2, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

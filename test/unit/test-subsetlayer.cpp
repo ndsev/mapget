@@ -63,6 +63,37 @@ model_ptr<GeometryCollection> transitionGeometry(TileSubsetLayer& layer)
 } // namespace
 
 TEST_CASE(
+    "TileSubsetLayer shares immutable empty projected-value arrays",
+    "[test.subsetlayer]")
+{
+    auto info = subsetLayerInfo();
+    auto strings = std::make_shared<StringPool>("EmptySubsetValues");
+    auto subset = std::make_shared<TileSubsetLayer>(
+        TileId::fromWgs84(11.0, 42.0, 13),
+        "EmptySubsetValues",
+        "TestMap",
+        info,
+        strings,
+        "empty-values",
+        1);
+    auto channel = subset->newChannel(
+        "feature-rule",
+        Scope::Feature,
+        1U << static_cast<uint8_t>(GeomType::Points),
+        std::nullopt);
+    auto geometry = pointGeometry(*subset, 1.0);
+    auto first = channel->newFeatureEntry(
+        subset->newFeatureId("Road", {{"roadId", int64_t{1}}}),
+        geometry);
+    auto second = channel->newFeatureEntry(
+        subset->newFeatureId("Road", {{"roadId", int64_t{2}}}),
+        geometry);
+
+    REQUIRE(first->values()->size() == 0);
+    REQUIRE(second->values()->addr() == first->values()->addr());
+}
+
+TEST_CASE(
     "TileSubsetLayer owns channel schemas and typed entries",
     "[test.subsetlayer]")
 {

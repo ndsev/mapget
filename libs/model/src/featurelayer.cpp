@@ -213,6 +213,8 @@ struct TileFeatureLayer::Impl {
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
     simfil::ModelColumn<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
+    simfil::ModelColumn<AttrPoint::Data, simfil::detail::ColumnPageSize> attrPoints_;
+    simfil::ModelColumn<AttrPointSequence::Data, simfil::detail::ColumnPageSize> attrPointSequences_;
 
     /**
      * Indexing of features by their id hash. The hash-feature pairs are kept
@@ -274,6 +276,8 @@ struct TileFeatureLayer::Impl {
         s.object(attrLayerLists_);
         s.object(featureIdPrefix_);
         s.object(relations_);
+        s.object(attrPoints_);
+        s.object(attrPointSequences_);
         sortFeatureHashIndex();
         s.object(featureHashIndex_);
     }
@@ -691,6 +695,142 @@ TileFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
         mpKey_);
 }
 
+model_ptr<AttrPointSequence> TileFeatureLayer::newAttrPointSequence(
+    model_ptr<Feature> const& feature,
+    model_ptr<Geometry> const& geometry)
+{
+    if (!feature || !geometry) {
+        raise("AttrPointSequence requires a feature and geometry.");
+    }
+    if (feature->owningModel().get() != this || geometry->owningModel().get() != this) {
+        raise("AttrPointSequence feature and geometry must belong to this TileFeatureLayer.");
+    }
+    if (geometry->geomType() != GeomType::Line) {
+        raise("AttrPointSequence currently requires a line geometry.");
+    }
+    if (geometry->numPoints() < 2) {
+        raise("AttrPointSequence requires a line with at least two shape points.");
+    }
+
+    bool geometryBelongsToFeature = false;
+    if (auto geometries = feature->geomOrNull()) {
+        geometries->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
+            geometryBelongsToFeature = candidate->addr() == geometry->addr();
+            return !geometryBelongsToFeature;
+        });
+    }
+    if (!geometryBelongsToFeature) {
+        raise("AttrPointSequence geometry must already be attached to its feature.");
+    }
+
+    auto const sequenceIndex = static_cast<uint32_t>(impl_->attrPointSequences_.size());
+    impl_->attrPointSequences_.emplace_back(AttrPointSequence::Data{
+        .featureId_ = feature->id()->addr(),
+        .geometry_ = geometry->addr(),
+        .firstAttrPoint_ = static_cast<uint32_t>(impl_->attrPoints_.size()),
+    });
+    return AttrPointSequence(
+        shared_from_this(),
+        {ColumnId::AttrPointSequences, sequenceIndex},
+        mpKey_);
+}
+
+uint32_t TileFeatureLayer::numAttrPointSequences() const
+{
+    return static_cast<uint32_t>(impl_->attrPointSequences_.size());
+}
+
+model_ptr<AttrPointSequence> TileFeatureLayer::attrPointSequenceAt(uint32_t index) const
+{
+    if (index >= impl_->attrPointSequences_.size()) {
+        raiseFmt(
+            "AttrPointSequence index {} is out of range ({} sequences).",
+            index,
+            impl_->attrPointSequences_.size());
+    }
+    return AttrPointSequence(
+        shared_from_this(),
+        {ColumnId::AttrPointSequences, index},
+        mpKey_);
+}
+
+AttrPoint::Data const& TileFeatureLayer::attrPointData(uint32_t index) const
+{
+    if (index >= impl_->attrPoints_.size()) {
+        raiseFmt(
+            "AttrPoint index {} is out of range ({} points).",
+            index,
+            impl_->attrPoints_.size());
+    }
+    return impl_->attrPoints_.at(index);
+}
+
+AttrPointSequence::Data const& TileFeatureLayer::attrPointSequenceData(uint32_t index) const
+{
+    if (index >= impl_->attrPointSequences_.size()) {
+        raiseFmt(
+            "AttrPointSequence index {} is out of range ({} sequences).",
+            index,
+            impl_->attrPointSequences_.size());
+    }
+    return impl_->attrPointSequences_.at(index);
+}
+
+AttrPointSequence::Data& TileFeatureLayer::attrPointSequenceData(uint32_t index)
+{
+    return const_cast<AttrPointSequence::Data&>(
+        static_cast<TileFeatureLayer const&>(*this).attrPointSequenceData(index));
+}
+
+model_ptr<AttrPoint> TileFeatureLayer::appendAttrPoint(
+    uint32_t sequenceIndex,
+    uint32_t logicalIndex,
+    Point const& point,
+    model_ptr<SourceDataReferenceCollection> const& sourceData)
+{
+    auto& sequence = attrPointSequenceData(sequenceIndex);
+    if (sequence.firstAttrPoint_ + sequence.attrPointCount_ != impl_->attrPoints_.size()) {
+        raise(
+            "AttrPoints must be appended before another AttrPointSequence starts using storage.");
+    }
+    if (logicalIndex == 0) {
+        raise("AttrPoint cannot replace the first geometry shape point.");
+    }
+    if (sequence.attrPointCount_ > 0) {
+        auto const& previous = impl_->attrPoints_.at(
+            sequence.firstAttrPoint_ + sequence.attrPointCount_ - 1U);
+        if (logicalIndex <= previous.index_) {
+            raise("AttrPoints must be appended in strictly increasing logical-index order.");
+        }
+    }
+
+    auto const geometry = resolve<Geometry>(sequence.geometry_);
+    auto const maximumInteriorIndex =
+        static_cast<uint64_t>(geometry->numPoints()) + sequence.attrPointCount_ - 1U;
+    if (logicalIndex > maximumInteriorIndex) {
+        raiseFmt(
+            "AttrPoint index {} is outside the interwoven sequence's interior range 1..{}.",
+            logicalIndex,
+            maximumInteriorIndex);
+    }
+
+    auto const anchor = geometryAnchor();
+    auto const pointIndex = static_cast<uint32_t>(impl_->attrPoints_.size());
+    impl_->attrPoints_.emplace_back(AttrPoint::Data{
+        .index_ = logicalIndex,
+        .point_ = glm::fvec3{
+            static_cast<float>(point.x - anchor.x),
+            static_cast<float>(point.y - anchor.y),
+            static_cast<float>(point.z - anchor.z)},
+        .sourceData_ = sourceData ? sourceData->addr() : ModelNodeAddress{},
+    });
+    ++sequence.attrPointCount_;
+    return AttrPoint(
+        shared_from_this(),
+        {ColumnId::AttrPoints, pointIndex},
+        mpKey_);
+}
+
 model_ptr<Object> TileFeatureLayer::getIdPrefix()
 {
     return static_cast<TileFeatureLayer const&>(*this).getIdPrefix();
@@ -1030,6 +1170,80 @@ model_ptr<RelationReference> resolveInternal(tag<RelationReference>, TileFeature
         model.mpKey_);
 }
 
+template<>
+model_ptr<AttrPoint> resolveInternal(tag<AttrPoint>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPoints) {
+        raise("Cannot cast this node to an AttrPoint.");
+    }
+    (void)model.attrPointData(node.addr().index());
+    return AttrPoint(model.shared_from_this(), node.addr(), model.mpKey_);
+}
+
+template<>
+model_ptr<AttrPointArray> resolveInternal(tag<AttrPointArray>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointArrayView) {
+        raise("Cannot cast this node to an AttrPointArray.");
+    }
+    (void)model.attrPointSequenceData(node.addr().index());
+    return AttrPointArray(model.shared_from_this(), node.addr(), model.mpKey_);
+}
+
+template<>
+model_ptr<AttrPointSequence> resolveInternal(tag<AttrPointSequence>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointSequences) {
+        raise("Cannot cast this node to an AttrPointSequence.");
+    }
+    (void)model.attrPointSequenceData(node.addr().index());
+    return AttrPointSequence(model.shared_from_this(), node.addr(), model.mpKey_);
+}
+
+template<>
+model_ptr<AttrPointSequenceReference> resolveInternal(
+    tag<AttrPointSequenceReference>,
+    TileFeatureLayer const& model,
+    ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointSequenceReferences) {
+        raise("Cannot cast this node to an AttrPointSequenceReference.");
+    }
+    (void)model.attrPointSequenceData(node.addr().index());
+    return AttrPointSequenceReference(model.shared_from_this(), node.addr(), model.mpKey_);
+}
+
+template<>
+model_ptr<AttrPointIndex> resolveInternal(tag<AttrPointIndex>, TileFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointIndexView) {
+        raise("Cannot cast this node to an AttrPointIndex.");
+    }
+    if (node.addr().index() >= model.impl_->validities_.size() ||
+        model.impl_->validities_.at(node.addr().index()).geomDescrType_ != Validity::AttrPointIndexValidity)
+    {
+        raise("AttrPointIndex view does not reference an AttrPointIndex validity.");
+    }
+    return AttrPointIndex(model.shared_from_this(), node.addr(), model.mpKey_);
+}
+
+template<>
+model_ptr<AttrPointIndexRange> resolveInternal(
+    tag<AttrPointIndexRange>,
+    TileFeatureLayer const& model,
+    ModelNode const& node)
+{
+    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointIndexRangeView) {
+        raise("Cannot cast this node to an AttrPointIndexRange.");
+    }
+    if (node.addr().index() >= model.impl_->validities_.size() ||
+        model.impl_->validities_.at(node.addr().index()).geomDescrType_ != Validity::AttrPointIndexRangeValidity)
+    {
+        raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
+    }
+    return AttrPointIndexRange(model.shared_from_this(), node.addr(), model.mpKey_);
+}
+
 model_ptr<PointNode> TileFeatureLayer::resolvePointNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
@@ -1136,6 +1350,24 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
         return {};
     case ColumnId::RelationReferences:
         cb(*resolve<RelationReference>(n));
+        return {};
+    case ColumnId::AttrPoints:
+        cb(*resolve<AttrPoint>(n));
+        return {};
+    case ColumnId::AttrPointSequences:
+        cb(*resolve<AttrPointSequence>(n));
+        return {};
+    case ColumnId::AttrPointArrayView:
+        cb(*resolve<AttrPointArray>(n));
+        return {};
+    case ColumnId::AttrPointSequenceReferences:
+        cb(*resolve<AttrPointSequenceReference>(n));
+        return {};
+    case ColumnId::AttrPointIndexView:
+        cb(*resolve<AttrPointIndex>(n));
+        return {};
+    case ColumnId::AttrPointIndexRangeView:
+        cb(*resolve<AttrPointIndexRange>(n));
         return {};
     case ColumnId::Points:
         cb(*resolve<PointNode>(n));
@@ -1340,6 +1572,14 @@ nlohmann::json TileFeatureLayer::toJson() const
         features.push_back(f->toJson());
     result["features"] = features;
 
+    if (!impl_->attrPointSequences_.empty()) {
+        auto sequences = nlohmann::json::array();
+        for (uint32_t index = 0; index < numAttrPointSequences(); ++index) {
+            sequences.push_back(attrPointSequenceAt(index)->toJson());
+        }
+        result["attrPointSequences"] = std::move(sequences);
+    }
+
     return result;
 }
 
@@ -1451,6 +1691,8 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     featureLayer["attribute-layers"] = impl_->attrLayers_.byte_size();
     featureLayer["attribute-layer-lists"] = impl_->attrLayerLists_.byte_size();
     featureLayer["relations"] = impl_->relations_.byte_size();
+    featureLayer["attr-points"] = impl_->attrPoints_.byte_size();
+    featureLayer["attr-point-sequences"] = impl_->attrPointSequences_.byte_size();
     featureLayer["feature-hash-index"] = impl_->featureHashIndex_.byte_size();
     featureLayer["point-geometries"] = 0;
     featureLayer["geometries"] = geomViews_.byte_size();
@@ -1674,6 +1916,12 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
         case Validity::FeatureTransition:
             increment(validityUsage["by-geometry-description"], "feature-transition");
             break;
+        case Validity::AttrPointIndexValidity:
+            increment(validityUsage["by-geometry-description"], "attr-point-index");
+            break;
+        case Validity::AttrPointIndexRangeValidity:
+            increment(validityUsage["by-geometry-description"], "attr-point-index-range");
+            break;
         }
 
         switch (validity.geomOffsetType_) {
@@ -1804,6 +2052,8 @@ MemoryUsageBreakdown TileFeatureLayer::memoryUsage() const
     result.add("feature-layer.attribute-layers", impl_->attrLayers_.memory_usage());
     result.add("feature-layer.attribute-layer-lists", impl_->attrLayerLists_.memory_usage());
     result.add("feature-layer.relations", impl_->relations_.memory_usage());
+    result.add("feature-layer.attr-points", impl_->attrPoints_.memory_usage());
+    result.add("feature-layer.attr-point-sequences", impl_->attrPointSequences_.memory_usage());
     result.add("feature-layer.feature-hash-index", impl_->featureHashIndex_.memory_usage());
     if (impl_->glbAttachmentName_) {
         result.add("feature-layer.glb-attachment-name", stringMemoryUsage(*impl_->glbAttachmentName_));
@@ -2167,6 +2417,20 @@ ModelNode::Ptr TileFeatureLayer::clone(
                 *resolved->transitionToConnectedEnd(),
                 *resolved->transitionNumber());
             break;
+        case Validity::AttrPointIndexValidity: {
+            auto value = resolved->attrPointIndex();
+            auto sequence = resolve<AttrPointSequence>(
+                *clone(cache, otherLayer, value->sequence()));
+            newNode->setAttrPointIndex(sequence, value->index());
+            break;
+        }
+        case Validity::AttrPointIndexRangeValidity: {
+            auto value = resolved->attrPointIndexRange();
+            auto sequence = resolve<AttrPointSequence>(
+                *clone(cache, otherLayer, value->sequence()));
+            newNode->setAttrPointIndexRange(sequence, value->start(), value->end());
+            break;
+        }
         }
         break;
     }
@@ -2244,6 +2508,59 @@ ModelNode::Ptr TileFeatureLayer::clone(
         newCacheNode = newNode;
         break;
     }
+    case ColumnId::AttrPointSequences: {
+        auto resolved = otherLayer->resolve<AttrPointSequence>(*otherNode);
+        auto sourceFeatureId = resolved->featureId();
+        auto clonedGeometry = resolve<Geometry>(
+            *clone(cache, otherLayer, resolved->geometry()));
+
+        // Sequences reference a host feature rather than owning one. During
+        // generic node cloning, create the compact sequence against the
+        // already cloned canonical feature when available.
+        auto host = find(sourceFeatureId->typeId(), sourceFeatureId->keyValuePairs());
+        if (!host) {
+            raiseFmt(
+                "Cannot clone AttrPointSequence before host feature '{}' exists.",
+                sourceFeatureId->toString());
+        }
+        bool geometryAttached = false;
+        if (auto geometries = host->geomOrNull()) {
+            geometries->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
+                geometryAttached = candidate->addr() == clonedGeometry->addr();
+                return !geometryAttached;
+            });
+        }
+        if (!geometryAttached) {
+            host->addGeometry(clonedGeometry);
+        }
+
+        auto newNode = newAttrPointSequence(host, clonedGeometry);
+        newCacheNode = newNode;
+        for (uint32_t index = 0; index < resolved->attrPointCount(); ++index) {
+            auto sourcePoint = resolved->attrPoints()->attrPointAt(index);
+            model_ptr<SourceDataReferenceCollection> sourceData;
+            if (auto refs = sourcePoint->sourceDataReferences()) {
+                sourceData = resolve<SourceDataReferenceCollection>(
+                    *clone(cache, otherLayer, refs));
+            }
+            newNode->appendAttrPoint(sourcePoint->index(), sourcePoint->point(), sourceData);
+        }
+        if (auto refs = resolved->sourceDataReferences()) {
+            newNode->setSourceDataReferences(
+                resolve<SourceDataReferenceCollection>(
+                    *clone(cache, otherLayer, refs)));
+        }
+        break;
+    }
+    case ColumnId::AttrPointSequenceReferences: {
+        auto resolved = otherLayer->resolve<AttrPointSequenceReference>(*otherNode);
+        auto sequence = resolve<AttrPointSequence>(
+            *clone(cache, otherLayer, resolved->sequence()));
+        newCacheNode = resolve<AttrPointSequenceReference>(simfil::ModelNodeAddress{
+            ColumnId::AttrPointSequenceReferences,
+            sequence->addr().index()});
+        break;
+    }
     case ColumnId::SourceDataReferenceCollections: {
         auto resolved = otherLayer->resolve<SourceDataReferenceCollection>(*otherNode);
         std::vector<QualifiedSourceDataReference> items;
@@ -2270,6 +2587,10 @@ ModelNode::Ptr TileFeatureLayer::clone(
     case ColumnId::PointBuffersView:
     case ColumnId::SourceDataReferences:
     case ColumnId::ValidityPoints:
+    case ColumnId::AttrPoints:
+    case ColumnId::AttrPointArrayView:
+    case ColumnId::AttrPointIndexView:
+    case ColumnId::AttrPointIndexRangeView:
         raiseFmt("Encountered unexpected column type {} in clone().", otherNode->addr().column());
     default: {
         newCacheNode = resolve(otherNode->addr());
@@ -2340,8 +2661,16 @@ void TileFeatureLayer::clone(
         geom->forEachGeometry(
             [this, &baseGeom, &clonedModelNodes, &owningLayer](auto&& geomElement)
             {
-                baseGeom->addGeometry(
-                    resolve<Geometry>(*clone(clonedModelNodes, owningLayer(geomElement), ModelNode::Ptr(geomElement))));
+                auto clonedGeometry = resolve<Geometry>(
+                    *clone(clonedModelNodes, owningLayer(geomElement), ModelNode::Ptr(geomElement)));
+                bool alreadyAttached = false;
+                baseGeom->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
+                    alreadyAttached = candidate->addr() == clonedGeometry->addr();
+                    return !alreadyAttached;
+                });
+                if (!alreadyAttached) {
+                    baseGeom->addGeometry(clonedGeometry);
+                }
                 return true;
             });
     }

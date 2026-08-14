@@ -898,6 +898,63 @@ struct BoundFeature : public BoundModelNode
     model_ptr<Feature> modelNodePtr_;
 };
 
+/** Python wrapper for one shared interwoven attribute-point sequence. */
+struct BoundAttrPointSequence : public BoundModelNode
+{
+    /** Register the shared sequence API. */
+    static void bind(py::module_& m)
+    {
+        py::class_<BoundAttrPointSequence, BoundModelNode>(
+            m,
+            "AttrPointSequence",
+            R"pbdoc(
+                Shared logical sequence interweaving geometry vertices and
+                explicitly inserted attribute points.
+            )pbdoc")
+            .def("feature_id", [](BoundAttrPointSequence& self) {
+                return BoundFeatureId(self.modelNodePtr_->featureId());
+            }, "Return the feature whose geometry defines this sequence.")
+            .def("geometry", [](BoundAttrPointSequence& self) {
+                return BoundGeometry(self.modelNodePtr_->geometry());
+            }, "Return the canonical geometry used as the sequence backbone.")
+            .def("geometry_index", [](BoundAttrPointSequence& self) {
+                return self.modelNodePtr_->geometryIndex();
+            }, "Return the feature-local geometry ordinal.")
+            .def("attr_point_count", [](BoundAttrPointSequence& self) {
+                return self.modelNodePtr_->attrPointCount();
+            }, "Return the number of explicitly inserted attribute points.")
+            .def("position_count", [](BoundAttrPointSequence& self) {
+                return self.modelNodePtr_->positionCount();
+            }, "Return the total interwoven position count.")
+            .def("point_at", [](BoundAttrPointSequence& self, uint32_t index) {
+                return self.modelNodePtr_->pointAt(index);
+            }, py::arg("index"), "Return the coordinate at one logical index.")
+            .def("is_attr_point", [](BoundAttrPointSequence& self, uint32_t index) {
+                return self.modelNodePtr_->isAttrPoint(index);
+            }, py::arg("index"), "Return whether a logical index is an inserted point.")
+            .def("metric_offset_at", [](BoundAttrPointSequence& self, uint32_t index) {
+                return self.modelNodePtr_->metricOffsetAt(index);
+            }, py::arg("index"), "Return the distance in metres from the sequence start.")
+            .def("append_attr_point", [](BoundAttrPointSequence& self,
+                                          uint32_t index,
+                                          Point const& point) {
+                self.modelNodePtr_->appendAttrPoint(index, point);
+            }, py::arg("index"), py::arg("point"),
+                "Append one inserted point in increasing logical-index order.");
+    }
+
+    /** Return the wrapped model node. */
+    ModelNode::Ptr node() override { return modelNodePtr_; }
+
+    /** Wrap a concrete shared sequence. */
+    explicit BoundAttrPointSequence(model_ptr<AttrPointSequence> const& ptr)
+        : modelNodePtr_(ptr)
+    {
+    }
+
+    model_ptr<AttrPointSequence> modelNodePtr_;
+};
+
 inline BoundValidity::BoundValidity(model_ptr<Validity> const& ptr) : modelNodePtr_(ptr) {}
 
 inline ModelNode::Ptr BoundValidity::node() { return modelNodePtr_; }
@@ -920,7 +977,9 @@ inline void BoundValidity::bind(py::module_& m)
         .value("SIMPLE_GEOMETRY", Validity::SimpleGeometry)
         .value("OFFSET_POINT", Validity::OffsetPointValidity)
         .value("OFFSET_RANGE", Validity::OffsetRangeValidity)
-        .value("FEATURE_TRANSITION", Validity::FeatureTransition);
+        .value("FEATURE_TRANSITION", Validity::FeatureTransition)
+        .value("ATTR_POINT_INDEX", Validity::AttrPointIndexValidity)
+        .value("ATTR_POINT_INDEX_RANGE", Validity::AttrPointIndexRangeValidity);
 
     py::enum_<Validity::GeometryOffsetType>(m, "ValidityGeometryOffsetType", R"pbdoc(
         Unit system used by one-dimensional validity offsets.
@@ -1014,6 +1073,44 @@ inline void BoundValidity::bind(py::module_& m)
             py::arg("start"),
             py::arg("end"),
             "Set this validity to a one-dimensional range offset restriction.")
+        .def("attr_point_index", [](BoundValidity& self) -> py::object {
+                if (auto value = self.modelNodePtr_->attrPointIndex()) {
+                    return py::make_tuple(
+                        BoundAttrPointSequence(value->sequence()),
+                        value->index());
+                }
+                return py::none();
+            },
+            "Return `(sequence, index)` for an AttrPointIndex validity.")
+        .def("set_attr_point_index", [](BoundValidity& self,
+                                         BoundAttrPointSequence const& sequence,
+                                         uint32_t index) {
+                self.modelNodePtr_->setAttrPointIndex(sequence.modelNodePtr_, index);
+            },
+            py::arg("sequence"),
+            py::arg("index"),
+            "Set one logical position in a shared AttrPointSequence.")
+        .def("attr_point_index_range", [](BoundValidity& self) -> py::object {
+                if (auto value = self.modelNodePtr_->attrPointIndexRange()) {
+                    return py::make_tuple(
+                        BoundAttrPointSequence(value->sequence()),
+                        value->start(),
+                        value->end());
+                }
+                return py::none();
+            },
+            "Return `(sequence, start, end)` for an AttrPointIndexRange validity.")
+        .def("set_attr_point_index_range", [](BoundValidity& self,
+                                               BoundAttrPointSequence const& sequence,
+                                               uint32_t start,
+                                               uint32_t end) {
+                self.modelNodePtr_->setAttrPointIndexRange(
+                    sequence.modelNodePtr_, start, end);
+            },
+            py::arg("sequence"),
+            py::arg("start"),
+            py::arg("end"),
+            "Set an inclusive logical range in a shared AttrPointSequence.")
         .def("simple_geometry", [](BoundValidity& self) -> py::object {
                 if (auto geom = self.modelNodePtr_->simpleGeometry())
                     return py::cast(BoundGeometry(geom));
@@ -1111,6 +1208,30 @@ inline void BoundMultiValidity::bind(py::module_& m)
             py::arg("geometry_name") = std::nullopt,
             py::arg("direction") = Validity::Empty,
             "Append a one-dimensional range-offset validity.")
+        .def("new_attr_point_index", [](BoundMultiValidity& self,
+                                         BoundAttrPointSequence const& sequence,
+                                         uint32_t index,
+                                         Validity::Direction direction) {
+                return BoundValidity(self.modelNodePtr_->newAttrPointIndex(
+                    sequence.modelNodePtr_, index, direction));
+            },
+            py::arg("sequence"),
+            py::arg("index"),
+            py::arg("direction") = Validity::Empty,
+            "Append one logical AttrPointSequence position validity.")
+        .def("new_attr_point_index_range", [](BoundMultiValidity& self,
+                                               BoundAttrPointSequence const& sequence,
+                                               uint32_t start,
+                                               uint32_t end,
+                                               Validity::Direction direction) {
+                return BoundValidity(self.modelNodePtr_->newAttrPointIndexRange(
+                    sequence.modelNodePtr_, start, end, direction));
+            },
+            py::arg("sequence"),
+            py::arg("start"),
+            py::arg("end"),
+            py::arg("direction") = Validity::Empty,
+            "Append an inclusive AttrPointSequence range validity.")
         .def("new_geometry", [](BoundMultiValidity& self,
                                 BoundGeometry const& geometry,
                                 Validity::Direction direction) {
@@ -1378,6 +1499,7 @@ void bindModel(py::module& m)
     mapget::BoundGeometry::bind(m);
     mapget::BoundGeometryCollection::bind(m);
     mapget::BoundFeatureId::bind(m);
+    mapget::BoundAttrPointSequence::bind(m);
     mapget::BoundValidity::bind(m);
     mapget::BoundMultiValidity::bind(m);
     mapget::BoundSourceDataReferenceCollection::bind(m);

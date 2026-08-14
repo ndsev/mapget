@@ -303,8 +303,6 @@ FeatureId::FeatureId(FeatureId::Data& data,
                 simfil::ModelPool::ColumnId::Arrays,
                 static_cast<uint32_t>(data_.idPartValues_)});
     }
-
-    resolveVisiblePartLayout(model(), data_, values_, partNames_, visibleValueIndices_);
 }
 
 FeatureId::FeatureId(FeatureId::Data const& data,
@@ -320,8 +318,20 @@ FeatureId::FeatureId(FeatureId::Data const& data,
                 simfil::ModelPool::ColumnId::Arrays,
                 static_cast<uint32_t>(data_.idPartValues_)});
     }
+}
 
-    resolveVisiblePartLayout(model(), data_, values_, partNames_, visibleValueIndices_);
+void FeatureId::ensureVisiblePartLayout() const
+{
+    if (visiblePartLayoutResolved_) {
+        return;
+    }
+    resolveVisiblePartLayout(
+        model(),
+        data_,
+        values_,
+        partNames_,
+        visibleValueIndices_);
+    visiblePartLayoutResolved_ = true;
 }
 
 std::string_view FeatureId::typeId() const
@@ -367,11 +377,8 @@ std::string FeatureId::toString() const
     }
 
     if (values_) {
-        auto const limit = std::min<size_t>(partNames_.size(), visibleValueIndices_.size());
-        for (size_t i = 0; i < limit; ++i) {
-            appendNodeValueToString(
-                result,
-                values_->at(static_cast<int64_t>(visibleValueIndices_[i])));
+        for (uint32_t index = 0U; index < values_->size(); ++index) {
+            appendNodeValueToString(result, values_->at(index));
         }
     }
 
@@ -449,6 +456,7 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
 
 KeyValueViewPairs FeatureId::keyValuePairs() const
 {
+    ensureVisiblePartLayout();
     KeyValueViewPairs result;
 
     if (data_.useCommonTilePrefix_) {

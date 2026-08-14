@@ -5,6 +5,10 @@
 #include "geometry.h"
 #include "validity.h"
 
+#include <limits>
+#include <stdexcept>
+#include <utility>
+
 namespace mapget
 {
 
@@ -44,11 +48,77 @@ private:
 
 template <typename LambdaType, class ModelType>
 bool Geometry::forEachPoint(LambdaType const& callback) const {
-    for (size_t i = 0; i < numPoints(); ++i) {
-        if (!callback(pointAt(i)))
-            return false;
+    if (geomType() == GeomType::GltfNodeIndex) {
+        return true;
     }
-    return true;
+    auto baseAddress = addr_;
+    size_t begin = 0U;
+    auto end = std::numeric_limits<size_t>::max();
+    if (geomViewData_) {
+        auto const* view = geomViewData_;
+        begin = view->offset_;
+        end = begin + view->size_;
+        baseAddress = view->baseGeometry_;
+        while (baseAddress.column() ==
+               TileFeatureModelLayerBase::ColumnId::GeometryViews)
+        {
+            view = model().geometryViewData(baseAddress);
+            if (!view) {
+                throw std::runtime_error(
+                    "Failed to resolve nested geometry view.");
+            }
+            begin += view->offset_;
+            end = begin + geomViewData_->size_;
+            baseAddress = view->baseGeometry_;
+        }
+        auto const column = baseAddress.column();
+        using Columns = TileFeatureModelLayerBase::ColumnId;
+        if (column != Columns::PointGeometries &&
+            column != Columns::LineGeometries &&
+            column != Columns::PolygonGeometries &&
+            column != Columns::MeshGeometries &&
+            column != Columns::AabbGeometries &&
+            column != Columns::GltfNodeIndexGeometries)
+        {
+            throw std::runtime_error(
+                "Geometry view must resolve to a base geometry.");
+        }
+        if (end > storage_->size(
+                static_cast<simfil::ArrayIndex>(baseAddress.index())))
+        {
+            throw std::runtime_error("Geometry view is out of bounds.");
+        }
+    }
+    auto const anchor = model().geometryAnchor();
+    bool completed = true;
+    // Keep the callback unary so ArrayArena propagates its boolean result.
+    size_t index = 0U;
+    storage_->iterate(
+        static_cast<simfil::ArrayIndex>(baseAddress.index()),
+        [&](glm::vec3 const& storedPoint) {
+            auto const currentIndex = index++;
+            if (currentIndex < begin) {
+                return true;
+            }
+            if (currentIndex >= end) {
+                return false;
+            }
+            Point point{storedPoint};
+            if (baseAddress.column() !=
+                    TileFeatureModelLayerBase::ColumnId::AabbGeometries ||
+                currentIndex != 1U)
+            {
+                point.x += anchor.x;
+                point.y += anchor.y;
+                point.z += anchor.z;
+            }
+            if (!callback(std::move(point))) {
+                completed = false;
+                return false;
+            }
+            return true;
+        });
+    return completed;
 }
 
 }

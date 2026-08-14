@@ -71,10 +71,14 @@ public:
     FeatureId() = delete;
 
 protected:
+    /** Resolve schema-backed id-part names only for callers which request them. */
+    void ensureVisiblePartLayout() const;
+
     Data data_{};
     model_ptr<Array> values_;
-    std::vector<simfil::StringId> partNames_;
-    std::vector<uint32_t> visibleValueIndices_;
+    mutable bool visiblePartLayoutResolved_ = false;
+    mutable std::vector<simfil::StringId> partNames_;
+    mutable std::vector<uint32_t> visibleValueIndices_;
 };
 
 /** Parsed representation of a canonical feature-id string. */

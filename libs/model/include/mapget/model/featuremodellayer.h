@@ -144,6 +144,12 @@ public:
         RelationEntries,
         GroupEntries,
         FilterTraces,
+        AttrPoints,
+        AttrPointSequences,
+        AttrPointArrayView,
+        AttrPointSequenceReferences,
+        AttrPointIndexView,
+        AttrPointIndexRangeView,
     }; };
 
     /** Create a feature id in the concrete layer's shared FeatureId storage. */

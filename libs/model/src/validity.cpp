@@ -11,6 +11,40 @@ namespace mapget
 
 namespace
 {
+/** Return the full validity record backing an AttrPoint index view. */
+model_ptr<Validity> attrPointValidity(
+    TileFeatureLayer const& model,
+    simfil::ModelNodeAddress const& viewAddress)
+{
+    return model.resolve<Validity>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::Validities,
+        viewAddress.index()});
+}
+
+/** Build the compact sequence-reference node shared by index and range views. */
+model_ptr<AttrPointSequenceReference> attrPointSequenceReference(
+    TileFeatureLayer const& model,
+    simfil::ModelNodeAddress const& sequenceAddress)
+{
+    return model.resolve<AttrPointSequenceReference>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::AttrPointSequenceReferences,
+        sequenceAddress.index()});
+}
+
+/** Visit every field in a small fixed-size procedural object. */
+bool iterateObject(
+    simfil::ModelNode const& object,
+    simfil::ModelNode::IterCallback const& callback)
+{
+    for (uint32_t index = 0; index < object.size(); ++index) {
+        auto value = object.at(static_cast<int64_t>(index));
+        if (value && !callback(*value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /** Convert a validity direction enum into the exported JSON token. */
 std::string_view directionToString(Validity::Direction const& d)
 {
@@ -23,6 +57,191 @@ std::string_view directionToString(Validity::Direction const& d)
     }
     return "?";
 }
+
+}  // namespace
+
+AttrPointIndex::AttrPointIndex(
+    simfil::ModelConstPtr model,
+    simfil::ModelNodeAddress address,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
+          std::move(model),
+          address,
+          key)
+{
+}
+
+model_ptr<AttrPointSequence> AttrPointIndex::sequence() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexValidity) {
+        raise("AttrPointIndex view does not reference an AttrPointIndex validity.");
+    }
+    return model().resolve<AttrPointSequence>(
+        validity->data_->geomDescr_.attrPointIndex_.sequence_);
+}
+
+uint32_t AttrPointIndex::index() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexValidity) {
+        raise("AttrPointIndex view does not reference an AttrPointIndex validity.");
+    }
+    return validity->data_->geomDescr_.attrPointIndex_.index_;
+}
+
+nlohmann::json AttrPointIndex::toJson() const
+{
+    return nlohmann::json::object({
+        {"sequence", nlohmann::json::object({
+            {"$mapgetAttrPointSequence", sequence()->addr().index()},
+        })},
+        {"index", index()},
+    });
+}
+
+simfil::ValueType AttrPointIndex::type() const
+{
+    return simfil::ValueType::Object;
+}
+
+simfil::ModelNode::Ptr AttrPointIndex::at(int64_t fieldIndex) const
+{
+    return fieldIndex >= 0 && fieldIndex < 2 ? get(keyAt(fieldIndex)) : simfil::ModelNode::Ptr{};
+}
+
+simfil::ModelNode::Ptr AttrPointIndex::get(simfil::StringId const& field) const
+{
+    if (field == StringPool::SequenceStr) {
+        return attrPointSequenceReference(model(), sequence()->addr());
+    }
+    if (field == StringPool::IndexStr) {
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(index()),
+            model().shared_from_this());
+    }
+    return {};
+}
+
+simfil::StringId AttrPointIndex::keyAt(int64_t fieldIndex) const
+{
+    switch (fieldIndex) {
+    case 0: return StringPool::SequenceStr;
+    case 1: return StringPool::IndexStr;
+    default: return {};
+    }
+}
+
+uint32_t AttrPointIndex::size() const
+{
+    return 2;
+}
+
+bool AttrPointIndex::iterate(IterCallback const& callback) const
+{
+    return iterateObject(*this, callback);
+}
+
+AttrPointIndexRange::AttrPointIndexRange(
+    simfil::ModelConstPtr model,
+    simfil::ModelNodeAddress address,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
+          std::move(model),
+          address,
+          key)
+{
+}
+
+model_ptr<AttrPointSequence> AttrPointIndexRange::sequence() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexRangeValidity) {
+        raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
+    }
+    return model().resolve<AttrPointSequence>(
+        validity->data_->geomDescr_.attrPointIndexRange_.sequence_);
+}
+
+uint32_t AttrPointIndexRange::start() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexRangeValidity) {
+        raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
+    }
+    return validity->data_->geomDescr_.attrPointIndexRange_.start_;
+}
+
+uint32_t AttrPointIndexRange::end() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexRangeValidity) {
+        raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
+    }
+    return validity->data_->geomDescr_.attrPointIndexRange_.end_;
+}
+
+nlohmann::json AttrPointIndexRange::toJson() const
+{
+    return nlohmann::json::object({
+        {"sequence", nlohmann::json::object({
+            {"$mapgetAttrPointSequence", sequence()->addr().index()},
+        })},
+        {"start", start()},
+        {"end", end()},
+    });
+}
+
+simfil::ValueType AttrPointIndexRange::type() const
+{
+    return simfil::ValueType::Object;
+}
+
+simfil::ModelNode::Ptr AttrPointIndexRange::at(int64_t fieldIndex) const
+{
+    return fieldIndex >= 0 && fieldIndex < 3 ? get(keyAt(fieldIndex)) : simfil::ModelNode::Ptr{};
+}
+
+simfil::ModelNode::Ptr AttrPointIndexRange::get(simfil::StringId const& field) const
+{
+    if (field == StringPool::SequenceStr) {
+        return attrPointSequenceReference(model(), sequence()->addr());
+    }
+    if (field == StringPool::StartStr) {
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(start()),
+            model().shared_from_this());
+    }
+    if (field == StringPool::EndStr) {
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(end()),
+            model().shared_from_this());
+    }
+    return {};
+}
+
+simfil::StringId AttrPointIndexRange::keyAt(int64_t fieldIndex) const
+{
+    switch (fieldIndex) {
+    case 0: return StringPool::SequenceStr;
+    case 1: return StringPool::StartStr;
+    case 2: return StringPool::EndStr;
+    default: return {};
+    }
+}
+
+uint32_t AttrPointIndexRange::size() const
+{
+    return 3;
+}
+
+bool AttrPointIndexRange::iterate(IterCallback const& callback) const
+{
+    return iterateObject(*this, callback);
+}
+
+namespace
+{
 
 /** Convert a transition endpoint enum into the exported JSON token. */
 std::string_view transitionEndToString(Validity::TransitionEnd const& end)
@@ -290,10 +509,16 @@ model_ptr<FeatureId> Validity::featureId() const
     if (!data_) {
         return {};
     }
-    if (!data_->featureAddress_) {
-        return {};
+    if (data_->featureAddress_) {
+        return model().resolve<FeatureId>(data_->featureAddress_);
     }
-    return model().resolve<FeatureId>(data_->featureAddress_);
+    if (auto index = attrPointIndex()) {
+        return index->sequence()->featureId();
+    }
+    if (auto range = attrPointIndexRange()) {
+        return range->sequence()->featureId();
+    }
+    return {};
 }
 
 void Validity::setFeatureId(model_ptr<FeatureId> featureId)
@@ -421,6 +646,20 @@ Validity::Validity(Validity::Data* data,
                     transitionEndToString(*self.transitionToConnectedEnd()),
                     self.model_);
             });
+        return;
+    }
+
+    if (data_->geomDescrType_ == AttrPointIndexValidity) {
+        fields_.emplace_back(
+            StringPool::AttrPointIndexStr,
+            [](Validity const& self) { return self.attrPointIndex(); });
+        return;
+    }
+
+    if (data_->geomDescrType_ == AttrPointIndexRangeValidity) {
+        fields_.emplace_back(
+            StringPool::AttrPointIndexRangeStr,
+            [](Validity const& self) { return self.attrPointIndexRange(); });
         return;
     }
 
@@ -582,6 +821,83 @@ std::optional<std::pair<Point, Point>> Validity::offsetRange() const
     return std::pair<Point, Point>{data_->geomDescr_.range_.first, data_->geomDescr_.range_.second};
 }
 
+void Validity::setAttrPointIndex(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t index)
+{
+    ensureMaterialized();
+    if (!sequence || sequence->owningModel().get() != &model()) {
+        raise("Validity AttrPointSequence must belong to the same TileFeatureLayer.");
+    }
+    if (index >= sequence->positionCount()) {
+        raiseFmt(
+            "AttrPointIndex {} is out of range for a sequence with {} positions.",
+            index,
+            sequence->positionCount());
+    }
+    data_->geomDescrType_ = AttrPointIndexValidity;
+    data_->geomOffsetType_ = InvalidOffsetType;
+    data_->geomDescr_.attrPointIndex_ = {
+        .sequence_ = sequence->addr(),
+        .index_ = index,
+    };
+    data_->featureAddress_ = {};
+    data_->referencedGeometryName_ = 0;
+}
+
+model_ptr<AttrPointIndex> Validity::attrPointIndex() const
+{
+    if (!data_ || data_->geomDescrType_ != AttrPointIndexValidity) {
+        return {};
+    }
+    return model().resolve<AttrPointIndex>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::AttrPointIndexView,
+        addr().index()});
+}
+
+void Validity::setAttrPointIndexRange(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t start,
+    uint32_t end)
+{
+    ensureMaterialized();
+    if (!sequence || sequence->owningModel().get() != &model()) {
+        raise("Validity AttrPointSequence must belong to the same TileFeatureLayer.");
+    }
+    if (start >= sequence->positionCount() || end >= sequence->positionCount()) {
+        raiseFmt(
+            "AttrPointIndexRange {}..{} is out of range for a sequence with {} positions.",
+            start,
+            end,
+            sequence->positionCount());
+    }
+    if (start > end) {
+        raiseFmt(
+            "AttrPointIndexRange start {} exceeds end {}.",
+            start,
+            end);
+    }
+    data_->geomDescrType_ = AttrPointIndexRangeValidity;
+    data_->geomOffsetType_ = InvalidOffsetType;
+    data_->geomDescr_.attrPointIndexRange_ = {
+        .sequence_ = sequence->addr(),
+        .start_ = start,
+        .end_ = end,
+    };
+    data_->featureAddress_ = {};
+    data_->referencedGeometryName_ = 0;
+}
+
+model_ptr<AttrPointIndexRange> Validity::attrPointIndexRange() const
+{
+    if (!data_ || data_->geomDescrType_ != AttrPointIndexRangeValidity) {
+        return {};
+    }
+    return model().resolve<AttrPointIndexRange>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::AttrPointIndexRangeView,
+        addr().index()});
+}
+
 void Validity::setSimpleGeometry(model_ptr<Geometry> geom) {
     ensureMaterialized();
     if (geom) {
@@ -718,6 +1034,28 @@ SelfContainedGeometry Validity::computeGeometry(
         auto simpleGeom = simpleGeometry();
         assert(simpleGeom);
         return applyDirectionToGeometry(simpleGeom->toSelfContained(), direction());
+    }
+
+    if (auto index = attrPointIndex()) {
+        return applyDirectionToGeometry(
+            {{index->sequence()->pointAt(index->index())}, {}, GeomType::Points},
+            direction());
+    }
+
+    if (auto range = attrPointIndexRange()) {
+        auto start = range->start();
+        auto end = range->end();
+        if (end < start) {
+            std::swap(start, end);
+        }
+        std::vector<Point> points;
+        points.reserve(end - start + 1U);
+        for (auto index = start; index <= end; ++index) {
+            points.push_back(range->sequence()->pointAt(index));
+        }
+        return applyDirectionToGeometry(
+            {points, {}, points.size() > 1 ? GeomType::Line : GeomType::Points},
+            direction());
     }
 
     const auto referencedName = geometryName();
@@ -970,6 +1308,31 @@ model_ptr<Validity> MultiValidity::newRange(
     auto result = featureLayer().newValidity();
     result->setOffsetRange(start, end);
     result->setGeometryName(geometryName);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> MultiValidity::newAttrPointIndex(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t index,
+    Validity::Direction direction)
+{
+    auto result = featureLayer().newValidity();
+    result->setAttrPointIndex(sequence, index);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> MultiValidity::newAttrPointIndexRange(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t start,
+    uint32_t end,
+    Validity::Direction direction)
+{
+    auto result = featureLayer().newValidity();
+    result->setAttrPointIndexRange(sequence, start, end);
     result->setDirection(direction);
     append(result);
     return result;

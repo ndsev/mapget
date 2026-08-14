@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -950,7 +951,8 @@ TEST_CASE(
                             },
                     },
                 },
-            });
+            },
+            std::vector<TileId>{easternTile});
 
     std::vector<TileSubsetLayer::Ptr> results;
     request->onFilterResult(
@@ -971,8 +973,15 @@ TEST_CASE(
             requestedSources.begin(),
             requestedSources.end())
             .size() == 12);
+    // The eastern priority propagates to its complete source halo. The first
+    // requested output remains first, while first-needed dependency sources
+    // are interleaved instead of accumulating after every output.
     REQUIRE(requestedSources[0] == westernTile);
-    REQUIRE(requestedSources[1] == easternTile);
+    auto const easternSource = std::ranges::find(
+        requestedSources,
+        easternTile);
+    REQUIRE(easternSource != requestedSources.end());
+    REQUIRE(std::distance(requestedSources.begin(), easternSource) > 1);
 
     REQUIRE(results.size() == 2);
     TileSubsetLayer::Ptr westernResult;

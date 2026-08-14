@@ -52,7 +52,16 @@ def main() -> int:
         geometry.set_name("centerline")
         assert geometry.name() == "centerline"
 
-        attr = feature.attribute_layers().new_layer("rules").new_attribute("speed")
+        attr_point_sequence = tile.new_attr_point_sequence(feature, geometry)
+        attr_point_sequence.append_attr_point(1, point(1.5, 2.5))
+        assert attr_point_sequence.feature_id().to_string() == "Way.1"
+        assert attr_point_sequence.geometry_index() == 0
+        assert attr_point_sequence.attr_point_count() == 1
+        assert attr_point_sequence.position_count() == 3
+        assert attr_point_sequence.is_attr_point(1)
+
+        rules_layer = feature.attribute_layers().new_layer("rules")
+        attr = rules_layer.new_attribute("speed")
         attr.validity().new_offset_range(
             mapget.ValidityGeometryOffsetType.RELATIVE_LENGTH,
             0.1,
@@ -60,6 +69,15 @@ def main() -> int:
             direction=mapget.Direction.POSITIVE,
         )
         attr.add_field("value", 42)
+
+        indexed_attr = rules_layer.new_attribute("indexed")
+        indexed_attr.validity().new_attr_point_index_range(
+            attr_point_sequence,
+            0,
+            2,
+            direction=mapget.Direction.POSITIVE,
+        )
+        indexed_attr.add_field("value", True)
 
         target = tile.new_feature_id("Way", [("wayId", 2)])
         relation = feature.add_relation("next", target)
@@ -129,6 +147,17 @@ def main() -> int:
         assert feature["relations"][0]["name"] == "next"
         assert feature["relations"][0]["sourceValidity"]["direction"] == "COMPLETE"
         assert feature["properties"]["layer"]["rules"]["speed"]["validity"]["offsetType"] == "RelativeLengthOffset"
+        assert feature["properties"]["layer"]["rules"]["indexed"]["validity"] == {
+            "direction": "POSITIVE",
+            "attrPointIndexRange": {
+                "sequence": {"$mapgetAttrPointSequence": 0},
+                "start": 0,
+                "end": 2,
+            },
+        }
+        assert feature_tile["attrPointSequences"][0]["attrPoints"] == [
+            {"index": 1, "point": [1.5, 2.5, 0.0]}
+        ]
         assert feature["_sourceData"][0]["qualifier"] == "primary"
 
         source_tile = _get_json(f"{base_url}/tile?layer=RawLayer&tileId=65536&responseType=json")

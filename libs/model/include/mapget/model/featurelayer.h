@@ -16,6 +16,7 @@
 #include "simfil/simfil.h"
 
 #include "attrlayer.h"
+#include "attrpoint.h"
 #include "feature.h"
 #include "featuremodellayer.h"
 #include "geojson-import.h"
@@ -46,6 +47,10 @@ class TileFeatureLayer : public TileFeatureModelLayerBase
     friend class Feature;
     friend class Relation;
     friend class RelationReference;
+    friend class AttrPoint;
+    friend class AttrPointArray;
+    friend class AttrPointSequence;
+    friend class AttrPointSequenceReference;
     friend class Attribute;
     friend class AttributeLayer;
     friend class AttributeLayerList;
@@ -165,6 +170,20 @@ public:
      * feature's top-level relation list.
      */
     model_ptr<RelationReference> newRelationReference(model_ptr<Relation> const& relation);
+
+    /**
+     * Create a shared sequence over one canonical feature geometry.
+     * The geometry must already be attached to the supplied feature.
+     */
+    model_ptr<AttrPointSequence> newAttrPointSequence(
+        model_ptr<Feature> const& feature,
+        model_ptr<Geometry> const& geometry);
+
+    /** Return the number of shared attribute-point sequences in this tile. */
+    [[nodiscard]] uint32_t numAttrPointSequences() const;
+
+    /** Return one shared attribute-point sequence by its stable tile-local index. */
+    [[nodiscard]] model_ptr<AttrPointSequence> attrPointSequenceAt(uint32_t index) const;
 
     /**
      * Create a new named attribute, which may be inserted into an attribute layer.
@@ -441,6 +460,22 @@ protected:
     [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;
     [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
     Feature::ComplexData& ensureFeatureComplexData(uint32_t featureIndex);
+
+    /** Return persisted data for one inserted attribute point. */
+    [[nodiscard]] AttrPoint::Data const& attrPointData(uint32_t index) const;
+
+    /** Return persisted data for one shared attribute-point sequence. */
+    [[nodiscard]] AttrPointSequence::Data const& attrPointSequenceData(uint32_t index) const;
+
+    /** Return mutable persisted data for one shared attribute-point sequence. */
+    [[nodiscard]] AttrPointSequence::Data& attrPointSequenceData(uint32_t index);
+
+    /** Append one point to a sequence while preserving compact contiguous storage. */
+    model_ptr<AttrPoint> appendAttrPoint(
+        uint32_t sequenceIndex,
+        uint32_t logicalIndex,
+        Point const& point,
+        model_ptr<SourceDataReferenceCollection> const& sourceData);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

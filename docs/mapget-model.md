@@ -216,6 +216,52 @@ Transition-number validities are exposed semantically rather than as baked helpe
 }
 ```
 
+### Interwoven attribute points
+
+Some source formats define logical attribute points between the vertices of a
+canonical line geometry. `AttrPointSequence` preserves that source indexing
+without duplicating every shape point. A sequence references one local feature
+and one of its attached line geometries; only inserted `AttrPoint` coordinates
+are stored. Both shape vertices and inserted points then occupy stable indices
+in the complete interwoven sequence.
+
+Strict mapget GeoJSON publishes shared definitions once at FeatureCollection
+scope:
+
+```json
+"attrPointSequences": [{
+  "id": 0,
+  "featureId": "Road.545555028.1",
+  "geometryIndex": 0,
+  "geometryName": "centerline",
+  "attrPoints": [{
+    "index": 1,
+    "point": [11.305, 48.005, 0.0]
+  }]
+}]
+```
+
+Validities refer to these definitions by tile-local index. A point uses
+`attrPointIndex`; an inclusive range uses `attrPointIndexRange`:
+
+```json
+"validity": {
+  "direction": "POSITIVE",
+  "attrPointIndexRange": {
+    "sequence": {"$mapgetAttrPointSequence": 0},
+    "start": 1,
+    "end": 3
+  }
+}
+```
+
+`featureId` and `geometryIndex` are authoritative. `geometryName` is emitted
+when present as a readable consistency check. Sequences and individual
+inserted points may carry `_sourceData`; strict import/export preserves both.
+Consumers can resolve each logical index to its WGS-84 coordinate or metric
+offset through the sequence while retaining the original source index for
+inspection.
+
 ### Validity internals
 
 The validity objects exposed in JSON map directly to the `Validity` C++ class:
@@ -224,6 +270,7 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
   - `SimpleGeometry` embeds or references a complete geometry object.
   - `OffsetPointValidity` and `OffsetRangeValidity` point into an existing geometry by name and add offsets.
   - `FeatureTransition` references two features plus their connected ends; mapget derives the rendered transition polyline from that semantic payload.
+  - `AttrPointIndexValidity` and `AttrPointIndexRangeValidity` reference a shared interwoven `AttrPointSequence` by source-faithful logical index.
   - `NoGeometry` is used when only direction or feature references are available.
 - **Geometry offset type** controls the coordinate space used for offsets:
 

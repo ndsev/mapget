@@ -831,10 +831,18 @@ TEST_CASE("FeatureLayer clone preserves source-data references",
     auto geometry = feature->geom()->newGeometry(GeomType::Line, 2, true);
     geometry->append({42., 11., 0.});
     geometry->append({42.1, 11.1, 0.});
+    geometry->setName("centerline");
     geometry->setSourceDataReferences(makeReference("geometry"));
+    auto sequence = source->newAttrPointSequence(feature, geometry);
+    sequence->appendAttrPoint(
+        1,
+        {42.05, 11.05, 0.},
+        makeReference("attribute-point"));
+    sequence->setSourceDataReferences(makeReference("attribute-point-list"));
     auto attribute = feature->attributeLayers()
         ->newLayer("Rules")
         ->newAttribute("Access");
+    attribute->validity()->newAttrPointIndexRange(sequence, 0, 2);
     attribute->setSourceDataReferences(makeReference("attribute"));
     auto relation = source->newRelation(
         "ConnectedTo",
@@ -859,6 +867,8 @@ TEST_CASE("FeatureLayer clone preserves source-data references",
         feature->id()->keyValuePairs());
 
     REQUIRE(target->toJson().at("features") == source->toJson().at("features"));
+    REQUIRE(target->toJson().at("attrPointSequences")
+        == source->toJson().at("attrPointSequences"));
 }
 
 TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test.feature.id.optionals]")
