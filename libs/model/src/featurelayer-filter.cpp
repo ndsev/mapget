@@ -872,7 +872,10 @@ void collectStoredRelationDescriptors(
     TileFeatureLayer const& sourceLayer,
     size_t channelIndex,
     ChannelState& channel,
-    IssueAccumulator& issues)
+    IssueAccumulator& issues,
+    FilterEvaluator& evaluator,
+    std::span<BindingField const> bindings,
+    std::map<std::string, simfil::Trace>& traces)
 {
     if (!channel.definition_.relation_) {
         return;
@@ -897,6 +900,35 @@ void collectStoredRelationDescriptors(
 
     std::deque<RelationRoot> pending(channel.relationRoots_.begin(), channel.relationRoots_.end());
     std::set<std::string> visitedFeatures;
+    auto const& entryFilter = channel.definition_.entryFilter_;
+    auto referencesResolvedTarget = [](std::string_view expression)
+    {
+        auto containsIdentifier = [&](std::string_view identifier)
+        {
+            auto isIdentifierCharacter = [](char character)
+            {
+                auto const value = static_cast<unsigned char>(character);
+                return std::isalnum(value) || character == '_' || character == '$';
+            };
+            for (size_t offset = expression.find(identifier); offset != std::string_view::npos;
+                 offset = expression.find(identifier, offset + identifier.size()))
+            {
+                auto const beginsIdentifier =
+                    offset == 0 || !isIdentifierCharacter(expression[offset - 1]);
+                auto const end = offset + identifier.size();
+                auto const endsIdentifier =
+                    end == expression.size() || !isIdentifierCharacter(expression[end]);
+                if (beginsIdentifier && endsIdentifier) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        return containsIdentifier("$target") || containsIdentifier("$twoway");
+    };
+    auto const canPreflightEntryFilter =
+        entryFilter && !referencesResolvedTarget(*entryFilter);
+
     while (!pending.empty()) {
         auto current = std::move(pending.front());
         pending.pop_front();
@@ -918,6 +950,41 @@ void collectStoredRelationDescriptors(
             {
                 continue;
             }
+
+            if (canPreflightEntryFilter) {
+                // Most style visibility predicates depend only on bindings or
+                // the stored relation/source. Reject them before locating and
+                // loading a target tile; only $target and $twoway require the
+                // completed cross-tile relation context.
+                auto context = simfil::model_ptr<simfil::OverlayNode>::make(
+                    simfil::Value::field(*relation));
+                context->set(
+                    StringPool::OverlaySourceStr,
+                    simfil::Value::field(*current.feature_));
+                context->set(
+                    StringPool::OverlayRelationIndexStr,
+                    simfil::Value::make(static_cast<int64_t>(relationOrdinal)));
+                addBindings(context, bindings);
+                auto entryMatch = evaluateFilter(
+                    evaluator,
+                    entryFilter,
+                    *context,
+                    static_cast<simfil::ModelNode const&>(*relation).schema(),
+                    traces);
+                if (!entryMatch) {
+                    rejectFilterCandidate(
+                        channel,
+                        entryFilter,
+                        Scope::Relation,
+                        entryMatch.error(),
+                        issues);
+                    return;
+                }
+                if (!*entryMatch) {
+                    continue;
+                }
+            }
+
             auto targetId = relation->target();
             if (!targetId) {
                 issues.add(
@@ -945,6 +1012,7 @@ void collectStoredRelationDescriptors(
                     std::nullopt,
                 .rootOrdinal_ = current.rootOrdinal_,
                 .exactRoot_ = current.exact_,
+                .entryFilterPreflighted_ = canPreflightEntryFilter,
             });
 
             if (channel.definition_.relation_->recursive_ && localTarget) {
@@ -1801,7 +1869,14 @@ tl::expected<FeatureLayerFilterSourceResult, simfil::Error> FeatureLayerFilterRe
     for (size_t channelIndex = 0; channelIndex < channels.size(); ++channelIndex) {
         auto& channel = channels[channelIndex];
         if (materializeOutput && channel.definition_.scope_ == FeatureLayerFilterScope::Relation) {
-            collectStoredRelationDescriptors(sourceLayer, channelIndex, channel, issues);
+            collectStoredRelationDescriptors(
+                sourceLayer,
+                channelIndex,
+                channel,
+                issues,
+                evaluator,
+                evaluatorContext->bindingFields_,
+                traces);
         }
         if (resultLayer) {
             materializeChannel(
@@ -2280,23 +2355,25 @@ FeatureLayerFilterRequest::completeRelations(
                 makeRelationContext(descriptor, emission.twoway_, evaluatorContext->bindingFields_);
             auto const relationSchema =
                 static_cast<simfil::ModelNode const&>(*descriptor.relation_).schema();
-            auto entryMatch = evaluateFilter(
-                *evaluatorContext->evaluator_,
-                definition.entryFilter_,
-                *context,
-                relationSchema,
-                traces);
-            if (!entryMatch) {
-                rejectFilterCandidate(
-                    channel,
+            if (!descriptor.entryFilterPreflighted_) {
+                auto entryMatch = evaluateFilter(
+                    *evaluatorContext->evaluator_,
                     definition.entryFilter_,
-                    Scope::Relation,
-                    entryMatch.error(),
-                    issues);
-                continue;
-            }
-            if (!*entryMatch) {
-                continue;
+                    *context,
+                    relationSchema,
+                    traces);
+                if (!entryMatch) {
+                    rejectFilterCandidate(
+                        channel,
+                        definition.entryFilter_,
+                        Scope::Relation,
+                        entryMatch.error(),
+                        issues);
+                    continue;
+                }
+                if (!*entryMatch) {
+                    continue;
+                }
             }
 
             auto sourceEntry = endpointEntry(descriptor.source_);

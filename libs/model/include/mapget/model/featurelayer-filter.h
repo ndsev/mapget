@@ -188,6 +188,8 @@ struct FeatureLayerRelationDescriptor
     std::vector<model_ptr<Feature>> targetMatches_;
     size_t rootOrdinal_ = 0;
     bool exactRoot_ = false;
+    /** True when a target-independent entry filter already accepted this relation. */
+    bool entryFilterPreflighted_ = false;
 };
 
 /**

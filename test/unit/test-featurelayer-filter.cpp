@@ -105,6 +105,33 @@ TileFeatureLayer::Ptr makeTransitionFilterSource()
     return source;
 }
 
+TileFeatureLayer::Ptr makeAttrPointFilterSource()
+{
+    auto strings = std::make_shared<StringPool>("FilterPool");
+    auto source = std::make_shared<TileFeatureLayer>(
+        TileId::fromTileXY(1, 0, 1),
+        strings->stringPoolId_,
+        "FilterMap",
+        filterLayerInfo(),
+        strings);
+    auto road = source->newFeature(
+        "Road",
+        {{"tileId", int64_t{1}}, {"roadId", int64_t{4}}});
+    auto geometry = road->geom()->newGeometry(GeomType::Line, 3, true);
+    geometry->append({11.0, 48.0, 0.0});
+    geometry->append({11.5, 48.0, 0.0});
+    geometry->append({12.0, 48.0, 0.0});
+    auto sequence = source->newAttrPointSequence(road, geometry);
+    sequence->appendAttrPoint(1, {11.25, 48.0, 0.0});
+    sequence->appendAttrPoint(3, {11.75, 48.0, 0.0});
+    road->attributeLayers()
+        ->newLayer("rules")
+        ->newAttribute("access")
+        ->validity()
+        ->newAttrPointIndexRange(sequence, 1, 3, Validity::Positive);
+    return source;
+}
+
 TileFeatureLayer::Ptr makeRelationSource()
 {
     auto strings = std::make_shared<StringPool>("FilterPool");
@@ -359,6 +386,55 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Feature-layer filter materializes AttrPoint validity geometry",
+    "[feature-layer-filter][attr-point]")
+{
+    auto request = FeatureLayerFilterRequest{
+        .filterId_ = "attribute-points",
+        .generation_ = 1,
+        .channels_ =
+            {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "access",
+                    .entryFilter_ = "true",
+                    .scope_ = FeatureLayerFilterScope::Attribute,
+                    .featureTypes_ = {"Road"},
+                    .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Line),
+                },
+            },
+    };
+    auto result = request.filter(*makeAttrPointFilterSource());
+    REQUIRE(result);
+    REQUIRE(result->layer_);
+    auto channel = result->layer_->at(0);
+    REQUIRE(channel->attributeValidityEntryCount() == 1);
+    model_ptr<AttributeValidityEntry> entry;
+    REQUIRE(channel->forEachAttributeValidityEntry(
+        [&](auto const& value)
+        {
+            entry = value;
+            return true;
+        }));
+    REQUIRE(entry);
+    REQUIRE(entry->geometryDescriptionType() == ValidityData::AttrPointIndexRangeValidity);
+    model_ptr<Geometry> line;
+    entry->geometry()->forEachGeometry(
+        [&](auto const& value)
+        {
+            line = value;
+            return false;
+        });
+    REQUIRE(line);
+    REQUIRE(line->geomType() == GeomType::Line);
+    REQUIRE(line->toSelfContained().points_ == std::vector<Point>{
+        {11.25, 48.0, 0.0},
+        {11.5, 48.0, 0.0},
+        {11.75, 48.0, 0.0},
+    });
+    REQUIRE(result->layer_->issues().empty());
+}
+
+TEST_CASE(
     "Filter compilation failure is channel-local and structured values become null",
     "[feature-layer-filter]")
 {
@@ -589,4 +665,34 @@ TEST_CASE(
     REQUIRE(relation->values()->toJson() == nlohmann::json::array({"Road", "Road", true}));
     REQUIRE(relation->sourceGeometry()->numGeometries() == 1);
     REQUIRE(relation->targetGeometry()->numGeometries() == 1);
+}
+
+TEST_CASE(
+    "Disabled relation channels do not plan relation targets",
+    "[feature-layer-filter][relation]")
+{
+    auto source = makeRelationSource();
+    FeatureLayerFilterRequest request{
+        .filterId_ = "disabled-relations",
+        .generation_ = 5,
+        .channels_ =
+            {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "connected",
+                    .entryFilter_ = "showTopology",
+                    .scope_ = FeatureLayerFilterScope::Relation,
+                    .featureTypes_ = {"Road"},
+                    .relation_ =
+                        FeatureLayerStoredRelationOptions{
+                            .relationNamePattern_ = "connected",
+                        },
+                },
+            },
+        .bindings_ = {{"showTopology", false}},
+    };
+
+    auto sourceResult = request.filterSource(*source, true);
+    REQUIRE(sourceResult.has_value());
+    REQUIRE(sourceResult->layer_);
+    REQUIRE(sourceResult->relationDescriptors_.empty());
 }
