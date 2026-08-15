@@ -1048,11 +1048,7 @@ SelfContainedGeometry Validity::computeGeometry(
         if (end < start) {
             std::swap(start, end);
         }
-        std::vector<Point> points;
-        points.reserve(end - start + 1U);
-        for (auto index = start; index <= end; ++index) {
-            points.push_back(range->sequence()->pointAt(index));
-        }
+        auto points = range->sequence()->points(start, end);
         return applyDirectionToGeometry(
             {points, {}, points.size() > 1 ? GeomType::Line : GeomType::Points},
             direction());

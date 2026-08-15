@@ -715,7 +715,7 @@ model_ptr<AttrPointSequence> TileFeatureLayer::newAttrPointSequence(
     bool geometryBelongsToFeature = false;
     if (auto geometries = feature->geomOrNull()) {
         geometries->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
-            geometryBelongsToFeature = candidate->addr() == geometry->addr();
+            geometryBelongsToFeature = candidate->addr().value_ == geometry->addr().value_;
             return !geometryBelongsToFeature;
         });
     }
@@ -788,6 +788,9 @@ model_ptr<AttrPoint> TileFeatureLayer::appendAttrPoint(
     Point const& point,
     model_ptr<SourceDataReferenceCollection> const& sourceData)
 {
+    if (sourceData && sourceData->owningModel().get() != this) {
+        raise("AttrPoint source-data references must belong to this TileFeatureLayer.");
+    }
     auto& sequence = attrPointSequenceData(sequenceIndex);
     if (sequence.firstAttrPoint_ + sequence.attrPointCount_ != impl_->attrPoints_.size()) {
         raise(
@@ -2206,7 +2209,21 @@ ModelNode::Ptr TileFeatureLayer::clone(
     const TileFeatureLayer::Ptr& otherLayer,
     const ModelNode::Ptr& otherNode)
 {
-    auto const cacheKey = CloneCacheKey{otherLayer.get(), otherNode->addr().value_};
+    return cloneNode({}, cache, otherLayer, otherNode);
+}
+
+ModelNode::Ptr TileFeatureLayer::cloneNode(
+    CloneContext const& context,
+    CloneCache& cache,
+    TileFeatureLayer::Ptr const& otherLayer,
+    ModelNode::Ptr const& otherNode)
+{
+    auto const targetFeatureAddress =
+        context.targetFeature_ ? context.targetFeature_->addr().value_ : 0U;
+    auto const cacheKey = CloneCacheKey{
+        otherLayer.get(),
+        otherNode->addr().value_,
+        targetFeatureAddress};
     auto it = cache.find(cacheKey);
     if (it != cache.end()) {
         return it->second;
@@ -2215,11 +2232,11 @@ ModelNode::Ptr TileFeatureLayer::clone(
     using namespace simfil;
     ModelNode::Ptr& newCacheNode = cache[cacheKey];
     auto cloneSourceDataReferences =
-        [this, &cache, &otherLayer](auto const& source, auto& target)
+        [this, &context, &cache, &otherLayer](auto const& source, auto& target)
         {
             if (auto refs = source->sourceDataReferences()) {
                 target->setSourceDataReferences(
-                    clone(cache, otherLayer, refs));
+                    cloneNode(context, cache, otherLayer, refs));
             }
         };
     switch (otherNode->addr().column()) {
@@ -2229,7 +2246,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         newCacheNode = newNode;
         for (auto [key, value] : resolved->fields()) {
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
-                newNode->addField(*keyStr, clone(cache, otherLayer, value));
+                newNode->addField(*keyStr, cloneNode(context, cache, otherLayer, value));
             }
         }
         break;
@@ -2239,7 +2256,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newArray(resolved->size(), true);
         newCacheNode = newNode;
         for (auto value : *resolved) {
-            newNode->append(clone(cache, otherLayer, value));
+            newNode->append(cloneNode(context, cache, otherLayer, value));
         }
         break;
     }
@@ -2249,7 +2266,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newArray(resolved->size(), true);
         newCacheNode = newNode;
         for (auto value : *resolved) {
-            newNode->append(clone(cache, otherLayer, value));
+            newNode->append(cloneNode(context, cache, otherLayer, value));
         }
         break;
     }
@@ -2302,9 +2319,10 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newGeometryCollection(resolved->numGeometries(), true);
         newCacheNode = newNode;
         resolved->forEachGeometry(
-            [this, &newNode, &cache, &otherLayer](auto&& geom)
+            [this, &newNode, &context, &cache, &otherLayer](auto&& geom)
             {
-                newNode->addGeometry(resolve<Geometry>(*clone(cache, otherLayer, geom)));
+                newNode->addGeometry(resolve<Geometry>(
+                    *cloneNode(context, cache, otherLayer, geom)));
                 return true;
             });
         break;
@@ -2342,7 +2360,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newArray(resolved->size(), true);
         newCacheNode = newNode;
         for (auto value : *resolved) {
-            newNode->append(clone(cache, otherLayer, value));
+            newNode->append(cloneNode(context, cache, otherLayer, value));
         }
         break;
     }
@@ -2369,13 +2387,16 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newAttribute(resolved->name());
         newCacheNode = newNode;
         if (resolved->validityOrNull()) {
-            newNode->setValidity(
-                resolve<MultiValidity>(*clone(cache, otherLayer, resolved->validityOrNull())));
+            newNode->setValidity(resolve<MultiValidity>(*cloneNode(
+                context,
+                cache,
+                otherLayer,
+                resolved->validityOrNull())));
         }
         resolved->forEachField(
-            [this, &newNode, &cache, &otherLayer](auto&& key, auto&& value)
+            [this, &newNode, &context, &cache, &otherLayer](auto&& key, auto&& value)
             {
-                newNode->addField(key, clone(cache, otherLayer, value));
+                newNode->addField(key, cloneNode(context, cache, otherLayer, value));
                 return true;
             });
         cloneSourceDataReferences(resolved, newNode);
@@ -2391,7 +2412,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
             break;
         case Validity::SimpleGeometry:
             newNode->setSimpleGeometry(resolve<Geometry>(
-                *clone(cache, otherLayer, resolved->simpleGeometry())));
+                *cloneNode(context, cache, otherLayer, resolved->simpleGeometry())));
             break;
         case Validity::OffsetPointValidity:
             if (resolved->geometryOffsetType() == Validity::GeoPosOffset) {
@@ -2403,31 +2424,44 @@ ModelNode::Ptr TileFeatureLayer::clone(
             break;
         case Validity::OffsetRangeValidity:
             if (resolved->geometryOffsetType() == Validity::GeoPosOffset) {
-                newNode->setOffsetRange(resolved->offsetRange()->first, resolved->offsetRange()->second);
+                newNode->setOffsetRange(
+                    resolved->offsetRange()->first,
+                    resolved->offsetRange()->second);
             }
             else {
-                newNode->setOffsetRange(resolved->geometryOffsetType(), resolved->offsetRange()->first.x, resolved->offsetRange()->second.x);
+                newNode->setOffsetRange(
+                    resolved->geometryOffsetType(),
+                    resolved->offsetRange()->first.x,
+                    resolved->offsetRange()->second.x);
             }
             break;
         case Validity::FeatureTransition:
             newNode->setFeatureTransition(
-                resolve<FeatureId>(*clone(cache, otherLayer, resolved->transitionFromFeatureId())),
+                resolve<FeatureId>(*cloneNode(
+                    context,
+                    cache,
+                    otherLayer,
+                    resolved->transitionFromFeatureId())),
                 *resolved->transitionFromConnectedEnd(),
-                resolve<FeatureId>(*clone(cache, otherLayer, resolved->transitionToFeatureId())),
+                resolve<FeatureId>(*cloneNode(
+                    context,
+                    cache,
+                    otherLayer,
+                    resolved->transitionToFeatureId())),
                 *resolved->transitionToConnectedEnd(),
                 *resolved->transitionNumber());
             break;
         case Validity::AttrPointIndexValidity: {
             auto value = resolved->attrPointIndex();
             auto sequence = resolve<AttrPointSequence>(
-                *clone(cache, otherLayer, value->sequence()));
+                *cloneNode(context, cache, otherLayer, value->sequence()));
             newNode->setAttrPointIndex(sequence, value->index());
             break;
         }
         case Validity::AttrPointIndexRangeValidity: {
             auto value = resolved->attrPointIndexRange();
             auto sequence = resolve<AttrPointSequence>(
-                *clone(cache, otherLayer, value->sequence()));
+                *cloneNode(context, cache, otherLayer, value->sequence()));
             newNode->setAttrPointIndexRange(sequence, value->start(), value->end());
             break;
         }
@@ -2448,7 +2482,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto newNode = newValidityCollection(resolved->size(), true);
         newCacheNode = newNode;
         for (auto value : *resolved) {
-            newNode->append(resolve<Validity>(*clone(cache, otherLayer, value)));
+            newNode->append(resolve<Validity>(*cloneNode(context, cache, otherLayer, value)));
         }
         break;
     }
@@ -2460,12 +2494,14 @@ ModelNode::Ptr TileFeatureLayer::clone(
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
                 if (*keyStr == AttributeLayer::InstanceIdField) {
                     auto const idValue = value->value();
-                    if (auto const* signedId = std::get_if<int64_t>(&idValue); signedId && *signedId >= 0) {
+                    if (auto const* signedId = std::get_if<int64_t>(&idValue);
+                        signedId && *signedId >= 0)
+                    {
                         newNode->setId(static_cast<uint64_t>(*signedId));
                     }
                     continue;
                 }
-                auto cloned = clone(cache, otherLayer, value);
+                auto cloned = cloneNode(context, cache, otherLayer, value);
                 newNode->addField(*keyStr, resolve<Attribute>(*cloned));
             }
         }
@@ -2478,7 +2514,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
         newCacheNode = newNode;
         for (auto [key, value] : resolved->fields()) {
             if (auto keyStr = otherLayer->strings()->resolve(key)) {
-                auto cloned = clone(cache, otherLayer, value);
+                auto cloned = cloneNode(context, cache, otherLayer, value);
                 newNode->addLayer(*keyStr, resolve<AttributeLayer>(*cloned));
             }
         }
@@ -2488,15 +2524,15 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto resolved = otherLayer->resolve<Relation>(*otherNode);
         auto newNode = newRelation(
             resolved->name(),
-            resolve<FeatureId>(*clone(cache, otherLayer, resolved->target())));
+            resolve<FeatureId>(*cloneNode(context, cache, otherLayer, resolved->target())));
         newCacheNode = newNode;
         if (resolved->sourceValidityOrNull()) {
             newNode->setSourceValidity(resolve<MultiValidity>(
-                *clone(cache, otherLayer, resolved->sourceValidityOrNull())));
+                *cloneNode(context, cache, otherLayer, resolved->sourceValidityOrNull())));
         }
         if (resolved->targetValidityOrNull()) {
             newNode->setTargetValidity(resolve<MultiValidity>(
-                *clone(cache, otherLayer, resolved->targetValidityOrNull())));
+                *cloneNode(context, cache, otherLayer, resolved->targetValidityOrNull())));
         }
         cloneSourceDataReferences(resolved, newNode);
         break;
@@ -2504,7 +2540,7 @@ ModelNode::Ptr TileFeatureLayer::clone(
     case ColumnId::RelationReferences: {
         auto resolved = otherLayer->resolve<RelationReference>(*otherNode);
         auto newNode = newRelationReference(
-            resolve<Relation>(*clone(cache, otherLayer, resolved->relation())));
+            resolve<Relation>(*cloneNode(context, cache, otherLayer, resolved->relation())));
         newCacheNode = newNode;
         break;
     }
@@ -2512,12 +2548,19 @@ ModelNode::Ptr TileFeatureLayer::clone(
         auto resolved = otherLayer->resolve<AttrPointSequence>(*otherNode);
         auto sourceFeatureId = resolved->featureId();
         auto clonedGeometry = resolve<Geometry>(
-            *clone(cache, otherLayer, resolved->geometry()));
+            *cloneNode(context, cache, otherLayer, resolved->geometry()));
 
-        // Sequences reference a host feature rather than owning one. During
-        // generic node cloning, create the compact sequence against the
-        // already cloned canonical feature when available.
-        auto host = find(sourceFeatureId->typeId(), sourceFeatureId->keyValuePairs());
+        model_ptr<Feature> host;
+        if (context.targetFeature_ && context.sourceFeatureId_ &&
+            context.sourceFeatureId_->toString() == sourceFeatureId->toString())
+        {
+            // A feature clone may change its ID. Keep feature-local sequence
+            // references attached to that exact destination feature.
+            host = context.targetFeature_;
+        }
+        else {
+            host = find(sourceFeatureId->typeId(), sourceFeatureId->keyValuePairs());
+        }
         if (!host) {
             raiseFmt(
                 "Cannot clone AttrPointSequence before host feature '{}' exists.",
@@ -2526,7 +2569,8 @@ ModelNode::Ptr TileFeatureLayer::clone(
         bool geometryAttached = false;
         if (auto geometries = host->geomOrNull()) {
             geometries->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
-                geometryAttached = candidate->addr() == clonedGeometry->addr();
+                geometryAttached =
+                    candidate->addr().value_ == clonedGeometry->addr().value_;
                 return !geometryAttached;
             });
         }
@@ -2541,21 +2585,21 @@ ModelNode::Ptr TileFeatureLayer::clone(
             model_ptr<SourceDataReferenceCollection> sourceData;
             if (auto refs = sourcePoint->sourceDataReferences()) {
                 sourceData = resolve<SourceDataReferenceCollection>(
-                    *clone(cache, otherLayer, refs));
+                    *cloneNode(context, cache, otherLayer, refs));
             }
             newNode->appendAttrPoint(sourcePoint->index(), sourcePoint->point(), sourceData);
         }
         if (auto refs = resolved->sourceDataReferences()) {
             newNode->setSourceDataReferences(
                 resolve<SourceDataReferenceCollection>(
-                    *clone(cache, otherLayer, refs)));
+                    *cloneNode(context, cache, otherLayer, refs)));
         }
         break;
     }
     case ColumnId::AttrPointSequenceReferences: {
         auto resolved = otherLayer->resolve<AttrPointSequenceReference>(*otherNode);
         auto sequence = resolve<AttrPointSequence>(
-            *clone(cache, otherLayer, resolved->sequence()));
+            *cloneNode(context, cache, otherLayer, resolved->sequence()));
         newCacheNode = resolve<AttrPointSequenceReference>(simfil::ModelNodeAddress{
             ColumnId::AttrPointSequenceReferences,
             sequence->addr().index()});
@@ -2617,10 +2661,14 @@ void TileFeatureLayer::clone(
         cloneTarget = newFeature(type, idParts);
     }
 
+    auto const context = CloneContext{
+        .sourceFeatureId_ = otherFeature.id(),
+        .targetFeature_ = cloneTarget,
+    };
     auto lookupOrClone =
         [&](ModelNode::Ptr const& n) -> ModelNode::Ptr
     {
-        return clone(clonedModelNodes, otherLayer, n);
+        return cloneNode(context, clonedModelNodes, otherLayer, n);
     };
 
     auto owningLayer =
@@ -2647,9 +2695,15 @@ void TileFeatureLayer::clone(
     if (auto attrLayers = otherFeature.attributeLayersOrNull()) {
         auto baseAttrLayers = cloneTarget->attributeLayers();
         attrLayers->forEachLayer(
-            [this, &baseAttrLayers, &clonedModelNodes, &owningLayer](std::string_view layerName, model_ptr<AttributeLayer> const& layer)
+            [this, &baseAttrLayers, &context, &clonedModelNodes, &owningLayer](
+                std::string_view layerName,
+                model_ptr<AttributeLayer> const& layer)
             {
-                auto cloned = clone(clonedModelNodes, owningLayer(layer), ModelNode::Ptr(layer));
+                auto cloned = cloneNode(
+                    context,
+                    clonedModelNodes,
+                    owningLayer(layer),
+                    ModelNode::Ptr(layer));
                 baseAttrLayers->addLayer(layerName, resolve<AttributeLayer>(*cloned));
                 return true;
             });
@@ -2659,13 +2713,18 @@ void TileFeatureLayer::clone(
     if (auto geom = otherFeature.geomOrNull()) {
         auto baseGeom = cloneTarget->geom();
         geom->forEachGeometry(
-            [this, &baseGeom, &clonedModelNodes, &owningLayer](auto&& geomElement)
+            [this, &baseGeom, &context, &clonedModelNodes, &owningLayer](auto&& geomElement)
             {
                 auto clonedGeometry = resolve<Geometry>(
-                    *clone(clonedModelNodes, owningLayer(geomElement), ModelNode::Ptr(geomElement)));
+                    *cloneNode(
+                        context,
+                        clonedModelNodes,
+                        owningLayer(geomElement),
+                        ModelNode::Ptr(geomElement)));
                 bool alreadyAttached = false;
                 baseGeom->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
-                    alreadyAttached = candidate->addr() == clonedGeometry->addr();
+                    alreadyAttached =
+                        candidate->addr().value_ == clonedGeometry->addr().value_;
                     return !alreadyAttached;
                 });
                 if (!alreadyAttached) {
@@ -2678,9 +2737,13 @@ void TileFeatureLayer::clone(
     // Adopt relations
     if (otherFeature.numRelations()) {
         otherFeature.forEachRelation(
-            [this, &cloneTarget, &clonedModelNodes, &owningLayer](auto&& rel)
+            [this, &cloneTarget, &context, &clonedModelNodes, &owningLayer](auto&& rel)
             {
-                auto newRel = resolve<Relation>(*clone(clonedModelNodes, owningLayer(rel), ModelNode::Ptr(rel)));
+                auto newRel = resolve<Relation>(*cloneNode(
+                    context,
+                    clonedModelNodes,
+                    owningLayer(rel),
+                    ModelNode::Ptr(rel)));
                 cloneTarget->addRelation(newRel);
                 return true;
             });

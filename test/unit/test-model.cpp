@@ -869,6 +869,44 @@ TEST_CASE("FeatureLayer clone preserves source-data references",
     REQUIRE(target->toJson().at("features") == source->toJson().at("features"));
     REQUIRE(target->toJson().at("attrPointSequences")
         == source->toJson().at("attrPointSequences"));
+
+    // One add-on feature may contribute to multiple destination features.
+    // Reuse the same cache to exercise the target-scoped clone identity.
+    KeyValuePairs firstTargetId{{"wayId", int64_t{100}}};
+    KeyValuePairs secondTargetId{{"wayId", int64_t{101}}};
+    target->clone(
+        cache,
+        source,
+        *feature,
+        "Way",
+        castToKeyValueView(firstTargetId));
+    target->clone(
+        cache,
+        source,
+        *feature,
+        "Way",
+        castToKeyValueView(secondTargetId));
+
+    REQUIRE(target->numAttrPointSequences() == 3);
+    REQUIRE(target->attrPointSequenceAt(1)->featureId()->toString() == "Way.100");
+    REQUIRE(target->attrPointSequenceAt(2)->featureId()->toString() == "Way.101");
+    REQUIRE(target->attrPointSequenceAt(1)->geometry()->addr().value_ !=
+        target->attrPointSequenceAt(2)->geometry()->addr().value_);
+    REQUIRE(target->attrPointSequenceAt(1)->geometryIndex() == 0);
+    REQUIRE(target->attrPointSequenceAt(2)->geometryIndex() == 0);
+    REQUIRE(target->attrPointSequenceAt(1)->attrPoints()->attrPointAt(0)
+        ->sourceDataReferences());
+    REQUIRE(target->attrPointSequenceAt(2)->sourceDataReferences());
+
+    auto const remappedJson = target->toJson();
+    auto const& firstValidity = remappedJson["features"][1]["properties"]
+        ["layer"]["Rules"]["Access"]["validity"];
+    auto const& secondValidity = remappedJson["features"][2]["properties"]
+        ["layer"]["Rules"]["Access"]["validity"];
+    REQUIRE(firstValidity["attrPointIndexRange"]["sequence"]
+        ["$mapgetAttrPointSequence"] == 1);
+    REQUIRE(secondValidity["attrPointIndexRange"]["sequence"]
+        ["$mapgetAttrPointSequence"] == 2);
 }
 
 TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test.feature.id.optionals]")

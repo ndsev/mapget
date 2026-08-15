@@ -52,12 +52,41 @@ def main() -> int:
         geometry.set_name("centerline")
         assert geometry.name() == "centerline"
 
+        point_source_refs = tile.new_source_data_references(
+            [("RawLayer", "attribute-point", mapget.SourceDataAddress(30, 6))]
+        )
+        sequence_source_refs = tile.new_source_data_references(
+            [("RawLayer", "attribute-point-sequence", mapget.SourceDataAddress(36, 8))]
+        )
         attr_point_sequence = tile.new_attr_point_sequence(feature, geometry)
-        attr_point_sequence.append_attr_point(1, point(1.5, 2.5))
+        attr_point = attr_point_sequence.append_attr_point(
+            1,
+            point(1.5, 2.5),
+            point_source_refs,
+        )
+        attr_point_sequence.set_source_data_references(sequence_source_refs)
+        assert isinstance(attr_point, mapget.AttrPoint)
+        assert attr_point.index() == 1
+        assert attr_point.point() == point(1.5, 2.5)
+        assert attr_point.source_data_references().to_list()[0]["qualifier"] == "attribute-point"
+        plain_attr_point = attr_point_sequence.append_attr_point(2, point(1.75, 2.75))
+        assert plain_attr_point.source_data_references() is None
+        assert len(attr_point_sequence.attr_points()) == 2
+        assert attr_point_sequence.attr_points()[0].index() == 1
+        assert (
+            attr_point_sequence.source_data_references().to_list()[0]["qualifier"]
+            == "attribute-point-sequence"
+        )
         assert attr_point_sequence.feature_id().to_string() == "Way.1"
         assert attr_point_sequence.geometry_index() == 0
-        assert attr_point_sequence.attr_point_count() == 1
-        assert attr_point_sequence.position_count() == 3
+        assert attr_point_sequence.attr_point_count() == 2
+        assert attr_point_sequence.position_count() == 4
+        assert attr_point_sequence.points(0, 3) == [
+            point(1.0, 2.0),
+            point(1.5, 2.5),
+            point(1.75, 2.75),
+            point(2.0, 3.0),
+        ]
         assert attr_point_sequence.is_attr_point(1)
 
         rules_layer = feature.attribute_layers().new_layer("rules")
@@ -155,9 +184,14 @@ def main() -> int:
                 "end": 2,
             },
         }
-        assert feature_tile["attrPointSequences"][0]["attrPoints"] == [
-            {"index": 1, "point": [1.5, 2.5, 0.0]}
-        ]
+        attr_point_json = feature_tile["attrPointSequences"][0]["attrPoints"][0]
+        assert attr_point_json["index"] == 1
+        assert attr_point_json["point"] == [1.5, 2.5, 0.0]
+        assert attr_point_json["_sourceData"][0]["qualifier"] == "attribute-point"
+        assert (
+            feature_tile["attrPointSequences"][0]["_sourceData"][0]["qualifier"]
+            == "attribute-point-sequence"
+        )
         assert feature["_sourceData"][0]["qualifier"] == "primary"
 
         source_tile = _get_json(f"{base_url}/tile?layer=RawLayer&tileId=65536&responseType=json")

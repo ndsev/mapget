@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace mapget
 {
@@ -152,6 +153,9 @@ public:
 
     /** Return the coordinate at one logical interwoven index. */
     [[nodiscard]] Point pointAt(uint32_t index) const;
+
+    /** Materialize an inclusive logical point range in one merged traversal. */
+    [[nodiscard]] std::vector<Point> points(uint32_t start, uint32_t end) const;
 
     /** Return whether one logical index denotes an explicitly inserted AttrPoint. */
     [[nodiscard]] bool isAttrPoint(uint32_t index) const;

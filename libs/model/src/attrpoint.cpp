@@ -73,6 +73,67 @@ std::vector<simfil::StringId> sequenceFields(AttrPointSequence const& sequence)
     }
     return result;
 }
+
+/** Find the first inserted point whose logical index is not below the target. */
+uint32_t lowerBoundAttrPoint(
+    model_ptr<AttrPointArray> const& points,
+    uint32_t pointCount,
+    uint32_t logicalIndex)
+{
+    uint32_t first = 0;
+    uint32_t count = pointCount;
+    while (count > 0) {
+        auto const step = count / 2U;
+        auto const candidate = first + step;
+        if (points->attrPointAt(candidate)->index() < logicalIndex) {
+            first = candidate + 1U;
+            count -= step + 1U;
+        }
+        else {
+            count = step;
+        }
+    }
+    return first;
+}
+
+/** Visit an inclusive logical range by merging shape and inserted-point storage once. */
+template <typename Callback>
+bool forEachSequencePoint(
+    AttrPointSequence const& sequence,
+    uint32_t start,
+    uint32_t end,
+    Callback const& callback)
+{
+    auto const attrPoints = sequence.attrPoints();
+    auto const attrPointCount = sequence.attrPointCount();
+    auto attrPointIndex = lowerBoundAttrPoint(attrPoints, attrPointCount, start);
+    auto geometryPointIndex = start - attrPointIndex;
+    auto const geometry = sequence.geometry();
+
+    for (auto logicalIndex = start;; ++logicalIndex) {
+        Point point;
+        if (attrPointIndex < attrPointCount) {
+            auto const attrPoint = attrPoints->attrPointAt(attrPointIndex);
+            if (attrPoint->index() == logicalIndex) {
+                point = attrPoint->point();
+                ++attrPointIndex;
+            }
+            else {
+                point = geometry->pointAt(geometryPointIndex++);
+            }
+        }
+        else {
+            point = geometry->pointAt(geometryPointIndex++);
+        }
+
+        if (!callback(point)) {
+            return false;
+        }
+        if (logicalIndex == end) {
+            return true;
+        }
+    }
+}
 }
 
 AttrPoint::AttrPoint(
@@ -258,7 +319,7 @@ uint32_t AttrPointSequence::geometryIndex() const
     uint32_t result = 0;
     bool found = false;
     geometries->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
-        if (candidate->addr() == geometry()->addr()) {
+        if (candidate->addr().value_ == geometry()->addr().value_) {
             found = true;
             return false;
         }
@@ -304,18 +365,34 @@ Point AttrPointSequence::pointAt(uint32_t logicalIndex) const
             positionCount());
     }
 
-    uint32_t precedingAttrPoints = 0;
-    for (uint32_t index = 0; index < attrPointCount(); ++index) {
-        auto attrPoint = attrPoints()->attrPointAt(index);
-        if (attrPoint->index() == logicalIndex) {
-            return attrPoint->point();
-        }
-        if (attrPoint->index() > logicalIndex) {
-            break;
-        }
-        ++precedingAttrPoints;
+    Point result;
+    forEachSequencePoint(*this, logicalIndex, logicalIndex, [&](Point const& point) {
+        result = point;
+        return false;
+    });
+    return result;
+}
+
+std::vector<Point> AttrPointSequence::points(uint32_t start, uint32_t end) const
+{
+    if (start > end) {
+        raiseFmt("AttrPointSequence range start {} exceeds end {}.", start, end);
     }
-    return geometry()->pointAt(logicalIndex - precedingAttrPoints);
+    if (end >= positionCount()) {
+        raiseFmt(
+            "AttrPointSequence range {}..{} is out of range for {} positions.",
+            start,
+            end,
+            positionCount());
+    }
+
+    std::vector<Point> result;
+    result.reserve(static_cast<size_t>(end - start) + 1U);
+    forEachSequencePoint(*this, start, end, [&](Point const& point) {
+        result.push_back(point);
+        return true;
+    });
+    return result;
 }
 
 bool AttrPointSequence::isAttrPoint(uint32_t logicalIndex) const
@@ -323,16 +400,10 @@ bool AttrPointSequence::isAttrPoint(uint32_t logicalIndex) const
     if (logicalIndex >= positionCount()) {
         return false;
     }
-    for (uint32_t index = 0; index < attrPointCount(); ++index) {
-        auto const candidate = attrPoints()->attrPointAt(index)->index();
-        if (candidate == logicalIndex) {
-            return true;
-        }
-        if (candidate > logicalIndex) {
-            return false;
-        }
-    }
-    return false;
+    auto const points = attrPoints();
+    auto const candidate = lowerBoundAttrPoint(points, attrPointCount(), logicalIndex);
+    return candidate < attrPointCount() &&
+        points->attrPointAt(candidate)->index() == logicalIndex;
 }
 
 double AttrPointSequence::metricOffsetAt(uint32_t logicalIndex) const
@@ -344,12 +415,16 @@ double AttrPointSequence::metricOffsetAt(uint32_t logicalIndex) const
             positionCount());
     }
     double result = 0.0;
-    auto previous = pointAt(0);
-    for (uint32_t index = 1; index <= logicalIndex; ++index) {
-        auto const current = pointAt(index);
-        result += previous.geographicDistanceTo(current);
-        previous = current;
-    }
+    Point previous;
+    bool first = true;
+    forEachSequencePoint(*this, 0, logicalIndex, [&](Point const& point) {
+        if (!first) {
+            result += previous.geographicDistanceTo(point);
+        }
+        previous = point;
+        first = false;
+        return true;
+    });
     return result;
 }
 
@@ -372,6 +447,9 @@ model_ptr<SourceDataReferenceCollection> AttrPointSequence::sourceDataReferences
 void AttrPointSequence::setSourceDataReferences(
     model_ptr<SourceDataReferenceCollection> const& sourceData)
 {
+    if (sourceData && sourceData->owningModel().get() != &model()) {
+        raise("AttrPointSequence source-data references must belong to its TileFeatureLayer.");
+    }
     model().attrPointSequenceData(addr().index()).sourceData_ =
         sourceData ? sourceData->addr() : simfil::ModelNodeAddress{};
 }

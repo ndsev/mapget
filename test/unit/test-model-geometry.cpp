@@ -318,6 +318,20 @@ TEST_CASE("AttrPointSequence preserves interwoven validity semantics", "[validit
     geometry->setName("centerline");
 
     auto sequence = tile->newAttrPointSequence(feature, geometry);
+    auto foreignTile = makeTile();
+    QualifiedSourceDataReference foreignReference{
+        .address_ = SourceDataAddress::fromBitPosition(4, 8),
+        .layerId_ = foreignTile->strings()->emplace("RawLayer").value(),
+        .qualifier_ = foreignTile->strings()->emplace("attribute-point").value(),
+    };
+    auto foreignReferences = foreignTile->newSourceDataReferenceCollection(
+        {&foreignReference, 1});
+    REQUIRE_THROWS(sequence->appendAttrPoint(
+        1,
+        {10.25, 20.0, 0.0},
+        foreignReferences));
+    REQUIRE_THROWS(sequence->setSourceDataReferences(foreignReferences));
+
     sequence->appendAttrPoint(1, {10.25, 20.0, 0.0});
     sequence->appendAttrPoint(3, {11.5, 20.0, 0.0});
 
@@ -329,6 +343,12 @@ TEST_CASE("AttrPointSequence preserves interwoven validity semantics", "[validit
     REQUIRE(sequence->pointAt(2) == geometry->pointAt(1));
     REQUIRE(sequence->pointAt(3) == Point{11.5, 20.0, 0.0});
     REQUIRE(sequence->pointAt(4) == geometry->pointAt(2));
+    REQUIRE(sequence->points(1, 3) == std::vector<Point>{
+        {10.25, 20.0, 0.0},
+        {11.0, 20.0, 0.0},
+        {11.5, 20.0, 0.0},
+    });
+    REQUIRE_THROWS(sequence->points(3, 1));
     REQUIRE(sequence->isAttrPoint(1));
     REQUIRE_FALSE(sequence->isAttrPoint(2));
 

@@ -521,6 +521,46 @@ struct BoundSourceDataReferenceCollection : public BoundModelNode
     model_ptr<SourceDataReferenceCollection> modelNodePtr_;
 };
 
+/** Python wrapper for one explicitly inserted attribute point. */
+struct BoundAttrPoint : public BoundModelNode
+{
+    /** Register coordinate, index, and provenance access. */
+    static void bind(py::module_& m)
+    {
+        py::class_<BoundAttrPoint, BoundModelNode>(m, "AttrPoint", R"pbdoc(
+            One explicitly inserted point in an interwoven attribute-point sequence.
+
+            The point exposes its logical sequence index, absolute coordinate,
+            and optional source-data provenance.
+        )pbdoc")
+            .def(
+                "index",
+                [](BoundAttrPoint& self) { return self.modelNodePtr_->index(); },
+                "Return the point's logical index in the complete sequence.")
+            .def(
+                "point",
+                [](BoundAttrPoint& self) { return self.modelNodePtr_->point(); },
+                "Return the point in the tile's absolute coordinate system.")
+            .def(
+                "source_data_references",
+                [](BoundAttrPoint& self) -> py::object {
+                    if (auto refs = self.modelNodePtr_->sourceDataReferences()) {
+                        return py::cast(BoundSourceDataReferenceCollection(refs));
+                    }
+                    return py::none();
+                },
+                "Return point-specific source-data provenance, or None.");
+    }
+
+    /** Return the wrapped model node. */
+    ModelNode::Ptr node() override { return modelNodePtr_; }
+
+    /** Wrap one concrete inserted point. */
+    explicit BoundAttrPoint(model_ptr<AttrPoint> const& ptr) : modelNodePtr_(ptr) {}
+
+    model_ptr<AttrPoint> modelNodePtr_;
+};
+
 struct BoundRelation : public BoundModelNode
 {
     static void bind(py::module_& m);
@@ -923,12 +963,26 @@ struct BoundAttrPointSequence : public BoundModelNode
             .def("attr_point_count", [](BoundAttrPointSequence& self) {
                 return self.modelNodePtr_->attrPointCount();
             }, "Return the number of explicitly inserted attribute points.")
+            .def("attr_points", [](BoundAttrPointSequence& self) {
+                py::list result;
+                auto const points = self.modelNodePtr_->attrPoints();
+                for (uint32_t index = 0; index < self.modelNodePtr_->attrPointCount(); ++index) {
+                    result.append(BoundAttrPoint(points->attrPointAt(index)));
+                }
+                return result;
+            }, "Return explicitly inserted points in logical-index order.")
             .def("position_count", [](BoundAttrPointSequence& self) {
                 return self.modelNodePtr_->positionCount();
             }, "Return the total interwoven position count.")
             .def("point_at", [](BoundAttrPointSequence& self, uint32_t index) {
                 return self.modelNodePtr_->pointAt(index);
             }, py::arg("index"), "Return the coordinate at one logical index.")
+            .def("points", [](BoundAttrPointSequence& self, uint32_t start, uint32_t end) {
+                return self.modelNodePtr_->points(start, end);
+            },
+                py::arg("start"),
+                py::arg("end"),
+                "Return an inclusive range of interwoven sequence coordinates.")
             .def("is_attr_point", [](BoundAttrPointSequence& self, uint32_t index) {
                 return self.modelNodePtr_->isAttrPoint(index);
             }, py::arg("index"), "Return whether a logical index is an inserted point.")
@@ -937,10 +991,31 @@ struct BoundAttrPointSequence : public BoundModelNode
             }, py::arg("index"), "Return the distance in metres from the sequence start.")
             .def("append_attr_point", [](BoundAttrPointSequence& self,
                                           uint32_t index,
-                                          Point const& point) {
-                self.modelNodePtr_->appendAttrPoint(index, point);
-            }, py::arg("index"), py::arg("point"),
-                "Append one inserted point in increasing logical-index order.");
+                                          Point const& point,
+                                          BoundSourceDataReferenceCollection const* sourceData) {
+                return BoundAttrPoint(self.modelNodePtr_->appendAttrPoint(
+                    index,
+                    point,
+                    sourceData ? sourceData->modelNodePtr_ :
+                                 model_ptr<SourceDataReferenceCollection>{}));
+            },
+                py::arg("index"),
+                py::arg("point"),
+                py::arg("source_data") = nullptr,
+                "Append and return one inserted point with optional source-data provenance.")
+            .def("source_data_references", [](BoundAttrPointSequence& self) -> py::object {
+                if (auto refs = self.modelNodePtr_->sourceDataReferences()) {
+                    return py::cast(BoundSourceDataReferenceCollection(refs));
+                }
+                return py::none();
+            }, "Return sequence-level source-data provenance, or None.")
+            .def("set_source_data_references", [](
+                    BoundAttrPointSequence& self,
+                    BoundSourceDataReferenceCollection const& refs) {
+                self.modelNodePtr_->setSourceDataReferences(refs.modelNodePtr_);
+            },
+                py::arg("refs"),
+                "Attach source-data provenance to the sequence as a whole.");
     }
 
     /** Return the wrapped model node. */
@@ -1499,10 +1574,11 @@ void bindModel(py::module& m)
     mapget::BoundGeometry::bind(m);
     mapget::BoundGeometryCollection::bind(m);
     mapget::BoundFeatureId::bind(m);
+    mapget::BoundSourceDataReferenceCollection::bind(m);
+    mapget::BoundAttrPoint::bind(m);
     mapget::BoundAttrPointSequence::bind(m);
     mapget::BoundValidity::bind(m);
     mapget::BoundMultiValidity::bind(m);
-    mapget::BoundSourceDataReferenceCollection::bind(m);
     mapget::BoundAttribute::bind(m);
     mapget::BoundAttributeLayer::bind(m);
     mapget::BoundAttributeLayerList::bind(m);

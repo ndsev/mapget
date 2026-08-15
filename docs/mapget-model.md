@@ -260,7 +260,11 @@ when present as a readable consistency check. Sequences and individual
 inserted points may carry `_sourceData`; strict import/export preserves both.
 Consumers can resolve each logical index to its WGS-84 coordinate or metric
 offset through the sequence while retaining the original source index for
-inspection.
+inspection. C++ callers can materialize an inclusive range with
+`AttrPointSequence::points`; Python exposes the inserted nodes through
+`AttrPointSequence.attr_points()` and returns an `AttrPoint` from
+`append_attr_point`. Sequence- and point-level source references must be
+created by the same `TileFeatureLayer` that owns the sequence.
 
 ### Validity internals
 

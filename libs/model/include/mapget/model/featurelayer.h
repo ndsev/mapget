@@ -3,6 +3,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -65,24 +66,32 @@ public:
     using Ptr = std::shared_ptr<TileFeatureLayer>;
     static constexpr std::string_view GLB_ATTACHMENT_MIME_TYPE = "model/gltf-binary";
 
+    /** Identify one source node clone within an optional destination-feature scope. */
     struct CloneCacheKey
     {
         TileFeatureLayer const* model_ = nullptr;
         uint32_t address_ = 0;
+        uint32_t targetFeatureAddress_ = 0;
 
         [[nodiscard]] bool operator==(CloneCacheKey const& other) const = default;
     };
 
+    /** Hash source-node and destination-feature identity for clone reuse. */
     struct CloneCacheKeyHash
     {
         [[nodiscard]] size_t operator()(CloneCacheKey const& key) const noexcept
         {
             auto const modelHash = std::hash<TileFeatureLayer const*>{}(key.model_);
             auto const addressHash = std::hash<uint32_t>{}(key.address_);
-            return modelHash ^ (addressHash + 0x9e3779b9U + (modelHash << 6U) + (modelHash >> 2U));
+            auto const targetHash = std::hash<uint32_t>{}(key.targetFeatureAddress_);
+            auto const sourceHash =
+                modelHash ^ (addressHash + 0x9e3779b9U + (modelHash << 6U) + (modelHash >> 2U));
+            return sourceHash ^
+                (targetHash + 0x9e3779b9U + (sourceHash << 6U) + (sourceHash >> 2U));
         }
     };
 
+    /** Cache cloned nodes while preserving feature-local remapping context. */
     using CloneCache = std::unordered_map<CloneCacheKey, simfil::ModelNode::Ptr, CloneCacheKeyHash>;
 
     /**
@@ -421,6 +430,20 @@ public:
     using ColumnId = TileFeatureModelLayerBase::ColumnId;
 
 protected:
+    /** Describe a feature clone whose local references must follow a remapped ID. */
+    struct CloneContext
+    {
+        model_ptr<FeatureId> sourceFeatureId_;
+        model_ptr<Feature> targetFeature_;
+    };
+
+    /** Clone one node while propagating an optional feature-remapping context. */
+    simfil::ModelNode::Ptr cloneNode(
+        CloneContext const& context,
+        CloneCache& clonedModelNodes,
+        TileFeatureLayer::Ptr const& otherLayer,
+        simfil::ModelNode::Ptr const& otherNode);
+
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
 
