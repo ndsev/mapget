@@ -16,6 +16,7 @@ add_executable(test.mapget
   test-config.cpp
   test-geojson-import.cpp
   test-geojsonsource.cpp
+  test-gridsource.cpp
   utility.cpp
   utility.h)
 
@@ -32,6 +33,7 @@ target_link_libraries(test.mapget
     mapget-http-datasource
     mapget-http-service
     mapget-location
+    gridsource
     geojsonsource
     Catch2::Catch2)
 

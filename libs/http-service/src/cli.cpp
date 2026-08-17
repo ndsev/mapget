@@ -143,13 +143,74 @@ nlohmann::json dataSourceProcessSchema()
 
 nlohmann::json gridDataSourceSchema()
 {
+    const nlohmann::json trafficSchema = {
+        {"type", "object"},
+        {"properties", {
+            {"roadLayer", {
+                {"type", "string"},
+                {"minLength", 1},
+                {"description", "Enabled non-traffic line layer whose roads are sampled."}}},
+            {"tileLevel", {
+                {"type", "integer"}, {"minimum", 13}, {"maximum", 15}, {"default", 13}}},
+            {"updateIntervalSeconds", {
+                {"type", "integer"}, {"minimum", 1}, {"maximum", 60}, {"default", 5}}},
+            {"seed", {
+                {"type", "integer"}, {"minimum", 0}, {"maximum", 4294967295ULL}, {"default", 0}}}}},
+        {"required", nlohmann::json::array({"roadLayer"})},
+        {"additionalProperties", false}};
+
+    const nlohmann::json geometrySchema = {
+        {"type", "object"},
+        {"properties", {
+            {"type", {{"type", "string"}, {"enum", nlohmann::json::array({"point", "line", "polygon", "mesh"})}}},
+            {"density", {{"type", "number"}}},
+            {"complexity", {{"type", "integer"}}},
+            {"curvature", {{"type", "number"}}},
+            {"sizeRange", {{"type", "array"}, {"minItems", 2}, {"maxItems", 2}}},
+            {"aspectRatio", {{"type", "array"}, {"minItems", 2}, {"maxItems", 2}}},
+            {"avoidBuildings", {{"type", "boolean"}}},
+            {"minBuildingDistance", {{"type", "number"}}}}},
+        {"additionalProperties", true}};
+
+    const nlohmann::json layerSchema = {
+        {"type", "object"},
+        {"properties", {
+            {"name", {{"type", "string"}}},
+            {"enabled", {{"type", "boolean"}, {"default", true}}},
+            {"featureType", {{"type", "string"}}},
+            {"kind", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "traffic"})}, {"default", "auto"}}},
+            {"geometry", geometrySchema},
+            {"attributes", {{"type", "object"}}},
+            {"relations", {{"type", "array"}}},
+            {"traffic", trafficSchema}}},
+        {"oneOf", nlohmann::json::array({
+            nlohmann::json{
+                {"properties", {{"kind", {{"const", "auto"}}}}},
+                {"not", {{"required", nlohmann::json::array({"traffic"})}}}},
+            nlohmann::json{
+                {"required", nlohmann::json::array({"name", "featureType", "kind", "traffic"})},
+                {"properties", {
+                    {"name", {{"type", "string"}, {"minLength", 1}}},
+                    {"featureType", {{"type", "string"}, {"minLength", 1}}},
+                    {"kind", {{"const", "traffic"}}},
+                    {"geometry", {
+                        {"type", "object"},
+                        {"properties", {{"type", {{"const", "line"}}}}},
+                        {"additionalProperties", false}}}}},
+                {"not", {{"anyOf", nlohmann::json::array({
+                    nlohmann::json{{"required", nlohmann::json::array({"attributes"})}},
+                    nlohmann::json{{"required", nlohmann::json::array({"relations"})}}
+                })}}}}
+        })},
+        {"additionalProperties", true}};
+
     return {
         {"type", "object"},
         {"properties",
          {{"mapId", {{"type", "string"}, {"title", "Map ID"}}},
           {"spatialCoherence", {{"type", "boolean"}}},
           {"collisionGridSize", {{"type", "number"}}},
-          {"layers", {{"type", "array"}}}}},
+          {"layers", {{"type", "array"}, {"items", layerSchema}}}}},
         {"additionalProperties", true}};
 }
 

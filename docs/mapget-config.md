@@ -170,6 +170,7 @@ Each layer configuration can specify:
 
 - `name`: layer name.
 - `featureType`: feature type identifier.
+- `kind`: `auto` (the legacy geometry-driven generator, default) or `traffic`.
 - `geometry`: structure describing geometry type and parameters such as density and curvature.
 - `attributes`: optional description of top‑level and layered attributes.
 - `relations`: optional relation definitions between features in different layers.
@@ -198,6 +199,39 @@ sources:
 ```
 
 The generator will produce deterministic but varied features for any requested tile ID. The full set of fields is defined in the `gridsource` library and can be explored by looking at example configurations or the header file.
+
+#### Road-backed live traffic
+
+A `kind: traffic` layer is a separate Grid-specific overlay over one enabled line
+road layer. It emits stable road geometry and IDs while traffic flow and speed values
+change on aligned time buckets:
+
+```yaml
+sources:
+  - type: GridDataSource
+    mapId: TrafficGrid
+    layers:
+      - name: DevSrc-RoadLayer
+        featureType: DevSrc-Road
+        geometry: {type: line}
+      - name: DevSrc-TrafficLayer
+        featureType: DevSrc-Traffic
+        kind: traffic
+        geometry: {type: line}
+        traffic:
+          roadLayer: DevSrc-RoadLayer
+          tileLevel: 13
+          updateIntervalSeconds: 5
+          seed: 0
+```
+
+`roadLayer` is required and must uniquely name an enabled, non-traffic line layer.
+`tileLevel` accepts 13–15 (default 13), `updateIntervalSeconds` accepts 1–60
+(default 5), and `seed` is an unsigned 32-bit value (default 0). Traffic layers do
+not accept generic attributes, relations, or geometry tuning because their feature
+contract is fixed. The timestamp is aligned to the current update bucket and the
+tile TTL equals the update interval, so normal cache expiry and sparse subscription
+renewal pull a new snapshot. This interval is not the datasource's generic `ttl`.
 
 <!-- --8<-- [end:grid] -->
 
