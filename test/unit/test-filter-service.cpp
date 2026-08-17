@@ -721,19 +721,23 @@ TEST_CASE(
         {secondTile(), 12},
     };
 
+    std::mutex callbackMutex;
     std::vector<TileSubsetLayer::Ptr> results;
     std::vector<nlohmann::json> statuses;
     request->onFilterResult(
         [&](TileSubsetLayer::Ptr layer) {
+            std::lock_guard lock(callbackMutex);
             results.push_back(std::move(layer));
         });
     request->onStatus(
         [&](nlohmann::json const& status) {
+            std::lock_guard lock(callbackMutex);
             statuses.push_back(status);
         });
 
     REQUIRE(service.request(request));
     request->wait();
+    std::lock_guard callbackLock(callbackMutex);
 
     REQUIRE(request->getStatus() == RequestStatus::Success);
     REQUIRE(results.size() == 2);
