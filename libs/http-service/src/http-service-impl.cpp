@@ -1,6 +1,7 @@
 #include "http-service-impl.h"
 
 #include "mapget/log.h"
+#include "mapget/service/detail/allocator-memory.h"
 
 #include <stdexcept>
 
@@ -75,15 +76,19 @@ void HttpService::Impl::runMemoryTrimLoop()
         // malloc_trim may walk every arena. Keep it off the Drogon event loop and
         // outside our wait mutex so destruction only waits for the active trim.
         lock.unlock();
-        auto const before = mallinfo2();
+        auto const before = detail::allocatorMemorySnapshot();
         auto const started = std::chrono::steady_clock::now();
         memoryTrimAttempts_.fetch_add(1, std::memory_order_relaxed);
         auto const released = malloc_trim(0) != 0;
         auto const elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started);
-        auto const after = mallinfo2();
-        memoryTrimLastFreeArenaBefore_.store(before.fordblks, std::memory_order_relaxed);
-        memoryTrimLastFreeArenaAfter_.store(after.fordblks, std::memory_order_relaxed);
+        auto const after = detail::allocatorMemorySnapshot();
+        memoryTrimLastFreeArenaBefore_.store(
+            before ? before->freeArenaBytes : 0,
+            std::memory_order_relaxed);
+        memoryTrimLastFreeArenaAfter_.store(
+            after ? after->freeArenaBytes : 0,
+            std::memory_order_relaxed);
         memoryTrimLastDurationMicros_.store(
             static_cast<uint64_t>(elapsed.count()),
             std::memory_order_relaxed);

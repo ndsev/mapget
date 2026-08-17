@@ -10,10 +10,6 @@
 #include <system_error>
 #include <unordered_map>
 
-#if defined(__linux__) && defined(__GLIBC__)
-#include <malloc.h>
-#endif
-
 #ifdef __APPLE__
 #include <mach/mach.h>
 #elif defined(_WIN32)
@@ -27,6 +23,7 @@
 #include "mapget/model/info.h"
 #include "mapget/model/memory.h"
 #include "mapget/service/config.h"
+#include "mapget/service/detail/allocator-memory.h"
 
 namespace mapget::detail
 {
@@ -274,19 +271,17 @@ nlohmann::json processMemoryStatistics()
 
 nlohmann::json allocatorMemoryStatistics()
 {
-#if defined(__linux__) && defined(__GLIBC__)
-    auto const allocator = mallinfo2();
-    return {
-        {"arena-bytes", allocator.arena},
-        {"free-arena-bytes", allocator.fordblks},
-        {"in-use-arena-bytes", allocator.uordblks},
-        {"mmap-bytes", allocator.hblkhd},
-        {"releasable-top-bytes", allocator.keepcost},
-        {"measurement", "mallinfo2"},
-    };
-#else
+    if (auto const allocator = allocatorMemorySnapshot()) {
+        return {
+            {"arena-bytes", allocator->arenaBytes},
+            {"free-arena-bytes", allocator->freeArenaBytes},
+            {"in-use-arena-bytes", allocator->inUseArenaBytes},
+            {"mmap-bytes", allocator->mmapBytes},
+            {"releasable-top-bytes", allocator->releasableTopBytes},
+            {"measurement", allocator->measurement},
+        };
+    }
     return nullptr;
-#endif
 }
 
 simfil::MemoryUsage dataSourceDescriptorMemoryUsage(DataSourceDescriptor const& descriptor)

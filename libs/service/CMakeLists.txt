@@ -9,6 +9,7 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/sqlitecache.h
   include/mapget/service/locate.h
   include/mapget/service/config.h
+  include/mapget/service/detail/allocator-memory.h
 
   src/service.cpp
   src/service-datasources.h
