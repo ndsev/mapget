@@ -148,6 +148,10 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    void handlePutMapPresetsConfigRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
+
     /** Handle the guarded, map-scoped tile-cache reset endpoint. */
     void handleCacheResetRequest(
         const drogon::HttpRequestPtr& req,

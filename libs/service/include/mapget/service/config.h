@@ -76,6 +76,13 @@ class DataSourceConfigService
 public:
     using PublicConfigSectionSerializer =
         std::function<nlohmann::json(YAML::Node const& fullConfig)>;
+    struct PublicConfigWriteResult {
+        nlohmann::json canonicalValue = nlohmann::json::array();
+        std::optional<std::string> error;
+    };
+    using PublicConfigFieldWriter = std::function<PublicConfigWriteResult(
+        YAML::Node& fullConfig,
+        nlohmann::json const& requestedValue)>;
     using DataSourceConstructor =
         std::function<DataSource::Ptr(YAML::Node const& arguments, DataSourceInitContext& initContext)>;
     using LegacyDataSourceConstructor =
@@ -208,6 +215,29 @@ public:
      */
     [[nodiscard]] nlohmann::json getPublicConfigSections(YAML::Node const& fullConfig) const;
 
+    /** Register a narrowly scoped public-config field writer used by an opt-in HTTP endpoint. */
+    void registerPublicConfigFieldWriter(
+        std::string path,
+        PublicConfigFieldWriter writer);
+
+    /** Apply a registered field writer to an in-memory complete YAML document. */
+    [[nodiscard]] PublicConfigWriteResult applyPublicConfigFieldWrite(
+        std::string const& path,
+        YAML::Node& fullConfig,
+        nlohmann::json const& requestedValue) const;
+
+    /** Return whether the named narrow public-config writer is registered. */
+    [[nodiscard]] bool hasPublicConfigFieldWriter(std::string const& path) const;
+
+    /** SHA-256 revision of the current complete config file bytes. */
+    [[nodiscard]] std::optional<std::string> getConfigFileRevision() const;
+
+    /** Advance the watcher checksum after a public-only write without notifying datasource subscribers. */
+    void acknowledgePublicConfigWrite(std::string const& completeFileContents);
+
+    /** Serialize config-file readers/writers with watcher reconciliation. */
+    [[nodiscard]] std::unique_lock<std::recursive_mutex> lockConfigMutation() const;
+
     /**
      * Call this to stop the config file watching thread.
      */
@@ -270,6 +300,7 @@ private:
     mutable std::optional<nlohmann::json> schema_;
     mutable std::unique_ptr<nlohmann::json_schema::json_validator> validator_;
     std::map<std::string, PublicConfigSectionSerializer> publicConfigSectionSerializers_;
+    std::map<std::string, PublicConfigFieldWriter> publicConfigFieldWriters_;
     DataSourceConfigStats dataSourceConfigStats_;
 
     // Atomic flag to control the file watching thread.
@@ -280,6 +311,7 @@ private:
 
     // Mutex to ensure that currentConfig_ and subscriptions_ are safely accessed.
     mutable std::recursive_mutex memberAccessMutex_;
+    mutable std::recursive_mutex configMutationMutex_;
 };
 
 /** Convert YAML to JSON, with optional secret masking. */

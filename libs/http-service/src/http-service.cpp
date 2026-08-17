@@ -133,6 +133,14 @@ void HttpService::setup(drogon::HttpAppFramework& app)
             callback(resp);
         },
         {drogon::Get, drogon::Post});
+
+    app.registerHandler(
+        "/config/erdblick/map-presets",
+        [this](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        { impl_->handlePutMapPresetsConfigRequest(req, std::move(callback)); },
+        {drogon::Put});
 }
 
 }  // namespace mapget

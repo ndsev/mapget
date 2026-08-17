@@ -17,6 +17,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <mutex>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -39,6 +40,7 @@ constexpr std::string_view kUnavailableReasonConfigFileMissing = "configFileMiss
 constexpr std::string_view kUnavailableReasonConfigFileOpenFailed = "configFileOpenFailed";
 constexpr std::string_view kUnavailableReasonConfigParseFailed = "configParseFailed";
 constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configValidationFailed";
+constexpr std::string_view kMapPresetsWriterPath = "erdblick/map-presets";
 
 [[nodiscard]] YAML::Node loadConfigYamlForPublicSections()
 {
@@ -96,17 +98,12 @@ constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configVal
     return resp;
 }
 
-/**
- * Rewrite the config via a temporary file so filesystem watchers never observe
- * an empty or partially written target file.
- */
-[[nodiscard]] std::optional<std::string> replaceConfigFile(
+/** Atomically replaces a config with exact bytes and optional preserved mode. */
+[[nodiscard]] std::optional<std::string> replaceConfigFileContents(
     std::filesystem::path const& configFilePath,
-    YAML::Node const& yamlConfig)
+    std::string const& contents,
+    std::optional<std::filesystem::perms> permissions)
 {
-    std::ostringstream serializedConfig;
-    serializedConfig << yamlConfig;
-
     static std::atomic_uint64_t tempFileCounter{0};
     auto tempConfigPath = configFilePath;
     auto tempFileSuffix = std::string(".tmp.")
@@ -120,12 +117,27 @@ constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configVal
             return std::string("failed to open temporary config file ") + tempConfigPath.string();
         }
 
-        tempConfigFile << serializedConfig.str();
+        tempConfigFile << contents;
         tempConfigFile.flush();
         if (!tempConfigFile) {
             std::error_code cleanupError;
             std::filesystem::remove(tempConfigPath, cleanupError);
             return std::string("failed to write temporary config file ") + tempConfigPath.string();
+        }
+    }
+
+    if (permissions) {
+        std::error_code permissionError;
+        std::filesystem::permissions(
+            tempConfigPath,
+            *permissions,
+            std::filesystem::perm_options::replace,
+            permissionError);
+        if (permissionError) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tempConfigPath, cleanupError);
+            return std::string("failed to preserve config file permissions: ")
+                + permissionError.message();
         }
     }
 
@@ -155,6 +167,30 @@ constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configVal
 #endif
 
     return std::nullopt;
+}
+
+/**
+ * Rewrite the config via a temporary file so filesystem watchers never observe
+ * an empty or partially written target file.
+ */
+[[nodiscard]] std::optional<std::string> replaceConfigFile(
+    std::filesystem::path const& configFilePath,
+    YAML::Node const& yamlConfig,
+    std::string* serializedOutput = nullptr)
+{
+    std::ostringstream serializedConfig;
+    serializedConfig << yamlConfig;
+    auto serialized = serializedConfig.str();
+    if (serializedOutput) {
+        *serializedOutput = serialized;
+    }
+
+    std::error_code statusError;
+    auto const originalPermissions = std::filesystem::status(configFilePath, statusError).permissions();
+    return replaceConfigFileContents(
+        configFilePath,
+        serialized,
+        statusError ? std::nullopt : std::optional{originalPermissions});
 }
 
 }  // namespace
@@ -210,6 +246,14 @@ void HttpService::Impl::handleGetConfigRequest(
         }
         payload["capabilities"]["cacheReset"] =
             cacheResetAvailable;
+        if (auto mapPresets = payload["capabilities"].find("mapPresets");
+            mapPresets != payload["capabilities"].end() && mapPresets->is_object()) {
+            auto const eligible = mapPresets->value("writeEligible", false);
+            (*mapPresets)["write"] = eligible
+                && isPostConfigEndpointEnabled()
+                && configService.hasPublicConfigFieldWriter(std::string{kMapPresetsWriterPath});
+            mapPresets->erase("writeEligible");
+        }
         auto response = jsonResponse(
             std::move(payload));
         response->addHeader(
@@ -297,6 +341,8 @@ void HttpService::Impl::handlePostConfigRequest(
         callback(resp);
         return;
     }
+
+    auto mutationLock = DataSourceConfigService::get().lockConfigMutation();
 
     struct ConfigUpdateState : std::enable_shared_from_this<ConfigUpdateState>
     {
@@ -427,6 +473,148 @@ void HttpService::Impl::handlePostConfigRequest(
             });
         }
     }).detach();
+}
+
+void HttpService::Impl::handlePutMapPresetsConfigRequest(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
+{
+    auto respondText = [&](drogon::HttpStatusCode status, std::string body) {
+        auto response = drogon::HttpResponse::newHttpResponse();
+        response->setStatusCode(status);
+        response->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+        response->setBody(std::move(body));
+        callback(std::move(response));
+    };
+
+    auto& configService = DataSourceConfigService::get();
+    if (!isPostConfigEndpointEnabled() ||
+        !configService.hasPublicConfigFieldWriter(std::string{kMapPresetsWriterPath})) {
+        respondText(drogon::k403Forbidden, "Map-preset configuration writes are not enabled.");
+        return;
+    }
+
+    auto ifMatch = req->getHeader("If-Match");
+    if (ifMatch.empty()) {
+        respondText(drogon::k428PreconditionRequired, "If-Match is required.");
+        return;
+    }
+    if (ifMatch.starts_with("W/")) {
+        ifMatch.erase(0, 2);
+    }
+    if (ifMatch.size() >= 2 && ifMatch.front() == '"' && ifMatch.back() == '"') {
+        ifMatch = ifMatch.substr(1, ifMatch.size() - 2);
+    }
+
+    nlohmann::json requested;
+    try {
+        requested = nlohmann::json::parse(std::string(req->body()));
+    }
+    catch (nlohmann::json::parse_error const& error) {
+        respondText(drogon::k400BadRequest, std::string("Invalid JSON: ") + error.what());
+        return;
+    }
+
+    auto mutationLock = configService.lockConfigMutation();
+    auto const currentRevision = configService.getConfigFileRevision();
+    if (!currentRevision) {
+        respondText(drogon::k404NotFound, "The durable config file is unavailable.");
+        return;
+    }
+    if (ifMatch != *currentRevision) {
+        respondText(drogon::k412PreconditionFailed, "The config revision changed; refetch and retry.");
+        return;
+    }
+
+    auto const configFilePath = configService.getConfigFilePath();
+    if (!configFilePath) {
+        respondText(drogon::k404NotFound, "The durable config file path is unavailable.");
+        return;
+    }
+
+    std::ifstream originalFile(*configFilePath, std::ios::binary);
+    if (!originalFile) {
+        respondText(drogon::k500InternalServerError, "Failed to preserve the current config for rollback.");
+        return;
+    }
+    std::ostringstream originalStream;
+    originalStream << originalFile.rdbuf();
+    auto const originalContents = originalStream.str();
+    std::error_code originalStatusError;
+    auto const originalPermissions = std::filesystem::status(
+        *configFilePath,
+        originalStatusError).permissions();
+
+    YAML::Node yamlConfig;
+    try {
+        yamlConfig = YAML::LoadFile(*configFilePath);
+    }
+    catch (std::exception const& error) {
+        respondText(drogon::k500InternalServerError, std::string("Failed to read config: ") + error.what());
+        return;
+    }
+
+    auto writeResult = configService.applyPublicConfigFieldWrite(
+        std::string{kMapPresetsWriterPath},
+        yamlConfig,
+        requested);
+    if (writeResult.error) {
+        respondText(drogon::k400BadRequest, *writeResult.error);
+        return;
+    }
+
+    // Close the parse/validation race with generic POST or an external file edit.
+    if (configService.getConfigFileRevision() != currentRevision) {
+        respondText(drogon::k412PreconditionFailed, "The config revision changed; refetch and retry.");
+        return;
+    }
+
+    std::string serialized;
+    if (auto error = replaceConfigFile(*configFilePath, yamlConfig, &serialized)) {
+        respondText(drogon::k500InternalServerError, "Failed to write config: " + *error);
+        return;
+    }
+
+    try {
+        auto readBack = YAML::LoadFile(*configFilePath);
+        if (!readBack || !readBack.IsMap()) {
+            throw std::runtime_error("written document is not a YAML object");
+        }
+        auto readBackResult = configService.applyPublicConfigFieldWrite(
+            std::string{kMapPresetsWriterPath},
+            readBack,
+            writeResult.canonicalValue);
+        if (readBackResult.error || readBackResult.canonicalValue != writeResult.canonicalValue) {
+            throw std::runtime_error("written map-preset catalog did not validate canonically");
+        }
+    }
+    catch (std::exception const& error) {
+        auto restoreError = replaceConfigFileContents(
+            *configFilePath,
+            originalContents,
+            originalStatusError ? std::nullopt : std::optional{originalPermissions});
+        if (!restoreError) {
+            configService.acknowledgePublicConfigWrite(originalContents);
+        }
+        respondText(
+            drogon::k500InternalServerError,
+            std::string("Canonical read-back failed; ")
+                + (restoreError ? "rollback also failed: " + *restoreError : "the original config was restored: ")
+                + error.what());
+        return;
+    }
+
+    configService.acknowledgePublicConfigWrite(serialized);
+    auto const newRevision = configService.getConfigFileRevision();
+    nlohmann::json body = {
+        {"mapPresets", std::move(writeResult.canonicalValue)},
+        {"revision", newRevision.value_or("")}};
+    auto response = jsonResponse(std::move(body));
+    response->addHeader("Cache-Control", "private, no-store");
+    if (newRevision) {
+        response->addHeader("ETag", "\"" + *newRevision + "\"");
+    }
+    callback(std::move(response));
 }
 
 }  // namespace mapget
