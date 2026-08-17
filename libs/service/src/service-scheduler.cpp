@@ -29,7 +29,7 @@ ServiceScheduler::ServiceScheduler(
     }
 }
 
-ServiceScheduler::~ServiceScheduler()
+ServiceScheduler::~ServiceScheduler() noexcept
 {
     stop();
 }
@@ -229,7 +229,7 @@ void ServiceScheduler::invalidateMap(std::string const& mapId)
     jobsAvailable_.notify_all();
 }
 
-void ServiceScheduler::stop()
+void ServiceScheduler::stop() noexcept
 {
     std::vector<std::unique_ptr<ServiceJob>> discarded;
     std::vector<LayerTilesRequest::Ptr> abortedRequests;
@@ -260,7 +260,18 @@ void ServiceScheduler::stop()
     }
     for (auto const& request : abortedRequests) {
         if (request && !request->isDone()) {
-            request->setStatus(RequestStatus::Aborted);
+            try {
+                request->setStatus(RequestStatus::Aborted);
+            }
+            catch (...) {
+                // Shutdown must still join the worker pool if a client callback fails.
+                try {
+                    log().error("LayerTilesRequest completion callback failed during shutdown.");
+                }
+                catch (...) {
+                    // Logging failure cannot be recovered during noexcept shutdown.
+                }
+            }
         }
     }
     jobsAvailable_.notify_all();

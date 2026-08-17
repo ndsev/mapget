@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -322,6 +323,38 @@ TEST_CASE("Service preserves per-datasource permits below the global cap", "[Ser
 TEST_CASE("Service rejects an empty homogeneous worker pool", "[Service][concurrency]")
 {
     REQUIRE_THROWS_AS(Service(std::make_shared<MemCache>(1), false, 0ms, 0), std::runtime_error);
+}
+
+TEST_CASE("Service shutdown contains request callback exceptions", "[Service][concurrency]")
+{
+    auto probe = std::make_shared<GlobalConcurrencyProbe>();
+    auto service = std::make_unique<Service>(std::make_shared<MemCache>(1), false, 0ms, 1);
+    service->add(std::make_shared<ConcurrencyTestDataSource>("Map", "Pool", probe));
+
+    auto request = std::make_shared<LayerTilesRequest>(
+        "Map",
+        "Features",
+        std::vector<TileId>{TileId::fromTileXY(0, 0, 3)});
+    std::promise<void> callbackEntered;
+    auto callbackEnteredFuture = callbackEntered.get_future();
+    request->onDone_ = [&callbackEntered](RequestStatus) {
+        callbackEntered.set_value();
+        throw std::runtime_error("Test callback failure");
+    };
+
+    REQUIRE(service->request({request}));
+    REQUIRE(probe->waitForEntries(1, 2s));
+    auto destruction = std::async(
+        std::launch::async,
+        [service = std::move(service)]() mutable { service.reset(); });
+
+    auto const callbackWasContained = callbackEnteredFuture.wait_for(2s) == std::future_status::ready;
+    probe->release();
+
+    REQUIRE(callbackWasContained);
+    REQUIRE(destruction.wait_for(2s) == std::future_status::ready);
+    REQUIRE_NOTHROW(destruction.get());
+    REQUIRE(request->getStatus() == RequestStatus::Aborted);
 }
 
 TEST_CASE("Service TTL behavior", "[Service][TTL]")

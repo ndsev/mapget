@@ -110,7 +110,7 @@ public:
         std::optional<std::chrono::milliseconds> defaultTtl,
         size_t workerCount);
     /** Stop and join workers before releasing scheduler-owned state. */
-    ~ServiceScheduler();
+    ~ServiceScheduler() noexcept;
 
     ServiceScheduler(ServiceScheduler const&) = delete;
     ServiceScheduler& operator=(ServiceScheduler const&) = delete;
@@ -140,7 +140,7 @@ public:
     void invalidateMap(std::string const& mapId);
 
     /** Stop accepting jobs, discard queued work, and join all workers. */
-    void stop();
+    void stop() noexcept;
 
     /** Return immutable queue-pressure statistics. */
     [[nodiscard]] ServiceSchedulerStatistics statistics() const;
