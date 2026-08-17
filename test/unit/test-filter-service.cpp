@@ -737,7 +737,6 @@ TEST_CASE(
 
     REQUIRE(service.request(request));
     request->wait();
-    std::lock_guard callbackLock(callbackMutex);
 
     REQUIRE(request->getStatus() == RequestStatus::Success);
     REQUIRE(results.size() == 2);
