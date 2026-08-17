@@ -5,6 +5,7 @@ namespace mapget::detail
 
 std::string_view statusPageHtml()
 {
+    // Keep each adjacent literal below MSVC's 16,380-byte per-literal limit.
     static constexpr std::string_view page = R"STATUS(<!doctype html>
 <html lang="en">
 <head>
