@@ -864,7 +864,7 @@ FilterRequestExecution::commitSource(
     {
         std::lock_guard lock(mutex);
         if (terminal || request->isCancelled()) {
-            return ready;
+            return std::move(ready);
         }
         if (sourceIndex >= committedSourceTiles.size() || committedSourceTiles[sourceIndex]) {
             return tl::unexpected(simfil::Error{
@@ -970,7 +970,7 @@ FilterRequestExecution::commitSource(
         ++evaluatedSourceTiles;
     }
     std::ranges::sort(ready, {}, &ReadyOutput::outputIndex_);
-    return ready;
+    return std::move(ready);
 }
 
 tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContribution(
@@ -1038,7 +1038,7 @@ FilterRequestExecution::takeRelationReadyOutputLocked(size_t outputIndex)
     }
     pendingRelationOutputs.erase(pending);
     ++readyOutputTiles;
-    return result;
+    return std::move(result);
 }
 
 tl::expected<std::vector<FilterRequestExecution::ReadyOutput>, simfil::Error>
@@ -1221,7 +1221,7 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
         result.push_back(std::move(output.ready_));
     }
     std::ranges::sort(result, {}, &ReadyOutput::outputIndex_);
-    return result;
+    return std::move(result);
 }
 
 void FilterRequestExecution::markRelationTargetUnavailableInOutput(
@@ -1269,7 +1269,7 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
     PreparedRelationOutputs prepared;
     std::lock_guard lock(mutex);
     if (terminal || request->isCancelled()) {
-        return prepared;
+        return std::move(prepared);
     }
 
     for (auto&& ready : fixedReady) {
@@ -1334,7 +1334,7 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
             prepared.relationReady_.push_back(std::move(*relationReady));
         }
     }
-    return prepared;
+    return std::move(prepared);
 }
 
 void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
