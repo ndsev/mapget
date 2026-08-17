@@ -353,7 +353,8 @@ pre {
     .field { width: 100%; justify-content: space-between; }
 }
 </style>
-</head>
+)STATUS"
+R"STATUS(</head>
 <body>
 <div class="shell">
     <header class="masthead">
@@ -505,7 +506,8 @@ pre {
     </main>
 </div>
 
-<script>
+)STATUS"
+R"STATUS(<script>
 /** Resolve one dashboard element by ID. */
 const byId = (id) => document.getElementById(id);
 /** Resolve one dashboard element by selector. */
@@ -730,7 +732,8 @@ function appendMemoryRow(body, label, help, current, peak = null) {
     body.appendChild(row);
 }
 
-/** Render process, allocator, datasource, and active-filter memory ownership. */
+)STATUS"
+R"STATUS(/** Render process, allocator, datasource, and active-filter memory ownership. */
 function renderMemory(memory) {
     const body = qs("#memoryOverviewTable tbody");
     if (body) {
@@ -917,7 +920,8 @@ function updateCacheReportStaleness(currentCache) {
     setText("cacheReportStale", stale ? `Cache changed: ${formatInt(reportEntries)} to ${formatInt(currentEntries)} entries` : "Point-in-time snapshot");
 }
 
-/** Render raw support snapshots behind collapsed details. */
+)STATUS"
+R"STATUS(/** Render raw support snapshots behind collapsed details. */
 function renderDiagnostics(payload) {
     setPreJson("serviceStats", payload.service || {});
     setPreJson("cacheStats", payload.cache || {});
