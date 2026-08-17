@@ -945,7 +945,6 @@ FilterRequestExecution::commitSource(
                     dependent.outputIndex_,
                     std::move(output.wipSubset_),
                     output.wipSubsetBytes_,
-                    {},
                 };
                 item.contributions_.reserve(output.contributions_.size());
                 for (auto& contribution : output.contributions_) {
@@ -1020,7 +1019,7 @@ FilterRequestExecution::takeRelationReadyOutputLocked(size_t outputIndex)
         });
     }
 
-    RelationReadyOutput result{std::move(pending->second.ready_), {}};
+    RelationReadyOutput result(std::move(pending->second.ready_));
     result.targets_.reserve(pending->second.targetTiles_.size());
     for (auto const& targetKey : pending->second.targetTiles_) {
         auto target = relationTargetTiles.find(targetKey);

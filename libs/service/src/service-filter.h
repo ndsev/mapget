@@ -5,6 +5,7 @@
 #include <atomic>
 #include <map>
 #include <set>
+#include <utility>
 
 namespace mapget::detail
 {
@@ -115,6 +116,15 @@ private:
     /** Fully source-complete output ready for relation/group finalization. */
     struct ReadyOutput
     {
+        ReadyOutput(size_t outputIndex, TileSubsetLayer::Ptr layer, uint64_t layerBytes)
+            : outputIndex_(outputIndex), layer_(std::move(layer)), layerBytes_(layerBytes)
+        {
+        }
+        ReadyOutput(ReadyOutput&&) = default;
+        ReadyOutput& operator=(ReadyOutput&&) = default;
+        ReadyOutput(ReadyOutput const&) = delete;
+        ReadyOutput& operator=(ReadyOutput const&) = delete;
+
         size_t outputIndex_ = 0;
         TileSubsetLayer::Ptr layer_;
         uint64_t layerBytes_ = 0;
@@ -142,6 +152,12 @@ private:
     /** One output whose complete target set can now be resolved independently. */
     struct RelationReadyOutput
     {
+        explicit RelationReadyOutput(ReadyOutput ready) : ready_(std::move(ready)) {}
+        RelationReadyOutput(RelationReadyOutput&&) = default;
+        RelationReadyOutput& operator=(RelationReadyOutput&&) = default;
+        RelationReadyOutput(RelationReadyOutput const&) = delete;
+        RelationReadyOutput& operator=(RelationReadyOutput const&) = delete;
+
         ReadyOutput ready_;
         std::vector<RelationTargetSnapshot> targets_;
     };
@@ -159,6 +175,12 @@ private:
     /** Outputs and target loads produced by relation preparation. */
     struct PreparedRelationOutputs
     {
+        PreparedRelationOutputs() = default;
+        PreparedRelationOutputs(PreparedRelationOutputs&&) = default;
+        PreparedRelationOutputs& operator=(PreparedRelationOutputs&&) = default;
+        PreparedRelationOutputs(PreparedRelationOutputs const&) = delete;
+        PreparedRelationOutputs& operator=(PreparedRelationOutputs const&) = delete;
+
         std::vector<ReadyOutput> ready_;
         std::vector<RelationReadyOutput> relationReady_;
         std::vector<MapTileKey> targetsToSchedule_;
