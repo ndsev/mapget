@@ -643,7 +643,7 @@ private:
         {
             return {};
         }
-        return {LocateCandidate(
+        return {LocateCandidate::fromFeatureIdExpression(
             MapTileKey(
                 LayerType::Features,
                 "FilterMap",
@@ -652,7 +652,7 @@ private:
                     static_cast<int32_t>(
                         *tileId))),
             "Road",
-            "roadId == locateRoadId",
+            "$features.*{typeId == 'Road' and roadId == locateRoadId}.id",
             {
                 {
                     "locateRoadId",

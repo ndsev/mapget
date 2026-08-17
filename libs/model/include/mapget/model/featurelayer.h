@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -342,9 +343,23 @@ public:
     find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
 
-    /** Apply a portable exact or filtered selector to this already-loaded tile. */
+    /** Apply one portable selector to this already-loaded tile. */
     [[nodiscard]] tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
-    find(FeatureLayerSelector const& selector) const;
+    find(
+        FeatureLayerSelector const& selector,
+        std::function<bool()> const& cancellationCheck = {}) const;
+
+    /**
+     * Apply several portable selectors while sharing tile-wide SIMFIL setup.
+     *
+     * Results retain selector order. A cancelled traversal returns an equally
+     * sized collection of empty results; callers providing a cancellation check
+     * must inspect their own state before consuming it.
+     */
+    [[nodiscard]]
+    tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error> find(
+        std::span<FeatureLayerSelector const> selectors,
+        std::function<bool()> const& cancellationCheck = {}) const;
 
     /**
      * Evaluate a (potentially cached) simfil query on this pool

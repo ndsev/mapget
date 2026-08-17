@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "mapget/model/featureid.h"
 #include "mapget/model/layerschema.h"
 #include "mapget/model/simfilutil.h"
 #include "simfil/overlay.h"
@@ -2463,64 +2464,257 @@ FeatureLayerFilterRequest::filter(TileFeatureLayer const& sourceLayer) const
 }
 
 tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
-TileFeatureLayer::find(FeatureLayerSelector const& selector) const
+TileFeatureLayer::find(
+    FeatureLayerSelector const& selector,
+    std::function<bool()> const& cancellationCheck) const
 {
-    if (selector.canonicalFeatureId_) {
-        if (!selector.typeId_.empty() || selector.featureFilter_ || !selector.bindings_.empty()) {
+    auto selected = find(
+        std::span<FeatureLayerSelector const>{&selector, 1},
+        cancellationCheck);
+    if (!selected) {
+        return tl::unexpected(selected.error());
+    }
+    return std::move(selected->front());
+}
+
+tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error>
+TileFeatureLayer::find(
+    std::span<FeatureLayerSelector const> selectors,
+    std::function<bool()> const& cancellationCheck) const
+{
+    std::vector<std::vector<model_ptr<Feature>>> results(selectors.size());
+    auto const cancelled = [&]() { return cancellationCheck && cancellationCheck(); };
+    if (selectors.empty() || cancelled()) {
+        return results;
+    }
+
+    bool needsEvaluator = false;
+    for (size_t index = 0; index < selectors.size(); ++index) {
+        if (cancelled()) {
+            return std::vector<std::vector<model_ptr<Feature>>>(selectors.size());
+        }
+        auto const& selector = selectors[index];
+        if (selector.canonicalFeatureId_) {
+            if (!selector.typeId_.empty() || selector.featureFilter_ ||
+                selector.featureIdExpression_ || !selector.bindings_.empty())
+            {
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::InvalidArguments,
+                    "An exact feature selector cannot also contain a type, filter, "
+                    "feature-ID expression, or bindings.",
+                });
+            }
+            if (auto feature = find(*selector.canonicalFeatureId_)) {
+                results[index].push_back(std::move(feature));
+            }
+            continue;
+        }
+
+        auto const hasFilter = selector.featureFilter_ && !selector.featureFilter_->empty();
+        auto const hasIdExpression =
+            selector.featureIdExpression_ && !selector.featureIdExpression_->empty();
+        if (selector.typeId_.empty() || hasFilter == hasIdExpression) {
             return tl::unexpected(simfil::Error{
                 simfil::Error::InvalidArguments,
-                "An exact feature selector cannot also contain a type, filter, or bindings.",
+                "A feature selector requires a type and exactly one filter or feature-ID "
+                "expression.",
             });
         }
-        auto feature = find(*selector.canonicalFeatureId_);
-        if (!feature) {
-            return std::vector<model_ptr<Feature>>{};
-        }
-        return std::vector<model_ptr<Feature>>{std::move(feature)};
+        needsEvaluator = true;
+    }
+    if (!needsEvaluator) {
+        return results;
     }
 
-    if (selector.typeId_.empty() || !selector.featureFilter_) {
+    auto sourceStrings = std::dynamic_pointer_cast<StringPool>(strings());
+    if (!sourceStrings) {
         return tl::unexpected(simfil::Error{
-            simfil::Error::InvalidArguments,
-            "A filtered feature selector requires both typeId and featureFilter.",
+            simfil::Error::InternalError,
+            fmt::format("Feature layer '{}' does not use a mapget StringPool.", stringPoolId()),
         });
     }
-
-    auto evaluatorContext = makeFilterEvaluator(*this, selector.bindings_);
-    if (!evaluatorContext) {
-        return tl::unexpected(evaluatorContext.error());
-    }
+    auto evaluatorStrings = std::make_shared<StringPool>(*sourceStrings);
+    auto environment = makeEnvironment(evaluatorStrings);
+    installCompletionLayerSchema(*environment, layerSchema(), evaluatorStrings);
 
     std::vector<model_ptr<Feature>> allFeatures;
     allFeatures.reserve(size());
+    std::unordered_map<std::string_view, model_ptr<Feature>> representativeByType;
     for (auto const& feature : *this) {
+        if (cancelled()) {
+            return results;
+        }
         allFeatures.push_back(feature);
+        representativeByType.try_emplace(feature->typeId(), feature);
     }
     auto featureArray = simfil::model_ptr<FeatureArrayView>::make(std::move(allFeatures));
+    auto const& features = featureArray->model().features_;
 
-    std::vector<model_ptr<Feature>> selected;
-    std::map<std::string, simfil::Trace> ignoredTraces;
-    for (auto const& feature : *this) {
-        if (feature->typeId() != selector.typeId_) {
+    auto const baseConstants = environment->constants;
+    auto installBindings = [&](FeatureLayerSelector const& selector)
+        -> tl::expected<std::vector<BindingField>, simfil::Error>
+    {
+        // Selector constants are compiled into SIMFIL programs. Restore the
+        // environment baseline first so bindings neither leak between
+        // selectors nor erase a same-named built-in constant.
+        environment->constants = baseConstants;
+
+        std::vector<BindingField> fields;
+        fields.reserve(selector.bindings_.size());
+        for (auto const& [name, binding] : selector.bindings_) {
+            if (name.empty()) {
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::InvalidArguments,
+                    "Feature selector binding names must not be empty.",
+                });
+            }
+            auto id = evaluatorStrings->emplace(name);
+            if (!id) {
+                return tl::unexpected(id.error());
+            }
+            auto value = bindingValue(binding);
+            environment->constants.insert_or_assign(name, value);
+            fields.push_back(BindingField{*id, std::move(value)});
+        }
+        return fields;
+    };
+
+    for (size_t selectorIndex = 0; selectorIndex < selectors.size(); ++selectorIndex) {
+        auto const& selector = selectors[selectorIndex];
+        if (selector.canonicalFeatureId_) {
             continue;
         }
-        auto context = simfil::model_ptr<simfil::OverlayNode>::make(simfil::Value::field(*feature));
-        addBindings(context, evaluatorContext->bindingFields_);
-        context->set(StringPool::OverlayFeaturesStr, simfil::Value::field(featureArray));
-        auto matches = evaluateFilter(
-            *evaluatorContext->evaluator_,
-            selector.featureFilter_,
-            *context,
-            static_cast<simfil::ModelNode const&>(*feature).schema(),
-            ignoredTraces);
-        if (!matches) {
-            return tl::unexpected(matches.error().error_);
+        if (cancelled()) {
+            return std::vector<std::vector<model_ptr<Feature>>>(selectors.size());
         }
-        if (*matches) {
-            selected.push_back(feature);
+
+        auto representative = representativeByType.find(selector.typeId_);
+        // Matching the old typed-scan behavior, an absent target type produces
+        // no result without compiling an expression that has no valid root.
+        if (representative == representativeByType.end()) {
+            continue;
+        }
+        auto bindingFields = installBindings(selector);
+        if (!bindingFields) {
+            return tl::unexpected(bindingFields.error());
+        }
+
+        auto const rootSchema =
+            static_cast<simfil::ModelNode const&>(*representative->second).schema();
+        auto const& expression = selector.featureFilter_ ?
+            *selector.featureFilter_ :
+            *selector.featureIdExpression_;
+        auto compiled = simfil::compile(
+            *environment,
+            expression,
+            simfil::CompileOptions{
+                .any = selector.featureFilter_.has_value(),
+                .rewriteMode = simfil::RewriteMode::Schema,
+                .rootSchema = rootSchema,
+            });
+        if (!compiled) {
+            return tl::unexpected(compiled.error());
+        }
+
+        auto makeContext = [&](model_ptr<Feature> const& feature)
+        {
+            auto context =
+                simfil::model_ptr<simfil::OverlayNode>::make(simfil::Value::field(*feature));
+            addBindings(context, *bindingFields);
+            context->set(StringPool::OverlayFeaturesStr, simfil::Value::field(featureArray));
+            return context;
+        };
+        if (selector.featureFilter_) {
+            for (auto const& feature : features) {
+                if (cancelled()) {
+                    return std::vector<std::vector<model_ptr<Feature>>>(selectors.size());
+                }
+                if (feature->typeId() != selector.typeId_) {
+                    continue;
+                }
+                environment->warnings.clear();
+                environment->traces.clear();
+                auto values = simfil::eval(
+                    *environment,
+                    **compiled,
+                    *makeContext(feature),
+                    nullptr);
+                environment->traces.clear();
+                if (!values) {
+                    return tl::unexpected(values.error());
+                }
+                if (filterMatches(*values)) {
+                    results[selectorIndex].push_back(feature);
+                }
+            }
+            continue;
+        }
+
+        environment->warnings.clear();
+        environment->traces.clear();
+        auto values = simfil::eval(
+            *environment,
+            **compiled,
+            *makeContext(representative->second),
+            nullptr);
+        environment->traces.clear();
+        if (!values) {
+            return tl::unexpected(values.error());
+        }
+
+        std::set<std::string> seenIds;
+        for (auto const& value : *values) {
+            if (cancelled()) {
+                return std::vector<std::vector<model_ptr<Feature>>>(selectors.size());
+            }
+            if (value.isa(simfil::ValueType::Null) || value.isa(simfil::ValueType::Undef)) {
+                continue;
+            }
+
+            std::string canonicalId;
+            if (value.isa(simfil::ValueType::String)) {
+                canonicalId = value.as<simfil::ValueType::String>();
+            }
+            else if (value.isa(simfil::ValueType::Object)) {
+                auto const* node = value.node();
+                try {
+                    auto featureId = node && node->owningModel() ?
+                        node->owningModel()->resolve<FeatureId>(*node) :
+                        model_ptr<FeatureId>{};
+                    if (!featureId) {
+                        return tl::unexpected(simfil::Error{
+                            simfil::Error::InvalidArguments,
+                            "A feature-ID expression returned an object that is not a FeatureId.",
+                        });
+                    }
+                    canonicalId = featureId->toString();
+                }
+                catch (std::exception const&) {
+                    return tl::unexpected(simfil::Error{
+                        simfil::Error::InvalidArguments,
+                        "A feature-ID expression returned an object that is not a FeatureId.",
+                    });
+                }
+            }
+            else {
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::InvalidArguments,
+                    fmt::format(
+                        "A feature-ID expression returned unsupported {} value.",
+                        simfil::valueType2String(value.type)),
+                });
+            }
+
+            if (!seenIds.insert(canonicalId).second) {
+                continue;
+            }
+            auto feature = find(canonicalId);
+            if (feature && feature->typeId() == selector.typeId_) {
+                results[selectorIndex].push_back(std::move(feature));
+            }
         }
     }
-    return selected;
+    return results;
 }
 
 }  // namespace mapget

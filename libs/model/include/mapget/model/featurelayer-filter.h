@@ -53,12 +53,17 @@ using FeatureLayerFilterBinding = std::variant<std::monostate, bool, int64_t, do
  * - `typeId_ + featureFilter_` evaluates a schema-compiled SIMFIL expression
  *   against every feature of that type. Bindings and the request-local
  *   `$features` array are available to the expression.
+ * - `typeId_ + featureIdExpression_` evaluates one schema-compiled SIMFIL
+ *   expression for the tile and resolves its returned canonical feature IDs
+ *   through the tile's primary-id index. This form avoids re-evaluating a
+ *   tile-wide identity expression once for every candidate feature.
  */
 struct FeatureLayerSelector
 {
     std::optional<std::string> canonicalFeatureId_;
     std::string typeId_;
     std::optional<std::string> featureFilter_;
+    std::optional<std::string> featureIdExpression_;
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
 
     /** Return whether this selector uses canonical identity instead of SIMFIL. */

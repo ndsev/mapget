@@ -3,6 +3,7 @@
 #include "fmt/format.h"
 #include "mapget/log.h"
 #include "mapget/model/featureid.h"
+#include "mapget/service/locate.h"
 #include "service-impl.h"
 #include "service-memory.h"
 
@@ -342,6 +343,16 @@ FilterRequestExecution::~FilterRequestExecution()
             pendingRelationOutputs.size() *
                 (sizeof(decltype(pendingRelationOutputs)::value_type) + 3 * sizeof(void*)),
         });
+    for (auto const& [_, pending] : pendingRelationOutputs) {
+        usage.add(
+            "relation-output-targets",
+            {
+                (pending.targetTiles_.size() + pending.pendingTargetTiles_.size()) *
+                    sizeof(MapTileKey),
+                (pending.targetTiles_.size() + pending.pendingTargetTiles_.size()) *
+                    (sizeof(MapTileKey) + 3 * sizeof(void*)),
+            });
+    }
     usage.add(
         "relation-target-tiles",
         {
@@ -358,6 +369,28 @@ FilterRequestExecution::~FilterRequestExecution()
             });
         if (target.failureMessage_) {
             usage.add("relation-target-errors", stringMemoryUsage(*target.failureMessage_));
+        }
+    }
+    {
+        std::lock_guard cacheLock(relationSelectorCacheMutex);
+        usage.add(
+            "relation-selector-cache",
+            {
+                relationSelectorCache.size() *
+                    sizeof(decltype(relationSelectorCache)::value_type),
+                relationSelectorCache.size() *
+                    (sizeof(decltype(relationSelectorCache)::value_type) + 3 * sizeof(void*)),
+            });
+        for (auto const& [key, resolution] : relationSelectorCache) {
+            usage.add("relation-selector-keys", stringMemoryUsage(key));
+            if (*resolution) {
+                usage.add("relation-selector-results", vectorMemoryUsage(resolution->value()));
+            }
+            else {
+                usage.add(
+                    "relation-selector-errors",
+                    stringMemoryUsage(resolution->error().message));
+            }
         }
     }
     return usage.total().allocatedBytes;
@@ -531,6 +564,9 @@ void FilterRequestExecution::abortChildRequests()
 
 void FilterRequestExecution::finishIfComplete()
 {
+    if (request->isCancelled()) {
+        return;
+    }
     RequestStatus finalStatus = RequestStatus::Open;
     {
         std::lock_guard lock(mutex);
@@ -549,6 +585,9 @@ void FilterRequestExecution::finishIfComplete()
 
 void FilterRequestExecution::fail(simfil::Error const& error)
 {
+    if (request->isCancelled()) {
+        return;
+    }
     {
         std::lock_guard lock(mutex);
         if (terminal) {
@@ -630,6 +669,9 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
 void FilterRequestExecution::discardEvaluationJob(uint64_t sourceBytes)
 {
     memory->sourceTileModels.subtract(sourceBytes);
+    if (request->isCancelled()) {
+        return;
+    }
     {
         std::lock_guard lock(mutex);
         if (pendingEvaluationJobs > 0) {
@@ -733,7 +775,13 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
             if (location.tileKey_ != source.id()) {
                 continue;
             }
-            auto selected = resolveLocateCandidate(location, source);
+            auto selected = resolveLocateCandidate(
+                location,
+                source,
+                [request = this->request] { return request->isCancelled(); });
+            if (request->isCancelled()) {
+                return {};
+            }
             if (!selected) {
                 addIssue(fmt::format(
                     "Could not evaluate relation-target selector for '{}': {}",
@@ -925,7 +973,7 @@ FilterRequestExecution::commitSource(
     return ready;
 }
 
-tl::expected<void, simfil::Error> FilterRequestExecution::resolveRelationTargetInOutput(
+tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContribution(
     ReadyOutput& output,
     MapTileKey const& targetKey,
     TileFeatureLayer const& targetLayer)
@@ -956,28 +1004,224 @@ tl::expected<void, simfil::Error> FilterRequestExecution::resolveRelationTargetI
             std::nullopt,
     };
 
-    for (auto& contribution : output.contributions_) {
-        for (auto& descriptor : contribution.relationDescriptors_) {
-            if (descriptor.target_) {
-                continue;
-            }
-            for (auto& candidate : descriptor.targetCandidates_) {
-                if (candidate.resolved_ || candidate.tileKey_ != targetKey) {
-                    continue;
-                }
-                auto selected = targetLayer.find(candidate.selector_);
-                if (!selected) {
-                    return tl::unexpected(selected.error());
-                }
-                candidate.resolved_ = true;
-                descriptor.targetMatches_
-                    .insert(descriptor.targetMatches_.end(), selected->begin(), selected->end());
-            }
-        }
-    }
     output.dynamicContributions_.erase(targetKey);
     output.dynamicContributions_.emplace(targetKey, std::move(targetContribution));
     return {};
+}
+
+tl::expected<FilterRequestExecution::RelationReadyOutput, simfil::Error>
+FilterRequestExecution::takeRelationReadyOutputLocked(size_t outputIndex)
+{
+    auto pending = pendingRelationOutputs.find(outputIndex);
+    if (pending == pendingRelationOutputs.end() || !pending->second.pendingTargetTiles_.empty()) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InternalError,
+            "A relation output was released before all target tiles became terminal.",
+        });
+    }
+
+    RelationReadyOutput result{std::move(pending->second.ready_), {}};
+    result.targets_.reserve(pending->second.targetTiles_.size());
+    for (auto const& targetKey : pending->second.targetTiles_) {
+        auto target = relationTargetTiles.find(targetKey);
+        if (target == relationTargetTiles.end() || !target->second.terminal_) {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InternalError,
+                "A relation output references a non-terminal target tile.",
+            });
+        }
+        result.targets_.push_back(RelationTargetSnapshot{
+            targetKey,
+            target->second.layer_,
+            target->second.failureMessage_,
+        });
+    }
+    pendingRelationOutputs.erase(pending);
+    ++readyOutputTiles;
+    return result;
+}
+
+tl::expected<std::vector<FilterRequestExecution::ReadyOutput>, simfil::Error>
+FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOutput> ready)
+{
+    struct SelectorConsumer
+    {
+        FeatureLayerRelationTargetCandidate* candidate_ = nullptr;
+        FeatureLayerRelationDescriptor* descriptor_ = nullptr;
+        size_t selectorIndex_ = 0;
+    };
+    struct TargetBatch
+    {
+        TileFeatureLayer::Ptr layer_;
+        std::optional<std::string> failureMessage_;
+        std::vector<ReadyOutput*> outputs_;
+    };
+
+    std::map<MapTileKey, TargetBatch> targetBatches;
+    for (auto& output : ready) {
+        for (auto const& target : output.targets_) {
+            auto [batch, inserted] = targetBatches.try_emplace(
+                target.key_,
+                TargetBatch{target.layer_, target.failureMessage_, {}});
+            if (!inserted && batch->second.layer_ != target.layer_) {
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::InternalError,
+                    "One relation target tile acquired inconsistent terminal states.",
+                });
+            }
+            batch->second.outputs_.push_back(&output.ready_);
+        }
+    }
+
+    for (auto& [targetKey, batch] : targetBatches) {
+        if (request->isCancelled()) {
+            return std::vector<ReadyOutput>{};
+        }
+        if (!batch.layer_) {
+            auto const message = batch.failureMessage_.value_or(
+                fmt::format("Could not load relation target tile {}.", targetKey.toString()));
+            for (auto* output : batch.outputs_) {
+                markRelationTargetUnavailableInOutput(*output, targetKey, message);
+            }
+            continue;
+        }
+
+        std::map<std::string, size_t> selectorIndexByKey;
+        std::vector<std::string> selectorKeys;
+        std::vector<FeatureLayerSelector> selectors;
+        std::vector<SelectorConsumer> consumers;
+        for (auto* output : batch.outputs_) {
+            for (auto& contribution : output->contributions_) {
+                for (auto& descriptor : contribution.relationDescriptors_) {
+                    if (descriptor.target_) {
+                        continue;
+                    }
+                    for (auto& candidate : descriptor.targetCandidates_) {
+                        if (candidate.resolved_ || candidate.tileKey_ != targetKey) {
+                            continue;
+                        }
+                        auto selectorKey =
+                            LocateCandidate(targetKey, candidate.selector_).serialize().dump();
+                        auto [found, inserted] = selectorIndexByKey.try_emplace(
+                            selectorKey,
+                            selectors.size());
+                        if (inserted) {
+                            selectorKeys.push_back(std::move(selectorKey));
+                            selectors.push_back(candidate.selector_);
+                        }
+                        consumers.push_back(SelectorConsumer{
+                            &candidate,
+                            &descriptor,
+                            found->second,
+                        });
+                    }
+                }
+            }
+        }
+
+        std::vector<SharedSelectorResolution> resolutions(selectors.size());
+        std::vector<size_t> missingIndexes;
+        std::vector<FeatureLayerSelector> missingSelectors;
+        {
+            std::lock_guard cacheLock(relationSelectorCacheMutex);
+            for (size_t index = 0; index < selectors.size(); ++index) {
+                auto found = relationSelectorCache.find(selectorKeys[index]);
+                if (found != relationSelectorCache.end()) {
+                    resolutions[index] = found->second;
+                    continue;
+                }
+                missingIndexes.push_back(index);
+                missingSelectors.push_back(selectors[index]);
+            }
+        }
+
+        if (!missingSelectors.empty()) {
+            tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error> selected =
+                tl::unexpected(simfil::Error{
+                    simfil::Error::InternalError,
+                    "Relation-target selector evaluation did not complete.",
+                });
+            try {
+                selected = batch.layer_->find(
+                    std::span<FeatureLayerSelector const>{missingSelectors},
+                    [request = this->request] { return request->isCancelled(); });
+            }
+            catch (std::exception const& exception) {
+                selected = tl::unexpected(simfil::Error{
+                    simfil::Error::InternalError,
+                    fmt::format("Relation-target selector evaluation failed: {}", exception.what()),
+                });
+            }
+            catch (...) {
+                selected = tl::unexpected(simfil::Error{
+                    simfil::Error::InternalError,
+                    "Relation-target selector evaluation failed with a non-standard exception.",
+                });
+            }
+
+            if (request->isCancelled()) {
+                return std::vector<ReadyOutput>{};
+            }
+
+            if (selected && selected->size() != missingIndexes.size()) {
+                selected = tl::unexpected(simfil::Error{
+                    simfil::Error::InternalError,
+                    "Batched relation-target selector results lost positional alignment.",
+                });
+            }
+
+            for (size_t index = 0; index < missingIndexes.size(); ++index) {
+                SharedSelectorResolution resolution;
+                if (selected) {
+                    resolution = std::make_shared<SelectorResolution>(
+                        std::move((*selected)[index]));
+                }
+                else {
+                    resolution = std::make_shared<SelectorResolution>(
+                        tl::unexpected(selected.error()));
+                }
+                auto const selectorIndex = missingIndexes[index];
+                // Never hold this cache mutex during SIMFIL. A concurrent miss
+                // may do the same work, but whichever completes first becomes
+                // the request-wide reusable result without blocking workers
+                // behind another selector scan.
+                std::lock_guard cacheLock(relationSelectorCacheMutex);
+                auto [cached, _] = relationSelectorCache.try_emplace(
+                    selectorKeys[selectorIndex],
+                    std::move(resolution));
+                resolutions[selectorIndex] = cached->second;
+            }
+        }
+
+        if (request->isCancelled()) {
+            return std::vector<ReadyOutput>{};
+        }
+        for (auto& consumer : consumers) {
+            auto const& resolution = resolutions[consumer.selectorIndex_];
+            if (!*resolution) {
+                return tl::unexpected(resolution->error());
+            }
+            consumer.candidate_->resolved_ = true;
+            consumer.descriptor_->targetMatches_.insert(
+                consumer.descriptor_->targetMatches_.end(),
+                resolution->value().begin(),
+                resolution->value().end());
+        }
+        for (auto* output : batch.outputs_) {
+            auto added = addRelationTargetContribution(*output, targetKey, *batch.layer_);
+            if (!added) {
+                return tl::unexpected(added.error());
+            }
+        }
+    }
+
+    std::vector<ReadyOutput> result;
+    result.reserve(ready.size());
+    for (auto&& output : ready) {
+        result.push_back(std::move(output.ready_));
+    }
+    std::ranges::sort(result, {}, &ReadyOutput::outputIndex_);
+    return result;
 }
 
 void FilterRequestExecution::markRelationTargetUnavailableInOutput(
@@ -1043,6 +1287,12 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
             }
         }
 
+        if (targetKeys.empty()) {
+            prepared.ready_.push_back(std::move(ready));
+            ++readyOutputTiles;
+            continue;
+        }
+
         std::set<MapTileKey> pendingKeys;
         for (auto const& targetKey : targetKeys) {
             auto [targetState, inserted] = relationTargetTiles.try_emplace(targetKey);
@@ -1053,23 +1303,6 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
                 });
             }
             if (targetState->second.terminal_) {
-                if (targetState->second.layer_) {
-                    auto resolved = resolveRelationTargetInOutput(
-                        ready,
-                        targetKey,
-                        *targetState->second.layer_);
-                    if (!resolved) {
-                        return tl::unexpected(resolved.error());
-                    }
-                }
-                else {
-                    markRelationTargetUnavailableInOutput(
-                        ready,
-                        targetKey,
-                        targetState->second.failureMessage_.value_or(fmt::format(
-                            "Could not load relation target tile {}.",
-                            targetKey.toString())));
-                }
                 continue;
             }
             pendingKeys.insert(targetKey);
@@ -1080,15 +1313,11 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
             }
         }
 
-        if (pendingKeys.empty()) {
-            prepared.ready_.push_back(std::move(ready));
-            ++readyOutputTiles;
-            continue;
-        }
         auto [pending, inserted] = pendingRelationOutputs.emplace(
             ready.outputIndex_,
             PendingRelationOutput{
                 std::move(ready),
+                std::move(targetKeys),
                 std::move(pendingKeys),
             });
         if (!inserted) {
@@ -1096,6 +1325,13 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
                 simfil::Error::InternalError,
                 "Filter output entered relation-target resolution more than once.",
             });
+        }
+        if (pending->second.pendingTargetTiles_.empty()) {
+            auto relationReady = takeRelationReadyOutputLocked(pending->first);
+            if (!relationReady) {
+                return tl::unexpected(relationReady.error());
+            }
+            prepared.relationReady_.push_back(std::move(*relationReady));
         }
     }
     return prepared;
@@ -1123,9 +1359,23 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
     };
     {
         std::lock_guard lock(request->childRequestsMutex_);
+        // Abort clears children under the same mutex. Refuse late ownership so
+        // a cancelled request cannot regain a child/callback reference cycle.
+        if (request->isCancelled()) {
+            return;
+        }
         request->childRequests_.push_back(child);
     }
-    if (!impl->requestTiles(std::vector<LayerTilesRequest::Ptr>{child}, clientHeaders)) {
+    auto const accepted =
+        impl->requestTiles(std::vector<LayerTilesRequest::Ptr>{child}, clientHeaders);
+    // If cancellation cleared child ownership immediately after insertion,
+    // close the narrow enqueue race explicitly. Otherwise a now-unowned child
+    // could continue loading after its filter generation was cancelled.
+    if (request->isCancelled()) {
+        impl->scheduler_.abortRequest(child);
+        return;
+    }
+    if (!accepted) {
         completeUnavailableRelationTarget(
             targetKey,
             fmt::format("Could not schedule relation target tile {}.", targetKey.toString()));
@@ -1136,7 +1386,11 @@ void FilterRequestExecution::completeUnavailableRelationTarget(
     MapTileKey const& targetKey,
     std::string message)
 {
-    std::vector<ReadyOutput> ready;
+    if (request->isCancelled()) {
+        return;
+    }
+    std::vector<RelationReadyOutput> relationReady;
+    std::optional<simfil::Error> error;
     {
         std::lock_guard lock(mutex);
         if (terminal || request->isCancelled()) {
@@ -1156,20 +1410,27 @@ void FilterRequestExecution::completeUnavailableRelationTarget(
             if (pending == pendingRelationOutputs.end()) {
                 continue;
             }
-            markRelationTargetUnavailableInOutput(
-                pending->second.ready_,
-                targetKey,
-                *found->second.failureMessage_);
             pending->second.pendingTargetTiles_.erase(targetKey);
             if (pending->second.pendingTargetTiles_.empty()) {
-                ready.push_back(std::move(pending->second.ready_));
-                pendingRelationOutputs.erase(pending);
-                ++readyOutputTiles;
+                auto released = takeRelationReadyOutputLocked(outputIndex);
+                if (!released) {
+                    error = released.error();
+                    break;
+                }
+                relationReady.push_back(std::move(*released));
             }
         }
     }
-    std::ranges::sort(ready, {}, &ReadyOutput::outputIndex_);
-    emitCompletedOutputs(std::move(ready));
+    if (error) {
+        fail(*error);
+        return;
+    }
+    auto ready = resolveRelationReadyOutputs(std::move(relationReady));
+    if (!ready) {
+        fail(ready.error());
+        return;
+    }
+    emitCompletedOutputs(std::move(*ready));
     emitProgress("RelationTargetUnavailable");
     finishIfComplete();
 }
@@ -1178,6 +1439,9 @@ void FilterRequestExecution::collectRelationTarget(
     MapTileKey const& targetKey,
     TileFeatureLayer::Ptr layer)
 {
+    if (request->isCancelled()) {
+        return;
+    }
     if (!layer || layer->id() != targetKey) {
         fail(simfil::Error{
             simfil::Error::InternalError,
@@ -1188,7 +1452,7 @@ void FilterRequestExecution::collectRelationTarget(
         return;
     }
 
-    std::vector<ReadyOutput> ready;
+    std::vector<RelationReadyOutput> relationReady;
     std::optional<simfil::Error> error;
     {
         std::lock_guard lock(mutex);
@@ -1217,17 +1481,14 @@ void FilterRequestExecution::collectRelationTarget(
                 if (pending == pendingRelationOutputs.end()) {
                     continue;
                 }
-                auto resolved =
-                    resolveRelationTargetInOutput(pending->second.ready_, targetKey, *layer);
-                if (!resolved) {
-                    error = resolved.error();
-                    break;
-                }
                 pending->second.pendingTargetTiles_.erase(targetKey);
                 if (pending->second.pendingTargetTiles_.empty()) {
-                    ready.push_back(std::move(pending->second.ready_));
-                    pendingRelationOutputs.erase(pending);
-                    ++readyOutputTiles;
+                    auto released = takeRelationReadyOutputLocked(outputIndex);
+                    if (!released) {
+                        error = released.error();
+                        break;
+                    }
+                    relationReady.push_back(std::move(*released));
                 }
             }
         }
@@ -1236,8 +1497,12 @@ void FilterRequestExecution::collectRelationTarget(
         fail(*error);
         return;
     }
-    std::ranges::sort(ready, {}, &ReadyOutput::outputIndex_);
-    emitCompletedOutputs(std::move(ready));
+    auto ready = resolveRelationReadyOutputs(std::move(relationReady));
+    if (!ready) {
+        fail(ready.error());
+        return;
+    }
+    emitCompletedOutputs(std::move(*ready));
     emitProgress("RelationTargetResolved");
     finishIfComplete();
 }
@@ -1498,6 +1763,9 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
 bool FilterRequestExecution::emitCompletedOutputs(std::vector<ReadyOutput> ready)
 {
     for (auto&& output : ready) {
+        if (request->isCancelled()) {
+            return false;
+        }
         auto entryCount = finalizeOutput(std::move(output));
         if (!entryCount) {
             fail(entryCount.error());
@@ -1558,6 +1826,11 @@ void FilterRequestExecution::evaluate(
     auto finishEvaluationJob = [&]()
     {
         if (!evaluationJobPending) {
+            return;
+        }
+        if (request->isCancelled()) {
+            memory->sourceTileModels.subtract(sourceBytes);
+            evaluationJobPending = false;
             return;
         }
         {
@@ -1656,6 +1929,17 @@ void FilterRequestExecution::evaluate(
         for (auto const& targetKey : prepared->targetsToSchedule_) {
             scheduleRelationTarget(targetKey);
         }
+        auto relationReady = resolveRelationReadyOutputs(std::move(prepared->relationReady_));
+        if (!relationReady) {
+            finishEvaluationJob();
+            fail(relationReady.error());
+            return;
+        }
+        prepared->ready_.insert(
+            prepared->ready_.end(),
+            std::make_move_iterator(relationReady->begin()),
+            std::make_move_iterator(relationReady->end()));
+        std::ranges::sort(prepared->ready_, {}, &ReadyOutput::outputIndex_);
         if (!emitCompletedOutputs(std::move(prepared->ready_))) {
             finishEvaluationJob();
             return;
@@ -1681,6 +1965,9 @@ void FilterRequestExecution::evaluate(
 
 void FilterRequestExecution::childFinished(RequestStatus status)
 {
+    if (request->isCancelled()) {
+        return;
+    }
     if (status != RequestStatus::Success) {
         {
             std::lock_guard lock(mutex);
@@ -2002,7 +2289,13 @@ bool detail::FilterRequestExecution::start(
         if (!active) {
             return uint64_t{0};
         }
-        std::lock_guard lock(active->mutex);
+        // Operational status must not queue behind filter coordination. A
+        // contended sample reuses the last exact gauge value and retries on
+        // the next poll instead of blocking an HTTP event-loop thread.
+        std::unique_lock lock(active->mutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            return active->memory->orchestration.current();
+        }
         return active->orchestrationBytesLocked();
     };
     service.scheduler_.addFilterMemoryTracker(state->memory);

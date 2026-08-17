@@ -9,6 +9,7 @@
 
 #include "mapget/model/featurelayer-filter.h"
 #include "mapget/model/stream.h"
+#include "mapget/service/locate.h"
 
 using namespace mapget;
 
@@ -158,6 +159,88 @@ TileFeatureLayer::Ptr makeRelationSource()
 }
 
 }  // namespace
+
+TEST_CASE(
+    "Portable selector scans stop cooperatively when cancelled",
+    "[feature-layer-filter][selector][cancellation]")
+{
+    auto source = makeFilterSource();
+    size_t cancellationChecks = 0;
+    auto selected = source->find(
+        FeatureLayerSelector{
+            .typeId_ = "Road",
+            .featureFilter_ = "roadId == 42",
+        },
+        [&] { return ++cancellationChecks == 3; });
+
+    REQUIRE(selected.has_value());
+    REQUIRE(selected->empty());
+    REQUIRE(cancellationChecks == 3);
+}
+
+TEST_CASE(
+    "Portable selectors share tile setup and resolve computed feature IDs",
+    "[feature-layer-filter][selector]")
+{
+    auto source = makeRelationSource();
+    auto const firstId = source->at(0)->id()->toString();
+    auto selectors = std::array{
+        FeatureLayerSelector{.canonicalFeatureId_ = firstId},
+        FeatureLayerSelector{
+            .typeId_ = "Road",
+            .featureFilter_ = "roadId == selectedRoadId",
+            .bindings_ = {{"selectedRoadId", int64_t{2}}},
+        },
+        FeatureLayerSelector{
+            .typeId_ = "Road",
+            .featureIdExpression_ =
+                "select(($features.*{typeId == selectedType}.id), selectedIndex)",
+            .bindings_ = {
+                {"selectedType", std::string{"Road"}},
+                {"selectedIndex", int64_t{1}},
+            },
+        },
+    };
+
+    auto selected = source->find(selectors);
+
+    REQUIRE(selected.has_value());
+    REQUIRE(selected->size() == selectors.size());
+    REQUIRE((*selected)[0].size() == 1);
+    REQUIRE((*selected)[0].front()->id()->toString() == firstId);
+    REQUIRE((*selected)[1].size() == 1);
+    REQUIRE((*selected)[1].front()->id()->toString() == source->at(1)->id()->toString());
+    REQUIRE((*selected)[2].size() == 1);
+    REQUIRE((*selected)[2].front()->id()->toString() == source->at(1)->id()->toString());
+}
+
+TEST_CASE(
+    "Feature-ID expression locate candidates roundtrip and resolve",
+    "[feature-layer-filter][selector][locate]")
+{
+    auto source = makeRelationSource();
+    auto candidate = LocateCandidate::fromFeatureIdExpression(
+        source->id(),
+        "Road",
+        "select(($features.*{typeId == selectedType}.id), selectedIndex)",
+        {
+            {"selectedType", std::string{"Road"}},
+            {"selectedIndex", int64_t{1}},
+        });
+
+    auto serialized = candidate.serialize();
+    LocateCandidate roundtripped(serialized);
+    auto selected = resolveLocateCandidate(roundtripped, *source);
+
+    REQUIRE(
+        serialized.at("selector").at("featureIdExpression") ==
+        "select(($features.*{typeId == selectedType}.id), selectedIndex)");
+    REQUIRE_FALSE(serialized.at("selector").contains("featureFilter"));
+    REQUIRE(roundtripped.serialize() == serialized);
+    REQUIRE(selected.has_value());
+    REQUIRE(selected->size() == 1);
+    REQUIRE(selected->front()->id()->toString() == source->at(1)->id()->toString());
+}
 
 TEST_CASE(
     "Feature-layer filter emits ordered feature and attribute channels",

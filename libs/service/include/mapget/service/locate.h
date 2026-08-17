@@ -57,6 +57,18 @@ public:
             std::string,
             FeatureLayerFilterBinding> bindings = {});
 
+    /**
+     * Construct a selector which computes canonical IDs once per candidate tile.
+     *
+     * The expression may use `$features` and scalar bindings and must return
+     * canonical feature-id strings or FeatureId nodes for `typeId`.
+     */
+    [[nodiscard]] static LocateCandidate fromFeatureIdExpression(
+        MapTileKey tileKey,
+        std::string typeId,
+        std::string featureIdExpression,
+        std::map<std::string, FeatureLayerFilterBinding> bindings = {});
+
     MapTileKey tileKey_;
     FeatureLayerSelector selector_;
 
@@ -83,6 +95,7 @@ public:
 tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
 resolveLocateCandidate(
     LocateCandidate const& candidate,
-    TileFeatureLayer const& tile);
+    TileFeatureLayer const& tile,
+    FeatureLayerFilterCancellationCheck const& cancellationCheck = {});
 
 }

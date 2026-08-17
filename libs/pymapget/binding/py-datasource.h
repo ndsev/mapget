@@ -220,6 +220,37 @@ void bindDataSourceServer(py::module_& m)
             py::arg("feature_filter"),
             py::arg("bindings") = py::dict{},
             "Construct a typed SIMFIL candidate with scalar bindings.")
+        .def_static(
+            "from_feature_id_expression",
+            [](MapTileKey tileKey,
+               std::string typeId,
+               std::string featureIdExpression,
+               py::dict const& bindings)
+            {
+                py::module jsonModule = py::module::import("json");
+                auto bindingsJson = nlohmann::json::parse(
+                    jsonModule.attr("dumps")(bindings).cast<std::string>());
+                return LocateCandidate(nlohmann::json{
+                    {"tileId", tileKey.toString()},
+                    {"selector",
+                     {
+                         {"typeId", std::move(typeId)},
+                         {"featureIdExpression", std::move(featureIdExpression)},
+                         {"bindings", std::move(bindingsJson)},
+                     }},
+                });
+            },
+            py::arg("tile_key"),
+            py::arg("type_id"),
+            py::arg("feature_id_expression"),
+            py::arg("bindings") = py::dict{},
+            R"pbdoc(
+            Construct a candidate which computes canonical feature IDs once.
+
+            The SIMFIL expression may use ``$features`` and the supplied scalar
+            bindings. Its returned IDs are resolved through the candidate tile's
+            primary feature index instead of scanning the target type.
+            )pbdoc")
         .def(py::init([](py::dict const& dict) {
                 py::module jsonModule =
                     py::module::import("json");
@@ -231,17 +262,20 @@ void bindDataSourceServer(py::module_& m)
                         jsonString));
             }),
             py::arg("dict"),
-            "Construct an exact or filtered candidate from its wire dictionary.")
+            "Construct an exact, filtered, or feature-ID-expression candidate from its "
+            "wire dictionary.")
         .def_readwrite(
             "tile_key",
             &LocateCandidate::tileKey_)
         .def("to_dict", [](LocateCandidate const& self) {
                 return datasourceJsonToPython(
                     self.serialize());
-            })
+            },
+            "Serialize the candidate to its portable wire dictionary.")
         .def("to_json", [](LocateCandidate const& self) {
                 return self.serialize().dump();
-            });
+            },
+            "Serialize the candidate to a JSON string.");
 
     py::class_<AttachmentRequest>(
         m,

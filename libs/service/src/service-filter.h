@@ -127,7 +127,23 @@ private:
     struct PendingRelationOutput
     {
         ReadyOutput ready_;
+        std::set<MapTileKey> targetTiles_;
         std::set<MapTileKey> pendingTargetTiles_;
+    };
+
+    /** Immutable terminal target state carried beyond the coordination lock. */
+    struct RelationTargetSnapshot
+    {
+        MapTileKey key_;
+        TileFeatureLayer::Ptr layer_;
+        std::optional<std::string> failureMessage_;
+    };
+
+    /** One output whose complete target set can now be resolved independently. */
+    struct RelationReadyOutput
+    {
+        ReadyOutput ready_;
+        std::vector<RelationTargetSnapshot> targets_;
     };
 
     /** Shared load state for one dynamically located relation target tile. */
@@ -144,8 +160,13 @@ private:
     struct PreparedRelationOutputs
     {
         std::vector<ReadyOutput> ready_;
+        std::vector<RelationReadyOutput> relationReady_;
         std::vector<MapTileKey> targetsToSchedule_;
     };
+
+    using SelectorResolution =
+        tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>;
+    using SharedSelectorResolution = std::shared_ptr<SelectorResolution const>;
 
     Service::Impl* impl = nullptr;
     FeatureLayerFilterTilesRequest::Ptr request;
@@ -168,6 +189,8 @@ private:
     std::mutex relationLocationMutex;
     std::map<size_t, PendingRelationOutput> pendingRelationOutputs;
     std::map<MapTileKey, RelationTargetTileState> relationTargetTiles;
+    std::map<std::string, SharedSelectorResolution> relationSelectorCache;
+    mutable std::mutex relationSelectorCacheMutex;
     std::mutex mutex;
     size_t loadedSourceTiles = 0;
     size_t evaluatedSourceTiles = 0;
@@ -224,8 +247,16 @@ private:
         uint64_t outputModelBytes,
         FeatureLayerFilterSourceResult result);
 
-    /** Apply one loaded relation-target tile to unresolved output descriptors. */
-    tl::expected<void, simfil::Error> resolveRelationTargetInOutput(
+    /** Resolve complete target snapshots without holding request coordination state. */
+    tl::expected<std::vector<ReadyOutput>, simfil::Error>
+    resolveRelationReadyOutputs(std::vector<RelationReadyOutput> ready);
+
+    /** Move one fully unblocked output and its terminal target snapshots out of shared state. */
+    tl::expected<RelationReadyOutput, simfil::Error>
+    takeRelationReadyOutputLocked(size_t outputIndex);
+
+    /** Record one loaded relation target as a dependency of a completed output. */
+    tl::expected<void, simfil::Error> addRelationTargetContribution(
         ReadyOutput& output,
         MapTileKey const& targetKey,
         TileFeatureLayer const& targetLayer);

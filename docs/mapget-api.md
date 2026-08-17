@@ -425,6 +425,12 @@ is resolved against the ID compositions
 advertised by the layer before datasource dispatch. Datasources only plan
 candidate tiles and portable selectors; mapget loads candidates through its
 normal cache/coalescing path and returns concrete primary feature identities.
+Portable selectors use exactly one of `canonicalFeatureId`, `typeId` plus
+`featureFilter`, or `typeId` plus `featureIdExpression`. The latter evaluates
+once per loaded candidate tile with `$features` and optional scalar `bindings`,
+then resolves the returned canonical IDs through the tile's primary-ID index.
+It is intended for secondary identities that would otherwise require a nested
+full-tile expression for every candidate feature.
 
 ## `GET /location`
 

@@ -50,15 +50,22 @@ void validateSelector(FeatureLayerSelector const& selector)
         if (selector.canonicalFeatureId_->empty()) {
             throw std::invalid_argument("Locate selector canonicalFeatureId must not be empty.");
         }
-        if (!selector.typeId_.empty() || selector.featureFilter_ || !selector.bindings_.empty()) {
+        if (!selector.typeId_.empty() || selector.featureFilter_ ||
+            selector.featureIdExpression_ || !selector.bindings_.empty())
+        {
             throw std::invalid_argument(
-                "An exact locate selector cannot also contain typeId, featureFilter, or bindings.");
+                "An exact locate selector cannot also contain typeId, featureFilter, "
+                "featureIdExpression, or bindings.");
         }
         return;
     }
-    if (selector.typeId_.empty() || !selector.featureFilter_ || selector.featureFilter_->empty()) {
+    auto const hasFilter = selector.featureFilter_ && !selector.featureFilter_->empty();
+    auto const hasIdExpression =
+        selector.featureIdExpression_ && !selector.featureIdExpression_->empty();
+    if (selector.typeId_.empty() || hasFilter == hasIdExpression) {
         throw std::invalid_argument(
-            "A filtered locate selector requires non-empty typeId and featureFilter.");
+            "A locate selector requires non-empty typeId and exactly one of featureFilter or "
+            "featureIdExpression.");
     }
 }
 
@@ -211,6 +218,12 @@ LocateCandidate::LocateCandidate(nlohmann::json const& j)
         }
         selector_.featureFilter_ = filter->get<std::string>();
     }
+    if (auto expression = selector.find("featureIdExpression"); expression != selector.end()) {
+        if (!expression->is_string()) {
+            throw std::invalid_argument("Locate selector featureIdExpression must be a string.");
+        }
+        selector_.featureIdExpression_ = expression->get<std::string>();
+    }
     if (auto bindings = selector.find("bindings"); bindings != selector.end()) {
         if (!bindings->is_object()) {
             throw std::invalid_argument("Locate selector bindings must be an object.");
@@ -249,6 +262,21 @@ LocateCandidate::LocateCandidate(
 {
 }
 
+LocateCandidate LocateCandidate::fromFeatureIdExpression(
+    MapTileKey tileKey,
+    std::string typeId,
+    std::string featureIdExpression,
+    std::map<std::string, FeatureLayerFilterBinding> bindings)
+{
+    return LocateCandidate(
+        std::move(tileKey),
+        FeatureLayerSelector{
+            .typeId_ = std::move(typeId),
+            .featureIdExpression_ = std::move(featureIdExpression),
+            .bindings_ = std::move(bindings),
+        });
+}
+
 nlohmann::json LocateCandidate::serialize() const
 {
     auto selector = nlohmann::json::object();
@@ -257,7 +285,12 @@ nlohmann::json LocateCandidate::serialize() const
     }
     else {
         selector["typeId"] = selector_.typeId_;
-        selector["featureFilter"] = *selector_.featureFilter_;
+        if (selector_.featureFilter_) {
+            selector["featureFilter"] = *selector_.featureFilter_;
+        }
+        else {
+            selector["featureIdExpression"] = *selector_.featureIdExpression_;
+        }
         if (!selector_.bindings_.empty()) {
             selector["bindings"] = nlohmann::json::object();
             for (auto const& [name, binding] : selector_.bindings_) {
@@ -272,7 +305,10 @@ nlohmann::json LocateCandidate::serialize() const
 }
 
 tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
-resolveLocateCandidate(LocateCandidate const& candidate, TileFeatureLayer const& tile)
+resolveLocateCandidate(
+    LocateCandidate const& candidate,
+    TileFeatureLayer const& tile,
+    FeatureLayerFilterCancellationCheck const& cancellationCheck)
 {
     if (candidate.tileKey_ != tile.id()) {
         return tl::unexpected(simfil::Error{
@@ -280,7 +316,7 @@ resolveLocateCandidate(LocateCandidate const& candidate, TileFeatureLayer const&
             "Locate candidate was applied to a different tile.",
         });
     }
-    return tile.find(candidate.selector_);
+    return tile.find(candidate.selector_, cancellationCheck);
 }
 
 }  // namespace mapget

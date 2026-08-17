@@ -40,13 +40,16 @@ A `DataSource`:
 - may implement `attachment()` for a named lazy payload.
 
 `DataSource::locate()` returns candidate `MapTileKey`s plus a portable in-tile
-selector: either an exact canonical feature ID or a typed, schema-compiled
-SIMFIL `featureFilter` with scalar bindings. It must be side-effect free and
-must not fetch, fill, or convert a tile. The service loads every candidate
-through the ordinary cache/coalesced scheduler, applies the selector to the
-complete tile, and only then decides missing versus ambiguous. The same
-contract is used by public `/locate`, stored-relation targets, add-on
-composition, and `RemoteDataSource`.
+selector. A selector is either an exact canonical feature ID, a typed and
+schema-compiled SIMFIL `featureFilter`, or a typed `featureIdExpression` with
+scalar bindings. `featureIdExpression` is evaluated once against the candidate
+tile's `$features` view; its returned canonical IDs use the tile's primary-ID
+index instead of evaluating a predicate against every feature. Planning must
+be side-effect free and must not fetch, fill, or convert a tile. The service
+loads every candidate through the ordinary cache/coalesced scheduler, applies
+the selector to the complete tile, and only then decides missing versus
+ambiguous. The same contract is used by public `/locate`, stored-relation
+targets, add-on composition, and `RemoteDataSource`.
 
 `DataSourceInfo::stringPoolId_` names the serialized string namespace. The
 service catalog separately assigns `sourceId`. Only one primary datasource may
@@ -184,6 +187,12 @@ Missing cross-tile targets are fetched synchronously in sparse one-hop
 resolution jobs. A cross-tile endpoint is copied into the origin output as a
 supporting feature entry; the target source tile is not automatically another
 output.
+
+Target completion only snapshots terminal tile state while holding the filter
+request's coordination mutex. Portable selectors are then grouped by target
+tile, deduplicated, and evaluated outside that mutex. Their results are cached
+for the request so repeated relation descriptors neither rescan the tile nor
+block cancellation and unrelated workers behind SIMFIL evaluation.
 
 The relation root is overlaid with `$source`, `$target`, `$twoway`, and
 `$relationIndex`. `$relationIndex` is the stable descriptor ordinal within the

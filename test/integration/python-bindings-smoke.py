@@ -131,6 +131,17 @@ def main() -> int:
             "WayLayer",
             PackedTileId.from_tile_xy(0, 0, 0),
         )
+        computed = mapget.LocateCandidate.from_feature_id_expression(
+            tile_key,
+            "Way",
+            "select(($features.*.id), locateWayIndex)",
+            {"locateWayIndex": 0},
+        )
+        assert computed.to_dict()["selector"] == {
+            "typeId": "Way",
+            "featureIdExpression": "select(($features.*.id), locateWayIndex)",
+            "bindings": {"locateWayIndex": 0},
+        }
         return [
             mapget.LocateCandidate(
                 tile_key,
