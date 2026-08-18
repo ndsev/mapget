@@ -1,4 +1,5 @@
 #include "service.h"
+#include "service-filter.h"
 #include "service-impl.h"
 
 #include <algorithm>
@@ -143,7 +144,15 @@ void Service::abort(const FeatureLayerFilterTilesRequest::Ptr& r)
         return;
     }
     r->cancel();
-    impl_->scheduler_.abortFilterJobs(r);
+    std::shared_ptr<detail::FilterRequestExecution> execution;
+    {
+        std::lock_guard lock(r->childRequestsMutex_);
+        execution = r->execution_.lock();
+    }
+    if (execution) {
+        execution->cancel();
+        return;
+    }
     std::vector<LayerTilesRequest::Ptr> childRequests;
     {
         std::lock_guard lock(r->childRequestsMutex_);
@@ -154,6 +163,34 @@ void Service::abort(const FeatureLayerFilterTilesRequest::Ptr& r)
         if (child && !child->isDone()) {
             impl_->scheduler_.abortRequest(child);
         }
+    }
+}
+
+void Service::retainOutputs(
+    LayerTilesRequest::Ptr const& request,
+    std::set<TileId> const& retainedTileIds)
+{
+    impl_->scheduler_.retainRequestOutputs(request, retainedTileIds);
+}
+
+void Service::retainOutputs(
+    FeatureLayerFilterTilesRequest::Ptr const& request,
+    std::set<TileId> const& retainedTileIds)
+{
+    if (!request || request->isDone()) {
+        return;
+    }
+    if (retainedTileIds.empty()) {
+        abort(request);
+        return;
+    }
+    std::shared_ptr<detail::FilterRequestExecution> execution;
+    {
+        std::lock_guard lock(request->childRequestsMutex_);
+        execution = request->execution_.lock();
+    }
+    if (execution) {
+        execution->retainOutputs(retainedTileIds);
     }
 }
 

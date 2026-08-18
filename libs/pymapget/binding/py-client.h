@@ -461,7 +461,7 @@ void bindHttpClient(py::module_& m)
                 layer_id: The source feature layer id to filter.
                 tiles: Source ndslive.math.PackedTileId values to filter.
                 filter_id: Stable identity of this filter subscription.
-                generation: Definition/coverage revision for stale-result rejection.
+                generation: Definition/root revision for stale-result rejection; pending coverage changes retain it.
                 channels: Ordered FilterChannel instances; channels are never conflated.
                 bindings: Scalar SIMFIL constants/overlay fields shared by all channels.
                 exact_roots: Optional indexed roots for relation traversal.

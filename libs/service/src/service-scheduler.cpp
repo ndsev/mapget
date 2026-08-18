@@ -121,44 +121,48 @@ void ServiceScheduler::abortRequest(LayerTilesRequest::Ptr const& request)
     jobsAvailable_.notify_all();
 }
 
-void ServiceScheduler::enqueueJob(std::unique_ptr<ServiceJob> job)
+void ServiceScheduler::retainRequestOutputs(
+    LayerTilesRequest::Ptr const& request,
+    std::set<TileId> const& retainedTileIds)
 {
-    if (!job) {
+    if (!request || request->isDone()) {
         return;
     }
-    bool discard = false;
-    {
-        std::lock_guard lock(mutex_);
-        if (stopping_) {
-            discard = true;
-        }
-        else {
-            queuedJobs_.push_back(std::move(job));
-        }
-    }
-    if (discard) {
-        job->discard();
-        return;
-    }
-    jobsAvailable_.notify_one();
-}
 
-void ServiceScheduler::abortFilterJobs(FeatureLayerFilterTilesRequest::Ptr const& request)
-{
-    std::vector<std::unique_ptr<ServiceJob>> discarded;
+    bool hasLiveOutputs = false;
+    bool allLiveOutputsComplete = false;
+    bool membershipChanged = false;
     {
         std::lock_guard lock(mutex_);
-        for (auto job = queuedJobs_.begin(); job != queuedJobs_.end();) {
-            if ((*job)->filterOwner() != request) {
-                ++job;
-                continue;
+        std::tie(hasLiveOutputs, allLiveOutputsComplete, membershipChanged) =
+            request->retainOutputTileIds(retainedTileIds);
+        if (!membershipChanged) {
+            return;
+        }
+        std::erase_if(
+            request->resolvedTileKeys_,
+            [&](MapTileKey const& key) { return !retainedTileIds.contains(key.tileId_); });
+        request->nextTileIndex_ = 0;
+        std::erase_if(
+            request->tileKeysNotStarted_,
+            [&](MapTileKey const& key) { return !retainedTileIds.contains(key.tileId_); });
+        for (auto& [key, job] : inFlightTiles_) {
+            if (!retainedTileIds.contains(key.tileId_)) {
+                std::erase(job->waitingRequests, request);
             }
-            discarded.push_back(std::move(*job));
-            job = queuedJobs_.erase(job);
+        }
+        if (!hasLiveOutputs || request->tileKeysNotStarted_.empty()) {
+            requests_.remove_if([&](auto const& queued) { return queued == request; });
         }
     }
-    for (auto& job : discarded) {
-        job->discard();
+
+    // Completion callbacks can re-enter the service and therefore must stay
+    // outside the scheduler lock.
+    if (!hasLiveOutputs) {
+        request->setStatus(RequestStatus::Aborted);
+    }
+    else if (allLiveOutputsComplete) {
+        request->setStatus(RequestStatus::Success);
     }
     jobsAvailable_.notify_all();
 }
@@ -175,7 +179,6 @@ void ServiceScheduler::addFilterMemoryTracker(std::shared_ptr<FilterMemoryTracke
 void ServiceScheduler::invalidateMap(std::string const& mapId)
 {
     std::vector<LayerTilesRequest::Ptr> abortedRequests;
-    std::vector<std::unique_ptr<ServiceJob>> discarded;
     {
         std::lock_guard lock(mutex_);
         ++mapEpochs_[mapId];
@@ -201,15 +204,6 @@ void ServiceScheduler::invalidateMap(std::string const& mapId)
             job->second->waitingRequests.clear();
             job = inFlightTiles_.erase(job);
         }
-        for (auto job = queuedJobs_.begin(); job != queuedJobs_.end();) {
-            if ((*job)->mapId() != mapId) {
-                ++job;
-                continue;
-            }
-            discarded.push_back(std::move(*job));
-            job = queuedJobs_.erase(job);
-        }
-
         // A running tile publishes under this mutex and checks the same epoch,
         // so no stale result can enter the cache after invalidation returns.
         cache_->invalidateMap(mapId);
@@ -223,15 +217,11 @@ void ServiceScheduler::invalidateMap(std::string const& mapId)
             request->setStatus(RequestStatus::Aborted);
         }
     }
-    for (auto& job : discarded) {
-        job->discard();
-    }
     jobsAvailable_.notify_all();
 }
 
 void ServiceScheduler::stop() noexcept
 {
-    std::vector<std::unique_ptr<ServiceJob>> discarded;
     std::vector<LayerTilesRequest::Ptr> abortedRequests;
     {
         std::lock_guard lock(mutex_);
@@ -239,11 +229,6 @@ void ServiceScheduler::stop() noexcept
             return;
         }
         stopping_ = true;
-        discarded.reserve(queuedJobs_.size());
-        while (!queuedJobs_.empty()) {
-            discarded.push_back(std::move(queuedJobs_.front()));
-            queuedJobs_.pop_front();
-        }
         abortedRequests.assign(requests_.begin(), requests_.end());
         requests_.clear();
         for (auto& [_, job] : inFlightTiles_) {
@@ -255,9 +240,6 @@ void ServiceScheduler::stop() noexcept
         }
     }
 
-    for (auto& job : discarded) {
-        job->discard();
-    }
     for (auto const& request : abortedRequests) {
         if (request && !request->isDone()) {
             try {
@@ -286,41 +268,26 @@ void ServiceScheduler::stop() noexcept
 void ServiceScheduler::workerLoop()
 {
     while (true) {
-        std::unique_ptr<ServiceJob> job;
+        std::unique_ptr<TileLoadJob> job;
         {
             std::unique_lock lock(mutex_);
             jobsAvailable_.wait(lock, [this] { return stopping_ || hasRunnableWorkLocked(); });
             if (stopping_) {
                 return;
             }
-            job = takeNextJobLocked(lock);
+            job = takeNextTileJobLocked(lock);
             if (!job) {
                 continue;
             }
-            if (job->cancelled()) {
-                lock.unlock();
-                job->discard();
-                continue;
-            }
             ++runningJobs_;
-            if (job->kind() == ServiceJobKind::FilterEvaluation) {
-                ++runningFilterJobs_;
-            }
         }
 
-        auto source = job->sourceAffinity();
         job->run();
 
         {
             std::lock_guard lock(mutex_);
             if (runningJobs_ > 0) {
                 --runningJobs_;
-            }
-            if (job->kind() == ServiceJobKind::FilterEvaluation && runningFilterJobs_ > 0) {
-                --runningFilterJobs_;
-            }
-            if (source && source->running > 0) {
-                --source->running;
             }
         }
         jobsAvailable_.notify_all();
@@ -329,9 +296,6 @@ void ServiceScheduler::workerLoop()
 
 bool ServiceScheduler::hasRunnableWorkLocked() const
 {
-    if (!queuedJobs_.empty()) {
-        return true;
-    }
     for (auto const& source : sources_) {
         if (!source->enabled || source->running >= source->limit) {
             continue;
@@ -343,45 +307,24 @@ bool ServiceScheduler::hasRunnableWorkLocked() const
     return false;
 }
 
-std::unique_ptr<ServiceJob> ServiceScheduler::takeNextJobLocked(std::unique_lock<std::mutex>& lock)
+void ServiceScheduler::releaseSourcePermit(
+    std::shared_ptr<SourceConcurrency> const& source) noexcept
 {
-    while (!stopping_) {
-        if (preferDerivedJob_ && !queuedJobs_.empty()) {
-            auto job = std::move(queuedJobs_.front());
-            queuedJobs_.pop_front();
-            preferDerivedJob_ = false;
-            if (job->cancelled()) {
-                lock.unlock();
-                job->discard();
-                lock.lock();
-                continue;
-            }
-            return job;
-        }
-
-        if (auto tileJob = takeNextTileJobLocked(lock)) {
-            preferDerivedJob_ = true;
-            return tileJob;
-        }
-
-        if (!queuedJobs_.empty()) {
-            auto job = std::move(queuedJobs_.front());
-            queuedJobs_.pop_front();
-            preferDerivedJob_ = false;
-            if (job->cancelled()) {
-                lock.unlock();
-                job->discard();
-                lock.lock();
-                continue;
-            }
-            return job;
-        }
-        return {};
+    if (!source) {
+        return;
     }
-    return {};
+    {
+        std::lock_guard lock(mutex_);
+        if (source->running > 0) {
+            --source->running;
+        }
+    }
+    // A worker may still be filtering the completed tile, while another
+    // worker can now use this datasource for its next backend call.
+    jobsAvailable_.notify_all();
 }
 
-std::unique_ptr<ServiceJob>
+std::unique_ptr<TileLoadJob>
 ServiceScheduler::takeNextTileJobLocked(std::unique_lock<std::mutex>& lock)
 {
     while (!stopping_) {
@@ -410,17 +353,6 @@ ServiceScheduler::takeNextTileJobLocked(std::unique_lock<std::mutex>& lock)
             requests_.splice(requests_.end(), requests_, candidate->requestIt);
             nextSourceIndex_ = (index + 1) % sourceCount;
 
-            auto cached = cache_->getTileLayer(candidate->tileKey, *source->source->info);
-            if (cached.tile) {
-                log().debug("Serving cached tile: {}", candidate->tileKey.toString());
-                lock.unlock();
-                request->notifyResult(cached.tile);
-                lock.lock();
-                removeCompletedRequestsLocked();
-                handledInline = true;
-                break;
-            }
-
             if (auto inFlight = inFlightTiles_.find(candidate->tileKey);
                 inFlight != inFlightTiles_.end()) {
                 log().debug("Joining tile with job in progress: {}", candidate->tileKey.toString());
@@ -434,6 +366,29 @@ ServiceScheduler::takeNextTileJobLocked(std::unique_lock<std::mutex>& lock)
                 removeCompletedRequestsLocked();
                 handledInline = true;
                 break;
+            }
+
+            auto cached = cache_->getTileLayer(candidate->tileKey, *source->source->info);
+            if (cached.tile) {
+                log().debug("Serving cached tile: {}", candidate->tileKey.toString());
+                auto state = std::make_shared<TileLoadState>();
+                state->tileKey = candidate->tileKey;
+                state->waitingRequests = {request};
+                state->mapEpoch = mapEpochs_[candidate->tileKey.mapId_];
+                // Cache hits are source-tile work too: coalesce every current
+                // consumer so all filters evaluate the same parsed model on
+                // this worker instead of reparsing it request by request.
+                attachMatchingRequestsLocked(
+                    request,
+                    *source,
+                    candidate->tileKey,
+                    state->waitingRequests);
+                inFlightTiles_.emplace(state->tileKey, state);
+                removeCompletedRequestsLocked();
+                return std::make_unique<TileLoadJob>(
+                    *this,
+                    std::move(state),
+                    std::move(cached.tile));
             }
 
             auto state = std::make_shared<TileLoadState>();
@@ -538,13 +493,18 @@ void ServiceScheduler::removeCompletedRequestsLocked()
         { return !request || request->isDone() || request->tileKeysNotStarted_.empty(); });
 }
 
-void ServiceScheduler::completeTileJob(TileLoadState const& job, TileLayer::Ptr const& layer)
+void ServiceScheduler::completeTileJob(
+    TileLoadState const& job,
+    TileLayer::Ptr const& layer,
+    bool updateCache)
 {
     std::vector<LayerTilesRequest::Ptr> notifyRequests;
     {
         std::lock_guard lock(mutex_);
         if (job.mapEpoch == mapEpochs_[job.tileKey.mapId_]) {
-            cache_->putTileLayer(layer);
+            if (updateCache) {
+                cache_->putTileLayer(layer);
+            }
             notifyRequests = job.waitingRequests;
         }
         if (auto inFlight = inFlightTiles_.find(job.tileKey);
@@ -608,17 +568,11 @@ void ServiceScheduler::notifyTileLoadState(TileLoadState& job, TileLayer::LoadSt
 ServiceSchedulerStatistics ServiceScheduler::statistics() const
 {
     std::lock_guard lock(mutex_);
-    auto queuedFilterJobs = size_t{0};
-    for (auto const& job : queuedJobs_) {
-        queuedFilterJobs += job->kind() == ServiceJobKind::FilterEvaluation ? 1 : 0;
-    }
     return ServiceSchedulerStatistics{
         .workerCount = workers_.size(),
         .runningJobs = runningJobs_,
         .activeTileRequests = requests_.size(),
         .inFlightTileJobs = inFlightTiles_.size(),
-        .queuedFilterJobs = queuedFilterJobs,
-        .runningFilterJobs = runningFilterJobs_,
     };
 }
 
@@ -650,6 +604,10 @@ void ServiceScheduler::collectMemoryUsage(
     };
     auto accountLayerRequest = [&](LayerTilesRequest const& request)
     {
+        // Output pruning mutates request membership while scheduler jobs are
+        // active. The scheduler lock protects scheduling fields; this second
+        // lock gives telemetry one coherent request-membership snapshot.
+        std::lock_guard requestLock(request.statusMutex_);
         scheduler.add("request-objects", {sizeof(LayerTilesRequest), sizeof(LayerTilesRequest)});
         scheduler.add("request-strings", stringMemoryUsage(request.mapId_));
         scheduler.add("request-strings", stringMemoryUsage(request.layerId_));
@@ -676,6 +634,21 @@ void ServiceScheduler::collectMemoryUsage(
         for (auto const& key : request.tileKeysNotStarted_) {
             accountMapTileKey(scheduler, key);
         }
+        auto accountOutputIndex = [&](std::string_view name, auto const& index)
+        {
+            scheduler.add(
+                std::string(name),
+                {
+                    index.size() * sizeof(MapTileKey),
+                    index.size() * (sizeof(MapTileKey) + 3 * sizeof(void*)),
+                });
+            for (auto const& key : index) {
+                accountMapTileKey(scheduler, key);
+            }
+        };
+        accountOutputIndex("live-output-index", request.liveTileKeys_);
+        accountOutputIndex("claimed-output-index", request.claimedTileKeys_);
+        accountOutputIndex("completed-output-index", request.completedTileKeys_);
         scheduler.add(
             "feature-id-restrictions",
             {
@@ -719,15 +692,6 @@ void ServiceScheduler::collectMemoryUsage(
                 accountLayerRequest(*request);
             }
         }
-    }
-    scheduler.add(
-        "derived-job-queue",
-        {
-            queuedJobs_.size() * sizeof(std::unique_ptr<ServiceJob>),
-            queuedJobs_.size() * sizeof(std::unique_ptr<ServiceJob>),
-        });
-    for (auto const& job : queuedJobs_) {
-        scheduler.add("derived-job-map-ids", stringMemoryUsage(std::string(job->mapId())));
     }
     scheduler.add("worker-handles", vectorMemoryUsage(workers_));
     scheduler.add("source-permit-handles", vectorMemoryUsage(sources_));

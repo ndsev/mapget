@@ -86,7 +86,6 @@ struct FilterIdentity
 {
     std::string filterId_;
     uint64_t generation_ = 0;
-    uint64_t deliveryEpoch_ = 0;
 
     bool operator==(FilterIdentity const&) const = default;
 };
@@ -522,8 +521,7 @@ public:
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& strings,
         std::string filterId = {},
-        uint64_t generation = 0,
-        uint64_t deliveryEpoch = 0);
+        uint64_t generation = 0);
 
     TileSubsetLayer(
         std::vector<uint8_t> const& input,
@@ -545,7 +543,6 @@ public:
 
     [[nodiscard]] std::string const& filterId() const;
     [[nodiscard]] uint64_t generation() const;
-    [[nodiscard]] uint64_t deliveryEpoch() const;
 
     void adoptSourceInfo(TileFeatureLayer const& source);
     void setDependencies(std::vector<TileSubsetDependency> dependencies);
@@ -695,7 +692,6 @@ private:
     Point geometryAnchor_{};
     std::string filterId_;
     uint64_t generation_ = 0;
-    uint64_t deliveryEpoch_ = 0;
     std::vector<TileSubsetDependency> dependencies_;
     std::vector<FilterIssue> issues_;
     std::optional<std::string> glbAttachmentName_;

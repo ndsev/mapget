@@ -15,6 +15,8 @@ namespace mapget::detail
 namespace
 {
 
+// Removed delivery-attempt fields remain inherited solely so protocol-3
+// envelopes fail loudly in the common per-request parser.
 constexpr std::array<std::string_view, 6> FilterFieldNames = {
     "filterId",
     "generation",
@@ -350,6 +352,10 @@ FeatureLayerFilterRequest parseFilterDefinition(
     nlohmann::json const& object,
     bool requireIdentity)
 {
+    if (object.contains("deliveryEpoch") || object.contains("deliveryEpochs")) {
+        throw std::runtime_error(
+            "deliveryEpoch and deliveryEpochs are not supported");
+    }
     FeatureLayerFilterRequest result;
     if (auto id = optionalString(object, "filterId", true)) {
         result.filterId_ = std::move(*id);
@@ -379,20 +385,6 @@ FeatureLayerFilterRequest parseFilterDefinition(
     else if (requireIdentity) {
         throw std::runtime_error(
             "interactive filter requests require generation");
-    }
-
-    if (auto deliveryEpoch = object.find("deliveryEpoch");
-        deliveryEpoch != object.end())
-    {
-        if (!(deliveryEpoch->is_number_unsigned() ||
-              deliveryEpoch->is_number_integer()) ||
-            (deliveryEpoch->is_number_integer() &&
-             deliveryEpoch->get<int64_t>() < 0))
-        {
-            throw std::runtime_error(
-                "deliveryEpoch must be a non-negative integer");
-        }
-        result.deliveryEpoch_ = deliveryEpoch->get<uint64_t>();
     }
 
     auto channels = object.find("channels");
@@ -446,54 +438,6 @@ void parsePlainTileIdsInto(
     }
 }
 
-void parseDeliveryEpochsInto(
-    ParsedLayerTilesRequest& result,
-    nlohmann::json const& requestJson)
-{
-    auto overrides = requestJson.find("deliveryEpochs");
-    if (overrides == requestJson.end()) {
-        return;
-    }
-    if (!overrides->is_array()) {
-        throw std::runtime_error("deliveryEpochs must be an array");
-    }
-    auto const requested = std::set<TileId>(
-        result.tileIds.begin(),
-        result.tileIds.end());
-    for (auto const& overrideJson : *overrides) {
-        if (!overrideJson.is_object() ||
-            !overrideJson.contains("tileId") ||
-            !overrideJson.contains("epoch"))
-        {
-            throw std::runtime_error(
-                "deliveryEpochs entries require tileId and epoch");
-        }
-        auto const tileId = parseRequestTileId(
-            overrideJson.at("tileId"),
-            result.layerId);
-        if (!requested.contains(tileId)) {
-            throw std::runtime_error(
-                "deliveryEpochs tileId values must be contained in tileIds");
-        }
-        auto const& epochJson = overrideJson.at("epoch");
-        if (!(epochJson.is_number_unsigned() ||
-              epochJson.is_number_integer()) ||
-            (epochJson.is_number_integer() &&
-             epochJson.get<int64_t>() < 0))
-        {
-            throw std::runtime_error(
-                "deliveryEpochs epoch values must be non-negative integers");
-        }
-        if (!result.deliveryEpochs.emplace(
-                tileId,
-                epochJson.get<uint64_t>()).second)
-        {
-            throw std::runtime_error(
-                "deliveryEpochs must not repeat tileId values");
-        }
-    }
-}
-
 void parseRequestBase(
     ParsedLayerTilesRequest& result,
     nlohmann::json const& requestJson)
@@ -505,7 +449,16 @@ void parseRequestBase(
         result,
         requestJson,
         result.layerId);
-    parseDeliveryEpochsInto(result, requestJson);
+
+    // Delivery attempts are transport-owned in protocol 4.0. Silently
+    // accepting these fields would make an outdated client believe that its
+    // renewal ordering is still enforced.
+    if (requestJson.contains("deliveryEpoch") ||
+        requestJson.contains("deliveryEpochs"))
+    {
+        throw std::runtime_error(
+            "deliveryEpoch and deliveryEpochs are not supported");
+    }
 
     if (auto priorities = requestJson.find("priorityTileIds");
         priorities != requestJson.end())
@@ -877,7 +830,6 @@ nlohmann::json filterRequestToJson(
     if (includeIdentity) {
         result["filterId"] = request.filterId_;
         result["generation"] = request.generation_;
-        result["deliveryEpoch"] = request.deliveryEpoch_;
     }
     result["channels"] = nlohmann::json::array();
     for (auto const& channel : request.channels_) {

@@ -99,81 +99,6 @@ makeFilterStatusJson(FeatureLayerFilterTilesRequest const& request, std::string 
 namespace detail
 {
 
-FilterEvaluationJob::FilterEvaluationJob(
-    std::string mapId,
-    FeatureLayerFilterTilesRequest::Ptr const& owner,
-    std::function<void()> work,
-    std::function<void()> discard)
-    : mapId_(std::move(mapId)), owner_(owner), work_(std::move(work)), discard_(std::move(discard))
-{
-}
-
-void FilterEvaluationJob::run() noexcept
-{
-    auto owner = owner_.lock();
-    if (!owner || owner->isDone() || !work_) {
-        discard();
-        return;
-    }
-    try {
-        work_();
-        discard_ = {};
-    }
-    catch (std::exception const& error) {
-        log().error("Unhandled filter evaluation failure: {}", error.what());
-        owner->setStatus(RequestStatus::Aborted);
-        discard();
-    }
-    catch (...) {
-        log().error("Unhandled non-standard filter evaluation failure.");
-        owner->setStatus(RequestStatus::Aborted);
-        discard();
-    }
-}
-
-void FilterEvaluationJob::discard() noexcept
-{
-    if (!discard_) {
-        return;
-    }
-    try {
-        auto callback = std::exchange(discard_, {});
-        callback();
-    }
-    catch (std::exception const& error) {
-        log().error("Filter evaluation discard failed: {}", error.what());
-    }
-    catch (...) {
-        log().error("Filter evaluation discard failed with a non-standard exception.");
-    }
-}
-
-bool FilterEvaluationJob::cancelled() const
-{
-    auto owner = owner_.lock();
-    return !owner || owner->isDone() || !work_;
-}
-
-std::shared_ptr<SourceConcurrency> FilterEvaluationJob::sourceAffinity() const
-{
-    return {};
-}
-
-std::string_view FilterEvaluationJob::mapId() const
-{
-    return mapId_;
-}
-
-FeatureLayerFilterTilesRequest::Ptr FilterEvaluationJob::filterOwner() const
-{
-    return owner_.lock();
-}
-
-ServiceJobKind FilterEvaluationJob::kind() const
-{
-    return ServiceJobKind::FilterEvaluation;
-}
-
 FilterRequestExecution::~FilterRequestExecution()
 {
     // No request-owned model remains once every callback has released
@@ -204,13 +129,16 @@ FilterRequestExecution::~FilterRequestExecution()
         usage.add("request-strings", stringMemoryUsage(*request->sourceId_));
     }
     usage.add("requested-tile-ids", vectorMemoryUsage(request->tileIds_));
-    usage.add(
-        "delivery-epochs",
-        {
-            request->deliveryEpochs_.size() * sizeof(std::pair<TileId const, uint64_t>),
-            request->deliveryEpochs_.size() *
-                (sizeof(std::pair<TileId const, uint64_t>) + 3 * sizeof(void*)),
-        });
+    {
+        std::lock_guard lock(request->outputMembershipMutex_);
+        usage.add(
+            "live-output-index",
+            {
+                request->liveOutputTileIds_.size() * sizeof(TileId),
+                request->liveOutputTileIds_.size() *
+                    (sizeof(TileId) + 3 * sizeof(void*)),
+            });
+    }
     usage.add(
         "priority-tile-index",
         {
@@ -512,11 +440,45 @@ void FilterRequestExecution::configure(
     }
 }
 
+bool FilterRequestExecution::outputLive(size_t outputIndex)
+{
+    std::lock_guard lock(mutex);
+    if (outputIndex >= outputs.size()) {
+        return false;
+    }
+    auto const state = outputs[outputIndex].state_;
+    return !terminal &&
+        (state == OutputTileState::State::Pending || state == OutputTileState::State::Taken);
+}
+
+bool FilterRequestExecution::sourceNeededLocked(size_t sourceIndex) const
+{
+    if (sourceIndex >= dependentOutputsBySource.size()) {
+        return false;
+    }
+    return std::ranges::any_of(
+        dependentOutputsBySource[sourceIndex],
+        [&](DependentOutputSlot const& dependent)
+        {
+            return dependent.outputIndex_ < outputs.size() &&
+                outputs[dependent.outputIndex_].state_ == OutputTileState::State::Pending;
+        });
+}
+
+void FilterRequestExecution::releaseReadyOutput(ReadyOutput& output)
+{
+    if (output.layer_) {
+        memory->outputSubsetModels.subtract(output.layerBytes_);
+        output.layer_.reset();
+        output.layerBytes_ = 0;
+    }
+}
+
 [[nodiscard]] nlohmann::json FilterRequestExecution::progress(std::string state)
 {
     std::lock_guard lock(mutex);
     auto status = makeFilterStatusJson(*request, std::move(state));
-    status["outputTilesRequested"] = outputs.size();
+    status["outputTilesRequested"] = outputs.size() - prunedOutputTiles;
     status["sourceTilesQueued"] = sourceTileIds.size();
     status["sourceTilesLoaded"] = loadedSourceTiles;
     status["sourceTilesEvaluated"] = evaluatedSourceTiles;
@@ -543,8 +505,15 @@ void FilterRequestExecution::emitProgress(std::string state, bool force)
 
 void FilterRequestExecution::releaseChildRequests()
 {
-    std::lock_guard lock(request->childRequestsMutex_);
-    request->childRequests_.clear();
+    {
+        std::lock_guard lock(request->childRequestsMutex_);
+        request->childRequests_.clear();
+    }
+    std::lock_guard lock(mutex);
+    sourceRequest.reset();
+    for (auto& [_, target] : relationTargetTiles) {
+        target.childRequest_.reset();
+    }
 }
 
 void FilterRequestExecution::abortChildRequests()
@@ -555,11 +524,145 @@ void FilterRequestExecution::abortChildRequests()
         children = request->childRequests_;
         request->childRequests_.clear();
     }
+    {
+        std::lock_guard lock(mutex);
+        sourceRequest.reset();
+        for (auto& [_, target] : relationTargetTiles) {
+            target.childRequest_.reset();
+        }
+    }
     for (auto const& child : children) {
         if (child && !child->isDone()) {
             impl->scheduler_.abortRequest(child);
         }
     }
+}
+
+void FilterRequestExecution::cancel()
+{
+    {
+        std::lock_guard lock(mutex);
+        terminal = true;
+        sourceChildDetached = true;
+    }
+    abortChildRequests();
+}
+
+void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileIds)
+{
+    if (request->isCancelled()) {
+        return;
+    }
+    auto const [hasLiveOutputs, membershipChanged] =
+        request->retainOutputTileIds(retainedTileIds);
+    if (!hasLiveOutputs || !membershipChanged) {
+        return;
+    }
+
+    std::set<TileId> retainedSourceTileIds;
+    std::vector<LayerTilesRequest::Ptr> childrenToAbort;
+    LayerTilesRequest::Ptr sourceRequestToPrune;
+    bool detachSourceChild = false;
+    {
+        std::lock_guard lock(mutex);
+        if (terminal) {
+            return;
+        }
+
+        for (size_t outputIndex = 0; outputIndex < outputs.size(); ++outputIndex) {
+            auto& output = outputs[outputIndex];
+            if (retainedTileIds.contains(output.tileId_) ||
+                output.state_ == OutputTileState::State::Emitted ||
+                output.state_ == OutputTileState::State::Pruned)
+            {
+                continue;
+            }
+
+            output.state_ = OutputTileState::State::Pruned;
+            ++prunedOutputTiles;
+            if (output.wipSubset_) {
+                memory->outputSubsetModels.subtract(output.wipSubsetBytes_);
+                output.wipSubset_.reset();
+                output.wipSubsetBytes_ = 0;
+            }
+            decltype(output.sourceTileIds_){}.swap(output.sourceTileIds_);
+            decltype(output.contributions_){}.swap(output.contributions_);
+
+            // Relation-finalization state owns the moved WIP model after the
+            // fixed source contributions have completed.
+            if (auto pending = pendingRelationOutputs.find(outputIndex);
+                pending != pendingRelationOutputs.end())
+            {
+                releaseReadyOutput(pending->second.ready_);
+                pendingRelationOutputs.erase(pending);
+            }
+        }
+
+        for (auto target = relationTargetTiles.begin(); target != relationTargetTiles.end();) {
+            std::erase_if(
+                target->second.dependentOutputs_,
+                [&](size_t outputIndex)
+                {
+                    return outputIndex >= outputs.size() ||
+                        outputs[outputIndex].state_ == OutputTileState::State::Pruned;
+                });
+            if (!target->second.dependentOutputs_.empty()) {
+                ++target;
+                continue;
+            }
+            if (target->second.layer_) {
+                memory->relationTargetModels.subtract(
+                    target->second.layer_->memoryUsage().total().allocatedBytes);
+            }
+            if (target->second.childRequest_ && !target->second.childRequest_->isDone()) {
+                childrenToAbort.push_back(target->second.childRequest_);
+            }
+            target = relationTargetTiles.erase(target);
+        }
+
+        for (size_t sourceIndex = 0; sourceIndex < sourceTileIds.size(); ++sourceIndex) {
+            if (sourceNeededLocked(sourceIndex)) {
+                retainedSourceTileIds.insert(sourceTileIds[sourceIndex]);
+            }
+        }
+        if (sourceRequest && !sourceRequest->isDone() && retainedSourceTileIds.empty()) {
+            // Every retained output already owns complete source contributions.
+            // Remaining source callbacks are obsolete and must not turn their
+            // deliberate abort into a parent request failure.
+            sourceChildDetached = true;
+            childRequestDone = true;
+            detachSourceChild = true;
+        }
+        sourceRequestToPrune = sourceRequest;
+    }
+
+    // releaseChildRequests() may clear execution-owned child pointers as soon
+    // as another callback completes the request. Keep a local shared owner for
+    // all scheduler calls performed outside the coordination mutex.
+    if (sourceRequestToPrune && !sourceRequestToPrune->isDone()) {
+        if (detachSourceChild) {
+            impl->scheduler_.abortRequest(sourceRequestToPrune);
+        }
+        else if (!retainedSourceTileIds.empty()) {
+            impl->scheduler_.retainRequestOutputs(sourceRequestToPrune, retainedSourceTileIds);
+        }
+    }
+    for (auto const& child : childrenToAbort) {
+        impl->scheduler_.abortRequest(child);
+    }
+    if (!childrenToAbort.empty() || detachSourceChild) {
+        std::lock_guard lock(request->childRequestsMutex_);
+        std::erase_if(
+            request->childRequests_,
+            [&](LayerTilesRequest::Ptr const& child)
+            {
+                return (detachSourceChild && child == sourceRequestToPrune) ||
+                    std::ranges::find(childrenToAbort, child) != childrenToAbort.end();
+            });
+    }
+
+    emitProgress("OutputsPruned", true);
+    finishIfComplete();
 }
 
 void FilterRequestExecution::finishIfComplete()
@@ -570,8 +673,8 @@ void FilterRequestExecution::finishIfComplete()
     RequestStatus finalStatus = RequestStatus::Open;
     {
         std::lock_guard lock(mutex);
-        if (terminal || !childRequestDone || pendingEvaluationJobs != 0 ||
-            evaluatedSourceTiles < sourceTileIds.size() || emittedOutputTiles < outputs.size())
+        if (terminal || !childRequestDone || activeEvaluations != 0 ||
+            emittedOutputTiles + prunedOutputTiles < outputs.size())
         {
             return;
         }
@@ -630,6 +733,9 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
         if (terminal) {
             return;
         }
+        if (!sourceNeededLocked(sourceIndex)) {
+            return;
+        }
         if (receivedSourceTiles[sourceIndex]) {
             // The ordinary child request is stable-deduplicated, so a
             // second delivery is an internal scheduler violation.
@@ -638,7 +744,7 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
         else {
             receivedSourceTiles[sourceIndex] = true;
             ++loadedSourceTiles;
-            ++pendingEvaluationJobs;
+            ++activeEvaluations;
         }
     }
     if (duplicate) {
@@ -649,36 +755,13 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
         return;
     }
 
-    // Source jobs are admitted by LayerTilesRequest in request order,
-    // but their datasource work may complete in parallel. Evaluate a
-    // completed source immediately: waiting for every preceding
-    // completion creates an unnecessary request-wide head-of-line
-    // barrier and retains complete source models while idle.
-    auto self = shared_from_this();
+    // The TileLoadJob has released its datasource permit before invoking this
+    // callback. Keep the source model on this worker through evaluation so
+    // loaded tiles never accumulate in a second scheduler queue.
     auto const sourceBytes = layer->memoryUsage().total().allocatedBytes;
     memory->sourceTileModels.add(sourceBytes);
-    impl->scheduler_.enqueueJob(std::make_unique<detail::FilterEvaluationJob>(
-        sourceInfo->mapId_,
-        request,
-        [self, sourceIndex, sourceBytes, source = std::move(layer)]() mutable
-        { self->evaluate(sourceIndex, sourceBytes, std::move(source)); },
-        [self, sourceBytes]() { self->discardEvaluationJob(sourceBytes); }));
     emitProgress("SourceTileLoaded");
-}
-
-void FilterRequestExecution::discardEvaluationJob(uint64_t sourceBytes)
-{
-    memory->sourceTileModels.subtract(sourceBytes);
-    if (request->isCancelled()) {
-        return;
-    }
-    {
-        std::lock_guard lock(mutex);
-        if (pendingEvaluationJobs > 0) {
-            --pendingEvaluationJobs;
-        }
-    }
-    finishIfComplete();
+    evaluate(sourceIndex, sourceBytes, std::move(layer));
 }
 
 tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
@@ -875,14 +958,24 @@ FilterRequestExecution::commitSource(
 
         auto outputForSource = outputIndexByTile.find(source.tileId());
         if (outputForSource != outputIndexByTile.end()) {
-            if (!result.layer_) {
+            auto& output = outputs[outputForSource->second];
+            if (output.state_ == OutputTileState::State::Pending && !result.layer_) {
                 return tl::unexpected(simfil::Error{
                     simfil::Error::InternalError,
                     "Requested filter output source produced no WIP subset.",
                 });
             }
-            outputs[outputForSource->second].wipSubset_ = std::move(result.layer_);
-            outputs[outputForSource->second].wipSubsetBytes_ = outputModelBytes;
+            if (output.state_ == OutputTileState::State::Pending) {
+                output.wipSubset_ = std::move(result.layer_);
+                output.wipSubsetBytes_ = outputModelBytes;
+            }
+            else if (result.layer_) {
+                // Pruning may race an already-running SIMFIL evaluation. The
+                // produced model is intentionally discarded at this commit
+                // boundary and its request-memory gauge is released here.
+                memory->outputSubsetModels.subtract(outputModelBytes);
+                result.layer_.reset();
+            }
         }
         else if (result.layer_) {
             return tl::unexpected(simfil::Error{
@@ -897,6 +990,9 @@ FilterRequestExecution::commitSource(
         };
         for (auto const& dependent : dependentOutputsBySource[sourceIndex]) {
             auto& output = outputs[dependent.outputIndex_];
+            if (output.state_ != OutputTileState::State::Pending) {
+                continue;
+            }
             auto& slot = output.contributions_[dependent.slotIndex_];
             if (slot) {
                 return tl::unexpected(simfil::Error{
@@ -940,7 +1036,7 @@ FilterRequestExecution::commitSource(
                         "Complete filter output has no WIP subset.",
                     });
                 }
-                output.takenForCompletion_ = true;
+                output.state_ = OutputTileState::State::Taken;
                 ReadyOutput item{
                     dependent.outputIndex_,
                     std::move(output.wipSubset_),
@@ -1057,8 +1153,13 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
     };
 
     std::map<MapTileKey, TargetBatch> targetBatches;
-    for (auto& output : ready) {
-        for (auto const& target : output.targets_) {
+    for (auto output = ready.begin(); output != ready.end();) {
+        if (!outputLive(output->ready_.outputIndex_)) {
+            releaseReadyOutput(output->ready_);
+            output = ready.erase(output);
+            continue;
+        }
+        for (auto const& target : output->targets_) {
             auto [batch, inserted] = targetBatches.try_emplace(
                 target.key_,
                 TargetBatch{target.layer_, target.failureMessage_, {}});
@@ -1068,8 +1169,9 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
                     "One relation target tile acquired inconsistent terminal states.",
                 });
             }
-            batch->second.outputs_.push_back(&output.ready_);
+            batch->second.outputs_.push_back(&output->ready_);
         }
+        ++output;
     }
 
     for (auto& [targetKey, batch] : targetBatches) {
@@ -1217,7 +1319,12 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
     std::vector<ReadyOutput> result;
     result.reserve(ready.size());
     for (auto&& output : ready) {
-        result.push_back(std::move(output.ready_));
+        if (outputLive(output.ready_.outputIndex_)) {
+            result.push_back(std::move(output.ready_));
+        }
+        else {
+            releaseReadyOutput(output.ready_);
+        }
     }
     std::ranges::sort(result, {}, &ReadyOutput::outputIndex_);
     return std::move(result);
@@ -1272,6 +1379,12 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
     }
 
     for (auto&& ready : fixedReady) {
+        if (ready.outputIndex_ >= outputs.size() ||
+            outputs[ready.outputIndex_].state_ != OutputTileState::State::Taken)
+        {
+            releaseReadyOutput(ready);
+            continue;
+        }
         std::set<MapTileKey> targetKeys;
         for (auto const& contribution : ready.contributions_) {
             for (auto const& descriptor : contribution.relationDescriptors_) {
@@ -1338,6 +1451,15 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
 
 void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
 {
+    {
+        std::lock_guard lock(mutex);
+        auto target = relationTargetTiles.find(targetKey);
+        if (terminal || target == relationTargetTiles.end() ||
+            target->second.dependentOutputs_.empty())
+        {
+            return;
+        }
+    }
     auto child = std::make_shared<LayerTilesRequest>(
         targetKey.mapId_,
         targetKey.layerId_,
@@ -1357,10 +1479,27 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
                 fmt::format("Could not load relation target tile {}.", targetKey.toString()));
     };
     {
+        std::lock_guard lock(mutex);
+        auto target = relationTargetTiles.find(targetKey);
+        if (terminal || target == relationTargetTiles.end() ||
+            target->second.dependentOutputs_.empty())
+        {
+            return;
+        }
+        target->second.childRequest_ = child;
+    }
+    {
         std::lock_guard lock(request->childRequestsMutex_);
         // Abort clears children under the same mutex. Refuse late ownership so
         // a cancelled request cannot regain a child/callback reference cycle.
         if (request->isCancelled()) {
+            std::lock_guard executionLock(mutex);
+            if (auto target = relationTargetTiles.find(targetKey);
+                target != relationTargetTiles.end() &&
+                target->second.childRequest_ == child)
+            {
+                target->second.childRequest_.reset();
+            }
             return;
         }
         request->childRequests_.push_back(child);
@@ -1371,6 +1510,18 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
     // close the narrow enqueue race explicitly. Otherwise a now-unowned child
     // could continue loading after its filter generation was cancelled.
     if (request->isCancelled()) {
+        impl->scheduler_.abortRequest(child);
+        return;
+    }
+    bool targetStillNeeded = false;
+    {
+        std::lock_guard lock(mutex);
+        auto target = relationTargetTiles.find(targetKey);
+        targetStillNeeded = target != relationTargetTiles.end() &&
+            target->second.childRequest_ == child &&
+            !target->second.dependentOutputs_.empty();
+    }
+    if (!targetStillNeeded) {
         impl->scheduler_.abortRequest(child);
         return;
     }
@@ -1460,10 +1611,9 @@ void FilterRequestExecution::collectRelationTarget(
         }
         auto found = relationTargetTiles.find(targetKey);
         if (found == relationTargetTiles.end()) {
-            error = simfil::Error{
-                simfil::Error::InternalError,
-                "Unplanned relation target tile was delivered.",
-            };
+            // Pruning may remove the final dependent while a copied child
+            // callback is already in flight. That late value is obsolete.
+            return;
         }
         else if (found->second.terminal_) {
             // A request-level failure may race a late child delivery.
@@ -1506,8 +1656,13 @@ void FilterRequestExecution::collectRelationTarget(
     finishIfComplete();
 }
 
-tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(ReadyOutput ready)
+tl::expected<std::optional<size_t>, simfil::Error>
+FilterRequestExecution::finalizeOutput(ReadyOutput ready)
 {
+    if (!outputLive(ready.outputIndex_)) {
+        releaseReadyOutput(ready);
+        return std::nullopt;
+    }
     std::vector<TileSubsetDependency> dependencies;
     std::vector<FeatureLayerPointGroupMember> members;
     std::vector<FeatureLayerRelationDescriptor> relationDescriptors;
@@ -1669,7 +1824,8 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
             return tl::unexpected(completion.error());
         }
         if (request->isCancelled()) {
-            return size_t{0};
+            releaseReadyOutput(ready);
+            return std::nullopt;
         }
         for (auto&& issue : completion->issues_) {
             auto key =
@@ -1689,13 +1845,21 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
     }
     if (hasStoredRelations) {
         std::vector<MapTileKey> requestedOutputKeys;
-        requestedOutputKeys.reserve(outputs.size());
-        for (auto const& output : outputs) {
-            requestedOutputKeys.emplace_back(
-                LayerType::Features,
-                request->mapId_,
-                request->layerId_,
-                output.tileId_);
+        {
+            std::lock_guard lock(mutex);
+            requestedOutputKeys.reserve(outputs.size() - prunedOutputTiles);
+            for (auto const& output : outputs) {
+                // Relation ownership must follow the current retained output
+                // set. Including a pruned south-west owner can suppress a
+                // relation in an output that still belongs to this request.
+                if (output.state_ != OutputTileState::State::Pruned) {
+                    requestedOutputKeys.emplace_back(
+                        LayerType::Features,
+                        request->mapId_,
+                        request->layerId_,
+                        output.tileId_);
+                }
+            }
         }
         auto const startedAt = std::chrono::steady_clock::now();
         auto completion = request->filter_.completeRelations(
@@ -1708,7 +1872,8 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
             return tl::unexpected(completion.error());
         }
         if (request->isCancelled()) {
-            return size_t{0};
+            releaseReadyOutput(ready);
+            return std::nullopt;
         }
         for (auto&& issue : completion->issues_) {
             auto key =
@@ -1745,7 +1910,8 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
             return true;
         });
     if (request->isCancelled()) {
-        return size_t{0};
+        releaseReadyOutput(ready);
+        return std::nullopt;
     }
     auto const finalLayerBytes = ready.layer_->memoryUsage().total().allocatedBytes;
     if (finalLayerBytes > ready.layerBytes_) {
@@ -1754,9 +1920,23 @@ tl::expected<size_t, simfil::Error> FilterRequestExecution::finalizeOutput(Ready
     else {
         memory->outputSubsetModels.subtract(ready.layerBytes_ - finalLayerBytes);
     }
-    request->notifyResult(std::move(ready.layer_));
+    bool emit = false;
+    {
+        std::lock_guard lock(mutex);
+        if (!terminal && ready.outputIndex_ < outputs.size() &&
+            outputs[ready.outputIndex_].state_ == OutputTileState::State::Taken)
+        {
+            outputs[ready.outputIndex_].state_ = OutputTileState::State::Emitted;
+            ++emittedOutputTiles;
+            entriesEmitted += entryCount;
+            emit = true;
+        }
+    }
+    if (emit) {
+        request->notifyResult(std::move(ready.layer_));
+    }
     memory->outputSubsetModels.subtract(finalLayerBytes);
-    return entryCount;
+    return emit ? std::optional<size_t>{entryCount} : std::nullopt;
 }
 
 bool FilterRequestExecution::emitCompletedOutputs(std::vector<ReadyOutput> ready)
@@ -1770,19 +1950,8 @@ bool FilterRequestExecution::emitCompletedOutputs(std::vector<ReadyOutput> ready
             fail(entryCount.error());
             return false;
         }
-        bool stopped = false;
-        {
-            std::lock_guard lock(mutex);
-            if (terminal) {
-                stopped = true;
-            }
-            else {
-                ++emittedOutputTiles;
-                entriesEmitted += *entryCount;
-            }
-        }
-        if (stopped) {
-            return false;
+        if (!*entryCount) {
+            continue;
         }
         emitProgress("OutputTileEmitted");
     }
@@ -1794,7 +1963,7 @@ void FilterRequestExecution::evaluate(
     uint64_t sourceBytes,
     TileFeatureLayer::Ptr source)
 {
-    bool evaluationJobPending = true;
+    bool evaluationActive = true;
     uint64_t trackedOutputModelBytes = 0;
     uint64_t trackedTemporaryBytes = 0;
     bool outputModelTransferred = false;
@@ -1822,46 +1991,53 @@ void FilterRequestExecution::evaluate(
         }
         trackedTemporaryBytes = replacement;
     };
-    auto finishEvaluationJob = [&]()
+    auto finishEvaluation = [&]()
     {
-        if (!evaluationJobPending) {
-            return;
-        }
-        if (request->isCancelled()) {
-            memory->sourceTileModels.subtract(sourceBytes);
-            evaluationJobPending = false;
+        if (!evaluationActive) {
             return;
         }
         {
             std::lock_guard lock(mutex);
-            if (pendingEvaluationJobs > 0) {
-                --pendingEvaluationJobs;
+            if (activeEvaluations > 0) {
+                --activeEvaluations;
             }
         }
         memory->sourceTileModels.subtract(sourceBytes);
-        evaluationJobPending = false;
+        evaluationActive = false;
     };
     try {
         if (!source || request->isCancelled()) {
-            finishEvaluationJob();
+            finishEvaluation();
+            finishIfComplete();
+            return;
+        }
+
+        bool sourceStillNeeded = false;
+        bool materializeOutput = false;
+        {
+            std::lock_guard lock(mutex);
+            sourceStillNeeded = !terminal && sourceNeededLocked(sourceIndex);
+            if (auto output = outputIndexByTile.find(source->tileId());
+                output != outputIndexByTile.end())
+            {
+                materializeOutput =
+                    outputs[output->second].state_ == OutputTileState::State::Pending;
+            }
+        }
+        if (!sourceStillNeeded) {
+            finishEvaluation();
             finishIfComplete();
             return;
         }
 
         auto const filterStartedAt = std::chrono::steady_clock::now();
-        auto effectiveFilter = request->filter_;
-        if (auto const deliveryEpoch = request->deliveryEpochs_.find(source->tileId());
-            deliveryEpoch != request->deliveryEpochs_.end())
-        {
-            effectiveFilter.deliveryEpoch_ = deliveryEpoch->second;
-        }
-        auto sourceResult = effectiveFilter.filterSource(
+        auto sourceResult = request->filter_.filterSource(
             *source,
-            outputIndexByTile.contains(source->tileId()),
+            materializeOutput,
             request->exactRoots_,
             [request = this->request] { return request->isCancelled(); });
         if (!sourceResult) {
-            finishEvaluationJob();
+            finishEvaluation();
             fail(sourceResult.error());
             return;
         }
@@ -1882,7 +2058,7 @@ void FilterRequestExecution::evaluate(
         if (request->isCancelled()) {
             releaseTemporary();
             releaseUntransferredOutputModel();
-            finishEvaluationJob();
+            finishEvaluation();
             finishIfComplete();
             return;
         }
@@ -1891,7 +2067,7 @@ void FilterRequestExecution::evaluate(
         if (!locatedRelations) {
             releaseTemporary();
             releaseUntransferredOutputModel();
-            finishEvaluationJob();
+            finishEvaluation();
             fail(locatedRelations.error());
             return;
         }
@@ -1911,7 +2087,7 @@ void FilterRequestExecution::evaluate(
         if (!ready) {
             releaseTemporary();
             releaseUntransferredOutputModel();
-            finishEvaluationJob();
+            finishEvaluation();
             fail(ready.error());
             return;
         }
@@ -1921,7 +2097,7 @@ void FilterRequestExecution::evaluate(
 
         auto prepared = prepareRelationOutputs(std::move(*ready));
         if (!prepared) {
-            finishEvaluationJob();
+            finishEvaluation();
             fail(prepared.error());
             return;
         }
@@ -1930,7 +2106,7 @@ void FilterRequestExecution::evaluate(
         }
         auto relationReady = resolveRelationReadyOutputs(std::move(prepared->relationReady_));
         if (!relationReady) {
-            finishEvaluationJob();
+            finishEvaluation();
             fail(relationReady.error());
             return;
         }
@@ -1940,16 +2116,16 @@ void FilterRequestExecution::evaluate(
             std::make_move_iterator(relationReady->end()));
         std::ranges::sort(prepared->ready_, {}, &ReadyOutput::outputIndex_);
         if (!emitCompletedOutputs(std::move(prepared->ready_))) {
-            finishEvaluationJob();
+            finishEvaluation();
             return;
         }
-        finishEvaluationJob();
+        finishEvaluation();
         finishIfComplete();
     }
     catch (std::exception const& exception) {
         releaseTemporary();
         releaseUntransferredOutputModel();
-        finishEvaluationJob();
+        finishEvaluation();
         auto const sourceTileId = source ? source->tileId() : TileId{};
         fail(simfil::Error{
             simfil::Error::InternalError,
@@ -1960,12 +2136,31 @@ void FilterRequestExecution::evaluate(
                 sourceTileId.value(),
                 exception.what())});
     }
+    catch (...) {
+        releaseTemporary();
+        releaseUntransferredOutputModel();
+        finishEvaluation();
+        auto const sourceTileId = source ? source->tileId() : TileId{};
+        fail(simfil::Error{
+            simfil::Error::InternalError,
+            fmt::format(
+                "Filter evaluation failed for {}::{} tile {:x}: non-standard exception",
+                request->mapId_,
+                request->layerId_,
+                sourceTileId.value())});
+    }
 }
 
 void FilterRequestExecution::childFinished(RequestStatus status)
 {
     if (request->isCancelled()) {
         return;
+    }
+    {
+        std::lock_guard lock(mutex);
+        if (sourceChildDetached) {
+            return;
+        }
     }
     if (status != RequestStatus::Success) {
         {
@@ -2020,6 +2215,7 @@ FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
         }
     }
     tileIds_.swap(uniqueTileIds);
+    liveOutputTileIds_.insert(tileIds_.begin(), tileIds_.end());
     for (auto const& priorityTileId : priorityTileIds_) {
         if (!seenTileIds.contains(priorityTileId)) {
             raise("Priority tile IDs must be contained in the request tile IDs.");
@@ -2028,6 +2224,26 @@ FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
     if (tileIds_.empty()) {
         status_ = RequestStatus::Success;
     }
+}
+
+std::pair<bool, bool>
+FeatureLayerFilterTilesRequest::retainOutputTileIds(std::set<TileId> const& retained)
+{
+    std::lock_guard lock(outputMembershipMutex_);
+    auto const previousSize = liveOutputTileIds_.size();
+    std::erase_if(
+        liveOutputTileIds_,
+        [&](TileId const& tileId) { return !retained.contains(tileId); });
+    return {
+        !liveOutputTileIds_.empty(),
+        liveOutputTileIds_.size() != previousSize,
+    };
+}
+
+bool FeatureLayerFilterTilesRequest::acceptsOutputTile(TileId tileId) const
+{
+    std::lock_guard lock(outputMembershipMutex_);
+    return liveOutputTileIds_.contains(tileId);
 }
 
 RequestStatus FeatureLayerFilterTilesRequest::getStatus()
@@ -2055,7 +2271,7 @@ void FeatureLayerFilterTilesRequest::wait()
 
 void FeatureLayerFilterTilesRequest::notifyResult(TileSubsetLayer::Ptr result)
 {
-    if (cancelled_ || isDone()) {
+    if (!result || cancelled_ || isDone() || !acceptsOutputTile(result->tileId())) {
         return;
     }
     if (onFilterResult_) {
@@ -2075,8 +2291,8 @@ void FeatureLayerFilterTilesRequest::notifyProgress(nlohmann::json const& status
 
 void FeatureLayerFilterTilesRequest::setStatus(RequestStatus s)
 {
-    auto const previous = status_.exchange(s);
-    if (previous != RequestStatus::Open) {
+    auto expected = RequestStatus::Open;
+    if (!status_.compare_exchange_strong(expected, s)) {
         return;
     }
     notifyStatus();
@@ -2274,6 +2490,7 @@ bool detail::FilterRequestExecution::start(
     state->hasPointGroups = hasPointGroups;
     state->hasStoredRelations = hasStoredRelations;
     state->outputLevel = request->tileIds_.front().level();
+    state->sourceRequest = childRequest;
     state->memory = std::make_shared<FilterMemoryTracker>();
     state->memory->mapId = request->mapId_;
     state->memory->layerId = request->layerId_;
@@ -2281,6 +2498,10 @@ bool detail::FilterRequestExecution::start(
     state->memory->generation = request->filter_.generation_;
     state->memory->requestedTiles = request->tileIds_.size();
     state->configure(request->tileIds_, tileIdsToProcess);
+    {
+        std::lock_guard lock(request->childRequestsMutex_);
+        request->execution_ = state;
+    }
     state->memory->sampleOrchestration =
         [weakState = std::weak_ptr<detail::FilterRequestExecution>{state}]
     {

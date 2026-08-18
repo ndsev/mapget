@@ -124,10 +124,6 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
              {"configured", schedulerStats.workerCount},
              {"running", schedulerStats.runningJobs}}},
         {"in-flight-tile-jobs", schedulerStats.inFlightTileJobs},
-        {"filter-evaluation",
-         nlohmann::json{
-             {"queued", schedulerStats.queuedFilterJobs},
-             {"running", schedulerStats.runningFilterJobs}}},
         {"datasource-config",
          nlohmann::json{
              {"configured", configStats.configured},

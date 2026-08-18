@@ -10,52 +10,13 @@
 namespace mapget::detail
 {
 
-/** CPU-only filter evaluation executable by any homogeneous service worker. */
-class FilterEvaluationJob final : public ServiceJob
-{
-public:
-    /** Capture callbacks and request ownership for one queued evaluation. */
-    FilterEvaluationJob(
-        std::string mapId,
-        FeatureLayerFilterTilesRequest::Ptr const& owner,
-        std::function<void()> work,
-        std::function<void()> discard);
-
-    /** Evaluate one loaded source contribution or release it when cancelled. */
-    void run() noexcept override;
-
-    /** Release request-owned source memory for a job that will not execute. */
-    void discard() noexcept override;
-
-    /** Return whether the owning filter request can no longer consume this job. */
-    [[nodiscard]] bool cancelled() const override;
-
-    /** Filter evaluation is CPU-only and consumes no datasource permit. */
-    [[nodiscard]] std::shared_ptr<SourceConcurrency> sourceAffinity() const override;
-
-    /** Return the map whose queued work this job contributes to. */
-    [[nodiscard]] std::string_view mapId() const override;
-
-    /** Return the filter request used to discard its queued jobs as one unit. */
-    [[nodiscard]] FeatureLayerFilterTilesRequest::Ptr filterOwner() const override;
-
-    /** Classify this work for scheduler fairness and telemetry. */
-    [[nodiscard]] ServiceJobKind kind() const override;
-
-private:
-    std::string mapId_;
-    std::weak_ptr<FeatureLayerFilterTilesRequest> owner_;
-    std::function<void()> work_;
-    std::function<void()> discard_;
-};
-
 /**
  * Owns one coordinated feature-filter request from admission through emission.
  *
- * Source tiles are loaded through ordinary service requests. Their independent
- * CPU evaluations are returned to the homogeneous scheduler as
- * FilterEvaluationJob instances, while this object coordinates cross-tile
- * groups, relations, progress, cancellation, and memory accounting.
+ * Source tiles are loaded through ordinary service requests and evaluated by
+ * the same worker immediately after backend access releases its datasource
+ * permit. This object coordinates cross-tile groups, relations, progress,
+ * cancellation, and memory accounting.
  */
 class FilterRequestExecution final : public std::enable_shared_from_this<FilterRequestExecution>
 {
@@ -65,6 +26,12 @@ public:
         Service::Impl& service,
         FeatureLayerFilterTilesRequest::Ptr const& request,
         std::optional<AuthHeaders> const& clientHeaders);
+
+    /** Prune removed outputs while retaining shared source and relation work. */
+    void retainOutputs(std::set<TileId> const& retainedTileIds);
+
+    /** Stop coordinated work and break request/child callback ownership cycles. */
+    void cancel();
 
     /** Clear active request-memory gauges when the last callback releases this execution. */
     ~FilterRequestExecution();
@@ -97,12 +64,19 @@ private:
     /** Mutable assembly state for one requested output tile. */
     struct OutputTileState
     {
+        enum class State {
+            Pending,
+            Taken,
+            Emitted,
+            Pruned,
+        };
+
         TileId tileId_;
         TileSubsetLayer::Ptr wipSubset_;
         std::vector<TileId> sourceTileIds_;
         std::vector<std::optional<SourceTileContribution>> contributions_;
         size_t missingContributions_ = 0;
-        bool takenForCompletion_ = false;
+        State state_ = State::Pending;
         uint64_t wipSubsetBytes_ = 0;
     };
 
@@ -170,6 +144,7 @@ private:
         TileFeatureLayer::Ptr layer_;
         std::optional<std::string> failureMessage_;
         std::set<size_t> dependentOutputs_;
+        LayerTilesRequest::Ptr childRequest_;
     };
 
     /** Outputs and target loads produced by relation preparation. */
@@ -206,6 +181,7 @@ private:
     std::vector<std::vector<DependentOutputSlot>> dependentOutputsBySource;
     std::vector<bool> receivedSourceTiles;
     std::vector<bool> committedSourceTiles;
+    LayerTilesRequest::Ptr sourceRequest;
     std::set<std::string> groupChannelIds;
     std::map<std::string, std::vector<LocateCandidate>> relationLocationCache;
     std::mutex relationLocationMutex;
@@ -218,10 +194,12 @@ private:
     size_t evaluatedSourceTiles = 0;
     size_t readyOutputTiles = 0;
     size_t emittedOutputTiles = 0;
+    size_t prunedOutputTiles = 0;
     size_t entriesEmitted = 0;
-    size_t pendingEvaluationJobs = 0;
+    size_t activeEvaluations = 0;
     std::atomic_size_t progressEventCount = 0;
     bool childRequestDone = false;
+    bool sourceChildDetached = false;
     bool terminal = false;
     std::shared_ptr<FilterMemoryTracker> memory;
     /** Recompute a conservative lower bound for request orchestration containers. */
@@ -233,6 +211,15 @@ private:
 
     /** Build source/output dependency indexes before child loading starts. */
     void configure(std::vector<TileId> const& outputTileIds, std::vector<TileId> processingTileIds);
+
+    /** Return whether one output can still be completed and emitted. */
+    [[nodiscard]] bool outputLive(size_t outputIndex);
+
+    /** Return whether at least one pending output still needs this source. */
+    [[nodiscard]] bool sourceNeededLocked(size_t sourceIndex) const;
+
+    /** Release a moved output model that became obsolete before emission. */
+    void releaseReadyOutput(ReadyOutput& output);
 
     /** Snapshot exact request counters for a transport progress event. */
     [[nodiscard]] nlohmann::json progress(std::string state);
@@ -246,17 +233,14 @@ private:
     /** Abort and detach every source or relation-target child request. */
     void abortChildRequests();
 
-    /** Publish terminal success once all source jobs and outputs are complete. */
+    /** Publish terminal success once all source evaluations and outputs are complete. */
     void finishIfComplete();
 
     /** Abort the coordinated request and publish a structured failure status. */
     void fail(simfil::Error const& error);
 
-    /** Queue CPU evaluation for one source tile delivered by the child request. */
+    /** Evaluate one source tile on the worker that delivered it. */
     void collect(TileFeatureLayer::Ptr layer);
-
-    /** Release accounting for an evaluation discarded before execution. */
-    void discardEvaluationJob(uint64_t sourceBytes);
 
     /** Locate unresolved stored-relation targets without loading their tiles. */
     tl::expected<void, simfil::Error>
@@ -303,7 +287,7 @@ private:
     void collectRelationTarget(MapTileKey const& targetKey, TileFeatureLayer::Ptr layer);
 
     /** Finish groups/relations and emit one immutable subset layer. */
-    tl::expected<size_t, simfil::Error> finalizeOutput(ReadyOutput ready);
+    tl::expected<std::optional<size_t>, simfil::Error> finalizeOutput(ReadyOutput ready);
 
     /** Finalize source-complete outputs in stable output order. */
     bool emitCompletedOutputs(std::vector<ReadyOutput> ready);

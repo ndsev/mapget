@@ -63,8 +63,45 @@ TileLoadJob::TileLoadJob(
 {
 }
 
+TileLoadJob::TileLoadJob(
+    ServiceScheduler& scheduler,
+    std::shared_ptr<TileLoadState> state,
+    TileLayer::Ptr cachedLayer)
+    : scheduler_(scheduler), state_(std::move(state)), cachedLayer_(std::move(cachedLayer))
+{
+}
+
 void TileLoadJob::run() noexcept
 {
+    if (cachedLayer_) {
+        try {
+            scheduler_.completeTileJob(*state_, cachedLayer_, false);
+        }
+        catch (std::exception const& error) {
+            log().error(
+                "Could not process cached tile {}: {}",
+                state_->tileKey.toString(),
+                error.what());
+            scheduler_.failTileJob(*state_);
+        }
+        catch (...) {
+            log().error(
+                "Could not process cached tile {}: non-standard exception.",
+                state_->tileKey.toString());
+            scheduler_.failTileJob(*state_);
+        }
+        return;
+    }
+
+    auto permitHeld = true;
+    auto releasePermit = [&]() noexcept
+    {
+        if (!permitHeld) {
+            return;
+        }
+        scheduler_.releaseSourcePermit(source_);
+        permitHeld = false;
+    };
     try {
         if (state_->cacheExpiredAt) {
             source_->source->dataSource->onCacheExpired(state_->tileKey, *state_->cacheExpiredAt);
@@ -95,42 +132,22 @@ void TileLoadJob::run() noexcept
                 scheduler_.defaultTtl_);
         }
 
-        scheduler_.completeTileJob(*state_, layer);
+        // The worker continues with cache publication and every attached
+        // filter/direct consumer, but those CPU/transport phases must not
+        // consume the datasource's backend-concurrency budget.
+        releasePermit();
+        scheduler_.completeTileJob(*state_, layer, true);
     }
     catch (std::exception const& error) {
+        releasePermit();
         log().error("Could not load tile {}: {}", state_->tileKey.toString(), error.what());
         scheduler_.failTileJob(*state_);
     }
     catch (...) {
+        releasePermit();
         log().error("Could not load tile {}: non-standard exception.", state_->tileKey.toString());
         scheduler_.failTileJob(*state_);
     }
-}
-
-void TileLoadJob::discard() noexcept
-{
-    // Tile jobs are materialized only when a worker accepts them, so they are
-    // never left in the scheduler's discardable queue.
-}
-
-bool TileLoadJob::cancelled() const
-{
-    return false;
-}
-
-std::shared_ptr<SourceConcurrency> TileLoadJob::sourceAffinity() const
-{
-    return source_;
-}
-
-std::string_view TileLoadJob::mapId() const
-{
-    return state_->tileKey.mapId_;
-}
-
-ServiceJobKind TileLoadJob::kind() const
-{
-    return ServiceJobKind::TileLoad;
 }
 
 void loadAddOnTiles(
@@ -365,9 +382,14 @@ LayerTilesRequest::LayerTilesRequest(
 void LayerTilesRequest::prepareResolvedLayer(LayerType layerType)
 {
     nextTileIndex_ = 0;
-    resultCount_ = 0;
     resolvedTileKeys_.clear();
     tileKeysNotStarted_.clear();
+    {
+        std::lock_guard lock(statusMutex_);
+        liveTileKeys_.clear();
+        claimedTileKeys_.clear();
+        completedTileKeys_.clear();
+    }
 
     const auto isPriorityTile = [this](TileId const& tileId)
     {
@@ -397,46 +419,129 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType)
         appendTiles(false);
     }
 
+    {
+        std::lock_guard lock(statusMutex_);
+        liveTileKeys_.insert(resolvedTileKeys_.begin(), resolvedTileKeys_.end());
+    }
+
     status_ = resolvedTileKeys_.empty() ? RequestStatus::Success : RequestStatus::Open;
+}
+
+std::tuple<bool, bool, bool>
+LayerTilesRequest::retainOutputTileIds(std::set<TileId> const& retained)
+{
+    std::lock_guard lock(statusMutex_);
+    auto const previousSize = liveTileKeys_.size();
+    std::erase_if(
+        liveTileKeys_,
+        [&](MapTileKey const& key) { return !retained.contains(key.tileId_); });
+    std::erase_if(
+        claimedTileKeys_,
+        [&](MapTileKey const& key) { return !liveTileKeys_.contains(key); });
+    std::erase_if(
+        completedTileKeys_,
+        [&](MapTileKey const& key) { return !liveTileKeys_.contains(key); });
+    std::erase_if(
+        featureIdsByTile_,
+        [&](auto const& item) { return !retained.contains(item.first); });
+    std::erase_if(
+        priorityTileIds_,
+        [&](TileId const& tileId) { return !retained.contains(tileId); });
+    tileIds_.erase(
+        std::remove_if(
+            tileIds_.begin(),
+            tileIds_.end(),
+            [&](TileId const& tileId) { return !retained.contains(tileId); }),
+        tileIds_.end());
+    return {
+        !liveTileKeys_.empty(),
+        !liveTileKeys_.empty() && claimedTileKeys_.empty() &&
+            completedTileKeys_.size() == liveTileKeys_.size(),
+        liveTileKeys_.size() != previousSize,
+    };
 }
 
 void LayerTilesRequest::notifyResult(TileLayer::Ptr r)
 {
-    if (isDone()) {
+    if (!r) {
         return;
     }
 
-    const auto type = r->layerInfo()->type_;
-    switch (type) {
-    case LayerType::Features:
-        if (onFeatureLayer_) {
-            auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(r);
-            if (auto restriction = featureIdsByTile_.find(featureLayer->tileId());
+    auto const key = MapTileKey(*r);
+    auto const type = r->layerInfo()->type_;
+    std::optional<std::vector<std::string>> featureRestriction;
+    bool completesRequest = false;
+    {
+        std::lock_guard lock(statusMutex_);
+        if (isDone() || !liveTileKeys_.contains(key) ||
+            completedTileKeys_.contains(key) || !claimedTileKeys_.insert(key).second)
+        {
+            return;
+        }
+        if (type == LayerType::Features) {
+            if (auto restriction = featureIdsByTile_.find(key.tileId_);
                 restriction != featureIdsByTile_.end())
             {
-                featureLayer = restrictFeatureLayerForResponse(featureLayer, restriction->second);
+                featureRestriction = restriction->second;
             }
-            onFeatureLayer_(std::move(featureLayer));
         }
-        break;
-    case LayerType::SourceData:
-        if (onSourceDataLayer_)
-            onSourceDataLayer_(std::move(std::static_pointer_cast<TileSourceDataLayer>(r)));
-        break;
-    default:
-        log().error(
-            fmt::format("Unhandled layer type {}, no matching callback!", static_cast<int>(type)));
-        break;
     }
 
-    const auto resultCount = resultCount_.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (resultCount == resolvedTileKeys_.size()) {
+    try {
+        switch (type) {
+        case LayerType::Features:
+            if (onFeatureLayer_) {
+                auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(r);
+                if (featureRestriction) {
+                    featureLayer =
+                        restrictFeatureLayerForResponse(featureLayer, *featureRestriction);
+                }
+                onFeatureLayer_(std::move(featureLayer));
+            }
+            break;
+        case LayerType::SourceData:
+            if (onSourceDataLayer_) {
+                onSourceDataLayer_(
+                    std::move(std::static_pointer_cast<TileSourceDataLayer>(r)));
+            }
+            break;
+        default:
+            log().error(
+                fmt::format(
+                    "Unhandled layer type {}, no matching callback!",
+                    static_cast<int>(type)));
+            break;
+        }
+    }
+    catch (...) {
+        std::lock_guard lock(statusMutex_);
+        claimedTileKeys_.erase(key);
+        throw;
+    }
+
+    {
+        std::lock_guard lock(statusMutex_);
+        claimedTileKeys_.erase(key);
+        if (!isDone() && liveTileKeys_.contains(key)) {
+            completedTileKeys_.insert(key);
+            completesRequest = claimedTileKeys_.empty() &&
+                completedTileKeys_.size() == liveTileKeys_.size();
+        }
+    }
+
+    if (completesRequest) {
         setStatus(RequestStatus::Success);
     }
 }
 
 void LayerTilesRequest::notifyLoadState(MapTileKey const& key, TileLayer::LoadState state) const
 {
+    {
+        std::lock_guard lock(statusMutex_);
+        if (isDone() || !liveTileKeys_.contains(key)) {
+            return;
+        }
+    }
     if (onLoadStateChanged_) {
         onLoadStateChanged_(key, state);
     }
@@ -444,7 +549,10 @@ void LayerTilesRequest::notifyLoadState(MapTileKey const& key, TileLayer::LoadSt
 
 void LayerTilesRequest::setStatus(RequestStatus s)
 {
-    this->status_ = s;
+    auto expected = RequestStatus::Open;
+    if (!status_.compare_exchange_strong(expected, s)) {
+        return;
+    }
     notifyStatus();
 }
 
@@ -499,12 +607,12 @@ nlohmann::json LayerTilesRequest::toJson()
     return requestJson;
 }
 
-RequestStatus LayerTilesRequest::getStatus()
+RequestStatus LayerTilesRequest::getStatus() const
 {
     return this->status_;
 }
 
-bool LayerTilesRequest::isDone()
+bool LayerTilesRequest::isDone() const
 {
     return status_ != RequestStatus::Open;
 }

@@ -1515,8 +1515,7 @@ tl::expected<FeatureLayerFilterSourceResult, simfil::Error> FeatureLayerFilterRe
             sourceLayer.layerInfo(),
             sourceLayer.strings(),
             filterId_,
-            generation_,
-            deliveryEpoch_);
+            generation_);
         resultLayer->setGeometryAnchor(sourceLayer.geometryAnchor());
         resultLayer->adoptSourceInfo(sourceLayer);
         resultLayer

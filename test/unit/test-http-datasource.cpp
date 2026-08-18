@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -99,6 +100,134 @@ private:
     std::map<MapTileKey, size_t> getCalls_;
 };
 
+/** Produces empty finite-lifetime tiles for interactive handoff tests. */
+class ExpiringInteractiveDataSource final : public DataSource
+{
+public:
+    /** Construct the isolated synthetic map/layer metadata. */
+    ExpiringInteractiveDataSource()
+        : info_(DataSourceInfo::fromJson(nlohmann::json::parse(R"({
+            "stringPoolId": "expiring-interactive-pool",
+            "mapId": "ExpiringInteractiveMap",
+            "maxParallelJobs": 1,
+            "layers": {
+                "ExpiringLayer": {
+                    "type": "Features",
+                    "featureTypes": []
+                }
+            }
+        })")))
+    {
+    }
+
+    /** Return the synthetic datasource metadata. */
+    DataSourceInfo info() override { return info_; }
+
+    /** Stamp one tile with a short positive semantic lifetime. */
+    void fill(TileFeatureLayer::Ptr const& tile) override
+    {
+        ++fillCount_;
+        tile->setTimestamp(std::chrono::system_clock::now());
+        tile->setTtl(std::chrono::seconds(4));
+    }
+
+    /** Reject unsupported source-data requests. */
+    void fill(TileSourceDataLayer::Ptr const&) override
+    {
+        throw std::runtime_error("ExpiringInteractiveDataSource has no source-data layer");
+    }
+
+    /** Return the number of actual datasource refreshes. */
+    [[nodiscard]] size_t fillCount() const { return fillCount_; }
+
+private:
+    DataSourceInfo info_;
+    std::atomic_size_t fillCount_ = 0;
+};
+
+/** Blocks individual tile fills so active interactive ownership can be reconciled deterministically. */
+class BlockingInteractiveDataSource final : public DataSource
+{
+public:
+    /** Construct isolated metadata with enough source concurrency for overlap tests. */
+    BlockingInteractiveDataSource()
+        : info_(DataSourceInfo::fromJson(nlohmann::json::parse(R"({
+            "stringPoolId": "blocking-interactive-pool",
+            "mapId": "BlockingInteractiveMap",
+            "maxParallelJobs": 3,
+            "layers": {
+                "BlockingLayer": {
+                    "type": "Features",
+                    "featureTypes": []
+                }
+            }
+        })")))
+    {
+    }
+
+    /** Return the synthetic datasource metadata. */
+    DataSourceInfo info() override { return info_; }
+
+    /** Hold one source call until the test releases all active fills. */
+    void fill(TileFeatureLayer::Ptr const& tile) override
+    {
+        std::unique_lock lock(mutex_);
+        ++fillCounts_[tile->tileId()];
+        started_.insert(tile->tileId());
+        stateChanged_.notify_all();
+        stateChanged_.wait(lock, [this] { return released_; });
+    }
+
+    /** Reject unsupported source-data requests. */
+    void fill(TileSourceDataLayer::Ptr const&) override
+    {
+        throw std::runtime_error("BlockingInteractiveDataSource has no source-data layer");
+    }
+
+    /** Wait until every requested tile has entered its datasource call. */
+    [[nodiscard]] bool waitForStarted(
+        std::set<TileId> const& tileIds,
+        std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        return stateChanged_.wait_for(
+            lock,
+            timeout,
+            [&]
+            {
+                return std::ranges::all_of(
+                    tileIds,
+                    [&](TileId tileId) { return started_.contains(tileId); });
+            });
+    }
+
+    /** Return how often one tile reached the datasource. */
+    [[nodiscard]] size_t fillCount(TileId tileId) const
+    {
+        std::lock_guard lock(mutex_);
+        auto const found = fillCounts_.find(tileId);
+        return found == fillCounts_.end() ? 0 : found->second;
+    }
+
+    /** Release every currently blocked datasource call. */
+    void releaseAll()
+    {
+        {
+            std::lock_guard lock(mutex_);
+            released_ = true;
+        }
+        stateChanged_.notify_all();
+    }
+
+private:
+    DataSourceInfo info_;
+    mutable std::mutex mutex_;
+    std::condition_variable stateChanged_;
+    std::map<TileId, size_t> fillCounts_;
+    std::set<TileId> started_;
+    bool released_ = false;
+};
+
 class SyncHttpClient
 {
 public:
@@ -177,14 +306,6 @@ public:
                   if (requireFeatureLayer_ && tile->id().layer_ != LayerType::Features) {
                       setError("Unexpected tile layer type");
                       return;
-                  }
-                  if (auto subset =
-                          std::dynamic_pointer_cast<TileSubsetLayer>(tile))
-                  {
-                      std::lock_guard lock(mutex_);
-                      receivedSubsets_.emplace_back(
-                          subset->tileId(),
-                          subset->deliveryEpoch());
                   }
                   receivedTileCount_.fetch_add(1, std::memory_order_relaxed);
                   cv_.notify_all();
@@ -336,18 +457,7 @@ public:
 
     void resetTileCount() { receivedTileCount_.store(0, std::memory_order_relaxed); }
 
-    void resetReceivedSubsets()
-    {
-        std::lock_guard lock(mutex_);
-        receivedSubsets_.clear();
-    }
-
-    [[nodiscard]] std::vector<std::pair<TileId, uint64_t>> receivedSubsets() const
-    {
-        std::lock_guard lock(mutex_);
-        return receivedSubsets_;
-    }
-
+    /** Drain payloads until at least the requested number of tile frames arrives. */
     [[nodiscard]] bool waitForTileCount(
         int expected,
         std::chrono::milliseconds timeout)
@@ -373,7 +483,7 @@ public:
                 waitMs,
                 64 * 1024 * 1024));
             if (result != drogon::ReqResult::Ok || !resp) {
-                setError("Failed to pull renewed tile frame");
+                setError("Failed to pull tile frame");
                 return false;
             }
             if (resp->statusCode() == drogon::k200OK) {
@@ -382,13 +492,13 @@ public:
                     reader_.read(std::string(resp->body()));
                 }
                 catch (std::exception const& e) {
-                    setError(std::string("Failed to parse renewed tile stream: ") + e.what());
+                    setError(std::string("Failed to parse tile stream: ") + e.what());
                     return false;
                 }
             }
             else if (resp->statusCode() != drogon::k204NoContent) {
                 setError(fmt::format(
-                    "Unexpected renewal pull response status: {}",
+                    "Unexpected payload response status: {}",
                     static_cast<int>(resp->statusCode())));
                 return false;
             }
@@ -495,7 +605,6 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::optional<nlohmann::json> lastStatus_;
-    std::vector<std::pair<TileId, uint64_t>> receivedSubsets_;
     std::string error_;
     std::mutex readerMutex_;
     std::atomic_int receivedTileCount_{0};
@@ -1389,8 +1498,67 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 wsClient.stop();
             }
 
-            // Coverage-only filter updates retain already forwarded overlap
-            // without retaining subset bytes on the server.
+            // Repeating active work is idempotent, and replacing {A, B} with
+            // {B, C} preserves B while suppressing A's eventual callback.
+            {
+                auto source = std::make_shared<BlockingInteractiveDataSource>();
+                service.add(source);
+                auto blockingLayerInfo = source->info().getLayer("BlockingLayer");
+                REQUIRE(blockingLayerInfo);
+
+                auto const tileA = TileId::fromValue(kHttpTileIdValue);
+                auto const tileB = TileId::fromValue(kSecondHttpTileIdValue);
+                auto const tileC = TileId::fromValue(kThirdHttpTileIdValue);
+                WsTilesClient wsClient(service.port(), blockingLayerInfo);
+                REQUIRE(wsClient.connect(true));
+                auto conn = requireConnected(wsClient);
+                auto makeRequest = [](std::initializer_list<int32_t> tileIds) {
+                    return nlohmann::json::object({
+                        {"requests", nlohmann::json::array({
+                            nlohmann::json::object({
+                                {"mapId", "BlockingInteractiveMap"},
+                                {"layerId", "BlockingLayer"},
+                                {"tileIds", tileIds},
+                                {"priorityTileIds", tileIds},
+                            }),
+                        })},
+                    }).dump();
+                };
+
+                conn->send(
+                    makeRequest({kHttpTileIdValue, kSecondHttpTileIdValue}),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(source->waitForStarted({tileA, tileB}, std::chrono::seconds(5)));
+
+                wsClient.resetStatus();
+                conn->send(
+                    makeRequest({kHttpTileIdValue, kSecondHttpTileIdValue}),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForStatus(std::chrono::seconds(5)));
+                REQUIRE(source->fillCount(tileA) == 1);
+                REQUIRE(source->fillCount(tileB) == 1);
+
+                wsClient.resetStatus();
+                conn->send(
+                    makeRequest({kSecondHttpTileIdValue, kThirdHttpTileIdValue}),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(source->waitForStarted({tileC}, std::chrono::seconds(5)));
+                source->releaseAll();
+
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                if (!wsClient.error().empty()) {
+                    wsClient.stop();
+                    FAIL(wsClient.error());
+                }
+                REQUIRE(wsClient.receivedTileCount() == 2);
+                REQUIRE(source->fillCount(tileA) == 1);
+                REQUIRE(source->fillCount(tileB) == 1);
+                REQUIRE(source->fillCount(tileC) == 1);
+                wsClient.stop();
+            }
+
+            // Pending filter snapshots suppress overlap while it is active,
+            // queued, or represented by a lightweight handoff record.
             {
                 WsTilesClient wsClient(
                     service.port(),
@@ -1451,11 +1619,16 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     }) == 2);
                 REQUIRE(
                     sendAndDrain({
+                        kHttpTileIdValue,
+                        kSecondHttpTileIdValue,
+                    }) == 0);
+                REQUIRE(
+                    sendAndDrain({
                         kSecondHttpTileIdValue,
                         kThirdHttpTileIdValue,
                     }) == 1);
-                // The first tile left the desired set in the preceding update,
-                // so requesting it again performs one fresh evaluation.
+                // Omission acknowledges or withdraws the first handoff, so a
+                // later ordinary pending snapshot evaluates it again.
                 REQUIRE(
                     sendAndDrain({
                         kHttpTileIdValue,
@@ -1463,8 +1636,160 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 wsClient.stop();
             }
 
-            // Sparse delivery epochs re-evaluate only due output IDs and are
-            // idempotent without replacing the full subscription snapshot.
+            // A filter generation is immutable while any of its output keys
+            // overlap. Rejecting a semantic mutation must leave the preceding
+            // handoff and pending snapshot intact.
+            {
+                WsTilesClient wsClient(service.port(), layerInfo, false);
+                REQUIRE(wsClient.connect(true));
+                auto conn = requireConnected(wsClient);
+                auto makeRequest = [](std::string entryFilter) {
+                    return nlohmann::json::object({
+                        {"filterId", "immutable-overlap"},
+                        {"generation", 5},
+                        {"channels", nlohmann::json::array({
+                            nlohmann::json::object({
+                                {"channelId", "ways"},
+                                {"scope", "feature"},
+                                {"entryFilter", std::move(entryFilter)},
+                                {"featureTypes", nlohmann::json::array({"Way"})},
+                            }),
+                        })},
+                        {"requests", nlohmann::json::array({
+                            nlohmann::json::object({
+                                {"mapId", "Tropico"},
+                                {"layerId", "WayLayer"},
+                                {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
+                            }),
+                        })},
+                    }).dump();
+                };
+
+                auto const originalRequest = makeRequest("typeId == 'Way'");
+                conn->send(originalRequest, drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                REQUIRE(wsClient.receivedTileCount() == 1);
+
+                wsClient.resetStatus();
+                wsClient.resetTileCount();
+                conn->send(
+                    makeRequest("typeId != 'Way'"),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForStatus(std::chrono::seconds(5)));
+                auto status = wsClient.lastStatus();
+                REQUIRE(status.has_value());
+                REQUIRE(
+                    status->value("message", "").find("advance generation") !=
+                    std::string::npos);
+                REQUIRE(wsClient.receivedTileCount() == 0);
+
+                wsClient.resetStatus();
+                conn->send(originalRequest, drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(5)));
+                REQUIRE(wsClient.receivedTileCount() == 0);
+                wsClient.stop();
+            }
+
+            // Indexed chunks form one atomic pending snapshot. Applying the
+            // first chunk early would clear A's handoff and recompute it when
+            // the final chunk adds A back.
+            {
+                WsTilesClient wsClient(service.port(), layerInfo);
+                REQUIRE(wsClient.connect(true));
+                auto conn = requireConnected(wsClient);
+                auto requestFor = [](int32_t tileId) {
+                    return nlohmann::json::object({
+                        {"mapId", "Tropico"},
+                        {"layerId", "WayLayer"},
+                        {"tileIds", nlohmann::json::array({tileId})},
+                    });
+                };
+
+                conn->send(
+                    nlohmann::json::object({
+                        {"requests", nlohmann::json::array({
+                            requestFor(kHttpTileIdValue),
+                        })},
+                    }).dump(),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                REQUIRE(wsClient.receivedTileCount() == 1);
+
+                wsClient.resetStatus();
+                wsClient.resetTileCount();
+                conn->send(
+                    nlohmann::json::object({
+                        {"requestId", 700},
+                        {"chunk", {{"index", 0}, {"isLast", false}}},
+                        {"requests", nlohmann::json::array({
+                            requestFor(kSecondHttpTileIdValue),
+                        })},
+                    }).dump(),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE_FALSE(
+                    wsClient.waitForStatus(std::chrono::milliseconds(200)));
+
+                conn->send(
+                    nlohmann::json::object({
+                        {"requestId", 700},
+                        {"chunk", {{"index", 1}, {"isLast", true}}},
+                        {"requests", nlohmann::json::array({
+                            requestFor(kHttpTileIdValue),
+                        })},
+                    }).dump(),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                REQUIRE(wsClient.receivedTileCount() == 1);
+                wsClient.stop();
+            }
+
+            // A handoff uses the produced value's absolute semantic expiry.
+            // Repeating the same pending key after expiry follows the normal
+            // cache path without an omission or delivery attempt number.
+            {
+                auto source = std::make_shared<ExpiringInteractiveDataSource>();
+                service.add(source);
+                auto expiringLayerInfo = source->info().getLayer("ExpiringLayer");
+                REQUIRE(expiringLayerInfo);
+
+                WsTilesClient wsClient(service.port(), expiringLayerInfo);
+                REQUIRE(wsClient.connect(true));
+                auto conn = requireConnected(wsClient);
+                auto const request = nlohmann::json::object({
+                    {"requests", nlohmann::json::array({
+                        nlohmann::json::object({
+                            {"mapId", "ExpiringInteractiveMap"},
+                            {"layerId", "ExpiringLayer"},
+                            {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
+                        }),
+                    })},
+                }).dump();
+                auto sendAndDrain = [&]() {
+                    wsClient.resetStatus();
+                    wsClient.resetTileCount();
+                    conn->send(request, drogon::WebSocketMessageType::Text);
+                    REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                    return wsClient.receivedTileCount();
+                };
+
+                wsClient.resetStatus();
+                wsClient.resetTileCount();
+                conn->send(request, drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForTileCount(1, std::chrono::seconds(10)));
+                REQUIRE(source->fillCount() == 1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+                REQUIRE(sendAndDrain() == 0);
+                REQUIRE(source->fillCount() == 1);
+                // The repeated snapshot above must not move the original
+                // four-second absolute handoff deadline forward.
+                std::this_thread::sleep_for(std::chrono::milliseconds(2700));
+                REQUIRE(sendAndDrain() == 1);
+                REQUIRE(source->fillCount() == 2);
+                wsClient.stop();
+            }
+
+            // Protocol 4 rejects the removed delivery-attempt operation and
+            // field instead of silently accepting stale renewal semantics.
             {
                 WsTilesClient wsClient(
                     service.port(),
@@ -1480,76 +1805,38 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                         {"featureTypes", nlohmann::json::array({"Way"})},
                     }),
                 });
-                auto const fullRequest = nlohmann::json::object({
-                    {"filterId", "ttl-renewal"},
+                auto const legacyRequest = nlohmann::json::object({
+                    {"mapId", "Tropico"},
+                    {"layerId", "WayLayer"},
+                    {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
+                    {"filterId", "removed-renewal"},
                     {"generation", 7},
-                    {"deliveryEpoch", 1},
+                    {"deliveryEpoch", 2},
                     {"channels", channels},
-                    {"requests", nlohmann::json::array({
-                        nlohmann::json::object({
-                            {"mapId", "Tropico"},
-                            {"layerId", "WayLayer"},
-                            {"tileIds", nlohmann::json::array({
-                                kHttpTileIdValue,
-                                kSecondHttpTileIdValue,
-                            })},
-                        }),
-                    })},
                 });
                 conn->send(
-                    fullRequest.dump(),
+                    nlohmann::json::object({
+                        {"renewals", nlohmann::json::array({legacyRequest})},
+                    }).dump(),
                     drogon::WebSocketMessageType::Text);
-                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
-                REQUIRE(wsClient.receivedTileCount() == 2);
+                REQUIRE(wsClient.waitForStatus(std::chrono::seconds(5)));
+                auto status = wsClient.lastStatus();
+                REQUIRE(status.has_value());
+                REQUIRE(status->value("message", "").find("renewals") != std::string::npos);
 
-                auto sendRenewal = [&](uint64_t epoch) {
-                    auto const renewal = nlohmann::json::object({
-                        {"mapId", "Tropico"},
-                        {"layerId", "WayLayer"},
-                        {"tileIds", nlohmann::json::array({kHttpTileIdValue})},
-                        {"filterId", "ttl-renewal"},
-                        {"generation", 7},
-                        {"deliveryEpoch", epoch},
-                        {"channels", channels},
-                    });
-                    conn->send(
-                        nlohmann::json::object({
-                            {"renewals", nlohmann::json::array({renewal})},
-                        }).dump(),
-                        drogon::WebSocketMessageType::Text);
-                };
-
-                wsClient.resetTileCount();
-                wsClient.resetReceivedSubsets();
-                sendRenewal(2);
-                REQUIRE(wsClient.waitForTileCount(
-                    1,
-                    std::chrono::seconds(10)));
+                wsClient.resetStatus();
+                conn->send(
+                    nlohmann::json::object({
+                        {"requests", nlohmann::json::array({legacyRequest})},
+                    }).dump(),
+                    drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForStatus(std::chrono::seconds(5)));
+                status = wsClient.lastStatus();
+                REQUIRE(status.has_value());
                 REQUIRE(
-                    wsClient.receivedSubsets() ==
-                    std::vector<std::pair<TileId, uint64_t>>{{
-                        TileId::fromValue(kHttpTileIdValue),
-                        2,
-                    }});
-
-                for (auto const ignoredEpoch : {uint64_t{2}, uint64_t{1}}) {
-                    wsClient.resetTileCount();
-                    wsClient.resetReceivedSubsets();
-                    sendRenewal(ignoredEpoch);
-                    REQUIRE_FALSE(wsClient.waitForTileCount(
-                        1,
-                        std::chrono::milliseconds(250)));
-                    REQUIRE(wsClient.receivedSubsets().empty());
-                }
-
-                wsClient.resetTileCount();
-                wsClient.resetReceivedSubsets();
-                sendRenewal(3);
-                REQUIRE(wsClient.waitForTileCount(
-                    1,
-                    std::chrono::seconds(10)));
-                REQUIRE(
-                    wsClient.receivedSubsets().front().second == 3);
+                    status->value("message", "").find("deliveryEpoch") !=
+                    std::string::npos);
+                REQUIRE(wsClient.receivedTileCount() == 0);
                 wsClient.stop();
             }
 

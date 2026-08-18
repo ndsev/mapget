@@ -91,11 +91,9 @@ std::string filterSubscriptionKey(
 
 std::string filterRequestKey(
     std::string_view filterId,
-    uint64_t generation,
-    uint64_t deliveryEpoch)
+    uint64_t generation)
 {
-    return filterSubscriptionKey(filterId, generation) + ":" +
-        std::to_string(deliveryEpoch);
+    return filterSubscriptionKey(filterId, generation);
 }
 
 /** Decorate a canonical tile key so concurrent subsets do not collide. */
@@ -129,8 +127,7 @@ std::optional<std::string> filterRequestKey(TileLayer::Ptr const& layer)
     }
     return filterRequestKey(
         subset->filterId(),
-        subset->generation(),
-        subset->deliveryEpoch());
+        subset->generation());
 }
 
 } // namespace mapget::detail

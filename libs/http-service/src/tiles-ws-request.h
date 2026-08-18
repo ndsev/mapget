@@ -25,13 +25,6 @@ struct ClientRequestChunk
     bool isLast = true;
 };
 
-/** Whether a parsed request replaces the current scope or appends another chunk. */
-enum class ClientRequestUpdateMode
-{
-    Replace,
-    Append,
-};
-
 /** Parse a JSON numeric field into non-negative int64 while handling missing keys. */
 [[nodiscard]] int64_t parseNonNegativeInt64(const nlohmann::json& j, std::string_view key);
 
@@ -52,11 +45,10 @@ enum class ClientRequestUpdateMode
     std::string_view filterId,
     uint64_t generation);
 
-/** Stable queue key derived from one exact per-tile delivery identity. */
+/** Stable queue key derived from one filter subscription generation. */
 [[nodiscard]] std::string filterRequestKey(
     std::string_view filterId,
-    uint64_t generation,
-    uint64_t deliveryEpoch);
+    uint64_t generation);
 
 /** Decorate queue keys so subset frames do not collide with source tile frames. */
 [[nodiscard]] MapTileKey makeFilterRequestedTileKey(
@@ -68,7 +60,7 @@ enum class ClientRequestUpdateMode
     MapTileKey key,
     std::optional<std::string_view> filterRequestKey);
 
-/** Extract `filterId + generation + deliveryEpoch` from a TileSubsetLayer. */
+/** Extract `filterId + generation` from a TileSubsetLayer. */
 [[nodiscard]] std::optional<std::string> filterRequestKey(
     TileLayer::Ptr const& layer);
 

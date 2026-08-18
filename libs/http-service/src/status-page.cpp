@@ -397,7 +397,7 @@ R"STATUS(</head>
                 <article class="metric-card"><span class="metric-label">Datasources</span><strong id="metricDatasources" class="metric-value">-</strong><span id="metricDatasourcesNote" class="metric-note">Waiting</span></article>
                 <article class="metric-card"><span class="metric-label">Process RSS</span><strong id="metricRss" class="metric-value">-</strong><span id="metricRssNote" class="metric-note">Current resident memory</span></article>
                 <article class="metric-card"><span class="metric-label">Cache</span><strong id="metricCache" class="metric-value">-</strong><span id="metricCacheNote" class="metric-note">Retained tile data</span></article>
-                <article class="metric-card"><span class="metric-label">Active work</span><strong id="metricWork" class="metric-value">-</strong><span id="metricWorkNote" class="metric-note">Requests and filters</span></article>
+                <article class="metric-card"><span class="metric-label">Active work</span><strong id="metricWork" class="metric-value">-</strong><span id="metricWorkNote" class="metric-note">Workers processing source tiles</span></article>
                 <article class="metric-card"><span class="metric-label">Interactive</span><strong id="metricInteractive" class="metric-value">-</strong><span id="metricInteractiveNote" class="metric-note">Connected sessions</span></article>
                 <article class="metric-card"><span class="metric-label">Allocator free</span><strong id="metricAllocator" class="metric-value">-</strong><span id="metricAllocatorNote" class="metric-note">Reusable arena memory</span></article>
             </div>
@@ -664,7 +664,6 @@ function renderOverview(payload) {
     const interactive = payload.tilesWebsocket || {};
     const rest = payload.tilesHttp || {};
     const config = service["datasource-config"] || {};
-    const filters = service["filter-evaluation"] || {};
     const datasources = memory.datasources || [];
     const ready = datasources.filter((source) => source.status === "ready").length;
     const configured = Number(config.configured ?? datasources.length);
@@ -681,9 +680,9 @@ function renderOverview(payload) {
     setMetric("metricCache", "metricCacheNote", formatBytes(cacheBytes), entries === undefined ? "Retained cache state" : `${formatInt(entries)} entries`);
 
     const activeRequests = Number(service["active-requests"] || 0);
-    const runningFilters = Number(filters.running || 0);
-    const queuedFilters = Number(filters.queued || 0);
-    setMetric("metricWork", "metricWorkNote", formatInt(activeRequests + runningFilters), `${formatInt(queuedFilters)} filters queued`);
+    const runningWorkers = Number(service.workers?.running || 0);
+    const inFlightTiles = Number(service["in-flight-tile-jobs"] || 0);
+    setMetric("metricWork", "metricWorkNote", formatInt(runningWorkers), `${formatInt(activeRequests)} tile requests active`);
 
     const sessions = Number(interactive["active-sessions"] || 0);
     setMetric("metricInteractive", "metricInteractiveNote", formatInt(sessions), `${formatInt(interactive["active-connections"] || 0)} connections`);
@@ -693,9 +692,9 @@ function renderOverview(payload) {
 
     renderDatasourceTable("#overviewDatasourceTable tbody", datasources, false);
     replaceRows("#currentWorkTable tbody", [
+        ["Workers running", formatInt(runningWorkers)],
         ["Tile requests", formatInt(activeRequests)],
-        ["Filter evaluations running", formatInt(runningFilters)],
-        ["Filter evaluations queued", formatInt(queuedFilters)],
+        ["In-flight source tiles", formatInt(inFlightTiles)],
         ["REST streams", formatInt(rest["active-streams"] || 0)],
         ["Interactive sessions", formatInt(sessions)],
     ], [1]);

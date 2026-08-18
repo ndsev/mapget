@@ -1,6 +1,6 @@
 # HTTP / WebSocket API Guide
 
-Mapget protocol 3 exposes complete source tiles to trusted clients and
+Mapget protocol 4 exposes complete source tiles to trusted clients and
 server-evaluated `TileSubsetLayer` values to interactive renderers. There is no
 staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
@@ -299,11 +299,11 @@ An alternating key/value ID array plus `typeId` is also accepted.
 
 ### Result contract
 
-Each output `TileSubsetLayer` carries `filterId`, `generation`, and a
-per-output `deliveryEpoch`. Its lifetime is the original timestamp/positive
-TTL pair of the contributing local, halo, or relation-source tile with the
-earliest absolute expiry. If none has a positive TTL, the subset does not
-expire. It also inherits source `info()` and contains:
+Each output `TileSubsetLayer` carries `filterId` and `generation`. Its lifetime
+is the original timestamp/positive TTL pair of the contributing local, halo,
+or relation-source tile with the earliest absolute expiry. If none has a
+positive TTL, the subset does not expire. It also inherits source `info()` and
+contains:
 
 - ordered channels and their concrete scope/field schemas;
 - typed `FeatureEntry`, `AttributeValidityEntry`, `RelationEntry`, or
@@ -314,13 +314,11 @@ expire. It also inherits source `info()` and contains:
 - aggregated issues and SIMFIL traces;
 - optional GLB attachment name.
 
-Definition/root changes and forced refreshes advance the interactive
-generation. Ordinary coverage amendments retain it so overlapping values are
-not refetched. A frame is accepted only while its output tile remains in
-current coverage; removing and later re-adding a tile may produce another
-value in the same semantic `(filterId, generation, output MapTileKey)` slot.
-`deliveryEpoch` distinguishes successive deliveries without changing that
-semantic generation.
+Definition, binding, or exact-root changes advance the interactive generation.
+Ordinary pending-set amendments and TTL refreshes retain it. A filtered output
+is identified by `(filterId, generation, output MapTileKey)`; mapget rejects a
+same-generation definition/root mutation while any overlapping output remains
+active, queued, or handed off.
 
 ## `GET /attachment`
 
@@ -344,38 +342,41 @@ attachment cache in the initial implementation.
 `/interactive` is a WebSocket control channel. `/interactive/payload` carries
 the binary frames so a client can apply explicit backpressure.
 
-An interactive message contains `requests`, `filterId`, `generation`,
-`deliveryEpoch`, `channels`, optional `bindings`, optional per-tile
-`deliveryEpochs`, and optional `stringPoolOffsets`. The filter definition may
-be on the envelope and is inherited by each request.
-Sending another message replaces the active logical request on that
-connection; processing preserves request tile order, while result arrival
-order may differ.
-
-Expired outputs use a sparse operation instead of replacing the full
-subscription:
+An interactive message contains `requests`, optional envelope-level
+`filterId`, `generation`, `channels`, optional `bindings`, and optional
+`stringPoolOffsets`. The filter definition may be on the envelope and is
+inherited by each request:
 
 ```json
 {
-  "renewals": [{
+  "filterId": "view-7",
+  "generation": 4,
+  "channels": [{
+    "channelId": "roads",
+    "scope": "feature",
+    "entryFilter": "typeId == 'Road'"
+  }],
+  "requests": [{
     "mapId": "Tropico",
     "layerId": "Display",
-    "filterId": "view-7",
-    "generation": 4,
-    "deliveryEpoch": 9,
     "tileIds": [545554572, 545554573]
   }]
 }
 ```
 
-The server validates the subscription against its last full snapshot and
-reuses that snapshot's definition, source, and roots. Only listed tiles whose
-epoch advances are evaluated; unrelated requests, status, and progress remain
-active. A late older delivery remains valid while the newer epoch is merely
-requested. It becomes stale only after a newer subset for that same semantic
-output slot has actually been delivered. Renewal work is split into bounded
-batches, so large user-configured tile coverage is queued rather than rejected
-or copied into every TTL operation.
+Every completed envelope replaces the connection's complete **pending-output
+snapshot**. `tileIds` lists only outputs the client is still waiting to accept;
+it is not the client's retained viewport inventory. Repeating a key is
+idempotent while backend work is active, its frame is queued, or an unexpired
+handoff record represents bytes already placed in a payload response.
+
+Mapget preserves overlapping active work, prunes omitted outputs, and starts
+only additions. Indexed `chunk` messages are staged and reconciled atomically
+after the final chunk. Omitting a handed-off key releases its bookkeeping; if
+the handed-off value's own timestamp plus positive TTL has expired, repeating
+the key follows the ordinary cache/refresh path without an omit/re-add cycle.
+Missing or zero TTL has no session-side expiry. The removed `renewals`,
+`deliveryEpoch`, and `deliveryEpochs` fields are rejected by protocol 4.
 
 Server control messages are binary VTLV frames:
 

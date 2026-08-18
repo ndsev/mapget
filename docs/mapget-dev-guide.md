@@ -106,12 +106,14 @@ The principal service requests are:
 - `LocateRequest`.
 
 `Service::Impl` composes a ready-source registry and one global
-`ServiceScheduler`. All workers are homogeneous: each can execute a
-datasource-affine `TileLoadJob` or a CPU-only `FilterEvaluationJob`. A source's
-`maxParallelJobs` is a permit limit for each primary datasource inside the
-scheduler rather than a number of dedicated threads. Add-ons remain nested in
-the matching primary tile job and share its concurrency. The service-wide
-worker cap is configurable with `--worker-count`; its default is
+`ServiceScheduler`. All workers are homogeneous: each owns one source tile
+through cache/backend loading and every attached direct or filter consumer. A
+source's `maxParallelJobs` is a permit limit for backend access rather than a
+number of dedicated threads. The tile job releases that permit before it runs
+SIMFIL evaluation and result callbacks, allowing another worker to enter the
+datasource without retaining the completed tile in a second queue. Add-ons
+remain nested in the matching primary tile job and share its concurrency. The
+service-wide worker cap is configurable with `--worker-count`; its default is
 `clamp(2 * hardware_concurrency, 16, 32)`.
 
 Complete source jobs are admitted in request order and sources are considered
@@ -120,6 +122,12 @@ in-flight tile index, reads the cache or invokes the datasource, caches the
 complete result, and notifies every waiter.
 `priorityTileIds` promotes keys already in the request. It does not add
 coverage or change data semantics.
+
+One coalesced source tile may serve ordinary tile consumers and several filter
+requests. Those filters run sequentially on the worker that completed the tile,
+and each source-local evaluation scatters immutable contributions to every
+dependent output. Loaded source models therefore remain bounded by active
+workers rather than accumulating in an independent evaluation queue.
 
 Terminal worker failure must erase the in-flight entry and terminally notify
 every waiter. A catch path which only logs is a request leak.
@@ -209,13 +217,10 @@ source feature.
 
 Request order controls processing. Output stream order may differ.
 `filterId + generation + output MapTileKey` identifies a semantic output
-slot. `deliveryEpoch` versions deliveries within that slot without changing
-the semantic generation. Viewport coverage amendments retain the generation,
-reject frames outside current coverage, and rely on the interactive envelope
-`requestId` to suppress stale status messages. A sparse TTL renewal advances
-the epoch only for due output tiles. The previous epoch remains admissible
-until the newer subset is delivered; after that, older deliveries for the
-same slot are suppressed.
+slot. The generation changes with filter semantics, not viewport movement or
+TTL refresh. Interactive clients send complete pending-output snapshots;
+mapget preserves overlapping active work and rejects results whose request no
+longer owns that output key.
 
 ### Construction and cancellation
 
@@ -234,10 +239,18 @@ in-flight writers return.
 `HttpService` derives from `Service`. Drogon owns network event loops; mapget's
 bounded homogeneous workers own blocking datasource and evaluation work.
 
+The `serve` command registers datasource schemas and static mounts first, then
+binds the HTTP listener before loading configuration or launching legacy
+remote/process datasources. This ordering is a lifecycle boundary: Trantor
+terminates the process directly when listener binding fails, so no datasource
+constructor thread or child process may be active before `HttpServer::go()`
+returns successfully.
+
 - `tiles-http-handler.cpp`: stateless `/tiles` and `/filter`, response
   negotiation, JSONL/binary streaming, gzip, and backpressure.
-- `tiles-ws-session.cpp`: `/interactive` replacements, bounded frame queues,
-  string-pool offsets, control/status frames, and
+- `tiles-ws-session.cpp`: atomic `/interactive` pending snapshots,
+  output-owner reconciliation, bounded frame queues, TTL-aware handoff
+  bookkeeping, string-pool offsets, control/status frames, and
   `/interactive/payload` draining.
 - `tiles-request-json.cpp`: canonical request parser shared by both paths.
 - `attachment-handler.cpp`: attachment validation, routing, ETags, and
@@ -246,16 +259,19 @@ bounded homogeneous workers own blocking datasource and evaluation work.
 Small endpoints such as `/sources`, `/location`, `/locate`, `/status`,
 `/status-data`, and `/config` return ordinary responses.
 
-An interactive replacement aborts obsolete backend work and suppresses queued
-stale subset frames. Removing and later re-adding an output tile in the same
-semantic generation may produce a new value for that tile.
+An interactive replacement is the complete set of outputs the client still
+needs, not its retained viewport coverage. Reconciliation preserves matching
+active requests, reprioritizes matching queued frames, suppresses duplicate
+work while lightweight handoff records are current, and prunes omitted output
+ownership without holding the session mutex during service cancellation.
+Indexed chunks are staged until the final chunk so a partial envelope cannot
+temporarily cancel work named later in the same logical snapshot.
 
-Sparse `{ "renewals": [...] }` control messages are different from a full
-replacement. They reuse the authoritative registered filter definition and
-roots, advance only listed per-output delivery epochs, and neither reset full
-request completion nor abort unrelated work. Renewal entries and envelopes
-are deliberately bounded; clients split arbitrarily large active coverage
-into queued batches rather than imposing a total subscription limit.
+When a tile frame leaves the bounded queue, the session retains only its key
+and optional absolute semantic expiry from `timestamp + ttl`; it never retains
+a second payload copy. A later omission clears that handoff. An expired
+handoff no longer suppresses an ordinary repeated request, while a missing or
+zero TTL relies on omission or connection teardown.
 
 ## Binary streaming and string pools
 
@@ -267,8 +283,9 @@ into queued batches rather than imposing a total subscription limit.
 - request context/status/catalog controls;
 - end of stream.
 
-Protocol 3 is a clean major break: stage/LOD/search-result blobs cannot be
-partially interpreted.
+Protocol 4 is a clean major break: it removes the serialized subset delivery
+epoch introduced during protocol 3 development. Older subset payloads cannot
+be partially interpreted.
 
 HTTP clients send the highest known string ID per `stringPoolId`. Writers emit
 only the missing suffix; readers merge it into `StringPoolCache`. Persistent

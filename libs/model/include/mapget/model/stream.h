@@ -104,15 +104,17 @@ public:
      *   - Renamed datasource node identity to string-pool identity.
      *   - Replaced TileSearchResultLayer with multi-channel TileSubsetLayer.
      * - Version 3.1:
-     *   + Added per-output delivery epochs to TileSubsetLayer so sparse TTL
-     *     renewals can coexist with older in-flight deliveries.
+     *   + Added per-output delivery epochs to TileSubsetLayer.
      * - Version 3.2:
      *   + Added shared AttrPointSequence definitions and AttrPoint index/range
      *     validity descriptions.
      * - Version 3.3:
      *   + Added tile-scoped feature-ID expressions to portable locate selectors.
+     * - Version 4.0:
+     *   - Removed delivery epochs from TileSubsetLayer. Interactive delivery
+     *     ownership is now represented by pending snapshots and handoff state.
      */
-    static constexpr Version CurrentProtocolVersion{3, 3, 0};
+    static constexpr Version CurrentProtocolVersion{4, 0, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

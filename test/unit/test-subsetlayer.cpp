@@ -119,8 +119,7 @@ TEST_CASE(
         info,
         strings,
         "styled-roads",
-        7,
-        12);
+        7);
     subset->adoptSourceInfo(*source);
     subset->setGlbAttachmentName("road-mesh");
 
@@ -250,7 +249,6 @@ TEST_CASE(
 
     REQUIRE(subset->filterId() == "styled-roads");
     REQUIRE(subset->generation() == 7);
-    REQUIRE(subset->deliveryEpoch() == 12);
     REQUIRE(subset->timestamp() == source->timestamp());
     REQUIRE(subset->ttl() == source->ttl());
     REQUIRE(subset->size() == 4);
@@ -317,7 +315,6 @@ TEST_CASE(
         &identityBytes);
     REQUIRE(identity.filterId_ == "styled-roads");
     REQUIRE(identity.generation_ == 7);
-    REQUIRE(identity.deliveryEpoch_ == 12);
     REQUIRE(identityBytes > 0);
     REQUIRE(identityBytes < bytes.size());
 
@@ -339,7 +336,6 @@ TEST_CASE(
         [&](auto const&) { return strings; });
     REQUIRE(parsed->filterId() == subset->filterId());
     REQUIRE(parsed->generation() == subset->generation());
-    REQUIRE(parsed->deliveryEpoch() == subset->deliveryEpoch());
     REQUIRE(parsed->timestamp() == source->timestamp());
     REQUIRE(parsed->ttl() == source->ttl());
     REQUIRE(parsed->toJson() == subset->toJson());

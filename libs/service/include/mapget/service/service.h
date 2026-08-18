@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -25,7 +26,6 @@ namespace mapget
 namespace detail
 {
 class AttachmentRequestExecution;
-class FilterEvaluationJob;
 class FilterRequestExecution;
 class LocateRequestExecution;
 class ServiceScheduler;
@@ -178,13 +178,13 @@ public:
         std::vector<TileId> const& priorityTileIds);
 
     /** Get the current status of the request. */
-    RequestStatus getStatus();
+    RequestStatus getStatus() const;
 
     /** Wait for the request to be done. */
     void wait();
 
     /** Check whether the request is done or still running. */
-    bool isDone();
+    bool isDone() const;
 
     /** The map id for which this request is dedicated. */
     std::string mapId_;
@@ -255,6 +255,10 @@ private:
     /** Resolve tile IDs into concrete keys while preserving priority/order. */
     void prepareResolvedLayer(LayerType layerType);
 
+    /** Restrict output membership and report live, complete, and changed state. */
+    [[nodiscard]] std::tuple<bool, bool, bool> retainOutputTileIds(
+        std::set<TileId> const& retained);
+
     /**
      * The callback functions which are called when a result tile is available.
      */
@@ -272,11 +276,14 @@ private:
     // Track which resolved tile keys still need to be scheduled/served.
     std::set<MapTileKey> tileKeysNotStarted_;
 
-    // So the requester can track how many results have been received.
-    std::atomic_size_t resultCount_ = 0;
+    // Output membership is separate from scheduler state so a callback copied
+    // just before pruning can still be rejected safely.
+    std::set<MapTileKey> liveTileKeys_;
+    std::set<MapTileKey> claimedTileKeys_;
+    std::set<MapTileKey> completedTileKeys_;
 
     // Mutex/condition variable for reading/setting request status.
-    std::mutex statusMutex_;
+    mutable std::mutex statusMutex_;
     std::condition_variable statusConditionVariable_;
     std::atomic<RequestStatus> status_ = RequestStatus::Open;
 };
@@ -285,13 +292,12 @@ private:
  * Client request for server-side multi-channel feature filtering.
  *
  * The service loads source feature tiles through the normal scheduler/cache
- * path, then runs SIMFIL evaluation as a scheduled service job.
+ * path, then runs SIMFIL evaluation on the worker that delivered each tile.
  */
 class FeatureLayerFilterTilesRequest
 {
     friend class Service;
     friend class HttpClient;
-    friend class detail::FilterEvaluationJob;
     friend class detail::FilterRequestExecution;
     friend class detail::ServiceScheduler;
 
@@ -343,9 +349,6 @@ public:
     /** Ordered channel bundle, scalar bindings, and transport identity. */
     FeatureLayerFilterRequest filter_;
 
-    /** Per-output delivery versions, used when one subscription renews tiles independently. */
-    std::map<TileId, uint64_t> deliveryEpochs_;
-
     /** Optional exact relation roots grouped by their requested origin tile. */
     std::vector<FeatureLayerFilterRoot> exactRoots_;
 
@@ -376,8 +379,18 @@ protected:
     void cancel();
 
 private:
+    /** Restrict live output membership and report whether anything changed. */
+    [[nodiscard]] std::pair<bool, bool> retainOutputTileIds(
+        std::set<TileId> const& retained);
+
+    /** Return whether a result tile still belongs to this request. */
+    [[nodiscard]] bool acceptsOutputTile(TileId tileId) const;
+
     std::function<void(TileSubsetLayer::Ptr)> onFilterResult_;
     std::function<void(nlohmann::json const&)> onStatus_;
+    mutable std::mutex outputMembershipMutex_;
+    std::set<TileId> liveOutputTileIds_;
+    std::weak_ptr<detail::FilterRequestExecution> execution_;
     std::mutex childRequestsMutex_;
     std::vector<LayerTilesRequest::Ptr> childRequests_;
     std::atomic_bool cancelled_{false};
@@ -433,8 +446,8 @@ public:
      *  backends based on a subscription to the YAML datasource config file.
      * @param defaultTtl Default time-to-live for tiles returned by the service. May be
      *  overridden by datasource or tile-specific TTL.
-     * @param workerCount Maximum number of tile-loading and derived-evaluation
-     *  jobs that may execute concurrently across the whole service.
+     * @param workerCount Maximum number of source-tile jobs that may load and
+     *  process attached consumers concurrently across the whole service.
      */
     explicit Service(
         Cache::Ptr cache = std::make_shared<MemCache>(),
@@ -523,6 +536,26 @@ public:
     /** Abort a server-side filter request. */
     void abort(FeatureLayerFilterTilesRequest::Ptr const& r);
 
+    /**
+     * Keep only the listed outputs of a live ordinary request.
+     *
+     * Work already running for removed outputs may still populate the shared
+     * cache, but it can no longer invoke this request's result callback.
+     */
+    void retainOutputs(
+        LayerTilesRequest::Ptr const& request,
+        std::set<TileId> const& retainedTileIds);
+
+    /**
+     * Keep only the listed outputs of a live filter request.
+     *
+     * Source contributions shared by retained outputs remain reusable while
+     * pruned output models and relation dependencies are released promptly.
+     */
+    void retainOutputs(
+        FeatureLayerFilterTilesRequest::Ptr const& request,
+        std::set<TileId> const& retainedTileIds);
+
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
 
@@ -584,7 +617,7 @@ public:
      * - `workers`: Configured and currently running global worker counts.
      * - `datasources`: Number of active data sources.
      * - `active-requests`: Number of in-flight requests.
-     * - `filter-evaluation`: Queued and running derived filter jobs.
+     * - `in-flight-tile-jobs`: Coalesced source tiles awaiting cache/backend completion.
      */
     [[nodiscard]] nlohmann::json getStatistics() const;
 

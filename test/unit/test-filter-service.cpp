@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -31,6 +33,16 @@ TileId firstTile()
 TileId secondTile()
 {
     return TileId::fromTileXY(2, 0, 1);
+}
+
+std::vector<TileId> tileSequence(size_t count)
+{
+    std::vector<TileId> result;
+    result.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        result.push_back(TileId::fromTileXY(static_cast<int>(index + 1), 0, 6));
+    }
+    return result;
 }
 
 DataSourceInfo filterDataSourceInfo(
@@ -716,10 +728,6 @@ TEST_CASE(
             "Road",
             std::vector<TileId>{firstTile(), secondTile()},
             filterDefinition());
-    request->deliveryEpochs_ = {
-        {firstTile(), 11},
-        {secondTile(), 12},
-    };
 
     std::mutex callbackMutex;
     std::vector<TileSubsetLayer::Ptr> results;
@@ -745,9 +753,6 @@ TEST_CASE(
     for (auto const& subset : results) {
         REQUIRE(subset->filterId() == "style:roads");
         REQUIRE(subset->generation() == 4);
-        REQUIRE(
-            subset->deliveryEpoch() ==
-            (subset->tileId() == firstTile() ? 11 : 12));
         REQUIRE(subset->stringPoolId() ==
                 "FilterServicePool");
         REQUIRE(subset->size() == 2);
@@ -849,6 +854,223 @@ TEST_CASE(
         std::this_thread::sleep_for(5ms);
     }
     REQUIRE(trackerReleased);
+}
+
+TEST_CASE(
+    "Cached source tiles are evaluated before the worker advances",
+    "[feature-layer-filter][Service][concurrency]")
+{
+    auto const tileIds = tileSequence(40);
+    Service service(std::make_shared<MemCache>(128), false, std::chrono::milliseconds{0}, 1);
+    auto dataSource = std::make_shared<FilterDataSource>();
+    service.add(dataSource);
+
+    auto warmup = std::make_shared<LayerTilesRequest>("FilterMap", "Road", tileIds);
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{warmup}));
+    warmup->wait();
+    REQUIRE(warmup->getStatus() == RequestStatus::Success);
+
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        tileIds,
+        filterDefinition());
+    std::vector<nlohmann::json> statuses;
+    request->onStatus([&](nlohmann::json const& status) { statuses.push_back(status); });
+
+    REQUIRE(service.request(request));
+    request->wait();
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+
+    auto intermediate = std::ranges::find_if(
+        statuses,
+        [](nlohmann::json const& status)
+        {
+            auto const state = status.value("state", "");
+            return state != "Open" && state != "Success";
+        });
+    REQUIRE(intermediate != statuses.end());
+    // A separate evaluation queue would let the cache-hit loop report many
+    // loaded tiles before evaluating any of them. Tile-centric execution keeps
+    // the first worker on each model until its contribution is committed.
+    REQUIRE((*intermediate)["sourceTilesEvaluated"].get<size_t>() > 0);
+}
+
+TEST_CASE(
+    "Filter processing releases the datasource permit",
+    "[feature-layer-filter][Service][concurrency]")
+{
+    using namespace std::chrono_literals;
+
+    Service service(std::make_shared<MemCache>(32), false, 0ms, 2);
+    auto dataSource = std::make_shared<FilterDataSource>();
+    service.add(dataSource);
+
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<TileId>{firstTile(), secondTile()},
+        filterDefinition());
+    std::mutex callbackMutex;
+    std::condition_variable callbackChanged;
+    bool firstCallbackStarted = false;
+    bool releaseFirstCallback = false;
+    request->onFilterResult(
+        [&](TileSubsetLayer::Ptr)
+        {
+            std::unique_lock lock(callbackMutex);
+            if (firstCallbackStarted) {
+                return;
+            }
+            firstCallbackStarted = true;
+            callbackChanged.notify_all();
+            callbackChanged.wait(lock, [&] { return releaseFirstCallback; });
+        });
+
+    REQUIRE(service.request(request));
+    {
+        std::unique_lock lock(callbackMutex);
+        REQUIRE(callbackChanged.wait_for(lock, 2s, [&] { return firstCallbackStarted; }));
+    }
+
+    bool secondBackendCallStarted = false;
+    for (size_t attempt = 0; attempt < 200; ++attempt) {
+        if (dataSource->requestedTiles().size() == 2) {
+            secondBackendCallStarted = true;
+            break;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    {
+        std::lock_guard lock(callbackMutex);
+        releaseFirstCallback = true;
+    }
+    callbackChanged.notify_all();
+    request->wait();
+
+    REQUIRE(secondBackendCallStarted);
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+}
+
+TEST_CASE(
+    "Filter cancellation detaches source work during inline result processing",
+    "[feature-layer-filter][Service][concurrency][cancellation]")
+{
+    using namespace std::chrono_literals;
+
+    Service service(std::make_shared<MemCache>(32), false, 0ms, 1);
+    auto dataSource = std::make_shared<FilterDataSource>();
+    service.add(dataSource);
+
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<TileId>{firstTile(), secondTile()},
+        filterDefinition());
+    std::mutex callbackMutex;
+    std::condition_variable callbackChanged;
+    bool callbackStarted = false;
+    bool releaseCallback = false;
+    request->onFilterResult(
+        [&](TileSubsetLayer::Ptr)
+        {
+            std::unique_lock lock(callbackMutex);
+            callbackStarted = true;
+            callbackChanged.notify_all();
+            callbackChanged.wait(lock, [&] { return releaseCallback; });
+        });
+
+    REQUIRE(service.request(request));
+    {
+        std::unique_lock lock(callbackMutex);
+        REQUIRE(callbackChanged.wait_for(lock, 2s, [&] { return callbackStarted; }));
+    }
+
+    service.abort(request);
+    {
+        std::lock_guard lock(callbackMutex);
+        releaseCallback = true;
+    }
+    callbackChanged.notify_all();
+    request->wait();
+    REQUIRE(request->getStatus() == RequestStatus::Aborted);
+
+    for (size_t attempt = 0; attempt < 200; ++attempt) {
+        if (service.getMemoryStatistics()["active-filters"].empty()) {
+            return;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    FAIL("Cancelled inline filter evaluation retained request-owned memory");
+}
+
+TEST_CASE(
+    "Service prunes ordinary outputs without notifying a stale in-flight result",
+    "[Service][request-pruning]")
+{
+    using namespace std::chrono_literals;
+
+    Service service(std::make_shared<MemCache>(32), false);
+    auto dataSource = std::make_shared<BlockingResetDataSource>();
+    service.add(dataSource);
+
+    auto request = std::make_shared<LayerTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<TileId>{firstTile(), secondTile()});
+    std::vector<TileId> results;
+    request->onFeatureLayer(
+        [&](TileFeatureLayer::Ptr layer) { results.push_back(layer->tileId()); });
+
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{request}));
+    REQUIRE(dataSource->waitForFirstStart());
+    service.retainOutputs(request, {secondTile()});
+    dataSource->releaseFirst();
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(results == std::vector<TileId>{secondTile()});
+    REQUIRE(
+        dataSource->requestedTiles() ==
+        std::vector<TileId>{firstTile(), secondTile()});
+}
+
+TEST_CASE(
+    "Service prunes filter outputs while preserving retained source work",
+    "[feature-layer-filter][Service][request-pruning]")
+{
+    Service service(std::make_shared<MemCache>(32), false);
+    auto dataSource = std::make_shared<BlockingResetDataSource>();
+    service.add(dataSource);
+
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<TileId>{firstTile(), secondTile()},
+        filterDefinition());
+    std::vector<TileId> results;
+    request->onFilterResult(
+        [&](TileSubsetLayer::Ptr layer) { results.push_back(layer->tileId()); });
+
+    REQUIRE(service.request(request));
+    REQUIRE(dataSource->waitForFirstStart());
+    service.retainOutputs(request, {secondTile()});
+    dataSource->releaseFirst();
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(results == std::vector<TileId>{secondTile()});
+    REQUIRE(
+        dataSource->requestedTiles() ==
+        std::vector<TileId>{firstTile(), secondTile()});
+
+    for (size_t attempt = 0; attempt < 200; ++attempt) {
+        if (service.getMemoryStatistics()["active-filters"].empty()) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    FAIL("Pruned filter execution retained request-owned memory");
 }
 
 TEST_CASE(
@@ -1659,7 +1881,6 @@ TEST_CASE(
     nlohmann::json envelope = {
         {"filterId", "styled-layer:17"},
         {"generation", 8},
-        {"deliveryEpoch", 1},
         {"channels", {
             {
                 {"channelId", "roads"},
@@ -1699,12 +1920,6 @@ TEST_CASE(
             secondTile().value(),
             firstTile().value(),
         }},
-        {"deliveryEpochs", {
-            {
-                {"tileId", firstTile().value()},
-                {"epoch", 5},
-            },
-        }},
         {"roots", {
             {
                 {"tileId", firstTile().value()},
@@ -1735,8 +1950,6 @@ TEST_CASE(
     REQUIRE(parsed.filterRequest->filterId_ ==
             "styled-layer:17");
     REQUIRE(parsed.filterRequest->generation_ == 8);
-    REQUIRE(parsed.filterRequest->deliveryEpoch_ == 1);
-    REQUIRE(parsed.deliveryEpochs.at(firstTile()) == 5);
     REQUIRE(parsed.filterRequest->channels_.size() == 2);
     auto const& feature =
         parsed.filterRequest->channels_[0];
@@ -1763,11 +1976,49 @@ TEST_CASE(
     REQUIRE(serialized["filterId"] ==
             "styled-layer:17");
     REQUIRE(serialized["generation"] == 8);
-    REQUIRE(serialized["deliveryEpoch"] == 1);
+    REQUIRE_FALSE(serialized.contains("deliveryEpoch"));
+    REQUIRE_FALSE(serialized.contains("deliveryEpochs"));
     REQUIRE(serialized["channels"].size() == 2);
     REQUIRE(
         serialized["channels"][1]["geometryName"] ==
         "*");
+}
+
+TEST_CASE(
+    "Interactive filter JSON rejects removed delivery epoch fields",
+    "[feature-layer-filter][tiles-request]")
+{
+    auto envelope = nlohmann::json::object({
+        {"filterId", "styled-layer:17"},
+        {"generation", 8},
+        {"deliveryEpoch", 1},
+        {"channels", nlohmann::json::array({{
+            {"channelId", "roads"},
+            {"scope", "feature"},
+            {"entryFilter", "typeId == 'Road'"},
+        }})},
+    });
+    nlohmann::json request = {
+        {"mapId", "FilterMap"},
+        {"layerId", "Road"},
+        {"tileIds", {firstTile().value()}},
+    };
+    detail::inheritFilterFields(request, envelope);
+    REQUIRE_THROWS_WITH(
+        detail::parseLayerTilesRequestJson(request),
+        Catch::Matchers::ContainsSubstring("deliveryEpoch"));
+
+    envelope.erase("deliveryEpoch");
+    request = {
+        {"mapId", "FilterMap"},
+        {"layerId", "Road"},
+        {"tileIds", {firstTile().value()}},
+        {"deliveryEpochs", nlohmann::json::array()},
+    };
+    detail::inheritFilterFields(request, envelope);
+    REQUIRE_THROWS_WITH(
+        detail::parseLayerTilesRequestJson(request),
+        Catch::Matchers::ContainsSubstring("deliveryEpoch"));
 }
 
 TEST_CASE(

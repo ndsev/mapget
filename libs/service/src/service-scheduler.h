@@ -4,13 +4,14 @@
 #include "service-memory.h"
 
 #include <condition_variable>
-#include <deque>
 #include <list>
 #include <map>
 #include <thread>
 
 namespace mapget::detail
 {
+
+class TileLoadJob;
 
 /** Scheduler-owned concurrency permit state for one primary datasource. */
 struct SourceConcurrency
@@ -21,7 +22,7 @@ struct SourceConcurrency
     /** Maximum concurrent calls into this datasource. */
     size_t limit = 0;
 
-    /** Calls currently executing in the homogeneous worker pool. */
+    /** Datasource calls currently holding this source's concurrency permit. */
     size_t running = 0;
 
     /** False after removal, preventing new jobs while existing calls drain. */
@@ -38,41 +39,6 @@ struct TileLoadState
     uint64_t mapEpoch = 0;
 };
 
-/** Coarse job category used only for scheduling telemetry. */
-enum class ServiceJobKind {
-    TileLoad,
-    FilterEvaluation,
-};
-
-/** One unit executable by any service worker. */
-class ServiceJob
-{
-public:
-    /** Allow destruction through the scheduler-owned interface. */
-    virtual ~ServiceJob() = default;
-
-    /** Execute the job and contain all exceptions at the job boundary. */
-    virtual void run() noexcept = 0;
-
-    /** Release queued ownership when the scheduler discards this job. */
-    virtual void discard() noexcept = 0;
-
-    /** Return true when execution no longer has an observable consumer. */
-    [[nodiscard]] virtual bool cancelled() const = 0;
-
-    /** Return the datasource permit consumed by this job, or null for CPU-only work. */
-    [[nodiscard]] virtual std::shared_ptr<SourceConcurrency> sourceAffinity() const = 0;
-
-    /** Return the affected map for invalidation of queued work. */
-    [[nodiscard]] virtual std::string_view mapId() const = 0;
-
-    /** Return the filter request owner when this is derived filter work. */
-    [[nodiscard]] virtual FeatureLayerFilterTilesRequest::Ptr filterOwner() const { return {}; }
-
-    /** Return the job category for fair scheduling and telemetry. */
-    [[nodiscard]] virtual ServiceJobKind kind() const = 0;
-};
-
 /** Snapshot of global pool and queue pressure. */
 struct ServiceSchedulerStatistics
 {
@@ -80,8 +46,6 @@ struct ServiceSchedulerStatistics
     size_t runningJobs = 0;
     size_t activeTileRequests = 0;
     size_t inFlightTileJobs = 0;
-    size_t queuedFilterJobs = 0;
-    size_t runningFilterJobs = 0;
 };
 
 /** Per-datasource permit telemetry for the status endpoint. */
@@ -96,9 +60,10 @@ struct SourceConcurrencyStatistics
 /**
  * Global homogeneous job scheduler.
  *
- * Tile loading and CPU-only derived evaluation share one bounded worker pool.
- * Per-datasource permits constrain backend calls without reserving threads for
- * idle sources.
+ * Each worker owns one source tile through cache/backend loading and all
+ * attached request processing. Per-datasource permits constrain only backend
+ * access without reserving threads for idle sources or retaining loaded tiles
+ * in a second evaluation queue.
  */
 class ServiceScheduler
 {
@@ -127,11 +92,10 @@ public:
     /** Abort and detach one tile request from queued and in-flight work. */
     void abortRequest(LayerTilesRequest::Ptr const& request);
 
-    /** Enqueue source-independent work for the same homogeneous workers. */
-    void enqueueJob(std::unique_ptr<ServiceJob> job);
-
-    /** Discard queued filter jobs owned by one request. */
-    void abortFilterJobs(FeatureLayerFilterTilesRequest::Ptr const& request);
+    /** Detach removed outputs while preserving retained queued/in-flight work. */
+    void retainRequestOutputs(
+        LayerTilesRequest::Ptr const& request,
+        std::set<TileId> const& retainedTileIds);
 
     /** Register an active request's cooperative memory tracker. */
     void addFilterMemoryTracker(std::shared_ptr<FilterMemoryTracker> const& tracker);
@@ -167,18 +131,18 @@ private:
         size_t nextTileIndex = 0;
     };
 
-    /** Worker entry point; every thread consumes both tile and derived jobs. */
+    /** Worker entry point; every thread processes complete source-tile jobs. */
     void workerLoop();
 
     /** Return whether at least one job can make progress while the mutex is held. */
     [[nodiscard]] bool hasRunnableWorkLocked() const;
 
-    /** Select one job, processing cache hits and joins inline as needed. */
-    [[nodiscard]] std::unique_ptr<ServiceJob> takeNextJobLocked(std::unique_lock<std::mutex>& lock);
-
     /** Materialize the next source-affine tile job in round-robin source order. */
-    [[nodiscard]] std::unique_ptr<ServiceJob>
+    [[nodiscard]] std::unique_ptr<TileLoadJob>
     takeNextTileJobLocked(std::unique_lock<std::mutex>& lock);
+
+    /** Release a datasource permit before the owning worker processes consumers. */
+    void releaseSourcePermit(std::shared_ptr<SourceConcurrency> const& source) noexcept;
 
     /** Find the next unresolved tile in one matching request. */
     [[nodiscard]] std::optional<Candidate>
@@ -203,7 +167,10 @@ private:
     void removeCompletedRequestsLocked();
 
     /** Publish a successful tile only if its map epoch is still current. */
-    void completeTileJob(TileLoadState const& job, TileLayer::Ptr const& layer);
+    void completeTileJob(
+        TileLoadState const& job,
+        TileLayer::Ptr const& layer,
+        bool updateCache);
 
     /** Abort every request waiting on a failed tile load. */
     void failTileJob(TileLoadState const& job);
@@ -219,15 +186,12 @@ private:
     std::condition_variable jobsAvailable_;
     std::list<LayerTilesRequest::Ptr> requests_;
     std::map<MapTileKey, std::shared_ptr<TileLoadState>> inFlightTiles_;
-    std::deque<std::unique_ptr<ServiceJob>> queuedJobs_;
     std::vector<std::shared_ptr<SourceConcurrency>> sources_;
     std::vector<std::weak_ptr<FilterMemoryTracker>> filterMemoryTrackers_;
     std::map<std::string, uint64_t> mapEpochs_;
     std::vector<std::thread> workers_;
     size_t nextSourceIndex_ = 0;
     size_t runningJobs_ = 0;
-    size_t runningFilterJobs_ = 0;
-    bool preferDerivedJob_ = false;
     bool stopping_ = false;
 
     friend class TileLoadJob;
