@@ -767,8 +767,36 @@ struct ServeCommand
         HttpService srv(cache, httpConfig);
 
         if (config && *config) {
+            // Registration and schema assembly are side-effect free. Actual
+            // datasource construction must wait until the listener is bound.
             registerDefaultDatasourceTypes();
             loadConfigSchemaPatch(getPathToSchemaPatch());
+        }
+
+        if (!webapp_.empty()) {
+            log().info("Webapp: {}", webapp_);
+            if (!srv.mountFileSystem(webapp_)) {
+                log().error("  ...failed to mount!");
+                raise("Failed to mount webapp filesystem path.");
+            }
+        }
+
+        if (!staticMounts_.empty()) {
+            for (auto const& staticMount : staticMounts_) {
+                log().info("Static mount: {}", staticMount);
+                if (!srv.mountFileSystem(staticMount)) {
+                    log().error("  ...failed to mount!");
+                    raise("Failed to mount static filesystem path.");
+                }
+            }
+        }
+
+        // Trantor terminates the process directly when listener binding fails.
+        // Bind before launching datasource threads or child processes so that
+        // this failure cannot race their teardown against global destruction.
+        srv.go(host_, port_, waitMs_);
+
+        if (config && *config) {
             DataSourceConfigService::get().loadConfig(config->as<std::string>());
         }
 
@@ -795,25 +823,6 @@ struct ServeCommand
             }
         }
 
-        if (!webapp_.empty()) {
-            log().info("Webapp: {}", webapp_);
-            if (!srv.mountFileSystem(webapp_)) {
-                log().error("  ...failed to mount!");
-                raise("Failed to mount webapp filesystem path.");
-            }
-        }
-
-        if (!staticMounts_.empty()) {
-            for (auto const& staticMount : staticMounts_) {
-                log().info("Static mount: {}", staticMount);
-                if (!srv.mountFileSystem(staticMount)) {
-                    log().error("  ...failed to mount!");
-                    raise("Failed to mount static filesystem path.");
-                }
-            }
-        }
-
-        srv.go(host_, port_, waitMs_);
         if (startedCallback_) {
             startedCallback_(host_, srv.port());
         }

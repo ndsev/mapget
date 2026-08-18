@@ -3,6 +3,16 @@ project(test.mapget.integration CXX)
 set(MAPGET_PICK_PORTS_PY "${CMAKE_CURRENT_LIST_DIR}/detect-ports-and-prepare-config-yaml.py")
 set(MAPGET_RUN_WITH_PORTS "${CMAKE_CURRENT_LIST_DIR}/run-with-ports.bash")
 set(MAPGET_NDSMATH_PYTHON_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../ndslive-math/python")
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+add_test(
+  NAME test-cli-bind-before-datasources
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/test-bind-before-datasources.py"
+    "$<TARGET_FILE:mapget>")
+set_tests_properties(test-cli-bind-before-datasources PROPERTIES LABELS integration)
+
 if (EXISTS "${MAPGET_NDSMATH_PYTHON_DIR}/pyproject.toml")
   set(MAPGET_INSTALL_NDSMATH_PYTHON -f "python -m pip install ${MAPGET_NDSMATH_PYTHON_DIR}")
 else()
