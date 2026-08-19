@@ -10,6 +10,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <fstream>
 #include <memory>
@@ -64,6 +65,13 @@ struct HttpService::Impl
     std::thread statusCacheReportThread_;
     std::vector<std::function<void(const drogon::HttpResponsePtr&)>> statusCacheReportCallbacks_;
 
+    /** Shared bounded-thread executor for latest-wins interactive reconciliation. */
+    std::mutex interactiveControlMutex_;
+    std::condition_variable interactiveControlCv_;
+    bool stopInteractiveControl_ = false;
+    std::deque<std::function<void()>> interactiveControlTasks_;
+    std::vector<std::thread> interactiveControlThreads_;
+
     explicit Impl(HttpService& self, const HttpServiceConfig& config);
     ~Impl();
 
@@ -114,6 +122,12 @@ struct HttpService::Impl
 
     /** Coalesce report callers and serialize expensive cache traversal. */
     void runStatusCacheReportLoop();
+
+    /** Queue one control task unless HTTP service shutdown has begun. */
+    [[nodiscard]] bool enqueueInteractiveControlTask(std::function<void()> task);
+
+    /** Execute interactive reconciliation without occupying Drogon's I/O loop. */
+    void runInteractiveControlLoop();
 
     void handleLocateRequest(
         const drogon::HttpRequestPtr& req,

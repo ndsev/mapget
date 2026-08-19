@@ -267,6 +267,21 @@ ownership without holding the session mutex during service cancellation.
 Indexed chunks are staged until the final chunk so a partial envelope cannot
 temporarily cancel work named later in the same logical snapshot.
 
+Complete snapshots enter a per-session latest-wins mailbox. A small shared
+control executor performs potentially expensive request expansion and
+reconciliation away from Drogon's I/O threads, while each session admits at
+most one executor task and therefore remains serialized. Replacing an
+unapplied mailbox value is safe because every completed envelope describes
+full replacement state. Expansion also checks for a newer sequence before its
+atomic commit, bounding stale request churn without introducing a second
+tile-work queue.
+
+Filter pruning maintains an atomic count of pending outputs per source tile.
+The source-local SIMFIL cancellation probe reads that count without taking the
+request coordination mutex, so an evaluation whose outputs were all removed
+can stop at its next cooperative boundary. Any partial result is discarded
+before contribution commit.
+
 When a tile frame leaves the bounded queue, the session retains only its key
 and optional absolute semantic expiry from `timestamp + ttl`; it never retains
 a second payload copy. A later omission clears that handoff. An expired

@@ -179,6 +179,7 @@ private:
     std::map<TileId, size_t> outputIndexByTile;
     std::vector<OutputTileState> outputs;
     std::vector<std::vector<DependentOutputSlot>> dependentOutputsBySource;
+    std::unique_ptr<std::atomic_size_t[]> liveDependentOutputsBySource;
     std::vector<bool> receivedSourceTiles;
     std::vector<bool> committedSourceTiles;
     LayerTilesRequest::Ptr sourceRequest;
@@ -216,7 +217,10 @@ private:
     [[nodiscard]] bool outputLive(size_t outputIndex);
 
     /** Return whether at least one pending output still needs this source. */
-    [[nodiscard]] bool sourceNeededLocked(size_t sourceIndex) const;
+    [[nodiscard]] bool sourceNeeded(size_t sourceIndex) const;
+
+    /** Remove one output from every source-liveness counter it contributed to. */
+    void releaseOutputDependenciesLocked(OutputTileState const& output);
 
     /** Release a moved output model that became obsolete before emission. */
     void releaseReadyOutput(ReadyOutput& output);

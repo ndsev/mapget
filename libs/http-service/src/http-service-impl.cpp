@@ -12,6 +12,14 @@
 namespace mapget
 {
 
+namespace
+{
+
+/** Two threads prevent one expensive client snapshot from blocking every session. */
+constexpr size_t INTERACTIVE_CONTROL_THREAD_COUNT = 2;
+
+}
+
 HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config)
 {
     AuthHeaderRegexMap normalizedCacheResetAlternatives;
@@ -41,10 +49,22 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
         memoryTrimThread_ = std::thread([this] { runMemoryTrimLoop(); });
     }
 #endif
+
+    interactiveControlThreads_.reserve(INTERACTIVE_CONTROL_THREAD_COUNT);
+    for (size_t index = 0; index < INTERACTIVE_CONTROL_THREAD_COUNT; ++index) {
+        interactiveControlThreads_.emplace_back([this] { runInteractiveControlLoop(); });
+    }
 }
 
 HttpService::Impl::~Impl()
 {
+    {
+        std::lock_guard lock(interactiveControlMutex_);
+        stopInteractiveControl_ = true;
+        interactiveControlTasks_.clear();
+    }
+    interactiveControlCv_.notify_all();
+
     {
         std::lock_guard lock(statusCacheReportMutex_);
         stopStatusCacheReport_ = true;
@@ -61,6 +81,54 @@ HttpService::Impl::~Impl()
     }
     if (statusCacheReportThread_.joinable()) {
         statusCacheReportThread_.join();
+    }
+    for (auto& thread : interactiveControlThreads_) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+}
+
+bool HttpService::Impl::enqueueInteractiveControlTask(std::function<void()> task)
+{
+    if (!task) {
+        return false;
+    }
+    {
+        std::lock_guard lock(interactiveControlMutex_);
+        if (stopInteractiveControl_) {
+            return false;
+        }
+        interactiveControlTasks_.push_back(std::move(task));
+    }
+    interactiveControlCv_.notify_one();
+    return true;
+}
+
+void HttpService::Impl::runInteractiveControlLoop()
+{
+    while (true) {
+        std::function<void()> task;
+        {
+            std::unique_lock lock(interactiveControlMutex_);
+            interactiveControlCv_.wait(
+                lock,
+                [this] { return stopInteractiveControl_ || !interactiveControlTasks_.empty(); });
+            if (stopInteractiveControl_ && interactiveControlTasks_.empty()) {
+                return;
+            }
+            task = std::move(interactiveControlTasks_.front());
+            interactiveControlTasks_.pop_front();
+        }
+        try {
+            task();
+        }
+        catch (std::exception const& e) {
+            log().error("Interactive control task failed: {}", e.what());
+        }
+        catch (...) {
+            log().error("Interactive control task failed with an unknown exception.");
+        }
     }
 }
 

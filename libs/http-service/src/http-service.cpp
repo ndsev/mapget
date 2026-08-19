@@ -17,7 +17,16 @@ HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
 {
 }
 
-HttpService::~HttpService() = default;
+HttpService::~HttpService()
+{
+    // Stop Drogon before destroying the executor used by websocket sessions.
+    stop();
+}
+
+bool HttpService::enqueueInteractiveControlTask(std::function<void()> task)
+{
+    return impl_->enqueueInteractiveControlTask(std::move(task));
+}
 
 void HttpService::setup(drogon::HttpAppFramework& app)
 {

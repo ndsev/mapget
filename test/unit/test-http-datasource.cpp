@@ -150,18 +150,19 @@ class BlockingInteractiveDataSource final : public DataSource
 {
 public:
     /** Construct isolated metadata with enough source concurrency for overlap tests. */
-    BlockingInteractiveDataSource()
-        : info_(DataSourceInfo::fromJson(nlohmann::json::parse(R"({
-            "stringPoolId": "blocking-interactive-pool",
-            "mapId": "BlockingInteractiveMap",
-            "maxParallelJobs": 3,
-            "layers": {
-                "BlockingLayer": {
-                    "type": "Features",
-                    "featureTypes": []
-                }
-            }
-        })")))
+    explicit BlockingInteractiveDataSource(
+        std::string mapId = "BlockingInteractiveMap")
+        : info_(DataSourceInfo::fromJson(nlohmann::json{
+              {"stringPoolId", mapId + "-pool"},
+              {"mapId", mapId},
+              {"maxParallelJobs", 3},
+              {"layers",
+               {{"BlockingLayer",
+                 {
+                     {"type", "Features"},
+                     {"featureTypes", nlohmann::json::array()},
+                 }}}},
+          }))
     {
     }
 
@@ -1554,6 +1555,85 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(source->fillCount(tileA) == 1);
                 REQUIRE(source->fillCount(tileB) == 1);
                 REQUIRE(source->fillCount(tileC) == 1);
+                wsClient.stop();
+            }
+
+            // Complete snapshots use a latest-wins mailbox. A deliberately
+            // expensive candidate keeps reconciliation busy while two small
+            // replacements arrive; only the final replacement may reach the
+            // datasource.
+            {
+                constexpr size_t RepeatedTileCount = 250'000;
+                auto source = std::make_shared<BlockingInteractiveDataSource>(
+                    "CoalescingInteractiveMap");
+                service.add(source);
+                auto blockingLayerInfo = source->info().getLayer("BlockingLayer");
+                REQUIRE(blockingLayerInfo);
+
+                SyncHttpClient statusClient("127.0.0.1", service.port());
+                auto supersededSnapshots = [&]() {
+                    auto [result, response] = statusClient.get("/status-data");
+                    REQUIRE(result == drogon::ReqResult::Ok);
+                    REQUIRE(response != nullptr);
+                    return nlohmann::json::parse(std::string(response->body()))
+                        ["tilesWebsocket"]["superseded-snapshots"]
+                            .get<int64_t>();
+                };
+                auto const supersededBefore = supersededSnapshots();
+
+                WsTilesClient wsClient(service.port(), blockingLayerInfo);
+                REQUIRE(wsClient.connect(true));
+                auto conn = requireConnected(wsClient);
+                auto requestFor = [](int32_t tileId, uint64_t requestId) {
+                    return nlohmann::json::object({
+                        {"requestId", requestId},
+                        {"requests", nlohmann::json::array({
+                            nlohmann::json::object({
+                                {"mapId", "CoalescingInteractiveMap"},
+                                {"layerId", "BlockingLayer"},
+                                {"tileIds", nlohmann::json::array({tileId})},
+                            }),
+                        })},
+                    }).dump();
+                };
+
+                auto repeatedIds = std::vector<int32_t>(
+                    RepeatedTileCount,
+                    kHttpTileIdValue);
+                conn->send(
+                    nlohmann::json::object({
+                        {"requestId", 800},
+                        {"requests", nlohmann::json::array({
+                            nlohmann::json::object({
+                                {"mapId", "UnknownCoalescingMap"},
+                                {"layerId", "BlockingLayer"},
+                                {"tileIds", std::move(repeatedIds)},
+                            }),
+                        })},
+                    }).dump(),
+                    drogon::WebSocketMessageType::Text);
+                conn->send(
+                    requestFor(kSecondHttpTileIdValue, 801),
+                    drogon::WebSocketMessageType::Text);
+                conn->send(
+                    requestFor(kThirdHttpTileIdValue, 802),
+                    drogon::WebSocketMessageType::Text);
+
+                auto const finalTile = TileId::fromValue(kThirdHttpTileIdValue);
+                REQUIRE(source->waitForStarted({finalTile}, std::chrono::seconds(10)));
+                auto const supersededTileCount =
+                    source->fillCount(TileId::fromValue(kSecondHttpTileIdValue));
+                source->releaseAll();
+
+                REQUIRE(supersededTileCount == 0);
+                wsClient.resetStatus();
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                REQUIRE(wsClient.error().empty());
+                auto const finalStatus = wsClient.lastStatus();
+                REQUIRE(finalStatus.has_value());
+                REQUIRE(finalStatus->value("requestId", 0) == 802);
+                REQUIRE(source->fillCount(finalTile) == 1);
+                REQUIRE(supersededSnapshots() > supersededBefore);
                 wsClient.stop();
             }
 

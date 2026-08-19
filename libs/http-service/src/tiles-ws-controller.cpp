@@ -118,7 +118,7 @@ public:
             }
 
             const auto requestId = tilesWsAllocateRequestId(session, j);
-            tilesWsUpdateFromClientRequestMessage(session, j, requestId);
+            tilesWsUpdateFromClientRequestMessage(session, std::move(j), requestId);
         }
         catch (const std::exception& e) {
             log().error("WebSocket message handler failed: {}", e.what());

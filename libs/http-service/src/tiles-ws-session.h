@@ -58,7 +58,7 @@ uint64_t tilesWsAllocateRequestId(
 /** Apply a logical request update received from the websocket client. */
 void tilesWsUpdateFromClientRequestMessage(
     const std::shared_ptr<TilesWsSession>& session,
-    const nlohmann::json& requestJson,
+    nlohmann::json requestJson,
     uint64_t requestId);
 
 /** Abort outstanding backend work for one websocket session. */

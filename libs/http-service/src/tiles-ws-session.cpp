@@ -57,6 +57,7 @@ struct TilesWsMetrics
     std::atomic<int64_t> totalDroppedFrames{0};
     std::atomic<int64_t> totalDroppedBytes{0};
     std::atomic<int64_t> reconciledSnapshots{0};
+    std::atomic<int64_t> supersededSnapshots{0};
     std::atomic<int64_t> totalPullRequests{0};
     std::atomic<int64_t> totalPullTimeouts{0};
     std::atomic<int64_t> totalPullSessionMisses{0};
@@ -334,7 +335,7 @@ public:
     }
 
     /** Stage indexed chunks and reconcile only one complete logical snapshot. */
-    void updateFromClientRequestMessage(const nlohmann::json& j, uint64_t requestId)
+    void updateFromClientRequestMessage(nlohmann::json j, uint64_t requestId)
     {
         if (j.contains("renewals")) {
             {
@@ -362,7 +363,7 @@ public:
                 std::lock_guard lock(mutex_);
                 stagedRequest_.reset();
             }
-            updateFromClientRequest(j, requestId);
+            queueCompletedClientRequest(std::move(j), requestId);
             return;
         }
 
@@ -422,7 +423,97 @@ public:
             return;
         }
         if (completedEnvelope) {
-            updateFromClientRequest(*completedEnvelope, requestId);
+            queueCompletedClientRequest(std::move(*completedEnvelope), requestId);
+        }
+    }
+
+    /** Publish the newest complete snapshot to the per-session reconciliation mailbox. */
+    void queueCompletedClientRequest(nlohmann::json requestJson, uint64_t requestId)
+    {
+        bool scheduleTask = false;
+        {
+            std::lock_guard lock(mutex_);
+            if (cancelled_) {
+                return;
+            }
+            if (pendingReconciliation_) {
+                // Complete snapshots are replacement state. Only the newest
+                // unapplied candidate can affect backend demand.
+                gTilesWsMetrics.supersededSnapshots.fetch_add(1, std::memory_order_relaxed);
+            }
+            auto const sequence = ++reconciliationSequence_;
+            latestReconciliationSequence_.store(sequence, std::memory_order_release);
+            pendingReconciliation_ = PendingReconciliation{
+                .requestId = requestId,
+                .sequence = sequence,
+                .envelope = std::move(requestJson),
+            };
+            if (!reconciliationTaskScheduled_) {
+                reconciliationTaskScheduled_ = true;
+                scheduleTask = true;
+            }
+        }
+        if (!scheduleTask) {
+            return;
+        }
+
+        auto weak = weak_from_this();
+        if (service_.enqueueInteractiveControlTask([weak] {
+                if (auto self = weak.lock()) {
+                    self->drainCompletedClientRequests();
+                }
+            }))
+        {
+            return;
+        }
+
+        // Service shutdown can reject the task after this session published it.
+        std::lock_guard lock(mutex_);
+        reconciliationTaskScheduled_ = false;
+        pendingReconciliation_.reset();
+    }
+
+    /** Reconcile one running candidate and then only the newest snapshot that replaced it. */
+    void drainCompletedClientRequests()
+    {
+        while (true) {
+            std::optional<PendingReconciliation> candidate;
+            {
+                std::lock_guard lock(mutex_);
+                if (cancelled_) {
+                    pendingReconciliation_.reset();
+                    reconciliationTaskScheduled_ = false;
+                    return;
+                }
+                if (!pendingReconciliation_) {
+                    reconciliationTaskScheduled_ = false;
+                    return;
+                }
+                candidate = std::move(pendingReconciliation_);
+                pendingReconciliation_.reset();
+            }
+            try {
+                updateFromClientRequest(
+                    candidate->envelope,
+                    candidate->requestId,
+                    candidate->sequence);
+            }
+            catch (std::exception const& e) {
+                // One malformed or failing candidate must not strand the
+                // mailbox's scheduled bit and block all later snapshots.
+                if (!shouldAbandonReconciliation(candidate->sequence)) {
+                    rejectClientRequest(
+                        candidate->requestId,
+                        fmt::format("Request reconciliation failed: {}", e.what()));
+                }
+            }
+            catch (...) {
+                if (!shouldAbandonReconciliation(candidate->sequence)) {
+                    rejectClientRequest(
+                        candidate->requestId,
+                        "Request reconciliation failed with an unknown exception.");
+                }
+            }
         }
     }
 
@@ -440,9 +531,28 @@ public:
             }).dump());
     }
 
-    /** Parse and atomically reconcile one complete pending-output snapshot. */
-    void updateFromClientRequest(const nlohmann::json& j, uint64_t requestId)
+    /** Stop canceled or superseded request expansion before it can mutate active state. */
+    [[nodiscard]] bool shouldAbandonReconciliation(uint64_t sequence) const
     {
+        if (cancelled_) {
+            return true;
+        }
+        if (latestReconciliationSequence_.load(std::memory_order_acquire) == sequence) {
+            return false;
+        }
+        gTilesWsMetrics.supersededSnapshots.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    /** Parse and atomically reconcile one complete pending-output snapshot. */
+    void updateFromClientRequest(
+        const nlohmann::json& j,
+        uint64_t requestId,
+        uint64_t sequence)
+    {
+        if (shouldAbandonReconciliation(sequence)) {
+            return;
+        }
         auto requestsIt = j.find("requests");
         if (requestsIt == j.end() || !requestsIt->is_array()) {
             rejectClientRequest(requestId, "Missing or invalid 'requests' array");
@@ -456,8 +566,14 @@ public:
         try {
             snapshotRequests.reserve(requestsIt->size());
             for (auto requestJson : *requestsIt) {
+                if (shouldAbandonReconciliation(sequence)) {
+                    return;
+                }
                 detail::inheritFilterFields(requestJson, j);
                 auto parsed = detail::parseLayerTilesRequestJson(requestJson);
+                if (shouldAbandonReconciliation(sequence)) {
+                    return;
+                }
                 registerFilterRequest(parsed, filterRegistrations);
                 auto context = service_.resolveLayerRequest(
                     parsed.mapId,
@@ -465,6 +581,9 @@ public:
                     authHeaders_,
                     parsed.sourceId);
                 auto pendingKeys = requestedTileKeys(parsed);
+                if (shouldAbandonReconciliation(sequence)) {
+                    return;
+                }
                 int64_t priorityRank = 0;
                 for (auto const& key : pendingKeys) {
                     nextPendingTileKeys.insert(key);
@@ -499,6 +618,9 @@ public:
 
         {
             std::unique_lock lock(mutex_);
+            if (shouldAbandonReconciliation(sequence)) {
+                return;
+            }
             expireHandoffRecordsLocked(std::chrono::system_clock::now());
             if (auto error = validateFilterRegistrationOverlapLocked(filterRegistrations)) {
                 // A generation identifies one immutable filter definition for
@@ -604,9 +726,9 @@ public:
                             std::memory_order_relaxed);
                         continue;
                     }
-                    if (std::ranges::find(additions, key.tileId_) == additions.end()) {
-                        additions.push_back(key.tileId_);
-                    }
+                    // requestedTileKeys() has already removed duplicate IDs
+                    // within this logical request.
+                    additions.push_back(key.tileId_);
                 }
                 if (additions.empty()) {
                     continue;
@@ -681,6 +803,7 @@ public:
             handoffRecords_.clear();
             filterRegistrations_.clear();
             stagedRequest_.reset();
+            pendingReconciliation_.reset();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
             outgoingCapacityChanged_.notify_all();
         }
@@ -746,6 +869,14 @@ private:
     {
         uint64_t requestId = 0;
         uint64_t nextChunkIndex = 0;
+        nlohmann::json envelope;
+    };
+
+    /** Newest complete replacement snapshot awaiting control-thread reconciliation. */
+    struct PendingReconciliation
+    {
+        uint64_t requestId = 0;
+        uint64_t sequence = 0;
         nlohmann::json envelope;
     };
 
@@ -1573,6 +1704,7 @@ private:
             handoffRecords_.clear();
             filterRegistrations_.clear();
             stagedRequest_.reset();
+            pendingReconciliation_.reset();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
             outgoingCapacityChanged_.notify_all();
         }
@@ -2007,6 +2139,10 @@ private:
     FilterRegistrationState filterRegistrations_;
     bool statusEmissionEnabled_ = false;
     std::optional<StagedRequest> stagedRequest_;
+    std::optional<PendingReconciliation> pendingReconciliation_;
+    bool reconciliationTaskScheduled_ = false;
+    uint64_t reconciliationSequence_ = 0;
+    std::atomic_uint64_t latestReconciliationSequence_{0};
 
     TileLayerStream::StringPoolOffsetMap committedStringPoolOffsets_;
     TileLayerStream::StringPoolOffsetMap writerOffsets_;
@@ -2210,11 +2346,11 @@ uint64_t tilesWsAllocateRequestId(
 /** Apply a parsed websocket request message to one session if it is still alive. */
 void tilesWsUpdateFromClientRequestMessage(
     const std::shared_ptr<TilesWsSession>& session,
-    const nlohmann::json& requestJson,
+    nlohmann::json requestJson,
     uint64_t requestId)
 {
     if (session) {
-        session->updateFromClientRequestMessage(requestJson, requestId);
+        session->updateFromClientRequestMessage(std::move(requestJson), requestId);
     }
 }
 
@@ -2295,6 +2431,7 @@ nlohmann::json tilesWebSocketMetricsSnapshotImpl()
         {"total-pull-timeouts", nonNegative(gTilesWsMetrics.totalPullTimeouts)},
         {"total-pull-session-misses", nonNegative(gTilesWsMetrics.totalPullSessionMisses)},
         {"reconciled-snapshots", nonNegative(gTilesWsMetrics.reconciledSnapshots)},
+        {"superseded-snapshots", nonNegative(gTilesWsMetrics.supersededSnapshots)},
         {"suppressed-active-outputs", nonNegative(gTilesWsMetrics.suppressedActiveOutputs)},
         {"suppressed-queued-outputs", nonNegative(gTilesWsMetrics.suppressedQueuedOutputs)},
         {"suppressed-handoff-outputs", nonNegative(gTilesWsMetrics.suppressedHandoffOutputs)},

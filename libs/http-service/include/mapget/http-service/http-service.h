@@ -8,9 +8,15 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <utility>
+
+namespace mapget::detail
+{
+class TilesWsSession;
+}
 
 namespace mapget
 {
@@ -60,6 +66,11 @@ protected:
     void setup(drogon::HttpAppFramework& app) override;
 
 private:
+    friend class detail::TilesWsSession;
+
+    /** Queue one interactive reconciliation away from Drogon's I/O threads. */
+    [[nodiscard]] bool enqueueInteractiveControlTask(std::function<void()> task);
+
     struct Impl;
     friend struct Impl;
     std::unique_ptr<Impl> impl_;

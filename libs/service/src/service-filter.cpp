@@ -243,6 +243,12 @@ FilterRequestExecution::~FilterRequestExecution()
         usage.add("dependent-output-slots", vectorMemoryUsage(dependents));
     }
     usage.add(
+        "live-dependent-output-counts",
+        {
+            dependentOutputsBySource.size() * sizeof(std::atomic_size_t),
+            dependentOutputsBySource.size() * sizeof(std::atomic_size_t),
+        });
+    usage.add(
         "received-source-flags",
         {
             (receivedSourceTiles.size() + 7) / 8,
@@ -438,6 +444,14 @@ void FilterRequestExecution::configure(
                 });
         }
     }
+
+    liveDependentOutputsBySource =
+        std::make_unique<std::atomic_size_t[]>(dependentOutputsBySource.size());
+    for (size_t sourceIndex = 0; sourceIndex < dependentOutputsBySource.size(); ++sourceIndex) {
+        liveDependentOutputsBySource[sourceIndex].store(
+            dependentOutputsBySource[sourceIndex].size(),
+            std::memory_order_relaxed);
+    }
 }
 
 bool FilterRequestExecution::outputLive(size_t outputIndex)
@@ -451,18 +465,23 @@ bool FilterRequestExecution::outputLive(size_t outputIndex)
         (state == OutputTileState::State::Pending || state == OutputTileState::State::Taken);
 }
 
-bool FilterRequestExecution::sourceNeededLocked(size_t sourceIndex) const
+bool FilterRequestExecution::sourceNeeded(size_t sourceIndex) const
 {
-    if (sourceIndex >= dependentOutputsBySource.size()) {
-        return false;
+    return sourceIndex < dependentOutputsBySource.size() &&
+        liveDependentOutputsBySource &&
+        liveDependentOutputsBySource[sourceIndex].load(std::memory_order_acquire) != 0;
+}
+
+void FilterRequestExecution::releaseOutputDependenciesLocked(OutputTileState const& output)
+{
+    for (auto const& sourceTileId : output.sourceTileIds_) {
+        auto& count = liveDependentOutputsBySource[sourceIndexByTile.at(sourceTileId)];
+        auto const previous = count.load(std::memory_order_relaxed);
+        if (previous == 0) {
+            raise("Filter source dependency was released more than once.");
+        }
+        count.store(previous - 1, std::memory_order_release);
     }
-    return std::ranges::any_of(
-        dependentOutputsBySource[sourceIndex],
-        [&](DependentOutputSlot const& dependent)
-        {
-            return dependent.outputIndex_ < outputs.size() &&
-                outputs[dependent.outputIndex_].state_ == OutputTileState::State::Pending;
-        });
 }
 
 void FilterRequestExecution::releaseReadyOutput(ReadyOutput& output)
@@ -578,6 +597,12 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
                 continue;
             }
 
+            // Taken outputs released these counters when their final source
+            // contribution arrived. Only a Pending -> Pruned transition
+            // removes a still-live source dependency here.
+            if (output.state_ == OutputTileState::State::Pending) {
+                releaseOutputDependenciesLocked(output);
+            }
             output.state_ = OutputTileState::State::Pruned;
             ++prunedOutputTiles;
             if (output.wipSubset_) {
@@ -621,7 +646,7 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
         }
 
         for (size_t sourceIndex = 0; sourceIndex < sourceTileIds.size(); ++sourceIndex) {
-            if (sourceNeededLocked(sourceIndex)) {
+            if (sourceNeeded(sourceIndex)) {
                 retainedSourceTileIds.insert(sourceTileIds[sourceIndex]);
             }
         }
@@ -733,7 +758,7 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
         if (terminal) {
             return;
         }
-        if (!sourceNeededLocked(sourceIndex)) {
+        if (!sourceNeeded(sourceIndex)) {
             return;
         }
         if (receivedSourceTiles[sourceIndex]) {
@@ -1036,6 +1061,7 @@ FilterRequestExecution::commitSource(
                         "Complete filter output has no WIP subset.",
                     });
                 }
+                releaseOutputDependenciesLocked(output);
                 output.state_ = OutputTileState::State::Taken;
                 ReadyOutput item{
                     dependent.outputIndex_,
@@ -2016,7 +2042,7 @@ void FilterRequestExecution::evaluate(
         bool materializeOutput = false;
         {
             std::lock_guard lock(mutex);
-            sourceStillNeeded = !terminal && sourceNeededLocked(sourceIndex);
+            sourceStillNeeded = !terminal && sourceNeeded(sourceIndex);
             if (auto output = outputIndexByTile.find(source->tileId());
                 output != outputIndexByTile.end())
             {
@@ -2035,7 +2061,10 @@ void FilterRequestExecution::evaluate(
             *source,
             materializeOutput,
             request->exactRoots_,
-            [request = this->request] { return request->isCancelled(); });
+            [this, sourceIndex]
+            {
+                return request->isCancelled() || request->isDone() || !sourceNeeded(sourceIndex);
+            });
         if (!sourceResult) {
             finishEvaluation();
             fail(sourceResult.error());
@@ -2055,7 +2084,7 @@ void FilterRequestExecution::evaluate(
                     std::chrono::steady_clock::now() - filterStartedAt)
                     .count());
         }
-        if (request->isCancelled()) {
+        if (request->isCancelled() || request->isDone() || !sourceNeeded(sourceIndex)) {
             releaseTemporary();
             releaseUntransferredOutputModel();
             finishEvaluation();

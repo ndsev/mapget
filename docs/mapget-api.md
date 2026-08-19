@@ -378,6 +378,15 @@ the key follows the ordinary cache/refresh path without an omit/re-add cycle.
 Missing or zero TTL has no session-side expiry. The removed `renewals`,
 `deliveryEpoch`, and `deliveryEpochs` fields are rejected by protocol 4.
 
+Completed snapshots are consumed through a latest-wins mailbox outside the
+WebSocket I/O thread. If several complete snapshots arrive faster than mapget
+can apply them, an unapplied intermediate snapshot may be superseded without a
+`RequestContext` or status response. The newest snapshot is always retained,
+and running request expansion abandons a superseded candidate before its
+atomic commit. Clients must therefore treat `requestId` as an acknowledgement
+of applied state rather than expecting one response for every submitted
+update.
+
 Server control messages are binary VTLV frames:
 
 - `RequestContext`: JSON with `requestId`, `clientId`, and catalog revision;

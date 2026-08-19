@@ -808,6 +808,8 @@ const interactiveMetricDefinitions = [
     ["Pull requests", "total-pull-requests", formatInt],
     ["Pull timeouts", "total-pull-timeouts", formatInt],
     ["Session misses", "total-pull-session-misses", formatInt],
+    ["Reconciled snapshots", "reconciled-snapshots", formatInt],
+    ["Superseded snapshots", "superseded-snapshots", formatInt],
     ["Replaced requests", "replaced-requests", formatInt],
 ];
 
