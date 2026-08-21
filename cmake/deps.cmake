@@ -93,8 +93,11 @@ else()
             "SIMFIL_SHARED OFF")
 endif()
 
+# Switch to a release newer than 2.0.4 once available.
 CPMAddPackage(
-    URI "gl:eidheim/tiny-process-library#8bbb5a"  # Switch to release > 2.0.4 once available
+    NAME tiny-process-library
+    URL "https://gitlab.com/eidheim/tiny-process-library/-/archive/8bbb5a211c5c9df8ee69301da9d22fb977b27dc1/tiny-process-library-8bbb5a211c5c9df8ee69301da9d22fb977b27dc1.tar.gz"
+    URL_HASH SHA256=0ff45f47da95f1c36ce5e1e91342285301bf339150b34c3c5964687117ef01e5
     OPTIONS
         "BUILD_TESTING OFF")
 
