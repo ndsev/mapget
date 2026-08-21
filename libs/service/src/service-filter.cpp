@@ -66,16 +66,6 @@ tl::expected<TileId, simfil::Error> pointGroupOwnerTile(
     return TileId::fromWgs84(wrappedLongitude, boundedLatitude, level);
 }
 
-/** Append trace fragments with equal names while preserving source order. */
-void mergeFilterTraces(
-    std::map<std::string, simfil::Trace>& target,
-    std::map<std::string, simfil::Trace> source)
-{
-    for (auto&& [name, trace] : source) {
-        target[name].append(std::move(trace));
-    }
-}
-
 /** Build the common generation-aware filter status payload. */
 nlohmann::json
 makeFilterStatusJson(FeatureLayerFilterTilesRequest const& request, std::string state)
@@ -112,6 +102,169 @@ FilterRequestExecution::~FilterRequestExecution()
     }
 }
 
+bool FilterRequestExecution::SourceTileContribution::Lifetime::expiresBefore(Lifetime const& other)
+    const
+{
+    return expiresAt() < other.expiresAt() ||
+        (expiresAt() == other.expiresAt() && sourceKey_ < other.sourceKey_);
+}
+
+void FilterRequestExecution::SourceTileContribution::addMemoryUsage(MemoryUsageBreakdown& usage)
+    const
+{
+    usage.add("point-group-members", vectorMemoryUsage(pointGroupMembers_));
+    for (auto const& member : pointGroupMembers_) {
+        if (member.geometryName_) {
+            usage.add("point-group-geometry-names", stringMemoryUsage(*member.geometryName_));
+        }
+    }
+    usage.add("relation-descriptors", vectorMemoryUsage(relationDescriptors_));
+    usage.add("issues", vectorMemoryUsage(issues_));
+    for (auto const& issue : issues_) {
+        usage.add("issue-strings", stringMemoryUsage(issue.channelId_));
+        usage.add("issue-strings", stringMemoryUsage(issue.expression_));
+        usage.add("issue-strings", stringMemoryUsage(issue.message_));
+    }
+    usage.add("diagnostics", diagnosticsMemoryUsage(diagnostics_));
+    usage.add(
+        "trace-index",
+        {
+            traces_.size() * sizeof(decltype(traces_)::value_type),
+            traces_.size() * (sizeof(decltype(traces_)::value_type) + 3 * sizeof(void*)),
+        });
+    for (auto const& [name, trace] : traces_) {
+        usage.add("trace-names", stringMemoryUsage(name));
+        usage.add("trace-values", vectorMemoryUsage(trace.values));
+    }
+}
+
+void FilterRequestExecution::OutputTileState::addMemoryUsage(MemoryUsageBreakdown& usage) const
+{
+    usage.add("output-source-ids", vectorMemoryUsage(sourceTileIds_));
+    usage.add("output-contributions", vectorMemoryUsage(contributions_));
+    for (auto const& contribution : contributions_) {
+        if (contribution) {
+            contribution->addMemoryUsage(usage);
+        }
+    }
+}
+
+void FilterRequestExecution::ReadyOutput::addIssue(FilterIssue issue)
+{
+    auto const duplicate = std::ranges::find_if(
+        issues_,
+        [&](FilterIssue const& existing)
+        {
+            return existing.channelId_ == issue.channelId_ &&
+                existing.expression_ == issue.expression_ && existing.scope_ == issue.scope_ &&
+                existing.message_ == issue.message_;
+        });
+    if (duplicate == issues_.end()) {
+        issues_.push_back(std::move(issue));
+        return;
+    }
+    auto const remaining = std::numeric_limits<uint64_t>::max() - duplicate->occurrenceCount_;
+    duplicate->occurrenceCount_ += std::min(remaining, issue.occurrenceCount_);
+}
+
+void FilterRequestExecution::ReadyOutput::addIssues(std::vector<FilterIssue> issues)
+{
+    for (auto&& issue : issues) {
+        addIssue(std::move(issue));
+    }
+}
+
+void FilterRequestExecution::ReadyOutput::addTraces(std::map<std::string, simfil::Trace> traces)
+{
+    for (auto&& [name, trace] : traces) {
+        traces_[name].append(std::move(trace));
+    }
+}
+
+void FilterRequestExecution::ReadyOutput::installMetadata()
+{
+    std::ranges::sort(
+        issues_,
+        [](FilterIssue const& left, FilterIssue const& right)
+        {
+            return std::tie(left.channelId_, left.expression_, left.scope_, left.message_) <
+                std::tie(right.channelId_, right.expression_, right.scope_, right.message_);
+        });
+    for (auto&& issue : issues_) {
+        layer_->addIssue(std::move(issue));
+    }
+    layer_->setTraces(std::move(traces_));
+}
+
+void FilterRequestExecution::ReadyOutput::considerLifetime(
+    std::optional<SourceTileContribution::Lifetime> const& lifetime)
+{
+    if (lifetime && (!limitingLifetime_ || lifetime->expiresBefore(*limitingLifetime_))) {
+        limitingLifetime_ = lifetime;
+    }
+}
+
+void FilterRequestExecution::ReadyOutput::addMemoryUsage(MemoryUsageBreakdown& usage) const
+{
+    usage.add("ready-contributions", vectorMemoryUsage(contributions_));
+    for (auto const& contribution : contributions_) {
+        contribution.addMemoryUsage(usage);
+    }
+    usage.add(
+        "dynamic-contributions",
+        {
+            dynamicContributions_.size() * sizeof(decltype(dynamicContributions_)::value_type),
+            dynamicContributions_.size() *
+                (sizeof(decltype(dynamicContributions_)::value_type) + 3 * sizeof(void*)),
+        });
+    for (auto const& [_, contribution] : dynamicContributions_) {
+        contribution.addMemoryUsage(usage);
+    }
+    usage.add("ready-issues", vectorMemoryUsage(issues_));
+    for (auto const& issue : issues_) {
+        usage.add("issue-strings", stringMemoryUsage(issue.channelId_));
+        usage.add("issue-strings", stringMemoryUsage(issue.expression_));
+        usage.add("issue-strings", stringMemoryUsage(issue.message_));
+    }
+    usage.add(
+        "ready-trace-index",
+        {
+            traces_.size() * sizeof(decltype(traces_)::value_type),
+            traces_.size() * (sizeof(decltype(traces_)::value_type) + 3 * sizeof(void*)),
+        });
+    for (auto const& [name, trace] : traces_) {
+        usage.add("trace-names", stringMemoryUsage(name));
+        usage.add("trace-values", vectorMemoryUsage(trace.values));
+    }
+}
+
+void FilterRequestExecution::PendingRelationOutput::addMemoryUsage(MemoryUsageBreakdown& usage)
+    const
+{
+    ready_.addMemoryUsage(usage);
+    usage.add(
+        "relation-output-targets",
+        {
+            (targetTiles_.size() + pendingTargetTiles_.size()) * sizeof(MapTileKey),
+            (targetTiles_.size() + pendingTargetTiles_.size()) *
+                (sizeof(MapTileKey) + 3 * sizeof(void*)),
+        });
+}
+
+void FilterRequestExecution::RelationTargetTileState::addMemoryUsage(MemoryUsageBreakdown& usage)
+    const
+{
+    usage.add(
+        "relation-target-dependents",
+        {
+            dependentOutputs_.size() * sizeof(size_t),
+            dependentOutputs_.size() * (sizeof(size_t) + 3 * sizeof(void*)),
+        });
+    if (failureMessage_) {
+        usage.add("relation-target-errors", stringMemoryUsage(*failureMessage_));
+    }
+}
+
 /** Recompute a conservative lower bound for request orchestration containers. */
 [[nodiscard]] uint64_t FilterRequestExecution::orchestrationBytesLocked() const
 {
@@ -135,8 +288,7 @@ FilterRequestExecution::~FilterRequestExecution()
             "live-output-index",
             {
                 request->liveOutputTileIds_.size() * sizeof(TileId),
-                request->liveOutputTileIds_.size() *
-                    (sizeof(TileId) + 3 * sizeof(void*)),
+                request->liveOutputTileIds_.size() * (sizeof(TileId) + 3 * sizeof(void*)),
             });
     }
     usage.add(
@@ -192,6 +344,7 @@ FilterRequestExecution::~FilterRequestExecution()
             usage.add("filter-binding-strings", stringMemoryUsage(*string));
         }
     }
+    usage.add("simfil-expression-cache", expressionCache.memoryUsage());
     usage.add("source-tile-ids", vectorMemoryUsage(sourceTileIds));
     usage.add(
         "source-index",
@@ -209,34 +362,7 @@ FilterRequestExecution::~FilterRequestExecution()
         });
     usage.add("outputs", vectorMemoryUsage(outputs));
     for (auto const& output : outputs) {
-        usage.add("output-source-ids", vectorMemoryUsage(output.sourceTileIds_));
-        usage.add("output-contributions", vectorMemoryUsage(output.contributions_));
-        for (auto const& contribution : output.contributions_) {
-            if (!contribution) {
-                continue;
-            }
-            usage.add("point-group-members", vectorMemoryUsage(contribution->pointGroupMembers_));
-            usage
-                .add("relation-descriptors", vectorMemoryUsage(contribution->relationDescriptors_));
-            usage.add("issues", vectorMemoryUsage(contribution->issues_));
-            for (auto const& issue : contribution->issues_) {
-                usage.add("issue-strings", stringMemoryUsage(issue.channelId_));
-                usage.add("issue-strings", stringMemoryUsage(issue.expression_));
-                usage.add("issue-strings", stringMemoryUsage(issue.message_));
-            }
-            usage.add("diagnostics", diagnosticsMemoryUsage(contribution->diagnostics_));
-            usage.add(
-                "trace-index",
-                {
-                    contribution->traces_.size() *
-                        sizeof(decltype(contribution->traces_)::value_type),
-                    contribution->traces_.size() *
-                        (sizeof(decltype(contribution->traces_)::value_type) + 3 * sizeof(void*)),
-                });
-            for (auto const& [name, _] : contribution->traces_) {
-                usage.add("trace-names", stringMemoryUsage(name));
-            }
-        }
+        output.addMemoryUsage(usage);
     }
     usage.add("dependent-output-lists", vectorMemoryUsage(dependentOutputsBySource));
     for (auto const& dependents : dependentOutputsBySource) {
@@ -278,14 +404,7 @@ FilterRequestExecution::~FilterRequestExecution()
                 (sizeof(decltype(pendingRelationOutputs)::value_type) + 3 * sizeof(void*)),
         });
     for (auto const& [_, pending] : pendingRelationOutputs) {
-        usage.add(
-            "relation-output-targets",
-            {
-                (pending.targetTiles_.size() + pending.pendingTargetTiles_.size()) *
-                    sizeof(MapTileKey),
-                (pending.targetTiles_.size() + pending.pendingTargetTiles_.size()) *
-                    (sizeof(MapTileKey) + 3 * sizeof(void*)),
-            });
+        pending.addMemoryUsage(usage);
     }
     usage.add(
         "relation-target-tiles",
@@ -295,23 +414,14 @@ FilterRequestExecution::~FilterRequestExecution()
                 (sizeof(decltype(relationTargetTiles)::value_type) + 3 * sizeof(void*)),
         });
     for (auto const& [_, target] : relationTargetTiles) {
-        usage.add(
-            "relation-target-dependents",
-            {
-                target.dependentOutputs_.size() * sizeof(size_t),
-                target.dependentOutputs_.size() * (sizeof(size_t) + 3 * sizeof(void*)),
-            });
-        if (target.failureMessage_) {
-            usage.add("relation-target-errors", stringMemoryUsage(*target.failureMessage_));
-        }
+        target.addMemoryUsage(usage);
     }
     {
         std::lock_guard cacheLock(relationSelectorCacheMutex);
         usage.add(
             "relation-selector-cache",
             {
-                relationSelectorCache.size() *
-                    sizeof(decltype(relationSelectorCache)::value_type),
+                relationSelectorCache.size() * sizeof(decltype(relationSelectorCache)::value_type),
                 relationSelectorCache.size() *
                     (sizeof(decltype(relationSelectorCache)::value_type) + 3 * sizeof(void*)),
             });
@@ -406,9 +516,8 @@ void FilterRequestExecution::configure(
                     // Sorting nine direct lookups by source index preserves
                     // processing order without scanning the complete source
                     // union once for every output.
-                    dependenciesBySourceIndex.emplace_back(
-                        sourceIndexByTile.at(sourceTileId),
-                        sourceTileId);
+                    dependenciesBySourceIndex
+                        .emplace_back(sourceIndexByTile.at(sourceTileId), sourceTileId);
                 }
             }
             std::ranges::sort(
@@ -448,9 +557,8 @@ void FilterRequestExecution::configure(
     liveDependentOutputsBySource =
         std::make_unique<std::atomic_size_t[]>(dependentOutputsBySource.size());
     for (size_t sourceIndex = 0; sourceIndex < dependentOutputsBySource.size(); ++sourceIndex) {
-        liveDependentOutputsBySource[sourceIndex].store(
-            dependentOutputsBySource[sourceIndex].size(),
-            std::memory_order_relaxed);
+        liveDependentOutputsBySource[sourceIndex]
+            .store(dependentOutputsBySource[sourceIndex].size(), std::memory_order_relaxed);
     }
 }
 
@@ -467,8 +575,7 @@ bool FilterRequestExecution::outputLive(size_t outputIndex)
 
 bool FilterRequestExecution::sourceNeeded(size_t sourceIndex) const
 {
-    return sourceIndex < dependentOutputsBySource.size() &&
-        liveDependentOutputsBySource &&
+    return sourceIndex < dependentOutputsBySource.size() && liveDependentOutputsBySource &&
         liveDependentOutputsBySource[sourceIndex].load(std::memory_order_acquire) != 0;
 }
 
@@ -504,6 +611,15 @@ void FilterRequestExecution::releaseReadyOutput(ReadyOutput& output)
     status["outputTilesReady"] = readyOutputTiles;
     status["outputTilesEmitted"] = emittedOutputTiles;
     status["entriesEmitted"] = entriesEmitted;
+    auto const expressions = expressionCache.statistics();
+    status["simfilExpressions"] = {
+        {"entries", expressions.entries},
+        {"hits", expressions.hits},
+        {"misses", expressions.misses},
+        {"compiles", expressions.compiles},
+        {"failedCompiles", expressions.failedCompiles},
+        {"compileMicroseconds", expressions.compileMicroseconds},
+    };
     return status;
 }
 
@@ -572,8 +688,7 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
     if (request->isCancelled()) {
         return;
     }
-    auto const [hasLiveOutputs, membershipChanged] =
-        request->retainOutputTileIds(retainedTileIds);
+    auto const [hasLiveOutputs, membershipChanged] = request->retainOutputTileIds(retainedTileIds);
     if (!hasLiveOutputs || !membershipChanged) {
         return;
     }
@@ -636,8 +751,8 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
                 continue;
             }
             if (target->second.layer_) {
-                memory->relationTargetModels.subtract(
-                    target->second.layer_->memoryUsage().total().allocatedBytes);
+                memory->relationTargetModels
+                    .subtract(target->second.layer_->memoryUsage().total().allocatedBytes);
             }
             if (target->second.childRequest_ && !target->second.childRequest_->isDone()) {
                 childrenToAbort.push_back(target->second.childRequest_);
@@ -1116,12 +1231,11 @@ tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContr
         {},
         {},
         targetLayer.ttl() && targetLayer.ttl()->count() > 0 ?
-            std::optional<SourceTileContribution::Lifetime>{
-                SourceTileContribution::Lifetime{
-                    targetKey,
-                    targetLayer.timestamp(),
-                    *targetLayer.ttl(),
-                }} :
+            std::optional<SourceTileContribution::Lifetime>{SourceTileContribution::Lifetime{
+                targetKey,
+                targetLayer.timestamp(),
+                *targetLayer.ttl(),
+            }} :
             std::nullopt,
     };
 
@@ -1165,18 +1279,10 @@ FilterRequestExecution::takeRelationReadyOutputLocked(size_t outputIndex)
 tl::expected<std::vector<FilterRequestExecution::ReadyOutput>, simfil::Error>
 FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOutput> ready)
 {
-    struct SelectorConsumer
-    {
-        FeatureLayerRelationTargetCandidate* candidate_ = nullptr;
-        FeatureLayerRelationDescriptor* descriptor_ = nullptr;
-        size_t selectorIndex_ = 0;
-    };
-    struct TargetBatch
-    {
-        TileFeatureLayer::Ptr layer_;
-        std::optional<std::string> failureMessage_;
-        std::vector<ReadyOutput*> outputs_;
-    };
+    using SelectorConsumer =
+        std::tuple<FeatureLayerRelationTargetCandidate*, FeatureLayerRelationDescriptor*, size_t>;
+    using TargetBatch =
+        std::tuple<TileFeatureLayer::Ptr, std::optional<std::string>, std::vector<ReadyOutput*>>;
 
     std::map<MapTileKey, TargetBatch> targetBatches;
     for (auto output = ready.begin(); output != ready.end();) {
@@ -1189,25 +1295,27 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
             auto [batch, inserted] = targetBatches.try_emplace(
                 target.key_,
                 TargetBatch{target.layer_, target.failureMessage_, {}});
-            if (!inserted && batch->second.layer_ != target.layer_) {
+            auto& [layer, _, outputs] = batch->second;
+            if (!inserted && layer != target.layer_) {
                 return tl::unexpected(simfil::Error{
                     simfil::Error::InternalError,
                     "One relation target tile acquired inconsistent terminal states.",
                 });
             }
-            batch->second.outputs_.push_back(&output->ready_);
+            outputs.push_back(&output->ready_);
         }
         ++output;
     }
 
     for (auto& [targetKey, batch] : targetBatches) {
+        auto& [targetLayer, failureMessage, outputs] = batch;
         if (request->isCancelled()) {
             return std::vector<ReadyOutput>{};
         }
-        if (!batch.layer_) {
-            auto const message = batch.failureMessage_.value_or(
+        if (!targetLayer) {
+            auto const message = failureMessage.value_or(
                 fmt::format("Could not load relation target tile {}.", targetKey.toString()));
-            for (auto* output : batch.outputs_) {
+            for (auto* output : outputs) {
                 markRelationTargetUnavailableInOutput(*output, targetKey, message);
             }
             continue;
@@ -1217,7 +1325,7 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
         std::vector<std::string> selectorKeys;
         std::vector<FeatureLayerSelector> selectors;
         std::vector<SelectorConsumer> consumers;
-        for (auto* output : batch.outputs_) {
+        for (auto* output : outputs) {
             for (auto& contribution : output->contributions_) {
                 for (auto& descriptor : contribution.relationDescriptors_) {
                     if (descriptor.target_) {
@@ -1229,18 +1337,13 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
                         }
                         auto selectorKey =
                             LocateCandidate(targetKey, candidate.selector_).serialize().dump();
-                        auto [found, inserted] = selectorIndexByKey.try_emplace(
-                            selectorKey,
-                            selectors.size());
+                        auto [found, inserted] =
+                            selectorIndexByKey.try_emplace(selectorKey, selectors.size());
                         if (inserted) {
                             selectorKeys.push_back(std::move(selectorKey));
                             selectors.push_back(candidate.selector_);
                         }
-                        consumers.push_back(SelectorConsumer{
-                            &candidate,
-                            &descriptor,
-                            found->second,
-                        });
+                        consumers.emplace_back(&candidate, &descriptor, found->second);
                     }
                 }
             }
@@ -1269,9 +1372,10 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
                     "Relation-target selector evaluation did not complete.",
                 });
             try {
-                selected = batch.layer_->find(
+                selected = targetLayer->find(
                     std::span<FeatureLayerSelector const>{missingSelectors},
-                    [request = this->request] { return request->isCancelled(); });
+                    [request = this->request] { return request->isCancelled(); },
+                    &expressionCache);
             }
             catch (std::exception const& exception) {
                 selected = tl::unexpected(simfil::Error{
@@ -1300,12 +1404,12 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
             for (size_t index = 0; index < missingIndexes.size(); ++index) {
                 SharedSelectorResolution resolution;
                 if (selected) {
-                    resolution = std::make_shared<SelectorResolution>(
-                        std::move((*selected)[index]));
+                    resolution =
+                        std::make_shared<SelectorResolution>(std::move((*selected)[index]));
                 }
                 else {
-                    resolution = std::make_shared<SelectorResolution>(
-                        tl::unexpected(selected.error()));
+                    resolution =
+                        std::make_shared<SelectorResolution>(tl::unexpected(selected.error()));
                 }
                 auto const selectorIndex = missingIndexes[index];
                 // Never hold this cache mutex during SIMFIL. A concurrent miss
@@ -1323,19 +1427,19 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
         if (request->isCancelled()) {
             return std::vector<ReadyOutput>{};
         }
-        for (auto& consumer : consumers) {
-            auto const& resolution = resolutions[consumer.selectorIndex_];
+        for (auto const& [candidate, descriptor, selectorIndex] : consumers) {
+            auto const& resolution = resolutions[selectorIndex];
             if (!*resolution) {
                 return tl::unexpected(resolution->error());
             }
-            consumer.candidate_->resolved_ = true;
-            consumer.descriptor_->targetMatches_.insert(
-                consumer.descriptor_->targetMatches_.end(),
+            candidate->resolved_ = true;
+            descriptor->targetMatches_.insert(
+                descriptor->targetMatches_.end(),
                 resolution->value().begin(),
                 resolution->value().end());
         }
-        for (auto* output : batch.outputs_) {
-            auto added = addRelationTargetContribution(*output, targetKey, *batch.layer_);
+        for (auto* output : outputs) {
+            auto added = addRelationTargetContribution(*output, targetKey, *targetLayer);
             if (!added) {
                 return tl::unexpected(added.error());
             }
@@ -1385,7 +1489,7 @@ void FilterRequestExecution::markRelationTargetUnavailableInOutput(
         }
     }
     for (auto const& [channelId, count] : affectedByChannel) {
-        output.issues_.push_back(FilterIssue{
+        output.addIssue(FilterIssue{
             channelId,
             "<relation-target>",
             Scope::Relation,
@@ -1395,84 +1499,107 @@ void FilterRequestExecution::markRelationTargetUnavailableInOutput(
     }
 }
 
-tl::expected<FilterRequestExecution::PreparedRelationOutputs, simfil::Error>
+tl::expected<std::vector<FilterRequestExecution::ReadyOutput>, simfil::Error>
 FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedReady)
 {
-    PreparedRelationOutputs prepared;
-    std::lock_guard lock(mutex);
-    if (terminal || request->isCancelled()) {
-        return std::move(prepared);
-    }
-
-    for (auto&& ready : fixedReady) {
-        if (ready.outputIndex_ >= outputs.size() ||
-            outputs[ready.outputIndex_].state_ != OutputTileState::State::Taken)
-        {
-            releaseReadyOutput(ready);
-            continue;
+    std::vector<ReadyOutput> ready;
+    std::vector<RelationReadyOutput> relationReady;
+    std::vector<MapTileKey> targetsToSchedule;
+    {
+        std::lock_guard lock(mutex);
+        if (terminal || request->isCancelled()) {
+            for (auto& output : fixedReady) {
+                releaseReadyOutput(output);
+            }
+            return ready;
         }
-        std::set<MapTileKey> targetKeys;
-        for (auto const& contribution : ready.contributions_) {
-            for (auto const& descriptor : contribution.relationDescriptors_) {
-                if (descriptor.target_) {
-                    continue;
-                }
-                for (auto const& candidate : descriptor.targetCandidates_) {
-                    if (!candidate.resolved_) {
-                        targetKeys.insert(candidate.tileKey_);
+
+        for (auto&& output : fixedReady) {
+            if (output.outputIndex_ >= outputs.size() ||
+                outputs[output.outputIndex_].state_ != OutputTileState::State::Taken)
+            {
+                releaseReadyOutput(output);
+                continue;
+            }
+            std::set<MapTileKey> targetKeys;
+            for (auto const& contribution : output.contributions_) {
+                for (auto const& descriptor : contribution.relationDescriptors_) {
+                    if (descriptor.target_) {
+                        continue;
+                    }
+                    for (auto const& candidate : descriptor.targetCandidates_) {
+                        if (!candidate.resolved_) {
+                            targetKeys.insert(candidate.tileKey_);
+                        }
                     }
                 }
             }
-        }
 
-        if (targetKeys.empty()) {
-            prepared.ready_.push_back(std::move(ready));
-            ++readyOutputTiles;
-            continue;
-        }
-
-        std::set<MapTileKey> pendingKeys;
-        for (auto const& targetKey : targetKeys) {
-            auto [targetState, inserted] = relationTargetTiles.try_emplace(targetKey);
-            if (inserted && relationTargetTiles.size() > 2048) {
-                return tl::unexpected(simfil::Error{
-                    simfil::Error::InvalidArguments,
-                    "Stored-relation traversal exceeded the initial 2048 unique-target-tile limit.",
-                });
-            }
-            if (targetState->second.terminal_) {
+            if (targetKeys.empty()) {
+                ready.push_back(std::move(output));
+                ++readyOutputTiles;
                 continue;
             }
-            pendingKeys.insert(targetKey);
-            targetState->second.dependentOutputs_.insert(ready.outputIndex_);
-            if (!targetState->second.scheduled_) {
-                targetState->second.scheduled_ = true;
-                prepared.targetsToSchedule_.push_back(targetKey);
-            }
-        }
 
-        auto [pending, inserted] = pendingRelationOutputs.emplace(
-            ready.outputIndex_,
-            PendingRelationOutput{
-                std::move(ready),
-                std::move(targetKeys),
-                std::move(pendingKeys),
-            });
-        if (!inserted) {
-            return tl::unexpected(simfil::Error{
-                simfil::Error::InternalError,
-                "Filter output entered relation-target resolution more than once.",
-            });
-        }
-        if (pending->second.pendingTargetTiles_.empty()) {
-            auto relationReady = takeRelationReadyOutputLocked(pending->first);
-            if (!relationReady) {
-                return tl::unexpected(relationReady.error());
+            std::set<MapTileKey> pendingKeys;
+            for (auto const& targetKey : targetKeys) {
+                auto [targetState, inserted] = relationTargetTiles.try_emplace(targetKey);
+                if (inserted && relationTargetTiles.size() > 2048) {
+                    return tl::unexpected(simfil::Error{
+                        simfil::Error::InvalidArguments,
+                        "Stored-relation traversal exceeded the initial 2048 unique-target-tile "
+                        "limit.",
+                    });
+                }
+                if (targetState->second.terminal_) {
+                    continue;
+                }
+                pendingKeys.insert(targetKey);
+                targetState->second.dependentOutputs_.insert(output.outputIndex_);
+                if (!targetState->second.scheduled_) {
+                    targetState->second.scheduled_ = true;
+                    targetsToSchedule.push_back(targetKey);
+                }
             }
-            prepared.relationReady_.push_back(std::move(*relationReady));
+
+            auto [pending, inserted] = pendingRelationOutputs.emplace(
+                output.outputIndex_,
+                PendingRelationOutput{
+                    std::move(output),
+                    std::move(targetKeys),
+                    std::move(pendingKeys),
+                });
+            if (!inserted) {
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::InternalError,
+                    "Filter output entered relation-target resolution more than once.",
+                });
+            }
+            if (pending->second.pendingTargetTiles_.empty()) {
+                auto resolved = takeRelationReadyOutputLocked(pending->first);
+                if (!resolved) {
+                    return tl::unexpected(resolved.error());
+                }
+                relationReady.push_back(std::move(*resolved));
+            }
         }
     }
-    return std::move(prepared);
+
+    // Child requests can complete synchronously, so scheduling must happen
+    // only after relation coordination state is fully published and unlocked.
+    for (auto const& targetKey : targetsToSchedule) {
+        scheduleRelationTarget(targetKey);
+    }
+    auto resolved = resolveRelationReadyOutputs(std::move(relationReady));
+    if (!resolved) {
+        return tl::unexpected(resolved.error());
+    }
+    ready.insert(
+        ready.end(),
+        std::make_move_iterator(resolved->begin()),
+        std::make_move_iterator(resolved->end()));
+    std::ranges::sort(ready, {}, &ReadyOutput::outputIndex_);
+    return ready;
 }
 
 void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
@@ -1481,8 +1608,7 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
         std::lock_guard lock(mutex);
         auto target = relationTargetTiles.find(targetKey);
         if (terminal || target == relationTargetTiles.end() ||
-            target->second.dependentOutputs_.empty())
-        {
+            target->second.dependentOutputs_.empty()) {
             return;
         }
     }
@@ -1508,8 +1634,7 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
         std::lock_guard lock(mutex);
         auto target = relationTargetTiles.find(targetKey);
         if (terminal || target == relationTargetTiles.end() ||
-            target->second.dependentOutputs_.empty())
-        {
+            target->second.dependentOutputs_.empty()) {
             return;
         }
         target->second.childRequest_ = child;
@@ -1521,8 +1646,7 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
         if (request->isCancelled()) {
             std::lock_guard executionLock(mutex);
             if (auto target = relationTargetTiles.find(targetKey);
-                target != relationTargetTiles.end() &&
-                target->second.childRequest_ == child)
+                target != relationTargetTiles.end() && target->second.childRequest_ == child)
             {
                 target->second.childRequest_.reset();
             }
@@ -1544,8 +1668,7 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
         std::lock_guard lock(mutex);
         auto target = relationTargetTiles.find(targetKey);
         targetStillNeeded = target != relationTargetTiles.end() &&
-            target->second.childRequest_ == child &&
-            !target->second.dependentOutputs_.empty();
+            target->second.childRequest_ == child && !target->second.dependentOutputs_.empty();
     }
     if (!targetStillNeeded) {
         impl->scheduler_.abortRequest(child);
@@ -1682,6 +1805,155 @@ void FilterRequestExecution::collectRelationTarget(
     finishIfComplete();
 }
 
+tl::expected<void, simfil::Error> FilterRequestExecution::resolveStoredRelationDescriptors(
+    ReadyOutput& output,
+    std::vector<FeatureLayerRelationDescriptor>& descriptors)
+{
+    if (!hasStoredRelations) {
+        return {};
+    }
+
+    std::vector<FeatureLayerRelationDescriptor> resolved;
+    resolved.reserve(descriptors.size());
+    for (auto&& descriptor : descriptors) {
+        if (descriptor.target_) {
+            resolved.push_back(std::move(descriptor));
+            continue;
+        }
+        if (std::ranges::any_of(
+                descriptor.targetCandidates_,
+                [](auto const& candidate) { return !candidate.resolved_; }))
+        {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InternalError,
+                "Relation target reached finalization with unresolved locate candidates.",
+            });
+        }
+
+        std::map<std::pair<MapTileKey, std::string>, model_ptr<Feature>> uniqueMatches;
+        for (auto const& match : descriptor.targetMatches_) {
+            uniqueMatches.emplace(
+                std::make_pair(MapTileKey(match->model()), match->id()->toString()),
+                match);
+        }
+        if (uniqueMatches.size() == 1) {
+            auto const& [identity, match] = *uniqueMatches.begin();
+            descriptor.target_ = match;
+            descriptor.targetTileKey_ = identity.first;
+            descriptor.targetTypeId_ = std::string(match->typeId());
+            descriptor.targetFeatureId_ = castToKeyValue(match->id()->keyValuePairs());
+            resolved.push_back(std::move(descriptor));
+            continue;
+        }
+
+        auto const channelId = descriptor.channelIndex_ < request->filter_.channels_.size() ?
+            request->filter_.channels_[descriptor.channelIndex_].channelId_ :
+            std::string{};
+        auto const targetIdentity = descriptor.relation_ && descriptor.relation_->target() ?
+            descriptor.relation_->target()->toString() :
+            formatFeatureIdString(descriptor.targetTypeId_, descriptor.targetFeatureId_);
+        auto message = uniqueMatches.empty() ?
+            fmt::format(
+                "Located relation target '{}' was not found in its candidate tiles.",
+                targetIdentity) :
+            fmt::format(
+                "Relation target '{}' resolved ambiguously to {} features.",
+                targetIdentity,
+                uniqueMatches.size());
+        output.addIssue(FilterIssue{
+            channelId,
+            "<relation-target>",
+            Scope::Relation,
+            std::move(message),
+            1,
+        });
+    }
+    descriptors = std::move(resolved);
+    return {};
+}
+
+std::vector<MapTileKey> FilterRequestExecution::liveOutputKeys()
+{
+    std::vector<MapTileKey> result;
+    std::lock_guard lock(mutex);
+    result.reserve(outputs.size() - prunedOutputTiles);
+    for (auto const& output : outputs) {
+        // A pruned south-west owner must not suppress a relation in an output
+        // that still belongs to the current request.
+        if (output.state_ != OutputTileState::State::Pruned) {
+            result.emplace_back(
+                LayerType::Features,
+                request->mapId_,
+                request->layerId_,
+                output.tileId_);
+        }
+    }
+    return result;
+}
+
+tl::expected<bool, simfil::Error> FilterRequestExecution::finalizePointGroups(
+    ReadyOutput& output,
+    std::span<FeatureLayerPointGroupMember const> members)
+{
+    if (!hasPointGroups) {
+        return true;
+    }
+
+    auto const startedAt = std::chrono::steady_clock::now();
+    auto completion = request->filter_.completePointGroups(
+        *output.layer_,
+        members,
+        [request = this->request] { return request->isCancelled(); },
+        &expressionCache);
+    if (!completion) {
+        return tl::unexpected(completion.error());
+    }
+    if (request->isCancelled()) {
+        return false;
+    }
+    output.addIssues(std::move(completion->issues_));
+    output.addTraces(std::move(completion->traces_));
+    output.layer_->setInfo(
+        "Filter/Process-Groups#ms",
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - startedAt)
+            .count());
+    return true;
+}
+
+tl::expected<bool, simfil::Error> FilterRequestExecution::finalizeRelations(
+    ReadyOutput& output,
+    std::span<FeatureLayerRelationDescriptor const> descriptors)
+{
+    if (!hasStoredRelations) {
+        return true;
+    }
+
+    auto const requestedOutputKeys = liveOutputKeys();
+    auto const startedAt = std::chrono::steady_clock::now();
+    auto completion = request->filter_.completeRelations(
+        *output.layer_,
+        descriptors,
+        requestedOutputKeys,
+        request->exactRoots_,
+        [request = this->request] { return request->isCancelled(); },
+        &expressionCache);
+    if (!completion) {
+        return tl::unexpected(completion.error());
+    }
+    if (request->isCancelled()) {
+        return false;
+    }
+    output.addIssues(std::move(completion->issues_));
+    output.addTraces(std::move(completion->traces_));
+    auto const priorMilliseconds = output.layer_->info().value("Filter/Process-Relations#ms", 0.0);
+    output.layer_->setInfo(
+        "Filter/Process-Relations#ms",
+        priorMilliseconds +
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - startedAt)
+                .count());
+    return true;
+}
+
 tl::expected<std::optional<size_t>, simfil::Error>
 FilterRequestExecution::finalizeOutput(ReadyOutput ready)
 {
@@ -1692,35 +1964,10 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
     std::vector<TileSubsetDependency> dependencies;
     std::vector<FeatureLayerPointGroupMember> members;
     std::vector<FeatureLayerRelationDescriptor> relationDescriptors;
-    std::map<std::tuple<std::string, std::string, Scope, std::string>, FilterIssue> issues;
-    std::map<std::string, simfil::Trace> traces;
     simfil::Diagnostics diagnostics;
-    std::optional<SourceTileContribution::Lifetime> limitingLifetime;
-    auto includeLifetime = [&](auto const& contribution)
-    {
-        if (contribution.lifetime_ &&
-            (!limitingLifetime ||
-             contribution.lifetime_->expiresAt() < limitingLifetime->expiresAt() ||
-             (contribution.lifetime_->expiresAt() == limitingLifetime->expiresAt() &&
-              contribution.lifetime_->sourceKey_ < limitingLifetime->sourceKey_)))
-        {
-            limitingLifetime = contribution.lifetime_;
-        }
-    };
-
-    for (auto&& issue : ready.issues_) {
-        auto key =
-            std::make_tuple(issue.channelId_, issue.expression_, issue.scope_, issue.message_);
-        auto [found, inserted] = issues.emplace(key, issue);
-        if (!inserted) {
-            auto const remaining = std::numeric_limits<uint64_t>::max() -
-                found->second.occurrenceCount_;
-            found->second.occurrenceCount_ += std::min(remaining, issue.occurrenceCount_);
-        }
-    }
 
     for (auto& contribution : ready.contributions_) {
-        includeLifetime(contribution);
+        ready.considerLifetime(contribution.lifetime_);
         dependencies.push_back(std::move(contribution.dependency_));
         members.insert(
             members.end(),
@@ -1730,17 +1977,8 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
             relationDescriptors.end(),
             std::make_move_iterator(contribution.relationDescriptors_.begin()),
             std::make_move_iterator(contribution.relationDescriptors_.end()));
-        for (auto&& issue : contribution.issues_) {
-            auto key =
-                std::make_tuple(issue.channelId_, issue.expression_, issue.scope_, issue.message_);
-            auto [found, inserted] = issues.emplace(key, issue);
-            if (!inserted) {
-                auto const remaining = std::numeric_limits<uint64_t>::max() -
-                    found->second.occurrenceCount_;
-                found->second.occurrenceCount_ += std::min(remaining, issue.occurrenceCount_);
-            }
-        }
-        mergeFilterTraces(traces, std::move(contribution.traces_));
+        ready.addIssues(std::move(contribution.issues_));
+        ready.addTraces(std::move(contribution.traces_));
         if (!contribution.diagnostics_.exprIndex_.empty() ||
             !contribution.diagnostics_.fieldData_.empty() ||
             !contribution.diagnostics_.comparisonData_.empty())
@@ -1749,183 +1987,46 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
         }
     }
     for (auto& [_, contribution] : ready.dynamicContributions_) {
-        includeLifetime(contribution);
+        ready.considerLifetime(contribution.lifetime_);
         dependencies.push_back(std::move(contribution.dependency_));
-        for (auto&& issue : contribution.issues_) {
-            auto key =
-                std::make_tuple(issue.channelId_, issue.expression_, issue.scope_, issue.message_);
-            auto [found, inserted] = issues.emplace(key, issue);
-            if (!inserted) {
-                auto const remaining = std::numeric_limits<uint64_t>::max() -
-                    found->second.occurrenceCount_;
-                found->second.occurrenceCount_ += std::min(remaining, issue.occurrenceCount_);
-            }
-        }
-        mergeFilterTraces(traces, std::move(contribution.traces_));
+        ready.addIssues(std::move(contribution.issues_));
+        ready.addTraces(std::move(contribution.traces_));
     }
 
-    if (hasStoredRelations) {
-        std::vector<FeatureLayerRelationDescriptor> resolvedDescriptors;
-        resolvedDescriptors.reserve(relationDescriptors.size());
-        for (auto&& descriptor : relationDescriptors) {
-            if (descriptor.target_) {
-                resolvedDescriptors.push_back(std::move(descriptor));
-                continue;
-            }
-            if (std::ranges::any_of(
-                    descriptor.targetCandidates_,
-                    [](auto const& candidate) { return !candidate.resolved_; }))
-            {
-                return tl::unexpected(simfil::Error{
-                    simfil::Error::InternalError,
-                    "Relation target reached finalization with unresolved locate candidates.",
-                });
-            }
-
-            std::map<std::pair<MapTileKey, std::string>, model_ptr<Feature>> uniqueMatches;
-            for (auto const& match : descriptor.targetMatches_) {
-                uniqueMatches.emplace(
-                    std::make_pair(MapTileKey(match->model()), match->id()->toString()),
-                    match);
-            }
-            if (uniqueMatches.size() == 1) {
-                auto const& [identity, match] = *uniqueMatches.begin();
-                descriptor.target_ = match;
-                descriptor.targetTileKey_ = identity.first;
-                descriptor.targetTypeId_ = std::string(match->typeId());
-                descriptor.targetFeatureId_ = castToKeyValue(match->id()->keyValuePairs());
-                resolvedDescriptors.push_back(std::move(descriptor));
-                continue;
-            }
-
-            auto const channelId = descriptor.channelIndex_ < request->filter_.channels_.size() ?
-                request->filter_.channels_[descriptor.channelIndex_].channelId_ :
-                std::string{};
-            auto const targetIdentity = descriptor.relation_ && descriptor.relation_->target() ?
-                descriptor.relation_->target()->toString() :
-                formatFeatureIdString(descriptor.targetTypeId_, descriptor.targetFeatureId_);
-            auto message = uniqueMatches.empty() ?
-                fmt::format(
-                    "Located relation target '{}' was not found in its candidate tiles.",
-                    targetIdentity) :
-                fmt::format(
-                    "Relation target '{}' resolved ambiguously to {} features.",
-                    targetIdentity,
-                    uniqueMatches.size());
-            auto issue = FilterIssue{
-                channelId,
-                "<relation-target>",
-                Scope::Relation,
-                std::move(message),
-                1,
-            };
-            auto key =
-                std::make_tuple(issue.channelId_, issue.expression_, issue.scope_, issue.message_);
-            auto [found, inserted] = issues.emplace(std::move(key), issue);
-            if (!inserted) {
-                ++found->second.occurrenceCount_;
-            }
-        }
-        relationDescriptors = std::move(resolvedDescriptors);
+    auto resolvedRelations = resolveStoredRelationDescriptors(ready, relationDescriptors);
+    if (!resolvedRelations) {
+        return tl::unexpected(resolvedRelations.error());
     }
 
-    if (limitingLifetime) {
+    if (ready.limitingLifetime_) {
         // Preserve the limiting source's original positive TTL pair. Deriving a
         // duration from the output timestamp could turn an already-expired
         // dependency into a negative TTL, which means non-expiring on the wire.
-        ready.layer_->setTimestamp(limitingLifetime->timestamp_);
-        ready.layer_->setTtl(limitingLifetime->ttl_);
+        ready.layer_->setTimestamp(ready.limitingLifetime_->timestamp_);
+        ready.layer_->setTtl(ready.limitingLifetime_->ttl_);
     }
     else {
         ready.layer_->setTtl(std::nullopt);
     }
     ready.layer_->setDependencies(std::move(dependencies));
-    if (hasPointGroups) {
-        auto const startedAt = std::chrono::steady_clock::now();
-        auto completion = request->filter_.completePointGroups(
-            *ready.layer_,
-            members,
-            [request = this->request] { return request->isCancelled(); });
-        if (!completion) {
-            return tl::unexpected(completion.error());
-        }
-        if (request->isCancelled()) {
-            releaseReadyOutput(ready);
-            return std::nullopt;
-        }
-        for (auto&& issue : completion->issues_) {
-            auto key =
-                std::make_tuple(issue.channelId_, issue.expression_, issue.scope_, issue.message_);
-            auto [found, inserted] = issues.emplace(key, issue);
-            if (!inserted) {
-                auto const remaining = std::numeric_limits<uint64_t>::max() -
-                    found->second.occurrenceCount_;
-                found->second.occurrenceCount_ += std::min(remaining, issue.occurrenceCount_);
-            }
-        }
-        mergeFilterTraces(traces, std::move(completion->traces_));
-        ready.layer_->setInfo(
-            "Filter/Process-Groups#ms",
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - startedAt)
-                .count());
+    auto groupsFinalized = finalizePointGroups(ready, members);
+    if (!groupsFinalized) {
+        return tl::unexpected(groupsFinalized.error());
     }
-    if (hasStoredRelations) {
-        std::vector<MapTileKey> requestedOutputKeys;
-        {
-            std::lock_guard lock(mutex);
-            requestedOutputKeys.reserve(outputs.size() - prunedOutputTiles);
-            for (auto const& output : outputs) {
-                // Relation ownership must follow the current retained output
-                // set. Including a pruned south-west owner can suppress a
-                // relation in an output that still belongs to this request.
-                if (output.state_ != OutputTileState::State::Pruned) {
-                    requestedOutputKeys.emplace_back(
-                        LayerType::Features,
-                        request->mapId_,
-                        request->layerId_,
-                        output.tileId_);
-                }
-            }
-        }
-        auto const startedAt = std::chrono::steady_clock::now();
-        auto completion = request->filter_.completeRelations(
-            *ready.layer_,
-            relationDescriptors,
-            requestedOutputKeys,
-            request->exactRoots_,
-            [request = this->request] { return request->isCancelled(); });
-        if (!completion) {
-            return tl::unexpected(completion.error());
-        }
-        if (request->isCancelled()) {
-            releaseReadyOutput(ready);
-            return std::nullopt;
-        }
-        for (auto&& issue : completion->issues_) {
-            auto key =
-                std::make_tuple(issue.channelId_, issue.expression_, issue.scope_, issue.message_);
-            auto [found, inserted] = issues.emplace(key, issue);
-            if (!inserted) {
-                auto const remaining = std::numeric_limits<uint64_t>::max() -
-                    found->second.occurrenceCount_;
-                found->second.occurrenceCount_ += std::min(remaining, issue.occurrenceCount_);
-            }
-        }
-        mergeFilterTraces(traces, std::move(completion->traces_));
-        auto const priorMilliseconds =
-            ready.layer_->info().value("Filter/Process-Relations#ms", 0.0);
-        ready.layer_->setInfo(
-            "Filter/Process-Relations#ms",
-            priorMilliseconds +
-                std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - startedAt)
-                    .count());
+    if (!*groupsFinalized) {
+        releaseReadyOutput(ready);
+        return std::nullopt;
+    }
+    auto relationsFinalized = finalizeRelations(ready, relationDescriptors);
+    if (!relationsFinalized) {
+        return tl::unexpected(relationsFinalized.error());
+    }
+    if (!*relationsFinalized) {
+        releaseReadyOutput(ready);
+        return std::nullopt;
     }
 
-    for (auto&& [key, issue] : issues) {
-        ready.layer_->addIssue(std::move(issue));
-    }
-    ready.layer_->setTraces(std::move(traces));
+    ready.installMetadata();
     ready.layer_->setDiagnostics(diagnostics);
 
     size_t entryCount = 0;
@@ -2044,10 +2145,9 @@ void FilterRequestExecution::evaluate(
             std::lock_guard lock(mutex);
             sourceStillNeeded = !terminal && sourceNeeded(sourceIndex);
             if (auto output = outputIndexByTile.find(source->tileId());
-                output != outputIndexByTile.end())
-            {
-                materializeOutput =
-                    outputs[output->second].state_ == OutputTileState::State::Pending;
+                output != outputIndexByTile.end()) {
+                materializeOutput = outputs[output->second].state_ ==
+                    OutputTileState::State::Pending;
             }
         }
         if (!sourceStillNeeded) {
@@ -2062,9 +2162,8 @@ void FilterRequestExecution::evaluate(
             materializeOutput,
             request->exactRoots_,
             [this, sourceIndex]
-            {
-                return request->isCancelled() || request->isDone() || !sourceNeeded(sourceIndex);
-            });
+            { return request->isCancelled() || request->isDone() || !sourceNeeded(sourceIndex); },
+            &expressionCache);
         if (!sourceResult) {
             finishEvaluation();
             fail(sourceResult.error());
@@ -2130,21 +2229,7 @@ void FilterRequestExecution::evaluate(
             fail(prepared.error());
             return;
         }
-        for (auto const& targetKey : prepared->targetsToSchedule_) {
-            scheduleRelationTarget(targetKey);
-        }
-        auto relationReady = resolveRelationReadyOutputs(std::move(prepared->relationReady_));
-        if (!relationReady) {
-            finishEvaluation();
-            fail(relationReady.error());
-            return;
-        }
-        prepared->ready_.insert(
-            prepared->ready_.end(),
-            std::make_move_iterator(relationReady->begin()),
-            std::make_move_iterator(relationReady->end()));
-        std::ranges::sort(prepared->ready_, {}, &ReadyOutput::outputIndex_);
-        if (!emitCompletedOutputs(std::move(prepared->ready_))) {
+        if (!emitCompletedOutputs(std::move(*prepared))) {
             finishEvaluation();
             return;
         }
@@ -2341,6 +2426,120 @@ void FeatureLayerFilterTilesRequest::cancel()
     setStatus(RequestStatus::Aborted);
 }
 
+bool detail::FilterRequestExecution::rejectStart(
+    FeatureLayerFilterTilesRequest::Ptr const& request,
+    std::string message)
+{
+    auto status = makeFilterStatusJson(*request, "Failed");
+    status["error"] = std::move(message);
+    request->notifyProgress(status);
+    request->setStatus(RequestStatus::Aborted);
+    return false;
+}
+
+tl::expected<void, simfil::Error> detail::FilterRequestExecution::prepareExactRoots(
+    FeatureLayerFilterTilesRequest::Ptr const& request,
+    bool hasStoredRelations)
+{
+    if (request->exactRoots_.size() > 4096) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "Stored-relation traversal exceeded the initial 4096 exact-root limit.",
+        });
+    }
+    for (size_t rootIndex = 0; rootIndex < request->exactRoots_.size(); ++rootIndex) {
+        request->exactRoots_[rootIndex].requestOrdinal_ = rootIndex;
+    }
+    if (!request->exactRoots_.empty() && !hasStoredRelations) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "Exact roots are valid only for a relation-scope filter bundle.",
+        });
+    }
+
+    auto const requestedOutputs =
+        std::set<TileId>(request->tileIds_.begin(), request->tileIds_.end());
+    if (std::ranges::any_of(
+            request->exactRoots_,
+            [&](auto const& root) { return !requestedOutputs.contains(root.tileId_); }))
+    {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "Every exact relation root must belong to an original requested output tile.",
+        });
+    }
+    return {};
+}
+
+tl::expected<std::vector<TileId>, simfil::Error> detail::FilterRequestExecution::processingTileIds(
+    FeatureLayerFilterTilesRequest const& request,
+    bool hasPointGroups,
+    std::set<TileId>& prioritySourceMembership)
+{
+    if (!hasPointGroups) {
+        return request.tileIds_;
+    }
+
+    auto const level = request.tileIds_.front().level();
+    for (auto const& tileId : request.tileIds_) {
+        if (!tileId.isValid() || tileId.level() != level) {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                "Point-grid outputs must be valid tiles at one common level.",
+            });
+        }
+    }
+    auto const [tileWidth, tileHeight] = request.tileIds_.front().wgs84Size();
+    for (auto const& channel : request.filter_.channels_) {
+        if (!channel.group_) {
+            continue;
+        }
+        if (!std::isfinite(channel.group_->cellSize_.x) ||
+            !std::isfinite(channel.group_->cellSize_.y) || channel.group_->cellSize_.x <= 0.0 ||
+            channel.group_->cellSize_.y <= 0.0 || channel.group_->cellSize_.x > tileWidth ||
+            channel.group_->cellSize_.y > tileHeight)
+        {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                fmt::format(
+                    "Point-grid channel '{}' exceeds the initial one-tile halo span.",
+                    channel.channelId_),
+            });
+        }
+    }
+
+    std::set<TileId> sourceTileMembership;
+    std::vector<TileId> result;
+    result.reserve(request.tileIds_.size());
+
+    // Traverse outputs in caller order and insert every source at its first
+    // point of need. Appending all halo sources after all outputs retains a
+    // viewport-sized set of mutable subsets while sparse dependencies wait.
+    for (auto const& outputTileId : request.tileIds_) {
+        if (sourceTileMembership.insert(outputTileId).second) {
+            result.push_back(outputTileId);
+        }
+        auto const priorityOutput = request.priorityTileIds_.contains(outputTileId);
+        for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
+            for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
+                if (offsetX == 0 && offsetY == 0) {
+                    continue;
+                }
+                auto const sourceTileId = outputTileId.neighbour(offsetX, offsetY);
+                if (priorityOutput) {
+                    // A prioritized output needs its complete halo, so those
+                    // dependencies inherit the same scheduling priority.
+                    prioritySourceMembership.insert(sourceTileId);
+                }
+                if (sourceTileMembership.insert(sourceTileId).second) {
+                    result.push_back(sourceTileId);
+                }
+            }
+        }
+    }
+    return result;
+}
+
 bool detail::FilterRequestExecution::start(
     Service::Impl& service,
     FeatureLayerFilterTilesRequest::Ptr const& request,
@@ -2392,116 +2591,28 @@ bool detail::FilterRequestExecution::start(
     auto const hasStoredRelations = std::ranges::any_of(
         request->filter_.channels_,
         [](auto const& channel) { return channel.scope_ == FeatureLayerFilterScope::Relation; });
-    if (request->exactRoots_.size() > 4096) {
-        auto status = makeFilterStatusJson(*request, "Failed");
-        status["error"] = "Stored-relation traversal exceeded the initial 4096 exact-root limit.";
-        request->notifyProgress(status);
-        request->setStatus(RequestStatus::Aborted);
-        return false;
-    }
-    for (size_t rootIndex = 0; rootIndex < request->exactRoots_.size(); ++rootIndex) {
-        request->exactRoots_[rootIndex].requestOrdinal_ = rootIndex;
-    }
-    if (!request->exactRoots_.empty() && !hasStoredRelations) {
-        auto status = makeFilterStatusJson(*request, "Failed");
-        status["error"] = "Exact roots are valid only for a relation-scope filter bundle.";
-        request->notifyProgress(status);
-        request->setStatus(RequestStatus::Aborted);
-        return false;
-    }
-    auto const requestedOutputMembership =
-        std::set<TileId>(request->tileIds_.begin(), request->tileIds_.end());
-    if (std::ranges::any_of(
-            request->exactRoots_,
-            [&](auto const& root) { return !requestedOutputMembership.contains(root.tileId_); }))
-    {
-        auto status = makeFilterStatusJson(*request, "Failed");
-        status["error"] =
-            "Every exact relation root must belong to an original requested output tile.";
-        request->notifyProgress(status);
-        request->setStatus(RequestStatus::Aborted);
-        return false;
+    auto exactRootsPrepared = prepareExactRoots(request, hasStoredRelations);
+    if (!exactRootsPrepared) {
+        return rejectStart(request, exactRootsPrepared.error().message);
     }
 
-    std::vector<TileId> tileIdsToProcess;
     auto prioritySourceMembership = request->priorityTileIds_;
-    if (hasPointGroups) {
-        auto const level = request->tileIds_.front().level();
-        for (auto const& tileId : request->tileIds_) {
-            if (!tileId.isValid() || tileId.level() != level) {
-                auto status = makeFilterStatusJson(*request, "Failed");
-                status["error"] = "Point-grid outputs must be valid tiles at one common level.";
-                request->notifyProgress(status);
-                request->setStatus(RequestStatus::Aborted);
-                return false;
-            }
-        }
-        auto const [tileWidth, tileHeight] = request->tileIds_.front().wgs84Size();
-        for (auto const& channel : request->filter_.channels_) {
-            if (!channel.group_) {
-                continue;
-            }
-            if (!std::isfinite(channel.group_->cellSize_.x) ||
-                !std::isfinite(channel.group_->cellSize_.y) || channel.group_->cellSize_.x <= 0.0 ||
-                channel.group_->cellSize_.y <= 0.0 || channel.group_->cellSize_.x > tileWidth ||
-                channel.group_->cellSize_.y > tileHeight)
-            {
-                auto status = makeFilterStatusJson(*request, "Failed");
-                status["error"] = fmt::format(
-                    "Point-grid channel '{}' exceeds the initial one-tile halo span.",
-                    channel.channelId_);
-                request->notifyProgress(status);
-                request->setStatus(RequestStatus::Aborted);
-                return false;
-            }
-        }
-
-        std::set<TileId> sourceTileMembership;
-        tileIdsToProcess.reserve(request->tileIds_.size());
-
-        // Traverse outputs in caller order and insert every source at its
-        // first point of need. Appending all halo sources after all outputs
-        // retains a viewport-sized set of mutable subset models while sparse
-        // coverage waits for dependencies that are scheduled only at the end.
-        for (auto const& outputTileId : request->tileIds_) {
-            if (sourceTileMembership.insert(outputTileId).second) {
-                tileIdsToProcess.push_back(outputTileId);
-            }
-            auto const priorityOutput = request->priorityTileIds_.contains(outputTileId);
-            for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
-                for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
-                    if (offsetX == 0 && offsetY == 0) {
-                        continue;
-                    }
-                    auto const sourceTileId = outputTileId.neighbour(offsetX, offsetY);
-                    if (priorityOutput) {
-                        // A prioritized output cannot complete before its
-                        // complete source halo, so its dependencies inherit
-                        // the same internal scheduling priority.
-                        prioritySourceMembership.insert(sourceTileId);
-                    }
-                    if (sourceTileMembership.insert(sourceTileId).second) {
-                        tileIdsToProcess.push_back(sourceTileId);
-                    }
-                }
-            }
-        }
-    }
-    else {
-        tileIdsToProcess = request->tileIds_;
+    auto tileIdsToProcess = processingTileIds(*request, hasPointGroups, prioritySourceMembership);
+    if (!tileIdsToProcess) {
+        return rejectStart(request, tileIdsToProcess.error().message);
     }
 
     std::vector<TileId> prioritySourceTileIds;
     prioritySourceTileIds.reserve(prioritySourceMembership.size());
     std::ranges::copy_if(
-        tileIdsToProcess,
+        *tileIdsToProcess,
         std::back_inserter(prioritySourceTileIds),
         [&](auto const& tileId) { return prioritySourceMembership.contains(tileId); });
 
     auto childRequest = std::make_shared<LayerTilesRequest>(
         request->mapId_,
         request->layerId_,
-        tileIdsToProcess,
+        *tileIdsToProcess,
         prioritySourceTileIds);
     childRequest->sourceId_ = request->sourceId_;
     {
@@ -2526,7 +2637,7 @@ bool detail::FilterRequestExecution::start(
     state->memory->filterId = request->filter_.filterId_;
     state->memory->generation = request->filter_.generation_;
     state->memory->requestedTiles = request->tileIds_.size();
-    state->configure(request->tileIds_, tileIdsToProcess);
+    state->configure(request->tileIds_, std::move(*tileIdsToProcess));
     {
         std::lock_guard lock(request->childRequestsMutex_);
         request->execution_ = state;

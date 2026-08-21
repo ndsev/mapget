@@ -26,17 +26,17 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "hash.h"
+#include "mapget/log.h"
+#include "mapget/model/simfilexpressioncache.h"
 #include "simfil/environment.h"
 #include "simfil/model/arena.h"
 #include "simfil/model/bitsery-traits.h"
 #include "simfil/model/nodes.h"
-#include "mapget/log.h"
 #include "simfil/model/string-pool.h"
 #include "simfilutil.h"
-#include "simfilexpressioncache.h"
 #include "sourcedatareference.h"
 #include "sourceinfo.h"
-#include "hash.h"
 
 /** Bitsery serialization traits */
 namespace bitsery
@@ -231,9 +231,11 @@ struct TileFeatureLayer::Impl {
         std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
     }
 
-    // SIMFIL schema lookup and compiled expression cache.
+    // SIMFIL schema lookup, runtime environment, and immutable compile cache.
     std::shared_ptr<LayerSchema const> layerSchema_;
+    std::unique_ptr<simfil::Environment> expressionEnvironment_;
     SimfilExpressionCache expressionCache_;
+    std::mutex expressionEvaluationMutex_;
 
     static std::unique_ptr<simfil::Environment> makeSchemaAwareEnvironment(
         std::shared_ptr<simfil::StringPool> stringPool,
@@ -251,6 +253,25 @@ struct TileFeatureLayer::Impl {
         auto env = makeEnvironment(stringPool);
         installCompletionLayerSchema(*env, std::move(layerSchema), std::move(stringPool));
         return env;
+    }
+
+    /** Compile once against a writable schema pool and return an immutable shared AST. */
+    tl::expected<simfil::SharedAST, simfil::Error>
+    compiledExpression(std::string_view query, simfil::CompileOptions options)
+    {
+        return expressionCache_.getOrCompile(
+            query,
+            options,
+            layerSchema_.get(),
+            {},
+            [&]() -> tl::expected<simfil::ASTPtr, simfil::Error>
+            {
+                auto compileStrings =
+                    std::make_shared<simfil::StringPool>(*expressionEnvironment_->strings());
+                auto compileEnvironment =
+                    makeSchemaAwareCompletionEnvironment(std::move(compileStrings), layerSchema_);
+                return simfil::compile(*compileEnvironment, query, options);
+            });
     }
 
     // (De-)Serialization
@@ -286,12 +307,7 @@ struct TileFeatureLayer::Impl {
         std::shared_ptr<simfil::StringPool> stringPool,
         std::shared_ptr<LayerInfo> const& layerInfo)
         : layerSchema_(layerInfo ? layerInfo->layerSchema() : nullptr),
-          expressionCache_(
-              makeSchemaAwareEnvironment(std::move(stringPool), layerSchema_),
-              [this]() {
-                  auto compileStrings = std::make_shared<simfil::StringPool>(*expressionCache_.environment().strings());
-                  return makeSchemaAwareCompletionEnvironment(std::move(compileStrings), layerSchema_);
-              })
+          expressionEnvironment_(makeSchemaAwareEnvironment(std::move(stringPool), layerSchema_))
     {
     }
 
@@ -1445,7 +1461,35 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
 tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
 TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool anyMode, bool autoWildcard)
 {
-    return impl_->expressionCache_.eval(query, node, anyMode, autoWildcard);
+    auto const rewriteMode = autoWildcard && node.schema() != simfil::NoSchemaId ?
+        simfil::RewriteMode::Schema :
+        simfil::RewriteMode::None;
+    simfil::CompileOptions options{
+        .any = anyMode,
+        .rewriteMode = rewriteMode,
+        .rootSchema = node.schema(),
+    };
+    auto ast = impl_->compiledExpression(query, options);
+    if (!ast) {
+        return tl::unexpected(ast.error());
+    }
+
+    // Environment traces and warnings are evaluation-local observable state.
+    // Serialize this legacy tile API; filter workers use independent evaluators.
+    std::lock_guard lock(impl_->expressionEvaluationMutex_);
+    impl_->expressionEnvironment_->warnings.clear();
+    impl_->expressionEnvironment_->traces.clear();
+    simfil::BoundExpression expression(*ast, *impl_->expressionEnvironment_);
+    QueryResult result;
+    auto values = expression.eval(node, &result.diagnostics);
+    if (!values) {
+        impl_->expressionEnvironment_->traces.clear();
+        return tl::unexpected(values.error());
+    }
+    result.values = std::move(*values);
+    result.traces = std::move(impl_->expressionEnvironment_->traces);
+    impl_->expressionEnvironment_->traces.clear();
+    return result;
 }
 
 tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
@@ -1465,7 +1509,18 @@ TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::
     auto rootSchema = rootResult && *rootResult
         ? (*rootResult)->schema()
         : simfil::NoSchemaId;
-    return impl_->expressionCache_.diagnostics(query, diag, anyMode, rootSchema);
+    simfil::CompileOptions options{
+        .any = anyMode,
+        .rewriteMode = rootSchema == simfil::NoSchemaId ?
+            simfil::RewriteMode::None :
+            simfil::RewriteMode::Schema,
+        .rootSchema = rootSchema,
+    };
+    auto ast = impl_->compiledExpression(query, options);
+    if (!ast) {
+        return tl::unexpected(ast.error());
+    }
+    return simfil::diagnostics(diag);
 }
 
 tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
@@ -2152,8 +2207,14 @@ tl::expected<void, simfil::Error>
 TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     auto oldDict = strings();
-    // Reset simfil environment and clear expression cache
-    impl_->expressionCache_.reset(Impl::makeSchemaAwareEnvironment(newDict, impl_->layerSchema_));
+    // String IDs are environment-local, so discard both bound runtime state and
+    // schema rewrites compiled against the prior pool.
+    {
+        std::lock_guard lock(impl_->expressionEvaluationMutex_);
+        impl_->expressionCache_.clear();
+        impl_->expressionEnvironment_ =
+            Impl::makeSchemaAwareEnvironment(newDict, impl_->layerSchema_);
+    }
     if (auto res = ModelPool::setStrings(newDict); !res)
         return tl::unexpected<simfil::Error>(std::move(res.error()));
 

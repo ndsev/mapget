@@ -19,6 +19,8 @@
 namespace mapget
 {
 
+class SimfilExpressionCache;
+
 /**
  * Candidate-expansion scope requested by one filter channel.
  *
@@ -134,12 +136,6 @@ struct FeatureLayerFilterRoot
     std::string canonicalFeatureId_;
 };
 
-/** Result of source-local filter evaluation. */
-struct FeatureLayerFilterResult
-{
-    TileSubsetLayer::Ptr layer_;
-};
-
 /** Stable integer cell identity for a point-grid group. */
 struct FeatureLayerPointGroupKey
 {
@@ -252,18 +248,25 @@ struct FeatureLayerFilterRequest
      *
      * Set `materializeOutput` for requested output tiles. Halo-only scans
      * evaluate coordinated operators without allocating a subset layer.
+     * A service-owned expression cache shares immutable compilation across
+     * source tiles; standalone callers may omit it for one-operation caching.
      */
     [[nodiscard]] tl::expected<FeatureLayerFilterSourceResult, simfil::Error> filterSource(
         TileFeatureLayer const& sourceLayer,
         bool materializeOutput,
         std::span<FeatureLayerFilterRoot const> exactRoots = {},
-        FeatureLayerFilterCancellationCheck const& cancellationCheck = {}) const;
+        FeatureLayerFilterCancellationCheck const& cancellationCheck = {},
+        SimfilExpressionCache* expressionCache = nullptr) const;
 
-    /** Materialize completed point-grid groups into an output created by filterSource(). */
+    /**
+     * Materialize completed point-grid groups into an output created by filterSource().
+     * Reusing the source-pass expression cache avoids recompiling projections.
+     */
     [[nodiscard]] tl::expected<FeatureLayerPointGroupCompletion, simfil::Error> completePointGroups(
         TileSubsetLayer& outputLayer,
         std::span<FeatureLayerPointGroupMember const> members,
-        FeatureLayerFilterCancellationCheck const& cancellationCheck = {}) const;
+        FeatureLayerFilterCancellationCheck const& cancellationCheck = {},
+        SimfilExpressionCache* expressionCache = nullptr) const;
 
     /**
      * Pair, filter, and materialize fully resolved stored-relation descriptors.
@@ -271,13 +274,15 @@ struct FeatureLayerFilterRequest
      * `requestedOutputKeys` controls permanent generic two-way ownership.
      * Exact-root traversal retains origin-output ownership; the first explicit
      * root owns a pair when both endpoints are roots.
+     * Reusing the request cache shares compilation across endpoint tiles.
      */
     [[nodiscard]] tl::expected<FeatureLayerRelationCompletion, simfil::Error> completeRelations(
         TileSubsetLayer& outputLayer,
         std::span<FeatureLayerRelationDescriptor const> descriptors,
         std::span<MapTileKey const> requestedOutputKeys,
         std::span<FeatureLayerFilterRoot const> exactRoots = {},
-        FeatureLayerFilterCancellationCheck const& cancellationCheck = {}) const;
+        FeatureLayerFilterCancellationCheck const& cancellationCheck = {},
+        SimfilExpressionCache* expressionCache = nullptr) const;
 
     /**
      * Evaluate source-local feature and attribute channels in one source pass.
@@ -285,8 +290,27 @@ struct FeatureLayerFilterRequest
      * Point grouping and stored relations require service coordination and are
      * rejected by this convenience operation.
      */
-    [[nodiscard]] tl::expected<FeatureLayerFilterResult, simfil::Error>
+    [[nodiscard]] tl::expected<TileSubsetLayer::Ptr, simfil::Error>
     filter(TileFeatureLayer const& sourceLayer) const;
+
+private:
+    class ExpressionEvaluator;
+    class Issues;
+    class SourceEvaluation;
+
+    /** Validate request invariants that depend on one concrete source layer. */
+    [[nodiscard]] tl::expected<void, simfil::Error>
+    validate(TileFeatureLayer const& sourceLayer) const;
+
+    /** Copy effective relation validity geometry into one subset result. */
+    [[nodiscard]] static model_ptr<GeometryCollection> copyRelationEffectiveGeometry(
+        TileSubsetLayer& target,
+        model_ptr<Feature> const& feature,
+        model_ptr<MultiValidity> const& validities,
+        FeatureLayerFilterChannel const& channel,
+        std::string_view endpoint,
+        Issues& issues,
+        model_ptr<GeometryCollection> const& fallback);
 };
 
 }  // namespace mapget

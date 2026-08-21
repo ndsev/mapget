@@ -169,6 +169,14 @@ All expressions are schema-compiled. `rewrite` controls only optional
 SIMFIL truthiness is used. A candidate-local error becomes an aggregated
 `FilterIssue`; structural/compile failures abort the request.
 
+`FilterRequestExecution` owns one bounded `SimfilExpressionCache` for the
+request lifetime. Source scans, group/relation completion, and relation-target
+selectors share immutable compiled ASTs through that cache, while each
+source-local evaluator binds those ASTs to its own environment and retains
+runtime lookup plans only for that worker. Cache keys include query/options,
+schema identity, and the exact typed request bindings so compilation can be
+shared across source tiles without crossing compile-time semantics.
+
 Attribute contexts add `$feature`, `$layer`, `$name`, `$attributeIndex`,
 `$hasValidity`, `$validityIndex`, and `$validityCount`.
 

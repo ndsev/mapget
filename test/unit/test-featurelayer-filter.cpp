@@ -1,13 +1,19 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <future>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "mapget/model/featurelayer-filter.h"
+#include "mapget/model/simfilexpressioncache.h"
+#include "mapget/model/simfilutil.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/locate.h"
 
@@ -115,9 +121,7 @@ TileFeatureLayer::Ptr makeAttrPointFilterSource()
         "FilterMap",
         filterLayerInfo(),
         strings);
-    auto road = source->newFeature(
-        "Road",
-        {{"tileId", int64_t{1}}, {"roadId", int64_t{4}}});
+    auto road = source->newFeature("Road", {{"tileId", int64_t{1}}, {"roadId", int64_t{4}}});
     auto geometry = road->geom()->newGeometry(GeomType::Line, 3, true);
     geometry->append({11.0, 48.0, 0.0});
     geometry->append({11.5, 48.0, 0.0});
@@ -195,10 +199,11 @@ TEST_CASE(
             .typeId_ = "Road",
             .featureIdExpression_ =
                 "select(($features.*{typeId == selectedType}.id), selectedIndex)",
-            .bindings_ = {
-                {"selectedType", std::string{"Road"}},
-                {"selectedIndex", int64_t{1}},
-            },
+            .bindings_ =
+                {
+                    {"selectedType", std::string{"Road"}},
+                    {"selectedIndex", int64_t{1}},
+                },
         },
     };
 
@@ -212,6 +217,119 @@ TEST_CASE(
     REQUIRE((*selected)[1].front()->id()->toString() == source->at(1)->id()->toString());
     REQUIRE((*selected)[2].size() == 1);
     REQUIRE((*selected)[2].front()->id()->toString() == source->at(1)->id()->toString());
+}
+
+TEST_CASE(
+    "Portable selector compilation distinguishes typed bindings",
+    "[feature-layer-filter][selector][expression-cache]")
+{
+    auto source = makeRelationSource();
+    auto selectors = std::array{
+        FeatureLayerSelector{
+            .typeId_ = "Road",
+            .featureFilter_ = "roadId == selectedRoadId",
+            .bindings_ = {{"selectedRoadId", int64_t{1}}},
+        },
+        FeatureLayerSelector{
+            .typeId_ = "Road",
+            .featureFilter_ = "roadId == selectedRoadId",
+            .bindings_ = {{"selectedRoadId", int64_t{2}}},
+        },
+    };
+    SimfilExpressionCache cache;
+
+    auto selected = source->find(selectors, {}, &cache);
+
+    REQUIRE(selected);
+    REQUIRE((*selected)[0].size() == 1);
+    REQUIRE((*selected)[1].size() == 1);
+    CHECK((*selected)[0].front()->id()->toString().ends_with(".1"));
+    CHECK((*selected)[1].front()->id()->toString().ends_with(".2"));
+    auto const statistics = cache.statistics();
+    CHECK(statistics.entries == 2);
+    CHECK(statistics.compiles == 2);
+}
+
+TEST_CASE(
+    "SIMFIL expression cache retains deterministic compilation failures",
+    "[feature-layer-filter][expression-cache]")
+{
+    auto strings = std::make_shared<StringPool>("FilterPool");
+    auto environment = makeEnvironment(strings);
+    SimfilExpressionCache cache;
+    size_t compileCalls = 0;
+    auto compile = [&]() -> tl::expected<simfil::ASTPtr, simfil::Error>
+    {
+        ++compileCalls;
+        return simfil::compile(*environment, "(", false);
+    };
+
+    simfil::CompileOptions options{.any = false};
+    auto first = cache.getOrCompile("(", options, nullptr, {}, compile);
+    auto second = cache.getOrCompile("(", options, nullptr, {}, compile);
+
+    REQUIRE_FALSE(first);
+    REQUIRE_FALSE(second);
+    CHECK(first.error() == second.error());
+    CHECK(compileCalls == 1);
+    auto const statistics = cache.statistics();
+    CHECK(statistics.entries == 1);
+    CHECK(statistics.hits == 1);
+    CHECK(statistics.misses == 1);
+    CHECK(statistics.compiles == 1);
+    CHECK(statistics.failedCompiles == 1);
+}
+
+TEST_CASE(
+    "SIMFIL expression cache compiles a concurrent first use once",
+    "[feature-layer-filter][expression-cache]")
+{
+    auto strings = std::make_shared<StringPool>("FilterPool");
+    auto environment = makeEnvironment(strings);
+    SimfilExpressionCache cache;
+    std::atomic_size_t compileCalls = 0;
+    std::promise<void> start;
+    auto ready = start.get_future().share();
+    auto compile = [&]() -> tl::expected<simfil::ASTPtr, simfil::Error>
+    {
+        ++compileCalls;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return simfil::compile(*environment, "true", false);
+    };
+
+    std::array<std::future<tl::expected<simfil::SharedAST, simfil::Error>>, 8> workers;
+    for (auto& worker : workers) {
+        worker = std::async(
+            std::launch::async,
+            [&]
+            {
+                ready.wait();
+                return cache.getOrCompile(
+                    "true",
+                    simfil::CompileOptions{.any = false},
+                    nullptr,
+                    {},
+                    compile);
+            });
+    }
+    start.set_value();
+
+    simfil::SharedAST shared;
+    for (auto& worker : workers) {
+        auto result = worker.get();
+        REQUIRE(result);
+        if (!shared) {
+            shared = *result;
+        }
+        else {
+            CHECK(result->get() == shared.get());
+        }
+    }
+    CHECK(compileCalls == 1);
+    auto const statistics = cache.statistics();
+    CHECK(statistics.entries == 1);
+    CHECK(statistics.compiles == 1);
+    CHECK(statistics.hits == workers.size() - 1);
 }
 
 TEST_CASE(
@@ -288,8 +406,8 @@ TEST_CASE(
     auto result = request.filter(*source);
 
     REQUIRE(result.has_value());
-    REQUIRE(result->layer_);
-    auto const& subset = result->layer_;
+    REQUIRE(*result);
+    auto const& subset = *result;
     REQUIRE(subset->filterId() == "style:roads");
     REQUIRE(subset->generation() == 9);
     REQUIRE(subset->size() == 2);
@@ -336,8 +454,7 @@ TEST_CASE(
             return true;
         }));
     REQUIRE(attributeEntry);
-    REQUIRE(attributeEntry->featureId()->addr().value_ ==
-        featureEntry->featureId()->addr().value_);
+    REQUIRE(attributeEntry->featureId()->addr().value_ == featureEntry->featureId()->addr().value_);
     REQUIRE_FALSE(attributeEntry->hasValidity());
     REQUIRE(attributeEntry->validityIndex() == 0);
     REQUIRE(attributeEntry->validityCount() == 1);
@@ -375,13 +492,13 @@ TEST_CASE(
 
     auto emptyResult = request.filter(*emptySource);
     REQUIRE(emptyResult.has_value());
-    REQUIRE(emptyResult->layer_);
+    REQUIRE(*emptyResult);
 
     std::string framedBytes;
     TileLayerStream::StringPoolOffsetMap offsets;
     TileLayerStream::Writer
         writer([&](std::string bytes, auto) { framedBytes.append(bytes); }, offsets);
-    writer.write(emptyResult->layer_);
+    writer.write(*emptyResult);
 
     auto populatedSource = std::make_shared<TileFeatureLayer>(
         TileId::fromTileXY(1, 0, 1),
@@ -392,8 +509,8 @@ TEST_CASE(
     populatedSource->newFeature("Road", {{"tileId", int64_t{1}}, {"roadId", int64_t{42}}});
     auto populatedResult = request.filter(*populatedSource);
     REQUIRE(populatedResult.has_value());
-    REQUIRE(populatedResult->layer_);
-    writer.write(populatedResult->layer_);
+    REQUIRE(*populatedResult);
+    writer.write(*populatedResult);
 
     std::vector<TileSubsetLayer::Ptr> streamed;
     TileLayerStream::Reader reader(
@@ -439,8 +556,8 @@ TEST_CASE(
     };
     auto result = request.filter(*makeTransitionFilterSource());
     REQUIRE(result);
-    REQUIRE(result->layer_);
-    auto channel = result->layer_->at(0);
+    REQUIRE(*result);
+    auto channel = (*result)->at(0);
     REQUIRE(channel->attributeValidityEntryCount() == 1);
     model_ptr<AttributeValidityEntry> entry;
     REQUIRE(channel->forEachAttributeValidityEntry(
@@ -488,8 +605,8 @@ TEST_CASE(
     };
     auto result = request.filter(*makeAttrPointFilterSource());
     REQUIRE(result);
-    REQUIRE(result->layer_);
-    auto channel = result->layer_->at(0);
+    REQUIRE(*result);
+    auto channel = (*result)->at(0);
     REQUIRE(channel->attributeValidityEntryCount() == 1);
     model_ptr<AttributeValidityEntry> entry;
     REQUIRE(channel->forEachAttributeValidityEntry(
@@ -509,12 +626,14 @@ TEST_CASE(
         });
     REQUIRE(line);
     REQUIRE(line->geomType() == GeomType::Line);
-    REQUIRE(line->toSelfContained().points_ == std::vector<Point>{
-        {11.25, 48.0, 0.0},
-        {11.5, 48.0, 0.0},
-        {11.75, 48.0, 0.0},
-    });
-    REQUIRE(result->layer_->issues().empty());
+    REQUIRE(
+        line->toSelfContained().points_ ==
+        std::vector<Point>{
+            {11.25, 48.0, 0.0},
+            {11.5, 48.0, 0.0},
+            {11.75, 48.0, 0.0},
+        });
+    REQUIRE((*result)->issues().empty());
 }
 
 TEST_CASE(
@@ -543,13 +662,13 @@ TEST_CASE(
     auto result = request.filter(*source);
 
     REQUIRE(result.has_value());
-    REQUIRE(result->layer_->at(0)->featureEntryCount() == 0);
-    REQUIRE(result->layer_->at(1)->featureEntryCount() == 1);
-    auto json = result->layer_->at(1)->toJson();
+    REQUIRE((*result)->at(0)->featureEntryCount() == 0);
+    REQUIRE((*result)->at(1)->featureEntryCount() == 1);
+    auto json = (*result)->at(1)->toJson();
     REQUIRE(json["featureEntries"][0]["values"] == nlohmann::json::array({nullptr, "Road"}));
-    REQUIRE(result->layer_->issues().size() == 2);
-    REQUIRE(result->layer_->issues()[0].occurrenceCount_ == 1);
-    REQUIRE(result->layer_->issues()[1].occurrenceCount_ == 1);
+    REQUIRE((*result)->issues().size() == 2);
+    REQUIRE((*result)->issues()[0].occurrenceCount_ == 1);
+    REQUIRE((*result)->issues()[1].occurrenceCount_ == 1);
 }
 
 TEST_CASE(
@@ -571,8 +690,8 @@ TEST_CASE(
     auto result = request.filter(*source);
 
     REQUIRE(result.has_value());
-    REQUIRE(result->layer_);
-    auto messages = simfil::diagnostics(result->layer_->diagnostics());
+    REQUIRE(*result);
+    auto messages = simfil::diagnostics((*result)->diagnostics());
     REQUIRE(messages.has_value());
     REQUIRE_FALSE(messages->empty());
 }
@@ -682,6 +801,38 @@ TEST_CASE(
     REQUIRE(firstResult->layer_->resolve<FeatureId>(*group->memberFeatureIds()->at(1))
                 ->toString()
                 .ends_with(".42"));
+}
+
+TEST_CASE(
+    "Filter source tiles share request-level SIMFIL compilation",
+    "[feature-layer-filter][expression-cache]")
+{
+    auto first = makePointGroupSource(TileId::fromTileXY(1, 0, 1), 41, Point{11.1, 48.1, 0.0});
+    auto second = makePointGroupSource(TileId::fromTileXY(2, 0, 1), 42, Point{11.2, 48.2, 0.0});
+    FeatureLayerFilterRequest request{
+        .filterId_ = "shared-compilation",
+        .channels_ =
+            {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "roads",
+                    .featureFilter_ = "typeId == 'Road'",
+                    .scope_ = FeatureLayerFilterScope::Feature,
+                },
+            },
+    };
+    SimfilExpressionCache cache;
+
+    auto firstResult = request.filterSource(*first, true, {}, {}, &cache);
+    auto secondResult = request.filterSource(*second, true, {}, {}, &cache);
+
+    REQUIRE(firstResult);
+    REQUIRE(secondResult);
+    CHECK(firstResult->layer_->at(0)->featureEntryCount() == 1);
+    CHECK(secondResult->layer_->at(0)->featureEntryCount() == 1);
+    auto const statistics = cache.statistics();
+    CHECK(statistics.entries == 1);
+    CHECK(statistics.compiles == 1);
+    CHECK(statistics.hits >= 1);
 }
 
 TEST_CASE(

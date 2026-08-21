@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mapget/model/simfilexpressioncache.h"
 #include "service-scheduler.h"
 
 #include <atomic>
@@ -40,6 +41,20 @@ private:
     /** Construct only through start(), after admission inputs are known. */
     FilterRequestExecution() = default;
 
+    /** Publish a structured admission failure and terminate the request. */
+    static bool
+    rejectStart(FeatureLayerFilterTilesRequest::Ptr const& request, std::string message);
+
+    /** Validate exact roots and assign their stable request ordinals. */
+    static tl::expected<void, simfil::Error>
+    prepareExactRoots(FeatureLayerFilterTilesRequest::Ptr const& request, bool hasStoredRelations);
+
+    /** Expand requested outputs into the source tiles required by point groups. */
+    static tl::expected<std::vector<TileId>, simfil::Error> processingTileIds(
+        FeatureLayerFilterTilesRequest const& request,
+        bool hasPointGroups,
+        std::set<TileId>& prioritySourceMembership);
+
     /** Source-local output retained until every dependent output is complete. */
     struct SourceTileContribution
     {
@@ -50,6 +65,9 @@ private:
             std::chrono::milliseconds ttl_;
 
             [[nodiscard]] auto expiresAt() const { return timestamp_ + ttl_; }
+
+            /** Return whether this source expires before another dependency. */
+            [[nodiscard]] bool expiresBefore(Lifetime const& other) const;
         };
 
         TileSubsetDependency dependency_;
@@ -59,6 +77,9 @@ private:
         std::map<std::string, simfil::Trace> traces_;
         simfil::Diagnostics diagnostics_;
         std::optional<Lifetime> lifetime_;
+
+        /** Add request-orchestration allocations owned by this contribution. */
+        void addMemoryUsage(MemoryUsageBreakdown& usage) const;
     };
 
     /** Mutable assembly state for one requested output tile. */
@@ -78,6 +99,9 @@ private:
         size_t missingContributions_ = 0;
         State state_ = State::Pending;
         uint64_t wipSubsetBytes_ = 0;
+
+        /** Add request-orchestration allocations owned by this output state. */
+        void addMemoryUsage(MemoryUsageBreakdown& usage) const;
     };
 
     /** One source contribution slot in a dependent output. */
@@ -99,12 +123,32 @@ private:
         ReadyOutput(ReadyOutput const&) = delete;
         ReadyOutput& operator=(ReadyOutput const&) = delete;
 
+        /** Merge one issue, saturating duplicate occurrence counts. */
+        void addIssue(FilterIssue issue);
+
+        /** Merge issues while transferring their retained strings. */
+        void addIssues(std::vector<FilterIssue> issues);
+
+        /** Merge named trace fragments in source order. */
+        void addTraces(std::map<std::string, simfil::Trace> traces);
+
+        /** Move deterministic issues and accumulated traces onto the output layer. */
+        void installMetadata();
+
+        /** Retain the dependency that causes the output to expire first. */
+        void considerLifetime(std::optional<SourceTileContribution::Lifetime> const& lifetime);
+
+        /** Add non-model request-orchestration allocations retained by this output. */
+        void addMemoryUsage(MemoryUsageBreakdown& usage) const;
+
         size_t outputIndex_ = 0;
         TileSubsetLayer::Ptr layer_;
         uint64_t layerBytes_ = 0;
         std::vector<SourceTileContribution> contributions_;
         std::map<MapTileKey, SourceTileContribution> dynamicContributions_;
         std::vector<FilterIssue> issues_;
+        std::map<std::string, simfil::Trace> traces_;
+        std::optional<SourceTileContribution::Lifetime> limitingLifetime_;
     };
 
     /** Output waiting for one or more dynamically located relation tiles. */
@@ -113,6 +157,9 @@ private:
         ReadyOutput ready_;
         std::set<MapTileKey> targetTiles_;
         std::set<MapTileKey> pendingTargetTiles_;
+
+        /** Add request-orchestration allocations retained while targets load. */
+        void addMemoryUsage(MemoryUsageBreakdown& usage) const;
     };
 
     /** Immutable terminal target state carried beyond the coordination lock. */
@@ -145,28 +192,17 @@ private:
         std::optional<std::string> failureMessage_;
         std::set<size_t> dependentOutputs_;
         LayerTilesRequest::Ptr childRequest_;
+
+        /** Add request-orchestration allocations retained for this target tile. */
+        void addMemoryUsage(MemoryUsageBreakdown& usage) const;
     };
 
-    /** Outputs and target loads produced by relation preparation. */
-    struct PreparedRelationOutputs
-    {
-        PreparedRelationOutputs() = default;
-        PreparedRelationOutputs(PreparedRelationOutputs&&) = default;
-        PreparedRelationOutputs& operator=(PreparedRelationOutputs&&) = default;
-        PreparedRelationOutputs(PreparedRelationOutputs const&) = delete;
-        PreparedRelationOutputs& operator=(PreparedRelationOutputs const&) = delete;
-
-        std::vector<ReadyOutput> ready_;
-        std::vector<RelationReadyOutput> relationReady_;
-        std::vector<MapTileKey> targetsToSchedule_;
-    };
-
-    using SelectorResolution =
-        tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>;
+    using SelectorResolution = tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>;
     using SharedSelectorResolution = std::shared_ptr<SelectorResolution const>;
 
     Service::Impl* impl = nullptr;
     FeatureLayerFilterTilesRequest::Ptr request;
+    SimfilExpressionCache expressionCache;
     std::shared_ptr<DataSourceInfo const> sourceInfo;
     DataSource::Ptr sourceDataSource;
     std::optional<AuthHeaders> clientHeaders;
@@ -277,8 +313,8 @@ private:
         MapTileKey const& targetKey,
         std::string const& failureMessage);
 
-    /** Partition complete outputs into finalizable and target-waiting sets. */
-    tl::expected<PreparedRelationOutputs, simfil::Error>
+    /** Resolve or schedule relation targets and return immediately finalizable outputs. */
+    tl::expected<std::vector<ReadyOutput>, simfil::Error>
     prepareRelationOutputs(std::vector<ReadyOutput> fixedReady);
 
     /** Schedule an ordinary coalescible request for one relation target tile. */
@@ -289,6 +325,23 @@ private:
 
     /** Commit a loaded relation target to every dependent output. */
     void collectRelationTarget(MapTileKey const& targetKey, TileFeatureLayer::Ptr layer);
+
+    /** Resolve located relation candidates and add non-fatal ambiguity issues. */
+    tl::expected<void, simfil::Error> resolveStoredRelationDescriptors(
+        ReadyOutput& output,
+        std::vector<FeatureLayerRelationDescriptor>& descriptors);
+
+    /** Snapshot output keys that may still own a completed relation. */
+    [[nodiscard]] std::vector<MapTileKey> liveOutputKeys();
+
+    /** Materialize point groups and merge their output metadata. */
+    tl::expected<bool, simfil::Error>
+    finalizePointGroups(ReadyOutput& output, std::span<FeatureLayerPointGroupMember const> members);
+
+    /** Materialize stored relations and merge their output metadata. */
+    tl::expected<bool, simfil::Error> finalizeRelations(
+        ReadyOutput& output,
+        std::span<FeatureLayerRelationDescriptor const> descriptors);
 
     /** Finish groups/relations and emit one immutable subset layer. */
     tl::expected<std::optional<size_t>, simfil::Error> finalizeOutput(ReadyOutput ready);

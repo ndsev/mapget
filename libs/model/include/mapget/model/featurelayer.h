@@ -36,6 +36,7 @@ namespace mapget
 {
 
 struct FeatureLayerSelector;
+class SimfilExpressionCache;
 
 /**
  * The TileFeatureLayer class represents a specific map layer
@@ -355,11 +356,13 @@ public:
      * Results retain selector order. A cancelled traversal returns an equally
      * sized collection of empty results; callers providing a cancellation check
      * must inspect their own state before consuming it.
+     * A request-owned expression cache may be supplied to share compilation
+     * with selector evaluation on other tiles.
      */
-    [[nodiscard]]
-    tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error> find(
+    [[nodiscard]] tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error> find(
         std::span<FeatureLayerSelector const> selectors,
-        std::function<bool()> const& cancellationCheck = {}) const;
+        std::function<bool()> const& cancellationCheck = {},
+        SimfilExpressionCache* expressionCache = nullptr) const;
 
     /**
      * Evaluate a (potentially cached) simfil query on this pool
