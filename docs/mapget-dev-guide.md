@@ -321,10 +321,11 @@ constructing every model node.
 ## Configuration endpoints
 
 `GET /config` returns schema, masked datasource model, read-only state, and
-registered public sections. `POST /config` is enabled by
-`--allow-post-config`, validates against the active schema, preserves secrets
-represented by masked tokens and unknown/public YAML sections, writes the
-model, and reloads datasources.
+registered public sections. `--allow-post-config` enables configuration writes:
+`POST /config` validates and replaces the datasource model, while
+revision-guarded `PATCH /config` dispatches one opaque path and complete value
+to an exact `PublicConfigFieldWriter` registered by the embedding application.
+Both preserve unrelated public YAML; field PATCH does not reload datasources.
 
 ## Logging and diagnostics
 

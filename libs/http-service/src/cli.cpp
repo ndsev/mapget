@@ -685,7 +685,7 @@ struct ServeCommand
         serveCmd->add_flag(
             "--allow-post-config",
             allowPostConfigEndpoint_,
-            "Allow the POST /config endpoint.");
+            "Allow configuration writes through /config (datasource POST and registered-field PATCH).");
         serveCmd->add_flag(
             "--no-get-config",
             noGetConfigEndpoint_,

@@ -271,6 +271,23 @@ public:
         return client_->sendRequest(req);
     }
 
+    /** Sends one registered-field JSON PATCH with optional optimistic-concurrency headers. */
+    std::pair<drogon::ReqResult, drogon::HttpResponsePtr> patchJson(
+        std::string path,
+        std::string body,
+        std::vector<std::pair<std::string, std::string>> headers = {})
+    {
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setMethod(drogon::Patch);
+        req->setPath(std::move(path));
+        req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        for (auto const& [key, value] : headers) {
+            req->addHeader(key, value);
+        }
+        req->setBody(std::move(body));
+        return client_->sendRequest(req);
+    }
+
     /** Sends one plain-text PUT request to exercise writable static mounts. */
     std::pair<drogon::ReqResult, drogon::HttpResponsePtr> putText(
         std::string path,
@@ -2189,6 +2206,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     )");
     DataSourceConfigService::get().setDataSourceConfigSchemaPatch(schemaPatch);
 
+    constexpr std::string_view publicFieldPath = "/extension/catalog";
     DataSourceConfigService::get().registerPublicConfigSection(
         "publicConfig",
         [](YAML::Node const& fullConfig) -> nlohmann::json {
@@ -2200,25 +2218,45 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         });
     DataSourceConfigService::get().registerPublicConfigSection(
         "capabilities",
-        [](YAML::Node const& fullConfig) -> nlohmann::json {
-            auto const erdblick = fullConfig.IsMap() ? fullConfig["erdblick"] : YAML::Node{};
-            auto const presets = erdblick.IsMap() ? erdblick["mapPresets"] : YAML::Node{};
-            return {{"mapPresets", {
-                {"configured", presets.IsDefined()},
-                {"valid", presets.IsSequence()},
-                {"writeEligible", presets.IsSequence()},
-                {"endpoint", "/config/erdblick/map-presets"},
+        [path = std::string{publicFieldPath}](YAML::Node const& fullConfig) -> nlohmann::json {
+            YAML::Node section{YAML::NodeType::Undefined};
+            if (fullConfig.IsMap()) {
+                for (auto const& entry : fullConfig) {
+                    if (entry.first.IsScalar() && entry.first.Scalar() == "extensionConfig") {
+                        section = entry.second;
+                        break;
+                    }
+                }
+            }
+            YAML::Node catalog{YAML::NodeType::Undefined};
+            if (section.IsMap()) {
+                for (auto const& entry : section) {
+                    if (entry.first.IsScalar() && entry.first.Scalar() == "catalog") {
+                        catalog = entry.second;
+                        break;
+                    }
+                }
+            }
+            auto& configService = DataSourceConfigService::get();
+            return {{"configField", {
+                {"configured", catalog.IsDefined()},
+                {"valid", !catalog.IsDefined() || catalog.IsSequence()},
+                {"write", isPostConfigEndpointEnabled()
+                    && configService.hasPublicConfigFieldWriter(path)},
+                {"endpoint", "/config"},
+                {"method", "PATCH"},
+                {"path", path},
                 {"revision", DataSourceConfigService::get().getConfigFileRevision().value_or("")}
             }}};
         });
     DataSourceConfigService::get().registerPublicConfigFieldWriter(
-        "erdblick/map-presets",
+        std::string{publicFieldPath},
         [](YAML::Node& fullConfig, nlohmann::json const& requested) {
             if (!requested.is_array()) {
                 return DataSourceConfigService::PublicConfigWriteResult{
-                    .error = "mapPresets must be an array"};
+                    .error = "catalog must be an array"};
             }
-            fullConfig["erdblick"]["mapPresets"] = jsonToYaml(requested);
+            fullConfig["extensionConfig"]["catalog"] = jsonToYaml(requested);
             return DataSourceConfigService::PublicConfigWriteResult{
                 .canonicalValue = requested};
         });
@@ -2281,9 +2319,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         "      clientSecret: oauth-secret\n"
         "publicConfig:\n"
         "  featureFlag: true\n"
-        "erdblick:\n"
-        "  keepMe: true\n"
-        "  mapPresets: []\n");
+        "  catalog: []\n");
     DataSourceConfigService::get().loadConfig(tempConfigPath.string());
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -2375,40 +2411,41 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
     SECTION("Post Configuration - Not Enabled")
     {
         setPostConfigEndpointEnabled(false);
-        REQUIRE(getConfigPayload()["capabilities"]["mapPresets"]["write"] == false);
+        REQUIRE(getConfigPayload()["capabilities"]["configField"]["write"] == false);
         auto [result, res] = cli.postJson("/config", "");
         REQUIRE(result == drogon::ReqResult::Ok);
         REQUIRE(res != nullptr);
         REQUIRE(res->statusCode() == drogon::k403Forbidden);
 
-        auto [putResult, putResponse] = cli.putJson(
-            "/config/erdblick/map-presets",
-            "[]",
+        auto [patchResult, patchResponse] = cli.patchJson(
+            "/config",
+            nlohmann::json{{"path", publicFieldPath}, {"value", nlohmann::json::array()}}.dump(),
             {{"If-Match", "unused"}});
-        REQUIRE(putResult == drogon::ReqResult::Ok);
-        REQUIRE(putResponse->statusCode() == drogon::k403Forbidden);
+        REQUIRE(patchResult == drogon::ReqResult::Ok);
+        REQUIRE(patchResponse->statusCode() == drogon::k403Forbidden);
     }
 
-    SECTION("Map-preset PUT requires a current revision and preserves config state")
+    SECTION("Registered-field PATCH requires a current revision and preserves config state")
     {
         setPostConfigEndpointEnabled(true);
         auto payload = getConfigPayload();
-        auto const capability = payload["capabilities"]["mapPresets"];
-        REQUIRE(capability["configured"] == true);
+        auto const capability = payload["capabilities"]["configField"];
+        REQUIRE(capability["configured"] == false);
         REQUIRE(capability["valid"] == true);
         REQUIRE(capability["write"] == true);
         auto const revision = capability["revision"].get<std::string>();
         REQUIRE_FALSE(revision.empty());
 
-        auto [missingResult, missing] = cli.putJson(
-            "/config/erdblick/map-presets",
-            "[]");
+        auto const emptyPatch = nlohmann::json{
+            {"path", publicFieldPath},
+            {"value", nlohmann::json::array()}};
+        auto [missingResult, missing] = cli.patchJson("/config", emptyPatch.dump());
         REQUIRE(missingResult == drogon::ReqResult::Ok);
         REQUIRE(missing->statusCode() == drogon::k428PreconditionRequired);
 
-        auto [staleResult, stale] = cli.putJson(
-            "/config/erdblick/map-presets",
-            "[]",
+        auto [staleResult, stale] = cli.patchJson(
+            "/config",
+            emptyPatch.dump(),
             {{"If-Match", "stale"}});
         REQUIRE(staleResult == drogon::ReqResult::Ok);
         REQUIRE(stale->statusCode() == drogon::k412PreconditionFailed);
@@ -2429,28 +2466,95 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
                 "layerId", "Lane"},
                 {"styleId", "Lanes"},
                 {"presetId", "topology"}}})}}});
-        auto [writeResult, written] = cli.putJson(
-            "/config/erdblick/map-presets",
-            catalog.dump(),
+        auto [writeResult, written] = cli.patchJson(
+            "/config",
+            nlohmann::json{{"path", publicFieldPath}, {"value", catalog}}.dump(),
             {{"If-Match", "\"" + revision + "\""}});
         REQUIRE(writeResult == drogon::ReqResult::Ok);
         REQUIRE(written->statusCode() == drogon::k200OK);
         auto response = nlohmann::json::parse(std::string(written->body()));
-        REQUIRE(response["mapPresets"] == catalog);
+        REQUIRE(response["path"] == publicFieldPath);
+        REQUIRE(response["value"] == catalog);
         REQUIRE(response["revision"].get<std::string>() != revision);
         REQUIRE(written->getHeader("ETag") == "\"" + response["revision"].get<std::string>() + "\"");
 
         std::this_thread::sleep_for(std::chrono::milliseconds(750));
         REQUIRE(datasourceNotifications == notificationsBeforeWrite);
         auto stored = YAML::LoadFile(tempConfigPath.string());
-        REQUIRE(yamlToJson(stored["erdblick"]["mapPresets"], false) == catalog);
-        REQUIRE(stored["erdblick"]["keepMe"].as<bool>());
+        REQUIRE(yamlToJson(stored["extensionConfig"]["catalog"], false) == catalog);
+        REQUIRE(stored["publicConfig"]["featureFlag"].as<bool>());
         REQUIRE(stored["http-settings"][0]["password"].as<std::string>() == "hunter2");
 #ifndef _WIN32
         REQUIRE(
             (fs::status(tempConfigPath).permissions() & fs::perms::owner_all)
             == (fs::perms::owner_read | fs::perms::owner_write));
 #endif
+    }
+
+    SECTION("Registered-field PATCH rejects malformed and unregistered requests")
+    {
+        setPostConfigEndpointEnabled(true);
+        auto const revision = DataSourceConfigService::get().getConfigFileRevision().value();
+        std::ifstream original(tempConfigPath, std::ios::binary);
+        std::string const originalContents(
+            std::istreambuf_iterator<char>(original), {});
+
+        auto [invalidResult, invalid] = cli.patchJson(
+            "/config",
+            nlohmann::json{{"path", publicFieldPath}}.dump(),
+            {{"If-Match", revision}});
+        REQUIRE(invalidResult == drogon::ReqResult::Ok);
+        REQUIRE(invalid->statusCode() == drogon::k400BadRequest);
+
+        auto [unknownResult, unknown] = cli.patchJson(
+            "/config",
+            nlohmann::json{{"path", "/unregistered/value"}, {"value", 1}}.dump(),
+            {{"If-Match", revision}});
+        REQUIRE(unknownResult == drogon::ReqResult::Ok);
+        REQUIRE(unknown->statusCode() == drogon::k400BadRequest);
+
+        std::ifstream unchanged(tempConfigPath, std::ios::binary);
+        REQUIRE(std::string(std::istreambuf_iterator<char>(unchanged), {}) == originalContents);
+    }
+
+    SECTION("Registered-field PATCH restores original bytes after canonical read-back failure")
+    {
+        setPostConfigEndpointEnabled(true);
+        auto const revision = DataSourceConfigService::get().getConfigFileRevision().value();
+        std::ifstream original(tempConfigPath, std::ios::binary);
+        std::string const originalContents(
+            std::istreambuf_iterator<char>(original), {});
+#ifndef _WIN32
+        auto const originalPermissions = fs::status(tempConfigPath).permissions();
+#endif
+        auto calls = std::make_shared<size_t>(0);
+        DataSourceConfigService::get().registerPublicConfigFieldWriter(
+            std::string{publicFieldPath},
+            [calls](YAML::Node& fullConfig, nlohmann::json const& requested) {
+                if ((*calls)++ > 0) {
+                    return DataSourceConfigService::PublicConfigWriteResult{
+                        .error = "intentional read-back failure"};
+                }
+                fullConfig["extensionConfig"]["catalog"] = jsonToYaml(requested);
+                return DataSourceConfigService::PublicConfigWriteResult{
+                    .canonicalValue = requested};
+            });
+
+        auto [result, response] = cli.patchJson(
+            "/config",
+            nlohmann::json{
+                {"path", publicFieldPath},
+                {"value", nlohmann::json::array({"will-roll-back"})}}.dump(),
+            {{"If-Match", revision}});
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(response->statusCode() == drogon::k500InternalServerError);
+
+        std::ifstream restored(tempConfigPath, std::ios::binary);
+        REQUIRE(std::string(std::istreambuf_iterator<char>(restored), {}) == originalContents);
+#ifndef _WIN32
+        REQUIRE(fs::status(tempConfigPath).permissions() == originalPermissions);
+#endif
+        REQUIRE(DataSourceConfigService::get().getConfigFileRevision() == revision);
     }
 
     SECTION("Post Configuration - Invalid JSON Format")
@@ -2483,7 +2587,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(std::string(res->body()).starts_with("Validation failed"));
     }
 
-    SECTION("Post Configuration - Valid JSON Config preserves top-level erdblick")
+    SECTION("Post Configuration - Valid JSON Config preserves registered public sections")
     {
         setPostConfigEndpointEnabled(true);
         auto payload = getConfigPayload();
@@ -2518,10 +2622,10 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(configContent.find("camel-secret") != std::string::npos);
         REQUIRE(configContent.find("oauth-secret") != std::string::npos);
         REQUIRE(configContent.find("MASKED:") == std::string::npos);
-        REQUIRE(configContent.find("erdblick") != std::string::npos);
-        REQUIRE(configContent.find("keepMe") != std::string::npos);
+        REQUIRE(configContent.find("publicConfig") != std::string::npos);
+        REQUIRE(configContent.find("featureFlag") != std::string::npos);
         auto stored = YAML::Load(configContent);
-        REQUIRE(yamlToJson(stored["erdblick"]["mapPresets"], false)
+        REQUIRE(yamlToJson(stored["publicConfig"]["catalog"], false)
             == nlohmann::json::array());
     }
 

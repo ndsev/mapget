@@ -535,11 +535,21 @@ Unavailable reasons include `getConfigDisabled`, `configPathUnset`,
 `configFileMissing`, `configFileOpenFailed`, `configParseFailed`, and
 `configValidationFailed`.
 
-`POST /config` is accepted only when the server starts with
-`--allow-post-config`. The JSON body must satisfy the returned schema. Mapget
-preserves real secrets when their masked tokens are posted, writes the
-datasource-model portion, preserves unknown/public top-level YAML sections,
-and reloads the catalog.
+Configuration writes are accepted only when the server starts with
+`--allow-post-config`:
+
+- `POST /config` accepts a complete datasource model that satisfies the
+  returned schema. Mapget preserves real secrets represented by masked tokens,
+  writes the datasource-model portion, preserves unknown/public top-level YAML
+  sections, and reloads the datasource catalog.
+- `PATCH /config` accepts exactly `{"path":"/...","value":...}` plus an
+  `If-Match` header containing the current full-file revision. The path is an
+  opaque identifier and must exactly match a field writer registered by the
+  embedding application; Mapget does not provide arbitrary JSON/YAML patching.
+  A successful response returns the same path, the writer's canonical value,
+  the new revision, and a matching `ETag`. Public-field writes use the same
+  atomic whole-document replacement and revision safeguards without reloading
+  datasources.
 
 Because capabilities can vary with request headers, `GET /config` responses
 include `Cache-Control: private, no-store`.

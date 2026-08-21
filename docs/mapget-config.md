@@ -24,7 +24,7 @@ For integration with configuration UIs there is an additional top‑level key:
 
 - `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents. It is exposed through `/config.model` only when the active datasource schema includes `http-settings`, typically via a deployment-specific `--config-schema` patch.
 
-Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, an embedding application may register a frontend settings section for its own UI defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file.
+Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, an embedding application may register a frontend settings section for its own UI defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file. An embedding application may separately register exact opaque field paths for revision-guarded `PATCH /config`; this is not an arbitrary JSON/YAML patch facility.
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
@@ -407,7 +407,7 @@ mapget:
     cache-dir: /var/lib/mapget/cache.db   # --cache-dir (used with persistent cache)
     cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
     clear-cache: false          # --clear-cache
-    allow-post-config: true     # --allow-post-config (enables POST /config)
+    allow-post-config: true     # --allow-post-config (enables POST/PATCH config writes)
     no-get-config: false        # --no-get-config (hides datasource model in GET /config)
     allow-cache-reset: true     # --allow-cache-reset (enables guarded POST /cache/reset)
     cache-reset-auth-header:    # repeatable --cache-reset-auth-header HEADER=REGEX
@@ -421,7 +421,7 @@ http-settings: ...
 sources: ...
 ```
 
-Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, host `0.0.0.0`, port 0, a 5000 ms startup wait, in-memory cache, GET `/config` enabled, and POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
+Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, host `0.0.0.0`, port 0, a 5000 ms startup wait, in-memory cache, GET `/config` enabled, and configuration writes through `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
 
 `worker-count` bounds all concurrently executing tile-load and derived filter
 jobs across the service. Every worker is homogeneous; an idle datasource does

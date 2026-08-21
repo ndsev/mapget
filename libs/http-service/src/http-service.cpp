@@ -125,6 +125,10 @@ void HttpService::setup(drogon::HttpAppFramework& app)
                 impl_->handlePostConfigRequest(req, std::move(callback));
                 return;
             }
+            if (req->method() == drogon::Patch) {
+                impl_->handlePatchConfigRequest(req, std::move(callback));
+                return;
+            }
 
             auto resp = drogon::HttpResponse::newHttpResponse();
             resp->setStatusCode(drogon::k405MethodNotAllowed);
@@ -132,15 +136,7 @@ void HttpService::setup(drogon::HttpAppFramework& app)
             resp->setBody("Method not allowed");
             callback(resp);
         },
-        {drogon::Get, drogon::Post});
-
-    app.registerHandler(
-        "/config/erdblick/map-presets",
-        [this](
-            const drogon::HttpRequestPtr& req,
-            std::function<void(const drogon::HttpResponsePtr&)>&& callback)
-        { impl_->handlePutMapPresetsConfigRequest(req, std::move(callback)); },
-        {drogon::Put});
+        {drogon::Get, drogon::Post, drogon::Patch});
 }
 
 }  // namespace mapget

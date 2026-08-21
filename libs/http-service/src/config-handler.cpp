@@ -40,7 +40,6 @@ constexpr std::string_view kUnavailableReasonConfigFileMissing = "configFileMiss
 constexpr std::string_view kUnavailableReasonConfigFileOpenFailed = "configFileOpenFailed";
 constexpr std::string_view kUnavailableReasonConfigParseFailed = "configParseFailed";
 constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configValidationFailed";
-constexpr std::string_view kMapPresetsWriterPath = "erdblick/map-presets";
 
 [[nodiscard]] YAML::Node loadConfigYamlForPublicSections()
 {
@@ -246,14 +245,6 @@ void HttpService::Impl::handleGetConfigRequest(
         }
         payload["capabilities"]["cacheReset"] =
             cacheResetAvailable;
-        if (auto mapPresets = payload["capabilities"].find("mapPresets");
-            mapPresets != payload["capabilities"].end() && mapPresets->is_object()) {
-            auto const eligible = mapPresets->value("writeEligible", false);
-            (*mapPresets)["write"] = eligible
-                && isPostConfigEndpointEnabled()
-                && configService.hasPublicConfigFieldWriter(std::string{kMapPresetsWriterPath});
-            mapPresets->erase("writeEligible");
-        }
         auto response = jsonResponse(
             std::move(payload));
         response->addHeader(
@@ -475,7 +466,7 @@ void HttpService::Impl::handlePostConfigRequest(
     }).detach();
 }
 
-void HttpService::Impl::handlePutMapPresetsConfigRequest(
+void HttpService::Impl::handlePatchConfigRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
@@ -488,9 +479,10 @@ void HttpService::Impl::handlePutMapPresetsConfigRequest(
     };
 
     auto& configService = DataSourceConfigService::get();
-    if (!isPostConfigEndpointEnabled() ||
-        !configService.hasPublicConfigFieldWriter(std::string{kMapPresetsWriterPath})) {
-        respondText(drogon::k403Forbidden, "Map-preset configuration writes are not enabled.");
+    if (!isPostConfigEndpointEnabled()) {
+        respondText(
+            drogon::k403Forbidden,
+            "Configuration writes through /config are not enabled by the server administrator.");
         return;
     }
 
@@ -506,12 +498,28 @@ void HttpService::Impl::handlePutMapPresetsConfigRequest(
         ifMatch = ifMatch.substr(1, ifMatch.size() - 2);
     }
 
-    nlohmann::json requested;
+    nlohmann::json patch;
     try {
-        requested = nlohmann::json::parse(std::string(req->body()));
+        patch = nlohmann::json::parse(std::string(req->body()));
     }
     catch (nlohmann::json::parse_error const& error) {
         respondText(drogon::k400BadRequest, std::string("Invalid JSON: ") + error.what());
+        return;
+    }
+    if (!patch.is_object()
+        || patch.size() != 2
+        || !patch.contains("path")
+        || !patch["path"].is_string()
+        || patch["path"].get_ref<std::string const&>().empty()
+        || !patch.contains("value")) {
+        respondText(
+            drogon::k400BadRequest,
+            "The request must contain exactly a non-empty string 'path' and a 'value'.");
+        return;
+    }
+    auto const path = patch["path"].get<std::string>();
+    if (!configService.hasPublicConfigFieldWriter(path)) {
+        respondText(drogon::k400BadRequest, "No public config writer is registered for the requested path.");
         return;
     }
 
@@ -555,9 +563,9 @@ void HttpService::Impl::handlePutMapPresetsConfigRequest(
     }
 
     auto writeResult = configService.applyPublicConfigFieldWrite(
-        std::string{kMapPresetsWriterPath},
+        path,
         yamlConfig,
-        requested);
+        patch["value"]);
     if (writeResult.error) {
         respondText(drogon::k400BadRequest, *writeResult.error);
         return;
@@ -581,11 +589,11 @@ void HttpService::Impl::handlePutMapPresetsConfigRequest(
             throw std::runtime_error("written document is not a YAML object");
         }
         auto readBackResult = configService.applyPublicConfigFieldWrite(
-            std::string{kMapPresetsWriterPath},
+            path,
             readBack,
             writeResult.canonicalValue);
         if (readBackResult.error || readBackResult.canonicalValue != writeResult.canonicalValue) {
-            throw std::runtime_error("written map-preset catalog did not validate canonically");
+            throw std::runtime_error("written public config field did not validate canonically");
         }
     }
     catch (std::exception const& error) {
@@ -607,7 +615,8 @@ void HttpService::Impl::handlePutMapPresetsConfigRequest(
     configService.acknowledgePublicConfigWrite(serialized);
     auto const newRevision = configService.getConfigFileRevision();
     nlohmann::json body = {
-        {"mapPresets", std::move(writeResult.canonicalValue)},
+        {"path", path},
+        {"value", std::move(writeResult.canonicalValue)},
         {"revision", newRevision.value_or("")}};
     auto response = jsonResponse(std::move(body));
     response->addHeader("Cache-Control", "private, no-store");

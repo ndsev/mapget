@@ -215,7 +215,7 @@ public:
      */
     [[nodiscard]] nlohmann::json getPublicConfigSections(YAML::Node const& fullConfig) const;
 
-    /** Register a narrowly scoped public-config field writer used by an opt-in HTTP endpoint. */
+    /** Register one opaque public-config field path for guarded PATCH /config updates. */
     void registerPublicConfigFieldWriter(
         std::string path,
         PublicConfigFieldWriter writer);
