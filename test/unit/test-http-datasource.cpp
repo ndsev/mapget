@@ -1038,7 +1038,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(page.find("Cache Report") != std::string::npos);
             REQUIRE(page.find("/status-data/cache-report") != std::string::npos);
             REQUIRE(page.find("includeTileSizeDistribution") == std::string::npos);
+            REQUIRE(page.find("color-scheme: light") != std::string::npos);
             REQUIRE(page.find("color-scheme: dark") != std::string::npos);
+            REQUIRE(page.find("id=\"themeSelect\"") != std::string::npos);
+            REQUIRE(page.find("brand-mark") == std::string::npos);
             REQUIRE(page.find("info-bubble") != std::string::npos);
             REQUIRE(page.find("Unattributed process RSS") == std::string::npos);
 
