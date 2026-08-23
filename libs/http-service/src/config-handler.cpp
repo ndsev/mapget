@@ -548,6 +548,7 @@ void HttpService::Impl::handlePatchConfigRequest(
     std::ostringstream originalStream;
     originalStream << originalFile.rdbuf();
     auto const originalContents = originalStream.str();
+    originalFile.close();
     std::error_code originalStatusError;
     auto const originalPermissions = std::filesystem::status(
         *configFilePath,
