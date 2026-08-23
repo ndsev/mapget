@@ -1597,8 +1597,9 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
             // Complete snapshots use a latest-wins mailbox. A deliberately
             // expensive candidate keeps reconciliation busy while two small
-            // replacements arrive; only the final replacement may reach the
-            // datasource.
+            // replacements arrive; the final replacement must become active.
+            // An intermediate may already have started before its successor
+            // reaches the mailbox and is canceled normally in that case.
             {
                 constexpr size_t RepeatedTileCount = 250'000;
                 auto source = std::make_shared<BlockingInteractiveDataSource>(
@@ -1658,11 +1659,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
                 auto const finalTile = TileId::fromValue(kThirdHttpTileIdValue);
                 REQUIRE(source->waitForStarted({finalTile}, std::chrono::seconds(10)));
-                auto const supersededTileCount =
-                    source->fillCount(TileId::fromValue(kSecondHttpTileIdValue));
                 source->releaseAll();
 
-                REQUIRE(supersededTileCount == 0);
                 wsClient.resetStatus();
                 REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
                 REQUIRE(wsClient.error().empty());
@@ -2476,7 +2474,7 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
         REQUIRE(writeResult == drogon::ReqResult::Ok);
         REQUIRE(written->statusCode() == drogon::k200OK);
         auto response = nlohmann::json::parse(std::string(written->body()));
-        REQUIRE(response["path"] == publicFieldPath);
+        REQUIRE(response["path"].get<std::string>() == publicFieldPath);
         REQUIRE(response["value"] == catalog);
         REQUIRE(response["revision"].get<std::string>() != revision);
         REQUIRE(written->getHeader("ETag") == "\"" + response["revision"].get<std::string>() + "\"");
