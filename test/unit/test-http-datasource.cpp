@@ -2168,6 +2168,19 @@ TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
     REQUIRE(std::string(std::istreambuf_iterator<char>(unchangedFile), {}) == "unchanged");
 }
 
+TEST_CASE("Startup root static mounts serve nested files", "[StaticMount]")
+{
+    auto& service = test::httpService();
+    REQUIRE(service.isRunning() == true);
+
+    SyncHttpClient client("127.0.0.1", service.port());
+    auto [result, response] = client.get("/styles/nested.yaml");
+    REQUIRE(result == drogon::ReqResult::Ok);
+    REQUIRE(response != nullptr);
+    REQUIRE(response->statusCode() == drogon::k200OK);
+    REQUIRE(response->body() == "nested startup mount");
+}
+
 TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 {
     auto& service = test::httpService();

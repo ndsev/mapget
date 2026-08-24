@@ -132,6 +132,8 @@ struct RuntimeStaticMountRegistry
 
 [[nodiscard]] bool requestPathMatchesPrefix(std::string_view requestPath, std::string_view urlPrefix)
 {
+    if (urlPrefix == "/")
+        return !requestPath.empty() && requestPath.front() == '/';
     if (requestPath == urlPrefix)
         return true;
     return requestPath.size() > urlPrefix.size()
@@ -148,7 +150,8 @@ struct RuntimeStaticMountRegistry
 
     auto relativePath = requestPath == mount.urlPrefix
         ? std::string()
-        : requestPath.substr(mount.urlPrefix.size() + 1);
+        : requestPath.substr(
+              mount.urlPrefix == "/" ? 1 : mount.urlPrefix.size() + 1);
     if (relativePath.empty())
         return std::nullopt;
 
@@ -168,7 +171,8 @@ struct RuntimeStaticMountRegistry
 }
 
 [[nodiscard]] std::optional<drogon::HttpResponsePtr> dynamicStaticMountResponse(
-    drogon::HttpRequestPtr const& req)
+    drogon::HttpRequestPtr const& req,
+    std::vector<MountPoint> const& startupMounts)
 {
     if (req->method() != drogon::Get
         && req->method() != drogon::Head
@@ -176,16 +180,16 @@ struct RuntimeStaticMountRegistry
         return std::nullopt;
     }
 
-    std::vector<MountPoint> mounts;
+    std::vector<MountPoint> mounts = startupMounts;
     {
         auto& registry = runtimeStaticMountRegistry();
         std::lock_guard lock(registry.mutex);
-        mounts = registry.mounts;
+        mounts.insert(mounts.begin(), registry.mounts.begin(), registry.mounts.end());
     }
     if (mounts.empty())
         return std::nullopt;
 
-    std::sort(
+    std::stable_sort(
         mounts.begin(),
         mounts.end(),
         [](MountPoint const& a, MountPoint const& b) { return a.urlPrefix.size() > b.urlPrefix.size(); });
@@ -321,10 +325,10 @@ void HttpServer::go(std::string const& interfaceAddr, uint16_t port, uint32_t wa
                 }
 
                 app.registerPreRoutingAdvice(
-                    [](drogon::HttpRequestPtr const& req,
+                    [mountsCopy](drogon::HttpRequestPtr const& req,
                        drogon::AdviceCallback&& callback,
                        drogon::AdviceChainCallback&& chainCallback) {
-                        if (auto response = dynamicStaticMountResponse(req)) {
+                        if (auto response = dynamicStaticMountResponse(req, mountsCopy)) {
                             callback(*response);
                             return;
                         }

@@ -2,8 +2,12 @@
 
 #include <catch2/catch_session.hpp>
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <regex>
+#include <stdexcept>
 
 #include "mapget/log.h"
 #include "test-http-service-fixture.h"
@@ -15,6 +19,7 @@ namespace
 
 std::mutex serviceMutex;
 HttpService* servicePtr = nullptr;
+std::filesystem::path startupStaticMountDir;
 
 }  // namespace
 
@@ -23,6 +28,12 @@ HttpService& httpService()
     std::lock_guard<std::mutex> lock(serviceMutex);
 
     if (!servicePtr) {
+        startupStaticMountDir = std::filesystem::temp_directory_path()
+            / ("mapget_test_startup_static_"
+               + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(startupStaticMountDir / "styles");
+        std::ofstream(startupStaticMountDir / "styles" / "nested.yaml") << "nested startup mount";
+
         // Intentionally leaked to avoid destructor ordering issues at process shutdown.
         HttpServiceConfig config;
         config.cacheResetEnabled = true;
@@ -35,6 +46,8 @@ HttpService& httpService()
         servicePtr = new HttpService(
             std::make_shared<MemCache>(),
             config);
+        if (!servicePtr->mountFileSystem(startupStaticMountDir.string()))
+            throw std::runtime_error("Failed to create the startup static mount used by HTTP tests");
         servicePtr->go("127.0.0.1", 0, 5000);
     }
 
@@ -48,6 +61,7 @@ void shutdownHttpService()
         return;
 
     servicePtr->stop();
+    std::filesystem::remove_all(startupStaticMountDir);
 }
 
 }  // namespace mapget::test
