@@ -2178,7 +2178,7 @@ TEST_CASE("Startup root static mounts serve nested files", "[StaticMount]")
     REQUIRE(result == drogon::ReqResult::Ok);
     REQUIRE(response != nullptr);
     REQUIRE(response->statusCode() == drogon::k200OK);
-    REQUIRE(response->body() == "nested startup mount");
+    REQUIRE(response->body() == "nested startup mount\n");
 }
 
 TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
