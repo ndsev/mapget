@@ -1006,6 +1006,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(statusResp != nullptr);
             REQUIRE(statusResp->statusCode() == drogon::k200OK);
             auto const status = nlohmann::json::parse(std::string(statusResp->body()));
+            REQUIRE(status["service"].contains("queued-tile-work-items"));
             REQUIRE_FALSE(status["service"].contains("cached-feature-tree-bytes"));
             REQUIRE_FALSE(status["service"].contains("cached-feature-tile-size-distribution"));
             REQUIRE_FALSE(status["memory"].contains("unattributed-resident-bytes"));
@@ -1041,6 +1042,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(page.find("color-scheme: light") != std::string::npos);
             REQUIRE(page.find("color-scheme: dark") != std::string::npos);
             REQUIRE(page.find("id=\"themeSelect\"") != std::string::npos);
+            REQUIRE(page.find("id=\"historyMetric\"") != std::string::npos);
+            REQUIRE(page.find("id=\"historyWindow\"") != std::string::npos);
+            REQUIRE(page.find("queued-tile-work-items") != std::string::npos);
+            REQUIRE(page.find("class StatusHistoryGraph") != std::string::npos);
             REQUIRE(page.find("brand-mark") == std::string::npos);
             REQUIRE(page.find("info-bubble") != std::string::npos);
             REQUIRE(page.find("Unattributed process RSS") == std::string::npos);

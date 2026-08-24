@@ -45,6 +45,7 @@ struct ServiceSchedulerStatistics
     size_t workerCount = 0;
     size_t runningJobs = 0;
     size_t activeTileRequests = 0;
+    size_t queuedTileWorkItems = 0;
     size_t inFlightTileJobs = 0;
 };
 

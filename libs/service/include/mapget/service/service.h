@@ -617,6 +617,7 @@ public:
      * - `workers`: Configured and currently running global worker counts.
      * - `datasources`: Number of active data sources.
      * - `active-requests`: Number of in-flight requests.
+     * - `queued-tile-work-items`: Request tile keys not yet admitted to a worker.
      * - `in-flight-tile-jobs`: Coalesced source tiles awaiting cache/backend completion.
      */
     [[nodiscard]] nlohmann::json getStatistics() const;

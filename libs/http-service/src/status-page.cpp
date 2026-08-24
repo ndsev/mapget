@@ -193,7 +193,7 @@ select, .button {
     z-index: 5;
     display: flex;
     gap: 6px;
-    margin: 18px 0;
+    margin: 18px 0 12px;
     padding: 6px;
     overflow-x: auto;
     border: 1px solid var(--line);
@@ -211,6 +211,49 @@ select, .button {
     font-weight: 800;
 }
 .tab:hover, .tab[aria-selected="true"] { color: var(--inverse-ink); background: var(--inverse); }
+
+.history-graph {
+    margin-bottom: 16px;
+    padding: 0;
+    overflow: hidden;
+}
+.history-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 18px;
+    border-bottom: 1px solid var(--line);
+    padding: 14px 16px;
+}
+.history-subtitle { margin-top: 3px; color: var(--muted); font-size: 0.8rem; }
+.history-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+.history-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    border-bottom: 1px solid var(--line-soft);
+    padding: 8px 16px;
+    color: var(--muted);
+    font-size: 0.76rem;
+    text-transform: uppercase;
+}
+.history-stats strong { color: var(--ink); font-weight: 850; font-variant-numeric: tabular-nums; }
+.history-plot-wrap { position: relative; min-height: 250px; background: var(--surface-alt); }
+.history-plot { display: block; width: 100%; height: 250px; color: var(--ink); }
+.history-grid { stroke: var(--line-soft); stroke-width: 1; stroke-dasharray: 2 4; }
+.history-axis { fill: var(--muted); font: 11px "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+.history-line { fill: none; stroke: var(--ink); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.history-point { fill: var(--surface); stroke: var(--ink); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.history-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    color: var(--muted);
+    text-align: center;
+    pointer-events: none;
+}
 
 .tab-panel { display: grid; gap: 16px; }
 #cacheReportResults { display: grid; gap: 14px; }
@@ -376,6 +419,8 @@ pre {
     .masthead { align-items: flex-start; padding: 17px; }
     .masthead, .report-callout { flex-direction: column; }
     .masthead-tools, .report-actions { justify-content: flex-start; }
+    .history-head { align-items: flex-start; flex-direction: column; }
+    .history-controls { width: 100%; justify-content: flex-start; }
     .refresh-meta { text-align: left; }
     .grid-two { grid-template-columns: 1fr; }
     .metric-grid { grid-template-columns: repeat(2, minmax(135px, 1fr)); }
@@ -385,6 +430,7 @@ pre {
     .metric-grid { grid-template-columns: 1fr; }
     .metric-card { min-height: 98px; }
     .field { width: 100%; justify-content: space-between; }
+    .history-controls select { max-width: 68%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -429,6 +475,33 @@ R"STATUS(</head>
         <button class="tab" role="tab" id="tab-cache" aria-controls="panel-cache" aria-selected="false" data-tab="cache" tabindex="-1">Cache Report</button>
         <button class="tab" role="tab" id="tab-diagnostics" aria-controls="panel-diagnostics" aria-selected="false" data-tab="diagnostics" tabindex="-1">Diagnostics</button>
     </nav>
+
+    <section class="panel history-graph" aria-labelledby="historyTitle">
+        <div class="history-head">
+            <div><h2 id="historyTitle">Live History</h2><div id="historySubtitle" class="history-subtitle">Client-side samples from this browser session</div></div>
+            <div class="history-controls">
+                <label class="field">Metric <select id="historyMetric"></select></label>
+                <label class="field">Window
+                    <select id="historyWindow">
+                        <option value="30000">30 seconds</option>
+                        <option value="60000" selected>1 minute</option>
+                        <option value="300000">5 minutes</option>
+                        <option value="900000">15 minutes</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+        <div class="history-stats" aria-live="polite">
+            <span>Now <strong id="historyCurrent">-</strong></span>
+            <span>Min <strong id="historyMinimum">-</strong></span>
+            <span>Max <strong id="historyMaximum">-</strong></span>
+            <span>Samples <strong id="historySamples">0</strong></span>
+        </div>
+        <div class="history-plot-wrap">
+            <svg id="historyPlot" class="history-plot" role="img" aria-label="No status history collected yet"></svg>
+            <div id="historyEmpty" class="history-empty">Collecting the first status sample...</div>
+        </div>
+    </section>
 
     <main>
         <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" data-panel="overview">
@@ -577,6 +650,7 @@ const state = {
     cacheReportInFlight: false,
     payload: null,
     cacheReport: null,
+    historyGraph: null,
     textCache: new Map(),
 };
 
@@ -641,6 +715,298 @@ function replaceRows(selector, rows, numericColumns = [], emptyText = "No data a
 function setMetric(valueId, noteId, value, note) {
     setText(valueId, value);
     setText(noteId, note);
+}
+
+)STATUS"
+R"STATUS(/** Client-owned rolling history for lightweight numeric status metrics. */
+class StatusHistoryGraph {
+    constructor() {
+        this.history = [];
+        this.activeTab = "overview";
+        this.selectedMetricByTab = new Map();
+        this.defaults = {
+            overview: "queued-tile-work-items",
+            memory: "process-rss",
+            traffic: "interactive-queued-frames",
+            cache: "cache-bytes",
+            diagnostics: "queued-tile-work-items",
+        };
+        this.metrics = new Map([
+            ["queued-tile-work-items", {
+                group: "Work",
+                label: "Queued tile/filter work",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.service?.["queued-tile-work-items"],
+            }],
+            ["in-flight-tile-jobs", {
+                group: "Work",
+                label: "In-flight source tiles",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.service?.["in-flight-tile-jobs"],
+            }],
+            ["running-workers", {
+                group: "Work",
+                label: "Running workers",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.service?.workers?.running,
+            }],
+            ["active-requests", {
+                group: "Work",
+                label: "Active tile/filter requests",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.service?.["active-requests"],
+            }],
+            ["process-rss", {
+                group: "Memory",
+                label: "Process RSS",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.process?.["resident-bytes"],
+            }],
+            ["allocator-live", {
+                group: "Memory",
+                label: "Allocator live allocations",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.reconciliation?.["allocator-live-bytes"] ?? payload.memory?.allocator?.["in-use-arena-bytes"],
+            }],
+            ["allocator-free", {
+                group: "Memory",
+                label: "Allocator arena free",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.allocator?.["free-arena-bytes"],
+            }],
+            ["known-memory", {
+                group: "Memory",
+                label: "Known ownership estimate",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.["known-current-bytes"],
+            }],
+            ["datasource-memory", {
+                group: "Memory",
+                label: "Datasource-owned state",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.["datasource-measured-bytes"],
+            }],
+            ["cache-bytes", {
+                group: "Memory",
+                label: "Cache retained bytes",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.["cache-current-bytes"],
+            }],
+            ["interactive-sessions", {
+                group: "Transport",
+                label: "Interactive sessions",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.tilesWebsocket?.["active-sessions"],
+            }],
+            ["interactive-queued-frames", {
+                group: "Transport",
+                label: "Interactive queued frames",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.tilesWebsocket?.["pending-controller-frames"],
+            }],
+            ["interactive-queued-bytes", {
+                group: "Transport",
+                label: "Interactive queued bytes",
+                format: formatBytes,
+                zeroBaseline: true,
+                read: (payload) => payload.tilesWebsocket?.["pending-controller-bytes"],
+            }],
+            ["rest-streams", {
+                group: "Transport",
+                label: "Active REST streams",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.tilesHttp?.["active-streams"],
+            }],
+            ["rest-pending-bytes", {
+                group: "Transport",
+                label: "REST pending bytes",
+                format: formatBytes,
+                zeroBaseline: true,
+                read: (payload) => payload.tilesHttp?.["pending-bytes"],
+            }],
+            ["cache-entries", {
+                group: "Cache",
+                label: "Cache entries",
+                format: formatInt,
+                zeroBaseline: true,
+                read: (payload) => payload.cache?.["memcache-map-size"],
+            }],
+            ["cache-hit-ratio", {
+                group: "Cache",
+                label: "Cache hit ratio",
+                format: formatPct,
+                zeroBaseline: true,
+                read: (payload) => {
+                    const hits = Number(payload.cache?.["cache-hits"] || 0);
+                    const misses = Number(payload.cache?.["cache-misses"] || 0);
+                    return hits + misses > 0 ? hits / (hits + misses) : 0;
+                },
+            }],
+        ]);
+        this.metricSelect = byId("historyMetric");
+        this.windowSelect = byId("historyWindow");
+        this.svg = byId("historyPlot");
+        this.populateMetricSelect();
+        this.metricSelect?.addEventListener("change", () => {
+            this.selectedMetricByTab.set(this.activeTab, this.metricSelect.value);
+            this.render();
+        });
+        this.windowSelect?.addEventListener("change", () => this.render());
+        if (window.ResizeObserver && this.svg) {
+            this.resizeObserver = new ResizeObserver(() => this.render());
+            this.resizeObserver.observe(this.svg);
+        } else {
+            window.addEventListener("resize", () => this.render());
+        }
+        this.activateTab("overview");
+    }
+
+    /** Populate grouped metric choices from the graph's numeric extractors. */
+    populateMetricSelect() {
+        if (!this.metricSelect) return;
+        const groups = new Map();
+        for (const [id, metric] of this.metrics) {
+            let group = groups.get(metric.group);
+            if (!group) {
+                group = document.createElement("optgroup");
+                group.label = metric.group;
+                groups.set(metric.group, group);
+                this.metricSelect.appendChild(group);
+            }
+            const option = document.createElement("option");
+            option.value = id;
+            option.textContent = metric.label;
+            group.appendChild(option);
+        }
+    }
+
+    /** Select a contextual default while retaining manual choices per tab. */
+    activateTab(tab) {
+        this.activeTab = tab;
+        if (!this.metricSelect) return;
+        this.metricSelect.value = this.selectedMetricByTab.get(tab) || this.defaults[tab] || this.defaults.overview;
+        this.render();
+    }
+
+)STATUS"
+R"STATUS(    /** Sample numeric values only; full status payloads are never retained. */
+    append(payload) {
+        const previousTimestamp = this.history.at(-1)?.timestamp || 0;
+        const reportedTimestamp = Number(payload.timestampMs);
+        // Preserve a monotonic x-axis across duplicate timestamps or a server restart.
+        const timestamp = Math.max(Number.isFinite(reportedTimestamp) ? reportedTimestamp : Date.now(), previousTimestamp + 1);
+        const values = {};
+        for (const [id, metric] of this.metrics) {
+            const value = Number(metric.read(payload));
+            values[id] = Number.isFinite(value) ? value : 0;
+        }
+        this.history.push({timestamp, values});
+        const retention = Math.max(...Array.from(this.windowSelect?.options || [], (option) => Number(option.value || 0)));
+        const cutoff = timestamp - retention;
+        while (this.history.length && this.history[0].timestamp < cutoff) this.history.shift();
+        this.render();
+    }
+
+    /** Create one namespaced SVG node without injecting status text as markup. */
+    svgNode(name, attributes = {}, text = "") {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+        for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+        if (text) node.textContent = text;
+        return node;
+    }
+
+    /** Format a graph-window duration for the chart subtitle. */
+    formatWindow(milliseconds) {
+        if (milliseconds < 60000) return `${milliseconds / 1000} seconds`;
+        return `${milliseconds / 60000} ${milliseconds === 60000 ? "minute" : "minutes"}`;
+    }
+
+    /** Render the active metric as a responsive SVG over the selected time domain. */
+    render() {
+        if (!this.svg || !this.metricSelect || !this.windowSelect) return;
+        const metric = this.metrics.get(this.metricSelect.value);
+        if (!metric) return;
+        const windowMilliseconds = Number(this.windowSelect.value || 60000);
+        const latestTimestamp = this.history.at(-1)?.timestamp || Date.now();
+        const firstTimestamp = latestTimestamp - windowMilliseconds;
+        const samples = this.history
+            .filter((sample) => sample.timestamp >= firstTimestamp)
+            .map((sample) => ({timestamp: sample.timestamp, value: sample.values[this.metricSelect.value]}));
+        const values = samples.map((sample) => sample.value);
+        setText("historySubtitle", `${metric.label}, ${this.formatWindow(windowMilliseconds)} rolling window`);
+        setText("historyCurrent", values.length ? metric.format(values.at(-1)) : "-");
+        setText("historyMinimum", values.length ? metric.format(Math.min(...values)) : "-");
+        setText("historyMaximum", values.length ? metric.format(Math.max(...values)) : "-");
+        setText("historySamples", formatInt(values.length));
+        byId("historyEmpty").hidden = samples.length > 0;
+        this.svg.setAttribute("aria-label", values.length
+            ? `${metric.label}: current ${metric.format(values.at(-1))}, minimum ${metric.format(Math.min(...values))}, maximum ${metric.format(Math.max(...values))}`
+            : `${metric.label}: no samples collected yet`);
+
+        const width = Math.max(320, this.svg.clientWidth || 0);
+        const height = Math.max(200, this.svg.clientHeight || 0);
+        const bounds = {left: width < 520 ? 72 : 92, right: 16, top: 14, bottom: 30};
+        const plotWidth = Math.max(1, width - bounds.left - bounds.right);
+        const plotHeight = Math.max(1, height - bounds.top - bounds.bottom);
+        this.svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        this.svg.replaceChildren();
+        this.svg.appendChild(this.svgNode("title", {}, `${metric.label} history`));
+
+        let minimum = values.length ? Math.min(...values) : 0;
+        let maximum = values.length ? Math.max(...values) : 1;
+        if (metric.zeroBaseline) minimum = 0;
+        if (metric.zeroBaseline && metric.format === formatInt) {
+            // Three equal integer intervals keep count axes free of fractional jobs or sessions.
+            maximum = Math.max(3, Math.ceil(maximum / 3) * 3);
+        } else if (minimum === maximum) {
+            const padding = Math.abs(maximum) * 0.05 || 1;
+            if (!metric.zeroBaseline) minimum = Math.max(0, minimum - padding);
+            maximum += padding;
+        } else if (!metric.zeroBaseline) {
+            const padding = (maximum - minimum) * 0.08;
+            minimum = Math.max(0, minimum - padding);
+            maximum += padding;
+        }
+        const valueRange = Math.max(Number.EPSILON, maximum - minimum);
+        const x = (timestamp) => bounds.left + ((timestamp - firstTimestamp) / windowMilliseconds) * plotWidth;
+        const y = (value) => bounds.top + (1 - (value - minimum) / valueRange) * plotHeight;
+
+        for (let index = 0; index <= 3; index++) {
+            const ratio = index / 3;
+            const gridY = bounds.top + ratio * plotHeight;
+            const value = maximum - ratio * valueRange;
+            this.svg.appendChild(this.svgNode("line", {x1: bounds.left, y1: gridY, x2: width - bounds.right, y2: gridY, class: "history-grid"}));
+            this.svg.appendChild(this.svgNode("text", {x: bounds.left - 8, y: gridY + 4, class: "history-axis", "text-anchor": "end"}, metric.format(value)));
+        }
+        for (let index = 0; index <= 2; index++) {
+            const ratio = index / 2;
+            const gridX = bounds.left + ratio * plotWidth;
+            const timestamp = firstTimestamp + ratio * windowMilliseconds;
+            this.svg.appendChild(this.svgNode("line", {x1: gridX, y1: bounds.top, x2: gridX, y2: height - bounds.bottom, class: "history-grid"}));
+            this.svg.appendChild(this.svgNode("text", {x: gridX, y: height - 9, class: "history-axis", "text-anchor": index === 0 ? "start" : (index === 2 ? "end" : "middle")}, new Date(timestamp).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"})));
+        }
+        if (samples.length > 1) {
+            const path = samples.map((sample, index) => `${index ? "L" : "M"} ${x(sample.timestamp)} ${y(sample.value)}`).join(" ");
+            this.svg.appendChild(this.svgNode("path", {d: path, class: "history-line"}));
+        }
+        if (samples.length) {
+            const latest = samples.at(-1);
+            this.svg.appendChild(this.svgNode("rect", {x: x(latest.timestamp) - 3, y: y(latest.value) - 3, width: 6, height: 6, class: "history-point"}));
+        }
+    }
 }
 
 /** Map a datasource lifecycle state to its presentation class. */
@@ -734,8 +1100,9 @@ function renderOverview(payload) {
 
     const activeRequests = Number(service["active-requests"] || 0);
     const runningWorkers = Number(service.workers?.running || 0);
+    const queuedWork = Number(service["queued-tile-work-items"] || 0);
     const inFlightTiles = Number(service["in-flight-tile-jobs"] || 0);
-    setMetric("metricWork", "metricWorkNote", formatInt(runningWorkers), `${formatInt(activeRequests)} tile requests active`);
+    setMetric("metricWork", "metricWorkNote", formatInt(runningWorkers), `${formatInt(queuedWork)} tile/filter work items queued`);
 
     const sessions = Number(interactive["active-sessions"] || 0);
     setMetric("metricInteractive", "metricInteractiveNote", formatInt(sessions), `${formatInt(interactive["active-connections"] || 0)} connections`);
@@ -747,6 +1114,7 @@ function renderOverview(payload) {
     replaceRows("#currentWorkTable tbody", [
         ["Workers running", formatInt(runningWorkers)],
         ["Tile requests", formatInt(activeRequests)],
+        ["Queued tile/filter work", formatInt(queuedWork)],
         ["In-flight source tiles", formatInt(inFlightTiles)],
         ["REST streams", formatInt(rest["active-streams"] || 0)],
         ["Interactive sessions", formatInt(sessions)],
@@ -992,6 +1360,7 @@ function renderPayload(payload) {
     renderTraffic(payload);
     renderCache(payload.cache || {}, payload.memory || {});
     renderDiagnostics(payload);
+    state.historyGraph?.append(payload);
 }
 
 /** Fetch one lightweight status snapshot while coalescing overlapping refreshes. */
@@ -1072,6 +1441,7 @@ function activateTab(name, updateHash = true) {
         tab.tabIndex = active ? 0 : -1;
     }
     for (const panel of document.querySelectorAll("[data-panel]")) panel.hidden = panel.dataset.panel !== valid;
+    state.historyGraph?.activateTab(valid);
     if (updateHash && location.hash !== `#${valid}`) history.replaceState(null, "", `#${valid}`);
 }
 
@@ -1140,6 +1510,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("hashchange", () => activateTab(location.hash.slice(1), false));
 
+state.historyGraph = new StatusHistoryGraph();
 activateTab(location.hash.slice(1) || "overview", false);
 resetTimer();
 refreshStatus(true);

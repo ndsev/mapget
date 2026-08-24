@@ -568,10 +568,19 @@ void ServiceScheduler::notifyTileLoadState(TileLoadState& job, TileLayer::LoadSt
 ServiceSchedulerStatistics ServiceScheduler::statistics() const
 {
     std::lock_guard lock(mutex_);
+    size_t queuedTileWorkItems = 0;
+    for (auto const& request : requests_) {
+        // One request may overlap another until admission coalesces the tile,
+        // so this measures pending request work rather than unique source keys.
+        if (request) {
+            queuedTileWorkItems += request->tileKeysNotStarted_.size();
+        }
+    }
     return ServiceSchedulerStatistics{
         .workerCount = workers_.size(),
         .runningJobs = runningJobs_,
         .activeTileRequests = requests_.size(),
+        .queuedTileWorkItems = queuedTileWorkItems,
         .inFlightTileJobs = inFlightTiles_.size(),
     };
 }

@@ -455,7 +455,18 @@ Python wheel bundle the default GeoNames database beside their mapget binary;
 `/status` is the operational HTML dashboard. Its live tabs poll
 `GET /status-data`, which contains service/cache metrics, datasource
 construction state, memory ownership, and interactive queue/pull statistics.
-The live endpoint deliberately never parses cached feature tiles.
+The live endpoint deliberately never parses cached feature tiles. The
+dashboard keeps only extracted numeric samples in the browser for its rolling
+history graph; its selectable 30-second to 15-minute windows create no
+server-side history or additional endpoint work. The active tab chooses a
+contextual default, such as queued tile/filter work on Overview and process
+RSS on Memory.
+
+Within the `service` object, `queued-tile-work-items` counts request tile keys
+that have not yet been admitted to a worker. Overlapping requests can each
+contribute one pending work item until scheduler admission coalesces their
+shared source key. `in-flight-tile-jobs` instead counts already-coalesced
+source tiles awaiting completion.
 
 `POST /status-data/cache-report` explicitly generates one point-in-time cache
 report. It returns `featureTree` storage measurements and a

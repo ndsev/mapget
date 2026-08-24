@@ -123,6 +123,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
          nlohmann::json{
              {"configured", schedulerStats.workerCount},
              {"running", schedulerStats.runningJobs}}},
+        {"queued-tile-work-items", schedulerStats.queuedTileWorkItems},
         {"in-flight-tile-jobs", schedulerStats.inFlightTileJobs},
         {"datasource-config",
          nlohmann::json{

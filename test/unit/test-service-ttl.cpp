@@ -270,12 +270,15 @@ TEST_CASE("Service uses one configurable worker cap across datasources", "[Servi
 
     auto const filledCap = probe->waitForEntries(2, 2s);
     auto const peakBeforeRelease = probe->peak();
+    auto const activeStatistics = service.getStatistics(false, false);
     probe->release();
     first->wait();
     second->wait();
 
     REQUIRE(filledCap);
     REQUIRE(peakBeforeRelease == 2);
+    REQUIRE(activeStatistics["queued-tile-work-items"] == 6);
+    REQUIRE(activeStatistics["in-flight-tile-jobs"] == 2);
     REQUIRE(first->getStatus() == RequestStatus::Success);
     REQUIRE(second->getStatus() == RequestStatus::Success);
     auto const statistics = service.getStatistics(false, false);

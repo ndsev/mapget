@@ -64,6 +64,8 @@ The easiest way to see how the cache behaves is to call `GET /status` on the run
 - Global service information such as active datasources, the configured worker cap, running jobs, and per-source permit pressure.
 - Cache statistics, including `cache-hits`, `cache-misses` and the number of loaded string pools.
 - Capacity-oriented memory for loaded string pools and the cache backend.
+- A browser-local rolling history graph for selectable work, memory, transport,
+  and cache gauges. No history is retained by the mapget server.
 
 When the in‑memory cache is used, additional fields show the current number of
 cached tiles, FIFO size, retained blob/index capacity, and its sampled peak.
