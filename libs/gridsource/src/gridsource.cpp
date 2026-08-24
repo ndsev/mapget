@@ -953,6 +953,31 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
     // Lazily generate road grid first (ensures roads are always generated before buildings)
     generateRoadGrid(ctx, config, tile);
 
+    auto appendGeometry = [&](model_ptr<Feature> feature,
+                              Building const& building) {
+        if (config.geometry.type == GeometryType::Polygon) {
+            auto polygon = feature->geom()->newGeometry(
+                GeomType::Polygon,
+                4,
+                true);
+            polygon->append({building.minX, building.minY, 0.0});
+            polygon->append({building.maxX, building.minY, 0.0});
+            polygon->append({building.maxX, building.maxY, 0.0});
+            polygon->append({building.minX, building.maxY, 0.0});
+            return;
+        }
+        feature->addMesh({
+            Point(building.minX, building.minY, 0.0),
+            Point(building.maxX, building.minY, 0.0),
+            Point(building.maxX, building.maxY, 0.0)
+        });
+        feature->addMesh({
+            Point(building.minX, building.minY, 0.0),
+            Point(building.maxX, building.maxY, 0.0),
+            Point(building.minX, building.maxY, 0.0)
+        });
+    };
+
     // Only generate buildings once for this tile
     if (!ctx.buildings.empty()) {
         // Buildings already generated, just recreate features
@@ -960,17 +985,7 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
             auto feature = tile->newFeature(config.featureType,
                 {{config.featureType + "Id", building.id}});
 
-            // Create axis-aligned rectangle as mesh (two triangles)
-            feature->addMesh({
-                Point(building.minX, building.minY, 0.0),
-                Point(building.maxX, building.minY, 0.0),
-                Point(building.maxX, building.maxY, 0.0)
-            });
-            feature->addMesh({
-                Point(building.minX, building.minY, 0.0),
-                Point(building.maxX, building.maxY, 0.0),
-                Point(building.minX, building.maxY, 0.0)
-            });
+            appendGeometry(feature, building);
 
             // Generate attributes
             std::mt19937 gen(ctx.seed + building.id);
@@ -1054,16 +1069,7 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
                 auto feature = tile->newFeature(config.featureType,
                     {{config.featureType + "Id", building.id}});
 
-                feature->addMesh({
-                    Point(building.minX, building.minY, 0.0),
-                    Point(building.maxX, building.minY, 0.0),
-                    Point(building.maxX, building.maxY, 0.0)
-                });
-                feature->addMesh({
-                    Point(building.minX, building.minY, 0.0),
-                    Point(building.maxX, building.maxY, 0.0),
-                    Point(building.minX, building.maxY, 0.0)
-                });
+                appendGeometry(feature, building);
 
                 // Generate attributes
                 std::mt19937 attrGen(ctx.seed + building.id);

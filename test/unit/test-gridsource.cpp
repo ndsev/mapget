@@ -180,6 +180,30 @@ layers:
     }
 }
 
+TEST_CASE("Grid building geometry follows the configured surface type", "[gridsource]")
+{
+    auto config = YAML::Load(R"yaml(
+mapId: GridBuildingTest
+layers:
+  - name: buildings
+    featureType: Building
+    geometry:
+      type: polygon
+      density: 0.03
+      sizeRange: [15, 50]
+      aspectRatio: [1.2, 3.0]
+)yaml");
+    GridDataSource source(config);
+    auto tile = makeTile(source.info(), "buildings");
+
+    source.fill(tile);
+
+    REQUIRE(tile->numRoots() > 0);
+    auto const features = tile->toJson()["features"];
+    REQUIRE_FALSE(features.empty());
+    REQUIRE(features.front()["geometry"]["type"] == "Polygon");
+}
+
 TEST_CASE("Grid traffic is logically reproducible across sources and signed tile ids", "[gridsource][traffic]")
 {
     const auto now = std::chrono::system_clock::time_point{500s};

@@ -200,6 +200,12 @@ sources:
 
 The generator will produce deterministic but varied features for any requested tile ID. The full set of fields is defined in the `gridsource` library and can be explored by looking at example configurations or the header file.
 
+Building layers configured with `geometry.type: polygon` emit one polygon
+footprint per building; `geometry.type: mesh` retains the legacy pair of flat
+triangles. A generated numeric attribute such as `height` can therefore drive
+Erdblick's `polygon-height-expression` without coupling the datasource to a
+particular visualization style.
+
 #### Road-backed live traffic
 
 A `kind: traffic` layer is a separate Grid-specific overlay over one enabled line
