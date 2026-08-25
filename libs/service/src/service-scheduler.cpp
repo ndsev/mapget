@@ -105,6 +105,15 @@ void ServiceScheduler::enqueueRequest(LayerTilesRequest::Ptr request)
     jobsAvailable_.notify_all();
 }
 
+void ServiceScheduler::notifyWorkAvailable()
+{
+    // Synchronize with the condition-variable wait boundary. Without taking
+    // this mutex, an external atomic gate could open after a worker checks it
+    // but before the worker actually sleeps, losing the notification.
+    std::lock_guard lock(mutex_);
+    jobsAvailable_.notify_all();
+}
+
 void ServiceScheduler::abortRequest(LayerTilesRequest::Ptr const& request)
 {
     if (!request || request->isDone()) {
@@ -422,7 +431,7 @@ std::optional<ServiceScheduler::Candidate>
 ServiceScheduler::nextCandidateLocked(SourceConcurrency const& source) const
 {
     for (auto request = requests_.begin(); request != requests_.end(); ++request) {
-        if (!requestMatchesSourceLocked(*request, source)) {
+        if (!requestMatchesSourceLocked(*request, source) || !(*request)->admitsNewWork()) {
             continue;
         }
         auto pendingIndex = nextPendingTileKeyLocked(**request);

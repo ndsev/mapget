@@ -95,8 +95,8 @@ std::string_view catalogStatusToString(DataSourceCatalogStatus status)
 constexpr int64_t DEFAULT_PULL_WAIT_MS = 25000;
 constexpr int64_t MAX_PULL_WAIT_MS = 30000;
 constexpr int64_t MAX_PULL_BATCH_BYTES = 64 * 1024 * 1024;
-constexpr size_t MAX_QUEUED_OUTGOING_FRAMES = 4096;
-constexpr size_t MAX_QUEUED_OUTGOING_BYTES = 256 * 1024 * 1024;
+constexpr size_t OUTGOING_FRAME_ADMISSION_WATERMARK = 4096;
+constexpr size_t OUTGOING_BYTE_ADMISSION_WATERMARK = 256 * 1024 * 1024;
 constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
 
@@ -784,6 +784,7 @@ public:
     void cancel(std::string reason)
     {
         cancelled_ = true;
+        workAdmissionOpen_->store(false, std::memory_order_release);
         std::vector<LayerTilesRequest::Ptr> requestsToAbort;
         std::vector<FeatureLayerFilterTilesRequest::Ptr> filterRequestsToAbort;
         std::vector<PullDispatch> pullDispatches;
@@ -805,7 +806,6 @@ public:
             stagedRequest_.reset();
             pendingReconciliation_.reset();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
-            outgoingCapacityChanged_.notify_all();
         }
 
         // Abort in-flight requests (best-effort).
@@ -1206,6 +1206,7 @@ private:
             *parsedRequest.filterRequest,
             priorityTileIds);
         request->sourceId_ = parsedRequest.sourceId;
+        request->setWorkAdmissionGate(workAdmissionOpen_);
         request->exactRoots_ = parsedRequest.exactRoots;
         std::erase_if(
             request->exactRoots_,
@@ -1262,6 +1263,7 @@ private:
             tileIds,
             priorityTileIds);
         request->sourceId_ = parsedRequest.sourceId;
+        request->setWorkAdmissionGate(workAdmissionOpen_);
         request->featureIdsByTile_ = parsedRequest.featureIdsByTile;
         std::erase_if(
             request->featureIdsByTile_,
@@ -1351,7 +1353,7 @@ private:
         auto frame = std::move(outgoing_.front());
         outgoing_.pop_front();
         untrackQueuedFrameLocked(frame);
-        outgoingCapacityChanged_.notify_all();
+        refreshWorkAdmissionLocked();
         if (frame.stringPoolCommit) {
             committedStringPoolOffsets_[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
         }
@@ -1562,23 +1564,22 @@ private:
         return lhs.priorityRank < rhs.priorityRank;
     }
 
-    /** Return true when another tile layer may be serialized without unbounded queue growth. */
-    [[nodiscard]] bool hasOutgoingCapacityLocked() const
+    /** Return whether the outbox is below its soft backend-work admission watermark. */
+    [[nodiscard]] bool hasBackendWorkCapacityLocked() const
     {
-        // Always allow an empty queue to accept the next layer, even if that
-        // single layer is larger than the nominal byte cap.
-        return outgoing_.empty()
-            || (outgoing_.size() < MAX_QUEUED_OUTGOING_FRAMES
-                && queuedOutgoingBytes_ < MAX_QUEUED_OUTGOING_BYTES);
+        return outgoing_.size() < OUTGOING_FRAME_ADMISSION_WATERMARK &&
+            queuedOutgoingBytes_ < OUTGOING_BYTE_ADMISSION_WATERMARK;
     }
 
-    /** Block backend producer callbacks until `/interactive/payload` drains queued frames. */
-    [[nodiscard]] bool waitForOutgoingCapacityLocked(std::unique_lock<std::mutex>& lock)
+    /** Publish a changed admission state and wake workers when this session becomes writable. */
+    void refreshWorkAdmissionLocked()
     {
-        outgoingCapacityChanged_.wait(lock, [this] {
-            return cancelled_ || hasOutgoingCapacityLocked();
-        });
-        return !cancelled_;
+        auto const open = !cancelled_.load(std::memory_order_acquire) &&
+            hasBackendWorkCapacityLocked();
+        auto const wasOpen = workAdmissionOpen_->exchange(open, std::memory_order_release);
+        if (!wasOpen && open) {
+            service_.notifyWorkAvailable();
+        }
     }
 
     /** Drop queued tile data frames omitted from the latest pending snapshot. */
@@ -1609,7 +1610,7 @@ private:
         if (droppedFrames > 0) {
             gTilesWsMetrics.totalDroppedFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
             gTilesWsMetrics.totalDroppedBytes.fetch_add(droppedBytes, std::memory_order_relaxed);
-            outgoingCapacityChanged_.notify_all();
+            refreshWorkAdmissionLocked();
         }
     }
 
@@ -1655,6 +1656,7 @@ private:
             }
         }
         outgoing_.insert(insertIt, std::move(frame));
+        refreshWorkAdmissionLocked();
         gTilesWsMetrics.totalQueuedFrames.fetch_add(1, std::memory_order_relaxed);
         gTilesWsMetrics.totalQueuedBytes.fetch_add(bytes, std::memory_order_relaxed);
     }
@@ -1677,7 +1679,7 @@ private:
 
         gTilesWsMetrics.totalDroppedFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
         gTilesWsMetrics.totalDroppedBytes.fetch_add(droppedBytes, std::memory_order_relaxed);
-        outgoingCapacityChanged_.notify_all();
+        refreshWorkAdmissionLocked();
     }
 
     /** Internal cancel path used by destructor/connection tear-down (no status emission). */
@@ -1685,6 +1687,7 @@ private:
     {
         if (cancelled_.exchange(true))
             return;
+        workAdmissionOpen_->store(false, std::memory_order_release);
         std::vector<LayerTilesRequest::Ptr> requestsToAbort;
         std::vector<FeatureLayerFilterTilesRequest::Ptr> filterRequestsToAbort;
         std::vector<PullDispatch> pullDispatches;
@@ -1706,7 +1709,6 @@ private:
             stagedRequest_.reset();
             pendingReconciliation_.reset();
             collectAllPullWaitersLocked(PullFrameResult::Status::Closed, pullDispatches);
-            outgoingCapacityChanged_.notify_all();
         }
 
         abortRequests(std::move(requestsToAbort));
@@ -1758,7 +1760,7 @@ private:
             std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
             std::vector<PullDispatch> pullDispatches;
             {
-                std::unique_lock lock(mutex_);
+                std::lock_guard lock(mutex_);
                 auto filterKey = filterRequestKey(layer);
                 auto requestedTileKey = matchPendingTileKeyLocked(
                     layer->id(),
@@ -1787,16 +1789,6 @@ private:
                 {
                     return;
                 }
-                if (!waitForOutgoingCapacityLocked(lock)) {
-                    return;
-                }
-                // Capacity waits release the mutex; a newer snapshot may have
-                // pruned or reassigned this output in the meantime.
-                if (!pendingTileKeys_.contains(*requestedTileKey) || !ownerIsCurrent()) {
-                    gTilesWsMetrics.obsoleteOwnerCallbacks.fetch_add(1, std::memory_order_relaxed);
-                    return;
-                }
-
                 if (currentWriteBatch_) {
                     raise("TilesWsSession writer callback re-entered");
                 }
@@ -2119,7 +2111,7 @@ private:
     AuthHeaders authHeaders_;
 
     mutable std::mutex mutex_;
-    std::condition_variable outgoingCapacityChanged_;
+    std::shared_ptr<std::atomic_bool> workAdmissionOpen_ = std::make_shared<std::atomic_bool>(true);
     uint64_t nextPullWaiterId_ = 1;
     std::deque<uint64_t> pendingPullWaiterOrder_;
     std::unordered_map<uint64_t, PullWaiter> pendingPullWaiters_;

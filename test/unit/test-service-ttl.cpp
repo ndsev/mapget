@@ -323,6 +323,69 @@ TEST_CASE("Service preserves per-datasource permits below the global cap", "[Ser
     REQUIRE((*constrainedRow)["parallel-limit"] == 1);
 }
 
+TEST_CASE("Service skips requests while their work admission is closed", "[Service][backpressure]")
+{
+    auto blockedProbe = std::make_shared<GlobalConcurrencyProbe>();
+    auto liveProbe = std::make_shared<GlobalConcurrencyProbe>();
+    Service service(std::make_shared<MemCache>(32), false, 0ms, 1);
+    service.add(
+        std::make_shared<ConcurrencyTestDataSource>("BlockedMap", "BlockedPool", blockedProbe));
+    service.add(std::make_shared<ConcurrencyTestDataSource>("LiveMap", "LivePool", liveProbe));
+
+    auto admissionOpen = std::make_shared<std::atomic_bool>(false);
+    auto blocked = std::make_shared<LayerTilesRequest>(
+        "BlockedMap",
+        "Features",
+        std::vector<TileId>{TileId::fromTileXY(0, 0, 3)});
+    blocked->setWorkAdmissionGate(admissionOpen);
+    auto live = std::make_shared<
+        LayerTilesRequest>("LiveMap", "Features", std::vector<TileId>{TileId::fromTileXY(0, 0, 3)});
+
+    REQUIRE(service.request({blocked, live}));
+    auto const liveStarted = liveProbe->waitForEntries(1, 2s);
+    liveProbe->release();
+    live->wait();
+    auto const blockedStayedQueued = !blockedProbe->waitForEntries(1, 100ms);
+
+    admissionOpen->store(true);
+    service.notifyWorkAvailable();
+    auto const blockedStarted = blockedProbe->waitForEntries(1, 2s);
+    blockedProbe->release();
+    blocked->wait();
+
+    REQUIRE(liveStarted);
+    REQUIRE(blockedStayedQueued);
+    REQUIRE(blockedStarted);
+    REQUIRE(live->getStatus() == RequestStatus::Success);
+    REQUIRE(blocked->getStatus() == RequestStatus::Success);
+}
+
+TEST_CASE("Shared work still completes requests with closed admission", "[Service][backpressure]")
+{
+    Service service(std::make_shared<MemCache>(32), false, 0ms, 1);
+    auto source = std::make_shared<TestTtlDataSource>();
+    service.add(source);
+    auto const tileId = TileId::fromValue(kTtlTileIdValue);
+
+    auto sharedResultCount = std::atomic_size_t{0};
+    auto blocked =
+        std::make_shared<LayerTilesRequest>("Tropico", "WayLayer", std::vector<TileId>{tileId});
+    blocked->setWorkAdmissionGate(std::make_shared<std::atomic_bool>(false));
+    blocked->onFeatureLayer([&](TileFeatureLayer::Ptr) { ++sharedResultCount; });
+    auto live =
+        std::make_shared<LayerTilesRequest>("Tropico", "WayLayer", std::vector<TileId>{tileId});
+    live->onFeatureLayer([&](TileFeatureLayer::Ptr) { ++sharedResultCount; });
+
+    REQUIRE(service.request({blocked, live}));
+    blocked->wait();
+    live->wait();
+
+    REQUIRE(blocked->getStatus() == RequestStatus::Success);
+    REQUIRE(live->getStatus() == RequestStatus::Success);
+    REQUIRE(sharedResultCount == 2);
+    REQUIRE(source->fillCount() == 1);
+}
+
 TEST_CASE("Service rejects an empty homogeneous worker pool", "[Service][concurrency]")
 {
     REQUIRE_THROWS_AS(Service(std::make_shared<MemCache>(1), false, 0ms, 0), std::runtime_error);

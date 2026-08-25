@@ -1617,6 +1617,7 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
         targetKey.layerId_,
         std::vector<TileId>{targetKey.tileId_});
     child->sourceId_ = request->sourceId_;
+    child->setWorkAdmissionGate(request->workAdmissionGate_);
     auto self = shared_from_this();
     child->onFeatureLayer([self, targetKey](TileFeatureLayer::Ptr layer)
                           { self->collectRelationTarget(targetKey, std::move(layer)); });
@@ -2375,6 +2376,13 @@ bool FeatureLayerFilterTilesRequest::isCancelled() const
     return cancelled_;
 }
 
+FeatureLayerFilterTilesRequest&
+FeatureLayerFilterTilesRequest::setWorkAdmissionGate(std::shared_ptr<std::atomic_bool const> gate)
+{
+    workAdmissionGate_ = std::move(gate);
+    return *this;
+}
+
 void FeatureLayerFilterTilesRequest::wait()
 {
     std::unique_lock doneLock(statusMutex_);
@@ -2615,6 +2623,7 @@ bool detail::FilterRequestExecution::start(
         *tileIdsToProcess,
         prioritySourceTileIds);
     childRequest->sourceId_ = request->sourceId_;
+    childRequest->setWorkAdmissionGate(request->workAdmissionGate_);
     {
         std::lock_guard lock(request->childRequestsMutex_);
         request->childRequests_.push_back(childRequest);
