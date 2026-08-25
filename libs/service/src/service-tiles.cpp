@@ -617,6 +617,18 @@ bool LayerTilesRequest::isDone() const
     return status_ != RequestStatus::Open;
 }
 
+LayerTilesRequest&
+LayerTilesRequest::setWorkAdmissionGate(std::shared_ptr<std::atomic_bool const> gate)
+{
+    workAdmissionGate_ = std::move(gate);
+    return *this;
+}
+
+bool LayerTilesRequest::admitsNewWork() const
+{
+    return !workAdmissionGate_ || workAdmissionGate_->load(std::memory_order_acquire);
+}
+
 bool Service::Impl::requestTiles(
     std::vector<LayerTilesRequest::Ptr> const& requests,
     std::optional<AuthHeaders> const& clientHeaders)

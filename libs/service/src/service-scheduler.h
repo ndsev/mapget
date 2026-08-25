@@ -90,6 +90,9 @@ public:
     /** Enqueue a validated tile request. */
     void enqueueRequest(LayerTilesRequest::Ptr request);
 
+    /** Wake workers so externally gated requests are reconsidered. */
+    void notifyWorkAvailable();
+
     /** Abort and detach one tile request from queued and in-flight work. */
     void abortRequest(LayerTilesRequest::Ptr const& request);
 

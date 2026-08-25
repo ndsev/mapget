@@ -342,6 +342,12 @@ attachment cache in the initial implementation.
 `/interactive` is a WebSocket control channel. `/interactive/payload` carries
 the binary frames so a client can apply explicit backpressure.
 
+Each session has soft frame and byte watermarks. Crossing a watermark pauses
+admission of new jobs originating only from that session; it never blocks a
+service worker or discards completed work. Already-running and coalesced jobs
+can therefore move the outbox temporarily above a watermark. Payload draining
+reopens admission once the queue is below both thresholds.
+
 An interactive message contains `requests`, optional envelope-level
 `filterId`, `generation`, `channels`, optional `bindings`, and optional
 `stringPoolOffsets`. The filter definition may be on the envelope and is

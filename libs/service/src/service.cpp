@@ -194,6 +194,11 @@ void Service::retainOutputs(
     }
 }
 
+void Service::notifyWorkAvailable()
+{
+    impl_->scheduler_.notifyWorkAvailable();
+}
+
 std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clientHeaders)
 {
     return impl_->getDataSourceInfos(clientHeaders);

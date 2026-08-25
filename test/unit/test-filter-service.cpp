@@ -789,6 +789,37 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Filter source requests inherit their work admission gate",
+    "[feature-layer-filter][Service][backpressure]")
+{
+    auto service = Service(std::make_shared<MemCache>(32), false, std::chrono::milliseconds{0}, 1);
+    auto dataSource = std::make_shared<FilterDataSource>();
+    service.add(dataSource);
+    auto admissionOpen = std::make_shared<std::atomic_bool>(false);
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<TileId>{firstTile()},
+        filterDefinition());
+    request->setWorkAdmissionGate(admissionOpen);
+
+    REQUIRE(service.request(request));
+    auto liveRequest =
+        std::make_shared<LayerTilesRequest>("FilterMap", "Road", std::vector<TileId>{secondTile()});
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{liveRequest}));
+    liveRequest->wait();
+    REQUIRE(liveRequest->getStatus() == RequestStatus::Success);
+    REQUIRE(dataSource->requestedTiles() == std::vector<TileId>{secondTile()});
+
+    admissionOpen->store(true);
+    service.notifyWorkAvailable();
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(dataSource->requestedTiles() == std::vector<TileId>{secondTile(), firstTile()});
+}
+
+TEST_CASE(
     "Filter evaluation does not wait for earlier source completion",
     "[feature-layer-filter][Service][concurrency]")
 {

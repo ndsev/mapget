@@ -123,6 +123,13 @@ complete result, and notifies every waiter.
 `priorityTileIds` promotes keys already in the request. It does not add
 coverage or change data semantics.
 
+Requests may share an atomic work-admission gate which is fixed before
+submission. A closed gate keeps that request's unscheduled keys queued while
+workers continue with other requests. It does not detach the request from a job
+selected for another live consumer, and backpressure does not suppress work
+which has already started. Opening a gate calls `Service::notifyWorkAvailable()`
+so sleeping workers reconsider the queued keys.
+
 One coalesced source tile may serve ordinary tile consumers and several filter
 requests. Those filters run sequentially on the worker that completed the tile,
 and each source-local evaluation scatters immutable contributions to every
@@ -290,7 +297,13 @@ request coordination mutex, so an evaluation whose outputs were all removed
 can stop at its next cooperative boundary. Any partial result is discarded
 before contribution commit.
 
-When a tile frame leaves the bounded queue, the session retains only its key
+The interactive outbox limits are soft admission watermarks, not result-drop
+limits. Crossing either watermark closes that session's backend work gate;
+workers never wait for `/interactive/payload`. Results from work already in
+flight or shared with another session are still queued, so the outbox may
+temporarily exceed a watermark. Draining below both limits reopens the gate.
+
+When a tile frame leaves the outbox, the session retains only its key
 and optional absolute semantic expiry from `timestamp + ttl`; it never retains
 a second payload copy. A later omission clears that handoff. An expired
 handoff no longer suppresses an ordinary repeated request, while a missing or

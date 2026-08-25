@@ -186,6 +186,14 @@ public:
     /** Check whether the request is done or still running. */
     bool isDone() const;
 
+    /**
+     * Attach a shared gate controlling admission of new tile jobs.
+     *
+     * Set the gate before submitting the request. A false value pauses only
+     * jobs originating from this request; running or shared jobs still publish.
+     */
+    LayerTilesRequest& setWorkAdmissionGate(std::shared_ptr<std::atomic_bool const> gate);
+
     /** The map id for which this request is dedicated. */
     std::string mapId_;
 
@@ -252,6 +260,9 @@ protected:
     nlohmann::json toJson();
 
 private:
+    /** Return whether this request may originate another tile job. */
+    [[nodiscard]] bool admitsNewWork() const;
+
     /** Resolve tile IDs into concrete keys while preserving priority/order. */
     void prepareResolvedLayer(LayerType layerType);
 
@@ -265,6 +276,7 @@ private:
     std::function<void(TileFeatureLayer::Ptr)> onFeatureLayer_;
     std::function<void(TileSourceDataLayer::Ptr)> onSourceDataLayer_;
     std::function<void(MapTileKey const&, TileLayer::LoadState)> onLoadStateChanged_;
+    std::shared_ptr<std::atomic_bool const> workAdmissionGate_;
 
     // So the service can track which tile index from resolvedTileKeys_
     // is next in line to be processed.
@@ -331,6 +343,15 @@ public:
     /** Check whether the request has been cancelled by the owning transport. */
     [[nodiscard]] bool isCancelled() const;
 
+    /**
+     * Attach a shared gate controlling admission of new source-tile jobs.
+     *
+     * Set the gate before submitting the request. It is inherited by source
+     * and relation-target child requests; already running work still completes.
+     */
+    FeatureLayerFilterTilesRequest&
+    setWorkAdmissionGate(std::shared_ptr<std::atomic_bool const> gate);
+
     /** The source map id for this filter execution. */
     std::string mapId_;
 
@@ -388,6 +409,7 @@ private:
 
     std::function<void(TileSubsetLayer::Ptr)> onFilterResult_;
     std::function<void(nlohmann::json const&)> onStatus_;
+    std::shared_ptr<std::atomic_bool const> workAdmissionGate_;
     mutable std::mutex outputMembershipMutex_;
     std::set<TileId> liveOutputTileIds_;
     std::weak_ptr<detail::FilterRequestExecution> execution_;
@@ -555,6 +577,9 @@ public:
     void retainOutputs(
         FeatureLayerFilterTilesRequest::Ptr const& request,
         std::set<TileId> const& retainedTileIds);
+
+    /** Wake workers after an external request-admission gate may have opened. */
+    void notifyWorkAvailable();
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
