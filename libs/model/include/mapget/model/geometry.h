@@ -79,7 +79,8 @@ public:
      *
      * The node index is stored losslessly only up to 2^24 because it is encoded
      * in the shared float-based point-buffer storage. The referenced binary
-     * payload is the tile's `glbAttachment()`.
+     * payload is the tile's independently transferred
+     * `glbAttachmentName()`.
      */
     void setGltfNodeIndex(uint32_t index);
     [[nodiscard]] uint32_t gltfNodeIndex() const;
@@ -105,17 +106,12 @@ public:
     /** Store explicit polygon ring starts; ring zero must start at vertex zero. */
     void setPolygonRingStarts(std::span<uint32_t const> ringStarts);
 
-    /** Get the human-readable stage name if this geometry is above high fidelity. */
-    [[nodiscard]] std::optional<std::string_view> name() const;
-
     /** Get a hash of the geometry. **/
     [[nodiscard]] uint64_t getHash() const;
 
-    /** Get the persisted logical stage of this geometry, if any. */
-    [[nodiscard]] std::optional<uint32_t> stage() const;
-
-    /** Persist an explicit geometry stage override used by JSON import/export. */
-    void setStage(std::optional<uint32_t> geometryStage);
+    /** Get or set the persisted layer-local logical geometry name. */
+    [[nodiscard]] std::optional<std::string_view> name() const;
+    void setName(std::optional<std::string_view> geometryName);
 
     /** Iterate over all Points in the geometry.
      * @param callback Function which is called for each contained point.
@@ -226,41 +222,7 @@ public:
     /** Get the number of contained geometries. */
     [[nodiscard]] size_t numGeometries() const;
 
-    /**
-     * Resolve the geometry stage that should be used when no explicit stage
-     * override is given. This defaults to the layer's configured
-     * `highFidelityStage_`.
-     */
-    [[nodiscard]] std::optional<uint32_t> preferredGeometryStage(
-        std::optional<uint32_t> stageOverride = std::nullopt) const;
-
-    /**
-     * Find the first geometry of the requested type at the preferred stage.
-     * When `stageOverride` is omitted, the layer's `highFidelityStage_` is used.
-     */
-    [[nodiscard]] model_ptr<Geometry> geometryOfTypeAtPreferredStage(
-        GeomType type,
-        std::optional<uint32_t> stageOverride = std::nullopt) const;
-
     [[nodiscard]] nlohmann::json toJson() const override;
-
-    /** Iterate over all geometries at the preferred stage. */
-    template <typename LambdaType>
-    bool forEachGeometryAtPreferredStage(
-        std::optional<uint32_t> stageOverride,
-        LambdaType const& callback) const
-    {
-        auto const preferredStage = preferredGeometryStage(stageOverride);
-        if (!preferredStage) {
-            return true;
-        }
-        return forEachGeometry([&](model_ptr<Geometry> const& geom) {
-            if (geom->stage().value_or(0U) != *preferredStage) {
-                return true;
-            }
-            return callback(geom);
-        });
-    }
 
     /** Iterate over all Geometries in the collection.
      * @param callback Function which is called for each contained geometry.

@@ -6,6 +6,7 @@
 
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
+#include <drogon/utils/Utilities.h>
 #include <trantor/net/EventLoopThread.h>
 
 #include <chrono>
@@ -50,7 +51,7 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
     }
     info_ = DataSourceInfo::fromJson(infoJson);
 
-    if (info_.nodeId_.empty()) {
+    if (info_.stringPoolId_.empty()) {
         // Unique node IDs are required for the string pool offsets.
         raise(
             fmt::format("Remote data source is missing node ID! Source info: {}",
@@ -98,11 +99,10 @@ RemoteDataSource::get(
     auto tileReq = drogon::HttpRequest::newHttpRequest();
     tileReq->setMethod(drogon::Get);
     tileReq->setPath(fmt::format(
-        "/tile?layer={}&tileId={}&stage={}&stringPoolOffset={}",
+        "/tile?layer={}&tileId={}&stringPoolOffset={}",
         k.layerId_,
         k.tileId_.value(),
-        k.stage_,
-        cachedStringPoolOffset(info.nodeId_, cache)));
+        cachedStringPoolOffset(info.stringPoolId_, cache)));
     auto [resultCode, tileResponse] = client->sendRequest(tileReq);
 
     // Check that the response is OK.
@@ -138,7 +138,8 @@ RemoteDataSource::get(
     return result;
 }
 
-std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
+std::vector<LocateCandidate> RemoteDataSource::locate(
+    LocateRequest const& req)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
@@ -152,9 +153,6 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
 
     // Check that the response is OK.
     if (resultCode != drogon::ReqResult::Ok || !locateResponse || (int)locateResponse->statusCode() >= 300) {
-        // Forward to base class get(). This will instantiate a
-        // default TileFeatureLayer and call fill(). In our implementation
-        // of fill, we set an error.
         // TODO: Read HTTPLIB_ERROR header, more log output.
         return {};
     }
@@ -166,11 +164,63 @@ std::vector<LocateResponse> RemoteDataSource::locate(const LocateRequest& req)
     }
 
     // Parse the resulting responses.
-    std::vector<LocateResponse> responseVector;
+    std::vector<LocateCandidate> responseVector;
     for (auto const& responseJsonAlternative : responseJson) {
         responseVector.emplace_back(responseJsonAlternative);
     }
     return responseVector;
+}
+
+std::optional<AttachmentResponse>
+RemoteDataSource::attachment(
+    AttachmentRequest const& request)
+{
+    auto& client =
+        httpClients_[(nextClient_++) %
+                     httpClients_.size()];
+    auto attachmentRequest =
+        drogon::HttpRequest::newHttpRequest();
+    attachmentRequest->setMethod(
+        drogon::Get);
+    attachmentRequest->setPath(
+        fmt::format(
+            "/attachment?layer={}&tileId={}&name={}",
+            drogon::utils::urlEncodeComponent(
+                request.tileKey_.layerId_),
+            request.tileKey_.tileId_.value(),
+            drogon::utils::urlEncodeComponent(
+                request.name_)));
+    auto [resultCode, response] =
+        client->sendRequest(
+            attachmentRequest);
+    if (resultCode !=
+            drogon::ReqResult::Ok ||
+        !response ||
+        response->statusCode() !=
+            drogon::k200OK)
+    {
+        return {};
+    }
+
+    auto bytes =
+        std::make_shared<
+            std::vector<uint8_t> const>(
+            response->body().begin(),
+            response->body().end());
+    auto result = AttachmentResponse{
+        .name_ = request.name_,
+        .mimeType_ =
+            response->contentTypeString(),
+        .bytes_ = std::move(bytes),
+    };
+    if (auto etag =
+            response->getHeader("etag");
+        !etag.empty())
+    {
+        result.etag_ =
+            std::move(etag);
+    }
+    return result;
 }
 
 void RemoteDataSource::onCacheExpired(
@@ -304,11 +354,22 @@ RemoteDataSourceProcess::get(
     return remoteSource_->get(k, cache, info, std::move(loadStateCallback));
 }
 
-std::vector<LocateResponse> RemoteDataSourceProcess::locate(const LocateRequest& req)
+std::vector<LocateCandidate>
+RemoteDataSourceProcess::locate(
+    LocateRequest const& req)
 {
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
     return remoteSource_->locate(req);
+}
+
+std::optional<AttachmentResponse>
+RemoteDataSourceProcess::attachment(
+    AttachmentRequest const& request)
+{
+    if (!remoteSource_)
+        raise("Remote data source is not initialized.");
+    return remoteSource_->attachment(request);
 }
 
 void RemoteDataSourceProcess::onCacheExpired(

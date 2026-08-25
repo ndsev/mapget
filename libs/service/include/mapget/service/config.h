@@ -41,23 +41,23 @@ struct DataSourceInitContext {
 
 /** Cheap, config-derived datasource facts available before construction starts. */
 struct DataSourceDescriptor {
-    /** Stable identity for frontend diffing and async completion lookup. */
-    std::string sourceId;
-
     /** Preserves `mapviewer.yaml` order and gives clear diagnostics for config-entry failures. */
     uint32_t configIndex = 0;
+
+    /** Stable catalog identity used only for lifecycle and optional request assertions. */
+    std::string sourceId;
 
     /** Needed for placeholder UI and error messages before a `DataSource` exists. */
     std::string type;
 
-    /** Best-known map identity before construction; runtime `mapId` still comes from ready DataSourceInfo. */
-    std::optional<std::string> configuredMapId;
+    /** Display-only placeholder used until construction provides authoritative `DataSourceInfo`. */
+    std::string displayName;
 
     /** Prevents initializing/failed add-on sources from being shown as standalone maps. */
     bool addOn = false;
 
     /** Preserves current `/sources` authorization behavior before a ready DataSource exists. */
-    std::unordered_map<std::string, std::regex> authHeaderAlternatives;
+    AuthHeaderRegexMap authHeaderAlternatives;
 };
 
 
@@ -76,12 +76,17 @@ class DataSourceConfigService
 public:
     using PublicConfigSectionSerializer =
         std::function<nlohmann::json(YAML::Node const& fullConfig)>;
+    struct PublicConfigWriteResult {
+        nlohmann::json canonicalValue = nlohmann::json::array();
+        std::optional<std::string> error;
+    };
+    using PublicConfigFieldWriter = std::function<PublicConfigWriteResult(
+        YAML::Node& fullConfig,
+        nlohmann::json const& requestedValue)>;
     using DataSourceConstructor =
         std::function<DataSource::Ptr(YAML::Node const& arguments, DataSourceInitContext& initContext)>;
     using LegacyDataSourceConstructor =
         std::function<DataSource::Ptr(YAML::Node const& arguments)>;
-    using DataSourceDescribeFn =
-        std::function<DataSourceDescriptor(YAML::Node const& descriptor, uint32_t configIndex)>;
 
     /**
      * Gets the singleton instance of the DataSourceConfig class.
@@ -167,8 +172,7 @@ public:
     void registerDataSourceType(
         std::string const& typeName,
         LegacyDataSourceConstructor constructor,
-        nlohmann::json schema = {},
-        DataSourceDescribeFn describe = {});
+        nlohmann::json schema = {});
 
     /**
      * Registers a constructor that can report startup progress and observe cancellation.
@@ -176,8 +180,7 @@ public:
     void registerDataSourceType(
         std::string const& typeName,
         DataSourceConstructor constructor,
-        nlohmann::json schema = {},
-        DataSourceDescribeFn describe = {});
+        nlohmann::json schema = {});
 
     /** Get (and lazily build) JSON schema that describes registered datasource types. */
     [[nodiscard]] nlohmann::json getDataSourceConfigSchema() const;
@@ -211,6 +214,29 @@ public:
      * Every registered key is present in the result.
      */
     [[nodiscard]] nlohmann::json getPublicConfigSections(YAML::Node const& fullConfig) const;
+
+    /** Register one opaque public-config field path for guarded PATCH /config updates. */
+    void registerPublicConfigFieldWriter(
+        std::string path,
+        PublicConfigFieldWriter writer);
+
+    /** Apply a registered field writer to an in-memory complete YAML document. */
+    [[nodiscard]] PublicConfigWriteResult applyPublicConfigFieldWrite(
+        std::string const& path,
+        YAML::Node& fullConfig,
+        nlohmann::json const& requestedValue) const;
+
+    /** Return whether the named narrow public-config writer is registered. */
+    [[nodiscard]] bool hasPublicConfigFieldWriter(std::string const& path) const;
+
+    /** SHA-256 revision of the current complete config file bytes. */
+    [[nodiscard]] std::optional<std::string> getConfigFileRevision() const;
+
+    /** Advance the watcher checksum after a public-only write without notifying datasource subscribers. */
+    void acknowledgePublicConfigWrite(std::string const& completeFileContents);
+
+    /** Serialize config-file readers/writers with watcher reconciliation. */
+    [[nodiscard]] std::unique_lock<std::recursive_mutex> lockConfigMutation() const;
 
     /**
      * Call this to stop the config file watching thread.
@@ -258,7 +284,6 @@ private:
     struct DataSourceRegistration {
         DataSourceConstructor constructor_;
         nlohmann::json schema_;
-        DataSourceDescribeFn describe_;
     };
 
     // Map of data source type names to their respective constructor functions.
@@ -275,6 +300,7 @@ private:
     mutable std::optional<nlohmann::json> schema_;
     mutable std::unique_ptr<nlohmann::json_schema::json_validator> validator_;
     std::map<std::string, PublicConfigSectionSerializer> publicConfigSectionSerializers_;
+    std::map<std::string, PublicConfigFieldWriter> publicConfigFieldWriters_;
     DataSourceConfigStats dataSourceConfigStats_;
 
     // Atomic flag to control the file watching thread.
@@ -285,6 +311,7 @@ private:
 
     // Mutex to ensure that currentConfig_ and subscriptions_ are safely accessed.
     mutable std::recursive_mutex memberAccessMutex_;
+    mutable std::recursive_mutex configMutationMutex_;
 };
 
 /** Convert YAML to JSON, with optional secret masking. */

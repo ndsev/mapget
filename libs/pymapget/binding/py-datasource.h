@@ -65,30 +65,29 @@ void bindDataSourceServer(py::module_& m)
     py::class_<MapTileKey>(m, "MapTileKey", R"pbdoc(
         Fully qualified tile address used by datasource, cache and locate APIs.
 
-        A key contains the layer type, map id, layer id,
-        ndslive.math.PackedTileId, and optional staged-loading index.
+        A key contains the layer type, map id, layer id, and
+        ndslive.math.PackedTileId.
     )pbdoc")
         .def(py::init<>(), "Construct an empty map tile key.")
         .def(py::init<std::string const&>(), py::arg("value"), "Parse a map tile key from its string form.")
-        .def(py::init<LayerType, std::string, std::string, TileId, uint32_t>(),
+        .def(py::init<LayerType, std::string, std::string, TileId>(),
             py::arg("layer_type"),
             py::arg("map_id"),
             py::arg("layer_id"),
             py::arg("tile_id"),
-            py::arg("stage") = 0,
             "Construct a map tile key from individual components.")
         .def_readwrite("layer_type", &MapTileKey::layer_, "Layer category addressed by this key.")
         .def_readwrite("map_id", &MapTileKey::mapId_, "Map identifier addressed by this key.")
         .def_readwrite("layer_id", &MapTileKey::layerId_, "Layer identifier addressed by this key.")
         .def_readwrite("tile_id", &MapTileKey::tileId_, "Packed tile id addressed by this key.")
-        .def_readwrite("stage", &MapTileKey::stage_, "Staged-loading index addressed by this key.")
         .def("to_string", &MapTileKey::toString, "Convert this key to its stable string form.")
         .def("__str__", &MapTileKey::toString);
 
     py::class_<LocateRequest>(m, "LocateRequest", R"pbdoc(
         Request asking a datasource to locate a feature id in map tiles.
 
-        Datasources may resolve secondary ids to primary ids in their responses.
+        Datasources return cheap tile candidates with portable selectors;
+        mapget resolves secondary ids against normally loaded complete tiles.
     )pbdoc")
         .def(py::init([](std::string mapId, std::string typeId, KeyValuePairVec const& featureIdParts) {
                 return LocateRequest(std::move(mapId), std::move(typeId), castToKeyValue(castToKeyValueView(featureIdParts)));
@@ -141,10 +140,10 @@ void bindDataSourceServer(py::module_& m)
             "Serialize the request to a JSON string.");
 
     py::class_<LocateResponse, LocateRequest>(m, "LocateResponse", R"pbdoc(
-        Datasource response to a `LocateRequest`.
+        Canonical result of the complete mapget Service locate operation.
 
         Inherits the resolved feature id fields and adds the tile key where the
-        feature may be found.
+        feature was found.
     )pbdoc")
         .def(py::init<LocateRequest const&>(),
             py::arg("request"),
@@ -163,6 +162,203 @@ void bindDataSourceServer(py::module_& m)
             "Serialize the response to a Python dictionary.")
         .def("to_json", [](LocateResponse const& self) { return self.serialize().dump(); },
             "Serialize the response to a JSON string.");
+
+    py::class_<LocateCandidate>(
+        m,
+        "LocateCandidate",
+        R"pbdoc(
+        Cheap datasource locate candidate. The service loads `tile_key`
+        normally and applies the portable selector inside that tile.
+    )pbdoc")
+        .def(
+            py::init<
+                MapTileKey,
+                std::string>(),
+            py::arg("tile_key"),
+            py::arg("canonical_feature_id"),
+            "Construct an exact-primary-id candidate.")
+        .def(
+            py::init(
+                [](MapTileKey tileKey,
+                   std::string typeId,
+                   std::string featureFilter,
+                   py::dict const& bindings)
+                {
+                    py::module jsonModule =
+                        py::module::import("json");
+                    auto bindingsJson =
+                        nlohmann::json::parse(
+                            jsonModule
+                                .attr("dumps")(
+                                    bindings)
+                                .cast<std::string>());
+                    return LocateCandidate(
+                        nlohmann::json{
+                            {
+                                "tileId",
+                                tileKey.toString()},
+                            {
+                                "selector",
+                                {
+                                    {
+                                        "typeId",
+                                        std::move(
+                                            typeId)},
+                                    {
+                                        "featureFilter",
+                                        std::move(
+                                            featureFilter)},
+                                    {
+                                        "bindings",
+                                        std::move(
+                                            bindingsJson)},
+                                }},
+                        });
+                }),
+            py::arg("tile_key"),
+            py::arg("type_id"),
+            py::arg("feature_filter"),
+            py::arg("bindings") = py::dict{},
+            "Construct a typed SIMFIL candidate with scalar bindings.")
+        .def_static(
+            "from_feature_id_expression",
+            [](MapTileKey tileKey,
+               std::string typeId,
+               std::string featureIdExpression,
+               py::dict const& bindings)
+            {
+                py::module jsonModule = py::module::import("json");
+                auto bindingsJson = nlohmann::json::parse(
+                    jsonModule.attr("dumps")(bindings).cast<std::string>());
+                return LocateCandidate(nlohmann::json{
+                    {"tileId", tileKey.toString()},
+                    {"selector",
+                     {
+                         {"typeId", std::move(typeId)},
+                         {"featureIdExpression", std::move(featureIdExpression)},
+                         {"bindings", std::move(bindingsJson)},
+                     }},
+                });
+            },
+            py::arg("tile_key"),
+            py::arg("type_id"),
+            py::arg("feature_id_expression"),
+            py::arg("bindings") = py::dict{},
+            R"pbdoc(
+            Construct a candidate which computes canonical feature IDs once.
+
+            The SIMFIL expression may use ``$features`` and the supplied scalar
+            bindings. Its returned IDs are resolved through the candidate tile's
+            primary feature index instead of scanning the target type.
+            )pbdoc")
+        .def(py::init([](py::dict const& dict) {
+                py::module jsonModule =
+                    py::module::import("json");
+                auto jsonString =
+                    jsonModule.attr("dumps")(dict)
+                        .cast<std::string>();
+                return LocateCandidate(
+                    nlohmann::json::parse(
+                        jsonString));
+            }),
+            py::arg("dict"),
+            "Construct an exact, filtered, or feature-ID-expression candidate from its "
+            "wire dictionary.")
+        .def_readwrite(
+            "tile_key",
+            &LocateCandidate::tileKey_)
+        .def("to_dict", [](LocateCandidate const& self) {
+                return datasourceJsonToPython(
+                    self.serialize());
+            },
+            "Serialize the candidate to its portable wire dictionary.")
+        .def("to_json", [](LocateCandidate const& self) {
+                return self.serialize().dump();
+            },
+            "Serialize the candidate to a JSON string.");
+
+    py::class_<AttachmentRequest>(
+        m,
+        "AttachmentRequest",
+        "Request for one named feature-tile side payload.")
+        .def(py::init<>())
+        .def_readwrite(
+            "tile_key",
+            &AttachmentRequest::tileKey_)
+        .def_readwrite(
+            "name",
+            &AttachmentRequest::name_)
+        .def_readwrite(
+            "source_id",
+            &AttachmentRequest::sourceId_);
+
+    py::class_<AttachmentResponse>(
+        m,
+        "AttachmentResponse",
+        "Immutable bytes and HTTP metadata for a named tile attachment.")
+        .def(
+            py::init(
+                [](std::string name,
+                   std::string mimeType,
+                   py::bytes bytes,
+                   std::optional<std::string> etag)
+                {
+                    auto value =
+                        bytes.cast<std::string>();
+                    return AttachmentResponse{
+                        .name_ =
+                            std::move(name),
+                        .mimeType_ =
+                            std::move(mimeType),
+                        .bytes_ =
+                            std::make_shared<
+                                std::vector<
+                                    uint8_t> const>(
+                                value.begin(),
+                                value.end()),
+                        .etag_ =
+                            std::move(etag),
+                    };
+                }),
+            py::arg("name"),
+            py::arg("mime_type") =
+                "application/octet-stream",
+            py::arg("bytes") = py::bytes{},
+            py::arg("etag") = std::nullopt)
+        .def_readwrite(
+            "name",
+            &AttachmentResponse::name_)
+        .def_readwrite(
+            "mime_type",
+            &AttachmentResponse::mimeType_)
+        .def_property(
+            "bytes",
+            [](AttachmentResponse const& self)
+            {
+                if (!self.bytes_) {
+                    return py::bytes{};
+                }
+                return py::bytes(
+                    reinterpret_cast<
+                        char const*>(
+                        self.bytes_->data()),
+                    self.bytes_->size());
+            },
+            [](AttachmentResponse& self,
+               py::bytes bytes)
+            {
+                auto value =
+                    bytes.cast<std::string>();
+                self.bytes_ =
+                    std::make_shared<
+                        std::vector<
+                            uint8_t> const>(
+                        value.begin(),
+                        value.end());
+            })
+        .def_readwrite(
+            "etag",
+            &AttachmentResponse::etag_);
 
     py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer", R"pbdoc(
         Small HTTP datasource server implemented from Python callbacks.
@@ -234,13 +430,44 @@ void bindDataSourceServer(py::module_& m)
                 return self.onLocateRequest(
                     [callback = std::move(callback)](LocateRequest const& request) {
                         py::gil_scoped_acquire gil;
-                        return callback(request).cast<std::vector<LocateResponse>>();
+                        return callback(request).cast<
+                            std::vector<LocateCandidate>>();
                     });
             },
             py::arg("callback"),
             R"pbdoc(
             Set the Callback which will be invoked when a `/locate` request is received.
-            The callback receives a LocateRequest and must return a list of LocateResponse objects.
+            The callback receives a LocateRequest and must return a list of
+            cheap LocateCandidate objects. It must not fill or fetch tile data.
+        )pbdoc")
+        .def(
+            "on_attachment_request",
+            [](DataSourceServer& self,
+               py::function callback)
+                -> DataSourceServer&
+            {
+                return self.onAttachmentRequest(
+                    [callback =
+                         std::move(callback)](
+                        AttachmentRequest const&
+                            request)
+                        -> std::optional<
+                            AttachmentResponse>
+                    {
+                        py::gil_scoped_acquire gil;
+                        auto result =
+                            callback(request);
+                        if (result.is_none()) {
+                            return {};
+                        }
+                        return result.cast<
+                            AttachmentResponse>();
+                    });
+            },
+            py::arg("callback"),
+            R"pbdoc(
+            Set the callback invoked for `/attachment`. It receives an
+            AttachmentRequest and returns AttachmentResponse or None.
         )pbdoc")
         .def(
             "on_cache_expired",
@@ -266,12 +493,13 @@ void bindDataSourceServer(py::module_& m)
             &DataSourceServer::go,
             py::arg("interfaceAddr") = "0.0.0.0",
             py::arg("port") = 0,
-            py::arg("waitMs") = 100,
+            py::arg("waitMs") = DataSourceServer::DefaultStartupWaitMs,
             R"pbdoc(
             Launch the DataSource server in its own thread. Use the stop-function to
             stop the thread. The server will also be stopped automatically, if the
             DataSource object is destroyed. An exception will be thrown if this
-            instance is already running, or if the server fails to launch within waitMs.
+            instance is already running, or if the server fails to launch within
+            waitMs. The default startup wait is 5000 milliseconds.
         )pbdoc")
         .def(
             "is_running",

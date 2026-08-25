@@ -1,601 +1,568 @@
 # HTTP / WebSocket API Guide
 
-Mapget exposes a small HTTP + WebSocket API that lets clients discover datasources, stream tiles, locate features by ID and inspect or update the running configuration. Interactive tile streaming uses the `/interactive` WebSocket control channel plus `/interactive/payload` pull requests for the binary tile data. This guide describes the endpoints and their request and response formats.
+Mapget protocol 4 exposes complete source tiles to trusted clients and
+server-evaluated `TileSubsetLayer` values to interactive renderers. There is no
+staged loading, backend feature LOD, `/search`, or
+`TileSearchResultLayer`. Search, styling, selection, and relation
+visualization all use `/filter`.
 
-## Base URL and formats
+## Base URL and stream formats
 
-The server started by `mapget serve` listens on the configured host and port (by default on all interfaces and an automatically chosen port). All endpoints are rooted at that host and port.
+JSON requests use `Content-Type: application/json`. `/tiles` and `/filter`
+support:
 
-Requests that send JSON use `Content-Type: application/json`. HTTP tile/search streaming supports two response encodings, selected via the `Accept` header or a top-level `responseType` override:
+- `application/binary`: the versioned `TileLayerStream` format.
+- `application/jsonl`: one JSON value per line.
+- a top-level `responseType` of `binary`, `jsonl`, or `json`; `json` is an
+  alias for JSON Lines.
 
-- `Accept: application/jsonl` returns a JSON‑Lines stream where each line is one JSON object.
-- `Accept: application/binary` returns a compact binary stream optimized for high-volume traffic.
+`Accept-Encoding: gzip` enables response compression. Binary clients may send
+`stringPoolOffsets`, keyed by datasource `stringPoolId`, to suppress string
+pool entries they already possess.
 
-The binary format and the logical feature model are described in more detail in `mapget-model.md`.
+Protocol-3 `MapTileKey` values contain exactly four parts:
 
-## `/sources` – list datasources
+```text
+<LayerType>:<percent-escaped mapId>:<percent-escaped layerId>:<signed tileId>
+```
 
-`GET /sources` returns a backward-compatible JSON array describing the datasource catalog.
+The removed stage suffix is not accepted.
 
-- **Method:** `GET`
-- **Query parameters:** optional `blocking=false` returns immediately while a datasource reload is still in progress.
-- **Request body:** none
-- **Response:** `application/json` array of datasource descriptors
+## `GET /sources`
 
-By default, `/sources` preserves legacy behavior and waits until the current config-backed datasource reload has completed before returning. Clients that want live startup indicators should call `/sources?blocking=false`; that form returns immediately and may include initializing entries. Ready datasources are serialized as normal `DataSourceInfo` objects plus catalog metadata. Initializing or failed config entries are serialized as placeholder `DataSourceInfo`-compatible objects with empty `layers`, `maxParallelJobs: 0`, and catalog metadata. This keeps old array-shape clients working while allowing frontends to show per-datasource startup state.
+`/sources` returns the datasource catalog as a JSON array. Ready entries
+contain `sourceId`, `stringPoolId`, `mapId`, layer metadata, feature ID
+compositions, feature-model schemas, coverage, and supported zoom levels.
+`stringPoolId` is the serialized string namespace; it is not datasource
+routing identity.
 
-Each item includes:
+Only one primary datasource may advertise a given map. Add-on datasources may
+augment that primary source. Requests normally identify a map and layer;
+`sourceId` is an optional assertion/routing override for clients which already
+know the catalog entry.
 
-- `status`: `initializing`, `ready` or `failed`.
-- `statusMessage`: human-readable progress or failure text.
-- `progress`: optional datasource-constructor progress percentage in the range `0..100`.
-- `sourceId`: stable source identity from config `id`/`sourceId`, or generated as `config:<index>`.
-- `configIndex`: order in `mapviewer.yaml`.
-- `type`: datasource type from config.
-- `configuredMapId` when known before construction.
+By default the endpoint waits for the current datasource reload. Use
+`?blocking=false` to receive initializing and failed catalog placeholders.
+Catalog entries include:
 
-Ready entries also contain map ID, available layers and basic metadata. Each layer entry includes its type, `zoomLevels`, `coverage`, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`) and feature-type information. This endpoint is typically used by frontends to discover which maps and layers can be requested via `POST /tiles` or `/interactive`.
+- `status`: `initializing`, `ready`, or `failed`;
+- `statusMessage` and optional `progress`;
+- `configIndex` and configured datasource `type`.
 
-Response headers:
+Responses carry `X-Mapget-Sources-Revision` and an `ETag` of
+`"sources-<revision>"`. `If-None-Match` may produce `304 Not Modified`.
 
-- `X-Mapget-Sources-Revision`: monotonic datasource-catalog revision.
-- `ETag`: `"sources-<revision>"`; clients may send `If-None-Match` and receive `304 Not Modified`.
-- `X-Mapget-Sources-Config-Status`: `ok` or `error`.
-- `X-Mapget-Sources-Config-Message`: config parse/validation error text when present.
+## `POST /tiles`
 
-## `/location` – location lookup
+`/tiles` streams complete feature/source-data tiles. Erdblick uses this path
+only for explicit, short-lived inspection fetches; normal map rendering uses
+`/filter`.
 
-`GET /location` searches the configured location database for place-name matches. By default, mapget builds can generate a small SQLite database from GeoNames `cities5000` data at build time and place it next to the runtime binary as `geonames-cities5000.sqlite`.
+```json
+{
+  "responseType": "binary",
+  "stringPoolOffsets": {"my-string-pool": 312},
+  "requests": [
+    {
+      "mapId": "Tropico",
+      "layerId": "WayLayer",
+      "tileIds": [545554572],
+      "priorityTileIds": [545554572]
+    }
+  ]
+}
+```
 
-- **Method:** `GET`
-- **Query parameters:**
-  - `name` (required): place-name fragment. Empty or too-short names return an empty array.
-  - `limit` (optional): maximum number of returned matches. Defaults to `10` and is clamped by the server-side `--location-max-limit` setting.
-- **Response:** `application/json` array of location objects.
-- **Unavailable database:** `503 application/json` with `{"error":"location database unavailable"}`.
+Each request has:
 
-Example:
+- `mapId`, `layerId`, and an ordered `tileIds` array;
+- optional `sourceId`;
+- optional `priorityTileIds`, which must be a subset of `tileIds` and affect
+  scheduling only;
+- optional `featureIds`: tile/id groups used by the inspection boundary.
+
+The restricted form is:
+
+```json
+{
+  "requests": [{
+    "mapId": "Tropico",
+    "layerId": "WayLayer",
+    "tileIds": [545554572],
+    "featureIds": [{
+      "tileId": 545554572,
+      "ids": ["Road.545554572.1001"]
+    }]
+  }]
+}
+```
+
+At most 4096 distinct canonical feature IDs are accepted per envelope. The
+service may load/cache the complete source tile internally, but only the named
+features cross this response boundary.
+
+`tileIdsByNextStage` and filter fields are rejected. Close the HTTP connection
+to cancel an in-flight stream.
+
+## `POST /filter`
+
+`/filter` evaluates an ordered multi-channel definition over one or more
+complete source-tile sets and streams immutable `TileSubsetLayer` outputs. A
+REST definition lives on the envelope; source requests only select coverage:
+
+```json
+{
+  "responseType": "jsonl",
+  "channels": [
+    {
+      "channelId": "roads",
+      "scope": "feature",
+      "featureTypes": ["Road"],
+      "featureFilter": "properties.frc <= 4",
+      "entryFilter": "typeId == 'Road'",
+      "featureFields": [
+        "properties.name",
+        "properties.category"
+      ],
+      "entryFields": [],
+      "geometryTypes": 6,
+      "geometryName": "centerline",
+      "rewrite": false
+    }
+  ],
+  "bindings": {
+    "selected": false,
+    "threshold": 12.5
+  },
+  "requests": [
+    {
+      "mapId": "Tropico",
+      "layerId": "WayLayer",
+      "tileIds": [545554572]
+    }
+  ]
+}
+```
+
+REST identity defaults to an empty `filterId` and generation zero.
+Interactive filters require both fields.
+
+### Channel evaluation
+
+Every channel has a unique `channelId` and a request scope:
+
+- `feature`: evaluate terminal feature rows;
+- `attribute`: expand each admitted feature into attribute/validity contexts;
+- `relation`: traverse stored relations;
+- `auto`: normalize `entryFilter` using `LayerSchema` and select feature or
+  attribute scope before constructing the result.
+
+The returned channel stores one concrete terminal scope: `feature`,
+`attribute`, `relation`, or `group`.
+
+Candidate evaluation is deliberately split:
+
+1. `featureTypes`, geometry selectors, and `featureFilter` gate feature roots.
+2. Scope expansion creates the terminal candidate.
+3. `entryFilter` gates that feature, attribute-validity, or relation context.
+4. `featureFields` are evaluated on the owning feature; `entryFields` are
+   evaluated on the terminal context.
+
+All filters and fields are schema-compiled in their actual context.
+`rewrite: true` only enables `LayerSchema::normalizeSearchQuery()` for
+`entryFilter`; `rewrite: false` does not disable ordinary schema compilation.
+Relation channels require `rewrite: false`.
+
+SIMFIL truthiness is used: zero results, `false`, `null`, and undefined are
+false; every other successfully evaluated value is true. A projection with no
+result becomes null. If an expression yields several values, the first is
+used. Candidate-local evaluation failures reject that candidate and are
+aggregated into structured channel issues instead of aborting the viewport.
+
+`bindings` accepts null, boolean, signed integer, finite floating-point, and
+string values. Bindings are available as SIMFIL constants and overlay fields.
+
+### Attribute contexts
+
+Attribute rows expose the attribute as their root and add:
+
+- `$feature`: owning feature;
+- `$layer` and `$name`: attribute layer/name;
+- `$attributeIndex`;
+- `$hasValidity`;
+- `$validityIndex` and `$validityCount`.
+
+The explicit validity bit distinguishes an attribute with no validity from the
+first validity of an attribute which has one. Effective validity geometry is
+copied into the returned `AttributeValidityEntry`.
+
+### Geometry selectors
+
+`geometryName` is either a concrete semantic name such as `centerline`, or
+`"*"` for all applicable names. Omission also means wildcard. `geometryTypes`
+is an independent bit mask.
+
+Geometry names are model semantics. Mapget does not interpret names as
+high/low fidelity and has no LOD gate. A presentation which wants fewer
+features uses an ordinary attribute filter such as FRC/PRC.
+
+### Point-grid grouping
+
+The initial grouping operator is feature-only:
+
+```json
+{
+  "channelId": "merged-points",
+  "scope": "feature",
+  "featureFilter": "typeId == 'Sign'",
+  "geometryName": "position",
+  "group": {
+    "kind": "point-grid",
+    "origin": [0, 0, 0],
+    "cellSize": [1.5, 1.5, 1.5]
+  },
+  "entryFields": [
+    "count($features.*)"
+  ]
+}
+```
+
+The service scans the ordered request plus its required contribution halo once
+in source-major order. Each scanned tile submits point contributions to their
+canonical output cells. An output is emitted atomically after its own source
+and every required halo contribution are terminal.
+
+The group context is rooted at the deterministic representative feature and
+adds `$features`, a direct array of participating feature model pointers.
+`GroupEntry` contains representative geometry, representative feature ID, all
+member IDs, the stable cell key, and projected values. Attribute grouping and
+multi-input grouping are not supported in protocol 3.1.
+
+### Stored relations
+
+A relation channel carries relation options:
+
+```json
+{
+  "channelId": "topology",
+  "scope": "relation",
+  "featureFilter": "typeId == 'Intersection'",
+  "entryFilter": "name == 'connects'",
+  "geometryName": "*",
+  "relation": {
+    "namePattern": "connects.*",
+    "recursive": true,
+    "mergeTwoway": true
+  },
+  "featureFields": ["typeId"],
+  "entryFields": ["name"]
+}
+```
+
+`recursive: true` follows stored relations through local tiles and resolves at
+most one hop across a tile border. Target tiles are fetched synchronously
+inside the sparse relation-resolution job; their features become endpoint
+entries in the origin output subset. They are not emitted as independent
+output tiles unless requested.
+
+`mergeTwoway` pairs reverse descriptors. Exact-root/selection traversal is
+owned by the selected origin; if both endpoints are explicit roots, the first
+root in request order owns the pair. Generic display uses permanent
+south-west endpoint ownership. If the permanent owner tile is outside the
+requested output set, the pair is omitted rather than temporarily reassigned,
+so panning cannot display the same relation under changing owners.
+
+Generic cross-layer or cross-level targets remain owned by the source output.
+Exactly-once ownership is per filter definition, not global across independent
+clients or presentations.
+
+Relation contexts expose the stored relation as root and add `$source`,
+`$target`, `$twoway`, and `$relationIndex`. The index is the descriptor's
+stable ordinal in its source feature and lets a focused presentation select
+one exact relation without treating a frontend pseudo-ID as a feature ID.
+
+Exact roots are supplied on a source request:
+
+```json
+{
+  "mapId": "Tropico",
+  "layerId": "WayLayer",
+  "tileIds": [545554572],
+  "roots": [{
+    "tileId": 545554572,
+    "featureId": "Intersection.545554572.42"
+  }]
+}
+```
+
+An alternating key/value ID array plus `typeId` is also accepted.
+
+### Result contract
+
+Each output `TileSubsetLayer` carries `filterId` and `generation`. Its lifetime
+is the original timestamp/positive TTL pair of the contributing local, halo,
+or relation-source tile with the earliest absolute expiry. If none has a
+positive TTL, the subset does not expire. It also inherits source `info()` and
+contains:
+
+- ordered channels and their concrete scope/field schemas;
+- typed `FeatureEntry`, `AttributeValidityEntry`, `RelationEntry`, or
+  `GroupEntry` arrays;
+- source dependencies with `MapTileKey` and `sourceFeatureCount`;
+- scalar `Filter/Entries/*#count` statistics and
+  `Filter/Geometry/Vertices#count` for cheap pre-deserialization accounting;
+- aggregated issues and SIMFIL traces;
+- optional GLB attachment name.
+
+Definition, binding, or exact-root changes advance the interactive generation.
+Ordinary pending-set amendments and TTL refreshes retain it. A filtered output
+is identified by `(filterId, generation, output MapTileKey)`; mapget rejects a
+same-generation definition/root mutation while any overlapping output remains
+active, queued, or handed off.
+
+## `GET /attachment`
+
+Attachments use a separate data channel:
 
 ```http
-GET /location?name=munich&limit=10
+GET /attachment?mapId=Tropico&layerId=Display&tileId=545554572&name=island.glb
 ```
 
-```json
-[
-  {
-    "id": "geonames:2867714",
-    "name": "Munich, DE",
-    "lonLat": [11.57549, 48.13743],
-    "aabb": [[11.57549, 48.13743], [0, 0]],
-    "source": "geonames-cities5000",
-    "countryCode": "DE",
-    "population": 1260391
-  }
-]
-```
+`sourceId` is optional. A successful response uses the datasource-supplied
+MIME type and an ETag. Clients should revalidate with `If-None-Match`; the
+server returns `304` when unchanged. `404` means no such attachment, `403`
+means unauthorized, and `503` means the request was aborted.
 
-`lonLat` is `[longitude, latitude]` in WGS84 and is the authoritative jump coordinate. `aabb` is encoded as `[[west, south], [extentLon, extentLat]]`; GeoNames `cities5000` contains point coordinates only, so the bundled database returns zero-extent boxes.
+Mapget coalesces in-flight production. The Erdblick transport retains bytes
+only while active `TileAttachmentRef` users exist; there is no unpinned warm
+attachment cache in the initial implementation.
 
-The bundled GeoNames data is licensed under Creative Commons Attribution 4.0 and is provided without warranty. Keep `geonames-readme.txt` with redistributed runtime artifacts.
+## `GET /interactive`
 
-## `/tiles` – stream tiles (HTTP)
+`/interactive` is a WebSocket control channel. `/interactive/payload` carries
+the binary frames so a client can apply explicit backpressure.
 
-`POST /tiles` streams tiles for one or more map–layer combinations.
-
-- **Method:** `POST`
-- **Request body (JSON):**
-  - `requests`: array of objects, each with:
-    - `mapId`: string, ID of the map to query.
-    - `layerId`: string, ID of the layer within that map.
-    - either `tileIds`: array of numeric tile IDs in mapget’s tiling scheme. This is an **unstaged** request shape: the service does not expand it into one backend fetch per advertised stage and returns one tile response per requested tile with no explicit stage affinity.
-    - or `tileIdsByNextStage`: array of arrays where bucket `i` lists tiles whose next missing stage is `i`. This is the **staged** request shape: the service expands each tile to stage `i` and all higher stages advertised by the layer.
-    - `priorityTileIds` (optional): array of numeric tile IDs from the same request that should be scheduled before regular tile IDs. This is only a scheduling hint; it does not request additional tiles and does not change staged vs. unstaged semantics.
-  - `responseType` (optional): `binary`, `jsonl` or `json`. This overrides `Accept`; `json` is an alias for JSON Lines.
-  - `stringPoolOffsets` (optional): dictionary from datasource node ID to last known string ID. Used by advanced clients to avoid receiving the same field names repeatedly in the binary stream.
-- **Response:**
-  - `application/jsonl` if `Accept: application/jsonl` is sent.
-  - `application/binary` if `Accept: application/binary` is sent, using the tile stream protocol.
-
-Tiles are streamed as they become available. In JSONL mode, each line is the JSON representation of one tile layer. In binary mode, the response is a sequence of versioned messages that can be decoded using the tile stream protocol from `mapget-model.md`.
-
-For staged feature-layer clients, `tileIdsByNextStage` must be used even when only bucket `0` is non-empty. Collapsing such a request to plain `tileIds` changes its semantics to an unstaged request.
-
-`priorityTileIds` is intended for interactive clients that need a few foreground tiles to finish before broad background loading. For example, a map viewer can prioritize the selected feature's tile so its high-stage inspection data arrives before unrelated viewport tiles. The server may still finish already-running jobs first.
-
-Example staged request with one foreground tile:
+An interactive message contains `requests`, optional envelope-level
+`filterId`, `generation`, `channels`, optional `bindings`, and optional
+`stringPoolOffsets`. The filter definition may be on the envelope and is
+inherited by each request:
 
 ```json
 {
-  "requests": [
-    {
-      "mapId": "Tropico",
-      "layerId": "WayLayer",
-      "tileIdsByNextStage": [
-        [1234, 5678],
-        [9112]
-      ],
-      "priorityTileIds": [9112]
-    }
-  ]
-}
-```
-
-If `Accept-Encoding: gzip` is set, the server compresses responses where possible, which is especially useful for JSONL streams.
-
-To cancel an in-flight HTTP stream, close the HTTP connection.
-
-## `/search` – server-side search-as-map (HTTP)
-
-`POST /search` runs a one-shot server-side SIMFIL search over feature tiles and streams `TileSearchResultLayer` chunks back to the client. `POST /tiles` is tile-only; REST clients must use `/search` for search.
-
-- **Method:** `POST`
-- **Request body (JSON):**
-  - `query`: string SIMFIL predicate evaluated on each candidate context.
-  - `scope` (optional): `"feature"` (default) evaluates once per feature. `"attribute"` evaluates once per attribute validity context. `"auto"` asks mapget to normalize the query through the layer schema and choose feature or attribute scope.
-  - `rewrite` (optional): boolean. When `true`, mapget normalizes the query before evaluation. `scope: "auto"` implies `rewrite: true`.
-  - `withFields` (optional): array of SIMFIL expressions evaluated for every match. Values are stored in `SearchResult.values` in the same order.
-  - `featureTypes` (optional): array of feature type names. When present, mapget evaluates only matching feature roots and their attributes.
-  - `responseType` (optional): `"binary"`, `"jsonl"` or `"json"`. This overrides `Accept`; `"json"` is an alias for JSON Lines.
-  - `requests`: array of source-layer requests with `mapId`, `layerId`, `tileIds`, and optional `priorityTileIds`.
-  - `stringPoolOffsets` (optional): same binary stream optimization as `/tiles`.
-- **Response:**
-  - `application/jsonl` if `Accept: application/jsonl` or `responseType: "jsonl"` is used.
-  - `application/binary` if `Accept: application/binary`, `responseType: "binary"`, or no response type is specified.
-
-Search requests must use `tileIds`, not `tileIdsByNextStage`. The server always loads all advertised stages for every searched tile before evaluating the SIMFIL predicate, so client-side "next missing stage" buckets are not meaningful for search.
-
-Example REST search request:
-
-```json
-{
-  "query": "typeId == 'Road'",
-  "scope": "feature",
-  "withFields": ["name", "typeId", "speedLimitKmh"],
-  "featureTypes": ["Road"],
-  "responseType": "jsonl",
-  "requests": [
-    {
-      "mapId": "Tropico",
-      "layerId": "WayLayer",
-      "tileIds": [1234, 5678]
-    }
-  ]
-}
-```
-
-The same request with `curl`:
-
-```bash
-curl -N \
-  -H "content-type: application/json" \
-  -H "accept: application/jsonl" \
-  -d '{
-    "query": "typeId == '\''Road'\''",
+  "filterId": "view-7",
+  "generation": 4,
+  "channels": [{
+    "channelId": "roads",
     "scope": "feature",
-    "withFields": ["typeId"],
-    "requests": [
-      {"mapId": "Tropico", "layerId": "WayLayer", "tileIds": [1234, 5678]}
-    ]
-  }' \
-  http://127.0.0.1:8080/search
-```
-
-For `scope: "feature"`, the SIMFIL context is the feature itself. For `scope: "attribute"`, the context is an attribute object with a few overlay fields:
-
-| Field | Meaning |
-|-------|---------|
-| `$name` | Attribute name. |
-| `$feature` | Owning feature object. |
-| `$layer` | Attribute-layer name. |
-| `$validityIndex` | Zero-based validity index being evaluated. |
-| `$validityCount` | Number of validity contexts for the matched attribute. |
-
-When rewrite is enabled, mapget uses `LayerSchema::normalizeSearchQuery` before tile evaluation. The normalizer compiles the query with SIMFIL schema rewrites, inspects AST-derived `referencedSchemaPaths`, and emits guarded attribute-root predicates when the query is proven to target attribute data. It performs these normalization steps:
-
-- Exact attribute type-code/name queries such as `WARNING_SIGN` become `$feature.typeId`/`$layer`/`$name` guards.
-- Feature-root attribute paths such as `properties.layer.rules.speedLimit.limit > 40` are rewritten to the attribute-root suffix, for example `limit > 40`, under the same guards.
-- Enum constants rewritten by SIMFIL to schema equality paths become guarded attribute-root comparisons, for example `attributeValue.warningSign == "SPEED_LIMIT"`.
-- Recursive wildcard expressions such as `**.speedLimitKmh` remain in SIMFIL's schema compile path so wildcard pruning still happens against the concrete root schema.
-- References inside feature-level aggregate calls such as `count(**.speedLimitKmh) == 0` do not drive attribute-scope inference, because the aggregate result belongs to the feature query context.
-- If an inferred attribute rewrite would fan out to more than eight candidate attribute contexts, mapget keeps attribute scope but suppresses the guarded rewrite. Schema-generated enum predicates are still compacted to generic attribute-root predicates, for example `conditions.*.conditionTypeCode == "DAYS_OF_WEEK"`, while ordinary wildcard paths stay in SIMFIL's schema-aware evaluation path.
-
-`withFields` expressions run in the same context as `query`. They are intended for labels, style keys and compact metadata. Scalar values are preserved; structured values are stringified in the result layer. Attribute-scope results use the computed validity geometry for the matched validity when one is available; otherwise they fall back to the feature display geometry.
-
-Example attribute-scope request:
-
-```json
-{
-  "query": "$name == 'SPEED_LIMIT' and valueKph > 50",
-  "scope": "attribute",
-  "withFields": [
-    "$name",
-    "$layer",
-    "$feature.typeId",
-    "$validityIndex",
-    "$validityCount",
-    "valueKph",
-    "trace(valueKph, name=\"speed limits\")"
-  ],
-  "responseType": "jsonl",
-  "requests": [
-    {
-      "mapId": "Tropico",
-      "layerId": "WayLayer",
-      "tileIds": [1234, 5678],
-      "priorityTileIds": [1234]
-    }
-  ]
+    "entryFilter": "typeId == 'Road'"
+  }],
+  "requests": [{
+    "mapId": "Tropico",
+    "layerId": "Display",
+    "tileIds": [545554572, 545554573]
+  }]
 }
 ```
 
-Use `withFields` for values that clients need for labels, grouping, color categories, or compact export metadata. Use `trace()` when you want the result stream to carry aggregate diagnostics about values observed while evaluating the query.
+Every completed envelope replaces the connection's complete **pending-output
+snapshot**. `tileIds` lists only outputs the client is still waiting to accept;
+it is not the client's retained viewport inventory. Repeating a key is
+idempotent while backend work is active, its frame is queued, or an unexpired
+handoff record represents bytes already placed in a payload response.
 
-### Interactive WebSocket Search
+Mapget preserves overlapping active work, prunes omitted outputs, and starts
+only additions. Indexed `chunk` messages are staged and reconciled atomically
+after the final chunk. Omitting a handed-off key releases its bookkeeping; if
+the handed-off value's own timestamp plus positive TTL has expired, repeating
+the key follows the ordinary cache/refresh path without an omit/re-add cycle.
+Missing or zero TTL has no session-side expiry. The removed `renewals`,
+`deliveryEpoch`, and `deliveryEpochs` fields are rejected by protocol 4.
 
-WebSocket search remains part of the `/interactive` control channel because it supports replacing an ongoing logical search. The WebSocket request shape uses the same `query`, optional `scope`, optional `withFields`, optional `rewrite`, and optional `featureTypes` search spec as `/search`, plus interactive-only `searchId` and optional `refresh`. Reusing the same `searchId` updates the ongoing query in the client session. `searchQuery` and `searchScope` are accepted as legacy aliases for older interactive clients.
+Completed snapshots are consumed through a latest-wins mailbox outside the
+WebSocket I/O thread. If several complete snapshots arrive faster than mapget
+can apply them, an unapplied intermediate snapshot may be superseded without a
+`RequestContext` or status response. The newest snapshot is always retained,
+and running request expansion abandons a superseded candidate before its
+atomic commit. Clients must therefore treat `requestId` as an acknowledgement
+of applied state rather than expecting one response for every submitted
+update.
 
-Example control-channel message:
+Server control messages are binary VTLV frames:
+
+- `RequestContext`: JSON with `requestId`, `clientId`, and catalog revision;
+- `Status`: per-request state and final `allDone`;
+- `SourceCatalogChange`: catalog revision/progress notifications.
+
+`GET /tiles` remains a WebSocket alias for stale reverse-proxy deployments.
+It does not change `POST /tiles` semantics.
+
+## `GET|POST /interactive/payload`
+
+Query parameters:
+
+- `clientId`: required ID from `RequestContext`;
+- `waitMs`: long-poll timeout, up to 30 seconds;
+- `maxBytes`: pre-compression batch budget, capped at 64 MiB;
+- `compress=1`: allow gzip when `Accept-Encoding` also permits it.
+
+Responses are `200 application/octet-stream`, `204` on timeout, or `410` when
+the session has gone away. `/tiles/next` remains a deployment-compatibility
+alias.
+
+## `POST /locate`
+
+`/locate` resolves secondary or canonical IDs:
 
 ```json
 {
   "requests": [
     {
       "mapId": "Tropico",
-      "layerId": "WayLayer",
-      "tileIds": [1234, 5678],
-      "priorityTileIds": [1234]
-    }
-  ],
-  "searchId": "speed-limit-search",
-  "query": "$name == 'SPEED_LIMIT' and valueKph > 50",
-  "scope": "attribute",
-  "withFields": ["$name", "$feature.typeId", "valueKph"],
-  "featureTypes": ["Road"],
-  "refresh": true
-}
-```
-
-Clients should treat `searchId` as the routing key for one interactive search session. Sending another message with the same `searchId` replaces the previous logical search on that connection; stale queued frames for the older request may be dropped before delivery. Status frames and `TileSearchResultLayer` frames carry search metadata so clients can ignore frames that no longer match their active request key.
-
-### Search result JSONL shape
-
-In JSONL mode, search result chunks are emitted as `SearchResultCollection` objects. Search progress status objects may appear between result chunks.
-
-```json
-{
-  "type": "SearchResultCollection",
-  "mapgetTileId": 1234,
-  "mapId": "Tropico",
-  "mapgetLayerId": "WayLayer",
-  "resultFields": ["limit", "$feature.typeId", "$layer"],
-  "diagnostics": [
+      "typeId": "Road",
+      "featureId": ["roadLocationId", 64774998151332387]
+    },
     {
-      "message": "No matches for field: someField",
-      "location": {"offset": 0, "size": 9}
-    }
-  ],
-  "info": {
-    "searchScope": "attribute",
-    "resultCount": 1,
-    "sourceNodeId": "WayDataSource",
-    "sourceMapId": "Tropico",
-    "sourceLayerId": "WayLayer",
-    "sourceTileId": 1234
-  },
-  "results": [
-    {
-      "type": "SearchResult",
-      "featureId": "Road.42",
-      "geometry": {"type": "GeometryCollection", "geometries": []},
-      "values": [80, "Road", "details"],
-      "attributeIndex": 0,
-      "match": {
-        "attributeIndex": 0,
-        "validityIndex": 0,
-        "validityCount": 1
-      }
+      "mapId": "Tropico",
+      "featureId": "Road.545554572.1001"
     }
   ]
 }
 ```
 
-Interactive WebSocket search result layers additionally carry `info.searchId`, `info.searchRequestKey`, and optional `info.refresh` so clients can route replacement-search updates.
+The response contains a parallel `responses` array. Each result includes the
+four-part `tileId` key and the resolved `canonicalFeatureId`. Canonical input
+is resolved against the ID compositions
+advertised by the layer before datasource dispatch. Datasources only plan
+candidate tiles and portable selectors; mapget loads candidates through its
+normal cache/coalescing path and returns concrete primary feature identities.
+Portable selectors use exactly one of `canonicalFeatureId`, `typeId` plus
+`featureFilter`, or `typeId` plus `featureIdExpression`. The latter evaluates
+once per loaded candidate tile with `$features` and optional scalar `bindings`,
+then resolves the returned canonical IDs through the tile's primary-ID index.
+It is intended for secondary identities that would otherwise require a nested
+full-tile expression for every candidate feature.
 
-Important result fields:
+## `GET /location`
 
-| Field | Description |
-|-------|-------------|
-| `resultFields` | Copy of the requested `withFields` expressions. Indices align with every result's `values` array. |
-| `results[].featureId` | Dot-separated feature ID string for the matched source feature. |
-| `diagnostics` | Optional parsed SIMFIL diagnostics from `query` evaluation, serialized with the result layer and exported in JSONL mode. |
-| `traces` | Optional typed SIMFIL `trace()` aggregates collected while evaluating the search and field expressions. |
-| `results[].geometry` | Copied display geometry used for map styling/highlighting. For attribute-scope validity matches, this is the computed validity geometry when available. |
-| `results[].values` | Evaluated `withFields` values in order. Binary/object/list values are represented as `blob`/`object`/`list` placeholder strings. |
-| `results[].match` | Present for attribute-scope matches and identifies the matched attribute/validity context. |
-| `info.sourceStageMask` | Present when staged source payloads were assembled before search evaluation. |
+`/location?name=munich&limit=10` searches the configured place-name database.
+Results contain `name`, WGS84 `lonLat`, and an `aabb`. The endpoint returns
+`503` when no location database is available. Native deployments and the
+Python wheel bundle the default GeoNames database beside their mapget binary;
+`mapget serve --location-db` can select a different SQLite database.
 
-### Search status objects
+## `GET /status`, `GET /status-data`, and `POST /status-data/cache-report`
 
-Search status frames/JSONL lines have `type: "mapget.search.status"` and describe backend progress:
+`/status` is the operational HTML dashboard. Its live tabs poll
+`GET /status-data`, which contains service/cache metrics, datasource
+construction state, memory ownership, and interactive queue/pull statistics.
+The live endpoint deliberately never parses cached feature tiles. The
+dashboard keeps only extracted numeric samples in the browser for its rolling
+history graph; its selectable 30-second to 15-minute windows create no
+server-side history or additional endpoint work. The active tab chooses a
+contextual default, such as queued tile/filter work on Overview and process
+RSS on Memory.
 
-```json
-{
-  "type": "mapget.search.status",
-  "state": "TileSearched",
-  "tilesQueued": 8,
-  "tilesLoaded": 4,
-  "tilesSearched": 3,
-  "matches": 12,
-  "chunksEmitted": 3
-}
-```
+Within the `service` object, `queued-tile-work-items` counts request tile keys
+that have not yet been admitted to a worker. Overlapping requests can each
+contribute one pending work item until scheduler admission coalesces their
+shared source key. `in-flight-tile-jobs` instead counts already-coalesced
+source tiles awaiting completion.
 
-Observed `state` values include `Open`, `TileLoaded`, `TileSearched`, `Success`, `Aborted` and `Failed`. Failed statuses also include an `error` string. WebSocket status objects also include `searchId`, `requestKey`, and optional `refresh`.
+`POST /status-data/cache-report` explicitly generates one point-in-time cache
+report. It returns `featureTree` storage measurements and a
+`tileSizeDistribution`, together with `generatedAtMs`, `durationMs`, and the
+cache counters captured for that report. Cache reports are serialized,
+concurrent callers share an active run, and the blocking traversal executes
+outside Drogon's HTTP event loop. The dashboard retains the result in the
+browser until the customer regenerates or reloads it; automatic refreshes do
+not repeat the analysis.
 
-## `/interactive` – interactive control channel (WebSocket)
+The `memory` object presents process residency, allocator state, and
+explicitly owned mapget state as distinct measurement domains:
 
-`GET /interactive` supports WebSocket upgrades. This endpoint is the control channel for interactive clients. It carries request updates and lightweight status/control frames; binary tile data is pulled separately via `/interactive/payload`. `GET /tiles` is accepted as a legacy WebSocket alias for deployments with older reverse-proxy rules; `POST /tiles` remains the stateless REST tile endpoint.
+- `process` reports RSS/peak RSS and platform-specific process or cgroup
+  controls where available;
+- `mapget` breaks down retained metadata, catalog, scheduler, active-filter,
+  and telemetry capacity;
+- `active-filters` attributes source models, output models, relation targets,
+  evaluation temporaries, and orchestration state to individual filter jobs;
+- `datasources` contains each datasource's optional cooperative retained-state
+  estimate;
+- `cache` and `transport` account loaded string pools, serialized tile blobs,
+  SQLite-owned state, and queued REST/interactive response buffers;
+- `allocator-trim` reports whether periodic glibc heap trimming is supported
+  and enabled, its period, attempt/success counters, and the most recent
+  duration and free-arena samples;
+- `reconciliation` contains diagnostic differences between allocator-live
+  bytes, anonymous RSS, file/shared RSS, and known ownership estimates.
 
-- **Connect:** `ws://<host>:<port>/interactive`
-  - Legacy alias: `ws://<host>:<port>/tiles`
-- **Client → Server:** send one *text* message containing tile `requests`, optional `stringPoolOffsets`, and optional interactive search fields (`searchId`, `query`, `scope`, `withFields`, `rewrite`, `featureTypes`, `refresh`; `searchQuery`/`searchScope` remain legacy aliases).
-  - `stringPoolOffsets` is optional; the server remembers the latest offsets per WebSocket connection. Clients may re-send it to reset/resync offsets.
-- **Server → Client:** sends *binary* WebSocket messages carrying VTLV control frames.
-  - `RequestContext` frames contain a UTF-8 JSON payload with `requestId`, `clientId` and `sourcesRevision`. The `clientId` is then used for `/interactive/payload`.
-  - `Status` frames contain UTF-8 JSON describing per-request `RequestStatus` transitions, search progress updates, and human-readable messages. The final regular tile status frame has `"allDone": true`.
-  - `SourceCatalogChange` frames contain `{"type":"mapget.sources.changed","revision":<number>,"reason":<string>}`. Status-message and progress changes also include a `source` object with `sourceId`, `configIndex`, `type`, `status`, `statusMessage`, `progress`, `addOn` and optional `configuredMapId`, allowing clients to update loading UI without refetching `/sources`. Generic reload/add/remove changes omit `source` and tell clients to refetch `/sources`.
-  - `LoadStateChange` exists in the protocol but is currently not emitted by the HTTP service.
+Container values are capacity-based lower bounds rather than allocator-exact
+measurements. They must not be added directly to RSS rows. The reconciliation
+residuals can indicate allocator fragmentation, thread stacks, opaque mappings,
+or missing ownership instrumentation, but they do not identify leaks by
+themselves.
 
-For search requests, `/interactive/payload` returns normal stream frames plus `TileSearchResultLayer` frames. Clients should decode the binary message type and handle search-result layers separately from source `TileFeatureLayer` / `TileSourceDataLayer` frames.
+## `/cache/reset`
 
-Interactive sessions use bounded outgoing queues. If a client stops polling `/interactive/payload` while replacing searches quickly, the service favours current request frames and may discard stale search-result frames for superseded requests. This keeps interactive search responsive instead of forcing the client to drain obsolete result layers.
-
-Each entry in a status frame's `requests` array contains `index`, `mapId`, `layerId`, numeric `status`, and `statusText`. For `NoDataSource` statuses, servers may also include `noDataSourceReason`:
-
-- `emptySources`
-- `allSourcesDisabled`
-- `datasourceInitializationFailed`
-- `missingMapOrLayer`
-- `noConfig`
-
-To cancel, either send a new request message on the same connection (which replaces the current one) or close the WebSocket connection.
-
-## `/interactive/payload` – pull binary tile frames
-
-`GET /interactive/payload` (also accepts `POST`) returns the next available binary tile frame batch for an active `/interactive` session, including sessions opened through the legacy `/tiles` WebSocket alias.
-
-- **Method:** `GET` or `POST`
-- **Query parameters:**
-  - `clientId` (required): numeric client id received via the websocket `RequestContext` frame.
-  - `waitMs` (optional): long-poll timeout in milliseconds. Defaults to 25000 and is clamped to 30000.
-  - `maxBytes` (optional): batch size budget. If greater than zero, the response may concatenate multiple VTLV frames up to that byte budget (capped at 64 MiB; the budget is counted before optional gzip compression).
-  - `compress` (optional): set to `1` to enable gzip compression when the client also sends `Accept-Encoding: gzip`.
-- **Response:**
-  - `200 application/octet-stream` with one or more concatenated `TileLayerStream` VTLV frames.
-  - `204 No Content` if the long-poll timed out before any frame became available.
-  - `410 Gone` if the interactive session no longer exists.
-
-### Why JSONL instead of JSON?
-
-JSON Lines is better suited to streaming large responses than a single JSON array. Clients can start processing the first tiles immediately, do not need to buffer the complete response in memory, and can naturally consume the stream with incremental parsers.
-
-### JSONL response format
-
-Each line in the JSONL response is a GeoJSON-like FeatureCollection with additional metadata:
+`POST /cache/reset` clears every cached Feature and SourceData tile for one
+exact map ID. The JSON request body is:
 
 ```json
-{
-  "type": "FeatureCollection",
-  "mapgetTileId": 281479271743500,
-  "mapId": "EuropeHD",
-  "mapgetLayerId": "Roads",
-  "timestamp": 1736850600000000,
-  "ttl": 3600000,
-  "error": {
-    "code": 404,
-    "message": "Error while contacting remote data source: not found"
-  },
-  "features": [...]
-}
+{"mapId": "Example/Map"}
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"FeatureCollection"` |
-| `mapgetTileId` | integer | The mapget tile ID (64-bit decimal) |
-| `mapId` | string | Map identifier |
-| `mapgetLayerId` | string | Layer identifier within the map |
-| `timestamp` | integer | Tile creation time in microseconds since the Unix epoch |
-| `ttl` | integer | Time-to-live in milliseconds (optional) |
-| `error` | object | Error information if tile creation failed (optional) |
-| `error.code` | integer | Numeric error code, e.g., HTTP status or database error (optional) |
-| `error.message` | string | Human-readable error message (optional) |
-| `features` | array | Array of GeoJSON Feature objects |
+The endpoint is disabled by default. It is available only when mapget starts
+with `--allow-cache-reset` and at least one
+`--cache-reset-auth-header HEADER=REGEX` gate. A request must satisfy that global gate and the target
+map's ordinary datasource `auth-header` gate. Header names are matched without
+case sensitivity, values use full regular-expression matching, and multiple
+configured alternatives are ORed.
 
-The `error` object is only present if an error occurred while filling the tile. When present, the `features` array may be empty or contain partial data.
+A successful reset returns `204 No Content` after the cache and scheduler
+boundary has been crossed. Invalid input returns `400`, a disabled or failed
+global gate returns `403`, an unknown or caller-inaccessible ready primary map
+returns `404`, and an invalidation failure returns `500`. Feature checks happen
+before map lookup so an unauthorized caller cannot use the endpoint to probe
+configured map IDs.
 
-### Curl Call Example
+The operation is local to this mapget process. It does not clear datasource-
+internal caches or notify other browser sessions.
 
-For example, the following curl call could be used to stream GeoJSON feature objects
-from the `MyMap` data source defined previously:
-
-```bash
-# Standard request (uncompressed response)
-curl -X POST \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/jsonl" \
-    -H "Connection: close" \
-    -d '{
-    "requests": [
-       {
-           "mapId": "Tropico",
-           "layerId": "WayLayer",
-           "tileIds": [1, 2, 3]
-       }
-    ]
-}' "http://localhost:8080/tiles"
-
-# Request with gzip compression (reduces bandwidth by ~70-95%)
-curl -X POST \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/jsonl" \
-    -H "Accept-Encoding: gzip" \
-    -H "Connection: close" \
-    --compressed \
-    -d '{
-    "requests": [
-       {
-           "mapId": "Tropico",
-           "layerId": "WayLayer",
-           "tileIds": [1, 2, 3]
-       }
-    ]
-}' "http://localhost:8080/tiles"
-```
-
-Note: The `--compressed` flag tells curl to automatically decompress the gzip response for display.
-
-### C++ Call Example
-
-If we use `"Accept: application/binary"` instead, we get a binary stream of
-tile data which we can also parse in C++, Python or JS. Here is an example in C++, using
-the `mapget::HttpClient` class:
-
-```C++
-#include "mapget/http-service/http-client.h"
-#include <iostream>
-
-using namespace mapget;
-
-void main(int argc, char const *argv[])
-{
-     // Create client with gzip compression enabled (default)
-     HttpClient client("localhost", service.port());
-     // Or disable compression: HttpClient client("localhost", service.port(), {}, false);
-
-     auto tileRequest = std::make_shared<LayerTilesRequest>(
-         "Tropico",
-         "WayLayer",
-         std::vector<TileId>{{1234, 5678, 9112, 1234}});
-     auto receivedTileCount = 0;
-     tileRequest->onFeatureLayer([&](auto&& tile) { receivedTileCount++; });
-     client.request(tileRequest)->wait();
-
-     std::cout << receivedTileCount << std::endl;
-
-     FeatureLayerSearchRequest search;
-     search.query_ = "typeId == 'Road'";
-     search.withFields_ = {"name", "typeId"};
-     auto searchRequest = std::make_shared<FeatureLayerSearchTilesRequest>(
-         "Tropico",
-         "WayLayer",
-         std::vector<TileId>{{1234, 5678}},
-         std::move(search));
-     searchRequest->onSearchResult([](TileSearchResultLayer::Ptr layer) {
-         std::cout << "matches in tile: " << layer->size() << std::endl;
-     });
-     client.search(searchRequest)->wait();
-
-     service.stop();
-}
-```
-
-Keep in mind, that you can also run a `mapget` service without any RPCs in your application. Check out [`examples/cpp/local-datasource`](../examples/cpp/local-datasource/main.cpp) on how to do that.
-
-## `/status` – service and cache statistics
-
-`GET /status` returns a simple HTML page with diagnostic information.
-
-- **Method:** `GET`
-- **Request body:** none
-- **Response:** `text/html`
-
-The page shows the number of active datasources and worker threads, cache statistics, websocket/pull metrics, and optional tile-size-distribution data. It refreshes by polling `/status-data`. This endpoint is primarily used during development and debugging.
-
-## `/status-data` – machine-readable diagnostics
-
-`GET /status-data` returns the JSON payload that powers `/status`.
-
-- **Method:** `GET`
-- **Query parameters:**
-  - `includeTileSizeDistribution` (optional, default `false`): include the heavy cached-tile size histogram / distribution calculations.
-  - `includeCachedFeatureTreeBytes` (optional, default `true`): include cached feature-tree byte breakdowns.
-- **Response:** `application/json`
-
-The response contains:
-
-- `timestampMs`
-- `service`: service statistics, datasource info, cache occupancy, datasource-config counts, and optional tile-size-distribution data
-- `cache`: cache hit/miss counters and cache sizes
-- `tilesWebsocket`: control-channel metrics such as active sessions, pending queued frames for `/interactive/payload`, blocked pull requests, and total forwarded bytes / frames
-
-`service.datasource-config` reports datasource YAML load diagnostics:
-
-- `configured`: number of entries under `sources`.
-- `enabled`: number of entries not disabled by `enabled: false`.
-- `disabled`: number of entries skipped because `enabled: false`.
-- `construction-failed`: number of enabled entries whose datasource construction failed.
-
-## `/locate` – resolve external feature IDs
-
-`POST /locate` resolves external feature references to the tile IDs and feature IDs that contain them. This is commonly used together with feature search results or external databases that store map references.
-
-- **Method:** `POST`
-- **Request body (JSON):**
-  - `requests`: array of objects, each with:
-    - `mapId`: ID of the map to search in.
-    - `typeId`: feature type identifier.
-    - `featureId`: array of ID parts forming the external feature ID.
-- **Response:** `application/json` object:
-  - `responses`: array of arrays. Each inner array corresponds to one input request and contains resolution objects with:
-    - `tileId`: numeric tile ID where the feature can be found.
-    - `typeId`: feature type in the resolved context.
-    - `featureId`: resolved feature ID string within that tile.
-
-Datasources are free to implement more advanced resolution schemes (for example mapping secondary ID schemes to primary ones) as long as they return consistent tile and feature identifiers.
-
-## `/config` – inspect and update configuration
-
-The `/config` endpoint family exposes the YAML configuration used by `mapget` for datasource wiring and HTTP settings. Command-line flags control whether datasource config is exposed and whether updates are accepted.
+## `/config`
 
 <!-- --8<-- [start:config-endpoints] -->
 
-### `GET /config`
+`GET /config` returns:
 
-- **Method:** `GET`
-- **Request body:** none
-- **Response:** `application/json` object with the keys:
-  - `schema`: JSON Schema used to validate datasource-model configurations.
-  - `model`: JSON representation of the current YAML config, limited to top-level keys in the active datasource schema. The built-in schema includes `sources`; deployments can add keys such as `http-settings` through `--config-schema`.
-  - `readOnly`: boolean flag indicating whether `POST /config` is enabled.
-  - `datasourceConfigUnavailable`: boolean flag indicating that datasource config could not or must not be exposed.
-  - `datasourceConfigUnavailableReason`: `null` on success, otherwise a stable reason string.
-  - Additional public sections registered by the embedding application, returned as top-level siblings of `model`.
+- `schema`: the datasource configuration JSON Schema;
+- `model`: the current editable datasource portion of YAML;
+- `readOnly`;
+- `datasourceConfigUnavailable` and its stable reason;
+- caller-specific server capabilities such as `capabilities.cacheReset`;
+- read-only public sections registered by the embedding application.
 
-When the endpoint handler is reached, `GET /config` returns HTTP `200`. `readOnly` reflects whether `POST /config` is enabled. If `--no-get-config` is set, `datasourceConfigUnavailable` is `true`, `datasourceConfigUnavailableReason` is `getConfigDisabled`, and `model` is empty. In that state, writable servers still return `schema` so clients can present an empty replacement editor; read-only servers return an empty schema.
+Sensitive password/API-key fields are represented by stable masked tokens.
+Unavailable reasons include `getConfigDisabled`, `configPathUnset`,
+`configFileMissing`, `configFileOpenFailed`, `configParseFailed`, and
+`configValidationFailed`.
 
-Unavailable reason values are:
+Configuration writes are accepted only when the server starts with
+`--allow-post-config`:
 
-- `getConfigDisabled`
-- `configPathUnset`
-- `configFileMissing`
-- `configFileOpenFailed`
-- `configParseFailed`
-- `configValidationFailed`
+- `POST /config` accepts a complete datasource model that satisfies the
+  returned schema. Mapget preserves real secrets represented by masked tokens,
+  writes the datasource-model portion, preserves unknown/public top-level YAML
+  sections, and reloads the datasource catalog.
+- `PATCH /config` accepts exactly `{"path":"/...","value":...}` plus an
+  `If-Match` header containing the current full-file revision. The path is an
+  opaque identifier and must exactly match a field writer registered by the
+  embedding application; Mapget does not provide arbitrary JSON/YAML patching.
+  A successful response returns the same path, the writer's canonical value,
+  the new revision, and a matching `ETag`. Public-field writes use the same
+  atomic whole-document replacement and revision safeguards without reloading
+  datasources.
 
-On a successful datasource-config response, `datasourceConfigUnavailable` is `false` and `datasourceConfigUnavailableReason` is `null`. The returned model masks sensitive fields: any `password` or `api-key` values are replaced with stable masked tokens.
-
-Registered public sections are read-only. They are included as top-level siblings of `model` when the YAML config can be read and parsed, even if the datasource model itself is hidden through `--no-get-config`. If the YAML config cannot be read or parsed, registered public sections are still present but empty.
-
-### `POST /config`
-
-- **Method:** `POST`
-- **Request body:** `application/json` matching the schema returned by `GET /config`.
-  - Must contain the datasource-model keys required by the schema.
-- **Response:**
-  - `text/plain` success message when the configuration was validated, written to disk and successfully applied.
-  - `text/plain` error description and a 4xx/5xx status code if validation or application failed.
-
-This call is only accepted if the server is started with `--allow-post-config`. When a valid configuration is posted, mapget rewrites the datasource-model fields in the underlying YAML file, preserving real secret values where masked tokens were supplied, and then reloads the datasource configuration. Unknown top-level YAML sections, including registered public sections, are preserved but not edited through this endpoint. Clients should be prepared for temporary 5xx errors if reloading fails.
+Because capabilities can vary with request headers, `GET /config` responses
+include `Cache-Control: private, no-store`.
 
 <!-- --8<-- [end:config-endpoints] -->

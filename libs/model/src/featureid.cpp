@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -302,8 +303,6 @@ FeatureId::FeatureId(FeatureId::Data& data,
                 simfil::ModelPool::ColumnId::Arrays,
                 static_cast<uint32_t>(data_.idPartValues_)});
     }
-
-    resolveVisiblePartLayout(model(), data_, values_, partNames_, visibleValueIndices_);
 }
 
 FeatureId::FeatureId(FeatureId::Data const& data,
@@ -319,8 +318,20 @@ FeatureId::FeatureId(FeatureId::Data const& data,
                 simfil::ModelPool::ColumnId::Arrays,
                 static_cast<uint32_t>(data_.idPartValues_)});
     }
+}
 
-    resolveVisiblePartLayout(model(), data_, values_, partNames_, visibleValueIndices_);
+void FeatureId::ensureVisiblePartLayout() const
+{
+    if (visiblePartLayoutResolved_) {
+        return;
+    }
+    resolveVisiblePartLayout(
+        model(),
+        data_,
+        values_,
+        partNames_,
+        visibleValueIndices_);
+    visiblePartLayoutResolved_ = true;
 }
 
 std::string_view FeatureId::typeId() const
@@ -366,11 +377,8 @@ std::string FeatureId::toString() const
     }
 
     if (values_) {
-        auto const limit = std::min<size_t>(partNames_.size(), visibleValueIndices_.size());
-        for (size_t i = 0; i < limit; ++i) {
-            appendNodeValueToString(
-                result,
-                values_->at(static_cast<int64_t>(visibleValueIndices_[i])));
+        for (uint32_t index = 0U; index < values_->size(); ++index) {
+            appendNodeValueToString(result, values_->at(index));
         }
     }
 
@@ -448,6 +456,7 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
 
 KeyValueViewPairs FeatureId::keyValuePairs() const
 {
+    ensureVisiblePartLayout();
     KeyValueViewPairs result;
 
     if (data_.useCommonTilePrefix_) {
@@ -531,20 +540,68 @@ bool parseFeatureIdString(
         return false;
     }
 
+    auto selectedMatch = matches.begin();
     if (matches.size() > 1) {
-        if (error) {
-            *error = fmt::format(
-                "Feature id '{}' matches multiple id compositions of type '{}'.",
-                featureId,
-                typeId);
+        auto const primaryMatch = std::find_if(
+            matches.begin(), matches.end(), [](auto const& match) {
+                return match.first == 0;
+            });
+        auto const secondPrimaryMatch = primaryMatch == matches.end()
+            ? matches.end()
+            : std::find_if(
+                  std::next(primaryMatch), matches.end(), [](auto const& match) {
+                      return match.first == 0;
+                  });
+
+        // Stored features always use composition zero. Prefer its one valid
+        // interpretation when a secondary locate composition serializes to
+        // the same unlabeled token shape.
+        if (primaryMatch != matches.end() && secondPrimaryMatch == matches.end()) {
+            selectedMatch = primaryMatch;
         }
-        return false;
+        else {
+            if (error) {
+                *error = fmt::format(
+                    "Feature id '{}' matches multiple id compositions of type '{}'.",
+                    featureId,
+                    typeId);
+            }
+            return false;
+        }
     }
 
     result.typeId_ = typeId;
-    result.idCompositionIndex_ = matches.front().first;
-    result.keyValuePairs_ = std::move(matches.front().second.values);
+    result.idCompositionIndex_ = selectedMatch->first;
+    result.keyValuePairs_ = std::move(selectedMatch->second.values);
     return true;
+}
+
+std::string formatFeatureIdString(
+    std::string_view typeId,
+    KeyValuePairs const& featureIdParts)
+{
+    std::string result(typeId);
+    for (auto const& [_, value] : featureIdParts) {
+        std::visit(
+            [&](auto&& part) {
+                using T = std::decay_t<decltype(part)>;
+                if constexpr (std::is_same_v<T, std::string_view> ||
+                              std::is_same_v<T, std::string>) {
+                    fmt::format_to(
+                        std::back_inserter(result),
+                        FMT_STRING(".{}"),
+                        escapeFeatureIdPart(part));
+                }
+                else {
+                    fmt::format_to(
+                        std::back_inserter(result),
+                        FMT_STRING(".{}"),
+                        part);
+                }
+            },
+            value);
+    }
+    return result;
 }
 
 }

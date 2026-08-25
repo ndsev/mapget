@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mapget/model/searchresultlayer.h"
+#include "mapget/model/subsetlayer.h"
 #include "mapget/service/service.h"
 #include "tiles-request-json.h"
 
@@ -25,13 +25,6 @@ struct ClientRequestChunk
     bool isLast = true;
 };
 
-/** Whether a parsed request replaces the current scope or appends another chunk. */
-enum class ClientRequestUpdateMode
-{
-    Replace,
-    Append,
-};
-
 /** Parse a JSON numeric field into non-negative int64 while handling missing keys. */
 [[nodiscard]] int64_t parseNonNegativeInt64(const nlohmann::json& j, std::string_view key);
 
@@ -42,21 +35,33 @@ enum class ClientRequestUpdateMode
 [[nodiscard]] MapTileKey makeCanonicalRequestedTileKey(
     std::string_view mapId,
     std::string_view layerId,
-    TileId tileId,
-    uint32_t stage = 0);
+    TileId tileId);
 
 /** Normalize an existing map tile key so request matching ignores source layer type. */
 [[nodiscard]] MapTileKey makeCanonicalRequestedTileKey(MapTileKey key);
 
-/** Decorate server-internal queue keys so search results do not collide with source tile frames. */
-[[nodiscard]] MapTileKey makeSearchRequestedTileKey(MapTileKey key, std::string_view searchRequestKey);
+/** Stable logical key derived from one filter subscription generation. */
+[[nodiscard]] std::string filterSubscriptionKey(
+    std::string_view filterId,
+    uint64_t generation);
 
-/** Build the outgoing-frame key for either normal feature tiles or a specific search request. */
+/** Stable queue key derived from one filter subscription generation. */
+[[nodiscard]] std::string filterRequestKey(
+    std::string_view filterId,
+    uint64_t generation);
+
+/** Decorate queue keys so subset frames do not collide with source tile frames. */
+[[nodiscard]] MapTileKey makeFilterRequestedTileKey(
+    MapTileKey key,
+    std::string_view filterRequestKey);
+
+/** Build the outgoing-frame key for a plain tile or filter subset. */
 [[nodiscard]] MapTileKey makeRequestedTileKey(
     MapTileKey key,
-    std::optional<std::string_view> searchRequestKey);
+    std::optional<std::string_view> filterRequestKey);
 
-/** Extract the search request key attached to TileSearchResultLayer metadata. */
-[[nodiscard]] std::optional<std::string> searchRequestKey(TileLayer::Ptr const& layer);
+/** Extract `filterId + generation` from a TileSubsetLayer. */
+[[nodiscard]] std::optional<std::string> filterRequestKey(
+    TileLayer::Ptr const& layer);
 
 } // namespace mapget::detail

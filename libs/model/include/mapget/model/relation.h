@@ -61,9 +61,7 @@ public:
     /**
      * Feature-local ordinal assigned when the relation is inserted into its
      * owning feature. RelationReference JSON uses this ordinal as a compact,
-     * feature-local identity token. Known limitation: staged overlays are not
-     * remapped here, so relation-backed attribute refs must be emitted by the
-     * same stage that owns the relevant relation list.
+     * feature-local identity token.
      */
     [[nodiscard]] std::optional<uint16_t> featureRelationIndex() const;
 

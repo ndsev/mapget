@@ -11,6 +11,40 @@ namespace mapget
 
 namespace
 {
+/** Return the full validity record backing an AttrPoint index view. */
+model_ptr<Validity> attrPointValidity(
+    TileFeatureLayer const& model,
+    simfil::ModelNodeAddress const& viewAddress)
+{
+    return model.resolve<Validity>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::Validities,
+        viewAddress.index()});
+}
+
+/** Build the compact sequence-reference node shared by index and range views. */
+model_ptr<AttrPointSequenceReference> attrPointSequenceReference(
+    TileFeatureLayer const& model,
+    simfil::ModelNodeAddress const& sequenceAddress)
+{
+    return model.resolve<AttrPointSequenceReference>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::AttrPointSequenceReferences,
+        sequenceAddress.index()});
+}
+
+/** Visit every field in a small fixed-size procedural object. */
+bool iterateObject(
+    simfil::ModelNode const& object,
+    simfil::ModelNode::IterCallback const& callback)
+{
+    for (uint32_t index = 0; index < object.size(); ++index) {
+        auto value = object.at(static_cast<int64_t>(index));
+        if (value && !callback(*value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /** Convert a validity direction enum into the exported JSON token. */
 std::string_view directionToString(Validity::Direction const& d)
 {
@@ -23,6 +57,191 @@ std::string_view directionToString(Validity::Direction const& d)
     }
     return "?";
 }
+
+}  // namespace
+
+AttrPointIndex::AttrPointIndex(
+    simfil::ModelConstPtr model,
+    simfil::ModelNodeAddress address,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
+          std::move(model),
+          address,
+          key)
+{
+}
+
+model_ptr<AttrPointSequence> AttrPointIndex::sequence() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexValidity) {
+        raise("AttrPointIndex view does not reference an AttrPointIndex validity.");
+    }
+    return model().resolve<AttrPointSequence>(
+        validity->data_->geomDescr_.attrPointIndex_.sequence_);
+}
+
+uint32_t AttrPointIndex::index() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexValidity) {
+        raise("AttrPointIndex view does not reference an AttrPointIndex validity.");
+    }
+    return validity->data_->geomDescr_.attrPointIndex_.index_;
+}
+
+nlohmann::json AttrPointIndex::toJson() const
+{
+    return nlohmann::json::object({
+        {"sequence", nlohmann::json::object({
+            {"$mapgetAttrPointSequence", sequence()->addr().index()},
+        })},
+        {"index", index()},
+    });
+}
+
+simfil::ValueType AttrPointIndex::type() const
+{
+    return simfil::ValueType::Object;
+}
+
+simfil::ModelNode::Ptr AttrPointIndex::at(int64_t fieldIndex) const
+{
+    return fieldIndex >= 0 && fieldIndex < 2 ? get(keyAt(fieldIndex)) : simfil::ModelNode::Ptr{};
+}
+
+simfil::ModelNode::Ptr AttrPointIndex::get(simfil::StringId const& field) const
+{
+    if (field == StringPool::SequenceStr) {
+        return attrPointSequenceReference(model(), sequence()->addr());
+    }
+    if (field == StringPool::IndexStr) {
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(index()),
+            model().shared_from_this());
+    }
+    return {};
+}
+
+simfil::StringId AttrPointIndex::keyAt(int64_t fieldIndex) const
+{
+    switch (fieldIndex) {
+    case 0: return StringPool::SequenceStr;
+    case 1: return StringPool::IndexStr;
+    default: return {};
+    }
+}
+
+uint32_t AttrPointIndex::size() const
+{
+    return 2;
+}
+
+bool AttrPointIndex::iterate(IterCallback const& callback) const
+{
+    return iterateObject(*this, callback);
+}
+
+AttrPointIndexRange::AttrPointIndexRange(
+    simfil::ModelConstPtr model,
+    simfil::ModelNodeAddress address,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
+          std::move(model),
+          address,
+          key)
+{
+}
+
+model_ptr<AttrPointSequence> AttrPointIndexRange::sequence() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexRangeValidity) {
+        raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
+    }
+    return model().resolve<AttrPointSequence>(
+        validity->data_->geomDescr_.attrPointIndexRange_.sequence_);
+}
+
+uint32_t AttrPointIndexRange::start() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexRangeValidity) {
+        raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
+    }
+    return validity->data_->geomDescr_.attrPointIndexRange_.start_;
+}
+
+uint32_t AttrPointIndexRange::end() const
+{
+    auto validity = attrPointValidity(model(), addr());
+    if (validity->geometryDescriptionType() != Validity::AttrPointIndexRangeValidity) {
+        raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
+    }
+    return validity->data_->geomDescr_.attrPointIndexRange_.end_;
+}
+
+nlohmann::json AttrPointIndexRange::toJson() const
+{
+    return nlohmann::json::object({
+        {"sequence", nlohmann::json::object({
+            {"$mapgetAttrPointSequence", sequence()->addr().index()},
+        })},
+        {"start", start()},
+        {"end", end()},
+    });
+}
+
+simfil::ValueType AttrPointIndexRange::type() const
+{
+    return simfil::ValueType::Object;
+}
+
+simfil::ModelNode::Ptr AttrPointIndexRange::at(int64_t fieldIndex) const
+{
+    return fieldIndex >= 0 && fieldIndex < 3 ? get(keyAt(fieldIndex)) : simfil::ModelNode::Ptr{};
+}
+
+simfil::ModelNode::Ptr AttrPointIndexRange::get(simfil::StringId const& field) const
+{
+    if (field == StringPool::SequenceStr) {
+        return attrPointSequenceReference(model(), sequence()->addr());
+    }
+    if (field == StringPool::StartStr) {
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(start()),
+            model().shared_from_this());
+    }
+    if (field == StringPool::EndStr) {
+        return model_ptr<simfil::ValueNode>::make(
+            static_cast<int64_t>(end()),
+            model().shared_from_this());
+    }
+    return {};
+}
+
+simfil::StringId AttrPointIndexRange::keyAt(int64_t fieldIndex) const
+{
+    switch (fieldIndex) {
+    case 0: return StringPool::SequenceStr;
+    case 1: return StringPool::StartStr;
+    case 2: return StringPool::EndStr;
+    default: return {};
+    }
+}
+
+uint32_t AttrPointIndexRange::size() const
+{
+    return 3;
+}
+
+bool AttrPointIndexRange::iterate(IterCallback const& callback) const
+{
+    return iterateObject(*this, callback);
+}
+
+namespace
+{
 
 /** Convert a transition endpoint enum into the exported JSON token. */
 std::string_view transitionEndToString(Validity::TransitionEnd const& end)
@@ -93,19 +312,41 @@ Validity::TransitionEnd unpackToConnectedEnd(uint8_t packedEnds)
 /** Pick the line geometry that should be used for line-based validity resolution. */
 model_ptr<Geometry> resolveLineGeometry(
     model_ptr<GeometryCollection> const& geometryCollection,
-    std::optional<uint32_t> referencedStage)
+    std::optional<std::string_view> referencedName)
 {
     if (!geometryCollection) {
         return {};
     }
-    return geometryCollection->geometryOfTypeAtPreferredStage(GeomType::Line, referencedStage);
+    model_ptr<Geometry> firstLine;
+    model_ptr<Geometry> matchingLine;
+    geometryCollection->forEachGeometry([&](model_ptr<Geometry> const& geometry)
+    {
+        if (geometry->geomType() != GeomType::Line) {
+            return true;
+        }
+        if (!firstLine) {
+            firstLine = geometry;
+        }
+        if (geometry->name() == referencedName) {
+            matchingLine = geometry;
+            return false;
+        }
+        return true;
+    });
+    // Unnamed validities prefer an unnamed line but retain the historical
+    // fallback to the first line when a feature only has named geometry.
+    return matchingLine ? matchingLine : (!referencedName ? firstLine : model_ptr<Geometry>{});
 }
 
 struct TransitionSegment
 {
-    Point outer_;
-    Point inner_;
+    // Ordered from the connected endpoint outwards. The final segment may be
+    // an extrapolated endpoint tangent when the complete road is shorter than
+    // the semantic transition-leg length.
+    std::vector<Point> innerToOuter_;
 };
+
+constexpr double kTransitionLegLengthMeters = 10.0;
 
 /** Compare two validity points with a small tolerance to absorb numeric noise. */
 bool pointsCoincide(Point const& left, Point const& right)
@@ -117,44 +358,76 @@ bool pointsCoincide(Point const& left, Point const& right)
 std::optional<TransitionSegment> resolveTransitionSegment(
     model_ptr<Feature> const& feature,
     Validity::TransitionEnd connectedEnd,
-    std::optional<uint32_t> referencedStage)
+    std::optional<std::string_view> referencedName)
 {
     if (!feature) {
         return std::nullopt;
     }
 
-    auto geometry = resolveLineGeometry(feature->geomOrNull(), referencedStage);
+    auto geometry = resolveLineGeometry(feature->geomOrNull(), referencedName);
     if (!geometry || geometry->numPoints() == 0) {
         return std::nullopt;
     }
 
     const auto numPoints = geometry->numPoints();
     const auto innerIndex = connectedEnd == Validity::End ? numPoints - 1U : 0U;
-    auto outerIndex = innerIndex;
-    auto const innerPoint = geometry->pointAt(innerIndex);
+    TransitionSegment result;
+    result.innerToOuter_.push_back(geometry->pointAt(innerIndex));
+
+    double accumulatedMeters = 0.0;
+    auto appendCandidate = [&](Point const& candidate) {
+        auto const& previous = result.innerToOuter_.back();
+        auto const segmentMeters = previous.geographicDistanceTo(candidate);
+        if (segmentMeters <= 1.0e-6) {
+            return false;
+        }
+        auto const remainingMeters =
+            kTransitionLegLengthMeters - accumulatedMeters;
+        if (segmentMeters >= remainingMeters) {
+            result.innerToOuter_.push_back(Point{
+                previous + (candidate - previous) *
+                    (remainingMeters / segmentMeters)});
+            accumulatedMeters = kTransitionLegLengthMeters;
+            return true;
+        }
+        result.innerToOuter_.push_back(candidate);
+        accumulatedMeters += segmentMeters;
+        return false;
+    };
+
     if (connectedEnd == Validity::End) {
-        // Transition endpoints may be repeated at the tail, so walk backwards
-        // until the first distinct point to get a visible outgoing segment.
         for (auto pointIndex = innerIndex; pointIndex-- > 0;) {
-            if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
-                outerIndex = pointIndex;
+            if (appendCandidate(geometry->pointAt(pointIndex))) {
                 break;
             }
         }
     } else {
-        // Likewise, repeated points at the head must be skipped when entering
-        // a transition from the start of a polyline.
         for (auto pointIndex = innerIndex + 1U; pointIndex < numPoints; ++pointIndex) {
-            if (!pointsCoincide(geometry->pointAt(pointIndex), innerPoint)) {
-                outerIndex = pointIndex;
+            if (appendCandidate(geometry->pointAt(pointIndex))) {
                 break;
             }
         }
     }
-    return TransitionSegment{
-        geometry->pointAt(outerIndex),
-        innerPoint,
-    };
+
+    if (accumulatedMeters + 1.0e-6 < kTransitionLegLengthMeters &&
+        result.innerToOuter_.size() >= 2)
+    {
+        // Preserve the complete short road, then extend its outer endpoint
+        // tangent by precisely the missing distance. This keeps the real
+        // source shape while guaranteeing a readable ten-metre semantic leg.
+        auto const& previous = result.innerToOuter_[result.innerToOuter_.size() - 2];
+        auto const& outer = result.innerToOuter_.back();
+        auto const tangentMeters = previous.geographicDistanceTo(outer);
+        if (tangentMeters > 1.0e-6) {
+            result.innerToOuter_.push_back(Point{
+                outer + (outer - previous) *
+                    ((kTransitionLegLengthMeters - accumulatedMeters) /
+                     tangentMeters)});
+        }
+    }
+    return result.innerToOuter_.size() >= 2
+        ? std::optional<TransitionSegment>{std::move(result)}
+        : std::nullopt;
 }
 
 /** Apply direction semantics to a resolved geometry after the shape has been computed. */
@@ -198,29 +471,6 @@ GeomType geomTypeForOffsetValidity(
     return points.size() > 1 ? GeomType::Line : GeomType::Points;
 }
 
-/** Map a stored geometry stage back to the optional exported `geometryName`. */
-std::optional<std::string_view> geometryNameForStage(
-    TileFeatureLayer const& model,
-    std::optional<uint32_t> geometryStage)
-{
-    if (!geometryStage || !model.layerInfo()) {
-        return std::nullopt;
-    }
-    auto const& layerInfo = *model.layerInfo();
-    if (*geometryStage <= layerInfo.highFidelityStage_) {
-        // High-fidelity geometries intentionally omit a stage label in JSON.
-        return std::nullopt;
-    }
-    if (*geometryStage >= layerInfo.stageLabels_.size()) {
-        return std::nullopt;
-    }
-    auto const& label = layerInfo.stageLabels_.at(*geometryStage);
-    if (label.empty()) {
-        return std::nullopt;
-    }
-    return label;
-}
-
 }
 
 void Validity::ensureMaterialized()
@@ -259,10 +509,16 @@ model_ptr<FeatureId> Validity::featureId() const
     if (!data_) {
         return {};
     }
-    if (!data_->featureAddress_) {
-        return {};
+    if (data_->featureAddress_) {
+        return model().resolve<FeatureId>(data_->featureAddress_);
     }
-    return model().resolve<FeatureId>(data_->featureAddress_);
+    if (auto index = attrPointIndex()) {
+        return index->sequence()->featureId();
+    }
+    if (auto range = attrPointIndexRange()) {
+        return range->sequence()->featureId();
+    }
+    return {};
 }
 
 void Validity::setFeatureId(model_ptr<FeatureId> featureId)
@@ -323,12 +579,12 @@ Validity::Validity(Validity::Data* data,
                     self.model_);
             });
 
-    if (auto geometryName = geometryNameForStage(model(), geometryStage())) {
+    if (auto referencedGeometryName = geometryName()) {
         fields_.emplace_back(
             StringPool::GeometryNameStr,
-            [geometryName](Validity const& self)
+            [referencedGeometryName](Validity const& self)
             {
-                return model_ptr<simfil::ValueNode>::make(*geometryName, self.model_);
+                return model_ptr<simfil::ValueNode>::make(*referencedGeometryName, self.model_);
             });
     }
 
@@ -360,9 +616,9 @@ Validity::Validity(Validity::Data* data,
             StringPool::FromStr,
             [](Validity const& self)
             {
-                auto fromFeature = self.transitionFromFeature();
+                auto fromFeatureId = self.transitionFromFeatureId();
                 return model_ptr<simfil::ValueNode>::make(
-                    fromFeature ? fromFeature->id()->toString() : std::string{},
+                    fromFeatureId ? fromFeatureId->toString() : std::string{},
                     self.model_);
             });
         fields_.emplace_back(
@@ -377,9 +633,9 @@ Validity::Validity(Validity::Data* data,
             StringPool::ToStr,
             [](Validity const& self)
             {
-                auto toFeature = self.transitionToFeature();
+                auto toFeatureId = self.transitionToFeatureId();
                 return model_ptr<simfil::ValueNode>::make(
-                    toFeature ? toFeature->id()->toString() : std::string{},
+                    toFeatureId ? toFeatureId->toString() : std::string{},
                     self.model_);
             });
         fields_.emplace_back(
@@ -390,6 +646,20 @@ Validity::Validity(Validity::Data* data,
                     transitionEndToString(*self.transitionToConnectedEnd()),
                     self.model_);
             });
+        return;
+    }
+
+    if (data_->geomDescrType_ == AttrPointIndexValidity) {
+        fields_.emplace_back(
+            StringPool::AttrPointIndexStr,
+            [](Validity const& self) { return self.attrPointIndex(); });
+        return;
+    }
+
+    if (data_->geomDescrType_ == AttrPointIndexRangeValidity) {
+        fields_.emplace_back(
+            StringPool::AttrPointIndexRangeStr,
+            [](Validity const& self) { return self.attrPointIndexRange(); });
         return;
     }
 
@@ -485,28 +755,18 @@ Validity::GeometryDescriptionType Validity::geometryDescriptionType() const
     return data_->geomDescrType_;
 }
 
-void Validity::setGeometryStage(std::optional<uint32_t> geometryStage)
+void Validity::setGeometryName(std::optional<std::string_view> geometryName)
 {
     ensureMaterialized();
-    if (!geometryStage) {
-        data_->referencedStage_ = Data::InvalidReferencedStage;
-        return;
-    }
-    if (*geometryStage > static_cast<uint32_t>(std::numeric_limits<int8_t>::max())) {
-        raise("Validity::setGeometryStage: stage is out of int8_t range.");
-    }
-    data_->referencedStage_ = static_cast<int8_t>(*geometryStage);
+    data_->referencedGeometryName_ = model().encodeGeometryName(geometryName);
 }
 
-std::optional<uint32_t> Validity::geometryStage() const
+std::optional<std::string_view> Validity::geometryName() const
 {
     if (!data_) {
         return {};
     }
-    if (data_->referencedStage_ == Data::InvalidReferencedStage) {
-        return {};
-    }
-    return static_cast<uint32_t>(data_->referencedStage_);
+    return model().decodeGeometryName(data_->referencedGeometryName_);
 }
 
 void Validity::setOffsetPoint(Point pos) {
@@ -561,6 +821,83 @@ std::optional<std::pair<Point, Point>> Validity::offsetRange() const
     return std::pair<Point, Point>{data_->geomDescr_.range_.first, data_->geomDescr_.range_.second};
 }
 
+void Validity::setAttrPointIndex(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t index)
+{
+    ensureMaterialized();
+    if (!sequence || sequence->owningModel().get() != &model()) {
+        raise("Validity AttrPointSequence must belong to the same TileFeatureLayer.");
+    }
+    if (index >= sequence->positionCount()) {
+        raiseFmt(
+            "AttrPointIndex {} is out of range for a sequence with {} positions.",
+            index,
+            sequence->positionCount());
+    }
+    data_->geomDescrType_ = AttrPointIndexValidity;
+    data_->geomOffsetType_ = InvalidOffsetType;
+    data_->geomDescr_.attrPointIndex_ = {
+        .sequence_ = sequence->addr(),
+        .index_ = index,
+    };
+    data_->featureAddress_ = {};
+    data_->referencedGeometryName_ = 0;
+}
+
+model_ptr<AttrPointIndex> Validity::attrPointIndex() const
+{
+    if (!data_ || data_->geomDescrType_ != AttrPointIndexValidity) {
+        return {};
+    }
+    return model().resolve<AttrPointIndex>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::AttrPointIndexView,
+        addr().index()});
+}
+
+void Validity::setAttrPointIndexRange(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t start,
+    uint32_t end)
+{
+    ensureMaterialized();
+    if (!sequence || sequence->owningModel().get() != &model()) {
+        raise("Validity AttrPointSequence must belong to the same TileFeatureLayer.");
+    }
+    if (start >= sequence->positionCount() || end >= sequence->positionCount()) {
+        raiseFmt(
+            "AttrPointIndexRange {}..{} is out of range for a sequence with {} positions.",
+            start,
+            end,
+            sequence->positionCount());
+    }
+    if (start > end) {
+        raiseFmt(
+            "AttrPointIndexRange start {} exceeds end {}.",
+            start,
+            end);
+    }
+    data_->geomDescrType_ = AttrPointIndexRangeValidity;
+    data_->geomOffsetType_ = InvalidOffsetType;
+    data_->geomDescr_.attrPointIndexRange_ = {
+        .sequence_ = sequence->addr(),
+        .start_ = start,
+        .end_ = end,
+    };
+    data_->featureAddress_ = {};
+    data_->referencedGeometryName_ = 0;
+}
+
+model_ptr<AttrPointIndexRange> Validity::attrPointIndexRange() const
+{
+    if (!data_ || data_->geomDescrType_ != AttrPointIndexRangeValidity) {
+        return {};
+    }
+    return model().resolve<AttrPointIndexRange>(simfil::ModelNodeAddress{
+        TileFeatureLayer::ColumnId::AttrPointIndexRangeView,
+        addr().index()});
+}
+
 void Validity::setSimpleGeometry(model_ptr<Geometry> geom) {
     ensureMaterialized();
     if (geom) {
@@ -586,42 +923,78 @@ model_ptr<Geometry> Validity::simpleGeometry() const
 }
 
 void Validity::setFeatureTransition(
+    model_ptr<FeatureId> const& fromFeatureId,
+    TransitionEnd fromConnectedEnd,
+    model_ptr<FeatureId> const& toFeatureId,
+    TransitionEnd toConnectedEnd,
+    uint32_t transitionNumber)
+{
+    ensureMaterialized();
+    if (!fromFeatureId || !toFeatureId) {
+        raise("Validity::setFeatureTransition requires both from/to feature IDs.");
+    }
+    data_->geomDescrType_ = FeatureTransition;
+    data_->geomOffsetType_ = InvalidOffsetType;
+    data_->referencedGeometryName_ = 0;
+    data_->featureAddress_ = {};
+    data_->geomDescr_.featureTransition_ = {
+        fromFeatureId->addr(),
+        toFeatureId->addr(),
+        transitionNumber,
+        packTransitionEnds(fromConnectedEnd, toConnectedEnd),
+    };
+}
+
+void Validity::setFeatureTransition(
     model_ptr<Feature> const& fromFeature,
     TransitionEnd fromConnectedEnd,
     model_ptr<Feature> const& toFeature,
     TransitionEnd toConnectedEnd,
     uint32_t transitionNumber)
 {
-    ensureMaterialized();
     if (!fromFeature || !toFeature) {
         raise("Validity::setFeatureTransition requires both from/to features.");
     }
-    data_->geomDescrType_ = FeatureTransition;
-    data_->geomOffsetType_ = InvalidOffsetType;
-    data_->referencedStage_ = Data::InvalidReferencedStage;
-    data_->featureAddress_ = {};
-    data_->geomDescr_.featureTransition_ = {
-        fromFeature->addr(),
-        toFeature->addr(),
-        transitionNumber,
-        packTransitionEnds(fromConnectedEnd, toConnectedEnd),
-    };
+    setFeatureTransition(
+        fromFeature->id(),
+        fromConnectedEnd,
+        toFeature->id(),
+        toConnectedEnd,
+        transitionNumber);
+}
+
+model_ptr<FeatureId> Validity::transitionFromFeatureId() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return {};
+    }
+    return model().resolve<FeatureId>(data_->geomDescr_.featureTransition_.fromFeatureId_);
+}
+
+model_ptr<FeatureId> Validity::transitionToFeatureId() const
+{
+    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+        return {};
+    }
+    return model().resolve<FeatureId>(data_->geomDescr_.featureTransition_.toFeatureId_);
 }
 
 model_ptr<Feature> Validity::transitionFromFeature() const
 {
-    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+    auto featureId = transitionFromFeatureId();
+    if (!featureId || featureId->mapId() != model().mapId()) {
         return {};
     }
-    return model().resolve<Feature>(data_->geomDescr_.featureTransition_.fromFeature_);
+    return model().find(featureId->typeId(), featureId->keyValuePairs());
 }
 
 model_ptr<Feature> Validity::transitionToFeature() const
 {
-    if (!data_ || data_->geomDescrType_ != FeatureTransition) {
+    auto featureId = transitionToFeatureId();
+    if (!featureId || featureId->mapId() != model().mapId()) {
         return {};
     }
-    return model().resolve<Feature>(data_->geomDescr_.featureTransition_.toFeature_);
+    return model().find(featureId->typeId(), featureId->keyValuePairs());
 }
 
 std::optional<Validity::TransitionEnd> Validity::transitionFromConnectedEnd() const
@@ -651,8 +1024,11 @@ std::optional<uint32_t> Validity::transitionNumber() const
 SelfContainedGeometry Validity::computeGeometry(
     model_ptr<GeometryCollection> geometryCollection,
     std::string* error,
-    std::optional<uint32_t> defaultGeometryStage) const
+    uint32_t* transitionPivotIndex) const
 {
+    if (transitionPivotIndex) {
+        *transitionPivotIndex = std::numeric_limits<uint32_t>::max();
+    }
     if (geometryDescriptionType() == SimpleGeometry) {
         // Return the self-contained geometry points.
         auto simpleGeom = simpleGeometry();
@@ -660,23 +1036,57 @@ SelfContainedGeometry Validity::computeGeometry(
         return applyDirectionToGeometry(simpleGeom->toSelfContained(), direction());
     }
 
-    const auto referencedStage = geometryStage().has_value()
-        ? geometryStage()
-        : defaultGeometryStage;
+    if (auto index = attrPointIndex()) {
+        return applyDirectionToGeometry(
+            {{index->sequence()->pointAt(index->index())}, {}, GeomType::Points},
+            direction());
+    }
+
+    if (auto range = attrPointIndexRange()) {
+        auto start = range->start();
+        auto end = range->end();
+        if (end < start) {
+            std::swap(start, end);
+        }
+        auto points = range->sequence()->points(start, end);
+        return applyDirectionToGeometry(
+            {points, {}, points.size() > 1 ? GeomType::Line : GeomType::Points},
+            direction());
+    }
+
+    const auto referencedName = geometryName();
 
     if (geometryDescriptionType() == FeatureTransition) {
+        auto fromFeatureId = transitionFromFeatureId();
+        auto toFeatureId = transitionToFeatureId();
         auto fromFeature = transitionFromFeature();
         auto toFeature = transitionToFeature();
         auto fromConnectedEnd = transitionFromConnectedEnd();
         auto toConnectedEnd = transitionToConnectedEnd();
-        if (!fromFeature || !toFeature || !fromConnectedEnd || !toConnectedEnd) {
+        if (!fromFeatureId || !toFeatureId || !fromConnectedEnd || !toConnectedEnd) {
             if (error) {
-                *error = "Failed to resolve semantic feature transition validity.";
+                *error = "Malformed semantic feature transition validity.";
+            }
+            return {};
+        }
+        if (!fromFeature) {
+            if (error) {
+                *error = fmt::format(
+                    "Transition source geometry is unavailable for feature {}.",
+                    fromFeatureId->toString());
+            }
+            return {};
+        }
+        if (!toFeature) {
+            if (error) {
+                *error = fmt::format(
+                    "Transition target geometry is unavailable for feature {}.",
+                    toFeatureId->toString());
             }
             return {};
         }
 
-        auto fromSegment = resolveTransitionSegment(fromFeature, *fromConnectedEnd, referencedStage);
+        auto fromSegment = resolveTransitionSegment(fromFeature, *fromConnectedEnd, referencedName);
         if (!fromSegment) {
             if (error) {
                 *error = fmt::format(
@@ -686,7 +1096,7 @@ SelfContainedGeometry Validity::computeGeometry(
             return {};
         }
 
-        auto toSegment = resolveTransitionSegment(toFeature, *toConnectedEnd, referencedStage);
+        auto toSegment = resolveTransitionSegment(toFeature, *toConnectedEnd, referencedName);
         if (!toSegment) {
             if (error) {
                 *error = fmt::format(
@@ -697,40 +1107,53 @@ SelfContainedGeometry Validity::computeGeometry(
         }
 
         std::vector<Point> points;
-        points.reserve(3);
-        auto appendIfNotDuplicate = [&](Point const& point)
-        {
-            if (points.empty() || !pointsCoincide(points.back(), point)) {
-                points.emplace_back(point);
-            }
-        };
-        // Render the transition as outer-from -> shared transition midpoint -> outer-to.
-        // The midpoint prefers the hosting feature geometry (for example an intersection point)
-        // and otherwise falls back to the connected road endpoints.
-        appendIfNotDuplicate(fromSegment->outer_);
+        points.reserve(
+            fromSegment->innerToOuter_.size() +
+            toSegment->innerToOuter_.size() + 1);
+        // Preserve the exact incoming road slice in traversal order.
+        points.insert(
+            points.end(),
+            fromSegment->innerToOuter_.rbegin(),
+            fromSegment->innerToOuter_.rend());
+
+        // The pivot prefers the hosting feature geometry (for example an
+        // intersection point) and otherwise falls back to the connected road
+        // endpoints. Keep the pivot as an explicit point even if it coincides
+        // with an endpoint: the subset metadata must identify one unambiguous
+        // split between incoming and outgoing road slices.
+        Point pivot;
         bool appendedHostMidpoint = false;
         if (geometryCollection) {
             geometryCollection->forEachGeometry([&](auto&& geom) {
                 if (geom->geomType() != GeomType::Points || geom->numPoints() == 0) {
                     return true;
                 }
-                appendIfNotDuplicate(geom->pointAt(0));
+                pivot = geom->pointAt(0);
                 appendedHostMidpoint = true;
                 return false;
             });
         }
         if (!appendedHostMidpoint) {
-            if (pointsCoincide(fromSegment->inner_, toSegment->inner_)) {
-                appendIfNotDuplicate(fromSegment->inner_);
+            auto const& fromInner = fromSegment->innerToOuter_.front();
+            auto const& toInner = toSegment->innerToOuter_.front();
+            if (pointsCoincide(fromInner, toInner)) {
+                pivot = fromInner;
             } else {
-                appendIfNotDuplicate(Point{
-                    (fromSegment->inner_.x + toSegment->inner_.x) * 0.5,
-                    (fromSegment->inner_.y + toSegment->inner_.y) * 0.5,
-                    (fromSegment->inner_.z + toSegment->inner_.z) * 0.5,
-                });
+                pivot = Point{
+                    (fromInner.x + toInner.x) * 0.5,
+                    (fromInner.y + toInner.y) * 0.5,
+                    (fromInner.z + toInner.z) * 0.5,
+                };
             }
         }
-        appendIfNotDuplicate(toSegment->outer_);
+        if (transitionPivotIndex) {
+            *transitionPivotIndex = static_cast<uint32_t>(points.size());
+        }
+        points.push_back(pivot);
+        points.insert(
+            points.end(),
+            toSegment->innerToOuter_.begin(),
+            toSegment->innerToOuter_.end());
         return {points, {}, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
@@ -749,18 +1172,18 @@ SelfContainedGeometry Validity::computeGeometry(
         return {};
     }
 
-    // Line-based validities always resolve against the preferred line geometry
-    // for the chosen stage, not against arbitrary polygons or meshes.
-    auto geometry = resolveLineGeometry(geometryCollection, referencedStage);
+    // Line-based validities resolve by semantic geometry name, never by
+    // presentation fidelity or loading stage.
+    auto geometry = resolveLineGeometry(geometryCollection, referencedName);
 
     if (!geometry) {
         if (error) {
-            if (referencedStage) {
+            if (referencedName) {
                 *error = fmt::format(
-                    "Failed to find line geometry for validity stage {}.",
-                    *referencedStage);
+                    "Failed to find line geometry named '{}' for validity.",
+                    *referencedName);
             } else {
-                *error = "Failed to find line geometry for validity at the configured high-fidelity stage.";
+                *error = "Failed to find a line geometry for validity.";
             }
         }
         return {};
@@ -859,11 +1282,14 @@ TileFeatureLayer& MultiValidity::featureLayer()
 }
 
 model_ptr<Validity>
-MultiValidity::newPoint(Point pos, std::optional<uint32_t> geometryStage, Validity::Direction direction)
+MultiValidity::newPoint(
+    Point pos,
+    std::optional<std::string_view> geometryName,
+    Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetPoint(pos);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;
@@ -872,12 +1298,37 @@ MultiValidity::newPoint(Point pos, std::optional<uint32_t> geometryStage, Validi
 model_ptr<Validity> MultiValidity::newRange(
     Point start,
     Point end,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetRange(start, end);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> MultiValidity::newAttrPointIndex(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t index,
+    Validity::Direction direction)
+{
+    auto result = featureLayer().newValidity();
+    result->setAttrPointIndex(sequence, index);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> MultiValidity::newAttrPointIndexRange(
+    model_ptr<AttrPointSequence> const& sequence,
+    uint32_t start,
+    uint32_t end,
+    Validity::Direction direction)
+{
+    auto result = featureLayer().newValidity();
+    result->setAttrPointIndexRange(sequence, start, end);
     result->setDirection(direction);
     append(result);
     return result;
@@ -886,12 +1337,12 @@ model_ptr<Validity> MultiValidity::newRange(
 model_ptr<Validity> MultiValidity::newPoint(
     Validity::GeometryOffsetType offsetType,
     double pos,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetPoint(offsetType, pos);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;
@@ -900,22 +1351,22 @@ model_ptr<Validity> MultiValidity::newPoint(
 model_ptr<Validity> MultiValidity::newPoint(
     Validity::GeometryOffsetType offsetType,
     int32_t pos,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
-    return newPoint(offsetType, static_cast<double>(pos), geometryStage, direction);
+    return newPoint(offsetType, static_cast<double>(pos), geometryName, direction);
 }
 
 model_ptr<Validity> MultiValidity::newRange(
     Validity::GeometryOffsetType offsetType,
     double start,
     double end,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
     result->setOffsetRange(offsetType, start, end);
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
     result->setDirection(direction);
     append(result);
     return result;
@@ -925,14 +1376,14 @@ model_ptr<Validity> MultiValidity::newRange(
     Validity::GeometryOffsetType offsetType,
     int32_t start,
     int32_t end,
-    std::optional<uint32_t> geometryStage,
+    std::optional<std::string_view> geometryName,
     Validity::Direction direction)
 {
     return newRange(
         offsetType,
         static_cast<double>(start),
         static_cast<double>(end),
-        geometryStage,
+        geometryName,
         direction);
 }
 
@@ -957,10 +1408,30 @@ MultiValidity::newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Dir
 }
 
 model_ptr<Validity>
-MultiValidity::newGeomStage(uint32_t geometryStage, Validity::Direction direction)
+MultiValidity::newGeomName(std::string_view geometryName, Validity::Direction direction)
 {
     auto result = featureLayer().newValidity();
-    result->setGeometryStage(geometryStage);
+    result->setGeometryName(geometryName);
+    result->setDirection(direction);
+    append(result);
+    return result;
+}
+
+model_ptr<Validity> MultiValidity::newFeatureTransition(
+    model_ptr<FeatureId> const& fromFeatureId,
+    Validity::TransitionEnd fromConnectedEnd,
+    model_ptr<FeatureId> const& toFeatureId,
+    Validity::TransitionEnd toConnectedEnd,
+    uint32_t transitionNumber,
+    Validity::Direction direction)
+{
+    auto result = featureLayer().newValidity();
+    result->setFeatureTransition(
+        fromFeatureId,
+        fromConnectedEnd,
+        toFeatureId,
+        toConnectedEnd,
+        transitionNumber);
     result->setDirection(direction);
     append(result);
     return result;
@@ -974,16 +1445,16 @@ model_ptr<Validity> MultiValidity::newFeatureTransition(
     uint32_t transitionNumber,
     Validity::Direction direction)
 {
-    auto result = featureLayer().newValidity();
-    result->setFeatureTransition(
-        fromFeature,
+    if (!fromFeature || !toFeature) {
+        raise("MultiValidity::newFeatureTransition requires both from/to features.");
+    }
+    return newFeatureTransition(
+        fromFeature->id(),
         fromConnectedEnd,
-        toFeature,
+        toFeature->id(),
         toConnectedEnd,
-        transitionNumber);
-    result->setDirection(direction);
-    append(result);
-    return result;
+        transitionNumber,
+        direction);
 }
 
 model_ptr<Validity> MultiValidity::newComplete(Validity::Direction direction)

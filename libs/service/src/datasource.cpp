@@ -11,6 +11,48 @@
 namespace mapget
 {
 
+bool addAuthHeaderRegexMatchOption(
+    AuthHeaderRegexMap& alternatives,
+    std::string header,
+    std::regex re)
+{
+    std::ranges::transform(
+        header,
+        header.begin(),
+        [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+    return alternatives.emplace(
+        std::move(header),
+        std::move(re)).second;
+}
+
+bool authHeadersMatch(
+    AuthHeaderRegexMap const& alternatives,
+    AuthHeaders const& clientHeaders)
+{
+    if (alternatives.empty()) {
+        return true;
+    }
+
+    for (auto const& [name, value] : clientHeaders) {
+        auto normalizedName = name;
+        std::ranges::transform(
+            normalizedName,
+            normalizedName.begin(),
+            [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+        auto pattern = alternatives.find(normalizedName);
+        if (pattern != alternatives.end() &&
+            std::regex_match(value, pattern->second))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 TileLayer::Ptr DataSource::get(
     const MapTileKey& k,
     Cache::Ptr& cache,
@@ -28,45 +70,24 @@ TileLayer::Ptr DataSource::get(
     case mapget::LayerType::Features: {
         auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
             k.tileId_,
-            info.nodeId_,
+            info.stringPoolId_,
             info.mapId_,
             info.getLayer(k.layerId_),
-            cache->getStringPool(info.nodeId_));
+            cache->getStringPool(info.stringPoolId_));
         if (loadStateCallback) {
             tileFeatureLayer->setLoadStateCallback(loadStateCallback);
         }
-        if (layerInfo->stages_ > 1 && k.stage_ != UnspecifiedStage) {
-            tileFeatureLayer->setStage(k.stage_);
-            if (k.stage_ > 0) {
-                auto stageZeroKey = k;
-                stageZeroKey.stage_ = 0;
-                auto stageZeroLookup = cache->getTileLayer(stageZeroKey, info);
-                auto stageZeroLayer =
-                    std::dynamic_pointer_cast<TileFeatureLayer>(stageZeroLookup.tile);
-                if (stageZeroLayer) {
-                    std::vector<std::string> expectedFeatureIds;
-                    expectedFeatureIds.reserve(stageZeroLayer->size());
-                    for (auto const& feature : *stageZeroLayer) {
-                        expectedFeatureIds.emplace_back(feature->id()->toString());
-                    }
-                    tileFeatureLayer->setExpectedFeatureSequence(std::move(expectedFeatureIds));
-                }
-            }
-        } else {
-            tileFeatureLayer->setStage(std::nullopt);
-        }
         fill(tileFeatureLayer);
-        tileFeatureLayer->validateExpectedFeatureSequenceComplete();
         result = tileFeatureLayer;
         break;
     }
     case mapget::LayerType::SourceData: {
         auto tileSourceDataLayer = std::make_shared<TileSourceDataLayer>(
             k.tileId_,
-            info.nodeId_,
+            info.stringPoolId_,
             info.mapId_,
             info.getLayer(k.layerId_),
-            cache->getStringPool(info.nodeId_));
+            cache->getStringPool(info.stringPoolId_));
         if (loadStateCallback) {
             tileSourceDataLayer->setLoadStateCallback(loadStateCallback);
         }
@@ -88,33 +109,23 @@ TileLayer::Ptr DataSource::get(
 
 void DataSource::requireAuthHeaderRegexMatchOption(std::string header, std::regex re)
 {
-    std::ranges::transform(header, header.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-    authHeaderAlternatives_.insert({std::move(header), std::move(re)});
+    addAuthHeaderRegexMatchOption(
+        authHeaderAlternatives_,
+        std::move(header),
+        std::move(re));
 }
 
 bool DataSource::isDataSourceAuthorized(
     AuthHeaders const& clientHeaders) const
 {
-    if (authHeaderAlternatives_.empty())
-        return true;
-
-    for (auto const& [k, v] : clientHeaders) {
-        auto key = k;
-        std::ranges::transform(key, key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-        auto authHeaderPatternIt = authHeaderAlternatives_.find(key);
-        if (authHeaderPatternIt != authHeaderAlternatives_.end()) {
-            if (std::regex_match(v, authHeaderPatternIt->second)) {
-                return true;
-            }
-        }
-    }
-
-    return false;
+    return authHeadersMatch(
+        authHeaderAlternatives_,
+        clientHeaders);
 }
 
-StringId DataSource::cachedStringPoolOffset(const std::string& nodeId, Cache::Ptr const& cache)
+StringId DataSource::cachedStringPoolOffset(const std::string& stringPoolId, Cache::Ptr const& cache)
 {
-    return cache->cachedStringPoolOffset(nodeId);
+    return cache->cachedStringPoolOffset(stringPoolId);
 }
 
 void DataSource::setTtl(std::optional<std::chrono::milliseconds> ttl)
@@ -127,9 +138,21 @@ std::optional<std::chrono::milliseconds> DataSource::ttl() const
     return ttl_;
 }
 
-std::vector<LocateResponse> DataSource::locate(const LocateRequest& req)
+std::vector<LocateCandidate> DataSource::locate(
+    LocateRequest const&)
 {
     return {};
+}
+
+std::optional<AttachmentResponse> DataSource::attachment(
+    AttachmentRequest const&)
+{
+    return {};
+}
+
+std::optional<uint64_t> DataSource::estimatedRetainedMemoryBytes() const
+{
+    return std::nullopt;
 }
 
 }

@@ -24,7 +24,7 @@ For integration with configuration UIs there is an additional top‑level key:
 
 - `http-settings` (optional) stores HTTP‑related settings used by frontends or tooling. Mapget itself does not interpret its contents. It is exposed through `/config.model` only when the active datasource schema includes `http-settings`, typically via a deployment-specific `--config-schema` patch.
 
-Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, an embedding application may register a frontend settings section for its own UI defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file.
+Embedded applications can also register additional public top-level sections for `GET /config`. These sections are returned as siblings of `model`, not inside `model`, and are outside mapget's datasource schema. For example, an embedding application may register a frontend settings section for its own UI defaults. `POST /config` remains scoped to datasource-model keys and preserves unknown public sections in the YAML file. An embedding application may separately register exact opaque field paths for revision-guarded `PATCH /config`; this is not an arbitrary JSON/YAML patch facility.
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
@@ -170,6 +170,7 @@ Each layer configuration can specify:
 
 - `name`: layer name.
 - `featureType`: feature type identifier.
+- `kind`: `auto` (the legacy geometry-driven generator, default) or `traffic`.
 - `geometry`: structure describing geometry type and parameters such as density and curvature.
 - `attributes`: optional description of top‑level and layered attributes.
 - `relations`: optional relation definitions between features in different layers.
@@ -198,6 +199,45 @@ sources:
 ```
 
 The generator will produce deterministic but varied features for any requested tile ID. The full set of fields is defined in the `gridsource` library and can be explored by looking at example configurations or the header file.
+
+Building layers configured with `geometry.type: polygon` emit one polygon
+footprint per building; `geometry.type: mesh` retains the legacy pair of flat
+triangles. A generated numeric attribute such as `height` can therefore drive
+Erdblick's `polygon-height-expression` without coupling the datasource to a
+particular visualization style.
+
+#### Road-backed live traffic
+
+A `kind: traffic` layer is a separate Grid-specific overlay over one enabled line
+road layer. It emits stable road geometry and IDs while traffic flow and speed values
+change on aligned time buckets:
+
+```yaml
+sources:
+  - type: GridDataSource
+    mapId: TrafficGrid
+    layers:
+      - name: DevSrc-RoadLayer
+        featureType: DevSrc-Road
+        geometry: {type: line}
+      - name: DevSrc-TrafficLayer
+        featureType: DevSrc-Traffic
+        kind: traffic
+        geometry: {type: line}
+        traffic:
+          roadLayer: DevSrc-RoadLayer
+          tileLevel: 13
+          updateIntervalSeconds: 5
+          seed: 0
+```
+
+`roadLayer` is required and must uniquely name an enabled, non-traffic line layer.
+`tileLevel` accepts 13–15 (default 13), `updateIntervalSeconds` accepts 1–60
+(default 5), and `seed` is an unsigned 32-bit value (default 0). Traffic layers do
+not accept generic attributes, relations, or geometry tuning because their feature
+contract is fixed. The timestamp is aligned to the current update bucket and the
+tile TTL equals the update interval, so normal cache expiry and sparse subscription
+renewal pull a new snapshot. This interval is not the datasource's generic `ttl`.
 
 <!-- --8<-- [end:grid] -->
 
@@ -365,24 +405,59 @@ All of `mapget serve`’s command-line switches can be persisted in the same YAM
 ```yaml
 mapget:
   serve:
+    host: 127.0.0.1             # --host (default 0.0.0.0, all IPv4 interfaces)
     port: 9000                  # --port
+    wait-ms: 5000               # --wait-ms, listener startup timeout
+    worker-count: 32            # --worker-count, global service job cap
     cache-type: persistent      # --cache-type [memory|persistent|none]
     cache-dir: /var/lib/mapget/cache.db   # --cache-dir (used with persistent cache)
     cache-max-tiles: 20000      # --cache-max-tiles (0 disables the limit)
     clear-cache: false          # --clear-cache
-    allow-post-config: true     # --allow-post-config (enables POST /config)
+    allow-post-config: true     # --allow-post-config (enables POST/PATCH config writes)
     no-get-config: false        # --no-get-config (hides datasource model in GET /config)
+    allow-cache-reset: true     # --allow-cache-reset (enables guarded POST /cache/reset)
+    cache-reset-auth-header:    # repeatable --cache-reset-auth-header HEADER=REGEX
+      - 'X-User-Role=^cache-admin$'
     webapp: /srv/my-ui          # --webapp, one application document root
     static-mount:               # --static-mount, additional static aliases
       - /assets:/srv/assets
-    memory-trim-binary-interval: 100  # --memory-trim-binary-interval
-    memory-trim-json-interval: 0      # --memory-trim-json-interval
+    memory-trim-period-seconds: 10    # --memory-trim-period-seconds (0 disables)
 
 http-settings: ...
 sources: ...
 ```
 
-Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, in-memory cache, port 0, GET `/config` enabled, POST `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
+Adjust or omit fields as needed; unspecified options fall back to the same defaults as the CLI flags (for example, host `0.0.0.0`, port 0, a 5000 ms startup wait, in-memory cache, GET `/config` enabled, and configuration writes through `/config` disabled). Static mount entries use `[<url-scope>:]<filesystem-path>` syntax and are served as plain files; mapget does not attach application-specific meaning to those files.
+
+`worker-count` bounds all concurrently executing tile-load and derived filter
+jobs across the service. Every worker is homogeneous; an idle datasource does
+not reserve threads. `DataSourceInfo.maxParallelJobs` remains a separate
+per-primary-datasource permit limit; add-ons run inside their matching primary
+tile job. The default is twice the detected hardware thread count, clamped to
+the inclusive range 16 through 32.
+
+When `cache-max-bytes` is omitted, the in-memory cache derives its byte budget
+as `cache-max-tiles * 512 KiB`. The default `1024` tile limit therefore retains
+at most `512 MiB` of serialized tile payloads. Index and allocator overhead are
+reported separately and are not part of that payload budget.
+
+On Linux with glibc, mapget trims unused allocator pages from a dedicated
+maintenance thread every 10 seconds by default. Set
+`memory-trim-period-seconds` to `0` to disable it. Other platforms do not
+currently use an allocator-maintenance implementation in mapget, so the
+default there is disabled.
+
+Cache reset is disabled by default. Enabling it without at least one valid
+`cache-reset-auth-header` entry fails startup. Each entry is split at the first
+`=` into an HTTP header name and regular expression, so expressions may contain
+additional equals signs. Header names are case-insensitive, values use full
+regular-expression matching, and alternatives are ORed. The reset request must
+also satisfy the selected map's normal datasource `auth-header` restriction.
+
+Use this gate only behind a trusted authentication proxy. The proxy must strip
+client-supplied copies of the identity header, inject its authenticated value,
+and forward the same identity context to `/config`, `/sources`,
+`/cache/reset`, and the tile endpoints.
 
 Datasource editor visibility is controlled by `allow-post-config` and `no-get-config`:
 

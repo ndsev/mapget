@@ -65,15 +65,13 @@ ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j)
 MapTileKey makeCanonicalRequestedTileKey(
     std::string_view mapId,
     std::string_view layerId,
-    TileId tileId,
-    uint32_t stage)
+    TileId tileId)
 {
     return MapTileKey(
         REQUEST_TILE_LAYER_TYPE,
         std::string(mapId),
         std::string(layerId),
-        tileId,
-        stage);
+        tileId);
 }
 
 /** Normalize an existing backend tile key into the request-key namespace. */
@@ -83,38 +81,53 @@ MapTileKey makeCanonicalRequestedTileKey(MapTileKey key)
     return key;
 }
 
-/** Decorate a canonical tile key so concurrent search results do not collide. */
-MapTileKey makeSearchRequestedTileKey(MapTileKey key, std::string_view searchRequestKey)
+std::string filterSubscriptionKey(
+    std::string_view filterId,
+    uint64_t generation)
+{
+    return std::string(filterId) + ":" +
+        std::to_string(generation);
+}
+
+std::string filterRequestKey(
+    std::string_view filterId,
+    uint64_t generation)
+{
+    return filterSubscriptionKey(filterId, generation);
+}
+
+/** Decorate a canonical tile key so concurrent subsets do not collide. */
+MapTileKey makeFilterRequestedTileKey(
+    MapTileKey key,
+    std::string_view filterKey)
 {
     key = makeCanonicalRequestedTileKey(std::move(key));
-    key.layerId_.append("#search:");
-    key.layerId_.append(searchRequestKey);
+    key.layerId_.append("#filter:");
+    key.layerId_.append(filterKey);
     return key;
 }
 
-/** Build either a normal tile key or the search-specific key for the same source tile. */
+/** Build either a normal tile key or filter-specific key for the same source tile. */
 MapTileKey makeRequestedTileKey(
     MapTileKey key,
-    std::optional<std::string_view> searchRequestKey)
+    std::optional<std::string_view> filterKey)
 {
-    if (searchRequestKey && !searchRequestKey->empty()) {
-        return makeSearchRequestedTileKey(std::move(key), *searchRequestKey);
+    if (filterKey && !filterKey->empty()) {
+        return makeFilterRequestedTileKey(std::move(key), *filterKey);
     }
     return makeCanonicalRequestedTileKey(std::move(key));
 }
 
-/** Extract the search request key carried by backend-produced search-result layers. */
-std::optional<std::string> searchRequestKey(TileLayer::Ptr const& layer)
+/** Extract the subscription identity carried by a subset layer. */
+std::optional<std::string> filterRequestKey(TileLayer::Ptr const& layer)
 {
-    if (!std::dynamic_pointer_cast<TileSearchResultLayer>(layer)) {
+    auto subset = std::dynamic_pointer_cast<TileSubsetLayer>(layer);
+    if (!subset) {
         return std::nullopt;
     }
-    auto info = layer->info();
-    auto it = info.find("searchRequestKey");
-    if (it == info.end() || !it->is_string()) {
-        return std::nullopt;
-    }
-    return it->get<std::string>();
+    return filterRequestKey(
+        subset->filterId(),
+        subset->generation());
 }
 
 } // namespace mapget::detail

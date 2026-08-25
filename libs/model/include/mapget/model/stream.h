@@ -48,10 +48,8 @@ public:
          * Payload: UTF-8 JSON bytes (not null-terminated).
          */
         RequestContext = 6,
-        /**
-         * Binary TileSearchResultLayer payload for server-side search-as-map streams.
-         */
-        TileSearchResultLayer = 7,
+        /** Binary TileSubsetLayer payload for server-evaluated filter streams. */
+        TileSubsetLayer = 7,
         /**
          * JSON-encoded datasource catalog invalidation for interactive streams.
          *
@@ -96,8 +94,27 @@ public:
      * - Version 1.9:
      *   + Added typed SIMFIL trace aggregates to TileSearchResultLayer.
      *   + Added SourceCatalogChange control messages.
+     * - Version 2.0:
+     *   + Adopted NDS.Live-compatible packed tile IDs.
+     * - Version 2.1:
+     *   + Added presentation address scopes to SourceData compound nodes.
+     * - Version 3.0:
+     *   - Removed staged tile loading and feature LOD.
+     *   - Replaced geometry stage bytes with layer-local semantic name indices.
+     *   - Renamed datasource node identity to string-pool identity.
+     *   - Replaced TileSearchResultLayer with multi-channel TileSubsetLayer.
+     * - Version 3.1:
+     *   + Added per-output delivery epochs to TileSubsetLayer.
+     * - Version 3.2:
+     *   + Added shared AttrPointSequence definitions and AttrPoint index/range
+     *     validity descriptions.
+     * - Version 3.3:
+     *   + Added tile-scoped feature-ID expressions to portable locate selectors.
+     * - Version 4.0:
+     *   - Removed delivery epochs from TileSubsetLayer. Interactive delivery
+     *     ownership is now represented by pending snapshots and handoff state.
      */
-    static constexpr Version CurrentProtocolVersion{2, 0, 0};
+    static constexpr Version CurrentProtocolVersion{4, 0, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -217,7 +234,7 @@ public:
          * This operator is called by the Reader to obtain the string pool
          * dictionary for a particular node id.
          */
-        virtual std::shared_ptr<StringPool> getStringPool(const std::string_view& nodeId);
+        virtual std::shared_ptr<StringPool> getStringPool(const std::string_view& stringPoolId);
 
         /**
          * Obtain the highest known string id for each data source node id,
@@ -227,8 +244,8 @@ public:
         [[nodiscard]] virtual StringPoolOffsetMap stringPoolOffsets() const;
 
     protected:
-        std::shared_mutex stringPoolCacheMutex_;
-        std::map<std::string, std::shared_ptr<StringPool>, std::less<void>> stringPoolPerNodeId_;
+        mutable std::shared_mutex stringPoolCacheMutex_;
+        std::map<std::string, std::shared_ptr<StringPool>, std::less<void>> stringPoolPerStringPoolId_;
     };
 };
 

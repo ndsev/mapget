@@ -21,7 +21,7 @@ Tiles do not exist in isolation: each datasource publishes metadata that tells c
 classDiagram
   direction LR
   class DataSourceInfo {
-    +string nodeId
+    +string stringPoolId
     +string mapId
     +map<string, LayerInfo> layers
     +int maxParallelJobs
@@ -34,9 +34,6 @@ classDiagram
     +LayerType type
     +vector<int> zoomLevels
     +vector<Coverage> coverage
-    +uint32_t stages
-    +vector<string> stageLabels
-    +uint32_t highFidelityStage
     +bool canRead
     +bool canWrite
     +Version version
@@ -69,7 +66,11 @@ classDiagram
 ```
 
 - **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
-- **`LayerInfo`** describes a single layer: type (`Features` or `SourceData`), advertised zoom levels, coverage rectangles, staged-loading metadata (`stages`, optional `stageLabels`, `highFidelityStage`), read/write flags, semantic version and optional `featureModelSchema`. The service uses this to validate client requests, and the reader/writer uses it when parsing tile streams.
+- **`LayerInfo`** describes a single layer: type (`Features` or
+  `SourceData`), advertised zoom levels, coverage rectangles, read/write
+  flags, semantic version and optional `featureModelSchema`. The service uses
+  this to validate requests, and the reader/writer uses it when parsing tile
+  streams.
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
 - **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
 
@@ -89,57 +90,58 @@ Feature layers may attach `LayerInfo.featureModelSchema`, a typed `LayerSchema` 
 - Large repeated schema branches may be shared through ordinary local JSON Schema `$ref` entries under `definitions`; consumers must resolve local refs before interpreting mapget-specific annotations.
 - `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
 
-Search-facing consumers use the schema in several distinct ways. Completion uses direct and nested schema fields for query suggestions. `LayerSchema::normalizeSearchQuery` is the shared query post-processing entry point used by mapget and Erdblick: it compiles through SIMFIL's schema rewrite engine, inspects AST-derived referenced schema paths, chooses feature or attribute scope, and emits guarded attribute-root predicates where needed. Feature-level aggregate calls such as `count(...)` do not trigger attribute-scope inference, and broad attribute matches are left unrewritten once they exceed the guarded-rewrite fan-out limit. Combined JSON Schema branches of the same logical kind are merged for search metadata, so union-like condition values expose fields from every alternative. Schema-aware wildcard evaluation can skip branches that cannot contain a requested field. Result styling uses scalar field metadata, enum domains and numeric ranges to initialize labels, categories and gradients. None of these consumers replace the emitted feature data; the schema only describes and constrains it.
+Filter/search-facing consumers use the schema in several distinct ways.
+Completion uses direct and nested schema fields for query suggestions.
+`LayerSchema::normalizeSearchQuery` is the optional search-query
+post-processing entry point used by mapget and Erdblick: it compiles through
+SIMFIL's schema rewrite engine, inspects AST-derived referenced schema paths,
+chooses feature or attribute scope, and emits guarded attribute-root
+predicates where needed. Ordinary `/filter` filters and projections are always
+schema-compiled in their actual contexts, even when normalization is disabled.
+Schema-aware wildcard evaluation can skip branches which cannot contain a
+requested field. Result styling uses scalar field metadata, enum domains and
+numeric ranges to initialize labels, categories and gradients. None of these
+consumers replace the emitted feature data; the schema only describes and
+constrains it.
 
 ### Add‑on datasources
 
-Add‑on datasources are registered with `isAddOn` and must share the same `mapId` (and layer IDs) as the base datasource they extend. The service registers them without their own worker threads and evaluates them only while serving feature tiles from the base datasource:
+Add‑on datasources are registered with `isAddOn` and must share the same `mapId` (and layer IDs) as the base datasource they extend. They have no independent scheduler permits; the worker serving a base feature tile evaluates matching add-ons inline:
 
 - Clients request tiles for the base datasource map ID. When a base feature tile is loaded, the service also fetches the matching tile (same map, layer, and tile ID) from every add‑on datasource.
 - The base tile is re-encoded into a combined string pool so that strings introduced by the add‑on tile can be referenced.
 - Features from the add‑on tile are cloned into the base tile: attributes, attribute layers, geometries, and relations are merged into matching base features; if no match exists, a new feature is created in the base tile.
-- If an add‑on feature uses secondary IDs, the service issues a `locate` call against the base datasource to resolve them to primary IDs before merging.
+- If an add‑on feature uses secondary IDs, the service asks the base datasource
+  for cheap locate candidates, applies their portable selectors to the already
+  loaded base tile, and merges into the resulting primary features. Locate
+  never loads or reconstructs the tile itself.
 - Only feature layers participate in this overlay path; add‑ons cannot introduce standalone maps or layers that are not already present in the base datasource metadata.
 
 Clients see both base and add‑on entries in the `/sources` response (add‑ons are marked `isAddOn`), but the base datasource remains the entry point for tile requests. This mechanism is used by Python LiveSource overlays that attach Road and Lane attribute layers to an existing NDS.Live or NDS.Classic base map.
 
-## Staged loading and feature LOD
+## Complete source tiles and semantic geometry
 
-Mapget layer metadata can describe staged loading as well as a per-feature level-of-detail (LOD) signal used by low-fidelity renderers.
+Protocol 3 removed staged loading and backend feature LOD. A datasource request
+produces one complete `TileFeatureLayer`. Mapget may cache that source tile,
+but interactive clients normally receive immutable style/query subsets rather
+than the complete model.
 
-```mermaid
-flowchart LR
-  LayerInfo["LayerInfo<br/>stages / stageLabels / highFidelityStage"]
-  ClientState["Client tracks nextMissingStage<br/>per tile"]
-  RequestJson["/tiles request<br/>tileIdsByNextStage[]"]
-  Service["Service expands each tile to<br/>requested stages"]
-  Stage0["Stage 0<br/>early geometry payload"]
-  Stage1["Stage 1<br/>full geometry / non-ADAS enrichment"]
-  Stage2["Stage 2<br/>ADAS enrichment"]
-  FeatureLOD["Feature.lod<br/>LOD_0..LOD_7"]
-  ClientPolicy["Low-fi client policy<br/>may cap rendered LOD"]
+Every geometry can carry an optional semantic name such as `centerline`,
+`topology`, `position`, `boundary`, `ADAS`, or `reference`. The layer stores
+those names compactly:
 
-  LayerInfo --> ClientState
-  ClientState --> RequestJson --> Service
-  LayerInfo --> Service
-  Service --> Stage0
-  Service --> Stage1
-  Service --> Stage2
-  Stage0 --> FeatureLOD
-  FeatureLOD --> ClientPolicy
-```
+- byte `0` means unnamed;
+- bytes `1..255` refer to entries in a layer-local name table;
+- geometry copied between model pools is remapped into the destination table;
+- validity geometry references use the same representation.
 
-- `LayerInfo.stages` declares how many stages exist for a layer. `stageLabels` are presentation metadata only. `highFidelityStage` is the actual rule-fidelity cutover used by consumers: stages below it are low-fidelity, stages at/above it are high-fidelity.
-- Clients request staged tiles with `tileIdsByNextStage`: bucket `i` contains tiles whose next missing stage is `i`. The service expands each tile to the remaining stages for that layer.
-- Payload partitioning is datasource-defined. In current `mapget-live-cpp`, the common patterns are:
-  ```
-  SINGLE_STAGE: stage `0` carries the complete feature payload.
-  GEOMETRY_THEN_ATTRIBUTES: stage `0` carries full geometry/internal relations, stage `1` carries non-ADAS attributes and relations.
-  LOW_FI_HIGH_FI_ADAS: stage `0` carries the low-fidelity geometry payload, stage `1` carries full geometry plus non-ADAS enrichment, stage `2` carries ADAS-only enrichment.
-  LOW_FI_FULL_GEOM_HIGH_FI_ADAS: stage `0` already carries the canonical base geometry, stage `1` adds non-ADAS enrichment, stage `2` adds ADAS-only enrichment.
-  ```
-- A consequence of the last two patterns: stage number and stage label do not, by themselves, tell you whether a stage is “high fidelity”. Use `highFidelityStage` instead.
-- Each feature also carries a backend `lod` (`LOD_0..LOD_7`). This is independent of stage: a stage answers “which payload slice arrived?”, while `lod` answers “how aggressively may a low-fidelity renderer cull this feature?”.
+Names describe data semantics. They do not encode high/low fidelity. A
+stylesheet chooses a name and uses ordinary feature attributes—such as FRC or
+PRC—to express presentation density.
+
+Large GLBs are optional named attachments. A feature/subset layer carries the
+attachment name and lightweight geometry/AABB nodes; attachment bytes are
+produced and transferred separately on demand.
 
 ## Feature IDs
 
@@ -214,6 +216,56 @@ Transition-number validities are exposed semantically rather than as baked helpe
 }
 ```
 
+### Interwoven attribute points
+
+Some source formats define logical attribute points between the vertices of a
+canonical line geometry. `AttrPointSequence` preserves that source indexing
+without duplicating every shape point. A sequence references one local feature
+and one of its attached line geometries; only inserted `AttrPoint` coordinates
+are stored. Both shape vertices and inserted points then occupy stable indices
+in the complete interwoven sequence.
+
+Strict mapget GeoJSON publishes shared definitions once at FeatureCollection
+scope:
+
+```json
+"attrPointSequences": [{
+  "id": 0,
+  "featureId": "Road.545555028.1",
+  "geometryIndex": 0,
+  "geometryName": "centerline",
+  "attrPoints": [{
+    "index": 1,
+    "point": [11.305, 48.005, 0.0]
+  }]
+}]
+```
+
+Validities refer to these definitions by tile-local index. A point uses
+`attrPointIndex`; an inclusive range uses `attrPointIndexRange`:
+
+```json
+"validity": {
+  "direction": "POSITIVE",
+  "attrPointIndexRange": {
+    "sequence": {"$mapgetAttrPointSequence": 0},
+    "start": 1,
+    "end": 3
+  }
+}
+```
+
+`featureId` and `geometryIndex` are authoritative. `geometryName` is emitted
+when present as a readable consistency check. Sequences and individual
+inserted points may carry `_sourceData`; strict import/export preserves both.
+Consumers can resolve each logical index to its WGS-84 coordinate or metric
+offset through the sequence while retaining the original source index for
+inspection. C++ callers can materialize an inclusive range with
+`AttrPointSequence::points`; Python exposes the inserted nodes through
+`AttrPointSequence.attr_points()` and returns an `AttrPoint` from
+`append_attr_point`. Sequence- and point-level source references must be
+created by the same `TileFeatureLayer` that owns the sequence.
+
 ### Validity internals
 
 The validity objects exposed in JSON map directly to the `Validity` C++ class:
@@ -222,6 +274,7 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
   - `SimpleGeometry` embeds or references a complete geometry object.
   - `OffsetPointValidity` and `OffsetRangeValidity` point into an existing geometry by name and add offsets.
   - `FeatureTransition` references two features plus their connected ends; mapget derives the rendered transition polyline from that semantic payload.
+  - `AttrPointIndexValidity` and `AttrPointIndexRangeValidity` reference a shared interwoven `AttrPointSequence` by source-faithful logical index.
   - `NoGeometry` is used when only direction or feature references are available.
 - **Geometry offset type** controls the coordinate space used for offsets:
 
@@ -241,6 +294,7 @@ Attributes and relations can attach their own validity lists, so a datasource ca
 Features can refer back to their original source material and to other features.
 
 - Source data references group pointers to raw data, such as blobs or records in an external system. They are organised per feature in a `SourceDataReferenceCollection`.
+- A `SourceDataCompoundNode` may be marked as an address scope. Its stored address remains canonical and absolute, but presentation clients may show that node and its descendants relative to the scope node's offset. This is useful for records embedded in a larger virtual address space, such as decoded SQL blob cells.
 - Relations connect a feature to other features by ID. Each relation has a `name`, a target feature ID and optional validity information for both the source and the target.
 
 These mechanisms make it possible to keep a clean separation between the processed map model and the original data sources while still preserving traceability.
@@ -269,7 +323,7 @@ The most important model classes and their relationships are summarised here:
 classDiagram
   class TileLayer {
     +TileId tileId
-    +string nodeId
+    +string stringPoolId
     +string mapId
     +LayerInfo~&~ layerInfo()
     +nlohmann::json toJson()
@@ -283,11 +337,23 @@ classDiagram
     +complete(query, point, opts)
   }
 
-  class TileSearchResultLayer {
-    +vector~SearchResult~ results
-    +vector~string~ resultFields
-    +json diagnostics
-    +json traces
+  class TileSubsetLayer {
+    +FilterIdentity filterIdentity()
+    +vector~TileSubsetChannel~ channels
+    +vector~TileSubsetDependency~ dependencies
+    +vector~FilterIssue~ issues
+    +vector~FilterTrace~ traces
+  }
+
+  class TileSubsetChannel {
+    +string channelId()
+    +Scope scope()
+    +vector~string~ featureFields()
+    +vector~string~ entryFields()
+    +forEachFeatureEntry(cb)
+    +forEachAttributeValidityEntry(cb)
+    +forEachRelationEntry(cb)
+    +forEachGroupEntry(cb)
   }
 
   class TileSourceDataLayer {
@@ -295,10 +361,15 @@ classDiagram
     +Environment& evaluationEnvironment()
   }
 
+  class SourceDataCompoundNode {
+    +SourceDataAddress sourceDataAddress()
+    +void setSourceDataAddress(address)
+    +bool isSourceDataAddressScope()
+    +void setSourceDataAddressScope(enabled)
+  }
+
   class Feature {
     +string_view typeId()
-    +LOD lod()
-    +void setLod(LOD)
     +model_ptr~FeatureId~ id()
     +model_ptr~GeometryCollection~ geom()
     +model_ptr~AttributeLayerList~ attributeLayers()
@@ -344,7 +415,7 @@ classDiagram
     +model_ptr~Validity~ newRange(...)
     +model_ptr~Validity~ newGeometry(...)
     +model_ptr~Validity~ newFeatureId(...)
-    +model_ptr~Validity~ newGeomStage(...)
+    +model_ptr~Validity~ newGeometry(...)
     +model_ptr~Validity~ newFeatureTransition(...)
     +model_ptr~Validity~ newComplete(...)
     +model_ptr~Validity~ newDirection(...)
@@ -373,11 +444,12 @@ classDiagram
   }
 
   TileLayer <|-- TileFeatureLayer
-  TileLayer <|-- TileSearchResultLayer
+  TileLayer <|-- TileSubsetLayer
   TileLayer <|-- TileSourceDataLayer
+  TileSourceDataLayer "1" *-- "many" SourceDataCompoundNode
 
   simfil_ModelPool <|-- TileFeatureLayer
-  simfil_ModelPool <|-- TileSearchResultLayer
+  simfil_ModelPool <|-- TileSubsetLayer
   simfil_ModelPool <|-- TileSourceDataLayer
 
   simfil_ModelNode <|-- Feature
@@ -393,6 +465,7 @@ classDiagram
   simfil_ModelNode <|-- SourceDataReferenceItem
 
   TileFeatureLayer "1" *-- "many" Feature
+  TileSubsetLayer "1" *-- "many" TileSubsetChannel
   Feature "1" *-- "0..1" GeometryCollection
   GeometryCollection "1" *-- "many" Geometry
   Feature "1" *-- "0..1" AttributeLayerList
@@ -411,15 +484,45 @@ classDiagram
 
 From a simfil perspective, each of the model classes shown above is either a direct `simfil::ModelNode` derivative or a thin wrapper built on simfil’s node types. `TileFeatureLayer` and `TileSourceDataLayer` act as model pools: they own the storage for all nodes in a tile and provide the environment required to evaluate simfil expressions directly against tile content.
 
-## Search result layers
+## Subset layers
 
-`TileSearchResultLayer` is the stream/model layer used for server-side search results. It is transient and is emitted by `/search` or interactive WebSocket search; it is not a datasource-owned feature tile and is not stored in the normal tile cache.
+`TileSubsetLayer` is the immutable result of one `/filter` definition for one
+output tile. It derives from `TileFeatureModelLayerBase`, so it reuses the
+compact feature-ID and geometry model, but it does not contain complete source
+features.
 
-A search result layer keeps the source map, source layer and source tile metadata so clients can route the result back to the correct map context. Each result stores the matched feature ID, result geometry, and the values requested through `withFields`. Feature-scope results copy display geometry from the matched feature. Attribute-scope results prefer the computed validity geometry for the matched attribute/validity context and fall back to the owning feature display geometry when a validity geometry cannot be derived.
+The layer owns every result node. Its ordered `TileSubsetChannel` roots contain
+aggregate arrays which reference typed column entries:
 
-Result layers also carry parsed Simfil diagnostics and typed `trace()` aggregates. Search UIs use those fields for diagnostics, value summaries, generated labels, color categories and numeric gradients.
+- `FeatureEntry`: feature ID, selected geometry collection, and feature
+  projections;
+- `AttributeValidityEntry`: feature ID, effective geometry, host projections,
+  entry projections, attribute identity/index, and explicit validity
+  metadata;
+- `RelationEntry`: one resolved source/target pair, endpoint feature entries
+  and geometries, relation identity/provenance/direction, and projected values;
+- `GroupEntry`: stable group key, representative feature/geometry, projected
+  values, and all participating feature IDs.
 
-When search query normalization rewrites a request, `TileSearchResultLayer.info` includes both `originalSearchQuery` and `normalizedSearchQuery`. This makes REST clients and UI diagnostics able to distinguish the visible query from the guarded backend predicate.
+A channel's `scope()` determines which typed aggregate is terminal.
+Relation-channel feature entries are supporting endpoints rather than
+additional terminal rows.
+
+Each subset also carries:
+
+- `filterId + generation` semantic identity;
+- the timestamp and positive TTL pair of the finite-lifetime source
+  dependency with the earliest absolute expiry, when one exists;
+- source dependencies and `sourceFeatureCount`;
+- inherited source `info()` statistics plus subset-owned terminal-entry and
+  stored-geometry vertex counts;
+- aggregated structured issues and typed SIMFIL traces;
+- an optional attachment name.
+
+During service execution one output state may own an unpublished,
+single-writer work-in-progress subset. Cross-tile contributions contain source
+feature pointers/descriptors, not partially constructed model nodes. The
+completed value is serialized once and is immutable to consumers.
 
 ## Binary tile streaming
 
@@ -434,8 +537,9 @@ The main message types are:
 
 - String pool updates that carry field name dictionaries.
 - Feature tiles representing `TileFeatureLayer` instances.
-- Search-result tiles representing `TileSearchResultLayer` instances.
+- Filter results representing `TileSubsetLayer` instances.
 - Source data tiles representing `TileSourceDataLayer` instances.
+- Control/status messages for interactive sessions.
 - An explicit end‑of‑stream marker.
 
 On the receiving side, a tile stream reader validates the protocol version, updates or reuses string pools per datasource node and reconstructs tile layer objects as messages arrive. Clients that do not need the compact binary form can instead use `application/jsonl` and let the server handle the conversion to JSON at the cost of much higher bandwidth and CPU usage.
@@ -462,6 +566,11 @@ When a tile is streamed as JSON Lines, each `TileFeatureLayer` becomes a single 
 ```
 
 Source data tiles follow a similar pattern but expose an array of source data items instead of features. The exact JSON layout mirrors what `TileFeatureLayer::toJson()` and `TileSourceDataLayer::toJson()` produce, so a client can round‑trip between binary and JSON representations without losing information.
+
+Tile-stream protocol 2.1 adds a sparse address-scope flag for SourceData
+compound nodes. The marker changes presentation only: serialized
+`SourceDataAddress` values and feature source-data references remain in the
+same canonical address namespace.
 
 Each feature inside that tile looks like this:
 

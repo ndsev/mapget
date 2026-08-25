@@ -206,9 +206,33 @@ TEST_CASE("GeometryCollection", "[geom.collection]")
         REQUIRE(view->pointAt(1).x == .5);
         REQUIRE_THROWS(view->pointAt(2));
 
+        std::vector<Point> viewPoints;
+        REQUIRE(view->forEachPoint([&](Point&& point) {
+            viewPoints.push_back(std::move(point));
+            return true;
+        }));
+        REQUIRE(viewPoints == std::vector<Point>{
+            {.25, .25, .25},
+            {.5, .5, .5},
+        });
+
         auto subview = model_pool->newGeometryView(GeomType::Points, 1, 1, view);
         REQUIRE(subview->pointAt(0).x == .5);
         REQUIRE_THROWS(subview->pointAt(1));
+
+        std::vector<Point> subviewPoints;
+        REQUIRE(subview->forEachPoint([&](Point&& point) {
+            subviewPoints.push_back(std::move(point));
+            return true;
+        }));
+        REQUIRE(subviewPoints == std::vector<Point>{{.5, .5, .5}});
+
+        size_t visited = 0U;
+        REQUIRE_FALSE(point_geom->forEachPoint([&](Point&&) {
+            ++visited;
+            return false;
+        }));
+        REQUIRE(visited == 1U);
     }
 }
 
@@ -239,26 +263,19 @@ TEST_CASE("Spatial Operators", "[spatial.ops]") {
     }
 }
 
-TEST_CASE("GeoJSON geometry names are derived from non-default stages", "[geometry][geojson]")
+TEST_CASE("Semantic geometry names roundtrip independently of presentation", "[geometry][geojson]")
 {
     auto tile = makeTile();
-    tile->layerInfo()->stages_ = 3;
-    tile->layerInfo()->stageLabels_ = {"Low-Fi", "High-Fi", "ADAS"};
-    tile->layerInfo()->highFidelityStage_ = 1;
-
     auto feature = tile->newFeature("Way", {{"wayId", 77}});
 
-    tile->setStage(1U);
     auto baseGeometry = feature->geom()->newGeometry(GeomType::Line, 2);
     baseGeometry->append({0., 0., 0.});
     baseGeometry->append({1., 0., 0.});
 
-    tile->setStage(2U);
     auto adasGeometry = feature->geom()->newGeometry(GeomType::Line, 2);
     adasGeometry->append({1., 0., 0.});
     adasGeometry->append({2., 0., 0.});
-
-    tile->setStage(std::nullopt);
+    adasGeometry->setName("ADAS");
 
     auto json = feature->toJson();
     REQUIRE_FALSE(json.contains("lod"));
@@ -266,6 +283,144 @@ TEST_CASE("GeoJSON geometry names are derived from non-default stages", "[geomet
     REQUIRE(geometries.size() == 2);
     REQUIRE_FALSE(geometries[0].contains("geometryName"));
     REQUIRE(geometries[1].at("geometryName") == "ADAS");
+
+    std::stringstream bytes;
+    tile->write(bytes);
+    auto const serialized = bytes.str();
+    auto roundtripped = std::make_shared<TileFeatureLayer>(
+        std::vector<uint8_t>(serialized.begin(), serialized.end()),
+        [&](auto&&, auto&&) {
+            return tile->layerInfo();
+        },
+        [&](auto&&) {
+            return tile->strings();
+        });
+
+    auto roundtrippedFeature = roundtripped->at(0);
+    std::vector<std::optional<std::string>> names;
+    roundtrippedFeature->geomOrNull()->forEachGeometry(
+        [&](model_ptr<Geometry> const& geometry) {
+            auto const name = geometry->name();
+            names.emplace_back(name ? std::optional<std::string>(*name) : std::nullopt);
+            return true;
+        });
+    REQUIRE(names == std::vector<std::optional<std::string>>{std::nullopt, "ADAS"});
+}
+
+TEST_CASE("AttrPointSequence preserves interwoven validity semantics", "[validity][attr-point]")
+{
+    auto tile = makeTile();
+    auto feature = tile->newFeature("Way", {{"wayId", 77}});
+    auto geometry = feature->geom()->newGeometry(GeomType::Line, 3, true);
+    geometry->append({10.0, 20.0, 0.0});
+    geometry->append({11.0, 20.0, 0.0});
+    geometry->append({12.0, 20.0, 0.0});
+    geometry->setName("centerline");
+
+    auto sequence = tile->newAttrPointSequence(feature, geometry);
+    auto foreignTile = makeTile();
+    QualifiedSourceDataReference foreignReference{
+        .address_ = SourceDataAddress::fromBitPosition(4, 8),
+        .layerId_ = foreignTile->strings()->emplace("RawLayer").value(),
+        .qualifier_ = foreignTile->strings()->emplace("attribute-point").value(),
+    };
+    auto foreignReferences = foreignTile->newSourceDataReferenceCollection(
+        {&foreignReference, 1});
+    REQUIRE_THROWS(sequence->appendAttrPoint(
+        1,
+        {10.25, 20.0, 0.0},
+        foreignReferences));
+    REQUIRE_THROWS(sequence->setSourceDataReferences(foreignReferences));
+
+    sequence->appendAttrPoint(1, {10.25, 20.0, 0.0});
+    sequence->appendAttrPoint(3, {11.5, 20.0, 0.0});
+
+    REQUIRE(sequence->attrPointCount() == 2);
+    REQUIRE(sequence->positionCount() == 5);
+    REQUIRE(sequence->geometryIndex() == 0);
+    REQUIRE(sequence->pointAt(0) == geometry->pointAt(0));
+    REQUIRE(sequence->pointAt(1) == Point{10.25, 20.0, 0.0});
+    REQUIRE(sequence->pointAt(2) == geometry->pointAt(1));
+    REQUIRE(sequence->pointAt(3) == Point{11.5, 20.0, 0.0});
+    REQUIRE(sequence->pointAt(4) == geometry->pointAt(2));
+    REQUIRE(sequence->points(1, 3) == std::vector<Point>{
+        {10.25, 20.0, 0.0},
+        {11.0, 20.0, 0.0},
+        {11.5, 20.0, 0.0},
+    });
+    REQUIRE_THROWS(sequence->points(3, 1));
+    REQUIRE(sequence->isAttrPoint(1));
+    REQUIRE_FALSE(sequence->isAttrPoint(2));
+
+    auto attribute = feature->attributeLayers()
+                         ->newLayer("rules")
+                         ->newAttribute("speedLimit");
+    auto pointValidity = attribute->validity()->newAttrPointIndex(
+        sequence,
+        1,
+        Validity::Positive);
+    auto rangeValidity = attribute->validity()->newAttrPointIndexRange(
+        sequence,
+        1,
+        3,
+        Validity::Negative);
+    REQUIRE_THROWS(attribute->validity()->newAttrPointIndexRange(
+        sequence,
+        3,
+        1));
+
+    auto pointGeometry = pointValidity->computeGeometry(feature->geomOrNull());
+    REQUIRE(pointGeometry.geomType_ == GeomType::Points);
+    REQUIRE(pointGeometry.points_ == std::vector<Point>{{10.25, 20.0, 0.0}});
+
+    auto rangeGeometry = rangeValidity->computeGeometry(feature->geomOrNull());
+    REQUIRE(rangeGeometry.geomType_ == GeomType::Line);
+    REQUIRE(rangeGeometry.points_ == std::vector<Point>{
+        {11.5, 20.0, 0.0},
+        {11.0, 20.0, 0.0},
+        {10.25, 20.0, 0.0},
+    });
+
+    auto const json = tile->toJson();
+    REQUIRE(json["attrPointSequences"].size() == 1);
+    REQUIRE(json["attrPointSequences"][0]["featureId"] == feature->id()->toString());
+    REQUIRE(json["attrPointSequences"][0]["geometryIndex"] == 0);
+    REQUIRE(json["attrPointSequences"][0]["geometryName"] == "centerline");
+    REQUIRE(json["attrPointSequences"][0]["attrPoints"].size() == 2);
+    auto const& validityJson =
+        json["features"][0]["properties"]["layer"]["rules"]["speedLimit"]["validity"];
+    REQUIRE(validityJson[0]["attrPointIndex"]["sequence"]["$mapgetAttrPointSequence"] == 0);
+    REQUIRE(validityJson[0]["attrPointIndex"]["index"] == 1);
+    REQUIRE(validityJson[1]["attrPointIndexRange"]["start"] == 1);
+    REQUIRE(validityJson[1]["attrPointIndexRange"]["end"] == 3);
+
+    std::stringstream bytes;
+    REQUIRE(tile->write(bytes));
+    auto const serialized = bytes.str();
+    auto roundtripped = std::make_shared<TileFeatureLayer>(
+        std::vector<uint8_t>(serialized.begin(), serialized.end()),
+        [&](auto&&, auto&&) { return tile->layerInfo(); },
+        [&](auto&&) { return tile->strings(); });
+
+    REQUIRE(roundtripped->toJson() == json);
+    auto roundtrippedSequence = roundtripped->attrPointSequenceAt(0);
+    REQUIRE(roundtrippedSequence->positionCount() == 5);
+    REQUIRE(roundtrippedSequence->pointAt(3) == Point{11.5, 20.0, 0.0});
+}
+
+TEST_CASE("A layer supports all 255 compact geometry-name indices", "[geometry][name]")
+{
+    auto tile = makeTile();
+    auto feature = tile->newFeature("Way", {{"wayId", 78}});
+
+    for (uint32_t i = 0; i < 255; ++i) {
+        auto geometry = feature->geom()->newGeometry(GeomType::Points, 0);
+        geometry->setName("geometry-" + std::to_string(i));
+    }
+
+    REQUIRE(feature->geomOrNull()->numGeometries() == 255);
+    auto overflow = feature->geom()->newGeometry(GeomType::Points, 0);
+    REQUIRE_THROWS(overflow->setName("geometry-255"));
 }
 
 TEST_CASE("GeometryCollection Multiple Geometries", "[geom.collection.multiple]") {
@@ -401,8 +556,13 @@ TEST_CASE("AABB geometry roundtrip and JSON exposure", "[geom.aabb]")
         });
 
     auto roundTrippedFeature = deserializedTile->at(0);
-    auto roundTrippedAabb =
-        roundTrippedFeature->geomOrNull()->geometryOfTypeAtPreferredStage(GeomType::AABB, 0U);
+    model_ptr<Geometry> roundTrippedAabb;
+    roundTrippedFeature->geomOrNull()->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
+        if (candidate->geomType() != GeomType::AABB)
+            return true;
+        roundTrippedAabb = candidate;
+        return false;
+    });
     REQUIRE(roundTrippedAabb);
     REQUIRE(roundTrippedAabb->aabbOrigin() == Point{1.0, 2.0, 3.0});
     REQUIRE(roundTrippedAabb->aabbSize() == Point{10.0, 20.0, 30.0});
@@ -411,7 +571,7 @@ TEST_CASE("AABB geometry roundtrip and JSON exposure", "[geom.aabb]")
 TEST_CASE("GltfNodeIndex geometry roundtrip and JSON exposure", "[geom.gltf]")
 {
     auto tile = makeTile();
-    tile->setGlbAttachment("city.glb", {0x67, 0x6c, 0x54, 0x46});
+    tile->setGlbAttachmentName("city.glb");
     auto feature = tile->newFeature("Way", {{"wayId", 202}});
     auto first = feature->geom()->newGeometry(GeomType::GltfNodeIndex);
     first->setGltfNodeIndex(17);
@@ -691,15 +851,24 @@ TEST_CASE("Semantic feature transition validities compute transition geometry", 
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
+    REQUIRE(geometry.points_.size() == 5);
+    REQUIRE(pivot == 2);
     REQUIRE(geometry.points_[1] == Point{1.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[2] == Point{1.0, 0.0, 0.0});
+    REQUIRE(geometry.points_[3] == Point{1.0, 0.0, 0.0});
+    REQUIRE_THAT(
+        geometry.points_[0].geographicDistanceTo(geometry.points_[1]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
+    REQUIRE_THAT(
+        geometry.points_[3].geographicDistanceTo(geometry.points_[4]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
 }
 
-TEST_CASE("Semantic feature transition validities skip duplicate endpoint points", "[validity]") {
+TEST_CASE("Semantic feature transition validities ignore duplicate source vertices", "[validity]") {
     auto modelPool = makeTile();
 
     auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
@@ -726,12 +895,106 @@ TEST_CASE("Semantic feature transition validities skip duplicate endpoint points
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[1] == Point{1.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+    REQUIRE(geometry.points_.size() == 5);
+    REQUIRE(pivot == 2);
+    REQUIRE_THAT(
+        geometry.points_[0].geographicDistanceTo(geometry.points_[1]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
+    REQUIRE_THAT(
+        geometry.points_[3].geographicDistanceTo(geometry.points_[4]),
+        Catch::Matchers::WithinAbs(10.0, 1e-3));
+}
+
+TEST_CASE("Semantic feature transition validities extend short endpoint legs", "[validity]") {
+    auto modelPool = makeTile();
+
+    auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 3);
+    fromGeometry->append({0.0, 0.0, 0.0});
+    fromGeometry->append({0.00019, 0.0, 0.0});
+    fromGeometry->append({0.00020, 0.0, 0.0});
+
+    auto toFeature = modelPool->newFeature("Way", {{"wayId", int64_t(2)}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 3);
+    toGeometry->append({0.00020, 0.0, 0.0});
+    toGeometry->append({0.00021, 0.0, 0.0});
+    toGeometry->append({0.00040, 0.0, 0.0});
+
+    auto intersection = modelPool->newFeature("Way", {{"wayId", int64_t(3)}});
+    auto validity = intersection->attributeLayers()
+                        ->newLayer("rules")
+                        ->newAttribute("turn")
+                        ->validity()
+                        ->newFeatureTransition(
+                            fromFeature,
+                            Validity::End,
+                            toFeature,
+                            Validity::Start,
+                            7);
+
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
+    REQUIRE(geometry.geomType_ == GeomType::Line);
+    REQUIRE(geometry.points_.size() == 7);
+    REQUIRE(pivot == 3);
+    REQUIRE(geometry.points_[1] == fromGeometry->pointAt(1));
+    REQUIRE(geometry.points_[2] == fromGeometry->pointAt(2));
+    REQUIRE(geometry.points_[4] == toGeometry->pointAt(0));
+    REQUIRE(geometry.points_[5] == toGeometry->pointAt(1));
+    auto polylineLength = [&](size_t begin, size_t end) {
+        double result = 0.0;
+        for (auto index = begin + 1; index <= end; ++index) {
+            result += geometry.points_[index - 1]
+                .geographicDistanceTo(geometry.points_[index]);
+        }
+        return result;
+    };
+    REQUIRE_THAT(polylineLength(0, pivot - 1), Catch::Matchers::WithinAbs(10.0, 1e-3));
+    REQUIRE_THAT(polylineLength(pivot + 1, geometry.points_.size() - 1), Catch::Matchers::WithinAbs(10.0, 1e-3));
+}
+
+TEST_CASE("Semantic feature transition validities extrapolate short endpoint links", "[validity]") {
+    auto modelPool = makeTile();
+
+    auto fromFeature = modelPool->newFeature("Way", {{"wayId", int64_t(1)}});
+    auto fromGeometry = fromFeature->geom()->newGeometry(GeomType::Line, 2);
+    fromGeometry->append({0.0, 0.0, 0.0});
+    fromGeometry->append({0.00020, 0.0, 0.0});
+
+    auto toFeature = modelPool->newFeature("Way", {{"wayId", int64_t(2)}});
+    auto toGeometry = toFeature->geom()->newGeometry(GeomType::Line, 2);
+    toGeometry->append({0.00020, 0.0, 0.0});
+    toGeometry->append({0.00021, 0.0, 0.0});
+
+    auto intersection = modelPool->newFeature("Way", {{"wayId", int64_t(3)}});
+    auto validity = intersection->attributeLayers()
+                        ->newLayer("rules")
+                        ->newAttribute("turn")
+                        ->validity()
+                        ->newFeatureTransition(
+                            fromFeature,
+                            Validity::End,
+                            toFeature,
+                            Validity::Start,
+                            7);
+
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
+    REQUIRE(geometry.geomType_ == GeomType::Line);
+    REQUIRE(geometry.points_.size() == 6);
+    REQUIRE(pivot == 2);
+    REQUIRE(geometry.points_[4] == toGeometry->pointAt(1));
+    REQUIRE(geometry.points_[5].x > toGeometry->pointAt(1).x);
+    REQUIRE(
+        geometry.points_[3].geographicDistanceTo(geometry.points_[4]) +
+        geometry.points_[4].geographicDistanceTo(geometry.points_[5]) >=
+        9.99);
 }
 
 TEST_CASE("Semantic feature transition validities prefer host geometry as midpoint", "[validity]") {
@@ -762,10 +1025,11 @@ TEST_CASE("Semantic feature transition validities prefer host geometry as midpoi
                             Validity::Start,
                             7);
 
-    auto geometry = validity->computeGeometry(intersection->geomOrNull());
+    uint32_t pivot = 0;
+    auto geometry = validity->computeGeometry(
+        intersection->geomOrNull(), nullptr, &pivot);
     REQUIRE(geometry.geomType_ == GeomType::Line);
-    REQUIRE(geometry.points_.size() == 3);
-    REQUIRE(geometry.points_[0] == Point{0.0, 0.0, 0.0});
-    REQUIRE(geometry.points_[1] == Point{1.0, 0.5, 0.0});
-    REQUIRE(geometry.points_[2] == Point{2.0, 0.0, 0.0});
+    REQUIRE(geometry.points_.size() == 5);
+    REQUIRE(pivot == 2);
+    REQUIRE(geometry.points_[2] == Point{1.0, 0.5, 0.0});
 }

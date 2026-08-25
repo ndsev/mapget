@@ -15,6 +15,8 @@
 #include <mutex>
 #include <optional>
 #include <map>
+#include <chrono>
+#include <functional>
 
 // Hash function for TileId to use in unordered_map
 namespace std {
@@ -57,6 +59,26 @@ enum class GeometryType {
     Line,
     Polygon,
     Mesh
+};
+
+/** Selects the semantic generator used for a configured layer. */
+enum class LayerKind {
+    Auto,
+    Traffic
+};
+
+/** Fixed v1 configuration for the road-backed synthetic traffic overlay. */
+struct TrafficConfig {
+    std::string roadLayer;
+    int tileLevel = 13;
+    uint32_t updateIntervalSeconds = 5;
+    uint32_t seed = 0;
+
+    // Resolved once while parsing the complete layer list.
+    std::string roadFeatureType;
+    std::string roadFeatureIdPart;
+
+    static TrafficConfig fromYAML(const YAML::Node& node);
 };
 
 /**
@@ -196,6 +218,8 @@ struct LayerConfig {
     std::string name;
     bool enabled = true;
     std::string featureType;
+    LayerKind kind = LayerKind::Auto;
+    std::optional<TrafficConfig> traffic;
 
     GeometryConfig geometry;
     std::vector<AttributeConfig> topAttributes;
@@ -303,20 +327,32 @@ private:
 class GridDataSource : public mapget::DataSource
 {
 public:
-    explicit GridDataSource(const YAML::Node& config = YAML::Node());
+    using Clock = std::function<std::chrono::system_clock::time_point()>;
+
+    explicit GridDataSource(
+        const YAML::Node& config = YAML::Node(),
+        Clock clock = [] { return std::chrono::system_clock::now(); });
 
     mapget::DataSourceInfo info() override;
     void fill(mapget::TileFeatureLayer::Ptr const& tile) override;
     void fill(mapget::TileSourceDataLayer::Ptr const& tile) override {
         throw std::runtime_error("SourceDataLayer not supported by GridDataSource");
     }
-    std::vector<mapget::LocateResponse> locate(mapget::LocateRequest const& req) override;
+    std::vector<mapget::LocateCandidate> locate(
+        mapget::LocateRequest const& req) override;
+
+    /** Estimate configuration and cached procedural spatial-context storage. */
+    [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
 
 private:
+    /** Compute immutable generator configuration ownership once during construction. */
+    [[nodiscard]] uint64_t computeStaticRetainedMemoryBytes() const;
     gridsource::Config config_;
     mutable std::mutex contextMutex_;
     mutable std::unordered_map<mapget::TileId, std::shared_ptr<gridsource::TileSpatialContext>> contextCache_;
     static constexpr size_t MAX_CACHED_CONTEXTS = 1000;
+    uint64_t staticRetainedMemoryBytes_ = 0;
+    Clock clock_;
 
     // Get or create spatial context for a tile
     std::shared_ptr<gridsource::TileSpatialContext> getOrCreateContext(mapget::TileId tileId) const;
@@ -337,6 +373,10 @@ private:
     void generateIntersections(gridsource::TileSpatialContext& ctx,
                               const gridsource::LayerConfig& config,
                               mapget::TileFeatureLayer::Ptr const& tile);
+
+    void generateTraffic(gridsource::TileSpatialContext& ctx,
+                         const gridsource::LayerConfig& config,
+                         mapget::TileFeatureLayer::Ptr const& tile);
 
     // Attribute generation
     void generateAttributes(mapget::model_ptr<mapget::Feature> feature,

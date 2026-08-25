@@ -1,7 +1,7 @@
 #pragma once
 
 #include "mapget/model/featurelayer.h"
-#include "mapget/model/searchresultlayer.h"
+#include "mapget/model/subsetlayer.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/sourcedatalayer.h"
 
@@ -75,152 +75,261 @@ inline py::list diagnosticsToPython(simfil::Diagnostics const& diagnostics)
     return result;
 }
 
-struct BoundSearchResult : public BoundModelNode
+template<typename Node>
+struct BoundSubsetNode : public BoundModelNode
 {
-    static void bind(py::module_& m)
-    {
-        py::class_<BoundSearchResult, BoundModelNode>(m, "SearchResult", R"pbdoc(
-            One root entry in a `TileSearchResultLayer`.
-
-            A result represents one matched feature or one matched attribute
-            validity context. It carries a copied feature id, copied display
-            geometry, optional attribute/validity indices, and the extracted
-            `with_fields` values aligned to the parent layer's `result_fields()`.
-        )pbdoc")
-            .def("feature_id", [](BoundSearchResult& self) {
-                    return BoundFeatureId(self.modelNodePtr_->featureId());
-                },
-                R"pbdoc(
-                Return the matched feature id as a `FeatureId` object.
-            )pbdoc")
-            .def("geometry", [](BoundSearchResult& self) {
-                    return BoundGeometryCollection(self.modelNodePtr_->geometry());
-                },
-                R"pbdoc(
-                Return the copied display geometry for this search result.
-            )pbdoc")
-            .def("attribute_index", [](BoundSearchResult& self) {
-                    return self.modelNodePtr_->attributeIndex();
-                },
-                R"pbdoc(
-                Return the matched attribute index for attribute-scope searches.
-
-                Returns `None` for feature-scope matches.
-            )pbdoc")
-            .def("validity_index", [](BoundSearchResult& self) {
-                    return self.modelNodePtr_->validityIndex();
-                },
-                R"pbdoc(
-                Return the matched validity index within the matched attribute.
-
-                Returns `None` when the match is not tied to one validity.
-            )pbdoc")
-            .def("validity_count", [](BoundSearchResult& self) {
-                    return self.modelNodePtr_->validityCount();
-                },
-                R"pbdoc(
-                Return how many validity contexts were considered for the matched attribute.
-
-                Returns `None` for feature-scope matches.
-            )pbdoc")
-            .def("values", [](BoundSearchResult& self) {
-                    return BoundArray(self.modelNodePtr_->values());
-                },
-                R"pbdoc(
-                Return the extracted `with_fields` values as an `Array`.
-
-                The array order is the same as `TileSearchResultLayer.result_fields()`.
-            )pbdoc")
-            .def("value", [](BoundSearchResult& self, int64_t i) {
-                    auto values = self.modelNodePtr_->values();
-                    auto sz = static_cast<int64_t>(values->size());
-                    if (i < 0) i += sz;
-                    if (i < 0 || i >= sz) {
-                        throw py::index_error();
-                    }
-                    BoundModelNodeBase node;
-                    node.modelNodePtr_ = values->at(static_cast<uint32_t>(i));
-                    return node;
-                },
-                py::arg("index"),
-                R"pbdoc(
-                Return one extracted `with_fields` value by index.
-
-                Negative indices follow Python sequence semantics.
-            )pbdoc")
-            .def("values_list", [](BoundSearchResult& self) {
-                    return nodeToPython(self.modelNodePtr_->values(), self.featureModelLayer());
-                },
-                R"pbdoc(
-                Return extracted `with_fields` values as a plain Python list.
-            )pbdoc")
-            .def("to_dict", [](BoundSearchResult& self) {
-                    return nodeToPython(self.node(), self.featureModelLayer());
-                },
-                R"pbdoc(
-                Convert this result to a Python dictionary.
-            )pbdoc")
-            .def("to_json", [](BoundSearchResult& self) {
-                    return self.modelNodePtr_->toJson().dump();
-                },
-                R"pbdoc(
-                Convert this result to a compact JSON string.
-            )pbdoc");
-    }
+    explicit BoundSubsetNode(model_ptr<Node> ptr)
+        : modelNodePtr_(std::move(ptr))
+    {}
 
     ModelNode::Ptr node() override { return modelNodePtr_; }
-
-    explicit BoundSearchResult(model_ptr<SearchResult> const& ptr) : modelNodePtr_(ptr) {}
-
-    model_ptr<SearchResult> modelNodePtr_;
+    model_ptr<Node> modelNodePtr_;
 };
 
-struct BoundSearchTrace : public BoundModelNode
+struct BoundFilterTrace : BoundSubsetNode<FilterTrace>
 {
-    static void bind(py::module_& m)
-    {
-        py::class_<BoundSearchTrace, BoundModelNode>(m, "SearchTrace", R"pbdoc(
-            Typed aggregate produced by SIMFIL `trace(...)` while evaluating a search.
-
-            Trace values are stored in the search-result layer's model pool, so
-            they can be inspected without mutating datasource string pools.
-        )pbdoc")
-            .def("name", [](BoundSearchTrace& self) {
-                    return self.modelNodePtr_->name();
-                },
-                "Return the trace name supplied by the SIMFIL expression.")
-            .def("calls", [](BoundSearchTrace& self) {
-                    return self.modelNodePtr_->calls();
-                },
-                "Return how often this trace expression was evaluated.")
-            .def("total_us", [](BoundSearchTrace& self) {
-                    return self.modelNodePtr_->totalUs().count();
-                },
-                "Return total evaluation time for this trace in microseconds.")
-            .def("values", [](BoundSearchTrace& self) {
-                    return BoundArray(self.modelNodePtr_->values());
-                },
-                "Return sampled trace values as an `Array`.")
-            .def("values_list", [](BoundSearchTrace& self) {
-                    return nodeToPython(self.modelNodePtr_->values(), self.featureModelLayer());
-                },
-                "Return sampled trace values as plain Python values.")
-            .def("to_dict", [](BoundSearchTrace& self) {
-                    return nodeToPython(self.node(), self.featureModelLayer());
-                },
-                "Convert this trace aggregate to a Python dictionary.")
-            .def("to_json", [](BoundSearchTrace& self) {
-                    return self.modelNodePtr_->toJson().dump();
-                },
-                "Convert this trace aggregate to a JSON string.");
-    }
-
-    ModelNode::Ptr node() override { return modelNodePtr_; }
-
-    explicit BoundSearchTrace(model_ptr<SearchTrace> const& ptr) : modelNodePtr_(ptr) {}
-
-    model_ptr<SearchTrace> modelNodePtr_;
+    using BoundSubsetNode::BoundSubsetNode;
 };
+
+struct BoundFeatureEntry : BoundSubsetNode<FeatureEntry>
+{
+    using BoundSubsetNode::BoundSubsetNode;
+};
+
+struct BoundAttributeValidityEntry
+    : BoundSubsetNode<AttributeValidityEntry>
+{
+    using BoundSubsetNode::BoundSubsetNode;
+};
+
+struct BoundRelationEntry : BoundSubsetNode<RelationEntry>
+{
+    using BoundSubsetNode::BoundSubsetNode;
+};
+
+struct BoundGroupEntry : BoundSubsetNode<GroupEntry>
+{
+    using BoundSubsetNode::BoundSubsetNode;
+};
+
+struct BoundTileSubsetChannel : BoundSubsetNode<TileSubsetChannel>
+{
+    using BoundSubsetNode::BoundSubsetNode;
+};
+
+inline void bindSubsetNodes(py::module_& m)
+{
+    py::class_<BoundFilterTrace, BoundModelNode>(
+        m,
+        "FilterTrace")
+        .def("name", [](BoundFilterTrace& self) {
+            return self.modelNodePtr_->name();
+        })
+        .def("calls", [](BoundFilterTrace& self) {
+            return self.modelNodePtr_->calls();
+        })
+        .def("total_us", [](BoundFilterTrace& self) {
+            return self.modelNodePtr_->totalUs().count();
+        })
+        .def("values", [](BoundFilterTrace& self) {
+            return BoundArray(self.modelNodePtr_->values());
+        });
+
+    py::class_<BoundFeatureEntry, BoundModelNode>(
+        m,
+        "FeatureEntry")
+        .def("feature_id", [](BoundFeatureEntry& self) {
+            return BoundFeatureId(self.modelNodePtr_->featureId());
+        })
+        .def("geometry", [](BoundFeatureEntry& self) {
+            return BoundGeometryCollection(
+                self.modelNodePtr_->geometry());
+        })
+        .def("values", [](BoundFeatureEntry& self) {
+            return BoundArray(self.modelNodePtr_->values());
+        });
+
+    py::class_<BoundAttributeValidityEntry, BoundModelNode>(
+        m,
+        "AttributeValidityEntry")
+        .def("feature_id", [](BoundAttributeValidityEntry& self) {
+            return BoundFeatureId(self.modelNodePtr_->featureId());
+        })
+        .def("geometry", [](BoundAttributeValidityEntry& self) {
+            return BoundGeometryCollection(
+                self.modelNodePtr_->geometry());
+        })
+        .def("host_values", [](BoundAttributeValidityEntry& self) {
+            return BoundArray(self.modelNodePtr_->hostValues());
+        })
+        .def("values", [](BoundAttributeValidityEntry& self) {
+            return BoundArray(self.modelNodePtr_->values());
+        })
+        .def("attribute_layer", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->attributeLayer();
+        })
+        .def("attribute_name", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->attributeName();
+        })
+        .def("attribute_index", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->attributeIndex();
+        })
+        .def("has_validity", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->hasValidity();
+        })
+        .def("validity_index", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->validityIndex();
+        })
+        .def("validity_count", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->validityCount();
+        })
+        .def("geometry_description_type", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->geometryDescriptionType();
+        }, "Return the semantic validity geometry representation retained by this entry.")
+        .def("is_feature_transition", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->isFeatureTransition();
+        }, "Return whether this entry contains complete feature-transition metadata.")
+        .def("transition_from_feature_id", [](BoundAttributeValidityEntry& self) -> py::object {
+            auto id = self.modelNodePtr_->transitionFromFeatureId();
+            return id ? py::cast(BoundFeatureId(id)) : py::none();
+        }, "Return the incoming transition feature ID, or None for non-transition entries.")
+        .def("transition_to_feature_id", [](BoundAttributeValidityEntry& self) -> py::object {
+            auto id = self.modelNodePtr_->transitionToFeatureId();
+            return id ? py::cast(BoundFeatureId(id)) : py::none();
+        }, "Return the outgoing transition feature ID, or None for non-transition entries.")
+        .def("transition_from_connected_end", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->transitionFromConnectedEnd();
+        }, "Return the connected endpoint on the incoming feature, or None.")
+        .def("transition_to_connected_end", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->transitionToConnectedEnd();
+        }, "Return the connected endpoint on the outgoing feature, or None.")
+        .def("transition_pivot_index", [](BoundAttributeValidityEntry& self) {
+            return self.modelNodePtr_->transitionPivotIndex();
+        }, "Return the line-point index separating incoming and outgoing geometry, or None.");
+
+    py::class_<BoundRelationEntry, BoundModelNode>(
+        m,
+        "RelationEntry")
+        .def("relation_id", [](BoundRelationEntry& self) {
+            return self.modelNodePtr_->relationId();
+        })
+        .def("name", [](BoundRelationEntry& self) {
+            return self.modelNodePtr_->name();
+        })
+        .def("provenance", [](BoundRelationEntry& self) {
+            return self.modelNodePtr_->provenance();
+        })
+        .def("direction", [](BoundRelationEntry& self) {
+            return self.modelNodePtr_->direction();
+        })
+        .def("twoway", [](BoundRelationEntry& self) {
+            return self.modelNodePtr_->twoway();
+        })
+        .def("source", [](BoundRelationEntry& self) {
+            return BoundFeatureEntry(self.modelNodePtr_->source());
+        })
+        .def("target", [](BoundRelationEntry& self) {
+            return BoundFeatureEntry(self.modelNodePtr_->target());
+        })
+        .def("source_geometry", [](BoundRelationEntry& self) {
+            return BoundGeometryCollection(
+                self.modelNodePtr_->sourceGeometry());
+        })
+        .def("target_geometry", [](BoundRelationEntry& self) {
+            return BoundGeometryCollection(
+                self.modelNodePtr_->targetGeometry());
+        })
+        .def("values", [](BoundRelationEntry& self) {
+            return BoundArray(self.modelNodePtr_->values());
+        });
+
+    py::class_<BoundGroupEntry, BoundModelNode>(
+        m,
+        "GroupEntry")
+        .def("group_key", [](BoundGroupEntry& self) {
+            BoundModelNodeBase result;
+            result.modelNodePtr_ = self.modelNodePtr_->groupKey();
+            return result;
+        })
+        .def("representative_feature_id", [](BoundGroupEntry& self) {
+            return BoundFeatureId(
+                self.modelNodePtr_->representativeFeatureId());
+        })
+        .def("geometry", [](BoundGroupEntry& self) {
+            return BoundGeometryCollection(
+                self.modelNodePtr_->geometry());
+        })
+        .def("values", [](BoundGroupEntry& self) {
+            return BoundArray(self.modelNodePtr_->values());
+        })
+        .def("member_feature_ids", [](BoundGroupEntry& self) {
+            return BoundArray(
+                self.modelNodePtr_->memberFeatureIds());
+        });
+
+    py::class_<BoundTileSubsetChannel, BoundModelNode>(
+        m,
+        "TileSubsetChannel")
+        .def("channel_id", [](BoundTileSubsetChannel& self) {
+            return self.modelNodePtr_->channelId();
+        })
+        .def("scope", [](BoundTileSubsetChannel& self) {
+            return self.modelNodePtr_->scope();
+        })
+        .def("geometry_types", [](BoundTileSubsetChannel& self) {
+            return self.modelNodePtr_->geometryTypes();
+        })
+        .def("geometry_name", [](BoundTileSubsetChannel& self) {
+            return self.modelNodePtr_->geometryName();
+        })
+        .def("feature_fields", [](BoundTileSubsetChannel& self) {
+            return self.modelNodePtr_->featureFields();
+        })
+        .def("entry_fields", [](BoundTileSubsetChannel& self) {
+            return self.modelNodePtr_->entryFields();
+        })
+        .def("entry_count", [](BoundTileSubsetChannel& self) {
+            return self.modelNodePtr_->entryCount();
+        })
+        .def("feature_entries", [](BoundTileSubsetChannel& self) {
+            py::list result;
+            self.modelNodePtr_->forEachFeatureEntry(
+                [&](auto const& entry) {
+                    result.append(BoundFeatureEntry(entry));
+                    return true;
+                });
+            return result;
+        })
+        .def("attribute_validity_entries",
+            [](BoundTileSubsetChannel& self) {
+                py::list result;
+                self.modelNodePtr_->forEachAttributeValidityEntry(
+                    [&](auto const& entry) {
+                        result.append(
+                            BoundAttributeValidityEntry(entry));
+                        return true;
+                    });
+                return result;
+            })
+        .def("relation_entries", [](BoundTileSubsetChannel& self) {
+            py::list result;
+            self.modelNodePtr_->forEachRelationEntry(
+                [&](auto const& entry) {
+                    result.append(BoundRelationEntry(entry));
+                    return true;
+                });
+            return result;
+        })
+        .def("group_entries", [](BoundTileSubsetChannel& self) {
+            py::list result;
+            self.modelNodePtr_->forEachGroupEntry(
+                [&](auto const& entry) {
+                    result.append(BoundGroupEntry(entry));
+                    return true;
+                });
+            return result;
+        });
+}
 
 struct BoundSourceDataCompound : public BoundModelNode
 {
@@ -253,6 +362,15 @@ struct BoundSourceDataCompound : public BoundModelNode
                 },
                 py::arg("address"),
                 "Set the source-data address associated with this node.")
+            .def("is_source_data_address_scope", [](BoundSourceDataCompound& self) {
+                    return self.ptr()->isSourceDataAddressScope();
+                },
+                "Return whether this node starts a presentation address scope.")
+            .def("set_source_data_address_scope", [](BoundSourceDataCompound& self, bool enabled) {
+                    self.ptr()->setSourceDataAddressScope(enabled);
+                },
+                py::arg("enabled") = true,
+                "Mark this node as the origin of an independently addressed payload.")
             .def("add_field", [](BoundSourceDataCompound& self,
                                   std::string_view const& name,
                                   py::object const& pyValue) {
@@ -353,8 +471,8 @@ void bindTileLayer(py::module_& m)
         Common base class for mapget tile payloads.
 
         Exposes tile identity, layer identity, error metadata, TTL metadata, and
-        arbitrary scalar info fields shared by feature, source-data, and search
-        result layers.
+        arbitrary scalar info fields shared by feature, source-data, and subset
+        layers.
     )pbdoc")
         .def("tile_id", &TileLayer::tileId, "Get the layer tile id.")
         .def("map_id", &TileLayer::mapId, "Get the map id.")
@@ -458,20 +576,6 @@ void bindTileLayer(py::module_& m)
             [](TileFeatureLayer const& self) {return self.timestamp(); },
             R"pbdoc(
             Get when this layer was created.
-            )pbdoc")
-        .def(
-            "stage",
-            [](TileFeatureLayer const& self) { return self.stage(); },
-            R"pbdoc(
-            Get the staged-loading index requested for this feature tile, or None
-            for unstaged requests.
-            )pbdoc")
-        .def(
-            "set_stage",
-            [](TileFeatureLayer& self, std::optional<uint32_t> stage) { self.setStage(stage); },
-            py::arg("stage") = std::nullopt,
-            R"pbdoc(
-            Set or clear the staged-loading index for this feature tile.
             )pbdoc")
         .def(
             "ttl",
@@ -634,6 +738,30 @@ void bindTileLayer(py::module_& m)
             Create a new geometry of the given type.
         )pbdoc")
         .def(
+            "new_attr_point_sequence",
+            [](TileFeatureLayer& self,
+               BoundFeature const& feature,
+               BoundGeometry const& geometry)
+            {
+                return BoundAttrPointSequence(self.newAttrPointSequence(
+                    feature.modelNodePtr_,
+                    geometry.modelNodePtr_));
+            },
+            py::arg("feature"),
+            py::arg("geometry"),
+            "Create a shared interwoven sequence over one feature geometry.")
+        .def(
+            "num_attr_point_sequences",
+            [](TileFeatureLayer const& self)
+            { return self.numAttrPointSequences(); },
+            "Return the number of shared AttrPointSequence definitions.")
+        .def(
+            "attr_point_sequence_at",
+            [](TileFeatureLayer const& self, uint32_t index)
+            { return BoundAttrPointSequence(self.attrPointSequenceAt(index)); },
+            py::arg("index"),
+            "Return one shared AttrPointSequence by tile-local index.")
+        .def(
             "new_relation",
             [](TileFeatureLayer& self, std::string_view const& name, BoundFeatureId const& target)
             { return BoundRelation(self.newRelation(name, target.modelNodePtr_)); },
@@ -667,6 +795,17 @@ void bindTileLayer(py::module_& m)
             R"pbdoc(
             Convert this tile to a GeoJSON feature collection.
         )pbdoc")
+        .def_property(
+            "glb_attachment_name",
+            [](TileFeatureLayer const& self) {
+                return self.glbAttachmentName();
+            },
+            [](TileFeatureLayer& self,
+               std::optional<std::string> name) {
+                self.setGlbAttachmentName(
+                    std::move(name));
+            },
+            "Optional name of the separately transferred tile GLB.")
         .def("__len__", [](TileFeatureLayer const& self) { return self.size(); })
         .def("__getitem__", [](TileFeatureLayer const& self, int64_t i) {
             auto sz = (int64_t)self.size();
@@ -682,8 +821,17 @@ void bindTileLayer(py::module_& m)
         .value("BIT_RANGE", TileSourceDataLayer::SourceDataAddressFormat::BitRange);
 
     BoundSourceDataCompound::bind(m);
-    BoundSearchResult::bind(m);
-    BoundSearchTrace::bind(m);
+    bindSubsetNodes(m);
+
+    py::enum_<Scope>(m, "SubsetScope")
+        .value("FEATURE", Scope::Feature)
+        .value("ATTRIBUTE", Scope::Attribute)
+        .value("RELATION", Scope::Relation)
+        .value("GROUP", Scope::Group);
+
+    py::enum_<RelationDirection>(m, "RelationDirection")
+        .value("FORWARD", RelationDirection::Forward)
+        .value("REVERSE", RelationDirection::Reverse);
 
     py::class_<TileSourceDataLayer, TileLayer, TileSourceDataLayer::Ptr>(
         m,
@@ -712,91 +860,87 @@ void bindTileLayer(py::module_& m)
         .def("to_json", [](TileSourceDataLayer& self) { return self.toJson().dump(); },
             "Convert this source-data layer to JSON.");
 
-    py::class_<TileSearchResultLayer, TileLayer, TileSearchResultLayer::Ptr>(
+    py::class_<TileSubsetLayer, TileLayer, TileSubsetLayer::Ptr>(
         m,
-        "TileSearchResultLayer",
+        "TileSubsetLayer",
         R"pbdoc(
-        Tile layer returned by server-side search-as-map requests.
-
-        The layer contains `SearchResult` roots instead of source features.
-        Each result carries a copied feature id, display geometry, optional
-        attribute-scope indices, and extracted values aligned to
-        `result_fields()`.
-    )pbdoc")
-        .def("stage", [](TileSearchResultLayer const& self) { return self.stage(); },
-            R"pbdoc(
-            Return the source stage for single-stage results, or `None` for
-            assembled staged results.
+        Immutable multi-channel result returned by server-side `/filter`.
         )pbdoc")
-        .def("result_fields", &TileSearchResultLayer::resultFields,
-            R"pbdoc(
-            Return the `with_fields` expressions aligned to every result's `values()`.
-        )pbdoc")
-        .def("diagnostics", [](TileSearchResultLayer const& self) {
+        .def("filter_id", &TileSubsetLayer::filterId)
+        .def("generation", &TileSubsetLayer::generation)
+        .def("diagnostics", [](TileSubsetLayer const& self) {
                 return diagnosticsToPython(self.diagnostics());
-            },
-            R"pbdoc(
-            Return SIMFIL diagnostics collected while evaluating this result chunk.
-
-            The returned value is a list of dictionaries with `message`,
-            `location`, and optional `fix` fields.
-        )pbdoc")
-        .def("trace_count", &TileSearchResultLayer::traceCount,
-            "Return the number of typed SIMFIL trace aggregates on this result chunk.")
-        .def("trace_at", [](TileSearchResultLayer const& self, int64_t i) {
+            })
+        .def("dependencies", [](TileSubsetLayer const& self) {
+                py::list result;
+                for (auto const& dependency : self.dependencies()) {
+                    py::dict item;
+                    item["source_tile_key"] =
+                        dependency.sourceTileKey_.toString();
+                    item["source_feature_count"] =
+                        dependency.sourceFeatureCount_;
+                    result.append(std::move(item));
+                }
+                return result;
+            })
+        .def("issues", [](TileSubsetLayer const& self) {
+                py::list result;
+                for (auto const& issue : self.issues()) {
+                    py::dict item;
+                    item["channel_id"] = issue.channelId_;
+                    item["expression"] = issue.expression_;
+                    item["scope"] = issue.scope_;
+                    item["message"] = issue.message_;
+                    item["occurrence_count"] =
+                        issue.occurrenceCount_;
+                    result.append(std::move(item));
+                }
+                return result;
+            })
+        .def("glb_attachment_name",
+            &TileSubsetLayer::glbAttachmentName)
+        .def("trace_count", &TileSubsetLayer::traceCount)
+        .def("trace_at", [](TileSubsetLayer const& self, int64_t i) {
                 auto sz = static_cast<int64_t>(self.traceCount());
                 if (i < 0) i += sz;
                 if (i < 0 || i >= sz) {
                     throw py::index_error();
                 }
-                return BoundSearchTrace(self.traceAt(static_cast<size_t>(i)));
+                return BoundFilterTrace(
+                    self.traceAt(static_cast<size_t>(i)));
             },
-            py::arg("index"),
-            R"pbdoc(
-            Return one `SearchTrace` by index; negative indices are supported.
-        )pbdoc")
-        .def("traces", [](TileSearchResultLayer const& self) {
+            py::arg("index"))
+        .def("traces", [](TileSubsetLayer const& self) {
                 py::list result;
                 for (size_t i = 0; i < self.traceCount(); ++i) {
-                    result.append(BoundSearchTrace(self.traceAt(i)));
+                    result.append(BoundFilterTrace(self.traceAt(i)));
                 }
                 return result;
-            },
-            R"pbdoc(
-            Return all typed SIMFIL trace aggregates as `SearchTrace` objects.
-        )pbdoc")
-        .def("to_dict", [](TileSearchResultLayer& self) {
+            })
+        .def("to_dict", [](TileSubsetLayer& self) {
                 return layerJsonToPython(self.toJson());
-            },
-            R"pbdoc(
-            Convert this search-result layer to a Python dictionary.
-        )pbdoc")
-        .def("to_json", [](TileSearchResultLayer& self) { return self.toJson().dump(); },
-            R"pbdoc(
-            Convert this search-result layer to a JSON string.
-        )pbdoc")
-        .def("__len__", [](TileSearchResultLayer const& self) { return self.size(); },
-            "Return the number of search results in this layer.")
-        .def("__getitem__", [](TileSearchResultLayer const& self, int64_t i) {
+            })
+        .def("to_json", [](TileSubsetLayer& self) {
+                return self.toJson().dump();
+            })
+        .def("__len__", [](TileSubsetLayer const& self) {
+                return self.size();
+            })
+        .def("__getitem__", [](TileSubsetLayer const& self, int64_t i) {
                 auto sz = static_cast<int64_t>(self.size());
                 if (i < 0) i += sz;
                 if (i < 0 || i >= sz) {
                     throw py::index_error();
                 }
-                return BoundSearchResult(self.at(static_cast<size_t>(i)));
+                return BoundTileSubsetChannel(
+                    self.at(static_cast<size_t>(i)));
             },
-            py::arg("index"),
-            R"pbdoc(
-            Return one `SearchResult` by index; negative indices are supported.
-        )pbdoc")
-        .def("__iter__", [](TileSearchResultLayer const& self) {
+            py::arg("index"))
+        .def("__iter__", [](TileSubsetLayer const& self) {
                 py::list result;
                 for (size_t i = 0; i < self.size(); ++i) {
-                    result.append(BoundSearchResult(self.at(i)));
+                    result.append(BoundTileSubsetChannel(self.at(i)));
                 }
                 return py::iter(result);
-            },
-            R"pbdoc(
-            Iterate over `SearchResult` objects in this layer.
-        )pbdoc");
+            });
 }

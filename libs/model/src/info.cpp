@@ -523,32 +523,12 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
                 coverages.push_back(Coverage::fromJson(item));
             }
 
-        const auto stages = std::max<uint32_t>(1U, j.value("stages", 1U));
-        auto stageLabels = j.value("stageLabels", std::vector<std::string>{});
-        if (stageLabels.size() < stages) {
-            // Import pads missing labels so stage index -> label lookup remains
-            // total even when metadata only names a few stages explicitly.
-            stageLabels.reserve(stages);
-            for (uint32_t i = static_cast<uint32_t>(stageLabels.size()); i < stages; ++i) {
-                stageLabels.emplace_back(fmt::format("Stage {}", i));
-            }
-        }
-        const auto defaultHighFidelityStage = stages > 1U ? 1U : 0U;
-        const auto highFidelityStage = std::min<uint32_t>(
-            stages - 1U,
-            j.value("highFidelityStage", defaultHighFidelityStage));
-        // High-fidelity stage is clamped into the configured stage range so
-        // downstream geometry-name lookups never index past the metadata.
-
         auto result = std::make_shared<LayerInfo>();
         result->layerId_ = j.value("layerId", layerId);
         result->type_ = type;
         result->featureTypes_ = std::move(featureTypes);
         result->zoomLevels_ = j.value("zoomLevels", std::vector<int>());
         result->coverage_ = std::move(coverages);
-        result->stages_ = stages;
-        result->stageLabels_ = std::move(stageLabels);
-        result->highFidelityStage_ = highFidelityStage;
         result->canRead_ = j.value("canRead", true);
         result->canWrite_ = j.value("canWrite", false);
         result->version_ = Version::fromJson(j.value("version", Version().toJson()));
@@ -583,9 +563,6 @@ nlohmann::json LayerInfo::toJson() const
         {"featureTypes", featureTypes},
         {"zoomLevels", zoomLevels_},
         {"coverage", coverages},
-        {"stages", stages_},
-        {"stageLabels", stageLabels_},
-        {"highFidelityStage", highFidelityStage_},
         {"canRead", canRead_},
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};
@@ -594,6 +571,36 @@ nlohmann::json LayerInfo::toJson() const
         result["featureModelSchema"] = featureModelSchema_->toJsonSchema();
     }
 
+    return result;
+}
+
+MemoryUsageBreakdown LayerInfo::memoryUsage() const
+{
+    MemoryUsageBreakdown result;
+    result.add("object", {sizeof(LayerInfo), sizeof(LayerInfo)});
+    result.add("layer-id", stringMemoryUsage(layerId_));
+    result.add("feature-types", vectorMemoryUsage(featureTypes_));
+    for (auto const& featureType : featureTypes_) {
+        result.add("feature-type-names", stringMemoryUsage(featureType.name_));
+        result.add("id-compositions", vectorMemoryUsage(featureType.uniqueIdCompositions_));
+        for (auto const& composition : featureType.uniqueIdCompositions_) {
+            result.add("id-parts", vectorMemoryUsage(composition));
+            for (auto const& part : composition) {
+                result.add("id-part-strings", stringMemoryUsage(part.idPartLabel_));
+                result.add("id-part-strings", stringMemoryUsage(part.description_));
+            }
+        }
+    }
+    result.add("zoom-levels", vectorMemoryUsage(zoomLevels_));
+    result.add("coverage", vectorMemoryUsage(coverage_));
+    for (auto const& coverage : coverage_) {
+        auto const logicalBytes = (coverage.filled_.size() + 7) / 8;
+        auto const allocatedBytes = (coverage.filled_.capacity() + 7) / 8;
+        result.add("coverage-bits", {logicalBytes, allocatedBytes});
+    }
+    if (featureModelSchema_) {
+        result.merge("schema", featureModelSchema_->memoryUsage());
+    }
     return result;
 }
 
@@ -691,16 +698,16 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             layers[item.key()] = LayerInfo::fromJson(item.value(), item.key());
         }
 
-        std::string nodeId;
-        if (j.contains("nodeId"))
-            nodeId = j.at("nodeId").get<std::string>();
+        std::string stringPoolId;
+        if (j.contains("stringPoolId"))
+            stringPoolId = j.at("stringPoolId").get<std::string>();
         else
             // Datasource metadata may omit a stable node id for ad-hoc JSON
             // sources, so synthesize one to keep string-pool ownership valid.
-            nodeId = generateNodeHexUuid();
+            stringPoolId = generateNodeHexUuid();
 
         auto result = DataSourceInfo{
-            nodeId,
+            stringPoolId,
             j.at("mapId").get<std::string>(),
             layers,
             j.value("maxParallelJobs", 8),
@@ -724,13 +731,34 @@ nlohmann::json DataSourceInfo::toJson() const
     }
 
     return nlohmann::json{
-        {"nodeId", nodeId_},
+        {"stringPoolId", stringPoolId_},
         {"mapId", mapId_},
         {"layers", layersJson},
         {"maxParallelJobs", maxParallelJobs_},
         {"addOn", isAddOn_},
         {"extraJsonAttachment", extraJsonAttachment_},
         {"protocolVersion", effectiveDataSourceProtocolVersion(protocolVersion_).toJson()}};
+}
+
+MemoryUsageBreakdown DataSourceInfo::memoryUsage() const
+{
+    MemoryUsageBreakdown result;
+    result.add("object", {sizeof(DataSourceInfo), sizeof(DataSourceInfo)});
+    result.add("string-pool-id", stringMemoryUsage(stringPoolId_));
+    result.add("map-id", stringMemoryUsage(mapId_));
+    result.add("layers-index", {
+        layers_.size() * sizeof(decltype(layers_)::value_type),
+        layers_.bucket_count() * sizeof(void*) +
+            layers_.size() * (sizeof(decltype(layers_)::value_type) + 2 * sizeof(void*)),
+    });
+    for (auto const& [layerId, layer] : layers_) {
+        result.add("layer-index-keys", stringMemoryUsage(layerId));
+        if (layer) {
+            result.merge("layer." + layerId, layer->memoryUsage());
+        }
+    }
+    result.add("extra-json", jsonMemoryUsage(extraJsonAttachment_));
+    return result;
 }
 
 void DataSourceInfo::validateIdentifiers() const

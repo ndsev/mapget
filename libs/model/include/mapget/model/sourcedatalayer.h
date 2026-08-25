@@ -41,7 +41,7 @@ public:
 
     TileSourceDataLayer(
         TileId tileId,
-        std::string const& nodeId,
+        std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& stringPool);
@@ -69,6 +69,9 @@ public:
     tl::expected<void, simfil::Error> write(std::ostream&) override;
     nlohmann::json toJson() const override;
 
+    /** Report retained source-data model capacity without shared metadata. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
+
     tl::expected<void, simfil::Error>
     setStrings(std::shared_ptr<simfil::StringPool> const& newDict) override;
 
@@ -88,6 +91,14 @@ public:
     SourceDataAddressFormat sourceDataAddressFormat() const;
 
 private:
+    friend class SourceDataCompoundNode;
+
+    /** Set the sparse address-scope flag associated with one compound. */
+    void setSourceDataAddressScope(uint32_t compoundIndex, bool enabled);
+
+    /** Read one compound's address-scope flag without growing storage. */
+    [[nodiscard]] bool isSourceDataAddressScope(uint32_t compoundIndex) const;
+
     /**
      * Generic node resolution overload.
      */

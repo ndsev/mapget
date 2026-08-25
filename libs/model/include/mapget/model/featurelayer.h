@@ -1,51 +1,42 @@
 #pragma once
 
-#include <span>
-#include <string_view>
-#include <optional>
+#include <functional>
 #include <mutex>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "tl/expected.hpp"
 
-#include "simfil/simfil.h"
 #include "simfil/environment.h"
 #include "simfil/model/model.h"
 #include "simfil/model/nodes.h"
 #include "simfil/model/string-pool.h"
+#include "simfil/simfil.h"
 
-#include "stringpool.h"
-#include "layer.h"
-#include "sourceinfo.h"
-#include "geojson-import.h"
-#include "layerschema.h"
-#include "featuremodellayer.h"
-#include "feature.h"
 #include "attrlayer.h"
-#include "relation.h"
+#include "attrpoint.h"
+#include "feature.h"
+#include "featuremodellayer.h"
+#include "geojson-import.h"
 #include "geometry.h"
-#include "sourcedatareference.h"
-#include "pointnode.h"
+#include "layer.h"
+#include "layerschema.h"
 #include "nlohmann/json.hpp"
+#include "pointnode.h"
+#include "relation.h"
+#include "sourcedatareference.h"
+#include "sourceinfo.h"
+#include "stringpool.h"
 
 namespace mapget
 {
 
-/**
- * Optional GLB payload stored alongside a TileFeatureLayer.
- *
- * The attachment lives on TileFeatureLayer rather than on the base TileLayer
- * because only feature tiles need binary side payloads today. The model is
- * intentionally opinionated: at most one GLB payload may be attached to a tile.
- */
-struct TileGlbAttachment
-{
-    std::string name_;
-    std::vector<uint8_t> bytes_;
-
-    [[nodiscard]] nlohmann::json toJsonMetadata() const;
-};
+struct FeatureLayerSelector;
+class SimfilExpressionCache;
 
 /**
  * The TileFeatureLayer class represents a specific map layer
@@ -54,20 +45,22 @@ struct TileGlbAttachment
  */
 class TileFeatureLayer : public TileFeatureModelLayerBase
 {
-    template<class, class, class>
+    template <class, class, class>
     friend class MergedArrayView;
     friend class Feature;
     friend class Relation;
     friend class RelationReference;
+    friend class AttrPoint;
+    friend class AttrPointArray;
+    friend class AttrPointSequence;
+    friend class AttrPointSequenceReference;
     friend class Attribute;
     friend class AttributeLayer;
     friend class AttributeLayerList;
     friend class Validity;
-    template<typename Target>
-    friend model_ptr<Target> resolveInternal(
-        simfil::res::tag<Target>,
-        TileFeatureLayer const&,
-        simfil::ModelNode const&);
+    template <typename Target>
+    friend model_ptr<Target>
+    resolveInternal(simfil::res::tag<Target>, TileFeatureLayer const&, simfil::ModelNode const&);
 
 public:
     // Keep ModelPool::resolve<T> overloads visible alongside the override below.
@@ -75,32 +68,40 @@ public:
     using Ptr = std::shared_ptr<TileFeatureLayer>;
     static constexpr std::string_view GLB_ATTACHMENT_MIME_TYPE = "model/gltf-binary";
 
+    /** Identify one source node clone within an optional destination-feature scope. */
     struct CloneCacheKey
     {
         TileFeatureLayer const* model_ = nullptr;
         uint32_t address_ = 0;
+        uint32_t targetFeatureAddress_ = 0;
 
         [[nodiscard]] bool operator==(CloneCacheKey const& other) const = default;
     };
 
+    /** Hash source-node and destination-feature identity for clone reuse. */
     struct CloneCacheKeyHash
     {
         [[nodiscard]] size_t operator()(CloneCacheKey const& key) const noexcept
         {
             auto const modelHash = std::hash<TileFeatureLayer const*>{}(key.model_);
             auto const addressHash = std::hash<uint32_t>{}(key.address_);
-            return modelHash ^ (addressHash + 0x9e3779b9U + (modelHash << 6U) + (modelHash >> 2U));
+            auto const targetHash = std::hash<uint32_t>{}(key.targetFeatureAddress_);
+            auto const sourceHash =
+                modelHash ^ (addressHash + 0x9e3779b9U + (modelHash << 6U) + (modelHash >> 2U));
+            return sourceHash ^
+                (targetHash + 0x9e3779b9U + (sourceHash << 6U) + (sourceHash >> 2U));
         }
     };
 
+    /** Cache cloned nodes while preserving feature-local remapping context. */
     using CloneCache = std::unordered_map<CloneCacheKey, simfil::ModelNode::Ptr, CloneCacheKeyHash>;
 
     /**
      * This constructor initializes a new TileFeatureLayer instance.
-     * Each instance is associated with a specific TileId, nodeId, and mapId.
+     * Each instance is associated with a specific TileId, stringPoolId, and mapId.
      * @param tileId The tile id of the new feature layer. Features in this layer
      *  should be roughly within the area indicated by the tile.
-     * @param nodeId Unique id of the data source node which produced this feature.
+     * @param stringPoolId Unique id of the data source node which produced this feature.
      * @param mapId ID of the map which the layer belongs to.
      * @param layerInfo Information about the map layer this feature is associated with.
      *  Each feature in this layer must have a feature type which is also present in
@@ -112,7 +113,7 @@ public:
      */
     TileFeatureLayer(
         TileId tileId,
-        std::string const& nodeId,
+        std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& strings);
@@ -128,8 +129,7 @@ public:
     TileFeatureLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter
-    );
+        StringPoolResolveFun const& stringPoolGetter);
 
     /**
      * Get/Set common id prefix for all features in this layer.
@@ -152,8 +152,8 @@ public:
      * according to the requirements of typeId. Do not include the tile feature
      * prefix. If empty, an error will be thrown.
      */
-    model_ptr<Feature> newFeature(
-        std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
+    model_ptr<Feature>
+    newFeature(std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
 
     /**
      * Create a new feature id. Use this function to create a reference to another
@@ -172,9 +172,8 @@ public:
      * feature, which may also have optional source/target validity geometry.
      * Relations must be stored in the feature's special relations-list.
      */
-    model_ptr<Relation> newRelation(
-        std::string_view const& name,
-        model_ptr<FeatureId> const& target);
+    model_ptr<Relation>
+    newRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
 
     /**
      * Create a lightweight reference to a canonical relation. The reference can
@@ -184,37 +183,56 @@ public:
     model_ptr<RelationReference> newRelationReference(model_ptr<Relation> const& relation);
 
     /**
+     * Create a shared sequence over one canonical feature geometry.
+     * The geometry must already be attached to the supplied feature.
+     */
+    model_ptr<AttrPointSequence> newAttrPointSequence(
+        model_ptr<Feature> const& feature,
+        model_ptr<Geometry> const& geometry);
+
+    /** Return the number of shared attribute-point sequences in this tile. */
+    [[nodiscard]] uint32_t numAttrPointSequences() const;
+
+    /** Return one shared attribute-point sequence by its stable tile-local index. */
+    [[nodiscard]] model_ptr<AttrPointSequence> attrPointSequenceAt(uint32_t index) const;
+
+    /**
      * Create a new named attribute, which may be inserted into an attribute layer.
      */
-    model_ptr<Attribute> newAttribute(
-        std::string_view const& name,
-        size_t initialCapacity=8,
-        bool fixedSize=false);
+    model_ptr<Attribute>
+    newAttribute(std::string_view const& name, size_t initialCapacity = 8, bool fixedSize = false);
 
     /**
      * Create a new attribute layer, which may be inserted into a feature.
      */
-    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity=8, bool fixedSize=false);
+    model_ptr<AttributeLayer> newAttributeLayer(size_t initialCapacity = 8, bool fixedSize = false);
 
     /**
      * Create a new geometry collection.
      */
-    model_ptr<GeometryCollection> newGeometryCollection(size_t initialCapacity=2, bool fixedSize=false) override;
+    model_ptr<GeometryCollection>
+    newGeometryCollection(size_t initialCapacity = 2, bool fixedSize = false) override;
 
     /**
      * Create a new geometry.
      */
-    model_ptr<Geometry> newGeometry(GeomType geomType, size_t initialCapacity=2, bool fixedSize=false) override;
+    model_ptr<Geometry>
+    newGeometry(GeomType geomType, size_t initialCapacity = 2, bool fixedSize = false) override;
 
     /**
      * Create a new geometry view.
      */
-    model_ptr<Geometry> newGeometryView(GeomType geomType, uint32_t offset, uint32_t size, const model_ptr<Geometry>& base) override;
+    model_ptr<Geometry> newGeometryView(
+        GeomType geomType,
+        uint32_t offset,
+        uint32_t size,
+        const model_ptr<Geometry>& base) override;
 
     /**
      * Create a new list of qualified source-data references.
      */
-    model_ptr<SourceDataReferenceCollection> newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list) override;
+    model_ptr<SourceDataReferenceCollection>
+    newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list) override;
 
     /**
      * Create a new validity.
@@ -224,7 +242,8 @@ public:
     /**
      * Create a new validity collection.
      */
-    model_ptr<MultiValidity> newValidityCollection(size_t initialCapacity = 2, bool fixedSize=false);
+    model_ptr<MultiValidity>
+    newValidityCollection(size_t initialCapacity = 2, bool fixedSize = false);
 
     /**
      * Upgrade one compact simple-validity occurrence in-place to full storage.
@@ -258,6 +277,7 @@ public:
         using difference_type = std::ptrdiff_t;
         using pointer = value_type*;
         using reference = value_type&;
+
     private:
         TileFeatureLayer const& layer_;
         size_t i_ = 0;
@@ -271,13 +291,13 @@ public:
     Iterator end() const;
 
     /** (De-)Serialization */
-    tl::expected<void, simfil::Error>
-    write(std::ostream& outputStream) override;
+    tl::expected<void, simfil::Error> write(std::ostream& outputStream) override;
 
     /** Convert to (Geo-) JSON. */
     nlohmann::json toJson() const override;
 
-    /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo. */
+    /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo.
+     */
     void validateSchema() const;
 
     /** Return the layer schema attached through this tile's LayerInfo, if available. */
@@ -290,18 +310,20 @@ public:
     void fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options = {});
 
     /**
-     * Inspect or replace the optional tile-level GLB attachment without
-     * inlining payload bytes.
+     * Inspect or replace the optional name of the tile-level GLB attachment.
      *
-     * `GeomType::GltfNodeIndex` always refers to nodes inside this GLB
-     * attachment when present.
+     * Attachment bytes are transferred independently through the datasource
+     * attachment API and are never serialized into this model.
+     * `GeomType::GltfNodeIndex` refers to nodes inside the named GLB.
      */
-    [[nodiscard]] TileGlbAttachment const* glbAttachment() const;
-    void setGlbAttachment(std::string name, std::vector<uint8_t> bytes);
-    void clearGlbAttachment();
+    [[nodiscard]] std::optional<std::string> const& glbAttachmentName() const;
+    void setGlbAttachmentName(std::optional<std::string> name);
 
     /** Report serialized size stats for feature-layer data and model-pool columns. */
     [[nodiscard]] nlohmann::json serializationSizeStats() const;
+
+    /** Report retained feature-model capacity without counting shared metadata. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
 
     /** Access number of stored features */
     size_t size() const;
@@ -318,36 +340,29 @@ public:
 
     /** Access feature through its id. */
     model_ptr<Feature> find(std::string_view const& featureId) const;
-    model_ptr<Feature> find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
+    model_ptr<Feature>
+    find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
     model_ptr<Feature> find(std::string_view const& type, KeyValuePairs const& queryIdParts) const;
 
-    /** Optional staged-loading index (0-based) for this feature tile. */
-    [[nodiscard]] std::optional<uint32_t> stage() const override;
-
-    /** Store or clear the tile-stage marker without affecting contained geometries. */
-    void setStage(std::optional<uint32_t> stage) override;
-
-    /**
-     * Configure expected feature-id sequence for strict staged overlay validation.
-     * When configured, every newFeature call must match the next expected id.
-     */
-    void setExpectedFeatureSequence(std::vector<std::string> expectedFeatureIds);
-    void clearExpectedFeatureSequence();
-    [[nodiscard]] bool hasExpectedFeatureSequence() const;
-    void validateExpectedFeatureSequenceComplete() const;
+    /** Apply one portable selector to this already-loaded tile. */
+    [[nodiscard]] tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
+    find(
+        FeatureLayerSelector const& selector,
+        std::function<bool()> const& cancellationCheck = {}) const;
 
     /**
-     * Attach an overlay tile. Overlay tiles must have the same features in the
-     * same positions. Additional attribute layers, geometries and relations from
-     * overlay features are attached to the base features efficiently and lazily
-     * when retrieving the feature from the base layer.
-     * If this tile already has an overlay, the new overlay gets attached at the
-     * tail of the overlay chain.
+     * Apply several portable selectors while sharing tile-wide SIMFIL setup.
+     *
+     * Results retain selector order. A cancelled traversal returns an equally
+     * sized collection of empty results; callers providing a cancellation check
+     * must inspect their own state before consuming it.
+     * A request-owned expression cache may be supplied to share compilation
+     * with selector evaluation on other tiles.
      */
-    void attachOverlay(TileFeatureLayer::Ptr const& overlay);
-
-    /** Get the next overlay tile in the chain (if any). */
-    [[nodiscard]] TileFeatureLayer::Ptr overlay() const;
+    [[nodiscard]] tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error> find(
+        std::span<FeatureLayerSelector const> selectors,
+        std::function<bool()> const& cancellationCheck = {},
+        SimfilExpressionCache* expressionCache = nullptr) const;
 
     /**
      * Evaluate a (potentially cached) simfil query on this pool
@@ -359,7 +374,8 @@ public:
      *                      available, this enables schema-backed shorthand
      *                      rewrites. Without schema metadata it has no effect.
      */
-    struct QueryResult {
+    struct QueryResult
+    {
         // The list of values resulting from the query evaluation.
         std::vector<simfil::Value> values;
 
@@ -371,8 +387,11 @@ public:
         // generated during query evaluation.
         simfil::Diagnostics diagnostics;
     };
-    tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
-    evaluate(std::string_view query, ModelNode const& node, bool anyMode = true, bool autoWildcard = true);
+    tl::expected<TileFeatureLayer::QueryResult, simfil::Error> evaluate(
+        std::string_view query,
+        ModelNode const& node,
+        bool anyMode = true,
+        bool autoWildcard = true);
 
     tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
     evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
@@ -380,15 +399,20 @@ public:
     /**
      * Get auto-completion candidates at `point` of a query.
      */
-    tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
-    complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts);
+    tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error> complete(
+        std::string_view query,
+        int point,
+        ModelNode const& node,
+        simfil::CompletionOptions const& opts);
 
     /**
      * Collect query diagnostics for an evaluated query.
      * If the query has not yet been evaluated it gets compiled.
      */
-    tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
-    collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode = true);
+    tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error> collectQueryDiagnostics(
+        std::string_view query,
+        const simfil::Diagnostics& diag,
+        bool anyMode = true);
 
     /**
      * Change the string pool of this model to a different one.
@@ -423,8 +447,20 @@ public:
 
     using ColumnId = TileFeatureModelLayerBase::ColumnId;
 
-    
 protected:
+    /** Describe a feature clone whose local references must follow a remapped ID. */
+    struct CloneContext
+    {
+        model_ptr<FeatureId> sourceFeatureId_;
+        model_ptr<Feature> targetFeature_;
+    };
+
+    /** Clone one node while propagating an optional feature-remapping context. */
+    simfil::ModelNode::Ptr cloneNode(
+        CloneContext const& context,
+        CloneCache& clonedModelNodes,
+        TileFeatureLayer::Ptr const& otherLayer,
+        simfil::ModelNode::Ptr const& otherNode);
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
@@ -448,34 +484,49 @@ protected:
     /**
      * Create a new attribute layer collection.
      */
-    model_ptr<AttributeLayerList> newAttributeLayers(size_t initialCapacity=8, bool fixedSize=false);
+    model_ptr<AttributeLayerList>
+    newAttributeLayers(size_t initialCapacity = 8, bool fixedSize = false);
 
     /**
      * Generic node resolution overload.
      */
-    tl::expected<void, simfil::Error> resolve(const simfil::ModelNode &n, const ResolveFn &cb) const override;
+    tl::expected<void, simfil::Error>
+    resolve(const simfil::ModelNode& n, const ResolveFn& cb) const override;
 
-    [[nodiscard]] std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const override;
-    [[nodiscard]] model_ptr<FeatureId> resolveFeatureIdNode(simfil::ModelNode const& node) const override;
-    [[nodiscard]] model_ptr<PointNode> resolvePointNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<FeatureId>
+    resolveFeatureIdNode(simfil::ModelNode const& node) const override;
+    [[nodiscard]] model_ptr<PointNode>
+    resolvePointNode(simfil::ModelNode const& node) const override;
 
     [[nodiscard]] Feature::ComplexData const* featureComplexDataOrNull(uint32_t featureIndex) const;
     [[nodiscard]] Feature::ComplexData* featureComplexDataOrNull(uint32_t featureIndex);
     Feature::ComplexData& ensureFeatureComplexData(uint32_t featureIndex);
 
+    /** Return persisted data for one inserted attribute point. */
+    [[nodiscard]] AttrPoint::Data const& attrPointData(uint32_t index) const;
+
+    /** Return persisted data for one shared attribute-point sequence. */
+    [[nodiscard]] AttrPointSequence::Data const& attrPointSequenceData(uint32_t index) const;
+
+    /** Return mutable persisted data for one shared attribute-point sequence. */
+    [[nodiscard]] AttrPointSequence::Data& attrPointSequenceData(uint32_t index);
+
+    /** Append one point to a sequence while preserving compact contiguous storage. */
+    model_ptr<AttrPoint> appendAttrPoint(
+        uint32_t sequenceIndex,
+        uint32_t logicalIndex,
+        Point const& point,
+        model_ptr<SourceDataReferenceCollection> const& sourceData);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
-    std::optional<uint32_t> stage_;
-    TileFeatureLayer::Ptr overlay_;
-    mutable std::mutex overlayMutex_;
-    std::vector<std::string> expectedFeatureIds_;
 };
 
 // Primary template for ADL-based resolve hooks (specialized in featurelayer.cpp).
-template<typename Target>
+template <typename Target>
 simfil::model_ptr<Target> resolveInternal(
     simfil::res::tag<Target>,
     TileFeatureLayer const& model,
     simfil::ModelNode const& node);
 
-}
+}  // namespace mapget

@@ -1838,6 +1838,64 @@ nlohmann::json LayerSchema::toJsonSchema() const
     return transportJsonSchema_;
 }
 
+MemoryUsageBreakdown LayerSchema::memoryUsage() const
+{
+    MemoryUsageBreakdown result;
+    result.add("object", {sizeof(LayerSchema) + sizeof(Impl), sizeof(LayerSchema) + sizeof(Impl)});
+    result.add("logical-schemas", vectorMemoryUsage(impl_->schemas_));
+    for (auto const& schema : impl_->schemas_) {
+        result.add("logical-schema-strings", stringMemoryUsage(schema.entry_.key_));
+        result.add("logical-schema-strings", stringMemoryUsage(schema.entry_.jsonPointer_));
+        result.add("logical-schema-strings", stringMemoryUsage(schema.entry_.metaType_));
+        result.add("logical-schema-strings", stringMemoryUsage(schema.attributeTypeCode_));
+        result.add("logical-schema-strings", stringMemoryUsage(schema.attributeType_));
+        result.add("logical-schema-strings", stringMemoryUsage(schema.zserioType_));
+        result.add("direct-fields", stringVectorMemoryUsage(schema.directFields_));
+        result.add("direct-enum-symbols", stringVectorMemoryUsage(schema.directEnumSymbols_));
+        result.add("element-schemas", vectorMemoryUsage(schema.elementSchemas_));
+        result.add("flat-fields", stringVectorMemoryUsage(schema.flatFields_));
+        result.add("flat-enum-symbols", stringVectorMemoryUsage(schema.flatEnumSymbols_));
+        result.add("attribute-owners", vectorMemoryUsage(schema.attributeOwners_));
+        for (auto const& owner : schema.attributeOwners_) {
+            result.add("attribute-owner-strings", stringMemoryUsage(owner.featureType_));
+            result.add("attribute-owner-strings", stringMemoryUsage(owner.attributeLayerName_));
+            result.add("attribute-owner-strings", stringMemoryUsage(owner.attributeName_));
+        }
+        result.add("child-schema-map", {
+            schema.childSchemas_.size() * sizeof(decltype(schema.childSchemas_)::value_type),
+            schema.childSchemas_.size() *
+                (sizeof(decltype(schema.childSchemas_)::value_type) + 3 * sizeof(void*)),
+        });
+        for (auto const& [field, children] : schema.childSchemas_) {
+            result.add("child-schema-fields", stringMemoryUsage(field));
+            result.add("child-schema-values", vectorMemoryUsage(children));
+        }
+    }
+    result.add("entries-by-id", vectorMemoryUsage(impl_->entriesById_));
+    for (auto const& entry : impl_->entriesById_) {
+        result.add("entry-strings", stringMemoryUsage(entry.key_));
+        result.add("entry-strings", stringMemoryUsage(entry.jsonPointer_));
+        result.add("entry-strings", stringMemoryUsage(entry.metaType_));
+    }
+    result.add("key-index", {
+        impl_->idsByKey_.size() * sizeof(decltype(impl_->idsByKey_)::value_type),
+        impl_->idsByKey_.size() *
+            (sizeof(decltype(impl_->idsByKey_)::value_type) + 3 * sizeof(void*)),
+    });
+    for (auto const& [key, _] : impl_->idsByKey_) {
+        result.add("key-index-strings", stringMemoryUsage(key));
+    }
+    {
+        std::lock_guard lock(transportJsonSchemaMutex_);
+        // Do not invoke the emitter here: diagnostics must never turn a cheap
+        // memory snapshot into schema generation or datasource-owned work.
+        if (!transportJsonSchema_.is_null()) {
+            result.add("materialized-transport-json", jsonMemoryUsage(transportJsonSchema_));
+        }
+    }
+    return result;
+}
+
 std::shared_ptr<LayerSchema const> LayerSchema::detachedCopy() const
 {
     auto result = std::shared_ptr<LayerSchema>(new LayerSchema());

@@ -5,6 +5,7 @@
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/detail/http-server.h"
+#include "mapget/service/datasource.h"
 #include "mapget/service/locate.h"
 
 namespace mapget
@@ -43,7 +44,15 @@ public:
      * must process according to its available data.
      */
     DataSourceServer&
-    onLocateRequest(std::function<std::vector<LocateResponse>(LocateRequest const&)> const&);
+    onLocateRequest(
+        std::function<
+            std::vector<LocateCandidate>(
+                LocateRequest const&)> const&);
+
+    /** Set the callback which produces separately transferred tile attachments. */
+    DataSourceServer& onAttachmentRequest(
+        std::function<std::optional<AttachmentResponse>(
+            AttachmentRequest const&)> const&);
 
     /**
      * Set the callback which will be invoked when a service reports that a

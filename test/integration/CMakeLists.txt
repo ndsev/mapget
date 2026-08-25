@@ -3,6 +3,16 @@ project(test.mapget.integration CXX)
 set(MAPGET_PICK_PORTS_PY "${CMAKE_CURRENT_LIST_DIR}/detect-ports-and-prepare-config-yaml.py")
 set(MAPGET_RUN_WITH_PORTS "${CMAKE_CURRENT_LIST_DIR}/run-with-ports.bash")
 set(MAPGET_NDSMATH_PYTHON_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../ndslive-math/python")
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+add_test(
+  NAME test-cli-bind-before-datasources
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/test-bind-before-datasources.py"
+    "$<TARGET_FILE:mapget>")
+set_tests_properties(test-cli-bind-before-datasources PROPERTIES LABELS integration)
+
 if (EXISTS "${MAPGET_NDSMATH_PYTHON_DIR}/pyproject.toml")
   set(MAPGET_INSTALL_NDSMATH_PYTHON -f "python -m pip install ${MAPGET_NDSMATH_PYTHON_DIR}")
 else()
@@ -24,6 +34,15 @@ add_wheel_test(test-python-bindings-smoke
     ${MAPGET_INSTALL_NDSMATH_PYTHON}
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-bindings-smoke.py")
 
+if (TARGET mapget-location-database)
+  add_wheel_test(test-python-location-database-smoke
+    WORKING_DIRECTORY
+      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    COMMANDS
+      ${MAPGET_INSTALL_NDSMATH_PYTHON}
+      -f "python ${CMAKE_CURRENT_LIST_DIR}/python-location-database-smoke.py")
+endif()
+
 if (NOT WITH_COVERAGE)
   # Python wheels currently don't play well with gcov.
   message(STATUS "WITH_COVERAGE: ${WITH_COVERAGE}: Enabling wheel-based integration test.")
@@ -43,7 +62,7 @@ if (NOT WITH_COVERAGE)
       -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./cpp-sample-http-datasource $DATASOURCE_CPP_PORT"
 
       # Run service
-      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace serve -p $MAPGET_SERVER_PORT -d 127.0.0.1:$DATASOURCE_CPP_PORT -d 127.0.0.1:$DATASOURCE_PY_PORT"
+      -b "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace serve --host 127.0.0.1 --wait-ms 5000 -p $MAPGET_SERVER_PORT -d 127.0.0.1:$DATASOURCE_CPP_PORT -d 127.0.0.1:$DATASOURCE_PY_PORT"
 
       # Request from cpp datasource
       -f "bash ${MAPGET_RUN_WITH_PORTS} .integration/test-cli-cpp/ports.env ./mapget --log-level trace fetch -s 127.0.0.1:$MAPGET_SERVER_PORT -m Tropico -l WayLayer -t 65536"

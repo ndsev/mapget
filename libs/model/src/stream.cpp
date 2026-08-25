@@ -12,7 +12,7 @@
 #include <memory>
 
 #include "featurelayer.h"
-#include "searchresultlayer.h"
+#include "subsetlayer.h"
 #include "sourcedatalayer.h"
 
 namespace mapget
@@ -90,8 +90,8 @@ bool TileLayerStream::Reader::continueReading()
     if (nextValueType_ == MessageType::TileFeatureLayer)
     {
         auto start = std::chrono::system_clock::now();
-        auto layer = std::make_shared<TileFeatureLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
-            return stringPoolProvider_->getStringPool(nodeId);
+        auto layer = std::make_shared<TileFeatureLayer>(payload, layerInfoProvider_, [this](auto&& stringPoolId) {
+            return stringPoolProvider_->getStringPool(stringPoolId);
         });
 
         // Calculate duration.
@@ -99,17 +99,17 @@ bool TileLayerStream::Reader::continueReading()
         log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
         onParsedLayer_(layer);
     }
-    else if (nextValueType_ == MessageType::TileSearchResultLayer)
+    else if (nextValueType_ == MessageType::TileSubsetLayer)
     {
-        auto layer = std::make_shared<TileSearchResultLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
-            return stringPoolProvider_->getStringPool(nodeId);
+        auto layer = std::make_shared<TileSubsetLayer>(payload, layerInfoProvider_, [this](auto&& stringPoolId) {
+            return stringPoolProvider_->getStringPool(stringPoolId);
         });
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::TileSourceDataLayer)
     {
-        auto layer = std::make_shared<TileSourceDataLayer>(payload, layerInfoProvider_, [this](auto&& nodeId) {
-            return stringPoolProvider_->getStringPool(nodeId);
+        auto layer = std::make_shared<TileSourceDataLayer>(payload, layerInfoProvider_, [this](auto&& stringPoolId) {
+            return stringPoolProvider_->getStringPool(stringPoolId);
         });
         onParsedLayer_(layer);
     }
@@ -117,9 +117,9 @@ bool TileLayerStream::Reader::continueReading()
     {
         // String-pool updates are applied in-band so subsequent layer payloads
         // in the same stream can resolve freshly introduced string ids.
-        size_t nodeIdBytesRead = 0;
-        auto stringPoolNodeId = StringPool::readDataSourceNodeId(payload, 0, &nodeIdBytesRead);
-        auto result = stringPoolProvider_->getStringPool(stringPoolNodeId)->read(payload, nodeIdBytesRead);
+        size_t stringPoolIdBytesRead = 0;
+        auto stringPoolStringPoolId = StringPool::readDataSourceStringPoolId(payload, 0, &stringPoolIdBytesRead);
+        auto result = stringPoolProvider_->getStringPool(stringPoolStringPoolId)->read(payload, stringPoolIdBytesRead);
         if (!result) {
             raise(result.error().message);
         }
@@ -200,7 +200,7 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
 {
     if (auto modelPool = std::dynamic_pointer_cast<simfil::ModelPool>(tileLayer)) {
         if (auto strings = modelPool->strings()) {
-            auto& highestStringKnownToClient = stringPoolOffsets_[tileLayer->nodeId()];
+            auto& highestStringKnownToClient = stringPoolOffsets_[tileLayer->stringPoolId()];
             auto highestString = strings->highest();
 
             if (highestStringKnownToClient < highestString)
@@ -239,8 +239,8 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
     log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
 
-    if (std::dynamic_pointer_cast<TileSearchResultLayer>(tileLayer)) {
-        sendMessage(std::move(bytes), MessageType::TileSearchResultLayer);
+    if (std::dynamic_pointer_cast<TileSubsetLayer>(tileLayer)) {
+        sendMessage(std::move(bytes), MessageType::TileSubsetLayer);
         return;
     }
 
@@ -306,12 +306,12 @@ void TileLayerStream::Writer::sendEndOfStream()
     sendMessage("", MessageType::EndOfStream);
 }
 
-std::shared_ptr<StringPool> TileLayerStream::StringPoolCache::getStringPool(const std::string_view& nodeId)
+std::shared_ptr<StringPool> TileLayerStream::StringPoolCache::getStringPool(const std::string_view& stringPoolId)
 {
     {
         std::shared_lock stringPoolReadLock(stringPoolCacheMutex_);
-        auto it = stringPoolPerNodeId_.find(std::string(nodeId));
-        if (it != stringPoolPerNodeId_.end()) {
+        auto it = stringPoolPerStringPoolId_.find(std::string(stringPoolId));
+        if (it != stringPoolPerStringPoolId_.end()) {
             return it->second;
         }
     }
@@ -319,20 +319,21 @@ std::shared_ptr<StringPool> TileLayerStream::StringPoolCache::getStringPool(cons
         std::unique_lock stringPoolWriteLock(stringPoolCacheMutex_);
         // Another thread may have populated the cache between the shared-read
         // miss and taking the write lock, so check again before inserting.
-        auto it = stringPoolPerNodeId_.find(std::string(nodeId));
-        if (it != stringPoolPerNodeId_.end())
+        auto it = stringPoolPerStringPoolId_.find(std::string(stringPoolId));
+        if (it != stringPoolPerStringPoolId_.end())
             return it->second;
         auto [newIt, _] =
-            stringPoolPerNodeId_.emplace(nodeId, std::make_shared<StringPool>(std::string(nodeId)));
+            stringPoolPerStringPoolId_.emplace(stringPoolId, std::make_shared<StringPool>(std::string(stringPoolId)));
         return newIt->second;
     }
 }
 
 TileLayerStream::StringPoolOffsetMap TileLayerStream::StringPoolCache::stringPoolOffsets() const
 {
+    std::shared_lock stringPoolReadLock(stringPoolCacheMutex_);
     auto result = StringPoolOffsetMap();
-    for (auto const& [nodeId, stringPool] : stringPoolPerNodeId_)
-        result.emplace(nodeId, stringPool->highest());
+    for (auto const& [stringPoolId, stringPool] : stringPoolPerStringPoolId_)
+        result.emplace(stringPoolId, stringPool->highest());
     return result;
 }
 

@@ -8,12 +8,12 @@
 namespace mapget
 {
 
-std::shared_ptr<StringPool> Cache::getStringPool(const std::string_view& nodeId)
+std::shared_ptr<StringPool> Cache::getStringPool(const std::string_view& stringPoolId)
 {
     {
         std::shared_lock stringPoolReadLock(stringPoolCacheMutex_);
-        auto it = stringPoolPerNodeId_.find(nodeId);
-        if (it != stringPoolPerNodeId_.end())
+        auto it = stringPoolPerStringPoolId_.find(stringPoolId);
+        if (it != stringPoolPerStringPoolId_.end())
             return it->second;
     }
 
@@ -23,13 +23,13 @@ std::shared_ptr<StringPool> Cache::getStringPool(const std::string_view& nodeId)
         std::lock(stringPoolWriteLock, stringPoolOffsetsWriteLock);
 
         // Was the string pool inserted already now?
-        auto it = stringPoolPerNodeId_.find(nodeId);
-        if (it != stringPoolPerNodeId_.end())
+        auto it = stringPoolPerStringPoolId_.find(stringPoolId);
+        if (it != stringPoolPerStringPoolId_.end())
             return it->second;
 
         // Load/insert the string pool.
-        std::shared_ptr<StringPool> stringPool = std::make_shared<StringPool>(nodeId);
-        auto cachedStringsBlob = getStringPoolBlob(nodeId);
+        std::shared_ptr<StringPool> stringPool = std::make_shared<StringPool>(stringPoolId);
+        auto cachedStringsBlob = getStringPoolBlob(stringPoolId);
         if (cachedStringsBlob) {
             std::vector<uint8_t> bytes(cachedStringsBlob->begin(), cachedStringsBlob->end());
 
@@ -52,29 +52,74 @@ std::shared_ptr<StringPool> Cache::getStringPool(const std::string_view& nodeId)
             std::vector<uint8_t> payload(
                 bytes.begin() + static_cast<std::ptrdiff_t>(headerBytesRead),
                 bytes.begin() + static_cast<std::ptrdiff_t>(headerBytesRead + streamMessageSize));
-            size_t nodeIdBytesRead = 0;
-            auto streamDataSourceNodeId = StringPool::readDataSourceNodeId(payload, 0, &nodeIdBytesRead);
-            if (streamMessageType != TileLayerStream::MessageType::StringPool || streamDataSourceNodeId != nodeId) {
+            size_t stringPoolIdBytesRead = 0;
+            auto streamDataSourceStringPoolId = StringPool::readDataSourceStringPoolId(payload, 0, &stringPoolIdBytesRead);
+            if (streamMessageType != TileLayerStream::MessageType::StringPool || streamDataSourceStringPoolId != stringPoolId) {
                 raise("Stream header error while parsing string pool.");
             }
 
             // Now, actually read the string pool message.
-            auto readResult = stringPool->read(payload, nodeIdBytesRead);
+            auto readResult = stringPool->read(payload, stringPoolIdBytesRead);
             if (!readResult) {
                 raise(readResult.error().message);
             }
-            stringPoolOffsets_.emplace(nodeId, stringPool->highest());
+            stringPoolOffsets_.emplace(stringPoolId, stringPool->highest());
         }
-        auto [itNew, _] = stringPoolPerNodeId_.emplace(nodeId, stringPool);
+        auto [itNew, _] = stringPoolPerStringPoolId_.emplace(stringPoolId, stringPool);
         return itNew->second;
     }
 }
 
 nlohmann::json Cache::getStatistics() const {
+    int64_t loadedStringPools = 0;
+    int64_t stringPoolEntries = 0;
+    int64_t stringPoolPayloadBytes = 0;
+    MemoryUsageBreakdown memory;
+    {
+        std::shared_lock lock(stringPoolCacheMutex_);
+        loadedStringPools =
+            static_cast<int64_t>(stringPoolPerStringPoolId_.size());
+        memory.add("loaded-string-pool-index", {
+            stringPoolPerStringPoolId_.size() *
+                sizeof(decltype(stringPoolPerStringPoolId_)::value_type),
+            stringPoolPerStringPoolId_.size() *
+                (sizeof(decltype(stringPoolPerStringPoolId_)::value_type) + 3 * sizeof(void*)),
+        });
+        for (auto const& [id, pool] : stringPoolPerStringPoolId_) {
+            memory.add("loaded-string-pool-ids", stringMemoryUsage(id));
+            if (!pool) {
+                continue;
+            }
+            memory.add("loaded-string-pool-objects", {
+                sizeof(simfil::StringPool),
+                sizeof(simfil::StringPool),
+            });
+            stringPoolEntries +=
+                static_cast<int64_t>(pool->size());
+            stringPoolPayloadBytes +=
+                static_cast<int64_t>(pool->bytes());
+            memory.add("loaded-string-pools", pool->memoryUsage());
+        }
+    }
+    {
+        std::lock_guard lock(stringPoolOffsetMutex_);
+        memory.add("string-pool-offset-index", {
+            stringPoolOffsets_.size() * sizeof(decltype(stringPoolOffsets_)::value_type),
+            stringPoolOffsets_.bucket_count() * sizeof(void*) +
+                stringPoolOffsets_.size() *
+                    (sizeof(decltype(stringPoolOffsets_)::value_type) + 2 * sizeof(void*)),
+        });
+        for (auto const& [id, _] : stringPoolOffsets_) {
+            memory.add("string-pool-offset-ids", stringMemoryUsage(id));
+        }
+    }
     return {
         {"cache-hits", cacheHits_.load()},
         {"cache-misses", cacheMisses_.load()},
-        {"loaded-string-pools", (int64_t)stringPoolOffsets().size()}
+        {"loaded-string-pools", loadedStringPools},
+        {"string-pool-entries", stringPoolEntries},
+        {"string-pool-payload-bytes", stringPoolPayloadBytes},
+        {"memory", memory.toJson()}
     };
 }
 
@@ -113,16 +158,6 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
         return result;
     }
     if (tile) {
-        if (auto layerInfo = dataSource.getLayer(tileKey.layerId_);
-            layerInfo &&
-            layerInfo->type_ == LayerType::Features &&
-            layerInfo->stages_ > 1 &&
-            tileKey.stage_ != UnspecifiedStage)
-        {
-            tile->setStage(tileKey.stage_);
-        } else {
-            tile->setStage(std::nullopt);
-        }
         auto ttl = tile->ttl();
         if (ttl && ttl->count() > 0) {
             auto expiresAt = tile->timestamp() + *ttl;
@@ -140,6 +175,20 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
     return result;
 }
 
+void Cache::invalidateMap(std::string_view mapId)
+{
+    std::vector<MapTileKey> keys;
+    forEachTileLayerBlob(
+        [&](MapTileKey const& key, std::string const&) {
+            if (key.mapId_ == mapId) {
+                keys.push_back(key);
+            }
+        });
+    for (auto const& key : keys) {
+        eraseTileLayerBlob(key);
+    }
+}
+
 void Cache::putTileLayer(TileLayer::Ptr const& l)
 {
     std::unique_lock stringPoolOffsetLock(stringPoolOffsetMutex_);
@@ -150,7 +199,7 @@ void Cache::putTileLayer(TileLayer::Ptr const& l)
                 msgType == TileLayerStream::MessageType::TileSourceDataLayer)
                 putTileLayerBlob(MapTileKey(*l), msg);
             else if (msgType == TileLayerStream::MessageType::StringPool)
-                putStringPoolBlob(l->nodeId(), msg);
+                putStringPoolBlob(l->stringPoolId(), msg);
         },
         stringPoolOffsets_,
         /* differentialStringUpdates= */ false);
@@ -158,15 +207,15 @@ void Cache::putTileLayer(TileLayer::Ptr const& l)
     tileWriter.write(l);
 }
 
-simfil::StringId Cache::cachedStringPoolOffset(std::string const& nodeId)
+simfil::StringId Cache::cachedStringPoolOffset(std::string const& stringPoolId)
 {
-    if (nodeId.empty()) {
+    if (stringPoolId.empty()) {
         raise("Tried to query cached string pool offset for empty node ID!");
     }
     std::unique_lock stringPoolOffsetLock(stringPoolOffsetMutex_);
-    auto it = stringPoolOffsets_.find(nodeId);
+    auto it = stringPoolOffsets_.find(stringPoolId);
     if (it != stringPoolOffsets_.end()) {
-        log().trace("Cached string pool offset for {}: {}", nodeId, it->second);
+        log().trace("Cached string pool offset for {}: {}", stringPoolId, it->second);
         return it->second;
     }
     return 0;

@@ -10,10 +10,9 @@
 namespace mapget
 {
 
-StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
+StringPool::StringPool(const std::string_view& stringPoolId) : stringPoolId_(stringPoolId) {
     addStaticKey(IdStr, "id");
     addStaticKey(TypeIdStr, "typeId");
-    addStaticKey(LodStr, "lod");
     addStaticKey(MapIdStr, "mapId");
     addStaticKey(LayerIdStr, "layerId");
     addStaticKey(LayerStr, "layer");
@@ -58,13 +57,54 @@ StringPool::StringPool(const std::string_view& nodeId) : nodeId_(nodeId) {
     addStaticKey(ValidityCountStr, "validityCount");
     addStaticKey(OverlayNameStr, "$name");
     addStaticKey(OverlayFeatureStr, "$feature");
+    addStaticKey(OverlayFeaturesStr, "$features");
+    addStaticKey(OverlaySourceStr, "$source");
+    addStaticKey(OverlayTargetStr, "$target");
+    addStaticKey(OverlayTwowayStr, "$twoway");
     addStaticKey(OverlayLayerStr, "$layer");
     addStaticKey(OverlayValidityIndexStr, "$validityIndex");
     addStaticKey(OverlayValidityCountStr, "$validityCount");
+    addStaticKey(OverlayHasValidityStr, "$hasValidity");
     addStaticKey(CallsStr, "calls");
     addStaticKey(TotalUsStr, "totalus");
     addStaticKey(MapgetRelationStr, "$mapgetRelation");
     addStaticKey(AttributesStr, "attributes");
+    addStaticKey(ChannelIdStr, "channelId");
+    addStaticKey(ScopeStr, "scope");
+    addStaticKey(GeometryTypesStr, "geometryTypes");
+    addStaticKey(FeatureFieldsStr, "featureFields");
+    addStaticKey(EntryFieldsStr, "entryFields");
+    addStaticKey(FeatureEntriesStr, "featureEntries");
+    addStaticKey(AttributeValidityEntriesStr, "attributeValidityEntries");
+    addStaticKey(RelationEntriesStr, "relationEntries");
+    addStaticKey(GroupEntriesStr, "groupEntries");
+    addStaticKey(HostValuesStr, "hostValues");
+    addStaticKey(AttributeLayerStr, "attributeLayer");
+    addStaticKey(AttributeNameStr, "attributeName");
+    addStaticKey(HasValidityStr, "hasValidity");
+    addStaticKey(RelationIdStr, "relationId");
+    addStaticKey(ProvenanceStr, "provenance");
+    addStaticKey(TwowayStr, "twoway");
+    addStaticKey(SourceStr, "source");
+    addStaticKey(SourceGeometryStr, "sourceGeometry");
+    addStaticKey(TargetGeometryStr, "targetGeometry");
+    addStaticKey(GroupKeyStr, "groupKey");
+    addStaticKey(RepresentativeFeatureIdStr, "representativeFeatureId");
+    addStaticKey(MemberFeatureIdsStr, "memberFeatureIds");
+    addStaticKey(FilterIdStr, "filterId");
+    addStaticKey(GenerationStr, "generation");
+    addStaticKey(SourceFeatureCountStr, "sourceFeatureCount");
+    addStaticKey(OverlayAttributeIndexStr, "$attributeIndex");
+    addStaticKey(OverlayRelationIndexStr, "$relationIndex");
+    addStaticKey(AttrPointSequencesStr, "attrPointSequences");
+    addStaticKey(AttrPointsStr, "attrPoints");
+    addStaticKey(AttrPointIndexStr, "attrPointIndex");
+    addStaticKey(AttrPointIndexRangeStr, "attrPointIndexRange");
+    addStaticKey(MapgetAttrPointSequenceStr, "$mapgetAttrPointSequence");
+    addStaticKey(SequenceStr, "sequence");
+    addStaticKey(IndexStr, "index");
+    addStaticKey(GeometryIndexStr, "geometryIndex");
+    addStaticKey(PositionCountStr, "positionCount");
 }
 
 tl::expected<void, simfil::Error>
@@ -72,11 +112,11 @@ StringPool::write(std::ostream& outputStream, simfil::StringId offset) const
 {
     // Write the node id which identifies the string pool.
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
-    s.text1b(nodeId_, std::numeric_limits<uint32_t>::max());
+    s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
     return simfil::StringPool::write(outputStream, offset);
 }
 
-std::string StringPool::readDataSourceNodeId(
+std::string StringPool::readDataSourceStringPoolId(
     const std::vector<uint8_t>& input,
     size_t offset,
     size_t* bytesRead)
@@ -91,8 +131,8 @@ std::string StringPool::readDataSourceNodeId(
         input.end()));
 
     // Read the node id which identifies the string pool.
-    std::string stringPoolNodeId;
-    s.text1b(stringPoolNodeId, std::numeric_limits<uint32_t>::max());
+    std::string stringPoolStringPoolId;
+    s.text1b(stringPoolStringPoolId, std::numeric_limits<uint32_t>::max());
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raiseFmt(
             "Failed to read StringPool node id: Error {}",
@@ -101,7 +141,7 @@ std::string StringPool::readDataSourceNodeId(
     if (bytesRead != nullptr) {
         *bytesRead = s.adapter().currentReadPos();
     }
-    return stringPoolNodeId;
+    return stringPoolStringPoolId;
 }
 
 }

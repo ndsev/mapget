@@ -22,6 +22,16 @@ SourceDataAddress SourceDataCompoundNode::sourceDataAddress() const
     return data_->sourceAddress_;
 }
 
+void SourceDataCompoundNode::setSourceDataAddressScope(bool enabled)
+{
+    model().setSourceDataAddressScope(addr().index(), enabled);
+}
+
+bool SourceDataCompoundNode::isSourceDataAddressScope() const
+{
+    return model().isSourceDataAddressScope(addr().index());
+}
+
 void SourceDataCompoundNode::setSchemaName(std::string_view name)
 {
     auto res = model().strings()->emplace(name);

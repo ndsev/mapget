@@ -32,6 +32,18 @@ public:
     void setSourceDataAddress(SourceDataAddress);
     SourceDataAddress sourceDataAddress() const;
 
+    /**
+     * Mark this compound as the origin of an independently addressed payload.
+     *
+     * Consumers may present this node and its descendants relative to this
+     * compound's source address while retaining canonical absolute addresses
+     * for lookup and feature source-data references.
+     */
+    void setSourceDataAddressScope(bool enabled = true);
+
+    /** Return whether this compound starts a presentation address scope. */
+    [[nodiscard]] bool isSourceDataAddressScope() const;
+
     void setSchemaName(std::string_view name);
     std::string_view schemaName() const;
 

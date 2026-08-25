@@ -1,9 +1,12 @@
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include <glm/vec3.hpp>
 
@@ -42,6 +45,8 @@ class GeometryArrayView;
 class BoundsInfoNode;
 class BoundsPolygonCoordinatesNode;
 class BoundsRingNode;
+class Validity;
+struct MultiValidity;
 class PolygonNode;
 class MeshNode;
 class MeshTriangleCollectionNode;
@@ -58,9 +63,9 @@ using Array = simfil::Array;
  * Common ModelPool base for tile layers that store map feature identifiers and geometry.
  *
  * The base owns the concrete columns shared by TileFeatureLayer and
- * TileSearchResultLayer: detached feature ids, reusable geometry storage, and
+ * TileSubsetLayer: detached feature ids, reusable geometry storage, and
  * source-data references. Concrete layers add only their root-specific columns
- * and stage/feature-specific behavior on top.
+ * and feature/subset-specific behavior on top.
  */
 class TileFeatureModelLayerBase : public TileLayer, public simfil::ModelPool
 {
@@ -76,6 +81,8 @@ class TileFeatureModelLayerBase : public TileLayer, public simfil::ModelPool
     friend class LinearRingNode;
     friend class SourceDataReferenceCollection;
     friend class SourceDataReferenceItem;
+    friend class Validity;
+    friend struct MultiValidity;
     template<class, class, class> friend class MergedArrayView;
     template<typename Target>
     friend model_ptr<Target> resolveInternal(
@@ -127,13 +134,22 @@ public:
         GeometryBoundsRingView,
         GeometryPointView,
         SimpleValidity,
-        SearchResults,
-        Traces,
-        SearchResultValues,
         FeatureGeometryCollectionView,
         FeatureGeometryArrayView,
         FeatureAttributeLayerListView,
         RelationReferences,
+        SubsetChannels,
+        FeatureEntries,
+        AttributeValidityEntries,
+        RelationEntries,
+        GroupEntries,
+        FilterTraces,
+        AttrPoints,
+        AttrPointSequences,
+        AttrPointArrayView,
+        AttrPointSequenceReferences,
+        AttrPointIndexView,
+        AttrPointIndexRangeView,
     }; };
 
     /** Create a feature id in the concrete layer's shared FeatureId storage. */
@@ -211,16 +227,19 @@ public:
     [[nodiscard]] virtual model_ptr<SourceDataReferenceItem> resolveSourceDataReferenceItemNode(
         simfil::ModelNode const& node) const;
 
-    /** Return an optional common feature-id prefix; search-result layers normally return null. */
+    /** Return an optional common feature-id prefix. */
     [[nodiscard]] virtual model_ptr<Object> getIdPrefix() const;
 
     /** Access layer-wide geometry anchor used for anchor-relative vertex encoding. */
     [[nodiscard]] virtual Point geometryAnchor() const = 0;
 
+    /** Report base-layer, generic model-pool, feature-id, and geometry storage. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
+
 protected:
     TileFeatureModelLayerBase(
         TileId tileId,
-        std::string const& nodeId,
+        std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& strings);
@@ -234,14 +253,31 @@ protected:
     /** Access the concrete vertex buffer arena backing geometry nodes. */
     GeometryStorage& vertexBufferStorage();
 
+    /** Count logical vertices stored across all concrete geometry buffers. */
+    [[nodiscard]] uint64_t geometryVertexCount() const;
+
     /** Return geometry-view metadata for a stored geometry view address. */
     [[nodiscard]] GeometryViewData const* geometryViewData(simfil::ModelNodeAddress address) const;
 
-    /** Return the persisted geometry stage for one geometry address. */
-    [[nodiscard]] virtual std::optional<uint8_t> geometryStage(simfil::ModelNodeAddress address) const;
+    /** Resolve the layer-local logical name stored for one geometry address. */
+    [[nodiscard]] std::optional<std::string_view> geometryName(
+        simfil::ModelNodeAddress address) const;
 
-    /** Store or clear the persisted geometry stage for one geometry address. */
-    virtual void setGeometryStage(simfil::ModelNodeAddress address, std::optional<uint8_t> stage);
+    /** Store or clear a layer-local logical name for one geometry address. */
+    void setGeometryName(
+        simfil::ModelNodeAddress address,
+        std::optional<std::string_view> name);
+
+    /**
+     * Encode/decode the compact byte representation shared by geometries and
+     * validity geometry references. Byte zero means unnamed; bytes 1..255
+     * address entries 0..254 in the layer-local table.
+     */
+    [[nodiscard]] uint8_t encodeGeometryName(std::optional<std::string_view> name);
+    [[nodiscard]] std::optional<std::string_view> decodeGeometryName(uint8_t index) const;
+
+    /** Validate compact geometry-name metadata after deserialization. */
+    void validateGeometryNameStorage() const;
 
     /** Return the source-data-reference collection address attached to one geometry. */
     [[nodiscard]] virtual simfil::ModelNodeAddress geometrySourceDataReferences(
@@ -261,7 +297,14 @@ protected:
         s.object(geomViews_);
         s.ext(pointBuffers_, bitsery::ext::ArrayArenaExt{});
         s.object(sourceDataReferences_);
-        s.object(geomStages_);
+        s.container(
+            geometryNames_,
+            std::numeric_limits<uint8_t>::max(),
+            [](auto& serializer, std::string& name)
+            {
+                serializer.text1b(name, std::numeric_limits<uint16_t>::max());
+            });
+        s.object(geomNameIndices_);
         s.object(polygonRingStartRefs_);
         s.ext(polygonRingStarts_, bitsery::ext::ArrayArenaExt{});
     }
@@ -289,7 +332,8 @@ protected:
 
     simfil::ModelColumn<FeatureIdData, simfil::detail::ColumnPageSize / 2> featureIds_;
     simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> geomSourceDataRefs_;
-    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> geomStages_;
+    std::vector<std::string> geometryNames_;
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> geomNameIndices_;
     simfil::ModelColumn<GeometryViewData, simfil::detail::ColumnPageSize / 2> geomViews_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> polygonRingStartRefs_;
     simfil::ModelColumn<QualifiedSourceDataReference, simfil::detail::ColumnPageSize / 2> sourceDataReferences_;
@@ -297,7 +341,7 @@ protected:
     PolygonRingStartStorage polygonRingStarts_;
 };
 
-// Primary template for ADL-based resolve hooks shared by feature and search-result layers.
+// Primary template for ADL-based resolve hooks shared by feature-model layers.
 template<typename Target>
 simfil::model_ptr<Target> resolveInternal(
     simfil::res::tag<Target>,

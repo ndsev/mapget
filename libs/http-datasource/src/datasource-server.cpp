@@ -26,11 +26,17 @@ struct DataSourceServer::Impl
     std::function<void(TileSourceDataLayer::Ptr)> tileSourceDataCallback_ = [](auto&&) {
         throw std::runtime_error("TileSourceDataLayer callback is unset!");
     };
-    std::function<std::vector<LocateResponse>(const LocateRequest&)> locateCallback_;
+    std::function<
+        std::vector<LocateCandidate>(
+            LocateRequest const&)>
+        locateCallback_;
+    std::function<std::optional<AttachmentResponse>(
+        AttachmentRequest const&)>
+        attachmentCallback_;
     std::function<void(MapTileKey const&, std::chrono::system_clock::time_point)> cacheExpiredCallback_;
     std::shared_ptr<StringPool> strings_;
 
-    explicit Impl(DataSourceInfo info) : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.nodeId_))
+    explicit Impl(DataSourceInfo info) : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.stringPoolId_))
     {
     }
 };
@@ -55,9 +61,19 @@ DataSourceServer& DataSourceServer::onTileSourceDataRequest(std::function<void(T
 }
 
 DataSourceServer& DataSourceServer::onLocateRequest(
-    const std::function<std::vector<LocateResponse>(const LocateRequest&)>& callback)
+    std::function<
+        std::vector<LocateCandidate>(
+            LocateRequest const&)> const& callback)
 {
     impl_->locateCallback_ = callback;
+    return *this;
+}
+
+DataSourceServer& DataSourceServer::onAttachmentRequest(
+    std::function<std::optional<AttachmentResponse>(
+        AttachmentRequest const&)> const& callback)
+{
+    impl_->attachmentCallback_ = callback;
     return *this;
 }
 
@@ -92,12 +108,6 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                 auto layer = impl_->info_.getLayer(layerIdParam);
                 auto tileId = TileId::fromValue(std::stoi(tileIdParam));
 
-                auto stageParam = 0u;
-                auto const& stageStr = req->getParameter("stage");
-                if (!stageStr.empty()) {
-                    stageParam = std::stoul(stageStr);
-                }
-
                 auto stringPoolOffsetParam = (simfil::StringId)0;
                 auto const& stringPoolOffsetStr = req->getParameter("stringPoolOffset");
                 if (!stringPoolOffsetStr.empty()) {
@@ -114,16 +124,13 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                     switch (layer->type_) {
                     case mapget::LayerType::Features: {
                         auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
-                            tileId, impl_->info_.nodeId_, impl_->info_.mapId_, layer, impl_->strings_);
-                        if (layer->stages_ > 1) {
-                            tileFeatureLayer->setStage(stageParam);
-                        }
+                            tileId, impl_->info_.stringPoolId_, impl_->info_.mapId_, layer, impl_->strings_);
                         impl_->tileFeatureCallback_(tileFeatureLayer);
                         return tileFeatureLayer;
                     }
                     case mapget::LayerType::SourceData: {
                         auto tileSourceLayer = std::make_shared<TileSourceDataLayer>(
-                            tileId, impl_->info_.nodeId_, impl_->info_.mapId_, layer, impl_->strings_);
+                            tileId, impl_->info_.stringPoolId_, impl_->info_.mapId_, layer, impl_->strings_);
                         impl_->tileSourceDataCallback_(tileSourceLayer);
                         return tileSourceLayer;
                     }
@@ -137,7 +144,7 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
 
                 if (responseType == "binary") {
                     std::string content;
-                    TileLayerStream::StringPoolOffsetMap stringPoolOffsets{{impl_->info_.nodeId_, stringPoolOffsetParam}};
+                    TileLayerStream::StringPoolOffsetMap stringPoolOffsets{{impl_->info_.stringPoolId_, stringPoolOffsetParam}};
                     TileLayerStream::Writer layerWriter{
                         [&](std::string const& bytes, TileLayerStream::MessageType) { content.append(bytes); },
                         stringPoolOffsets};
@@ -203,6 +210,134 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
             }
         },
         {drogon::Post});
+
+    app.registerHandler(
+        "/attachment",
+        [this](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(
+                const drogon::HttpResponsePtr&)>&&
+                callback)
+        {
+            try {
+                auto layerId =
+                    req->getParameter("layer");
+                auto tileId =
+                    req->getParameter("tileId");
+                auto name =
+                    req->getParameter("name");
+                if (layerId.empty() ||
+                    tileId.empty() ||
+                    name.empty())
+                {
+                    auto response =
+                        drogon::HttpResponse::
+                            newHttpResponse();
+                    response->setStatusCode(
+                        drogon::k400BadRequest);
+                    response->setBody(
+                        "Missing query parameter: "
+                        "layer, tileId, and/or name");
+                    callback(response);
+                    return;
+                }
+                auto layer =
+                    impl_->info_.getLayer(
+                        layerId);
+                if (!layer ||
+                    layer->type_ !=
+                        LayerType::Features ||
+                    !impl_->attachmentCallback_)
+                {
+                    auto response =
+                        drogon::HttpResponse::
+                            newHttpResponse();
+                    response->setStatusCode(
+                        drogon::k404NotFound);
+                    callback(response);
+                    return;
+                }
+
+                auto request =
+                    AttachmentRequest{
+                        .tileKey_ = MapTileKey(
+                            LayerType::Features,
+                            impl_->info_.mapId_,
+                            std::move(layerId),
+                            TileId::fromValue(
+                                std::stoi(
+                                    tileId))),
+                        .name_ =
+                            std::move(name),
+                    };
+                auto attachment =
+                    impl_->attachmentCallback_(
+                        request);
+                if (!attachment ||
+                    attachment->name_ !=
+                        request.name_ ||
+                    !attachment->bytes_)
+                {
+                    auto response =
+                        drogon::HttpResponse::
+                            newHttpResponse();
+                    response->setStatusCode(
+                        drogon::k404NotFound);
+                    callback(response);
+                    return;
+                }
+                if (attachment->etag_ &&
+                    req->getHeader(
+                        "if-none-match") ==
+                        *attachment->etag_)
+                {
+                    auto response =
+                        drogon::HttpResponse::
+                            newHttpResponse();
+                    response->setStatusCode(
+                        drogon::k304NotModified);
+                    response->addHeader(
+                        "ETag",
+                        *attachment->etag_);
+                    callback(response);
+                    return;
+                }
+
+                auto response =
+                    drogon::HttpResponse::
+                        newHttpResponse();
+                response->setStatusCode(
+                    drogon::k200OK);
+                response->setContentTypeString(
+                    attachment->mimeType_.empty()
+                        ? "application/octet-stream"
+                        : attachment->mimeType_);
+                if (attachment->etag_) {
+                    response->addHeader(
+                        "ETag",
+                        *attachment->etag_);
+                }
+                response->setBody(std::string(
+                    attachment->bytes_->begin(),
+                    attachment->bytes_->end()));
+                callback(response);
+            }
+            catch (std::exception const& error) {
+                auto response =
+                    drogon::HttpResponse::
+                        newHttpResponse();
+                response->setStatusCode(
+                    drogon::k400BadRequest);
+                response->setContentTypeCode(
+                    drogon::CT_TEXT_PLAIN);
+                response->setBody(
+                    std::string(
+                        "Invalid request: ") +
+                    error.what());
+                callback(response);
+            }
+        },
+        {drogon::Get});
 
     app.registerHandler(
         "/cache-expired",

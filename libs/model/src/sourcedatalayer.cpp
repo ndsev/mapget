@@ -12,13 +12,12 @@
 #include "bitsery/traits/vector.h"
 #include "simfil/model/bitsery-traits.h"
 
-#include "mapget/log.h"
-#include "sourcedata.h"
 #include "featureid.h"
 #include "layer.h"
+#include "mapget/log.h"
 #include "simfil/model/model.h"
 #include "simfilutil.h"
-#include "simfilexpressioncache.h"
+#include "sourcedata.h"
 
 #include "simfil/environment.h"
 #include "simfil/model/nodes.h"
@@ -32,13 +31,14 @@ struct TileSourceDataLayer::Impl
 {
     SourceDataAddressFormat format_;
     simfil::ModelColumn<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
+    simfil::ModelColumn<uint8_t, simfil::detail::ColumnPageSize> addressScopeFlags_;
 
-    // Simfil compiled expression and environment
-    SimfilExpressionCache expressionCache_;
+    // Runtime environment exposed for callers evaluating source-data nodes.
+    std::unique_ptr<simfil::Environment> expressionEnvironment_;
 
     Impl(std::shared_ptr<simfil::StringPool> stringPool)
-        : expressionCache_(makeEnvironment(std::move(stringPool)))
-        , format_(SourceDataAddressFormat::BitRange)
+        : expressionEnvironment_(makeEnvironment(std::move(stringPool))),
+          format_(SourceDataAddressFormat::BitRange)
     {}
 
     // Bitsery (de-)serialization interface
@@ -46,16 +46,17 @@ struct TileSourceDataLayer::Impl
     void readWrite(S& s) {
         s.object(compounds_);
         s.value1b(format_);
+        s.object(addressScopeFlags_);
     }
 };
 
 TileSourceDataLayer::TileSourceDataLayer(
     TileId tileId,
-    std::string const& nodeId,
+    std::string const& stringPoolId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& stringPool) :
-    TileLayer(tileId, nodeId, mapId, layerInfo),
+    TileLayer(tileId, stringPoolId, mapId, layerInfo),
     ModelPool(stringPool),
     impl_(std::make_unique<Impl>(stringPool))
 {}
@@ -66,8 +67,8 @@ TileSourceDataLayer::TileSourceDataLayer(
     StringPoolResolveFun const& stringPoolGetter
 ) :
     TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
-    ModelPool(stringPoolGetter(nodeId_)),
-    impl_(std::make_unique<Impl>(stringPoolGetter(nodeId_)))
+    ModelPool(stringPoolGetter(stringPoolId_)),
+    impl_(std::make_unique<Impl>(stringPoolGetter(stringPoolId_)))
 {
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
@@ -92,7 +93,7 @@ TileSourceDataLayer::~TileSourceDataLayer() = default;
 
 simfil::Environment& TileSourceDataLayer::evaluationEnvironment()
 {
-    return impl_->expressionCache_.environment();
+    return *impl_->expressionEnvironment_;
 }
 
 model_ptr<SourceDataCompoundNode> TileSourceDataLayer::newCompound(size_t initialSize)
@@ -153,6 +154,32 @@ nlohmann::json TileSourceDataLayer::toJson() const
     return ModelPool::toJson();
 }
 
+MemoryUsageBreakdown TileSourceDataLayer::memoryUsage() const
+{
+    auto result = TileLayer::memoryUsage();
+    result.add("source-data-layer-object", {
+        sizeof(TileSourceDataLayer) - sizeof(TileLayer),
+        sizeof(TileSourceDataLayer) - sizeof(TileLayer),
+    });
+    result.add("source-data-layer-impl", {sizeof(Impl), sizeof(Impl)});
+
+    auto const model = ModelPool::memoryUsageStats();
+    result.add("model-pool.implementation", model.implementation);
+    result.add("model-pool.roots", model.roots);
+    result.add("model-pool.int64", model.int64Values);
+    result.add("model-pool.double", model.doubleValues);
+    result.add("model-pool.string-data", model.stringData);
+    result.add("model-pool.string-ranges", model.stringRanges);
+    result.add("model-pool.byte-array-ranges", model.byteArrayRanges);
+    result.add("model-pool.object-members", model.objectMembers);
+    result.add("model-pool.object-schemas", model.objectSchemas);
+    result.add("model-pool.array-members", model.arrayMembers);
+    result.add("model-pool.array-schemas", model.arraySchemas);
+    result.add("source-data.compounds", impl_->compounds_.memory_usage());
+    result.add("source-data.address-scope-flags", impl_->addressScopeFlags_.memory_usage());
+    return result;
+}
+
 tl::expected<void, simfil::Error>
 TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
@@ -166,7 +193,7 @@ TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDi
         }
     }
 
-    impl_->expressionCache_.reset(makeEnvironment(newDict));
+    impl_->expressionEnvironment_ = makeEnvironment(newDict);
 
     return ModelPool::setStrings(newDict);
 }
@@ -179,6 +206,20 @@ void TileSourceDataLayer::setSourceDataAddressFormat(SourceDataAddressFormat f)
 TileSourceDataLayer::SourceDataAddressFormat TileSourceDataLayer::sourceDataAddressFormat() const
 {
     return impl_->format_;
+}
+
+void TileSourceDataLayer::setSourceDataAddressScope(uint32_t compoundIndex, bool enabled)
+{
+    while (impl_->addressScopeFlags_.size() <= compoundIndex) {
+        impl_->addressScopeFlags_.emplace_back(0);
+    }
+    impl_->addressScopeFlags_.at(compoundIndex) = enabled ? 1 : 0;
+}
+
+bool TileSourceDataLayer::isSourceDataAddressScope(uint32_t compoundIndex) const
+{
+    return compoundIndex < impl_->addressScopeFlags_.size()
+        && impl_->addressScopeFlags_.at(compoundIndex) != 0;
 }
 
 }

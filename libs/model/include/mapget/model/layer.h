@@ -2,6 +2,7 @@
 
 #include "info.h"
 #include "tileid.h"
+#include "memory.h"
 
 #include "nlohmann/json.hpp"
 #include "simfil/error.h"
@@ -12,7 +13,6 @@
 #include <memory>
 #include <functional>
 #include <vector>
-#include <limits>
 #include <tl/expected.hpp>
 
 namespace simfil { struct StringPool; }
@@ -20,11 +20,9 @@ namespace simfil { struct StringPool; }
 namespace mapget
 {
 
-constexpr uint32_t UnspecifiedStage = std::numeric_limits<uint32_t>::max();
-
 /**
  * Callback type for a function which returns a string pool instance
- * for a given node identifier.
+ * for a given string-pool identifier.
  */
 using StringPoolResolveFun = std::function<std::shared_ptr<simfil::StringPool>(std::string_view const&)>;
 
@@ -51,9 +49,6 @@ struct MapTileKey
     // The tile's associated map tile id
     TileId tileId_;
 
-    // Staged-loading index for this tile/layer request (0-based).
-    uint32_t stage_ = 0;
-
     /** Constructor to parse the key from a string, as returned by toString. */
     explicit MapTileKey(std::string const& str);
 
@@ -61,18 +56,17 @@ struct MapTileKey
     explicit MapTileKey(TileLayer const& data);
 
     /** Constructor to create the cache key from raw components. */
-    explicit MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId, uint32_t stage = 0);
+    explicit MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId);
 
     /** Allow default ctor. */
     MapTileKey() = default;
 
     /** Convert the key to a string. The string will be in the form of
-     *  "(0):(1):(2):(3):(4)", with
+     *  "(0):(1):(2):(3)", with
      *   (0) being the layer type enum name,
      *   (1) being the percent-escaped map id,
      *   (2) being the percent-escaped layer id,
-     *   (3) being the decimal packed tile id,
-     *   (4) being the decimal stage index.
+     *   (3) being the decimal packed tile id.
      */
     [[nodiscard]] std::string toString() const;
 
@@ -102,12 +96,12 @@ public:
     using LoadStateCallback = std::function<void(LoadState)>;
 
     /**
-     * Constructor that takes tileId_, nodeId_, mapId_, layerInfo_,
+     * Constructor that takes tileId_, stringPoolId_, mapId_, layerInfo_,
      * and sets the timestamp_ to the current system time.
      */
     TileLayer(
         const TileId& id,
-        std::string nodeId,
+        std::string stringPoolId,
         std::string mapId,
         const std::shared_ptr<LayerInfo>& info);
 
@@ -134,11 +128,11 @@ public:
     void setTileId(const TileId& id);
 
     /**
-     * Getter and setter for layer's nodeId. This is the identifier of
+     * Getter and setter for layer's stringPoolId. This is the identifier of
      * the data source process which created this layer.
      */
-    [[nodiscard]] std::string nodeId() const;
-    void setNodeId(const std::string& id);
+    [[nodiscard]] std::string stringPoolId() const;
+    void setStringPoolId(const std::string& id);
 
     /**
      * Getter and setter for the layer's mapId. This is the identifier
@@ -196,6 +190,7 @@ public:
      * and other arbitrary meta-information.
      */
     [[nodiscard]] nlohmann::json info() const;
+    void setInfo(nlohmann::json const& info);
     void setInfo(std::string const& k, nlohmann::json const& v);
 
     /**
@@ -209,6 +204,14 @@ public:
     virtual nlohmann::json toJson() const;
 
     /**
+     * Report live payload and retained capacity owned by this layer.
+     *
+     * Shared LayerInfo, LayerSchema, and StringPool instances are excluded and
+     * must be counted once by the service which owns those shared resources.
+     */
+    [[nodiscard]] virtual MemoryUsageBreakdown memoryUsage() const;
+
+    /**
      * Set a load-state callback. Used by the service to forward state changes.
      * Not serialized with the tile.
      */
@@ -217,18 +220,11 @@ public:
     /** Emit a load-state change (if a callback is registered). */
     void setLoadState(LoadState state);
 
-    /**
-     * Optional staged-loading index for feature tiles.
-     * Base TileLayer implementation has no stage.
-     */
-    [[nodiscard]] virtual std::optional<uint32_t> stage() const;
-    virtual void setStage(std::optional<uint32_t> stage);
-
 protected:
     size_t deserializationOffsetBytes_ = 0;
     Version mapVersion_{0, 0, 0};
     TileId tileId_;
-    std::string nodeId_; // Identifier of the string-pool/datasource instance
+    std::string stringPoolId_; // Identifier of the string-pool/datasource instance
     std::string mapId_;
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;

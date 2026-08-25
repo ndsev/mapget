@@ -4,7 +4,9 @@ add_executable(test.mapget
   test-main.cpp
   test-model.cpp
   test-model-geometry.cpp
-  test-searchresultlayer.cpp
+  test-filter-service.cpp
+  test-subsetlayer.cpp
+  test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
   test-location.cpp
@@ -14,6 +16,7 @@ add_executable(test.mapget
   test-config.cpp
   test-geojson-import.cpp
   test-geojsonsource.cpp
+  test-gridsource.cpp
   utility.cpp
   utility.h)
 
@@ -30,6 +33,7 @@ target_link_libraries(test.mapget
     mapget-http-datasource
     mapget-http-service
     mapget-location
+    gridsource
     geojsonsource
     Catch2::Catch2)
 
@@ -40,7 +44,8 @@ target_link_libraries(test.mapget.datasource-server
 
 target_compile_definitions(test.mapget
   PRIVATE
-    MAPGET_TEST_DATASOURCE_SERVER_EXE=\"$<TARGET_FILE:test.mapget.datasource-server>\")
+    MAPGET_TEST_DATASOURCE_SERVER_EXE=\"$<TARGET_FILE:test.mapget.datasource-server>\"
+    MAPGET_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\")
 
 target_link_libraries(test.mapget.filelog
   PUBLIC

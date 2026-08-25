@@ -19,7 +19,6 @@ class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelL
 {
     friend class TileFeatureModelLayerBase;
     friend class TileFeatureLayer;
-    friend class TileSearchResultLayer;
     friend class Feature;
     friend class Relation;
     friend class bitsery::Access;
@@ -72,10 +71,14 @@ public:
     FeatureId() = delete;
 
 protected:
+    /** Resolve schema-backed id-part names only for callers which request them. */
+    void ensureVisiblePartLayout() const;
+
     Data data_{};
     model_ptr<Array> values_;
-    std::vector<simfil::StringId> partNames_;
-    std::vector<uint32_t> visibleValueIndices_;
+    mutable bool visiblePartLayoutResolved_ = false;
+    mutable std::vector<simfil::StringId> partNames_;
+    mutable std::vector<uint32_t> visibleValueIndices_;
 };
 
 /** Parsed representation of a canonical feature-id string. */
@@ -89,12 +92,18 @@ struct ParsedFeatureId
 /**
  * Parse a canonical dot-separated feature-id string as emitted by FeatureId::toString().
  * String-valued id parts are percent-unescaped before datatype validation.
- * Ambiguous matches are rejected so callers can resolve a single composition.
+ * The primary composition wins when a secondary composition has the same serialized
+ * shape; ambiguities within the primary or among secondary compositions are rejected.
  */
 bool parseFeatureIdString(
     std::string_view featureId,
     LayerInfo const& layerInfo,
     ParsedFeatureId& result,
     std::string* error = nullptr);
+
+/** Format typed parts into the same canonical string emitted by FeatureId::toString(). */
+std::string formatFeatureIdString(
+    std::string_view typeId,
+    KeyValuePairs const& featureIdParts);
 
 }

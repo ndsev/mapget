@@ -52,7 +52,10 @@ public:
         Cache::Ptr& cache,
         DataSourceInfo const& info,
         TileLayer::LoadStateCallback loadStateCallback = {}) override;
-    std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
+    std::vector<LocateCandidate> locate(
+        mapget::LocateRequest const& req) override;
+    std::optional<AttachmentResponse> attachment(
+        AttachmentRequest const& request) override;
     void onCacheExpired(
         MapTileKey const& tileKey,
         std::chrono::system_clock::time_point expiredAt) override;
@@ -99,7 +102,10 @@ public:
         Cache::Ptr& cache,
         DataSourceInfo const& info,
         TileLayer::LoadStateCallback loadStateCallback = {}) override;
-    std::vector<LocateResponse> locate(const mapget::LocateRequest &req) override;
+    std::vector<LocateCandidate> locate(
+        mapget::LocateRequest const& req) override;
+    std::optional<AttachmentResponse> attachment(
+        AttachmentRequest const& request) override;
     void onCacheExpired(
         MapTileKey const& tileKey,
         std::chrono::system_clock::time_point expiredAt) override;

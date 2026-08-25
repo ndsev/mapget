@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <limits>
+#include <set>
 
 #include "mapget/log.h"
 #include "fmt/format.h"
@@ -31,6 +33,115 @@ std::string replaceAll(std::string str, const std::string& from, const std::stri
         pos += to.length();
     }
     return str;
+}
+
+[[noreturn]] void trafficConfigError(const std::string& message) {
+    throw std::runtime_error("Invalid Grid traffic configuration: " + message);
+}
+
+/** SplitMix64 finalizer used by the stable Grid traffic sampling contract. */
+uint64_t stableMix64(uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
+}
+
+uint64_t stableCombine(uint64_t state, uint64_t value) {
+    return stableMix64(state ^ stableMix64(value));
+}
+
+struct TrafficSample {
+    uint32_t roadId;
+    const char* flow;
+    uint32_t freeFlowSpeedKph;
+    uint32_t estimatedAverageSpeedKph;
+    uint32_t relativeSpeedPercent;
+};
+
+TrafficSample makeTrafficSample(
+    uint32_t seed,
+    uint32_t packedTileId,
+    uint32_t roadId,
+    int64_t epoch) {
+    uint64_t roadBase = stableCombine(seed, packedTileId);
+    roadBase = stableCombine(roadBase, roadId);
+    const auto sample = stableCombine(roadBase, static_cast<uint64_t>(epoch));
+    const auto percentile = static_cast<uint32_t>(sample % 1000U);
+
+    const char* flow = "UNKNOWN";
+    uint32_t relativeMin = 40;
+    uint32_t relativeSpan = 21;
+    if (percentile < 10) {
+        flow = "NO_TRAFFIC_FLOW";
+        relativeMin = 0;
+        relativeSpan = 1;
+    } else if (percentile < 30) {
+        flow = "STATIONARY_TRAFFIC";
+        relativeMin = 1;
+        relativeSpan = 5;
+    } else if (percentile < 90) {
+        flow = "QUEUING_TRAFFIC";
+        relativeMin = 6;
+        relativeSpan = 15;
+    } else if (percentile < 200) {
+        flow = "SLOW_TRAFFIC";
+        relativeMin = 21;
+        relativeSpan = 25;
+    } else if (percentile < 400) {
+        flow = "HEAVY_TRAFFIC";
+        relativeMin = 46;
+        relativeSpan = 30;
+    } else if (percentile < 980) {
+        flow = "FREE_TRAFFIC";
+        relativeMin = 76;
+        relativeSpan = 25;
+    }
+
+    const auto freeFlow = 40U + static_cast<uint32_t>(roadBase % 91U);
+    const auto relative = relativeMin + static_cast<uint32_t>((sample >> 16U) % relativeSpan);
+    return {
+        roadId,
+        flow,
+        freeFlow,
+        static_cast<uint32_t>((static_cast<uint64_t>(freeFlow) * relative) / 100U),
+        relative};
+}
+
+nlohmann::json trafficFeatureSchema(const LayerConfig& layer) {
+    const auto& traffic = *layer.traffic;
+    nlohmann::json schema = {
+        {"$schema", "http://json-schema.org/draft-07/schema#"},
+        {"type", "object"},
+        {"required", nlohmann::json::array({"type", "typeId", "properties"})},
+        {"additionalProperties", true}};
+    schema["properties"]["type"] = {{"const", "Feature"}};
+    schema["properties"]["typeId"] = {{"const", layer.featureType}};
+    schema["properties"]["properties"] = {
+        {"type", "object"},
+        {"required", nlohmann::json::array({
+            "trafficFlow",
+            "estimatedAverageSpeedKph",
+            "freeFlowSpeedKph",
+            "relativeSpeedPercent",
+            "trafficEpoch"})},
+        {"additionalProperties", true}};
+    auto& fields = schema["properties"]["properties"]["properties"];
+    fields["trafficFlow"] = {
+        {"type", "string"},
+        {"enum", nlohmann::json::array({
+            "UNKNOWN", "FREE_TRAFFIC", "HEAVY_TRAFFIC", "SLOW_TRAFFIC",
+            "QUEUING_TRAFFIC", "STATIONARY_TRAFFIC", "NO_TRAFFIC_FLOW"})}};
+    fields["estimatedAverageSpeedKph"] = {{"type", "integer"}, {"minimum", 0}};
+    fields["freeFlowSpeedKph"] = {{"type", "integer"}, {"minimum", 1}};
+    fields["relativeSpeedPercent"] = {
+        {"type", "integer"}, {"minimum", 0}, {"maximum", 100}};
+    fields["trafficEpoch"] = {{"type", "integer"}};
+    schema["properties"]["relations"] = {
+        {"type", "array"},
+        {"description", "Contains a 'road' relation to " + traffic.roadFeatureType + "."},
+        {"items", {{"type", "object"}, {"additionalProperties", true}}}};
+    return schema;
 }
 
 }  // anonymous namespace
@@ -193,6 +304,52 @@ GeometryConfig GeometryConfig::fromYAML(const YAML::Node& node) {
     return cfg;
 }
 
+TrafficConfig TrafficConfig::fromYAML(const YAML::Node& node) {
+    if (!node || !node.IsMap()) {
+        trafficConfigError("'traffic' must be an object.");
+    }
+
+    static const std::set<std::string> allowedKeys = {
+        "roadLayer", "tileLevel", "updateIntervalSeconds", "seed"};
+    for (const auto& entry : node) {
+        const auto key = entry.first.as<std::string>();
+        if (!allowedKeys.contains(key)) {
+            trafficConfigError("unknown traffic field '" + key + "'.");
+        }
+    }
+
+    TrafficConfig cfg;
+    if (!node["roadLayer"] || !node["roadLayer"].IsScalar()) {
+        trafficConfigError("'traffic.roadLayer' is required and must be a string.");
+    }
+    cfg.roadLayer = node["roadLayer"].as<std::string>();
+    if (cfg.roadLayer.empty()) {
+        trafficConfigError("'traffic.roadLayer' must not be empty.");
+    }
+
+    try {
+        cfg.tileLevel = node["tileLevel"].as<int>(13);
+        cfg.updateIntervalSeconds = node["updateIntervalSeconds"].as<uint32_t>(5);
+        if (node["seed"]) {
+            const auto seed = node["seed"].as<uint64_t>();
+            if (seed > std::numeric_limits<uint32_t>::max()) {
+                trafficConfigError("'traffic.seed' must fit in an unsigned 32-bit integer.");
+            }
+            cfg.seed = static_cast<uint32_t>(seed);
+        }
+    } catch (const YAML::Exception& error) {
+        trafficConfigError(std::string("traffic numeric fields must be integers: ") + error.what());
+    }
+
+    if (cfg.tileLevel < 13 || cfg.tileLevel > 15) {
+        trafficConfigError("'traffic.tileLevel' must be between 13 and 15.");
+    }
+    if (cfg.updateIntervalSeconds < 1 || cfg.updateIntervalSeconds > 60) {
+        trafficConfigError("'traffic.updateIntervalSeconds' must be between 1 and 60.");
+    }
+    return cfg;
+}
+
 LayerConfig LayerConfig::fromYAML(const YAML::Node& node) {
     LayerConfig cfg;
     if (!node) return cfg;
@@ -200,6 +357,40 @@ LayerConfig LayerConfig::fromYAML(const YAML::Node& node) {
     cfg.name = node["name"].as<std::string>("");
     cfg.enabled = node["enabled"].as<bool>(true);
     cfg.featureType = node["featureType"].as<std::string>("");
+
+    const auto kind = node["kind"].as<std::string>("auto");
+    if (kind == "auto") {
+        cfg.kind = LayerKind::Auto;
+        if (node["traffic"].IsDefined()) {
+            trafficConfigError("layer '" + cfg.name + "' uses 'traffic' with kind 'auto'.");
+        }
+    } else if (kind == "traffic") {
+        cfg.kind = LayerKind::Traffic;
+        if (!node["traffic"].IsDefined()) {
+            trafficConfigError("layer '" + cfg.name + "' requires a 'traffic' object.");
+        }
+        if (node["attributes"].IsDefined() || node["relations"].IsDefined()) {
+            trafficConfigError(
+                "layer '" + cfg.name + "' cannot define generic attributes or relations.");
+        }
+        if (node["geometry"].IsDefined()) {
+            if (!node["geometry"].IsMap()) {
+                trafficConfigError("traffic geometry must be an object.");
+            }
+            for (const auto& entry : node["geometry"]) {
+                if (entry.first.as<std::string>() != "type") {
+                    trafficConfigError(
+                        "traffic geometry supports only the untuned 'type: line' field.");
+                }
+            }
+            if (node["geometry"]["type"].as<std::string>("line") != "line") {
+                trafficConfigError("traffic geometry must be 'line'.");
+            }
+        }
+        cfg.traffic = TrafficConfig::fromYAML(node["traffic"]);
+    } else {
+        trafficConfigError("unknown layer kind '" + kind + "'.");
+    }
 
     if (node["geometry"]) {
         cfg.geometry = GeometryConfig::fromYAML(node["geometry"]);
@@ -236,10 +427,64 @@ Config Config::fromYAML(const YAML::Node& node) {
     cfg.collisionGridSize = node["collisionGridSize"].as<double>(10.0);
 
     if (node["layers"]) {
+        std::vector<LayerConfig> parsedLayers;
         for (const auto& layer : node["layers"]) {
-            auto layerCfg = LayerConfig::fromYAML(layer);
-            if (layerCfg.enabled) {
-                cfg.layers.push_back(layerCfg);
+            parsedLayers.push_back(LayerConfig::fromYAML(layer));
+        }
+
+        for (auto& layer : parsedLayers) {
+            if (layer.kind != LayerKind::Traffic) {
+                continue;
+            }
+            if (layer.name.empty() || layer.featureType.empty()) {
+                trafficConfigError("traffic layer name and featureType must not be empty.");
+            }
+
+            size_t nameMatches = 0;
+            size_t typeMatches = 0;
+            for (const auto& candidate : parsedLayers) {
+                nameMatches += candidate.name == layer.name ? 1U : 0U;
+                typeMatches += candidate.featureType == layer.featureType ? 1U : 0U;
+            }
+            if (nameMatches != 1) {
+                trafficConfigError("traffic layer name '" + layer.name + "' must be unique.");
+            }
+            if (typeMatches != 1) {
+                trafficConfigError(
+                    "traffic featureType '" + layer.featureType + "' must be unique.");
+            }
+
+            std::vector<LayerConfig*> targets;
+            for (auto& candidate : parsedLayers) {
+                if (candidate.name == layer.traffic->roadLayer) {
+                    targets.push_back(&candidate);
+                }
+            }
+            if (targets.size() != 1) {
+                trafficConfigError(
+                    "traffic roadLayer '" + layer.traffic->roadLayer + "' must resolve exactly once.");
+            }
+            auto& target = *targets.front();
+            if (&target == &layer) {
+                trafficConfigError("traffic roadLayer cannot reference itself.");
+            }
+            if (!target.enabled) {
+                trafficConfigError("traffic roadLayer '" + target.name + "' is disabled.");
+            }
+            if (target.kind == LayerKind::Traffic || target.geometry.type != GeometryType::Line) {
+                trafficConfigError(
+                    "traffic roadLayer '" + target.name + "' must be a non-traffic line layer.");
+            }
+            if (target.featureType.empty()) {
+                trafficConfigError("traffic roadLayer featureType must not be empty.");
+            }
+            layer.traffic->roadFeatureType = target.featureType;
+            layer.traffic->roadFeatureIdPart = target.featureType + "Id";
+        }
+
+        for (auto& layer : parsedLayers) {
+            if (layer.enabled) {
+                cfg.layers.push_back(std::move(layer));
             }
         }
     }
@@ -413,7 +658,11 @@ uint32_t TileSpatialContext::findRoadAtPoint(Point p, double tolerance) const {
 // GridDataSource Implementation
 // ============================================================================
 
-GridDataSource::GridDataSource(const YAML::Node& config) {
+GridDataSource::GridDataSource(const YAML::Node& config, Clock clock)
+    : clock_(std::move(clock)) {
+    if (!clock_) {
+        throw std::invalid_argument("GridDataSource requires a valid clock provider.");
+    }
     if (config && config.IsMap()) {
         config_ = Config::fromYAML(config);
     } else {
@@ -455,6 +704,7 @@ GridDataSource::GridDataSource(const YAML::Node& config) {
         intersectionLayer.geometry.type = GeometryType::Point;
         config_.layers.push_back(intersectionLayer);
     }
+    staticRetainedMemoryBytes_ = computeStaticRetainedMemoryBytes();
 }
 
 DataSourceInfo GridDataSource::info() {
@@ -462,7 +712,7 @@ DataSourceInfo GridDataSource::info() {
     info["mapId"] = config_.mapId;
     info["layers"] = nlohmann::json::object();
 
-    mapget::log().info("GridDataSource registering {} layers", config_.layers.size());
+    mapget::log().debug("GridDataSource registering {} layers", config_.layers.size());
 
     // Collect all unique feature types across all layers
     std::set<std::string> allFeatureTypes;
@@ -474,6 +724,10 @@ DataSourceInfo GridDataSource::info() {
     for (const auto& layer : config_.layers) {
         nlohmann::json layerInfo;
         layerInfo["featureTypes"] = nlohmann::json::array();
+        if (layer.kind == LayerKind::Traffic) {
+            layerInfo["zoomLevels"] = nlohmann::json::array({layer.traffic->tileLevel});
+            layerInfo["featureModelSchema"] = trafficFeatureSchema(layer);
+        }
 
         // Register all feature types in this layer
         for (const auto& typeName : allFeatureTypes) {
@@ -499,10 +753,87 @@ DataSourceInfo GridDataSource::info() {
         }
 
         info["layers"][layer.name] = layerInfo;
-        mapget::log().info("  Layer '{}' with {} feature types", layer.name, allFeatureTypes.size());
+        mapget::log().debug("  Layer '{}' with {} feature types", layer.name, allFeatureTypes.size());
     }
 
     return DataSourceInfo::fromJson(info);
+}
+
+std::optional<uint64_t> GridDataSource::estimatedRetainedMemoryBytes() const
+{
+    MemoryUsageBreakdown dynamicMemory;
+    std::lock_guard lock(contextMutex_);
+    dynamicMemory.add("context-index", {
+        contextCache_.size() * sizeof(decltype(contextCache_)::value_type),
+        contextCache_.bucket_count() * sizeof(void*) +
+            contextCache_.size() *
+                (sizeof(decltype(contextCache_)::value_type) + 2 * sizeof(void*)),
+    });
+    dynamicMemory.add("context-objects", {
+        contextCache_.size() * sizeof(TileSpatialContext),
+        contextCache_.size() * sizeof(TileSpatialContext),
+    });
+    // Context vectors are populated outside contextMutex_. Reading their
+    // capacities here would race generation; process RSS keeps that mutable
+    // payload visible in the unattributed remainder without making /status unsafe.
+    return staticRetainedMemoryBytes_ + dynamicMemory.total().allocatedBytes;
+}
+
+uint64_t GridDataSource::computeStaticRetainedMemoryBytes() const
+{
+    MemoryUsageBreakdown memory;
+    memory.add("object", {sizeof(GridDataSource), sizeof(GridDataSource)});
+    memory.add("config-map-id", stringMemoryUsage(config_.mapId));
+    memory.add("config-layers", vectorMemoryUsage(config_.layers));
+
+    auto addAttribute = [&](AttributeConfig const& attribute) {
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.name));
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.templateStr));
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.formula));
+        memory.add("config-attribute-strings", stringMemoryUsage(attribute.fixedValue));
+        memory.add("config-attribute-string-values", stringVectorMemoryUsage(attribute.stringValues));
+        memory.add("config-attribute-weights", vectorMemoryUsage(attribute.weights));
+        memory.add("config-attribute-zones", vectorMemoryUsage(attribute.zones));
+        memory.add("config-attribute-zone-distances", vectorMemoryUsage(attribute.zoneDistances));
+    };
+    for (auto const& layer : config_.layers) {
+        memory.add("config-layer-strings", stringMemoryUsage(layer.name));
+        memory.add("config-layer-strings", stringMemoryUsage(layer.featureType));
+        if (layer.traffic) {
+            memory.add("config-traffic-strings", stringMemoryUsage(layer.traffic->roadLayer));
+            memory.add("config-traffic-strings", stringMemoryUsage(layer.traffic->roadFeatureType));
+            memory.add("config-traffic-strings", stringMemoryUsage(layer.traffic->roadFeatureIdPart));
+        }
+        memory.add("config-geometry-size-range", vectorMemoryUsage(layer.geometry.sizeRange));
+        memory.add("config-geometry-aspect-ratio", vectorMemoryUsage(layer.geometry.aspectRatio));
+        memory.add("config-top-attributes", vectorMemoryUsage(layer.topAttributes));
+        for (auto const& attribute : layer.topAttributes) {
+            addAttribute(attribute);
+        }
+        memory.add("config-attribute-layers", vectorMemoryUsage(layer.layeredAttributes));
+        for (auto const& attributeLayer : layer.layeredAttributes) {
+            memory.add("config-attribute-layer-names", stringMemoryUsage(attributeLayer.layerName));
+            memory.add("config-layered-attributes", vectorMemoryUsage(attributeLayer.attributes));
+            for (auto const& attribute : attributeLayer.attributes) {
+                memory.add("config-layered-attribute-strings", stringMemoryUsage(attribute.name));
+                memory.add("config-layered-attribute-strings", stringMemoryUsage(attribute.validityType));
+                memory.add("config-layered-attribute-fields", vectorMemoryUsage(attribute.fields));
+                for (auto const& field : attribute.fields) {
+                    addAttribute(field);
+                }
+            }
+        }
+        memory.add("config-relations", vectorMemoryUsage(layer.relations));
+        for (auto const& relation : layer.relations) {
+            memory.add("config-relation-strings", stringMemoryUsage(relation.name));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.targetLayer));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.targetType));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.cardinality));
+            memory.add("config-relation-strings", stringMemoryUsage(relation.validityType));
+        }
+    }
+
+    return memory.total().allocatedBytes;
 }
 
 std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(TileId tileId) const {
@@ -532,41 +863,52 @@ std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(TileId ti
 }
 
 void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
-    std::string layerName = tile->layerInfo()->layerId_;
-
-    mapget::log().info("GridDataSource::fill() called for layer '{}' tile {}", layerName, tile->tileId().value());
-
-    // Get or create spatial context for this tile
-    auto ctx = getOrCreateContext(tile->tileId());
+    const std::string layerName = tile->layerInfo()->layerId_;
+    mapget::log().debug(
+        "GridDataSource::fill() called for layer '{}' tile {}",
+        layerName,
+        tile->tileId().value());
 
     // Set ID prefix
     tile->setIdPrefix({{"tileId", static_cast<int64_t>(tile->tileId().value())}});
 
-    // Find matching layer configuration
-    for (const auto& layerCfg : config_.layers) {
-        if (layerCfg.name == layerName) {
-            mapget::log().info("  Found matching layer config, geometry type: {}", static_cast<int>(layerCfg.geometry.type));
-            // Generate features based on geometry type
-            if (layerCfg.geometry.type == GeometryType::Polygon || layerCfg.geometry.type == GeometryType::Mesh) {
-                mapget::log().info("  Generating buildings...");
-                generateBuildings(*ctx, layerCfg, tile);
-                mapget::log().info("  Generated {} buildings", ctx->buildings.size());
-            } else if (layerCfg.geometry.type == GeometryType::Line) {
-                mapget::log().info("  Generating roads...");
-                generateRoads(*ctx, layerCfg, tile);
-                mapget::log().info("  Generated {} roads", ctx->roads.size());
-            } else if (layerCfg.geometry.type == GeometryType::Point) {
-                mapget::log().info("  Generating intersections...");
-                generateIntersections(*ctx, layerCfg, tile);
-                mapget::log().info("  Generated {} intersections", ctx->intersections.size());
-            }
-            return;
-        }
+    const auto layerIt = std::find_if(
+        config_.layers.begin(),
+        config_.layers.end(),
+        [&](const auto& layer) { return layer.name == layerName; });
+    if (layerIt == config_.layers.end()) {
+        mapget::log().warn("No matching Grid layer configuration found for '{}'", layerName);
+        return;
     }
-    mapget::log().warn("  No matching layer configuration found for '{}'", layerName);
+    const auto& layerCfg = *layerIt;
+
+    if (layerCfg.kind == LayerKind::Traffic &&
+        tile->tileId().level() != layerCfg.traffic->tileLevel) {
+        tile->setError(fmt::format(
+            "Grid traffic layer '{}' supports only tile level {} (requested {}).",
+            layerName,
+            layerCfg.traffic->tileLevel,
+            tile->tileId().level()));
+        tile->setTtl(std::chrono::milliseconds{0});
+        return;
+    }
+
+    // Get or create spatial context only after terminal request checks.
+    auto ctx = getOrCreateContext(tile->tileId());
+    if (layerCfg.kind == LayerKind::Traffic) {
+        generateTraffic(*ctx, layerCfg, tile);
+    } else if (
+        layerCfg.geometry.type == GeometryType::Polygon ||
+        layerCfg.geometry.type == GeometryType::Mesh) {
+        generateBuildings(*ctx, layerCfg, tile);
+    } else if (layerCfg.geometry.type == GeometryType::Line) {
+        generateRoads(*ctx, layerCfg, tile);
+    } else if (layerCfg.geometry.type == GeometryType::Point) {
+        generateIntersections(*ctx, layerCfg, tile);
+    }
 }
 
-std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
+std::vector<LocateCandidate> GridDataSource::locate(const LocateRequest& req) {
     // Extract tileId from the feature ID parts
     std::optional<int64_t> tileId = req.getIntIdPart("tileId");
     if (!tileId) {
@@ -595,14 +937,14 @@ std::vector<LocateResponse> GridDataSource::locate(const LocateRequest& req) {
     mapTileKey.layerId_ = layerId;
     mapTileKey.tileId_ = TileId::fromValue(static_cast<int32_t>(*tileId));
 
-    // Create and return the LocateResponse
-    LocateResponse locateResponse(req);
-    locateResponse.tileKey_ = mapTileKey;
-
     mapget::log().debug("GridDataSource::locate() - Found feature '{}' in tile {} layer '{}'",
                        req.typeId_, *tileId, layerId);
 
-    return {locateResponse};
+    return {LocateCandidate(
+        std::move(mapTileKey),
+        formatFeatureIdString(
+            req.typeId_,
+            req.featureId_))};
 }
 
 void GridDataSource::generateBuildings(TileSpatialContext& ctx,
@@ -611,6 +953,31 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
     // Lazily generate road grid first (ensures roads are always generated before buildings)
     generateRoadGrid(ctx, config, tile);
 
+    auto appendGeometry = [&](model_ptr<Feature> feature,
+                              Building const& building) {
+        if (config.geometry.type == GeometryType::Polygon) {
+            auto polygon = feature->geom()->newGeometry(
+                GeomType::Polygon,
+                4,
+                true);
+            polygon->append({building.minX, building.minY, 0.0});
+            polygon->append({building.maxX, building.minY, 0.0});
+            polygon->append({building.maxX, building.maxY, 0.0});
+            polygon->append({building.minX, building.maxY, 0.0});
+            return;
+        }
+        feature->addMesh({
+            Point(building.minX, building.minY, 0.0),
+            Point(building.maxX, building.minY, 0.0),
+            Point(building.maxX, building.maxY, 0.0)
+        });
+        feature->addMesh({
+            Point(building.minX, building.minY, 0.0),
+            Point(building.maxX, building.maxY, 0.0),
+            Point(building.minX, building.maxY, 0.0)
+        });
+    };
+
     // Only generate buildings once for this tile
     if (!ctx.buildings.empty()) {
         // Buildings already generated, just recreate features
@@ -618,17 +985,7 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
             auto feature = tile->newFeature(config.featureType,
                 {{config.featureType + "Id", building.id}});
 
-            // Create axis-aligned rectangle as mesh (two triangles)
-            feature->addMesh({
-                Point(building.minX, building.minY, 0.0),
-                Point(building.maxX, building.minY, 0.0),
-                Point(building.maxX, building.maxY, 0.0)
-            });
-            feature->addMesh({
-                Point(building.minX, building.minY, 0.0),
-                Point(building.maxX, building.maxY, 0.0),
-                Point(building.minX, building.maxY, 0.0)
-            });
+            appendGeometry(feature, building);
 
             // Generate attributes
             std::mt19937 gen(ctx.seed + building.id);
@@ -712,16 +1069,7 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
                 auto feature = tile->newFeature(config.featureType,
                     {{config.featureType + "Id", building.id}});
 
-                feature->addMesh({
-                    Point(building.minX, building.minY, 0.0),
-                    Point(building.maxX, building.minY, 0.0),
-                    Point(building.maxX, building.maxY, 0.0)
-                });
-                feature->addMesh({
-                    Point(building.minX, building.minY, 0.0),
-                    Point(building.maxX, building.maxY, 0.0),
-                    Point(building.minX, building.maxY, 0.0)
-                });
+                appendGeometry(feature, building);
 
                 // Generate attributes
                 std::mt19937 attrGen(ctx.seed + building.id);
@@ -770,7 +1118,7 @@ void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
         double roadWidth = roadWidthMeters / metersPerDegree;
         double spacing = blockSize + roadWidth;
 
-        mapget::log().info("  Road grid generation: block size {}m, road width {}m, skip probability {}%",
+        mapget::log().debug("Road grid generation: block size {}m, road width {}m, skip probability {}%",
                            blockSizeMeters, roadWidthMeters, static_cast<int>(skipProbability * 100));
 
         std::mt19937 gen(ctx.seed);
@@ -794,7 +1142,7 @@ void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
             x += spacing;
         }
 
-        mapget::log().info("  Road grid: {} horizontal roads, {} vertical roads",
+        mapget::log().debug("Road grid: {} horizontal roads, {} vertical roads",
                            ctx.horizontalRoadY.size(), ctx.verticalRoadX.size());
 
         // Create intersections at all crossing points
@@ -869,7 +1217,7 @@ void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
             }
         }
 
-        mapget::log().info("  Generated {} intersections, {} road segments, {} blocks",
+        mapget::log().debug("Generated {} intersections, {} road segments, {} blocks",
                            ctx.intersections.size(), ctx.roads.size(), ctx.blocks.size());
     });
 }
@@ -927,6 +1275,105 @@ void GridDataSource::generateRoads(TileSpatialContext& ctx,
                           (road.start.y + road.end.y) / 2.0, 0.0);
         generateRelations(feature, ctx, config.relations, roadMidpoint);
     }
+}
+
+void GridDataSource::generateTraffic(TileSpatialContext& ctx,
+                                     const LayerConfig& config,
+                                     TileFeatureLayer::Ptr const& tile) {
+    constexpr size_t maxTrafficFeatures = 10'000;
+    const auto& traffic = *config.traffic;
+
+    // Publish the stable topology before choosing the snapshot bucket. The topology
+    // can be expensive on a cold context and must not consume most of a traffic epoch.
+    generateRoadGrid(ctx, config, tile);
+    if (ctx.roads.size() > maxTrafficFeatures) {
+        tile->setError(fmt::format(
+            "Grid traffic layer '{}' exceeds the {} feature safety cap ({} roads).",
+            config.name,
+            maxTrafficFeatures,
+            ctx.roads.size()));
+        tile->setTtl(std::chrono::milliseconds{0});
+        return;
+    }
+
+    const auto period = std::chrono::seconds{traffic.updateIntervalSeconds};
+    const auto periodMs = std::chrono::duration_cast<std::chrono::milliseconds>(period).count();
+    const auto packedTileId = static_cast<uint32_t>(tile->tileId().value());
+
+    auto bucketFor = [&](std::chrono::system_clock::time_point now) {
+        const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count();
+        auto epoch = millis / periodMs;
+        if (millis < 0 && millis % periodMs != 0) {
+            --epoch;
+        }
+        return epoch;
+    };
+    auto calculateSamples = [&](int64_t epoch) {
+        std::vector<TrafficSample> samples;
+        samples.reserve(ctx.roads.size());
+        for (const auto& road : ctx.roads) {
+            samples.push_back(makeTrafficSample(
+                traffic.seed,
+                packedTileId,
+                road.id,
+                epoch));
+        }
+        return samples;
+    };
+
+    auto epoch = bucketFor(clock_());
+    auto samples = calculateSamples(epoch);
+
+    // Recheck once immediately before tile mutation. Crossing while calculating must
+    // never publish a tile whose declared lifetime already ended.
+    const auto finalEpoch = bucketFor(clock_());
+    if (finalEpoch != epoch) {
+        epoch = finalEpoch;
+        samples = calculateSamples(epoch);
+    }
+
+    for (size_t index = 0; index < ctx.roads.size(); ++index) {
+        const auto& road = ctx.roads[index];
+        const auto& sample = samples[index];
+        auto feature = tile->newFeature(
+            config.featureType,
+            {{config.featureType + "Id", sample.roadId}});
+
+        auto line = feature->geom()->newGeometry(
+            GeomType::Line,
+            static_cast<uint32_t>(road.intermediatePoints.size() + 2U));
+        line->append(road.start);
+        for (const auto& point : road.intermediatePoints) {
+            line->append(point);
+        }
+        line->append(road.end);
+
+        feature->attributes()->addField("trafficFlow", sample.flow);
+        feature->attributes()->addField(
+            "estimatedAverageSpeedKph",
+            static_cast<int64_t>(sample.estimatedAverageSpeedKph));
+        feature->attributes()->addField(
+            "freeFlowSpeedKph",
+            static_cast<int64_t>(sample.freeFlowSpeedKph));
+        feature->attributes()->addField(
+            "relativeSpeedPercent",
+            static_cast<int64_t>(sample.relativeSpeedPercent));
+        feature->attributes()->addField("trafficEpoch", epoch);
+        feature->addRelation("road", traffic.roadFeatureType, {
+            {"tileId", static_cast<int64_t>(tile->tileId().value())},
+            {traffic.roadFeatureIdPart, static_cast<int64_t>(road.id)}
+        });
+    }
+
+    tile->setTimestamp(std::chrono::system_clock::time_point{
+        std::chrono::milliseconds{epoch * periodMs}});
+    tile->setTtl(std::chrono::duration_cast<std::chrono::milliseconds>(period));
+    mapget::log().debug(
+        "Generated {} traffic features for epoch {} on tile {}",
+        samples.size(),
+        epoch,
+        tile->tileId().value());
 }
 
 void GridDataSource::generateIntersections(TileSpatialContext& ctx,

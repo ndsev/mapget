@@ -46,10 +46,9 @@ nlohmann::json sourceCatalogEntryToJson(DataSourceCatalogEntry const& entry)
         result = entry.info->toJson();
     }
     else {
-        const auto mapId = entry.descriptor.configuredMapId.value_or(entry.descriptor.sourceId);
         result = nlohmann::json::object({
-            {"nodeId", entry.descriptor.sourceId},
-            {"mapId", mapId},
+            {"stringPoolId", entry.descriptor.displayName},
+            {"mapId", entry.descriptor.displayName},
             {"layers", nlohmann::json::object()},
             {"maxParallelJobs", 0},
             {"addOn", entry.descriptor.addOn},
@@ -65,9 +64,6 @@ nlohmann::json sourceCatalogEntryToJson(DataSourceCatalogEntry const& entry)
     result["statusMessage"] = entry.statusMessage;
     if (entry.progress) {
         result["progress"] = *entry.progress;
-    }
-    if (entry.descriptor.configuredMapId) {
-        result["configuredMapId"] = *entry.descriptor.configuredMapId;
     }
     return result;
 }

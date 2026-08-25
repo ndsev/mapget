@@ -3,6 +3,8 @@
 #include <catch2/catch_session.hpp>
 
 #include <mutex>
+#include <regex>
+#include <stdexcept>
 
 #include "mapget/log.h"
 #include "test-http-service-fixture.h"
@@ -23,7 +25,19 @@ HttpService& httpService()
 
     if (!servicePtr) {
         // Intentionally leaked to avoid destructor ordering issues at process shutdown.
-        servicePtr = new HttpService();
+        HttpServiceConfig config;
+        config.cacheResetEnabled = true;
+        config.cacheResetAuthHeaderAlternatives.emplace(
+            "x-cache-role",
+            std::regex("^resetter$"));
+        config.cacheResetAuthHeaderAlternatives.emplace(
+            "x-cache-group",
+            std::regex("^operators$"));
+        servicePtr = new HttpService(
+            std::make_shared<MemCache>(),
+            config);
+        if (!servicePtr->mountFileSystem(MAPGET_TEST_DATA_DIR "/startup-static"))
+            throw std::runtime_error("Failed to create the startup static mount used by HTTP tests");
         servicePtr->go("127.0.0.1", 0, 5000);
     }
 
@@ -47,4 +61,3 @@ int main(int argc, char* argv[])
     mapget::test::shutdownHttpService();
     return result;
 }
-

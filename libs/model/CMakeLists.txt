@@ -3,16 +3,18 @@ project(mapget-model CXX)
 add_library(mapget-model STATIC
   include/mapget/model/stringpool.h
   include/mapget/model/layer.h
+  include/mapget/model/memory.h
   include/mapget/model/featuremodellayer.h
   include/mapget/model/featurelayer.h
-  include/mapget/model/searchresultlayer.h
-  include/mapget/model/featurelayer-search.h
+  include/mapget/model/subsetlayer.h
+  include/mapget/model/featurelayer-filter.h
   include/mapget/model/geojson-import.h
   include/mapget/model/json-compare.h
   include/mapget/model/layerschema.h
   include/mapget/model/info.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
+  include/mapget/model/attrpoint.h
   include/mapget/model/attrlayer.h
   include/mapget/model/tileid.h
   include/mapget/model/featureid.h
@@ -23,6 +25,7 @@ add_library(mapget-model STATIC
   include/mapget/model/geometry-data.h
   include/mapget/model/geometry.h
   include/mapget/model/simfilgeometry.h
+  include/mapget/model/simfilexpressioncache.h
   include/mapget/model/simfilutil.h
   include/mapget/model/sourcedata.h
   include/mapget/model/sourcedatalayer.h
@@ -34,16 +37,18 @@ add_library(mapget-model STATIC
 
   src/stringpool.cpp
   src/layer.cpp
+  src/memory.cpp
   src/featuremodellayer.cpp
   src/featurelayer.cpp
-  src/searchresultlayer.cpp
-  src/featurelayer-search.cpp
+  src/subsetlayer.cpp
+  src/featurelayer-filter.cpp
   src/geojson-import.cpp
   src/json-compare.cpp
   src/layerschema.cpp
   src/info.cpp
   src/feature.cpp
   src/attr.cpp
+  src/attrpoint.cpp
   src/attrlayer.cpp
   src/featureid.cpp
   src/relation.cpp
@@ -52,7 +57,7 @@ add_library(mapget-model STATIC
   src/point.cpp
   src/pointnode.cpp
   src/simfilgeometry.cpp
-  src/simfilexpressioncache.h
+  src/simfilexpressioncache.cpp
   src/sourcedata.cpp
   src/sourcedatalayer.cpp
   src/sourcedatareference.cpp

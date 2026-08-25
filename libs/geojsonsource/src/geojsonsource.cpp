@@ -289,8 +289,8 @@ void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
 {
     ensureFeatureLayerInfoOnly(info, "GeoJSON datasource");
     info.maxParallelJobs_ = std::max(info.maxParallelJobs_, 1);
-    if (info.nodeId_.empty())
-        info.nodeId_ = generateNodeHexUuid();
+    if (info.stringPoolId_.empty())
+        info.stringPoolId_ = generateNodeHexUuid();
     if (!mapIdOverride.empty())
         info.mapId_ = mapIdOverride;
 }
@@ -314,7 +314,7 @@ void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
 
     auto layerInfo = LayerInfo::fromJson(fallbackLayerJson, "GeoJsonAny");
     DataSourceInfo info;
-    info.nodeId_ = generateNodeHexUuid();
+    info.stringPoolId_ = generateNodeHexUuid();
     info.mapId_ = mapId;
     info.maxParallelJobs_ = defaultParallelJobs();
     info.layers_.emplace(layerInfo->layerId_, std::move(layerInfo));
@@ -633,7 +633,7 @@ GeoJsonSource::GeoJsonSource(std::string inputDir, GeoJsonSourceOptions options)
 {
     info_.maxParallelJobs_ = defaultParallelJobs();
     info_.mapId_ = options.mapId.empty() ? mapNameFromUri(inputDir_) : options.mapId;
-    info_.nodeId_ = generateNodeHexUuid();
+    info_.stringPoolId_ = generateNodeHexUuid();
 
     if (auto loadedInfo = loadConfiguredDataSourceInfo(
             options.dataSourceInfoJson,
@@ -680,11 +680,69 @@ GeoJsonSource::GeoJsonSource(std::string inputDir, GeoJsonSourceOptions options)
         info_.mapId_,
         info_.layers_.size(),
         usesTemplatePaths_ ? "template" : hasManifest_ ? "manifest" : "legacy");
+    retainedMemoryBytes_ = computeRetainedMemoryBytes();
 }
 
 mapget::DataSourceInfo GeoJsonSource::info()
 {
     return info_;
+}
+
+std::optional<uint64_t> GeoJsonSource::estimatedRetainedMemoryBytes() const
+{
+    return retainedMemoryBytes_;
+}
+
+uint64_t GeoJsonSource::computeRetainedMemoryBytes() const
+{
+    MemoryUsageBreakdown memory;
+    memory.add("object", {sizeof(GeoJsonSource), sizeof(GeoJsonSource)});
+    memory.merge("metadata", info_.memoryUsage());
+    memory.add("paths", stringMemoryUsage(inputDir_));
+    memory.add("paths", stringMemoryUsage(tilePathTemplate_));
+    memory.add("manifest-files", vectorMemoryUsage(manifest_.files));
+    memory.add("manifest-default-layer", stringMemoryUsage(manifest_.defaultLayer));
+    for (auto const& file : manifest_.files) {
+        memory.add("manifest-file-strings", stringMemoryUsage(file.filename));
+        memory.add("manifest-file-strings", stringMemoryUsage(file.layer));
+    }
+    auto addOptionalString = [&](std::optional<std::string> const& value) {
+        if (value) {
+            memory.add("manifest-metadata", stringMemoryUsage(*value));
+        }
+    };
+    addOptionalString(manifest_.metadata.name);
+    addOptionalString(manifest_.metadata.description);
+    addOptionalString(manifest_.metadata.source);
+    addOptionalString(manifest_.metadata.created);
+    addOptionalString(manifest_.metadata.author);
+    addOptionalString(manifest_.metadata.license);
+
+    memory.add("tile-file-index", {
+        tileLayerToFile_.size() * sizeof(decltype(tileLayerToFile_)::value_type),
+        tileLayerToFile_.bucket_count() * sizeof(void*) +
+            tileLayerToFile_.size() *
+                (sizeof(decltype(tileLayerToFile_)::value_type) + 2 * sizeof(void*)),
+    });
+    for (auto const& [key, filename] : tileLayerToFile_) {
+        memory.add("tile-file-index-strings", stringMemoryUsage(key.layer));
+        memory.add("tile-file-index-strings", stringMemoryUsage(filename));
+    }
+    memory.add("coverage-index", {
+        layerCoverage_.size() * sizeof(decltype(layerCoverage_)::value_type),
+        layerCoverage_.bucket_count() * sizeof(void*) +
+            layerCoverage_.size() *
+                (sizeof(decltype(layerCoverage_)::value_type) + 2 * sizeof(void*)),
+    });
+    for (auto const& [layer, tiles] : layerCoverage_) {
+        memory.add("coverage-layer-ids", stringMemoryUsage(layer));
+        memory.add("coverage-tiles", {
+            tiles.size() * sizeof(decltype(tiles)::value_type),
+            tiles.bucket_count() * sizeof(void*) +
+                tiles.size() * (sizeof(decltype(tiles)::value_type) + 2 * sizeof(void*)),
+        });
+    }
+    return memory.total().allocatedBytes;
 }
 
 std::string GeoJsonSource::resolveTilePath(int32_t tileId, std::string_view layerId) const
@@ -815,7 +873,7 @@ struct GeoJsonEndpointSource::Impl
 
     int clientCount_ = 1;
     std::unique_ptr<trantor::EventLoopThread> loopThread_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::unordered_map<std::string, ClientPool> pools_;
 };
 
@@ -830,7 +888,7 @@ GeoJsonEndpointSource::GeoJsonEndpointSource(GeoJsonEndpointSourceOptions option
 
     info_.maxParallelJobs_ = defaultParallelJobs();
     info_.mapId_ = options.mapId.empty() ? mapNameFromUri(baseUrl_) : options.mapId;
-    info_.nodeId_ = generateNodeHexUuid();
+    info_.stringPoolId_ = generateNodeHexUuid();
 
     if (auto loadedInfo = loadConfiguredDataSourceInfo(
             options.dataSourceInfoJson,
@@ -852,6 +910,7 @@ GeoJsonEndpointSource::GeoJsonEndpointSource(GeoJsonEndpointSourceOptions option
     }
 
     impl_ = std::make_unique<Impl>(std::max(info_.maxParallelJobs_, 1));
+    baselineRetainedMemoryBytes_ = computeBaselineRetainedMemoryBytes();
 
     mapget::log().info(
         "GeoJsonEndpoint initialized: mapId='{}', layers={}, baseUrl='{}'",
@@ -865,6 +924,43 @@ GeoJsonEndpointSource::~GeoJsonEndpointSource() = default;
 mapget::DataSourceInfo GeoJsonEndpointSource::info()
 {
     return info_;
+}
+
+std::optional<uint64_t> GeoJsonEndpointSource::estimatedRetainedMemoryBytes() const
+{
+    auto bytes = baselineRetainedMemoryBytes_;
+    if (!impl_) {
+        return bytes;
+    }
+
+    MemoryUsageBreakdown dynamicMemory;
+    std::lock_guard lock(impl_->mutex_);
+    dynamicMemory.add("http-client-pools", {
+        impl_->pools_.size() * sizeof(decltype(impl_->pools_)::value_type),
+        impl_->pools_.bucket_count() * sizeof(void*) +
+            impl_->pools_.size() *
+                (sizeof(decltype(impl_->pools_)::value_type) + 2 * sizeof(void*)),
+    });
+    for (auto const& [origin, pool] : impl_->pools_) {
+        dynamicMemory.add("http-origins", stringMemoryUsage(origin));
+        dynamicMemory.add("http-client-handles", vectorMemoryUsage(pool.clients));
+    }
+    return bytes + dynamicMemory.total().allocatedBytes;
+}
+
+uint64_t GeoJsonEndpointSource::computeBaselineRetainedMemoryBytes() const
+{
+    MemoryUsageBreakdown memory;
+    memory.add("object", {sizeof(GeoJsonEndpointSource), sizeof(GeoJsonEndpointSource)});
+    memory.merge("metadata", info_.memoryUsage());
+    memory.add("endpoint-strings", stringMemoryUsage(baseUrl_));
+    memory.add("endpoint-strings", stringMemoryUsage(tileUrlTemplate_));
+    if (impl_) {
+        memory.add("http-state", {sizeof(Impl), sizeof(Impl)});
+    }
+    // Drogon client/event-loop internals remain opaque; this is deliberately a
+    // lower-bound estimate rather than an allocator-level claim.
+    return memory.total().allocatedBytes;
 }
 
 std::string GeoJsonEndpointSource::renderTileUrl(int32_t tileId, std::string_view layerId) const

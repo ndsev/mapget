@@ -1,5 +1,6 @@
 #pragma once
 
+#include "attrpoint.h"
 #include "geometry.h"
 #include "sourcedatareference.h"
 #include "validity-data.h"
@@ -11,6 +12,83 @@ class Geometry;
 class Feature;
 class FeatureId;
 
+/** Logical position in one shared interwoven AttrPointSequence. */
+class AttrPointIndex final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+{
+    friend class TileFeatureLayer;
+
+public:
+    /** Return the shared sequence defining this logical index. */
+    [[nodiscard]] model_ptr<AttrPointSequence> sequence() const;
+
+    /** Return the zero-based logical index. */
+    [[nodiscard]] uint32_t index() const;
+
+    /** Serialize the compact sequence reference and logical index. */
+    [[nodiscard]] nlohmann::json toJson() const override;
+
+    explicit AttrPointIndex(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+    {
+    }
+
+    AttrPointIndex(
+        simfil::ModelConstPtr model,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+
+    AttrPointIndex() = delete;
+
+protected:
+    /** Expose object semantics to SIMFIL and generic inspection. */
+    [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr at(int64_t fieldIndex) const override;
+    [[nodiscard]] simfil::ModelNode::Ptr get(simfil::StringId const& field) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t fieldIndex) const override;
+    [[nodiscard]] uint32_t size() const override;
+    bool iterate(IterCallback const& callback) const override;
+};
+
+/** Inclusive logical range in one shared interwoven AttrPointSequence. */
+class AttrPointIndexRange final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+{
+    friend class TileFeatureLayer;
+
+public:
+    /** Return the shared sequence defining this logical range. */
+    [[nodiscard]] model_ptr<AttrPointSequence> sequence() const;
+
+    /** Return the inclusive start index. */
+    [[nodiscard]] uint32_t start() const;
+
+    /** Return the inclusive end index. */
+    [[nodiscard]] uint32_t end() const;
+
+    /** Serialize the compact sequence reference and inclusive endpoints. */
+    [[nodiscard]] nlohmann::json toJson() const override;
+
+    explicit AttrPointIndexRange(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+    {
+    }
+
+    AttrPointIndexRange(
+        simfil::ModelConstPtr model,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+
+    AttrPointIndexRange() = delete;
+
+protected:
+    /** Expose object semantics to SIMFIL and generic inspection. */
+    [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr at(int64_t fieldIndex) const override;
+    [[nodiscard]] simfil::ModelNode::Ptr get(simfil::StringId const& field) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t fieldIndex) const override;
+    [[nodiscard]] uint32_t size() const override;
+    bool iterate(IterCallback const& callback) const override;
+};
+
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
  */
@@ -18,6 +96,8 @@ class Validity : public simfil::ProceduralObject<7, Validity, TileFeatureLayer>
 {
     friend class TileFeatureLayer;
     friend class PointNode;
+    friend class AttrPointIndex;
+    friend class AttrPointIndexRange;
 
 public:
     using Direction = ValidityData::Direction;
@@ -37,6 +117,8 @@ public:
     static constexpr GeometryDescriptionType OffsetPointValidity = ValidityData::OffsetPointValidity;
     static constexpr GeometryDescriptionType OffsetRangeValidity = ValidityData::OffsetRangeValidity;
     static constexpr GeometryDescriptionType FeatureTransition = ValidityData::FeatureTransition;
+    static constexpr GeometryDescriptionType AttrPointIndexValidity = ValidityData::AttrPointIndexValidity;
+    static constexpr GeometryDescriptionType AttrPointIndexRangeValidity = ValidityData::AttrPointIndexRangeValidity;
 
     static constexpr GeometryOffsetType InvalidOffsetType = ValidityData::InvalidOffsetType;
     static constexpr GeometryOffsetType GeoPosOffset = ValidityData::GeoPosOffset;
@@ -65,12 +147,9 @@ public:
     [[nodiscard]] GeometryOffsetType geometryOffsetType() const;
     [[nodiscard]] GeometryDescriptionType geometryDescriptionType() const;
 
-    /**
-     * Referenced geometry stage accessors.
-     * If unset, validity resolution falls back to the first matching line geometry.
-     */
-    [[nodiscard]] std::optional<uint32_t> geometryStage() const;
-    void setGeometryStage(std::optional<uint32_t> geometryStage);
+    /** Referenced layer-local geometry name used for validity resolution. */
+    [[nodiscard]] std::optional<std::string_view> geometryName() const;
+    void setGeometryName(std::optional<std::string_view> geometryName);
 
     /**
      * Single offset point accessors. Note for the getter:
@@ -90,6 +169,17 @@ public:
     void setOffsetRange(GeometryOffsetType offsetType, double start, double end);
     [[nodiscard]] std::optional<std::pair<Point, Point>> offsetRange() const;
 
+    /** Set/get one logical position in a shared interwoven AttrPointSequence. */
+    void setAttrPointIndex(model_ptr<AttrPointSequence> const& sequence, uint32_t index);
+    [[nodiscard]] model_ptr<AttrPointIndex> attrPointIndex() const;
+
+    /** Set/get one inclusive logical range in a shared interwoven AttrPointSequence. */
+    void setAttrPointIndexRange(
+        model_ptr<AttrPointSequence> const& sequence,
+        uint32_t start,
+        uint32_t end);
+    [[nodiscard]] model_ptr<AttrPointIndexRange> attrPointIndexRange() const;
+
     /**
      * Get or set a simple geometry for the validity.
      */
@@ -98,14 +188,31 @@ public:
 
     /**
      * Get or set a semantic feature transition validity.
-     * The connected ends indicate which endpoint of each referenced feature touches the transition.
+     * The connected ends indicate which endpoint of each referenced feature ID touches the transition.
+     * Feature IDs are stored directly so transitions may reference features outside the current tile.
      */
+    void setFeatureTransition(
+        model_ptr<FeatureId> const& fromFeatureId,
+        TransitionEnd fromConnectedEnd,
+        model_ptr<FeatureId> const& toFeatureId,
+        TransitionEnd toConnectedEnd,
+        uint32_t transitionNumber);
+
+    /** Convenience overload for transitions between features in the current tile. */
     void setFeatureTransition(
         model_ptr<Feature> const& fromFeature,
         TransitionEnd fromConnectedEnd,
         model_ptr<Feature> const& toFeature,
         TransitionEnd toConnectedEnd,
         uint32_t transitionNumber);
+
+    [[nodiscard]] model_ptr<FeatureId> transitionFromFeatureId() const;
+    [[nodiscard]] model_ptr<FeatureId> transitionToFeatureId() const;
+
+    /**
+     * Resolve transition endpoint IDs to features in the current tile when possible.
+     * Cross-tile, external-map, and secondary-ID references intentionally return null.
+     */
     [[nodiscard]] model_ptr<Feature> transitionFromFeature() const;
     [[nodiscard]] model_ptr<Feature> transitionToFeature() const;
     [[nodiscard]] std::optional<TransitionEnd> transitionFromConnectedEnd() const;
@@ -116,16 +223,18 @@ public:
      * Compute the actual shape-points of the validity with respect to one
      * of the geometries in the given collection, or the geometry collection of
      * the directly referenced feature. The geometry is picked based
-     * on the validity's geometryStage when available. The return value may be one of the following:
+     * on the validity's geometryName when available. The return value may be one of the following:
      * - An empty vector, indicating that the validity could not be applied.
      *   If an error string was passed, then it would be set to an error message.
      * - A vector containing a single point, if the validity resolved to a point geometry.
      * - A vector containing more than one point, if the validity resolved to a poly-line.
+     * For feature transitions, transitionPivotIndex receives the point that
+     * separates the incoming and outgoing road slices when provided.
      */
      SelfContainedGeometry computeGeometry(
          model_ptr<GeometryCollection> geometryCollection,
          std::string* error=nullptr,
-         std::optional<uint32_t> defaultGeometryStage = std::nullopt) const;
+         uint32_t* transitionPivotIndex=nullptr) const;
 
 protected:
     using Data = ValidityData;
@@ -170,7 +279,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
      */
     model_ptr<Validity> newPoint(
         Point pos,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -179,7 +288,20 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     model_ptr<Validity> newRange(
         Point start,
         Point end,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
+        Validity::Direction direction = Validity::Empty);
+
+    /** Append one logical position in a shared interwoven AttrPointSequence. */
+    model_ptr<Validity> newAttrPointIndex(
+        model_ptr<AttrPointSequence> const& sequence,
+        uint32_t index,
+        Validity::Direction direction = Validity::Empty);
+
+    /** Append one inclusive logical range in a shared interwoven AttrPointSequence. */
+    model_ptr<Validity> newAttrPointIndexRange(
+        model_ptr<AttrPointSequence> const& sequence,
+        uint32_t start,
+        uint32_t end,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -191,7 +313,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     model_ptr<Validity> newPoint(
         Validity::GeometryOffsetType offsetType,
         double pos,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -202,7 +324,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     model_ptr<Validity> newPoint(
         Validity::GeometryOffsetType offsetType,
         int32_t pos,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -215,7 +337,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
         Validity::GeometryOffsetType offsetType,
         double start,
         double end,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -227,7 +349,7 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
         Validity::GeometryOffsetType offsetType,
         int32_t start,
         int32_t end,
-        std::optional<uint32_t> geometryStage = std::nullopt,
+        std::optional<std::string_view> geometryName = std::nullopt,
         Validity::Direction direction = Validity::Empty);
 
     /**
@@ -244,14 +366,23 @@ struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Valid
     newFeatureId(model_ptr<FeatureId> const& featureId, Validity::Direction direction = Validity::Empty);
 
     /**
-     * Append a validity that references a staged geometry in the current feature context.
+     * Append a validity that references a named geometry in the current feature context.
      */
     model_ptr<Validity>
-    newGeomStage(uint32_t geometryStage, Validity::Direction direction = Validity::Empty);
+    newGeomName(std::string_view geometryName, Validity::Direction direction = Validity::Empty);
 
     /**
      * Append a semantic transition validity connecting two feature endpoints.
      */
+    model_ptr<Validity> newFeatureTransition(
+        model_ptr<FeatureId> const& fromFeatureId,
+        Validity::TransitionEnd fromConnectedEnd,
+        model_ptr<FeatureId> const& toFeatureId,
+        Validity::TransitionEnd toConnectedEnd,
+        uint32_t transitionNumber,
+        Validity::Direction direction = Validity::Empty);
+
+    /** Convenience overload for transitions between features in the current tile. */
     model_ptr<Validity> newFeatureTransition(
         model_ptr<Feature> const& fromFeature,
         Validity::TransitionEnd fromConnectedEnd,

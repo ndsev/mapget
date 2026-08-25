@@ -96,6 +96,44 @@ void reportInitStatus(DataSourceInitContext& initContext, std::string message)
     return std::nullopt;
 }
 
+/**
+ * Build a display-only name for a catalog row that has no authoritative
+ * DataSourceInfo yet. A configured map ID wins; otherwise non-secret
+ * top-level scalar values are concatenated in YAML order.
+ */
+[[nodiscard]] std::string dataSourceDisplayName(
+    YAML::Node const& descriptor,
+    uint32_t configIndex)
+{
+    std::string suffix;
+    if (auto mapId = scalarString(descriptor, "mapId"); mapId && !mapId->empty()) {
+        suffix = std::move(*mapId);
+    }
+    else if (descriptor.IsMap()) {
+        for (auto const& item : descriptor) {
+            if (!item.first.IsScalar() || !item.second.IsScalar()) {
+                continue;
+            }
+            auto const key = item.first.as<std::string>();
+            if (isSecretConfigKey(key)) {
+                continue;
+            }
+            auto const value = item.second.as<std::string>();
+            if (value.empty()) {
+                continue;
+            }
+            if (!suffix.empty()) {
+                suffix += '-';
+            }
+            suffix += value;
+        }
+    }
+
+    return suffix.empty()
+        ? fmt::format("datasource-{}", configIndex)
+        : fmt::format("datasource-{}-{}", configIndex, suffix);
+}
+
 [[nodiscard]] std::unordered_map<std::string, std::regex> parseAuthHeaderAlternatives(YAML::Node const& descriptor)
 {
     std::unordered_map<std::string, std::regex> result;
@@ -170,15 +208,18 @@ void DataSourceConfigService::unsubscribe(uint32_t id)
 void DataSourceConfigService::loadConfig(std::string const& path, bool startWatchThread)
 {
     log().debug("loadConfig called with path: {}, startWatchThread: {}", path, startWatchThread);
-    configFilePath_ = path;
+    {
+        auto configMutationLock = lockConfigMutation();
+        configFilePath_ = path;
 
-    // Force reload by clearing checksum.
-    lastConfigSHA256_.clear();
+        // Force reload by clearing checksum.
+        lastConfigSHA256_.clear();
 
-    // Notify subscribers immediately to allow dependent apps to proceed
-    // This is needed as there otherwise apps would have to wait manually
-    // for the callback to be called before they can continue.
-    loadConfig();
+        // Notify subscribers immediately to allow dependent apps to proceed
+        // This is needed as there otherwise apps would have to wait manually
+        // for the callback to be called before they can continue.
+        loadConfig();
+    }
 
     if (startWatchThread)
         startConfigFileWatchThread();
@@ -186,6 +227,7 @@ void DataSourceConfigService::loadConfig(std::string const& path, bool startWatc
 
 void DataSourceConfigService::loadConfig()
 {
+    auto configMutationLock = lockConfigMutation();
     std::optional<std::string> error;
 
     log().trace("loadConfig() called, configFilePath: {}", configFilePath_);
@@ -339,15 +381,13 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
 {
     DataSourceDescriptor result;
     result.configIndex = configIndex;
-    result.type = scalarString(descriptor, "type").value_or("");
-    result.sourceId = scalarString(descriptor, "id").value_or("");
+    result.sourceId = scalarString(descriptor, "sourceId")
+        .value_or(fmt::format("datasource-{}", configIndex));
     if (result.sourceId.empty()) {
-        result.sourceId = scalarString(descriptor, "sourceId").value_or(fmt::format("config:{}", configIndex));
+        result.sourceId = fmt::format("datasource-{}", configIndex);
     }
-    result.configuredMapId = scalarString(descriptor, "mapId");
-    if (!result.configuredMapId) {
-        result.configuredMapId = scalarString(descriptor, "configuredMapId");
-    }
+    result.type = scalarString(descriptor, "type").value_or("");
+    result.displayName = dataSourceDisplayName(descriptor, configIndex);
 
     try {
         result.addOn = descriptor["addOn"].as<bool>(false);
@@ -366,52 +406,13 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
             e.what());
     }
 
-    DataSourceDescribeFn describe;
-    {
-        std::lock_guard memberAccessLock(memberAccessMutex_);
-        auto it = constructors_.find(result.type);
-        if (it != constructors_.end()) {
-            describe = it->second.describe_;
-        }
-    }
-
-    if (describe) {
-        DataSourceDescriptor described;
-        try {
-            described = describe(descriptor, configIndex);
-        }
-        catch (std::exception const& e) {
-            log().warn(
-                "Datasource descriptor callback for type {} at index {} failed: {}",
-                result.type,
-                configIndex,
-                e.what());
-            return result;
-        }
-        if (described.sourceId.empty()) {
-            described.sourceId = result.sourceId;
-        }
-        if (described.type.empty()) {
-            described.type = result.type;
-        }
-        described.configIndex = configIndex;
-        if (!described.configuredMapId) {
-            described.configuredMapId = result.configuredMapId;
-        }
-        if (described.authHeaderAlternatives.empty()) {
-            described.authHeaderAlternatives = std::move(result.authHeaderAlternatives);
-        }
-        return described;
-    }
-
     return result;
 }
 
 void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
     LegacyDataSourceConstructor constructor,
-    nlohmann::json schema,
-    DataSourceDescribeFn describe)
+    nlohmann::json schema)
 {
     if (!constructor) {
         log().warn("Refusing to register NULL constructor for datasource type {}", typeName);
@@ -422,22 +423,20 @@ void DataSourceConfigService::registerDataSourceType(
         [constructor = std::move(constructor)](YAML::Node const& node, DataSourceInitContext&) {
             return constructor(node);
         },
-        std::move(schema),
-        std::move(describe));
+        std::move(schema));
 }
 
 void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
     DataSourceConstructor constructor,
-    nlohmann::json schema,
-    DataSourceDescribeFn describe)
+    nlohmann::json schema)
 {
     if (!constructor) {
         log().warn("Refusing to register NULL constructor for datasource type {}", typeName);
         return;
     }
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    constructors_[typeName] = {std::move(constructor), std::move(schema), std::move(describe)};
+    constructors_[typeName] = {std::move(constructor), std::move(schema)};
     schema_.reset();
     validator_.reset();
     log().info("Registered data source type {}.", typeName);
@@ -653,6 +652,10 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
         {"type", "object"},
         {"properties", {
             {"type", typeProperty},
+            {"sourceId", {
+                {"type", "string"},
+                {"minLength", 1},
+            }},
             {"enabled", enabledSchema()},
             {"ttl", ttlSchema()},
             {"auth-header", authHeaderSchema()}
@@ -768,6 +771,76 @@ nlohmann::json DataSourceConfigService::getPublicConfigSections(YAML::Node const
         result[name] = std::move(section);
     }
     return result;
+}
+
+void DataSourceConfigService::registerPublicConfigFieldWriter(
+    std::string path,
+    PublicConfigFieldWriter writer)
+{
+    if (path.empty() || !writer) {
+        log().warn("Refusing to register an invalid public config field writer.");
+        return;
+    }
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    publicConfigFieldWriters_[std::move(path)] = std::move(writer);
+}
+
+DataSourceConfigService::PublicConfigWriteResult
+DataSourceConfigService::applyPublicConfigFieldWrite(
+    std::string const& path,
+    YAML::Node& fullConfig,
+    nlohmann::json const& requestedValue) const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    auto const writer = publicConfigFieldWriters_.find(path);
+    if (writer == publicConfigFieldWriters_.end() || !writer->second) {
+        return {.error = "No writer is registered for public config field '" + path + "'."};
+    }
+    try {
+        return writer->second(fullConfig, requestedValue);
+    }
+    catch (std::exception const& error) {
+        return {.error = error.what()};
+    }
+    catch (...) {
+        return {.error = "The public config writer failed with an unknown error."};
+    }
+}
+
+bool DataSourceConfigService::hasPublicConfigFieldWriter(std::string const& path) const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    return publicConfigFieldWriters_.contains(path);
+}
+
+std::optional<std::string> DataSourceConfigService::getConfigFileRevision() const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    if (configFilePath_.empty()) {
+        return std::nullopt;
+    }
+    std::ifstream file(configFilePath_, std::ios::binary);
+    if (!file) {
+        return std::nullopt;
+    }
+    std::ostringstream content;
+    content << file.rdbuf();
+    std::string revision;
+    picosha2::hash256_hex_string(content.str(), revision);
+    return revision;
+}
+
+void DataSourceConfigService::acknowledgePublicConfigWrite(
+    std::string const& completeFileContents)
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    auto watchedContent = completeFileContents + configFilePath_;
+    picosha2::hash256_hex_string(watchedContent, lastConfigSHA256_);
+}
+
+std::unique_lock<std::recursive_mutex> DataSourceConfigService::lockConfigMutation() const
+{
+    return std::unique_lock<std::recursive_mutex>{configMutationMutex_};
 }
 
 void DataSourceConfigService::validateDataSourceConfig(nlohmann::json json) const
@@ -901,6 +974,7 @@ void DataSourceConfigService::reset() {
     schema_.reset();
     validator_.reset();
     publicConfigSectionSerializers_.clear();
+    publicConfigFieldWriters_.clear();
     dataSourceConfigStats_ = {};
     end();
 }

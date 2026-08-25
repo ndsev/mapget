@@ -10,6 +10,7 @@
 #include "mapget/model/info.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
+#include "mapget/model/memory.h"
 
 namespace mapget
 {
@@ -44,6 +45,14 @@ public:
     /** Used by DataSource to retrieve a cached TileLayer. */
     LookupResult getTileLayer(MapTileKey const& tileKey, DataSourceInfo const& dataSource);
 
+    /**
+     * Remove every cached tile for one map.
+     *
+     * Datasource and add-on lifecycle changes use this boundary because cache
+     * keys deliberately do not contain catalog source identity.
+     */
+    void invalidateMap(std::string_view mapId);
+
     /** Override for CachedStringPoolCache::getStringPool() */
     std::shared_ptr<StringPool> getStringPool(std::string_view const&) override;
 
@@ -55,14 +64,17 @@ public:
     /** Abstract: Upsert (update or insert) a TileLayer blob. */
     virtual void putTileLayerBlob(MapTileKey const& k, std::string const& v) = 0;
 
+    /** Abstract: Remove one TileLayer blob if present. */
+    virtual void eraseTileLayerBlob(MapTileKey const& k) = 0;
+
     /** Abstract: Iterate through all cached tile layer blobs. */
     virtual void forEachTileLayerBlob(const TileBlobVisitor& cb) const = 0;
 
-    /** Abstract: Retrieve a string-pool blob for a sourceNodeId. */
-    virtual std::optional<std::string> getStringPoolBlob(std::string_view const& sourceNodeId) = 0;
+    /** Abstract: Retrieve a string-pool blob for a sourceStringPoolId. */
+    virtual std::optional<std::string> getStringPoolBlob(std::string_view const& sourceStringPoolId) = 0;
 
     /** Abstract: Upsert (update or insert) a string-pool blob. */
-    virtual void putStringPoolBlob(std::string_view const& sourceNodeId, std::string const& v) = 0;
+    virtual void putStringPoolBlob(std::string_view const& sourceStringPoolId, std::string const& v) = 0;
 
     // Override this method if your cache implementation has special stats.
 
@@ -77,10 +89,10 @@ public:
 
 protected:
     // Used by DataSource::cachedStringPoolOffset()
-    simfil::StringId cachedStringPoolOffset(std::string const& nodeId);
+    simfil::StringId cachedStringPoolOffset(std::string const& stringPoolId);
 
     // Mutex for stringPoolOffsets_
-    std::mutex stringPoolOffsetMutex_;
+    mutable std::mutex stringPoolOffsetMutex_;
     TileLayerStream::StringPoolOffsetMap stringPoolOffsets_;
 
     // Statistics

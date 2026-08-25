@@ -9,8 +9,23 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/sqlitecache.h
   include/mapget/service/locate.h
   include/mapget/service/config.h
+  include/mapget/service/detail/allocator-memory.h
 
   src/service.cpp
+  src/service-datasources.h
+  src/service-datasources.cpp
+  src/service-filter.h
+  src/service-filter.cpp
+  src/service-impl.h
+  src/service-locate.h
+  src/service-locate.cpp
+  src/service-memory.h
+  src/service-memory.cpp
+  src/service-scheduler.h
+  src/service-scheduler.cpp
+  src/service-statistics.cpp
+  src/service-tiles.h
+  src/service-tiles.cpp
   src/cache.cpp
   src/datasource.cpp
   src/memcache.cpp
@@ -36,6 +51,10 @@ target_link_libraries(mapget-service
     nlohmann_json_schema_validator
   PRIVATE
     picosha2)
+
+if (WIN32)
+  target_link_libraries(mapget-service PRIVATE Psapi)
+endif()
 
 if (MSVC)
   target_compile_definitions(mapget-service

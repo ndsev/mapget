@@ -15,6 +15,7 @@
 
 #include "simfil/error.h"
 #include "simfil/model/schema.h"
+#include "mapget/model/memory.h"
 
 namespace mapget
 {
@@ -114,6 +115,9 @@ public:
 
     /** Serialize this typed schema to its JSON Schema transport representation. */
     [[nodiscard]] nlohmann::json toJsonSchema() const;
+
+    /** Report compiled lookup storage without forcing the lazy transport schema to materialize. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 
     /**
      * Create a detached copy without carrying the lazy transport emitter.

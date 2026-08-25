@@ -4,25 +4,28 @@
 #include "mapget/log.h"
 
 #include "mapget/http-datasource/datasource-client.h"
+#include "mapget/service/config.h"
 #include "mapget/service/memcache.h"
 #include "mapget/service/nullcache.h"
 #include "mapget/service/sqlitecache.h"
-#include "mapget/service/config.h"
 
-#include "gridsource/gridsource.h"
 #include "geojsonsource/geojsonsource.h"
+#include "gridsource/gridsource.h"
 
-#include <CLI/CLI.hpp>
-#include <string>
-#include <vector>
 #include <yaml-cpp/yaml.h>
-#include <chrono>
-#include <nlohmann/json.hpp>
-#include <filesystem>
-#include <fstream>
+#include <CLI/CLI.hpp>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <regex>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -38,130 +41,249 @@ namespace mapget
 namespace
 {
 
+[[nodiscard]] bool isHttpHeaderTokenChar(unsigned char character)
+{
+    if (character > 0x7f) {
+        return false;
+    }
+    if (std::isalnum(character)) {
+        return true;
+    }
+    switch (character) {
+    case '!':
+    case '#':
+    case '$':
+    case '%':
+    case '&':
+    case '\'':
+    case '*':
+    case '+':
+    case '-':
+    case '.':
+    case '^':
+    case '_':
+    case 0x60:
+    case '|':
+    case '~':
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] AuthHeaderRegexMap parseCacheResetAuthHeaderAlternatives(
+    std::vector<std::string> const& configuredAlternatives)
+{
+    AuthHeaderRegexMap alternatives;
+    for (auto const& configured : configuredAlternatives) {
+        auto const separator = configured.find('=');
+        if (separator == std::string::npos || separator == 0) {
+            raise(
+                "Each --cache-reset-auth-header value must use HEADER=REGEX syntax.");
+        }
+
+        auto header = configured.substr(0, separator);
+        if (!std::ranges::all_of(
+                header,
+                [](unsigned char character) {
+                    return isHttpHeaderTokenChar(character);
+                }))
+        {
+            raise(fmt::format(
+                "Invalid cache-reset auth header name: {}.",
+                header));
+        }
+
+        try {
+            if (!addAuthHeaderRegexMatchOption(
+                    alternatives,
+                    header,
+                    std::regex(configured.substr(separator + 1))))
+            {
+                raise(fmt::format(
+                    "Duplicate cache-reset auth header name: {}.",
+                    header));
+            }
+        }
+        catch (std::regex_error const& error) {
+            raise(fmt::format(
+                "Invalid regular expression for cache-reset auth header {}: {}",
+                header,
+                error.what()));
+        }
+    }
+    return alternatives;
+}
+
 nlohmann::json dataSourceHostSchema()
 {
     return {
         {"type", "object"},
-        {"properties", {
-            {"url", {
-                {"type", "string"},
-                {"title", "URL"},
-                {"description", "Host:port for the remote datasource server."}
-            }}
-        }},
+        {"properties",
+         {{"url",
+           {{"type", "string"},
+            {"title", "URL"},
+            {"description", "Host:port for the remote datasource server."}}}}},
         {"required", nlohmann::json::array({"url"})},
-        {"additionalProperties", false}
-    };
+        {"additionalProperties", false}};
 }
 
 nlohmann::json dataSourceProcessSchema()
 {
     return {
         {"type", "object"},
-        {"properties", {
-            {"cmd", {
-                {"type", "string"},
-                {"title", "Command"},
-                {"description", "Command line to start the datasource process."}
-            }}
-        }},
+        {"properties",
+         {{"cmd",
+           {{"type", "string"},
+            {"title", "Command"},
+            {"description", "Command line to start the datasource process."}}}}},
         {"required", nlohmann::json::array({"cmd"})},
-        {"additionalProperties", false}
-    };
+        {"additionalProperties", false}};
 }
 
 nlohmann::json gridDataSourceSchema()
 {
-    return {
+    const nlohmann::json trafficSchema = {
         {"type", "object"},
         {"properties", {
-            {"mapId", {{"type", "string"}, {"title", "Map ID"}}},
-            {"spatialCoherence", {{"type", "boolean"}}},
-            {"collisionGridSize", {{"type", "number"}}},
-            {"layers", {{"type", "array"}}}
-        }},
-        {"additionalProperties", true}
-    };
+            {"roadLayer", {
+                {"type", "string"},
+                {"minLength", 1},
+                {"description", "Enabled non-traffic line layer whose roads are sampled."}}},
+            {"tileLevel", {
+                {"type", "integer"}, {"minimum", 13}, {"maximum", 15}, {"default", 13}}},
+            {"updateIntervalSeconds", {
+                {"type", "integer"}, {"minimum", 1}, {"maximum", 60}, {"default", 5}}},
+            {"seed", {
+                {"type", "integer"}, {"minimum", 0}, {"maximum", 4294967295ULL}, {"default", 0}}}}},
+        {"required", nlohmann::json::array({"roadLayer"})},
+        {"additionalProperties", false}};
+
+    const nlohmann::json geometrySchema = {
+        {"type", "object"},
+        {"properties", {
+            {"type", {{"type", "string"}, {"enum", nlohmann::json::array({"point", "line", "polygon", "mesh"})}}},
+            {"density", {{"type", "number"}}},
+            {"complexity", {{"type", "integer"}}},
+            {"curvature", {{"type", "number"}}},
+            {"sizeRange", {{"type", "array"}, {"minItems", 2}, {"maxItems", 2}}},
+            {"aspectRatio", {{"type", "array"}, {"minItems", 2}, {"maxItems", 2}}},
+            {"avoidBuildings", {{"type", "boolean"}}},
+            {"minBuildingDistance", {{"type", "number"}}}}},
+        {"additionalProperties", true}};
+
+    const nlohmann::json layerSchema = {
+        {"type", "object"},
+        {"properties", {
+            {"name", {{"type", "string"}}},
+            {"enabled", {{"type", "boolean"}, {"default", true}}},
+            {"featureType", {{"type", "string"}}},
+            {"kind", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "traffic"})}, {"default", "auto"}}},
+            {"geometry", geometrySchema},
+            {"attributes", {{"type", "object"}}},
+            {"relations", {{"type", "array"}}},
+            {"traffic", trafficSchema}}},
+        {"oneOf", nlohmann::json::array({
+            nlohmann::json{
+                {"properties", {{"kind", {{"const", "auto"}}}}},
+                {"not", {{"required", nlohmann::json::array({"traffic"})}}}},
+            nlohmann::json{
+                {"required", nlohmann::json::array({"name", "featureType", "kind", "traffic"})},
+                {"properties", {
+                    {"name", {{"type", "string"}, {"minLength", 1}}},
+                    {"featureType", {{"type", "string"}, {"minLength", 1}}},
+                    {"kind", {{"const", "traffic"}}},
+                    {"geometry", {
+                        {"type", "object"},
+                        {"properties", {{"type", {{"const", "line"}}}}},
+                        {"additionalProperties", false}}}}},
+                {"not", {{"anyOf", nlohmann::json::array({
+                    nlohmann::json{{"required", nlohmann::json::array({"attributes"})}},
+                    nlohmann::json{{"required", nlohmann::json::array({"relations"})}}
+                })}}}}
+        })},
+        {"additionalProperties", true}};
+
+    return {
+        {"type", "object"},
+        {"properties",
+         {{"mapId", {{"type", "string"}, {"title", "Map ID"}}},
+          {"spatialCoherence", {{"type", "boolean"}}},
+          {"collisionGridSize", {{"type", "number"}}},
+          {"layers", {{"type", "array"}, {"items", layerSchema}}}}},
+        {"additionalProperties", true}};
 }
 
 nlohmann::json geoJsonFolderSchema()
 {
     return {
         {"type", "object"},
-        {"properties", {
-            {"folder", {
-                {"type", "string"},
-                {"title", "Folder"},
-                {"description", "Path to a folder containing GeoJSON tiles."}
-            }},
-            {"mapId", {
-                {"type", "string"},
-                {"title", "Map ID"},
-                {"description", "Custom map identifier. If not provided, derived from folder path."}
-            }},
-            {"withAttrLayers", {
-                {"type", "boolean"},
-                {"title", "With Attribute Layers"},
-                {"description", "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
-                {"default", true}
-            }},
-            {"tilePathTemplate", {
-                {"type", "string"},
-                {"title", "Tile Path Template"},
-                {"description", "Relative path template used with explicit dataSourceInfo, e.g. `{layerId}/{tileId}.geojson`."}
-            }},
-            {"dataSourceInfo", {
-                {"title", "Datasource Info"},
-                {"description", "Inline datasource info object, local YAML/JSON file path, or HTTP(S) URL."},
-                {"oneOf", nlohmann::json::array({
-                    nlohmann::json{{"type", "string"}},
-                    nlohmann::json{{"type", "object"}}
-                })}
-            }}
-        }},
+        {"properties",
+         {{"folder",
+           {{"type", "string"},
+            {"title", "Folder"},
+            {"description", "Path to a folder containing GeoJSON tiles."}}},
+          {"mapId",
+           {{"type", "string"},
+            {"title", "Map ID"},
+            {"description", "Custom map identifier. If not provided, derived from folder path."}}},
+          {"withAttrLayers",
+           {{"type", "boolean"},
+            {"title", "With Attribute Layers"},
+            {"description",
+             "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
+            {"default", true}}},
+          {"tilePathTemplate",
+           {{"type", "string"},
+            {"title", "Tile Path Template"},
+            {"description",
+             "Relative path template used with explicit dataSourceInfo, e.g. "
+             "`{layerId}/{tileId}.geojson`."}}},
+          {"dataSourceInfo",
+           {{"title", "Datasource Info"},
+            {"description",
+             "Inline datasource info object, local YAML/JSON file path, or HTTP(S) URL."},
+            {"oneOf",
+             nlohmann::json::array(
+                 {nlohmann::json{{"type", "string"}}, nlohmann::json{{"type", "object"}}})}}}}},
         {"required", nlohmann::json::array({"folder"})},
-        {"additionalProperties", false}
-    };
+        {"additionalProperties", false}};
 }
 
 nlohmann::json geoJsonEndpointSchema()
 {
     return {
         {"type", "object"},
-        {"properties", {
-            {"baseUrl", {
-                {"type", "string"},
-                {"title", "Base URL"},
-                {"description", "Base HTTP(S) URL used to fetch GeoJSON tiles."}
-            }},
-            {"mapId", {
-                {"type", "string"},
-                {"title", "Map ID"},
-                {"description", "Custom map identifier. If not provided, derived from the baseUrl."}
-            }},
-            {"withAttrLayers", {
-                {"type", "boolean"},
-                {"title", "With Attribute Layers"},
-                {"description", "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
-                {"default", true}
-            }},
-            {"tileUrlTemplate", {
-                {"type", "string"},
-                {"title", "Tile URL Template"},
-                {"description", "URL or relative path template used to fetch tiles, e.g. `{layerId}/{tileId}.geojson`."}
-            }},
-            {"dataSourceInfo", {
-                {"title", "Datasource Info"},
-                {"description", "Inline datasource info object, local YAML/JSON file path, or HTTP(S) URL."},
-                {"oneOf", nlohmann::json::array({
-                    nlohmann::json{{"type", "string"}},
-                    nlohmann::json{{"type", "object"}}
-                })}
-            }}
-        }},
+        {"properties",
+         {{"baseUrl",
+           {{"type", "string"},
+            {"title", "Base URL"},
+            {"description", "Base HTTP(S) URL used to fetch GeoJSON tiles."}}},
+          {"mapId",
+           {{"type", "string"},
+            {"title", "Map ID"},
+            {"description", "Custom map identifier. If not provided, derived from the baseUrl."}}},
+          {"withAttrLayers",
+           {{"type", "boolean"},
+            {"title", "With Attribute Layers"},
+            {"description",
+             "Convert nested GeoJSON property objects to mapget attribute layers. Default: true."},
+            {"default", true}}},
+          {"tileUrlTemplate",
+           {{"type", "string"},
+            {"title", "Tile URL Template"},
+            {"description",
+             "URL or relative path template used to fetch tiles, e.g. "
+             "`{layerId}/{tileId}.geojson`."}}},
+          {"dataSourceInfo",
+           {{"title", "Datasource Info"},
+            {"description",
+             "Inline datasource info object, local YAML/JSON file path, or HTTP(S) URL."},
+            {"oneOf",
+             nlohmann::json::array(
+                 {nlohmann::json{{"type", "string"}}, nlohmann::json{{"type", "object"}}})}}}}},
         {"required", nlohmann::json::array({"baseUrl"})},
-        {"additionalProperties", false}
-    };
+        {"additionalProperties", false}};
 }
 
 [[nodiscard]] bool looksLikeHttpUrl(std::string_view value)
@@ -169,23 +291,34 @@ nlohmann::json geoJsonEndpointSchema()
     static constexpr char cleartextScheme[] = {'h', 't', 't', 'p', '\0'};
     static constexpr char tlsScheme[] = {'h', 't', 't', 'p', 's', '\0'};
     constexpr std::string_view delimiter = "://";
-    auto hasScheme = [&](std::string_view scheme) {
+    auto hasScheme = [&](std::string_view scheme)
+    {
         return value.size() > scheme.size() + delimiter.size() &&
-               value.compare(0, scheme.size(), scheme) == 0 &&
-               value.compare(scheme.size(), delimiter.size(), delimiter) == 0;
+            value.compare(0, scheme.size(), scheme) == 0 &&
+            value.compare(scheme.size(), delimiter.size(), delimiter) == 0;
     };
     return hasScheme({cleartextScheme, 4}) || hasScheme({tlsScheme, 5});
 }
 
 [[nodiscard]] std::string trimCopy(std::string value)
 {
-    auto isWhitespace = [](unsigned char ch) { return std::isspace(ch) != 0; };
-    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char ch) {
-        return !isWhitespace(static_cast<unsigned char>(ch));
-    }));
-    value.erase(std::find_if(value.rbegin(), value.rend(), [&](char ch) {
-        return !isWhitespace(static_cast<unsigned char>(ch));
-    }).base(), value.end());
+    auto isWhitespace = [](unsigned char ch)
+    {
+        return std::isspace(ch) != 0;
+    };
+    value.erase(
+        value.begin(),
+        std::find_if(
+            value.begin(),
+            value.end(),
+            [&](char ch) { return !isWhitespace(static_cast<unsigned char>(ch)); }));
+    value.erase(
+        std::find_if(
+            value.rbegin(),
+            value.rend(),
+            [&](char ch) { return !isWhitespace(static_cast<unsigned char>(ch)); })
+            .base(),
+        value.end());
     return value;
 }
 
@@ -252,7 +385,8 @@ void applyStructuredDocumentOption(
     return options;
 }
 
-[[nodiscard]] geojsonsource::GeoJsonEndpointSourceOptions makeGeoJsonEndpointOptions(YAML::Node const& config)
+[[nodiscard]] geojsonsource::GeoJsonEndpointSourceOptions
+makeGeoJsonEndpointOptions(YAML::Node const& config)
 {
     geojsonsource::GeoJsonEndpointSourceOptions options;
     if (auto baseUrlNode = config["baseUrl"])
@@ -367,11 +501,13 @@ public:
     }
 };
 
-void registerDefaultDatasourceTypes() {
+void registerDefaultDatasourceTypes()
+{
     auto& service = DataSourceConfigService::get();
     service.registerDataSourceType(
         "DataSourceHost",
-        [](YAML::Node const& config) -> DataSource::Ptr {
+        [](YAML::Node const& config) -> DataSource::Ptr
+        {
             if (auto url = config["url"])
                 return RemoteDataSource::fromHostPort(url.as<std::string>());
             else
@@ -380,7 +516,8 @@ void registerDefaultDatasourceTypes() {
         dataSourceHostSchema());
     service.registerDataSourceType(
         "DataSourceProcess",
-        [](YAML::Node const& config) -> DataSource::Ptr {
+        [](YAML::Node const& config) -> DataSource::Ptr
+        {
             if (auto cmd = config["cmd"])
                 return std::make_shared<RemoteDataSourceProcess>(cmd.as<std::string>());
             else
@@ -389,11 +526,13 @@ void registerDefaultDatasourceTypes() {
         dataSourceProcessSchema());
     service.registerDataSourceType(
         "GridDataSource",
-        [](YAML::Node const& config) -> DataSource::Ptr { return std::make_shared<gridsource::GridDataSource>(config); },
+        [](YAML::Node const& config) -> DataSource::Ptr
+        { return std::make_shared<gridsource::GridDataSource>(config); },
         gridDataSourceSchema());
     service.registerDataSourceType(
         "GeoJsonFolder",
-        [](YAML::Node const& config) -> DataSource::Ptr {
+        [](YAML::Node const& config) -> DataSource::Ptr
+        {
             if (auto folder = config["folder"]) {
                 return std::make_shared<geojsonsource::GeoJsonSource>(
                     folder.as<std::string>(),
@@ -404,7 +543,8 @@ void registerDefaultDatasourceTypes() {
         geoJsonFolderSchema());
     service.registerDataSourceType(
         "GeoJsonEndpoint",
-        [](YAML::Node const& config) -> DataSource::Ptr {
+        [](YAML::Node const& config) -> DataSource::Ptr
+        {
             auto options = makeGeoJsonEndpointOptions(config);
             if (options.baseUrl.empty())
                 throw std::runtime_error("Missing `baseUrl` field.");
@@ -431,69 +571,108 @@ void loadConfigSchemaPatch(const std::string& schemaPath)
 
 bool isPostConfigEndpointEnabled_ = false;
 bool isGetConfigEndpointEnabled_ = true;
-}
+}  // namespace
 
 struct ServeCommand
 {
+    std::string host_ = "0.0.0.0";
     int port_ = 0;
+    uint32_t waitMs_ = HttpServer::DefaultStartupWaitMs;
     std::vector<std::string> datasourceHosts_;
     std::vector<std::string> datasourceExecutables_;
     std::string cacheType_;
     std::string cachePath_;
     int64_t cacheMaxTiles_ = 1024;
+    std::optional<uint64_t> cacheMaxBytes_;
     bool clearCache_ = false;
     bool allowPostConfigEndpoint_ = false;
     bool noGetConfigEndpoint_ = false;
+    bool allowCacheReset_ = false;
+    std::vector<std::string> cacheResetAuthHeaders_;
     std::string webapp_;
     std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
-    uint64_t memoryTrimIntervalBinary_ = HttpServiceConfig{}.memoryTrimIntervalBinary;  // Use default from config
-    uint64_t memoryTrimIntervalJson_ = HttpServiceConfig{}.memoryTrimIntervalJson;      // Use default from config
+    size_t workerCount_ = Service::defaultWorkerCount();
+    uint64_t memoryTrimPeriodSeconds_ =
+        static_cast<uint64_t>(HttpServiceConfig{}.memoryTrimPeriod.count());
     bool noLocation_ = false;
     std::string locationDbPath_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
+    ServeStartedCallback startedCallback_;
     CLI::App& app_;
 
-    explicit ServeCommand(CLI::App& app) : app_(app)
+    explicit ServeCommand(CLI::App& app, ServeStartedCallback startedCallback)
+        : startedCallback_(std::move(startedCallback)), app_(app)
     {
         auto serveCmd = app.add_subcommand("serve", "Starts the server.");
-        serveCmd->add_option(
-            "-p,--port",
-            port_,
-            "Port to start the server on. Default is 0.")
+        serveCmd
+            ->add_option(
+                "--host",
+                host_,
+                "Local address to bind the server to. Default is 0.0.0.0 (all IPv4 interfaces).")
+            ->default_val(host_);
+        serveCmd->add_option("-p,--port", port_, "Port to start the server on. Default is 0.")
             ->default_val("0");
-        CLI::deprecate_option(serveCmd->add_option(
-            "-d,--datasource-host",
-            datasourceHosts_,
-            "This option is deprecated. Use a config file instead!. "
-            "Data sources in format <host:port>. Can be specified multiple times."),
+        serveCmd
+            ->add_option(
+                "--wait-ms",
+                waitMs_,
+                "Maximum milliseconds to wait for the HTTP listener to start.")
+            ->default_val(waitMs_);
+        CLI::deprecate_option(
+            serveCmd->add_option(
+                "-d,--datasource-host",
+                datasourceHosts_,
+                "This option is deprecated. Use a config file instead!. "
+                "Data sources in format <host:port>. Can be specified multiple times."),
             "--config <yaml-file>");
-        CLI::deprecate_option(serveCmd->add_option(
-            "-e,--datasource-exe",
-            datasourceExecutables_,
-            "This option is deprecated. Use a config file instead!. "
-            "Data source executable paths, including arguments. "
-            "Can be specified multiple times."),
+        CLI::deprecate_option(
+            serveCmd->add_option(
+                "-e,--datasource-exe",
+                datasourceExecutables_,
+                "This option is deprecated. Use a config file instead!. "
+                "Data source executable paths, including arguments. "
+                "Can be specified multiple times."),
             "--config <yaml-file>");
-        serveCmd->add_option(
-            "-c,--cache-type", cacheType_, 
-            "From [memory|persistent|none], default memory. 'persistent' uses SQLite for disk-based caching, 'none' disables caching."
-            )
+        serveCmd
+            ->add_option(
+                "-c,--cache-type",
+                cacheType_,
+                "From [memory|persistent|none], default memory. 'persistent' uses SQLite for "
+                "disk-based caching, 'none' disables caching.")
             ->default_val("memory");
-        serveCmd->add_option(
-            "--cache-dir", cachePath_, "Path to store persistent cache (SQLite DB file).")
+        serveCmd
+            ->add_option(
+                "--cache-dir",
+                cachePath_,
+                "Path to store persistent cache (SQLite DB file).")
             ->default_val("mapget-cache");
-        serveCmd->add_option(
-            "--cache-max-tiles", cacheMaxTiles_, "0 for unlimited, default 1024.")
+        serveCmd->add_option("--cache-max-tiles", cacheMaxTiles_, "0 for unlimited, default 1024.")
             ->default_val(1024);
         serveCmd->add_option(
-            "--clear-cache", clearCache_, "Clear existing persistent cache at startup.")
+            "--cache-max-bytes",
+            cacheMaxBytes_,
+            "Maximum serialized tile bytes retained by the memory cache (0 for unlimited). "
+            "Defaults to cache-max-tiles multiplied by 512 KiB.");
+        serveCmd
+            ->add_option(
+                "--clear-cache",
+                clearCache_,
+                "Clear existing persistent cache at startup.")
             ->default_val(false);
-        serveCmd->add_option(
-            "--ttl",
-            ttlSeconds_,
-            "Default TTL for cached tiles in seconds (0 = infinite).")
+        serveCmd
+            ->add_option(
+                "--ttl",
+                ttlSeconds_,
+                "Default TTL for cached tiles in seconds (0 = infinite).")
             ->default_val(ttlSeconds_);
+        serveCmd
+            ->add_option(
+                "--worker-count",
+                workerCount_,
+                "Maximum number of tile-loading and derived-evaluation jobs executing across the "
+                "service.")
+            ->default_val(workerCount_);
         serveCmd->add_option(
             "-w,--webapp",
             webapp_,
@@ -501,72 +680,109 @@ struct ServeCommand
         serveCmd->add_option(
             "--static-mount",
             staticMounts_,
-            "Serve an additional static filesystem mount, in the format [<url-scope>:]<filesystem-path>. Can be specified multiple times.");
+            "Serve an additional static filesystem mount, in the format "
+            "[<url-scope>:]<filesystem-path>. Can be specified multiple times.");
         serveCmd->add_flag(
             "--allow-post-config",
             allowPostConfigEndpoint_,
-            "Allow the POST /config endpoint.");
+            "Allow configuration writes through /config (datasource POST and registered-field PATCH).");
         serveCmd->add_flag(
             "--no-get-config",
             noGetConfigEndpoint_,
             "Disable the GET /config datasource model endpoint.");
+        serveCmd->add_flag(
+            "--allow-cache-reset",
+            allowCacheReset_,
+            "Allow the guarded POST /cache/reset endpoint.");
         serveCmd->add_option(
-            "--memory-trim-binary-interval",
-            memoryTrimIntervalBinary_,
-            "Number of processed binary requests between explicit memory trimming to return unused memory to OS "
-            "(0=disabled, 1=after every request, N=after every N binary requests). "
-            "Only effective on platforms supporting allocator trimming (e.g., Linux).")
-            ->default_val(memoryTrimIntervalBinary_);
-        serveCmd->add_option(
-            "--memory-trim-json-interval",
-            memoryTrimIntervalJson_,
-            "Number of processed JSON/GeoJSON requests between explicit memory trimming to return unused memory to OS "
-            "(0=disabled, 1=after every request, N=after every N JSON requests). "
-            "Only effective on platforms supporting allocator trimming (e.g., Linux).")
-            ->default_val(memoryTrimIntervalJson_);
+            "--cache-reset-auth-header",
+            cacheResetAuthHeaders_,
+            "Required HEADER=REGEX authorization alternative for cache reset. Can be specified "
+            "multiple times.");
+        serveCmd
+            ->add_option(
+                "--memory-trim-period-seconds",
+                memoryTrimPeriodSeconds_,
+                "Seconds between periodic allocator trims which return unused heap pages to the OS "
+                "(0=disabled). Only effective with glibc on Linux.")
+            ->default_val(memoryTrimPeriodSeconds_);
         serveCmd->add_option(
             "--location-db",
             locationDbPath_,
-            "Path to the SQLite location database. Defaults to geonames-cities5000.sqlite next to the executable.");
-        serveCmd->add_option(
-            "--location-max-limit",
-            locationMaxLimit_,
-            "Maximum accepted /location result limit. Default 50.")
+            "Path to the SQLite location database. Defaults to the bundled database next to the "
+            "mapget binary module.");
+        serveCmd
+            ->add_option(
+                "--location-max-limit",
+                locationMaxLimit_,
+                "Maximum accepted /location result limit. Default 50.")
             ->default_val(locationMaxLimit_);
-        serveCmd->add_flag(
-            "--no-location",
-            noLocation_,
-            "Disable the /location endpoint.");
+        serveCmd->add_flag("--no-location", noLocation_, "Disable the /location endpoint.");
         serveCmd->callback([this]() { serve(); });
     }
 
     void serve()
     {
+        if (host_.empty()) {
+            raise("Host must not be empty.");
+        }
+        if (waitMs_ == 0) {
+            raise("Server startup wait must be at least 1 ms.");
+        }
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
+        }
+        if (workerCount_ == 0) {
+            raise("Worker count must be greater than zero.");
+        }
+        if (cacheMaxTiles_ < 0 ||
+            static_cast<uint64_t>(cacheMaxTiles_) > std::numeric_limits<uint32_t>::max())
+        {
+            raise("Cache tile limit must fit an unsigned 32-bit integer.");
         }
         if (locationMaxLimit_ < 1) {
             raise("Location max limit must be at least 1.");
         }
+        auto cacheResetAuthHeaderAlternatives =
+            parseCacheResetAuthHeaderAlternatives(
+                cacheResetAuthHeaders_);
+        if (allowCacheReset_ &&
+            cacheResetAuthHeaderAlternatives.empty())
+        {
+            raise(
+                "--allow-cache-reset requires at least one --cache-reset-auth-header value.");
+        }
         setPostConfigEndpointEnabled(allowPostConfigEndpoint_);
         setGetConfigEndpointEnabled(!noGetConfigEndpoint_);
-        log().info("Starting server on port {}.", port_);
+        log().info("Starting server on {}:{}.", host_, port_);
+        log().info("Service worker cap: {}.", workerCount_);
 
+        auto const cacheMaxTiles = static_cast<uint32_t>(cacheMaxTiles_);
+        auto const cacheMaxBytes =
+            cacheMaxBytes_.value_or(MemCache::defaultMaxCachedBytes(cacheMaxTiles));
         std::shared_ptr<Cache> cache;
         if (cacheType_ == "rocksdb") {
-            log().warn("RocksDB cache support has been removed. Please use '--cache-type persistent' instead, "
-                       "which now uses SQLite for persistent caching. The '--cache-type rocksdb' option will be "
-                       "removed in a future version. Falling back to persistent cache using SQLite.");
+            log().warn(
+                "RocksDB cache support has been removed. Please use '--cache-type persistent' "
+                "instead, "
+                "which now uses SQLite for persistent caching. The '--cache-type rocksdb' option "
+                "will be "
+                "removed in a future version. Falling back to persistent cache using SQLite.");
             cacheType_ = "persistent";
         }
-        
+
         if (cacheType_ == "persistent") {
             log().info("Initializing persistent SQLite cache.");
-            cache = std::make_shared<SQLiteCache>(cacheMaxTiles_, cachePath_, clearCache_);
+            if (cacheMaxBytes_) {
+                log().warn(
+                    "--cache-max-bytes applies only to the in-memory cache and is ignored for "
+                    "persistent caching.");
+            }
+            cache = std::make_shared<SQLiteCache>(cacheMaxTiles, cachePath_, clearCache_);
         }
         else if (cacheType_ == "memory") {
             log().info("Initializing in-memory cache.");
-            cache = std::make_shared<MemCache>(cacheMaxTiles_);
+            cache = std::make_shared<MemCache>(cacheMaxTiles, cacheMaxBytes);
         }
         else if (cacheType_ == "none") {
             log().info("Running without cache - all requests will go directly to data sources.");
@@ -577,48 +793,71 @@ struct ServeCommand
         }
 
         auto config = app_.get_config_ptr();
-        
+
         // Build HttpServiceConfig
         HttpServiceConfig httpConfig;
         httpConfig.watchConfig = config && *config;
         httpConfig.defaultTtl = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::seconds(ttlSeconds_));
-        httpConfig.memoryTrimIntervalBinary = memoryTrimIntervalBinary_;
-        httpConfig.memoryTrimIntervalJson = memoryTrimIntervalJson_;
+        httpConfig.workerCount = workerCount_;
+        httpConfig.memoryTrimPeriod = std::chrono::seconds(memoryTrimPeriodSeconds_);
+        httpConfig.cacheResetEnabled = allowCacheReset_;
+        httpConfig.cacheResetAuthHeaderAlternatives =
+            std::move(cacheResetAuthHeaderAlternatives);
         httpConfig.locationLookupEnabled = !noLocation_;
         httpConfig.locationResultMaxLimit = static_cast<uint32_t>(locationMaxLimit_);
         if (!locationDbPath_.empty()) {
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
         }
-        
-        // Log memory trim configuration
-        bool anyTrimEnabled = (memoryTrimIntervalBinary_ > 0) || (memoryTrimIntervalJson_ > 0);
-        if (anyTrimEnabled) {
-#ifdef __linux__
-            if (memoryTrimIntervalBinary_ > 0)
-                log().info("Memory trim for binary responses: every {} requests", memoryTrimIntervalBinary_);
-            else
-                log().info("Memory trim for binary responses: disabled");
-                
-            if (memoryTrimIntervalJson_ > 0)
-                log().info("Memory trim for JSON responses: every {} requests", memoryTrimIntervalJson_);
-            else
-                log().info("Memory trim for JSON responses: disabled");
+
+        if (memoryTrimPeriodSeconds_ > 0) {
+#if defined(__linux__) && defined(__GLIBC__)
+            log().info("Periodic allocator trim: every {} seconds", memoryTrimPeriodSeconds_);
 #else
-            log().warn("Memory trim intervals set (binary: {}, JSON: {}), but memory trimming is currently only supported on Linux. Settings will be ignored.", 
-                      memoryTrimIntervalBinary_, memoryTrimIntervalJson_);
+            log().warn(
+                "Periodic allocator trim set to {} seconds, but trimming is only supported with "
+                "glibc on Linux. Setting will be ignored.",
+                memoryTrimPeriodSeconds_);
 #endif
-        } else {
-            log().info("Memory trimming disabled for all response types");
+        }
+        else {
+            log().info("Periodic allocator trimming disabled");
         }
 
         // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, httpConfig);
 
-        if (config && *config)
-        {
+        if (config && *config) {
+            // Registration and schema assembly are side-effect free. Actual
+            // datasource construction must wait until the listener is bound.
             registerDefaultDatasourceTypes();
             loadConfigSchemaPatch(getPathToSchemaPatch());
+        }
+
+        if (!webapp_.empty()) {
+            log().info("Webapp: {}", webapp_);
+            if (!srv.mountFileSystem(webapp_)) {
+                log().error("  ...failed to mount!");
+                raise("Failed to mount webapp filesystem path.");
+            }
+        }
+
+        if (!staticMounts_.empty()) {
+            for (auto const& staticMount : staticMounts_) {
+                log().info("Static mount: {}", staticMount);
+                if (!srv.mountFileSystem(staticMount)) {
+                    log().error("  ...failed to mount!");
+                    raise("Failed to mount static filesystem path.");
+                }
+            }
+        }
+
+        // Trantor terminates the process directly when listener binding fails.
+        // Bind before launching datasource threads or child processes so that
+        // this failure cannot race their teardown against global destruction.
+        srv.go(host_, port_, waitMs_);
+
+        if (config && *config) {
             DataSourceConfigService::get().loadConfig(config->as<std::string>());
         }
 
@@ -645,25 +884,9 @@ struct ServeCommand
             }
         }
 
-        if (!webapp_.empty()) {
-            log().info("Webapp: {}", webapp_);
-            if (!srv.mountFileSystem(webapp_)) {
-                log().error("  ...failed to mount!");
-                raise("Failed to mount webapp filesystem path.");
-            }
+        if (startedCallback_) {
+            startedCallback_(host_, srv.port());
         }
-
-        if (!staticMounts_.empty()) {
-            for (auto const& staticMount : staticMounts_) {
-                log().info("Static mount: {}", staticMount);
-                if (!srv.mountFileSystem(staticMount)) {
-                    log().error("  ...failed to mount!");
-                    raise("Failed to mount static filesystem path.");
-                }
-            }
-        }
-
-        srv.go("0.0.0.0", port_);
         srv.waitForSignal();
     }
 };
@@ -682,10 +905,11 @@ struct FetchCommand
             ->required();
         fetchCmd->add_option("-m,--map", map_, "Map to retrieve.")->required();
         fetchCmd->add_option("-l,--layer", layer_, "Layer of the map to retrieve.")->required();
-        fetchCmd->add_option("--mute",
-            mute_, "Mute the actual tile GeoJSON output.");
-        fetchCmd->add_option("--no-compression",
-            noCompression_, "Disable gzip compression for responses.");
+        fetchCmd->add_option("--mute", mute_, "Mute the actual tile GeoJSON output.");
+        fetchCmd->add_option(
+            "--no-compression",
+            noCompression_,
+            "Disable gzip compression for responses.");
         fetchCmd
             ->add_option(
                 "-t,--tile",
@@ -716,17 +940,14 @@ struct FetchCommand
         int port = std::stoi(server_.substr(delimiterPos + 1, server_.size()));
 
         mapget::HttpClient cli(host, port, {}, !noCompression_);
-        auto request = std::make_shared<LayerTilesRequest>(
-            map_,
-            layer_,
-            std::vector<TileId>{tiles_.begin(), tiles_.end()});
+        auto request = std::make_shared<
+            LayerTilesRequest>(map_, layer_, std::vector<TileId>{tiles_.begin(), tiles_.end()});
         auto fn = [this](auto const& tile)
         {
             if (!mute_)
                 std::cout << tile->toJson().dump() << std::endl;
             if (tile->error())
-                raise(fmt::format("Tile {}: {}",
-                                  tile->id().toString(), *tile->error()));
+                raise(fmt::format("Tile {}: {}", tile->id().toString(), *tile->error()));
         };
         request->onFeatureLayer(fn);
         request->onSourceDataLayer(fn);
@@ -740,15 +961,19 @@ struct FetchCommand
 };
 
 std::string pathToSchema = "";
-int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand, std::function<void(CLI::App&)> additionalCommandLineSetupFun)
+int runFromCommandLine(
+    std::vector<std::string> args,
+    bool requireSubcommand,
+    std::function<void(CLI::App&)> additionalCommandLineSetupFun,
+    ServeStartedCallback serveStartedCallback)
 {
     CLI::App app{"A client/server application for map data retrieval."};
     std::string log_level_;
 
     app.add_option(
-        "--log-level",
-        log_level_,
-        "From [trace|debug|info|warn|error|critical], overrides MAPGET_LOG_LEVEL.")
+           "--log-level",
+           log_level_,
+           "From [trace|debug|info|warn|error|critical], overrides MAPGET_LOG_LEVEL.")
         ->default_val("");
     app.set_config(
         "--config",
@@ -767,7 +992,7 @@ int runFromCommandLine(std::vector<std::string> args, bool requireSubcommand, st
         mapget::setLogLevel(log_level_, log());
     }
 
-    ServeCommand serveCommand(app);
+    ServeCommand serveCommand(app, std::move(serveStartedCallback));
     FetchCommand fetchCommand(app);
 
     if (additionalCommandLineSetupFun) {
@@ -807,7 +1032,7 @@ void setGetConfigEndpointEnabled(bool enabled)
     isGetConfigEndpointEnabled_ = enabled;
 }
 
-const std::string &getPathToSchemaPatch()
+const std::string& getPathToSchemaPatch()
 {
     return pathToSchema;
 }

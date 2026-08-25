@@ -92,7 +92,7 @@ private:
     sqlite3* db_ = nullptr;
 };
 
-/** Resolve the default bundled location database path next to the running executable. */
+/** Resolve the bundled database next to the binary module containing mapget. */
 std::filesystem::path defaultLocationDatabasePath();
 
 }  // namespace mapget

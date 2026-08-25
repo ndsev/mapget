@@ -78,14 +78,17 @@ def handle_source_data_request(tile: mapget.TileSourceDataLayer):
 
 
 def handle_locate_request(request: mapget.LocateRequest):
-    response = mapget.LocateResponse(request)
-    response.tile_key = mapget.MapTileKey(
+    tile_key = mapget.MapTileKey(
         mapget.LayerType.FEATURES,
         request.map_id,
         "WayLayer",
-        PackedTileId.from_tile_xy(0, 0, 0),
-        0)
-    return [response]
+        PackedTileId.from_tile_xy(0, 0, 0))
+    return [
+        mapget.LocateCandidate(
+            tile_key,
+            f"Way.{request.get_int_id_part('wayId')}",
+        )
+    ]
 
 
 def handle_cache_expired(tile_key: mapget.MapTileKey, expired_at_us: int):

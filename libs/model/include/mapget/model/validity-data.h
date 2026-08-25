@@ -37,6 +37,8 @@ struct ValidityData
         OffsetPointValidity = 2,
         OffsetRangeValidity = 3,
         FeatureTransition = 4,
+        AttrPointIndexValidity = 5,
+        AttrPointIndexRangeValidity = 6,
     };
     enum GeometryOffsetType : uint8_t {
         InvalidOffsetType = 0,
@@ -57,11 +59,24 @@ struct ValidityData
     };
 
     struct FeatureTransitionDescription {
-        simfil::ModelNodeAddress fromFeature_;
-        simfil::ModelNodeAddress toFeature_;
+        simfil::ModelNodeAddress fromFeatureId_;
+        simfil::ModelNodeAddress toFeatureId_;
         uint32_t transitionNumber_ = 0;
-        // Bit 0 encodes the connected end of fromFeature_, bit 1 the end of toFeature_.
+        // Bit 0 encodes the connected end of fromFeatureId_, bit 1 the end of toFeatureId_.
         uint8_t connectedEnds_ = 0;
+    };
+
+    /** Persisted reference to one logical position in a shared AttrPointSequence. */
+    struct AttrPointIndexDescription {
+        simfil::ModelNodeAddress sequence_;
+        uint32_t index_ = 0;
+    };
+
+    /** Persisted inclusive range in a shared AttrPointSequence. */
+    struct AttrPointIndexRangeDescription {
+        simfil::ModelNodeAddress sequence_;
+        uint32_t start_ = 0;
+        uint32_t end_ = 0;
     };
 
     union GeometryDescription {
@@ -70,14 +85,16 @@ struct ValidityData
         Range range_;
         Point point_;
         FeatureTransitionDescription featureTransition_;
+        AttrPointIndexDescription attrPointIndex_;
+        AttrPointIndexRangeDescription attrPointIndexRange_;
     };
 
     Direction direction_ = Empty;
     GeometryDescriptionType geomDescrType_ = NoGeometry;
     GeometryOffsetType geomOffsetType_ = InvalidOffsetType;
     GeometryDescription geomDescr_{};
-    static constexpr int8_t InvalidReferencedStage = -1;
-    int8_t referencedStage_ = InvalidReferencedStage;
+    // Compact layer-local geometry-name index. Zero means unnamed/unrestricted.
+    uint8_t referencedGeometryName_ = 0;
     simfil::ModelNodeAddress featureAddress_;
 };
 

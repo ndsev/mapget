@@ -8,12 +8,16 @@ add_library(mapget-http-service STATIC
   src/http-service.cpp
   src/http-service-impl.h
   src/http-service-impl.cpp
+  src/attachment-handler.cpp
+  src/cache-reset-handler.cpp
   src/config-handler.cpp
   src/http-client.cpp
   src/location-handler.cpp
   src/locate-handler.cpp
   src/sources-handler.cpp
   src/status-handler.cpp
+  src/status-page.h
+  src/status-page.cpp
   src/tiles-request-json.h
   src/tiles-request-json.cpp
   src/tiles-http-handler.cpp

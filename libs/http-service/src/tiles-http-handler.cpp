@@ -3,7 +3,7 @@
 #include "tiles-stream-encoding.h"
 
 #include "mapget/log.h"
-#include "mapget/model/featurelayer-search.h"
+#include "mapget/model/featurelayer-filter.h"
 
 #include <fmt/format.h>
 #include <drogon/HttpAppFramework.h>
@@ -36,8 +36,50 @@ namespace
 enum class TilesStreamEndpoint
 {
     Tiles,
-    Search,
+    Filter,
 };
+
+/** Process-wide gauges for REST stream buffers retained between producer and socket drain. */
+struct TilesHttpMetrics
+{
+    std::atomic_uint64_t activeStreams{0};
+    std::atomic_uint64_t pendingBytes{0};
+    std::atomic_uint64_t pendingCapacityBytes{0};
+    std::atomic_uint64_t peakPendingBytes{0};
+    std::atomic_uint64_t peakPendingCapacityBytes{0};
+};
+
+TilesHttpMetrics gTilesHttpMetrics;
+
+/** Update an atomic high-water mark after changing its current gauge. */
+void updatePeak(std::atomic_uint64_t& peak, uint64_t candidate)
+{
+    auto observed = peak.load(std::memory_order_relaxed);
+    while (observed < candidate &&
+           !peak.compare_exchange_weak(
+               observed,
+               candidate,
+               std::memory_order_relaxed)) {
+    }
+}
+
+/** Apply a per-stream replacement to one process-wide current/peak pair. */
+void replaceGauge(
+    std::atomic_uint64_t& current,
+    std::atomic_uint64_t& peak,
+    uint64_t previous,
+    uint64_t replacement)
+{
+    if (replacement >= previous) {
+        auto const updated = current.fetch_add(
+            replacement - previous,
+            std::memory_order_relaxed) + replacement - previous;
+        updatePeak(peak, updated);
+    }
+    else {
+        current.fetch_sub(previous - replacement, std::memory_order_relaxed);
+    }
+}
 
 /**
  * Incremental gzip compressor used by the HTTP streaming endpoint.
@@ -106,7 +148,7 @@ private:
 }  // namespace
 
 /**
- * Per-request state for HTTP tile/search streaming responses.
+ * Per-request state for HTTP tile/filter streaming responses.
  *
  * It bridges backend tile callbacks into one Drogon async response stream while
  * preserving binary/JSONL encoding, optional gzip compression, and abort cleanup.
@@ -126,6 +168,42 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         requestId_ = nextRequestId++;
         writer_ = std::make_unique<TileLayerStream::Writer>(
             [this](auto&& msg, auto&& /*msgType*/) { appendOutgoingUnlocked(msg); }, stringOffsets_);
+        gTilesHttpMetrics.activeStreams.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /** Remove this stream's final retained buffer capacities from process-wide gauges. */
+    ~TilesStreamState()
+    {
+        replaceGauge(
+            gTilesHttpMetrics.pendingBytes,
+            gTilesHttpMetrics.peakPendingBytes,
+            accountedPendingBytes_,
+            0);
+        replaceGauge(
+            gTilesHttpMetrics.pendingCapacityBytes,
+            gTilesHttpMetrics.peakPendingCapacityBytes,
+            accountedPendingCapacityBytes_,
+            0);
+        gTilesHttpMetrics.activeStreams.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    /** Synchronize this stream's string size/capacity with process-wide metrics. */
+    void refreshPendingMetricsUnlocked()
+    {
+        auto const bytes = static_cast<uint64_t>(pending_.size());
+        auto const capacity = static_cast<uint64_t>(pending_.capacity());
+        replaceGauge(
+            gTilesHttpMetrics.pendingBytes,
+            gTilesHttpMetrics.peakPendingBytes,
+            accountedPendingBytes_,
+            bytes);
+        replaceGauge(
+            gTilesHttpMetrics.pendingCapacityBytes,
+            gTilesHttpMetrics.peakPendingCapacityBytes,
+            accountedPendingCapacityBytes_,
+            capacity);
+        accountedPendingBytes_ = bytes;
+        accountedPendingCapacityBytes_ = capacity;
     }
 
     /** Attach Drogon's stream handle once the async response starts and trigger draining. */
@@ -143,60 +221,54 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         scheduleDrain();
     }
 
-    /** Convert one parsed request JSON object into a backend tile or search request. */
+    /** Convert one parsed request JSON object into a backend tile or filter request. */
     void parseRequestFromJson(nlohmann::json const& requestJson)
     {
         if (endpoint_ == TilesStreamEndpoint::Tiles) {
             parseTileRequestFromJson(requestJson);
             return;
         }
-        throw std::runtime_error("Internal error: REST search requires an explicit search template");
+        throw std::runtime_error("Internal error: REST filter requires an explicit filter template");
     }
 
-    /** Convert one REST `/search` source JSON object into a backend search request. */
-    void parseSearchRequestFromJson(
+    /** Convert one REST `/filter` source JSON object into a backend filter request. */
+    void parseFilterRequestFromJson(
         nlohmann::json const& requestJson,
-        FeatureLayerSearchRequest const& searchTemplate)
+        FeatureLayerFilterRequest const& filterTemplate)
     {
-        auto parsed = detail::parseRestSearchLayerRequestJson(requestJson, searchTemplate);
-        auto request = std::make_shared<FeatureLayerSearchTilesRequest>(
+        auto parsed = detail::parseRestFilterLayerRequestJson(requestJson, filterTemplate);
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
             std::move(parsed.mapId),
             std::move(parsed.layerId),
-            detail::collectSearchTileIds(parsed),
-            std::move(*parsed.searchRequest),
+            detail::collectFilterTileIds(parsed),
+            std::move(*parsed.filterRequest),
             std::move(parsed.priorityTileIds));
-        searchRequests_.push_back(std::move(request));
+        request->sourceId_ = std::move(parsed.sourceId);
+        request->exactRoots_ =
+            std::move(parsed.exactRoots);
+        filterRequests_.push_back(std::move(request));
     }
 
     /** Convert one `/tiles` request JSON object into a backend tile request. */
     void parseTileRequestFromJson(nlohmann::json const& requestJson)
     {
-        if (detail::containsInteractiveSearchFields(requestJson) || detail::containsRestSearchFields(requestJson)) {
-            throw std::runtime_error("Search fields are not supported by POST /tiles; use POST /search");
+        if (detail::containsFilterFields(requestJson)) {
+            throw std::runtime_error("Filter fields are not supported by POST /tiles; use POST /filter");
         }
 
         auto parsed = detail::parseLayerTilesRequestJson(requestJson);
-        if (parsed.searchRequest) {
-            throw std::runtime_error("Search fields are not supported by POST /tiles; use POST /search");
+        if (parsed.filterRequest) {
+            throw std::runtime_error("Filter fields are not supported by POST /tiles; use POST /filter");
         }
 
-        LayerTilesRequest::Ptr request;
-        if (parsed.usesStageBuckets) {
-            request = std::make_shared<LayerTilesRequest>(
-                std::move(parsed.mapId),
-                std::move(parsed.layerId),
-                std::move(parsed.tileIdsByNextStage),
-                std::move(parsed.priorityTileIds));
-        } else {
-            auto tileIds = parsed.tileIdsByNextStage.empty()
-                ? std::vector<TileId>{}
-                : std::move(parsed.tileIdsByNextStage.front());
-            request = std::make_shared<LayerTilesRequest>(
-                std::move(parsed.mapId),
-                std::move(parsed.layerId),
-                std::move(tileIds),
-                std::move(parsed.priorityTileIds));
-        }
+        auto request = std::make_shared<LayerTilesRequest>(
+            std::move(parsed.mapId),
+            std::move(parsed.layerId),
+            std::move(parsed.tileIds),
+            std::move(parsed.priorityTileIds));
+        request->sourceId_ = std::move(parsed.sourceId);
+        request->featureIdsByTile_ =
+            std::move(parsed.featureIdsByTile);
         requests_.push_back(std::move(request));
     }
 
@@ -217,11 +289,9 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             responseType_ = jsonlMimeType;
 
         if (responseType_ == binaryMimeType) {
-            trimResponseType_ = HttpService::Impl::ResponseType::Binary;
             return true;
         }
         if (responseType_ == jsonlMimeType) {
-            trimResponseType_ = HttpService::Impl::ResponseType::Json;
             return true;
         }
 
@@ -236,7 +306,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     void releaseBackendRequestsUnlocked()
     {
         requests_.clear();
-        searchRequests_.clear();
+        filterRequests_.clear();
     }
 
     /** Thread-safe variant used by early error exits outside the stream mutex. */
@@ -256,7 +326,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                 impl_.self_.abort(req);
             }
         }
-        for (auto const& req : searchRequests_) {
+        for (auto const& req : filterRequests_) {
             if (!req->isDone()) {
                 impl_.self_.abort(req);
             }
@@ -279,7 +349,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     /** Return true if the HTTP response buffer can accept another serialized layer/status. */
     [[nodiscard]] bool hasPendingCapacityUnlocked() const
     {
-        // A single large tile/search-result layer must still make forward
+        // A single large tile/filter-result layer must still make forward
         // progress, so only block when there is already buffered data.
         return pending_.empty() || pending_.size() < maxPendingStreamBytes;
     }
@@ -293,7 +363,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         return !aborted_ && !responseEnded_;
     }
 
-    /** Serialize one backend tile/search/source layer into the pending HTTP response buffer. */
+    /** Serialize one backend tile/filter/source layer into the pending HTTP response buffer. */
     void addResult(TileLayer::Ptr const& result)
     {
         {
@@ -341,7 +411,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
 
             bool allDoneNow =
                 std::all_of(requests_.begin(), requests_.end(), [](auto const& r) { return r->isDone(); }) &&
-                std::all_of(searchRequests_.begin(), searchRequests_.end(), [](auto const& r) { return r->isDone(); });
+                std::all_of(filterRequests_.begin(), filterRequests_.end(), [](auto const& r) { return r->isDone(); });
 
             if (allDoneNow && !allDone_) {
                 allDone_ = true;
@@ -394,11 +464,13 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
                     size_t n = std::min(pending_.size(), maxChunk);
                     chunk.assign(pending_.data(), n);
                     pending_.erase(0, n);
+                    refreshPendingMetricsUnlocked();
                     pendingCapacityChanged_.notify_all();
                 } else {
                     if (allDone_ && compressor_ && !compressionFinished_) {
                         // Completion must wait until zlib has emitted the gzip footer.
                         pending_.append(compressor_->finish());
+                        refreshPendingMetricsUnlocked();
                         compressionFinished_ = true;
                         continue;
                     }
@@ -427,7 +499,6 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             if (done) {
                 if (streamToClose)
                     streamToClose->close();
-                impl_.tryMemoryTrim(trimResponseType_);
                 return;
             }
             if (scheduleAgain)
@@ -447,6 +518,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         } else {
             pending_.append(bytes);
         }
+        refreshPendingMetricsUnlocked();
     }
 
     Impl const& impl_;
@@ -458,13 +530,14 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     uint64_t requestId_ = 0;
 
     std::string responseType_;
-    HttpService::Impl::ResponseType trimResponseType_ = HttpService::Impl::ResponseType::Binary;
 
     std::string pending_;
+    uint64_t accountedPendingBytes_ = 0;
+    uint64_t accountedPendingCapacityBytes_ = 0;
     drogon::ResponseStreamPtr stream_;
     std::unique_ptr<TileLayerStream::Writer> writer_;
     std::vector<LayerTilesRequest::Ptr> requests_;
-    std::vector<FeatureLayerSearchTilesRequest::Ptr> searchRequests_;
+    std::vector<FeatureLayerFilterTilesRequest::Ptr> filterRequests_;
     TileLayerStream::StringPoolOffsetMap stringOffsets_;
 
     std::unique_ptr<GzipCompressor> compressor_;
@@ -502,13 +575,13 @@ std::optional<std::string> responseTypeOverride(
 
 }  // namespace
 
-/** Parse, schedule and stream one HTTP `/tiles` or `/search` request. */
+/** Parse, schedule and stream one HTTP `/tiles` or `/filter` request. */
 void HttpService::Impl::handleTilesLikeRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback,
-    bool searchEndpoint) const
+    bool filterEndpoint) const
 {
-    const auto endpoint = searchEndpoint ? TilesStreamEndpoint::Search : TilesStreamEndpoint::Tiles;
+    const auto endpoint = filterEndpoint ? TilesStreamEndpoint::Filter : TilesStreamEndpoint::Tiles;
     auto state = std::make_shared<TilesStreamState>(*this, drogon::app().getLoop(), endpoint);
 
     const std::string accept = req->getHeader("accept");
@@ -539,20 +612,20 @@ void HttpService::Impl::handleTilesLikeRequest(
     }
 
     try {
-        std::optional<FeatureLayerSearchRequest> searchTemplate;
-        if (endpoint == TilesStreamEndpoint::Search) {
-            searchTemplate = detail::parseRestSearchEnvelopeJson(j);
-        } else if (detail::containsInteractiveSearchFields(j) || detail::containsRestSearchFields(j)) {
-            throw std::runtime_error("Search fields are not supported by POST /tiles; use POST /search");
+        std::optional<FeatureLayerFilterRequest> filterTemplate;
+        if (endpoint == TilesStreamEndpoint::Filter) {
+            filterTemplate = detail::parseRestFilterEnvelopeJson(j);
+        } else if (detail::containsFilterFields(j)) {
+            throw std::runtime_error("Filter fields are not supported by POST /tiles; use POST /filter");
         }
 
         log().info(
             "Processing {} request {}",
-            endpoint == TilesStreamEndpoint::Search ? "search" : "tiles",
+            endpoint == TilesStreamEndpoint::Filter ? "filter" : "tiles",
             state->requestId_);
         for (auto& requestJson : *requestsIt) {
-            if (searchTemplate) {
-                state->parseSearchRequestFromJson(requestJson, *searchTemplate);
+            if (filterTemplate) {
+                state->parseFilterRequestFromJson(requestJson, *filterTemplate);
             } else {
                 state->parseRequestFromJson(requestJson);
             }
@@ -618,8 +691,8 @@ void HttpService::Impl::handleTilesLikeRequest(
         });
         request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
     }
-    for (auto& request : state->searchRequests_) {
-        request->onSearchResult([state](TileSearchResultLayer::Ptr layer) {
+    for (auto& request : state->filterRequests_) {
+        request->onFilterResult([state](TileSubsetLayer::Ptr layer) {
             state->addResult(std::move(layer));
         });
         request->onStatus([state](nlohmann::json const& status) {
@@ -629,16 +702,16 @@ void HttpService::Impl::handleTilesLikeRequest(
     }
 
     const auto tileRequestsAccepted = self_.request(state->requests_, clientHeaders);
-    const auto searchRequestsAccepted =
-        tileRequestsAccepted ? self_.request(state->searchRequests_, clientHeaders) : state->searchRequests_.empty();
-    const auto canProcess = tileRequestsAccepted && searchRequestsAccepted;
+    const auto filterRequestsAccepted =
+        tileRequestsAccepted ? self_.request(state->filterRequests_, clientHeaders) : state->filterRequests_.empty();
+    const auto canProcess = tileRequestsAccepted && filterRequestsAccepted;
     if (!canProcess) {
         for (auto const& r : state->requests_) {
             if (!r->isDone()) {
                 self_.abort(r);
             }
         }
-        for (auto const& r : state->searchRequests_) {
+        for (auto const& r : state->filterRequests_) {
             if (!r->isDone()) {
                 self_.abort(r);
             }
@@ -651,7 +724,7 @@ void HttpService::Impl::handleTilesLikeRequest(
             requestStatuses.emplace_back(static_cast<std::underlying_type_t<RequestStatus>>(status));
             anyUnauthorized |= (status == RequestStatus::Unauthorized);
         }
-        for (auto const& r : state->searchRequests_) {
+        for (auto const& r : state->filterRequests_) {
             auto status = r->getStatus();
             requestStatuses.emplace_back(static_cast<std::underlying_type_t<RequestStatus>>(status));
             anyUnauthorized |= (status == RequestStatus::Unauthorized);
@@ -685,12 +758,29 @@ void HttpService::Impl::handleTilesRequest(
     handleTilesLikeRequest(req, std::move(callback), false);
 }
 
-/** Handle the HTTP `/search` endpoint and stream search-result layers until completion. */
-void HttpService::Impl::handleSearchRequest(
+/** Handle the HTTP `/filter` endpoint and stream subset layers until completion. */
+void HttpService::Impl::handleFilterRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
     handleTilesLikeRequest(req, std::move(callback), true);
 }
+
+namespace detail
+{
+
+nlohmann::json tilesHttpMetricsSnapshot()
+{
+    return {
+        {"active-streams", gTilesHttpMetrics.activeStreams.load(std::memory_order_relaxed)},
+        {"pending-bytes", gTilesHttpMetrics.pendingBytes.load(std::memory_order_relaxed)},
+        {"pending-capacity-bytes", gTilesHttpMetrics.pendingCapacityBytes.load(std::memory_order_relaxed)},
+        {"peak-pending-bytes", gTilesHttpMetrics.peakPendingBytes.load(std::memory_order_relaxed)},
+        {"peak-pending-capacity-bytes", gTilesHttpMetrics.peakPendingCapacityBytes.load(std::memory_order_relaxed)},
+        {"measurement", "std-string-size-capacity"},
+    };
+}
+
+}  // namespace detail
 
 }  // namespace mapget

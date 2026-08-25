@@ -16,7 +16,7 @@ enum class GeomType : uint8_t {
     Polygon,  // Auto-closed polygon
     Mesh,     // Collection of triangles
     AABB,     // Axis-aligned bounding box: [origin, size]
-    GltfNodeIndex // Index into TileFeatureLayer::glbAttachment() plus per-node AABB bounds
+    GltfNodeIndex // Index into TileFeatureLayer::glbAttachmentName() plus per-node AABB bounds
 };
 
 enum class GeometryPointViewKind : uint8_t {

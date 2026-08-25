@@ -10,6 +10,7 @@
 #include "sfl/small_vector.hpp"
 #include <variant>
 #include "tileid.h"
+#include "memory.h"
 
 namespace mapget
 {
@@ -333,23 +334,6 @@ struct LayerInfo
      */
     std::vector<Coverage> coverage_;
 
-    /**
-     * Number of staged-loading levels available for this layer.
-     * Stage indices are zero-based and the minimum valid value is 1.
-     */
-    uint32_t stages_ = 1;
-
-    /**
-     * Optional human-readable labels for stages (index-aligned with stage number).
-     */
-    std::vector<std::string> stageLabels_;
-
-    /**
-     * Stage index at which this layer should be considered high-fidelity.
-     * Stage indices below this threshold are low-fidelity.
-     */
-    uint32_t highFidelityStage_ = 0;
-
     /** Can this layer be read from? */
     bool canRead_ = true;
 
@@ -400,6 +384,9 @@ struct LayerInfo
 
     /** Serialize LayerInfo to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
+
+    /** Report retained layer metadata and compiled schema capacity. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 };
 
 /**
@@ -408,7 +395,7 @@ struct LayerInfo
 struct DataSourceInfo
 {
     /** Unique identifier of the node */
-    std::string nodeId_;
+    std::string stringPoolId_;
 
     /** Unique identifier of the map */
     std::string mapId_;
@@ -447,9 +434,6 @@ struct DataSourceInfo
      *       "featureTypes": [<FeatureTypeInfo>...], // Mandatory: A list of feature type information.
      *       "zoomLevels": [<int>...],        // Optional: A list of zoom levels. Defaults to empty list.
      *       "coverage": [<Coverage>...],     // Optional: A list of coverage objects. Defaults to empty list.
-     *       "stages": <int>,                 // Optional: Number of staged-loading levels. Defaults to 1.
-     *       "stageLabels": [<string>...],    // Optional: Human-readable labels for stages.
-     *       "highFidelityStage": <int>,      // Optional: First stage considered high-fidelity.
      *       "canRead": <bool>,               // Optional: Whether the layer can be read. Defaults to true.
      *       "canWrite": <bool>,              // Optional: Whether the layer can be written. Defaults to false.
      *       "version": {                     // Optional: The version of the layer.
@@ -468,7 +452,7 @@ struct DataSourceInfo
      *     "minor": <int>,                    // Mandatory: The minor version number.
      *     "patch": <int>                     // Mandatory: The patch version number.
      *   },
-     *   "nodeId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
+     *   "stringPoolId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
      *                                        // Note: Only provide this if you have a good reason.
      *   "addOn": <bool>                      // Optional: Declare the datasource as add-on.
      * }
@@ -484,6 +468,9 @@ struct DataSourceInfo
 
     /** Serialize DataSourceInfo to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
+
+    /** Report retained datasource metadata, layer metadata, and schema capacity. */
+    [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 };
 
 }  // End of namespace mapget

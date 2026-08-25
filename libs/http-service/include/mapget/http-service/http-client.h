@@ -31,13 +31,13 @@ public:
      */
     LayerTilesRequest::Ptr request(LayerTilesRequest::Ptr const& request);
 
-    /**
-     * Post a one-shot server-side feature search request.
-     *
-     * Results are decoded from the `/search` binary stream and delivered via
-     * FeatureLayerSearchTilesRequest::onSearchResult.
-     */
-    FeatureLayerSearchTilesRequest::Ptr search(FeatureLayerSearchTilesRequest::Ptr const& request);
+    /** Post a one-shot server-side multi-channel filter request. */
+    FeatureLayerFilterTilesRequest::Ptr filter(
+        FeatureLayerFilterTilesRequest::Ptr const& request);
+
+    /** Fetch one separately transferred named tile attachment. */
+    std::optional<AttachmentResponse> attachment(
+        AttachmentRequest const& request);
 
 private:
     struct Impl;
