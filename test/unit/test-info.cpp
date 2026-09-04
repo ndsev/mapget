@@ -535,6 +535,81 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     REQUIRE(schemaEmitterCalls == 1);
 }
 
+TEST_CASE("LayerSchema compacts broad attribute searches beyond the guarded rewrite limit", "[DataSourceInfo]")
+{
+    auto makeSchema = [](int scopeCount) {
+        auto schema = std::make_shared<LayerSchema>();
+        for (auto index = 0; index < scopeCount; ++index) {
+            auto const featureType = "Road" + std::to_string(index);
+            auto const featureSchema = schema->addSchema(
+                simfil::Schema::Kind::Object,
+                LayerSchema::featureKey(featureType),
+                "Feature");
+            auto const propertiesSchema = schema->addSchema(
+                simfil::Schema::Kind::Object,
+                LayerSchema::featurePropertiesKey(featureType),
+                "FeatureProperties");
+            auto const layerMapSchema = schema->addSchema(
+                simfil::Schema::Kind::Object,
+                LayerSchema::attributeLayerMapKey(featureType),
+                "AttributeLayerMap");
+            auto const guidanceSchema = schema->addSchema(
+                simfil::Schema::Kind::Object,
+                LayerSchema::attributeContainerKey(featureType, "Guidance"),
+                "AttributeContainer");
+            auto const warningSchema = schema->addSchema(
+                simfil::Schema::Kind::Object,
+                LayerSchema::attributeKey(featureType, "Guidance", "WARNING_SIGN"),
+                "Attribute");
+            auto const valueSchema = schema->addSchema(
+                simfil::Schema::Kind::Value,
+                featureType + ".Guidance.WARNING_SIGN.warningSign");
+
+            schema->addFieldSchema(featureSchema, "properties", propertiesSchema);
+            schema->addFieldSchema(propertiesSchema, "layer", layerMapSchema);
+            schema->addFieldSchema(layerMapSchema, "Guidance", guidanceSchema);
+            schema->addFieldSchema(guidanceSchema, "WARNING_SIGN", warningSchema);
+            schema->addFieldSchema(warningSchema, "warningSign", valueSchema);
+            schema->setAttributeMetadata(
+                warningSchema,
+                LayerSchema::AttributePathOwner{
+                    featureType,
+                    "Guidance",
+                    "WARNING_SIGN",
+                    warningSchema},
+                "synthetic.WarningSignAttribute");
+        }
+        schema->finalize();
+        return schema;
+    };
+
+    auto bounded = makeSchema(1)->normalizeSearchQuery(
+        "**.warningSign",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(bounded.has_value());
+    REQUIRE_FALSE(bounded->rewriteSuppressed_);
+    REQUIRE(bounded->normalizedQuery_.find("**") == std::string::npos);
+
+    constexpr auto scopeCount = 9;
+    auto schema = makeSchema(scopeCount);
+
+    auto normalized = schema->normalizeSearchQuery(
+        "**.warningSign",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(normalized.has_value());
+    REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalized->attributeScopeCandidateCount_ == scopeCount);
+    REQUIRE(normalized->rewriteSuppressed_);
+    REQUIRE(normalized->attributeScopes_.empty());
+    INFO(normalized->normalizedQuery_);
+    REQUIRE(normalized->normalizedQuery_.find("**") == std::string::npos);
+    auto const layerGuard = normalized->normalizedQuery_.find(R"($layer == "Guidance")");
+    REQUIRE(layerGuard != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find(R"($layer == "Guidance")", layerGuard + 1) == std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find(R"($name == "WARNING_SIGN")") != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find("warningSign") != std::string::npos);
+}
+
 TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mutating datasource strings", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());

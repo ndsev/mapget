@@ -353,6 +353,35 @@ std::string joinOr(std::vector<std::string> branches)
     return result;
 }
 
+/** Factor many exact attribute owners so unrelated attributes fail before feature-type checks. */
+std::string compactAttributeScopeGuard(
+    std::vector<LayerSchema::AttributePathOwner> const& scopes)
+{
+    std::map<std::pair<std::string, std::string>, std::set<std::string>> featureTypesByAttribute;
+    for (auto const& scope : scopes) {
+        featureTypesByAttribute[{scope.attributeLayerName_, scope.attributeName_}]
+            .insert(scope.featureType_);
+    }
+
+    std::vector<std::string> attributeBranches;
+    attributeBranches.reserve(featureTypesByAttribute.size());
+    for (auto const& [attribute, featureTypes] : featureTypesByAttribute) {
+        auto const& [layer, name] = attribute;
+        std::vector<std::string> featureTypeBranches;
+        featureTypeBranches.reserve(featureTypes.size());
+        for (auto const& featureType : featureTypes) {
+            featureTypeBranches.push_back(
+                "$feature.typeId == " + simfilStringLiteral(featureType));
+        }
+        attributeBranches.push_back(fmt::format(
+            "$layer == {} and $name == {} and {}",
+            simfilStringLiteral(layer),
+            simfilStringLiteral(name),
+            parenthesized(joinOr(std::move(featureTypeBranches)))));
+    }
+    return joinOr(std::move(attributeBranches));
+}
+
 /** One AST-derived schema path reference owned by an attribute branch. */
 struct AttributeQueryReference
 {
@@ -374,6 +403,9 @@ struct FeatureQueryAnalysis
 };
 
 bool sourceRangeCoversWholeQuery(std::string_view query, simfil::SourceLocation location);
+bool sourceRangeCompletesWholeRecursiveWildcard(
+    std::string_view query,
+    simfil::SourceLocation location);
 
 /** Convert one compile-local SchemaPath into field names. Array markers are ignored for source-level path rewrites. */
 std::optional<std::vector<std::string>> schemaPathFieldNames(
@@ -481,6 +513,26 @@ std::optional<std::string> generatedAttributeRootPredicate(
     return *replacement + " == " + simfilStringLiteral(*reference.equalsStringLiteral);
 }
 
+/** Return an attribute-root predicate for a whole-query recursive field shorthand. */
+std::optional<std::string> wildcardAttributeRootPredicate(
+    AttributeQueryReference const& reference,
+    std::string_view query)
+{
+    if (!reference.viaWildcard ||
+        (!sourceRangeCoversWholeQuery(query, reference.location) &&
+         !sourceRangeCompletesWholeRecursiveWildcard(query, reference.location)))
+    {
+        return std::nullopt;
+    }
+    auto replacement = attributeRootPathForFeaturePath(
+        reference.expressionPath,
+        reference.owner);
+    if (!replacement || *replacement == "true") {
+        return std::nullopt;
+    }
+    return replacement;
+}
+
 /** Build a compact generic attribute-root body when specific scope guards would be too broad. */
 std::string genericAttributeRootQuery(
     std::string_view query,
@@ -490,6 +542,9 @@ std::string genericAttributeRootQuery(
     std::set<std::string> seen;
     for (auto const& reference : references) {
         auto predicate = generatedAttributeRootPredicate(reference, reference.owner, query);
+        if (!predicate) {
+            predicate = wildcardAttributeRootPredicate(reference, query);
+        }
         if (predicate && seen.insert(*predicate).second) {
             predicates.push_back(std::move(*predicate));
         }
@@ -535,6 +590,32 @@ bool sourceRangeCoversWholeQuery(std::string_view query, simfil::SourceLocation 
         return false;
     }
     return location.offset == 0 && location.size == query.size();
+}
+
+/** Return whether an AST wildcard-field token is the leaf of a whole `**.field` query. */
+bool sourceRangeCompletesWholeRecursiveWildcard(
+    std::string_view query,
+    simfil::SourceLocation location)
+{
+    if (location.size == 0 || location.offset + location.size > query.size()) {
+        return false;
+    }
+    auto begin = query.find_first_not_of(" \t\r\n");
+    auto end = query.find_last_not_of(" \t\r\n");
+    if (begin == std::string_view::npos ||
+        location.offset + location.size != end + 1 ||
+        location.offset < begin)
+    {
+        return false;
+    }
+    auto prefix = query.substr(begin, location.offset - begin);
+    std::string compactPrefix;
+    for (auto character : prefix) {
+        if (!std::isspace(static_cast<unsigned char>(character))) {
+            compactPrefix.push_back(character);
+        }
+    }
+    return compactPrefix == "**.";
 }
 
 /** Return whether a source range sits inside a function that changes feature-level cardinality. */
@@ -2338,16 +2419,20 @@ tl::expected<LayerSchema::SearchQueryNormalization, simfil::Error> LayerSchema::
             "Attribute query rewrite suppressed: {} candidate scopes exceed the limit of {}.",
             result.attributeScopeCandidateCount_,
             kMaxNormalizedAttributeScopes);
-        result.attributeScopes_.clear();
         result.concreteScope_ = shouldUseAttributeScope
             ? SearchQueryConcreteScope::Attribute
             : SearchQueryConcreteScope::Feature;
         if (result.concreteScope_ == SearchQueryConcreteScope::Attribute) {
-            if (auto genericQuery = genericAttributeRootQuery(result.normalizedQuery_, attributeReferences);
+            if (auto genericQuery = genericAttributeRootQuery(
+                    result.normalizedQuery_,
+                    attributeReferences);
                 !genericQuery.empty()) {
-                result.normalizedQuery_ = std::move(genericQuery);
+                result.normalizedQuery_ = parenthesized(
+                    compactAttributeScopeGuard(result.attributeScopes_))
+                    + " and " + parenthesized(std::move(genericQuery));
             }
         }
+        result.attributeScopes_.clear();
         return result;
     }
 
@@ -2409,6 +2494,10 @@ tl::expected<LayerSchema::SearchQueryNormalization, simfil::Error> LayerSchema::
                 }
 
                 if (auto predicate = generatedAttributeRootPredicate(reference, scope, result.normalizedQuery_)) {
+                    generatedPredicates.push_back(std::move(*predicate));
+                    continue;
+                }
+                if (auto predicate = wildcardAttributeRootPredicate(reference, result.normalizedQuery_)) {
                     generatedPredicates.push_back(std::move(*predicate));
                     continue;
                 }
