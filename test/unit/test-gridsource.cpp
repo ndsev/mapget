@@ -344,7 +344,9 @@ TEST_CASE("Grid traffic corrects a bucket crossed during sampling", "[gridsource
     source.fill(tile);
 
     REQUIRE(tile->timestamp() == std::chrono::system_clock::time_point{105s});
-    for (const auto& feature : tile->toJson()["features"]) {
+    // Keep the JSON owner alive while iterating its feature array.
+    const auto json = tile->toJson();
+    for (const auto& feature : json["features"]) {
         REQUIRE(feature["properties"]["trafficEpoch"] == 21);
     }
 }

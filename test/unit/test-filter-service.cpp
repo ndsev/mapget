@@ -181,6 +181,33 @@ private:
     std::atomic_size_t attempts_ = 0;
 };
 
+/** Returns an expiring error tile until the test restores the source. */
+class ErrorReportingFilterDataSource : public FilterDataSource
+{
+public:
+    /** Preserve the normal filter fixture's metadata with a separate string pool. */
+    ErrorReportingFilterDataSource() : FilterDataSource("ErrorReportingFilterPool") {}
+
+    /** Report a source error in the tile payload, as remote datasources do. */
+    void fill(TileFeatureLayer::Ptr const& tile) override
+    {
+        tile->setTimestamp(std::chrono::system_clock::now() - std::chrono::seconds(1));
+        tile->setTtl(std::chrono::milliseconds(1));
+        if (recovered_) {
+            FilterDataSource::fill(tile);
+        }
+        else {
+            tile->setError("synthetic recoverable tile error");
+        }
+    }
+
+    /** Make subsequent loads succeed without replacing the source or cache. */
+    void recover() { recovered_ = true; }
+
+private:
+    std::atomic_bool recovered_ = false;
+};
+
 class VersionedFilterDataSource : public FilterDataSource
 {
 public:
@@ -1903,6 +1930,48 @@ TEST_CASE(
     run();
     run();
     REQUIRE(dataSource->attempts() == 2);
+}
+
+TEST_CASE(
+    "Reported source tile errors fail filters and allow recovery after expiry",
+    "[feature-layer-filter][Service][failure]")
+{
+    Service service(std::make_shared<MemCache>(32), false);
+    auto source = std::make_shared<ErrorReportingFilterDataSource>();
+    service.add(source);
+
+    for (bool recovered : {false, true}) {
+        if (recovered) {
+            source->recover();
+        }
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap",
+            "Road",
+            std::vector<TileId>{firstTile()},
+            filterDefinition());
+        std::vector<nlohmann::json> statuses;
+        std::vector<TileSubsetLayer::Ptr> results;
+        request->onStatus([&](nlohmann::json const& status) { statuses.push_back(status); });
+        request->onFilterResult(
+            [&](TileSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+        REQUIRE(service.request(request));
+        request->wait();
+        REQUIRE_FALSE(statuses.empty());
+        if (recovered) {
+            REQUIRE(request->getStatus() == RequestStatus::Success);
+            REQUIRE(statuses.back()["state"] == "Success");
+            REQUIRE(results.size() == 1);
+            REQUIRE(results.front()->localSourceFeatureCount() == 1);
+        }
+        else {
+            REQUIRE(request->getStatus() == RequestStatus::Aborted);
+            REQUIRE(statuses.back()["state"] == "Failed");
+            REQUIRE(
+                statuses.back()["error"].get<std::string>().find(
+                    "synthetic recoverable tile error") != std::string::npos);
+            REQUIRE(results.empty());
+        }
+    }
 }
 
 TEST_CASE(

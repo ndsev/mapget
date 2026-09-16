@@ -881,7 +881,7 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
             // second delivery is an internal scheduler violation.
             duplicate = true;
         }
-        else {
+        else if (!layer->error()) {
             receivedSourceTiles[sourceIndex] = true;
             ++loadedSourceTiles;
             ++activeEvaluations;
@@ -891,6 +891,15 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
         fail(simfil::Error{
             simfil::Error::InternalError,
             "Filter source tile was delivered more than once.",
+        });
+        return;
+    }
+    if (auto error = layer->error()) {
+        // Remote sources can report failure in a successfully transported tile.
+        // Do not turn that failure into a successful, empty filter result.
+        fail(simfil::Error{
+            simfil::Error::RuntimeError,
+            fmt::format("Filter source tile {} failed: {}", layer->id().toString(), *error),
         });
         return;
     }

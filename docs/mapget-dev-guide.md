@@ -174,7 +174,10 @@ feature; `entryFields` run against the terminal context.
 All expressions are schema-compiled. `rewrite` controls only optional
 `LayerSchema::normalizeSearchQuery()` processing of `entryFilter`. Native
 SIMFIL truthiness is used. A candidate-local error becomes an aggregated
-`FilterIssue`; structural/compile failures abort the request.
+`FilterIssue`; structural/compile failures abort the request. Source tiles
+carrying an error also abort with a `Failed` status and the source error text;
+they must not be evaluated as successful empty tiles. An expired error tile can
+be loaded again after its datasource recovers.
 
 `FilterRequestExecution` owns one bounded `SimfilExpressionCache` for the
 request lifetime. Source scans, group/relation completion, and relation-target
