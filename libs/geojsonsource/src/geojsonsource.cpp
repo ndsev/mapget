@@ -3,6 +3,7 @@
 #include "geojsonsource/geojsonsource.h"
 
 #include "mapget/log.h"
+#include "mapget/model/featureid.h"
 #include "mapget/service/config.h"
 
 #include <drogon/HttpClient.h>
@@ -400,6 +401,96 @@ enum class TileIdEncoding
     return layerInfo->layerId_ + "Feature";
 }
 
+/** Plan exact-ID candidates from metadata only; secondary-ID translation needs a source-specific
+ * resolver. */
+std::vector<LocateCandidate>
+locateGeoJsonFeature(LocateRequest const& request, DataSourceInfo const& info)
+{
+    // A datasource must not offer candidates for another map, even when type names overlap.
+    if (request.mapId_ != info.mapId_)
+        return {};
+
+    std::vector<LocateCandidate> candidates;
+    std::string reason =
+        "no feature layer declares this feature type/ID; provide matching "
+        "dataSourceInfo.layers.<layer>.featureTypes and uniqueIdCompositions";
+    for (auto const& [layerId, layer] : info.layers_) {
+        if (!layer || layer->type_ != LayerType::Features)
+            continue;
+
+        ParsedFeatureId parsed{request.typeId_, request.featureId_};
+        // Service normally expands canonical strings, but direct datasource calls support them too.
+        if (request.canonicalFeatureId_ &&
+            !parseFeatureIdString(*request.canonicalFeatureId_, *layer, parsed))
+            continue;
+        if (!layer->getTypeInfo(parsed.typeId_, false))
+            continue;
+
+        auto const composition = layer->matchingFeatureIdCompositionIndex(
+            parsed.typeId_,
+            castToKeyValueView(parsed.keyValuePairs_),
+            false);
+        if (!composition) {
+            reason = fmt::format(
+                "layer '{}' has no matching uniqueIdCompositions entry (check part names, order "
+                "and datatypes)",
+                layerId);
+            continue;
+        }
+        // A secondary composition describes identity, not how it maps to the stored primary ID.
+        if (*composition != 0) {
+            reason = fmt::format(
+                "layer '{}' matches secondary ID composition {}; GeoJSON metadata supplies no "
+                "secondary-to-primary mapping. Use the primary feature ID or a custom datasource "
+                "locate resolver",
+                layerId,
+                *composition);
+            continue;
+        }
+
+        auto const tilePart = std::find_if(
+            parsed.keyValuePairs_.begin(),
+            parsed.keyValuePairs_.end(),
+            [](auto const& part) { return part.first == "tileId"; });
+        if (tilePart == parsed.keyValuePairs_.end() ||
+            !std::holds_alternative<int64_t>(tilePart->second)) {
+            reason = fmt::format(
+                "layer '{}' requires an integer 'tileId' in the actual primary feature ID and "
+                "featureTypes[].uniqueIdCompositions[0] (I64 supports signed packed IDs). "
+                "No full-source scan is performed; other ID layouts need a custom locate resolver",
+                layerId);
+            continue;
+        }
+        auto const rawTileId = std::get<int64_t>(tilePart->second);
+        auto packed = tryParsePackedTileId(rawTileId);
+        // Old manifests may route to packed tiles while retaining legacy tileId values in feature
+        // IDs.
+        if (!packed && isLegacyTileId(rawTileId))
+            packed = legacyTileIdToPacked(rawTileId).value();
+        if (!packed) {
+            reason = fmt::format(
+                "layer '{}' has invalid tileId {}; expected a signed packed or convertible legacy "
+                "mapget tile ID",
+                layerId,
+                rawTileId);
+            continue;
+        }
+
+        // Preserve the complete primary ID (including escaped strings and legacy-valued parts).
+        // All matching layers are candidates; the service verifies actual feature existence after
+        // loading.
+        candidates.emplace_back(
+            MapTileKey{LayerType::Features, info.mapId_, layerId, TileId::fromValue(*packed)},
+            formatFeatureIdString(parsed.typeId_, parsed.keyValuePairs_));
+    }
+    if (candidates.empty())
+        log().warn(
+            "GeoJSON locate could not route reference {}: {}.",
+            request.serialize().dump(),
+            reason);
+    return candidates;
+}
+
 void fillGeoJsonTile(
     const TileFeatureLayer::Ptr& tile,
     std::string const& geoJsonBody,
@@ -693,6 +784,11 @@ std::optional<uint64_t> GeoJsonSource::estimatedRetainedMemoryBytes() const
     return retainedMemoryBytes_;
 }
 
+std::vector<LocateCandidate> GeoJsonSource::locate(LocateRequest const& request)
+{
+    return locateGeoJsonFeature(request, info_);
+}
+
 uint64_t GeoJsonSource::computeRetainedMemoryBytes() const
 {
     MemoryUsageBreakdown memory;
@@ -920,6 +1016,11 @@ GeoJsonEndpointSource::GeoJsonEndpointSource(GeoJsonEndpointSourceOptions option
 }
 
 GeoJsonEndpointSource::~GeoJsonEndpointSource() = default;
+
+std::vector<LocateCandidate> GeoJsonEndpointSource::locate(LocateRequest const& request)
+{
+    return locateGeoJsonFeature(request, info_);
+}
 
 mapget::DataSourceInfo GeoJsonEndpointSource::info()
 {

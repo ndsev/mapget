@@ -130,6 +130,9 @@ public:
     void fill(mapget::TileFeatureLayer::Ptr const&) override;
     void fill(mapget::TileSourceDataLayer::Ptr const&) override;
 
+    /** Locate primary feature IDs carrying tileId without reading GeoJSON files. */
+    std::vector<LocateCandidate> locate(LocateRequest const& request) override;
+
     /** Estimate immutable manifest, coverage, path, and metadata storage. */
     [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
 
@@ -170,6 +173,9 @@ public:
     mapget::DataSourceInfo info() override;
     void fill(mapget::TileFeatureLayer::Ptr const&) override;
     void fill(mapget::TileSourceDataLayer::Ptr const&) override;
+
+    /** Locate primary feature IDs carrying tileId without fetching GeoJSON tiles. */
+    std::vector<LocateCandidate> locate(LocateRequest const& request) override;
 
     /** Estimate endpoint configuration and datasource metadata storage. */
     [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
