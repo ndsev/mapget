@@ -205,7 +205,7 @@ Scope terminalScope(FeatureLayerFilterChannel const& channel)
 }  // namespace
 
 tl::expected<void, simfil::Error>
-FeatureLayerFilterRequest::validate(TileFeatureLayer const& sourceLayer) const
+FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) const
 {
     if (channels_.empty()) {
         return tl::unexpected(simfil::Error{
@@ -383,7 +383,7 @@ public:
     }
 
     /** Add all accumulated issues to a completed subset layer. */
-    void install(TileSubsetLayer& layer) const
+    void install(PartitionSubsetLayer& layer) const
     {
         for (auto const& [issue, count] : issues_) {
             layer.addIssue(FilterIssue{
@@ -444,7 +444,7 @@ public:
 
     /** Create an evaluator without mutating the datasource-owned StringPool. */
     static tl::expected<std::unique_ptr<ExpressionEvaluator>, simfil::Error> create(
-        TileFeatureLayer const& sourceLayer,
+        PartitionFeatureLayer const& sourceLayer,
         std::map<std::string, FeatureLayerFilterBinding> const& bindings,
         std::map<std::string, simfil::Trace>& traces,
         SimfilExpressionCache& expressionCache)
@@ -742,7 +742,7 @@ public:
     /** Validate and execute one source-major filter pass. */
     static tl::expected<FeatureLayerFilterSourceResult, simfil::Error>
     run(FeatureLayerFilterRequest const& request,
-        TileFeatureLayer const& sourceLayer,
+        PartitionFeatureLayer const& sourceLayer,
         bool materializeOutput,
         std::span<FeatureLayerFilterRoot const> exactRoots,
         FeatureLayerFilterCancellationCheck const& cancellationCheck,
@@ -814,7 +814,7 @@ private:
     /** Capture one source pass after run() has validated its external inputs. */
     SourceEvaluation(
         FeatureLayerFilterRequest const& request,
-        TileFeatureLayer const& sourceLayer,
+        PartitionFeatureLayer const& sourceLayer,
         bool materializeOutput,
         std::span<FeatureLayerFilterRoot const> exactRoots,
         FeatureLayerFilterCancellationCheck const& cancellationCheck,
@@ -886,14 +886,14 @@ private:
     copyFeatureId(model_ptr<FeatureId> const& source, FeatureIdCache& cache);
 
     FeatureLayerFilterRequest const& request_;
-    TileFeatureLayer const& sourceLayer_;
+    PartitionFeatureLayer const& sourceLayer_;
     bool materializeOutput_ = false;
     std::span<FeatureLayerFilterRoot const> exactRoots_;
     CancellationProbe cancellation_;
     SimfilExpressionCache& expressionCache_;
     std::map<std::string, simfil::Trace> traces_;
     std::unique_ptr<ExpressionEvaluator> evaluator_;
-    TileSubsetLayer::Ptr resultLayer_;
+    PartitionSubsetLayer::Ptr resultLayer_;
     Issues issues_;
     std::vector<Channel> channels_;
     simfil::Diagnostics diagnostics_;
@@ -1149,7 +1149,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::collectStoredRelationDescripto
                 .targetFeatureId_ = castToKeyValue(targetId->keyValuePairs()),
                 .target_ = localTarget,
                 .targetTileKey_ = localTarget ?
-                    std::optional<MapTileKey>{MapTileKey(localTarget->model())} :
+                    std::optional<MapPartitionKey>{MapPartitionKey(localTarget->model())} :
                     std::nullopt,
                 .rootOrdinal_ = current.rootOrdinal_,
                 .exactRoot_ = current.exact_,
@@ -1169,7 +1169,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::collectStoredRelationDescripto
 
 /** Copy one selected geometry into a self-contained subset model node. */
 static model_ptr<Geometry> copyGeometry(
-    TileSubsetLayer& target,
+    PartitionSubsetLayer& target,
     model_ptr<Geometry> const& source,
     bool preserveGltfNodeIndex = true,
     bool* downgradedGltfNodeIndex = nullptr)
@@ -1216,7 +1216,7 @@ static model_ptr<Geometry> copyGeometry(
 
 /** Copy selected geometries while optionally downgrading foreign GLTF nodes. */
 static model_ptr<GeometryCollection> copyGeometryCollection(
-    TileSubsetLayer& target,
+    PartitionSubsetLayer& target,
     model_ptr<GeometryCollection> const& source,
     uint32_t geometryTypes,
     std::optional<std::string> const& geometryName,
@@ -1243,7 +1243,7 @@ static model_ptr<GeometryCollection> copyGeometryCollection(
 
 /** Materialize a computed self-contained geometry using channel selectors. */
 static model_ptr<GeometryCollection> copySelfContainedGeometry(
-    TileSubsetLayer& target,
+    PartitionSubsetLayer& target,
     SelfContainedGeometry const& source,
     std::optional<std::string_view> sourceName,
     uint32_t geometryTypes,
@@ -1337,7 +1337,7 @@ model_ptr<GeometryCollection> FeatureLayerFilterRequest::SourceEvaluation::copyA
 
 /** Copy one FeatureId into a destination subset model. */
 static model_ptr<FeatureId>
-copyFeatureId(TileSubsetLayer& target, model_ptr<FeatureId> const& source)
+copyFeatureId(PartitionSubsetLayer& target, model_ptr<FeatureId> const& source)
 {
     return source ?
         target.newFeatureId(source->typeId(), source->keyValuePairs(), source->externalMapId()) :
@@ -1362,7 +1362,7 @@ model_ptr<FeatureId> FeatureLayerFilterRequest::SourceEvaluation::copyFeatureId(
 
 /** Materialize scalar SIMFIL values as destination-owned model nodes. */
 static std::vector<simfil::ModelNode::Ptr>
-materializeValues(TileSubsetLayer& target, std::vector<simfil::Value> const& values)
+materializeValues(PartitionSubsetLayer& target, std::vector<simfil::Value> const& values)
 {
     std::vector<simfil::ModelNode::Ptr> result;
     result.reserve(values.size());
@@ -1445,7 +1445,10 @@ void FeatureLayerFilterRequest::SourceEvaluation::materializeChannel(
 /** Build a stable cross-tile identity for relation ordering and de-duplication. */
 static std::string stableFeatureIdentity(model_ptr<Feature> const& feature)
 {
-    return fmt::format("{}:{}", MapTileKey(feature->model()).toString(), feature->id()->toString());
+    return fmt::format(
+        "{}:{}",
+        MapPartitionKey(feature->model()).toString(),
+        feature->id()->toString());
 }
 
 /** Build the stable identity of one directed stored relation. */
@@ -1458,7 +1461,7 @@ static std::string directedRelationIdentity(FeatureLayerRelationDescriptor const
 }
 
 model_ptr<GeometryCollection> FeatureLayerFilterRequest::copyRelationEffectiveGeometry(
-    TileSubsetLayer& target,
+    PartitionSubsetLayer& target,
     model_ptr<Feature> const& feature,
     model_ptr<MultiValidity> const& validities,
     FeatureLayerFilterChannel const& channel,
@@ -1476,7 +1479,7 @@ model_ptr<GeometryCollection> FeatureLayerFilterRequest::copyRelationEffectiveGe
         if (!node) {
             continue;
         }
-        auto owner = std::dynamic_pointer_cast<TileFeatureLayer const>(node->owningModel());
+        auto owner = std::dynamic_pointer_cast<PartitionFeatureLayer const>(node->owningModel());
         auto validity = owner ? owner->resolve<Validity>(*node) : model_ptr<Validity>{};
         if (!validity) {
             continue;
@@ -1520,24 +1523,29 @@ model_ptr<GeometryCollection> FeatureLayerFilterRequest::copyRelationEffectiveGe
 
 /** Compare relation endpoints by the permanent south-west ownership rule. */
 static bool southWestOwnerLess(
-    MapTileKey const& left,
+    MapPartitionKey const& left,
     std::string_view leftFeatureIdentity,
-    MapTileKey const& right,
+    MapPartitionKey const& right,
     std::string_view rightFeatureIdentity)
 {
-    auto const [leftLongitude, leftLatitude] = left.tileId_.southWestWgs84();
-    auto const [rightLongitude, rightLatitude] = right.tileId_.southWestWgs84();
+    // Object-local reciprocal relations use identity, never discovery-tile geography.
+    if (left.partitionId_.kind() == PartitionKind::Object ||
+        right.partitionId_.kind() == PartitionKind::Object)
+        return std::tie(left.mapId_, left.layerId_, left.partitionId_, leftFeatureIdentity) <
+            std::tie(right.mapId_, right.layerId_, right.partitionId_, rightFeatureIdentity);
+    auto const [leftLongitude, leftLatitude] = left.partitionId_.tileId().southWestWgs84();
+    auto const [rightLongitude, rightLatitude] = right.partitionId_.tileId().southWestWgs84();
     return std::make_tuple(
                leftLatitude,
                leftLongitude,
-               left.tileId_.level(),
+               left.partitionId_.tileId().level(),
                left.mapId_,
                left.layerId_,
                std::string(leftFeatureIdentity)) <
         std::make_tuple(
                rightLatitude,
                rightLongitude,
-               right.tileId_.level(),
+               right.partitionId_.tileId().level(),
                right.mapId_,
                right.layerId_,
                std::string(rightFeatureIdentity));
@@ -1546,13 +1554,13 @@ static bool southWestOwnerLess(
 /** Return the first explicit root ordinal matching a completed relation endpoint. */
 static std::optional<size_t> exactRootOrdinal(
     model_ptr<Feature> const& feature,
-    TileSubsetLayer const& outputLayer,
+    PartitionSubsetLayer const& outputLayer,
     std::span<FeatureLayerFilterRoot const> exactRoots)
 {
     if (!feature) {
         return std::nullopt;
     }
-    auto const featureKey = MapTileKey(feature->model());
+    auto const featureKey = MapPartitionKey(feature->model());
     if (featureKey.mapId_ != outputLayer.id().mapId_ ||
         featureKey.layerId_ != outputLayer.id().layerId_)
     {
@@ -1568,7 +1576,7 @@ static std::optional<size_t> exactRootOrdinal(
         auto const identityMatches = !root.canonicalFeatureId_.empty() ?
             root.canonicalFeatureId_ == featureId->toString() :
             root.typeId_ == featureId->typeId() && root.featureId_ == featureIdParts;
-        if (root.tileId_ == featureKey.tileId_ && identityMatches &&
+        if (root.partitionId_ == featureKey.partitionId_ && identityMatches &&
             (!firstOrdinal || root.requestOrdinal_ < *firstOrdinal))
         {
             firstOrdinal = root.requestOrdinal_;
@@ -1578,7 +1586,7 @@ static std::optional<size_t> exactRootOrdinal(
 }
 
 tl::expected<FeatureLayerFilterSourceResult, simfil::Error> FeatureLayerFilterRequest::filterSource(
-    TileFeatureLayer const& sourceLayer,
+    PartitionFeatureLayer const& sourceLayer,
     bool materializeOutput,
     std::span<FeatureLayerFilterRoot const> exactRoots,
     FeatureLayerFilterCancellationCheck const& cancellationCheck,
@@ -1597,7 +1605,7 @@ tl::expected<FeatureLayerFilterSourceResult, simfil::Error> FeatureLayerFilterRe
 tl::expected<FeatureLayerFilterSourceResult, simfil::Error>
 FeatureLayerFilterRequest::SourceEvaluation::run(
     FeatureLayerFilterRequest const& request,
-    TileFeatureLayer const& sourceLayer,
+    PartitionFeatureLayer const& sourceLayer,
     bool materializeOutput,
     std::span<FeatureLayerFilterRoot const> exactRoots,
     FeatureLayerFilterCancellationCheck const& cancellationCheck,
@@ -1638,8 +1646,8 @@ FeatureLayerFilterRequest::SourceEvaluation::run(
 void FeatureLayerFilterRequest::SourceEvaluation::prepare()
 {
     if (materializeOutput_) {
-        resultLayer_ = std::make_shared<TileSubsetLayer>(
-            sourceLayer_.tileId(),
+        resultLayer_ = std::make_shared<PartitionSubsetLayer>(
+            sourceLayer_.partitionId(),
             sourceLayer_.stringPoolId(),
             sourceLayer_.mapId(),
             sourceLayer_.layerInfo(),
@@ -1648,8 +1656,9 @@ void FeatureLayerFilterRequest::SourceEvaluation::prepare()
             request_.generation_);
         resultLayer_->setGeometryAnchor(sourceLayer_.geometryAnchor());
         resultLayer_->adoptSourceInfo(sourceLayer_);
-        resultLayer_
-            ->addDependency(MapTileKey(sourceLayer_), static_cast<uint32_t>(sourceLayer_.size()));
+        resultLayer_->addDependency(
+            MapPartitionKey(sourceLayer_),
+            static_cast<uint32_t>(sourceLayer_.size()));
         if (auto const& attachmentName = sourceLayer_.glbAttachmentName()) {
             resultLayer_->setGlbAttachmentName(*attachmentName);
         }
@@ -1937,7 +1946,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanExactRoots()
         if (cancellation_.periodic()) {
             break;
         }
-        if (root.tileId_ != sourceLayer_.tileId()) {
+        if (root.partitionId_ != sourceLayer_.partitionId()) {
             continue;
         }
         auto feature = root.canonicalFeatureId_.empty() ?
@@ -1955,7 +1964,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanExactRoots()
                     fmt::format(
                         "Exact relation root '{}' was not found in tile {}.",
                         root.canonicalFeatureId_.empty() ? root.typeId_ : root.canonicalFeatureId_,
-                        sourceLayer_.tileId().value()));
+                        sourceLayer_.partitionId().toString()));
                 continue;
             }
             if (!featureTypeAllowed(feature, channel)) {
@@ -2028,7 +2037,7 @@ bool FeatureLayerFilterRequest::SourceEvaluation::featureTypeAllowed(
 
 tl::expected<FeatureLayerPointGroupCompletion, simfil::Error>
 FeatureLayerFilterRequest::completePointGroups(
-    TileSubsetLayer& outputLayer,
+    PartitionSubsetLayer& outputLayer,
     std::span<FeatureLayerPointGroupMember const> members,
     FeatureLayerFilterCancellationCheck const& cancellationCheck,
     SimfilExpressionCache* expressionCache) const
@@ -2184,9 +2193,9 @@ FeatureLayerFilterRequest::completePointGroups(
 
 tl::expected<FeatureLayerRelationCompletion, simfil::Error>
 FeatureLayerFilterRequest::completeRelations(
-    TileSubsetLayer& outputLayer,
+    PartitionSubsetLayer& outputLayer,
     std::span<FeatureLayerRelationDescriptor const> descriptors,
-    std::span<MapTileKey const> requestedOutputKeys,
+    std::span<MapPartitionKey const> requestedOutputKeys,
     std::span<FeatureLayerFilterRoot const> exactRoots,
     FeatureLayerFilterCancellationCheck const& cancellationCheck,
     SimfilExpressionCache* expressionCache) const
@@ -2354,9 +2363,9 @@ FeatureLayerFilterRequest::completeRelations(
             }
 
             if (twoway && exactRoots.empty()) {
-                auto const sourceKey = MapTileKey(descriptor->source_->model());
-                auto const targetKey =
-                    descriptor->targetTileKey_.value_or(MapTileKey(descriptor->target_->model()));
+                auto const sourceKey = MapPartitionKey(descriptor->source_->model());
+                auto const targetKey = descriptor->targetTileKey_.value_or(
+                    MapPartitionKey(descriptor->target_->model()));
                 auto const sourceFeatureIdentity = descriptor->source_->id()->toString();
                 auto const targetFeatureIdentity = descriptor->target_->id()->toString();
                 auto const& owner =
@@ -2432,7 +2441,7 @@ FeatureLayerFilterRequest::completeRelations(
                     feature->geomOrNull(),
                     definition.geometryTypes_,
                     definition.geometryName_,
-                    MapTileKey(feature->model()) == outputLayer.id(),
+                    MapPartitionKey(feature->model()) == outputLayer.id(),
                     &downgradedGltfNodeIndex),
                 materializeValues(outputLayer, values));
             if (downgradedGltfNodeIndex) {
@@ -2546,8 +2555,8 @@ FeatureLayerFilterRequest::completeRelations(
     };
 }
 
-tl::expected<TileSubsetLayer::Ptr, simfil::Error>
-FeatureLayerFilterRequest::filter(TileFeatureLayer const& sourceLayer) const
+tl::expected<PartitionSubsetLayer::Ptr, simfil::Error>
+FeatureLayerFilterRequest::filter(PartitionFeatureLayer const& sourceLayer) const
 {
     if (std::ranges::any_of(
             channels_,
@@ -2575,7 +2584,7 @@ FeatureLayerFilterRequest::filter(TileFeatureLayer const& sourceLayer) const
     return std::move(sourceResult->layer_);
 }
 
-tl::expected<std::vector<model_ptr<Feature>>, simfil::Error> TileFeatureLayer::find(
+tl::expected<std::vector<model_ptr<Feature>>, simfil::Error> PartitionFeatureLayer::find(
     FeatureLayerSelector const& selector,
     std::function<bool()> const& cancellationCheck) const
 {
@@ -2586,7 +2595,8 @@ tl::expected<std::vector<model_ptr<Feature>>, simfil::Error> TileFeatureLayer::f
     return std::move(selected->front());
 }
 
-tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error> TileFeatureLayer::find(
+tl::expected<std::vector<std::vector<model_ptr<Feature>>>, simfil::Error>
+PartitionFeatureLayer::find(
     std::span<FeatureLayerSelector const> selectors,
     std::function<bool()> const& cancellationCheck,
     SimfilExpressionCache* expressionCache) const

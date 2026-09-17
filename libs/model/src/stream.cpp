@@ -20,7 +20,7 @@ namespace mapget
 
 TileLayerStream::Reader::Reader(
     LayerInfoResolveFun layerInfoProvider,
-    std::function<void(TileLayer::Ptr)> onParsedLayer,
+    std::function<void(PartitionLayer::Ptr)> onParsedLayer,
     std::shared_ptr<StringPoolCache> stringPoolProvider,
     std::function<void(MessageType, std::string_view)> onControlMessage)
     : layerInfoProvider_(std::move(layerInfoProvider)),
@@ -87,30 +87,33 @@ bool TileLayerStream::Reader::continueReading()
         buffer_.begin() + static_cast<std::ptrdiff_t>(readOffset_ + nextValueSize_));
     readOffset_ += nextValueSize_;
 
-    if (nextValueType_ == MessageType::TileFeatureLayer)
-    {
+    if (nextValueType_ == MessageType::PartitionFeatureLayer) {
         auto start = std::chrono::system_clock::now();
-        auto layer = std::make_shared<TileFeatureLayer>(payload, layerInfoProvider_, [this](auto&& stringPoolId) {
-            return stringPoolProvider_->getStringPool(stringPoolId);
-        });
+        auto layer = std::make_shared<PartitionFeatureLayer>(
+            payload,
+            layerInfoProvider_,
+            [this](auto&& stringPoolId)
+            { return stringPoolProvider_->getStringPool(stringPoolId); });
 
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
         log().trace("Reading {} kB took {} ms.", nextValueSize_/1000, elapsed.count());
         onParsedLayer_(layer);
     }
-    else if (nextValueType_ == MessageType::TileSubsetLayer)
-    {
-        auto layer = std::make_shared<TileSubsetLayer>(payload, layerInfoProvider_, [this](auto&& stringPoolId) {
-            return stringPoolProvider_->getStringPool(stringPoolId);
-        });
+    else if (nextValueType_ == MessageType::PartitionSubsetLayer) {
+        auto layer = std::make_shared<PartitionSubsetLayer>(
+            payload,
+            layerInfoProvider_,
+            [this](auto&& stringPoolId)
+            { return stringPoolProvider_->getStringPool(stringPoolId); });
         onParsedLayer_(layer);
     }
-    else if (nextValueType_ == MessageType::TileSourceDataLayer)
-    {
-        auto layer = std::make_shared<TileSourceDataLayer>(payload, layerInfoProvider_, [this](auto&& stringPoolId) {
-            return stringPoolProvider_->getStringPool(stringPoolId);
-        });
+    else if (nextValueType_ == MessageType::PartitionSourceDataLayer) {
+        auto layer = std::make_shared<PartitionSourceDataLayer>(
+            payload,
+            layerInfoProvider_,
+            [this](auto&& stringPoolId)
+            { return stringPoolProvider_->getStringPool(stringPoolId); });
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::StringPool)
@@ -196,7 +199,7 @@ TileLayerStream::Writer::Writer(
 {
 }
 
-void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
+void TileLayerStream::Writer::write(PartitionLayer::Ptr const& tileLayer)
 {
     if (auto modelPool = std::dynamic_pointer_cast<simfil::ModelPool>(tileLayer)) {
         if (auto strings = modelPool->strings()) {
@@ -239,18 +242,16 @@ void TileLayerStream::Writer::write(TileLayer::Ptr const& tileLayer)
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
     log().trace("Writing {} kB took {} ms.", bytes.size()/1000, elapsed.count());
 
-    if (std::dynamic_pointer_cast<TileSubsetLayer>(tileLayer)) {
-        sendMessage(std::move(bytes), MessageType::TileSubsetLayer);
+    if (std::dynamic_pointer_cast<PartitionSubsetLayer>(tileLayer)) {
+        sendMessage(std::move(bytes), MessageType::PartitionSubsetLayer);
         return;
     }
 
     const auto layerType = tileLayer->layerInfo()->type_;
     const auto messageType = [&layerType]() {
         switch (layerType) {
-        case mapget::LayerType::Features:
-            return MessageType::TileFeatureLayer;
-        case mapget::LayerType::SourceData:
-            return MessageType::TileSourceDataLayer;
+        case mapget::LayerType::Features: return MessageType::PartitionFeatureLayer;
+        case mapget::LayerType::SourceData: return MessageType::PartitionSourceDataLayer;
         default:
             // Other layer types currently have no binary stream encoding.
             raiseFmt("Unsupported layer type: {}", static_cast<int>(layerType));

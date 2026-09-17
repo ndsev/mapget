@@ -13,9 +13,9 @@ class Feature;
 class FeatureId;
 
 /** Logical position in one shared interwoven AttrPointSequence. */
-class AttrPointIndex final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class AttrPointIndex final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     /** Return the shared sequence defining this logical index. */
@@ -28,7 +28,7 @@ public:
     [[nodiscard]] nlohmann::json toJson() const override;
 
     explicit AttrPointIndex(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
     {
     }
 
@@ -50,9 +50,10 @@ protected:
 };
 
 /** Inclusive logical range in one shared interwoven AttrPointSequence. */
-class AttrPointIndexRange final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class AttrPointIndexRange final
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     /** Return the shared sequence defining this logical range. */
@@ -68,7 +69,7 @@ public:
     [[nodiscard]] nlohmann::json toJson() const override;
 
     explicit AttrPointIndexRange(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
     {
     }
 
@@ -92,9 +93,9 @@ protected:
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
  */
-class Validity : public simfil::ProceduralObject<7, Validity, TileFeatureLayer>
+class Validity : public simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
     friend class PointNode;
     friend class AttrPointIndex;
     friend class AttrPointIndexRange;
@@ -241,7 +242,9 @@ protected:
 
 public:
     explicit Validity(simfil::detail::mp_key key)
-        : simfil::ProceduralObject<7, Validity, TileFeatureLayer>(key) {}
+        : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(key)
+    {
+    }
     Validity(Direction direction,
              simfil::ModelConstPtr layer,
              simfil::ModelNodeAddress a,
@@ -270,9 +273,9 @@ protected:
 /**
  * Array of Validity objects with convenience constructors.
  */
-struct MultiValidity : public simfil::BaseArray<TileFeatureModelLayerBase, Validity>
+struct MultiValidity : public simfil::BaseArray<PartitionFeatureModelLayerBase, Validity>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
     /**
      * Append a new line position validity based on an absolute geographic position.
@@ -412,11 +415,11 @@ private:
     /**
      * Access the concrete owning feature layer for validity data allocation.
      * The array base is intentionally the common model type so MSVC does not
-     * instantiate simfil BaseArray helpers against an incomplete TileFeatureLayer.
+     * instantiate simfil BaseArray helpers against an incomplete PartitionFeatureLayer.
      */
-    TileFeatureLayer& featureLayer();
+    PartitionFeatureLayer& featureLayer();
 
-    using simfil::BaseArray<TileFeatureModelLayerBase, Validity>::BaseArray;
+    using simfil::BaseArray<PartitionFeatureModelLayerBase, Validity>::BaseArray;
 };
 
 }

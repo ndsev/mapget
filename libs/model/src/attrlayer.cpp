@@ -81,9 +81,8 @@ AttributeLayer::AttributeLayer(
     simfil::ArrayIndex i,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
-    simfil::detail::mp_key key
-)
-    : simfil::BaseObject<TileFeatureLayer, Attribute>(i, std::move(l), a, key)
+    simfil::detail::mp_key key)
+    : simfil::BaseObject<PartitionFeatureLayer, Attribute>(i, std::move(l), a, key)
 {
 }
 
@@ -93,10 +92,8 @@ AttributeLayer::newAttribute(
     size_t initialCapacity,
     bool fixedSize)
 {
-    auto result = static_cast<TileFeatureLayer&>(model()).newAttribute(
-        name,
-        initialCapacity,
-        fixedSize);
+    auto result =
+        static_cast<PartitionFeatureLayer&>(model()).newAttribute(name, initialCapacity, fixedSize);
     addAttribute(result);
     return result;
 }
@@ -118,14 +115,14 @@ bool AttributeLayer::forEachAttribute(const std::function<bool(const model_ptr<A
     if (!cb)
         return false;
     for (auto const& [_, value] : fields()) {
-        if (value->addr().column() != TileFeatureLayer::ColumnId::Attributes) {
+        if (value->addr().column() != PartitionFeatureLayer::ColumnId::Attributes) {
             if (_ == StringPool::IdStr) {
                 continue;
             }
             log().warn("Don't add anything other than Attributes into AttributeLayers!");
             continue;
         }
-        auto attr = static_cast<TileFeatureLayer&>(model()).resolve<Attribute>(*value);
+        auto attr = static_cast<PartitionFeatureLayer&>(model()).resolve<Attribute>(*value);
         if (!cb(attr))
             return false;
     }
@@ -152,7 +149,7 @@ AttributeLayerList::newLayer(
     if (isFeatureScopedView()) {
         raise("Cannot mutate a feature-scoped AttributeLayerList view.");
     }
-    auto result = modelPtr<TileFeatureLayer>()->newAttributeLayer(initialCapacity, fixedSize);
+    auto result = modelPtr<PartitionFeatureLayer>()->newAttributeLayer(initialCapacity, fixedSize);
     addLayer(name, result);
     return result;
 }
@@ -205,11 +202,12 @@ bool AttributeLayerList::forEachLayer(
     if (local) {
         for (auto const& [stringId, value] : local->fields()) {
             if (auto layerName = model().strings()->resolve(stringId)) {
-                if (value->addr().column() != TileFeatureLayer::ColumnId::AttributeLayers) {
+                if (value->addr().column() != PartitionFeatureLayer::ColumnId::AttributeLayers) {
                     log().warn("Don't add anything other than AttributeLayers into AttributeLayerLists!");
                     continue;
                 }
-                auto attrLayer = static_cast<TileFeatureLayer&>(model()).resolve<AttributeLayer>(*value);
+                auto attrLayer =
+                    static_cast<PartitionFeatureLayer&>(model()).resolve<AttributeLayer>(*value);
                 if (!cb(*layerName, attrLayer))
                     return false;
             }
@@ -269,7 +267,7 @@ simfil::model_ptr<AttributeLayerList> AttributeLayerList::localConcreteList() co
 
 bool AttributeLayerList::isFeatureScopedView() const
 {
-    return addr_.column() == TileFeatureLayer::ColumnId::FeatureAttributeLayerListView;
+    return addr_.column() == PartitionFeatureLayer::ColumnId::FeatureAttributeLayerListView;
 }
 
 model_ptr<Feature> AttributeLayerList::featureScopedFeature() const

@@ -17,7 +17,7 @@ namespace mapget
 
 namespace
 {
-model_ptr<Feature> resolveFeatureByRootIndex(TileFeatureLayer const& model, uint32_t index)
+model_ptr<Feature> resolveFeatureByRootIndex(PartitionFeatureLayer const& model, uint32_t index)
 {
     auto rootResult = model.root(index);
     if (!rootResult || !*rootResult) {
@@ -72,12 +72,13 @@ bool RelationArrayView::localMergedIterate(simfil::ModelNode::IterCallback const
     return true;
 }
 
-Feature::Feature(Feature::BasicData& d,
+Feature::Feature(
+    Feature::BasicData& d,
     Feature::ComplexData* c,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(l), a, key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(l), a, key),
       basicData_(&d),
       complexData_(c)
 {
@@ -209,7 +210,9 @@ model_ptr<RelationArrayView> Feature::mergedRelationsOrNull() const
 
     return model_ptr<RelationArrayView>::make(
         model_,
-        simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureRelationsView, addr().index()});
+        simfil::ModelNodeAddress{
+            PartitionFeatureLayer::ColumnId::FeatureRelationsView,
+            addr().index()});
 }
 
 tl::expected<std::vector<simfil::Value>, simfil::Error>
@@ -318,7 +321,7 @@ bool Feature::iterate(const simfil::ModelNode::IterCallback& cb) const
 
 simfil::ModelNodeAddress Feature::featureIdNodeAddress() const
 {
-    using Col = TileFeatureLayer::ColumnId;
+    using Col = PartitionFeatureLayer::ColumnId;
     if (!basicData_) {
         return {};
     }
@@ -471,7 +474,9 @@ void Feature::updateFields() const {
             StringPool::PropertiesStr,
             Ptr::make(
                 model_,
-                simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::FeatureProperties, addr().index()}));
+                simfil::ModelNodeAddress{
+                    PartitionFeatureLayer::ColumnId::FeatureProperties,
+                    addr().index()}));
     if (auto rel = mergedRelationsOrNull()) {
         fields_.emplace_back(StringPool::RelationsStr, rel);
     }
@@ -480,7 +485,7 @@ void Feature::updateFields() const {
 
 nlohmann::json Feature::toJson() const
 {
-    auto json = simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::toJson();
+    auto json = simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>::toJson();
     if (auto layers = attributeLayersOrNull()) {
         json["properties"]["layer"] = layers->toJson();
     }
@@ -506,7 +511,7 @@ void Feature::addGeometry(const model_ptr<Geometry>& geom)
     }
 
     materializeGeometryCollection();
-    if (geometryNodeAddress().column() != TileFeatureLayer::ColumnId::GeometryCollections) {
+    if (geometryNodeAddress().column() != PartitionFeatureLayer::ColumnId::GeometryCollections) {
         simfil::raise<std::runtime_error>(
             "Feature geometry reference is neither Geometry nor GeometryCollection.");
     }
@@ -541,8 +546,9 @@ void Feature::addPoly(const std::vector<Point>& points) {
 
 void Feature::materializeGeometryCollection()
 {
-    auto const isBaseGeometryColumn = [](uint8_t column) {
-        using Col = TileFeatureLayer::ColumnId;
+    auto const isBaseGeometryColumn = [](uint8_t column)
+    {
+        using Col = PartitionFeatureLayer::ColumnId;
         return column == Col::PointGeometries ||
                column == Col::LineGeometries ||
                column == Col::PolygonGeometries ||
@@ -553,7 +559,8 @@ void Feature::materializeGeometryCollection()
     auto currentGeomAddress = geometryNodeAddress();
     if (!currentGeomAddress ||
         (!isBaseGeometryColumn(currentGeomAddress.column()) &&
-         currentGeomAddress.column() != TileFeatureLayer::ColumnId::GeometryViews)) {
+         currentGeomAddress.column() != PartitionFeatureLayer::ColumnId::GeometryViews))
+    {
         return;
     }
     auto existingGeometry = model().resolve<Geometry>(currentGeomAddress);
@@ -577,7 +584,7 @@ model_ptr<Geometry> Feature::appendGeometry(
     }
 
     materializeGeometryCollection();
-    if (geometryNodeAddress().column() != TileFeatureLayer::ColumnId::GeometryCollections) {
+    if (geometryNodeAddress().column() != PartitionFeatureLayer::ColumnId::GeometryCollections) {
         simfil::raise<std::runtime_error>(
             "Feature geometry reference is neither Geometry nor GeometryCollection.");
     }
@@ -606,11 +613,11 @@ model_ptr<Relation> Feature::addRelation(model_ptr<Relation> relation)
     if (!relation) {
         raise("Cannot add null relation.");
     }
-    if (relation->addr().column() != TileFeatureLayer::ColumnId::Relations) {
+    if (relation->addr().column() != PartitionFeatureLayer::ColumnId::Relations) {
         raise("Feature relations must be canonical Relation nodes.");
     }
     if (relation->owningModel().get() != &model()) {
-        raise("Feature relations must belong to the same TileFeatureLayer.");
+        raise("Feature relations must belong to the same PartitionFeatureLayer.");
     }
 
     // Re-resolve by address before mutation because previously returned
@@ -735,7 +742,7 @@ Feature::MergedBasicAttributesView::MergedBasicAttributesView(
     simfil::ModelConstPtr model,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(std::move(model), address, key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(model), address, key)
 {
 }
 
@@ -752,7 +759,7 @@ void Feature::MergedBasicAttributesView::rebuildMergedFields() const
     mergedFields_.clear();
 
     model_ptr<Feature> feature;
-    if (addr().column() == TileFeatureLayer::ColumnId::Features) {
+    if (addr().column() == PartitionFeatureLayer::ColumnId::Features) {
         feature = model().resolve<Feature>(addr());
     }
     else {
@@ -842,12 +849,9 @@ bool Feature::MergedBasicAttributesView::iterate(const simfil::ModelNode::IterCa
 
 Feature::FeaturePropertyView::FeaturePropertyView(
     model_ptr<Feature> feature,
-    simfil::detail::mp_key key
-)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
-        feature->model().shared_from_this(),
-        feature->addr(),
-        key)
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<
+          PartitionFeatureLayer>(feature->model().shared_from_this(), feature->addr(), key)
 {}
 
 simfil::ValueType Feature::FeaturePropertyView::type() const

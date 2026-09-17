@@ -124,6 +124,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
              {"configured", schedulerStats.workerCount},
              {"running", schedulerStats.runningJobs}}},
         {"queued-tile-work-items", schedulerStats.queuedTileWorkItems},
+        {"queued-discovery-jobs", schedulerStats.queuedDiscoveryJobs},
         {"in-flight-tile-jobs", schedulerStats.inFlightTileJobs},
         {"datasource-config",
          nlohmann::json{
@@ -171,7 +172,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
     };
 
     LayerInfoResolveFun resolveLayerInfo;
-    std::function<void(TileLayer::Ptr)> collectFeatureTreeStats;
+    std::function<void(PartitionLayer::Ptr)> collectFeatureTreeStats;
     if (includeCachedFeatureTreeBytes) {
         auto layerInfoByMap = std::unordered_map<
             std::string,
@@ -205,7 +206,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
 
         collectFeatureTreeStats = [&](auto&& parsedLayer)
         {
-            auto tile = std::dynamic_pointer_cast<mapget::TileFeatureLayer>(parsedLayer);
+            auto tile = std::dynamic_pointer_cast<mapget::PartitionFeatureLayer>(parsedLayer);
             if (!tile) {
                 ++parseErrors;
                 return;
@@ -221,7 +222,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
 
     auto cache = scheduler_.cache();
     cache->forEachTileLayerBlob(
-        [&](const MapTileKey& key, const std::string& blob)
+        [&](const MapPartitionKey& key, const std::string& blob)
         {
             if (key.layer_ != LayerType::Features)
                 return;

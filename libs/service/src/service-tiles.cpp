@@ -12,7 +12,7 @@ namespace
 {
 
 void applyTtlFallback(
-    TileLayer& tile,
+    PartitionLayer& tile,
     DataSource& dataSource,
     std::optional<std::chrono::milliseconds> const& defaultTtl)
 {
@@ -28,7 +28,7 @@ void applyTtlFallback(
     }
 }
 
-void includeLifetime(TileFeatureLayer& composite, TileFeatureLayer const& contributor)
+void includeLifetime(PartitionFeatureLayer& composite, PartitionFeatureLayer const& contributor)
 {
     auto const contributorTtl = contributor.ttl();
     if (!contributorTtl || contributorTtl->count() <= 0) {
@@ -66,7 +66,7 @@ TileLoadJob::TileLoadJob(
 TileLoadJob::TileLoadJob(
     ServiceScheduler& scheduler,
     std::shared_ptr<TileLoadState> state,
-    TileLayer::Ptr cachedLayer)
+    PartitionLayer::Ptr cachedLayer)
     : scheduler_(scheduler), state_(std::move(state)), cachedLayer_(std::move(cachedLayer))
 {
 }
@@ -107,8 +107,8 @@ void TileLoadJob::run() noexcept
             source_->source->dataSource->onCacheExpired(state_->tileKey, *state_->cacheExpiredAt);
         }
 
-        scheduler_.notifyTileLoadState(*state_, TileLayer::LoadState::BackendFetching);
-        auto notifyWaitingRequests = [this](TileLayer::LoadState state)
+        scheduler_.notifyTileLoadState(*state_, PartitionLayer::LoadState::BackendFetching);
+        auto notifyWaitingRequests = [this](PartitionLayer::LoadState state)
         {
             scheduler_.notifyTileLoadState(*state_, state);
         };
@@ -125,7 +125,7 @@ void TileLoadJob::run() noexcept
 
         if (layer->layerInfo()->type_ == LayerType::Features) {
             loadAddOnTiles(
-                std::static_pointer_cast<TileFeatureLayer>(layer),
+                std::static_pointer_cast<PartitionFeatureLayer>(layer),
                 *source_->source,
                 scheduler_.dataSources_,
                 scheduler_.cache_,
@@ -151,7 +151,7 @@ void TileLoadJob::run() noexcept
 }
 
 void loadAddOnTiles(
-    TileFeatureLayer::Ptr const& baseTile,
+    PartitionFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
     DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,
@@ -178,7 +178,7 @@ void loadAddOnTiles(
             log().warn("Add-on tile {} is not a feature layer.", baseTile->id().toString());
             continue;
         }
-        auto addOnTile = std::static_pointer_cast<TileFeatureLayer>(loaded);
+        auto addOnTile = std::static_pointer_cast<PartitionFeatureLayer>(loaded);
         applyTtlFallback(*addOnTile, *addOn->dataSource, defaultTtl);
         includeLifetime(*baseTile, *addOnTile);
 
@@ -188,7 +188,7 @@ void loadAddOnTiles(
         baseTile->setStrings(cache->getStringPool(combinedPoolId));
         baseTile->setStringPoolId(combinedPoolId);
 
-        TileFeatureLayer::CloneCache cloneCache;
+        PartitionFeatureLayer::CloneCache cloneCache;
         for (auto const& addOnFeature : *addOnTile) {
             std::vector<std::pair<std::string, KeyValuePairs>> targetIds = {{
                 std::string(addOnFeature->id()->typeId()),
@@ -252,7 +252,7 @@ public:
     std::function<void(AttachmentResult)> callback;
 
     /** Capture a valid datasource attachment advertised by the source tile. */
-    void consumeTile(TileFeatureLayer::Ptr const& tile)
+    void consumeTile(PartitionFeatureLayer::Ptr const& tile)
     {
         if (!tile || tile->error() || tile->glbAttachmentName() != request.name_) {
             return;
@@ -309,23 +309,24 @@ namespace
 {
 
 /** Clone only explicitly requested features into a response-local tile model. */
-TileFeatureLayer::Ptr restrictFeatureLayerForResponse(
-    TileFeatureLayer::Ptr const& source,
+PartitionFeatureLayer::Ptr restrictFeatureLayerForResponse(
+    PartitionFeatureLayer::Ptr const& source,
     std::span<std::string const> featureIds)
 {
-    auto result = std::make_shared<TileFeatureLayer>(
-        source->tileId(),
+    auto result = std::make_shared<PartitionFeatureLayer>(
+        source->partitionId(),
         source->stringPoolId(),
         source->mapId(),
         source->layerInfo(),
         source->strings());
     result->setInfo(source->info());
+    result->setGeometryAnchor(source->geometryAnchor());
     if (auto legalInfo = source->legalInfo()) {
         result->setLegalInfo(*legalInfo);
     }
     result->setGlbAttachmentName(source->glbAttachmentName());
 
-    TileFeatureLayer::CloneCache cloneCache;
+    PartitionFeatureLayer::CloneCache cloneCache;
     for (auto const& canonicalId : featureIds) {
         auto feature = source->find(canonicalId);
         if (!feature) {
@@ -343,7 +344,7 @@ TileFeatureLayer::Ptr restrictFeatureLayerForResponse(
 LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
-    std::vector<TileId> tiles)
+    std::vector<PartitionId> tiles)
     : LayerTilesRequest(std::move(mapId), std::move(layerId), std::move(tiles), {})
 {
 }
@@ -351,24 +352,24 @@ LayerTilesRequest::LayerTilesRequest(
 LayerTilesRequest::LayerTilesRequest(
     std::string mapId,
     std::string layerId,
-    std::vector<TileId> tiles,
-    std::vector<TileId> const& priorityTileIds)
+    std::vector<PartitionId> tiles,
+    std::vector<PartitionId> const& priorityPartitionIds)
     : mapId_(std::move(mapId)),
       layerId_(std::move(layerId)),
       tileIds_(std::move(tiles)),
-      priorityTileIds_({priorityTileIds.begin(), priorityTileIds.end()})
+      priorityPartitionIds_({priorityPartitionIds.begin(), priorityPartitionIds.end()})
 {
-    std::set<TileId> seenTileIds;
-    std::vector<TileId> uniqueTileIds;
-    uniqueTileIds.reserve(tileIds_.size());
+    std::set<PartitionId> seenPartitionIds;
+    std::vector<PartitionId> uniquePartitionIds;
+    uniquePartitionIds.reserve(tileIds_.size());
     for (auto const& tileId : tileIds_) {
-        if (seenTileIds.insert(tileId).second) {
-            uniqueTileIds.push_back(tileId);
+        if (seenPartitionIds.insert(tileId).second) {
+            uniquePartitionIds.push_back(tileId);
         }
     }
-    tileIds_.swap(uniqueTileIds);
-    for (auto const& priorityTileId : priorityTileIds_) {
-        if (!seenTileIds.contains(priorityTileId)) {
+    tileIds_.swap(uniquePartitionIds);
+    for (auto const& priorityPartitionId : priorityPartitionIds_) {
+        if (!seenPartitionIds.contains(priorityPartitionId)) {
             raise("Priority tile IDs must be contained in the request tile IDs.");
         }
     }
@@ -391,11 +392,11 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType)
         completedTileKeys_.clear();
     }
 
-    const auto isPriorityTile = [this](TileId const& tileId)
+    const auto isPriorityTile = [this](PartitionId const& tileId)
     {
-        return priorityTileIds_.find(tileId) != priorityTileIds_.end();
+        return priorityPartitionIds_.find(tileId) != priorityPartitionIds_.end();
     };
-    const auto appendKey = [this](MapTileKey key)
+    const auto appendKey = [this](MapPartitionKey key)
     {
         if (tileKeysNotStarted_.insert(key).second) {
             resolvedTileKeys_.push_back(std::move(key));
@@ -408,10 +409,10 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType)
             if (priorityFilter && isPriorityTile(tileId) != *priorityFilter) {
                 continue;
             }
-            appendKey(MapTileKey(layerType, mapId_, layerId_, tileId));
+            appendKey(MapPartitionKey(layerType, mapId_, layerId_, tileId));
         }
     };
-    if (priorityTileIds_.empty()) {
+    if (priorityPartitionIds_.empty()) {
         appendTiles(std::nullopt);
     }
     else {
@@ -428,30 +429,30 @@ void LayerTilesRequest::prepareResolvedLayer(LayerType layerType)
 }
 
 std::tuple<bool, bool, bool>
-LayerTilesRequest::retainOutputTileIds(std::set<TileId> const& retained)
+LayerTilesRequest::retainOutputPartitionIds(std::set<PartitionId> const& retained)
 {
     std::lock_guard lock(statusMutex_);
     auto const previousSize = liveTileKeys_.size();
     std::erase_if(
         liveTileKeys_,
-        [&](MapTileKey const& key) { return !retained.contains(key.tileId_); });
+        [&](MapPartitionKey const& key) { return !retained.contains(key.partitionId_); });
     std::erase_if(
         claimedTileKeys_,
-        [&](MapTileKey const& key) { return !liveTileKeys_.contains(key); });
+        [&](MapPartitionKey const& key) { return !liveTileKeys_.contains(key); });
     std::erase_if(
         completedTileKeys_,
-        [&](MapTileKey const& key) { return !liveTileKeys_.contains(key); });
+        [&](MapPartitionKey const& key) { return !liveTileKeys_.contains(key); });
     std::erase_if(
         featureIdsByTile_,
         [&](auto const& item) { return !retained.contains(item.first); });
     std::erase_if(
-        priorityTileIds_,
-        [&](TileId const& tileId) { return !retained.contains(tileId); });
+        priorityPartitionIds_,
+        [&](PartitionId const& tileId) { return !retained.contains(tileId); });
     tileIds_.erase(
         std::remove_if(
             tileIds_.begin(),
             tileIds_.end(),
-            [&](TileId const& tileId) { return !retained.contains(tileId); }),
+            [&](PartitionId const& tileId) { return !retained.contains(tileId); }),
         tileIds_.end());
     return {
         !liveTileKeys_.empty(),
@@ -461,13 +462,13 @@ LayerTilesRequest::retainOutputTileIds(std::set<TileId> const& retained)
     };
 }
 
-void LayerTilesRequest::notifyResult(TileLayer::Ptr r)
+void LayerTilesRequest::notifyResult(PartitionLayer::Ptr r)
 {
     if (!r) {
         return;
     }
 
-    auto const key = MapTileKey(*r);
+    auto const key = MapPartitionKey(*r);
     auto const type = r->layerInfo()->type_;
     std::optional<std::vector<std::string>> featureRestriction;
     bool completesRequest = false;
@@ -479,7 +480,7 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r)
             return;
         }
         if (type == LayerType::Features) {
-            if (auto restriction = featureIdsByTile_.find(key.tileId_);
+            if (auto restriction = featureIdsByTile_.find(key.partitionId_);
                 restriction != featureIdsByTile_.end())
             {
                 featureRestriction = restriction->second;
@@ -491,7 +492,7 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r)
         switch (type) {
         case LayerType::Features:
             if (onFeatureLayer_) {
-                auto featureLayer = std::static_pointer_cast<TileFeatureLayer>(r);
+                auto featureLayer = std::static_pointer_cast<PartitionFeatureLayer>(r);
                 if (featureRestriction) {
                     featureLayer =
                         restrictFeatureLayerForResponse(featureLayer, *featureRestriction);
@@ -502,7 +503,7 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r)
         case LayerType::SourceData:
             if (onSourceDataLayer_) {
                 onSourceDataLayer_(
-                    std::move(std::static_pointer_cast<TileSourceDataLayer>(r)));
+                    std::move(std::static_pointer_cast<PartitionSourceDataLayer>(r)));
             }
             break;
         default:
@@ -534,7 +535,8 @@ void LayerTilesRequest::notifyResult(TileLayer::Ptr r)
     }
 }
 
-void LayerTilesRequest::notifyLoadState(MapTileKey const& key, TileLayer::LoadState state) const
+void LayerTilesRequest::notifyLoadState(MapPartitionKey const& key, PartitionLayer::LoadState state)
+    const
 {
     {
         std::lock_guard lock(statusMutex_);
@@ -584,21 +586,21 @@ nlohmann::json LayerTilesRequest::toJson()
 
     auto tileIds = nlohmann::json::array();
     for (auto const& tileId : tileIds_) {
-        tileIds.emplace_back(tileId.value());
+        tileIds.emplace_back(tileId.toJson());
     }
-    requestJson["tileIds"] = std::move(tileIds);
-    if (!priorityTileIds_.empty()) {
-        auto priorityTileIds = nlohmann::json::array();
-        for (auto const& tileId : priorityTileIds_) {
-            priorityTileIds.emplace_back(tileId.value());
+    requestJson["partitions"] = std::move(tileIds);
+    if (!priorityPartitionIds_.empty()) {
+        auto priorityPartitionIds = nlohmann::json::array();
+        for (auto const& tileId : priorityPartitionIds_) {
+            priorityPartitionIds.emplace_back(tileId.toJson());
         }
-        requestJson["priorityTileIds"] = std::move(priorityTileIds);
+        requestJson["priorityPartitions"] = std::move(priorityPartitionIds);
     }
     if (!featureIdsByTile_.empty()) {
         auto featureIds = nlohmann::json::array();
         for (auto const& [tileId, ids] : featureIdsByTile_) {
             featureIds.push_back({
-                {"tileId", tileId.value()},
+                {"partition", tileId.toJson()},
                 {"ids", ids},
             });
         }
@@ -661,6 +663,11 @@ bool Service::Impl::requestTiles(
             request->setStatus(RequestStatus::Unauthorized);
             break;
         default:
+            if (std::ranges::any_of(
+                    request->tileIds_,
+                    [&](auto const& id) { return id.kind() != context.partitionKind_; }))
+                throw std::invalid_argument(
+                    "Requested partition kind does not match layer metadata.");
             request->prepareResolvedLayer(context.layerType_);
             if (request->isDone()) {
                 request->notifyStatus();
@@ -730,10 +737,10 @@ void Service::Impl::requestAttachment(
     auto tileRequest = std::make_shared<LayerTilesRequest>(
         execution->request.tileKey_.mapId_,
         execution->request.tileKey_.layerId_,
-        std::vector<TileId>{execution->request.tileKey_.tileId_});
+        std::vector<PartitionId>{execution->request.tileKey_.partitionId_});
     tileRequest->sourceId_ = execution->request.sourceId_;
-    tileRequest
-        ->onFeatureLayer([execution](TileFeatureLayer::Ptr tile) { execution->consumeTile(tile); });
+    tileRequest->onFeatureLayer(
+        [execution](PartitionFeatureLayer::Ptr tile) { execution->consumeTile(tile); });
     tileRequest->onDone_ = [execution](RequestStatus status)
     {
         execution->finish(status);

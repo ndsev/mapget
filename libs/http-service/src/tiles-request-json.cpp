@@ -31,10 +31,15 @@ bool isMetadataSourceDataLayer(std::string_view layerId)
     return layerId.starts_with("Metadata-");
 }
 
-TileId parseRequestTileId(
-    nlohmann::json const& tileIdJson,
-    std::string_view layerId)
+PartitionId parseRequestPartitionId(nlohmann::json const& tileIdJson, std::string_view layerId)
 {
+    if (tileIdJson.is_object()) {
+        auto id = PartitionId::fromJson(tileIdJson);
+        if (id.kind() == PartitionKind::Tile && id.value() == 0 &&
+            !isMetadataSourceDataLayer(layerId))
+            throw std::invalid_argument("Tile zero is reserved for metadata source data.");
+        return id;
+    }
     if (!tileIdJson.is_number_integer() &&
         !tileIdJson.is_number_unsigned())
     {
@@ -66,12 +71,11 @@ TileId parseRequestTileId(
         throw std::runtime_error(
             "tile IDs must be signed 32-bit integers");
     }
-    auto const rawTileId =
-        static_cast<int32_t>(rawValue);
-    if (rawTileId == 0 && isMetadataSourceDataLayer(layerId)) {
-        return TileId();
+    auto const rawPartitionId = static_cast<int32_t>(rawValue);
+    if (rawPartitionId == 0 && isMetadataSourceDataLayer(layerId)) {
+        return PartitionId();
     }
-    return TileId::fromValue(rawTileId);
+    return PartitionId::fromValue(rawPartitionId);
 }
 
 std::string requireString(
@@ -418,7 +422,7 @@ FeatureLayerFilterRequest parseFilterDefinition(
     return result;
 }
 
-void parsePlainTileIdsInto(
+void parsePlainPartitionIdsInto(
     ParsedLayerTilesRequest& result,
     nlohmann::json const& requestJson,
     std::string_view layerId)
@@ -427,14 +431,15 @@ void parsePlainTileIdsInto(
         throw std::runtime_error(
             "tileIdsByNextStage is not supported; use tileIds");
     }
-    auto tileIds = requestJson.find("tileIds");
+    if (requestJson.contains("tileIds") && requestJson.contains("partitions"))
+        throw std::invalid_argument("Supply partitions or tileIds, not both.");
+    auto tileIds = requestJson.find(requestJson.contains("partitions") ? "partitions" : "tileIds");
     if (tileIds == requestJson.end() || !tileIds->is_array()) {
         throw std::runtime_error("tileIds must be an array");
     }
     result.tileIds.reserve(tileIds->size());
     for (auto const& tileId : *tileIds) {
-        result.tileIds.emplace_back(
-            parseRequestTileId(tileId, layerId));
+        result.tileIds.emplace_back(parseRequestPartitionId(tileId, layerId));
     }
 }
 
@@ -445,10 +450,7 @@ void parseRequestBase(
     result.mapId = requireString(requestJson, "mapId");
     result.layerId = requireString(requestJson, "layerId");
     result.sourceId = optionalString(requestJson, "sourceId");
-    parsePlainTileIdsInto(
-        result,
-        requestJson,
-        result.layerId);
+    parsePlainPartitionIdsInto(result, requestJson, result.layerId);
 
     // Delivery attempts are transport-owned in protocol 4.0. Silently
     // accepting these fields would make an outdated client believe that its
@@ -460,29 +462,26 @@ void parseRequestBase(
             "deliveryEpoch and deliveryEpochs are not supported");
     }
 
-    if (auto priorities = requestJson.find("priorityTileIds");
+    if (requestJson.contains("priorityPartitions") && requestJson.contains("priorityTileIds"))
+        throw std::invalid_argument("Supply priorityPartitions or priorityTileIds, not both.");
+    if (auto priorities = requestJson.find(
+            requestJson.contains("priorityPartitions") ? "priorityPartitions" : "priorityTileIds");
         priorities != requestJson.end())
     {
         if (!priorities->is_array()) {
-            throw std::runtime_error(
-                "priorityTileIds must be an array");
+            throw std::runtime_error("priorityPartitionIds must be an array");
         }
-        result.priorityTileIds.reserve(priorities->size());
+        result.priorityPartitionIds.reserve(priorities->size());
         for (auto const& tileId : *priorities) {
-            result.priorityTileIds.emplace_back(
-                parseRequestTileId(tileId, result.layerId));
+            result.priorityPartitionIds
+                .emplace_back(parseRequestPartitionId(tileId, result.layerId));
         }
-        auto const requested = std::set<TileId>(
-            result.tileIds.begin(),
-            result.tileIds.end());
+        auto const requested = std::set<PartitionId>(result.tileIds.begin(), result.tileIds.end());
         if (std::ranges::any_of(
-                result.priorityTileIds,
-                [&](auto const& tileId) {
-                    return !requested.contains(tileId);
-                }))
+                result.priorityPartitionIds,
+                [&](auto const& tileId) { return !requested.contains(tileId); }))
         {
-            throw std::runtime_error(
-                "priorityTileIds must be contained in tileIds");
+            throw std::runtime_error("priorityPartitionIds must be contained in tileIds");
         }
     }
 
@@ -494,20 +493,17 @@ void parseRequestBase(
                 "featureIds must be an array of tile/id groups");
         }
         size_t totalIds = 0;
-        auto const requested = std::set<TileId>(
-            result.tileIds.begin(),
-            result.tileIds.end());
+        auto const requested = std::set<PartitionId>(result.tileIds.begin(), result.tileIds.end());
         for (auto const& restriction : *restrictions) {
             if (!restriction.is_object() ||
-                !restriction.contains("tileId") ||
-                !restriction.contains("ids") ||
-                !restriction.at("ids").is_array())
+                (!restriction.contains("tileId") && !restriction.contains("partition")) ||
+                !restriction.contains("ids") || !restriction.at("ids").is_array())
             {
                 throw std::runtime_error(
                     "featureIds entries require tileId and an ids array");
             }
-            auto const tileId = parseRequestTileId(
-                restriction.at("tileId"),
+            auto const tileId = parseRequestPartitionId(
+                restriction.at(restriction.contains("partition") ? "partition" : "tileId"),
                 result.layerId);
             if (!requested.contains(tileId)) {
                 throw std::runtime_error(
@@ -550,7 +546,7 @@ void parseRequestBase(
                 throw std::runtime_error(
                     "roots entries must be objects");
             }
-            auto tile = root.find("tileId");
+            auto tile = root.find(root.contains("partition") ? "partition" : "tileId");
             if (tile == root.end()) {
                 throw std::runtime_error(
                     "roots entries require tileId");
@@ -572,16 +568,13 @@ void parseRequestBase(
                     throw std::runtime_error(
                         "roots canonical featureId must not be empty");
                 }
-                result.exactRoots.push_back(
-                    FeatureLayerFilterRoot{
-                        parseRequestTileId(
-                            *tile,
-                            result.layerId),
-                        {},
-                        {},
-                        rootIndex,
-                        std::move(canonicalFeatureId),
-                    });
+                result.exactRoots.push_back(FeatureLayerFilterRoot{
+                    parseRequestPartitionId(*tile, result.layerId),
+                    {},
+                    {},
+                    rootIndex,
+                    std::move(canonicalFeatureId),
+                });
                 continue;
             }
             KeyValuePairs idParts;
@@ -633,27 +626,17 @@ void parseRequestBase(
                         "roots featureId values must be signed integers or strings");
                 }
             }
-            result.exactRoots.push_back(
-                FeatureLayerFilterRoot{
-                    parseRequestTileId(
-                        *tile,
-                        result.layerId),
-                    requireString(
-                        root,
-                        "typeId"),
-                    std::move(idParts),
-                    rootIndex,
-                });
+            result.exactRoots.push_back(FeatureLayerFilterRoot{
+                parseRequestPartitionId(*tile, result.layerId),
+                requireString(root, "typeId"),
+                std::move(idParts),
+                rootIndex,
+            });
         }
-        auto const requested = std::set<TileId>(
-            result.tileIds.begin(),
-            result.tileIds.end());
+        auto const requested = std::set<PartitionId>(result.tileIds.begin(), result.tileIds.end());
         if (std::ranges::any_of(
                 result.exactRoots,
-                [&](auto const& root) {
-                    return !requested.contains(
-                        root.tileId_);
-                }))
+                [&](auto const& root) { return !requested.contains(root.partitionId_); }))
         {
             throw std::runtime_error(
                 "roots tileId values must be contained in tileIds");
@@ -770,11 +753,10 @@ TileLayerStream::StringPoolOffsetMap parseStringPoolOffsetsJson(
     return result;
 }
 
-std::vector<TileId> collectFilterTileIds(
-    ParsedLayerTilesRequest const& request)
+std::vector<PartitionId> collectFilterPartitionIds(ParsedLayerTilesRequest const& request)
 {
-    std::set<TileId> seen;
-    std::vector<TileId> result;
+    std::set<PartitionId> seen;
+    std::vector<PartitionId> result;
     for (auto const& tileId : request.tileIds) {
         if (seen.insert(tileId).second) {
             result.push_back(tileId);
@@ -783,17 +765,17 @@ std::vector<TileId> collectFilterTileIds(
     return result;
 }
 
-std::vector<MapTileKey> expandLayerTilesRequestKeys(
-    ParsedLayerTilesRequest const& request,
-    LayerType layerType)
+std::vector<MapPartitionKey>
+expandLayerTilesRequestKeys(ParsedLayerTilesRequest const& request, LayerType layerType)
 {
-    std::vector<MapTileKey> result;
-    std::set<MapTileKey> seen;
-    std::set<TileId> priorityTileIds(
-        request.priorityTileIds.begin(),
-        request.priorityTileIds.end());
-    auto isPriority = [&](TileId const& tileId) {
-        return priorityTileIds.contains(tileId);
+    std::vector<MapPartitionKey> result;
+    std::set<MapPartitionKey> seen;
+    std::set<PartitionId> priorityPartitionIds(
+        request.priorityPartitionIds.begin(),
+        request.priorityPartitionIds.end());
+    auto isPriority = [&](PartitionId const& tileId)
+    {
+        return priorityPartitionIds.contains(tileId);
     };
     auto append = [&](std::optional<bool> priorityFilter) {
         for (auto const& tileId : request.tileIds) {
@@ -802,17 +784,13 @@ std::vector<MapTileKey> expandLayerTilesRequestKeys(
             {
                 continue;
             }
-            MapTileKey key(
-                layerType,
-                request.mapId,
-                request.layerId,
-                tileId);
+            MapPartitionKey key(layerType, request.mapId, request.layerId, tileId);
             if (seen.insert(key).second) {
                 result.push_back(std::move(key));
             }
         }
     };
-    if (priorityTileIds.empty()) {
+    if (priorityPartitionIds.empty()) {
         append(std::nullopt);
     }
     else {

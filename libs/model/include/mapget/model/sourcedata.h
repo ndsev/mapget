@@ -16,10 +16,11 @@ namespace mapget
  *
  * All other types like arrays or atomic values are stored as simfil builtin nodes.
  */
-class SourceDataCompoundNode : public simfil::MandatoryDerivedModelNodeBase<TileSourceDataLayer>
+class SourceDataCompoundNode
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionSourceDataLayer>
 {
     struct Data;
-    friend class TileSourceDataLayer;
+    friend class PartitionSourceDataLayer;
 
 public:
     SourceDataCompoundNode() = delete;
@@ -65,17 +66,20 @@ public:
 
 public:
     explicit SourceDataCompoundNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileSourceDataLayer>(key),
-          data_(nullptr) {}
-    SourceDataCompoundNode(Data* data,
-                           TileSourceDataLayer::ConstPtr model,
-                           simfil::ModelNodeAddress address,
-                           simfil::detail::mp_key key);
-    SourceDataCompoundNode(Data* data,
-                           TileSourceDataLayer::Ptr model,
-                           simfil::ModelNodeAddress address,
-                           size_t initialSize,
-                           simfil::detail::mp_key key);
+        : simfil::MandatoryDerivedModelNodeBase<PartitionSourceDataLayer>(key), data_(nullptr)
+    {
+    }
+    SourceDataCompoundNode(
+        Data* data,
+        PartitionSourceDataLayer::ConstPtr model,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+    SourceDataCompoundNode(
+        Data* data,
+        PartitionSourceDataLayer::Ptr model,
+        simfil::ModelNodeAddress address,
+        size_t initialSize,
+        simfil::detail::mp_key key);
 
 private:
     struct Data

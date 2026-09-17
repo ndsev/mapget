@@ -12,7 +12,7 @@
 namespace mapget
 {
 
-class TileFeatureLayer;
+class PartitionFeatureLayer;
 class Geometry;
 
 /**
@@ -20,9 +20,9 @@ class Geometry;
  * source feature, and points to a destination feature
  * by its id. It may also have a validity geometry on either side.
  */
-class Relation : public simfil::ProceduralObject<6, Relation, TileFeatureLayer>
+class Relation : public simfil::ProceduralObject<6, Relation, PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
     friend class Feature;
 
 public:
@@ -80,7 +80,9 @@ protected:
 
 public:
     explicit Relation(simfil::detail::mp_key key)
-        : simfil::ProceduralObject<6, Relation, TileFeatureLayer>(key) {}
+        : simfil::ProceduralObject<6, Relation, PartitionFeatureLayer>(key)
+    {
+    }
     Relation(Data* data,
              simfil::ModelConstPtr l,
              simfil::ModelNodeAddress a,
@@ -103,13 +105,16 @@ protected:
  * while indexed/keyed traversal exposes the compact `$mapgetRelation` token
  * needed by generic JSON serialization.
  */
-class RelationReference : public simfil::ProceduralObject<6, RelationReference, TileFeatureLayer>
+class RelationReference
+    : public simfil::ProceduralObject<6, RelationReference, PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     explicit RelationReference(simfil::detail::mp_key key)
-        : simfil::ProceduralObject<6, RelationReference, TileFeatureLayer>(key) {}
+        : simfil::ProceduralObject<6, RelationReference, PartitionFeatureLayer>(key)
+    {
+    }
     RelationReference(simfil::ModelConstPtr l,
                       simfil::ModelNodeAddress a,
                       simfil::detail::mp_key key);

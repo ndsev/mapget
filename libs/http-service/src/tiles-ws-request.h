@@ -32,13 +32,11 @@ struct ClientRequestChunk
 [[nodiscard]] ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j);
 
 /** Build a canonical request key using map/layer/tile while normalizing layer type. */
-[[nodiscard]] MapTileKey makeCanonicalRequestedTileKey(
-    std::string_view mapId,
-    std::string_view layerId,
-    TileId tileId);
+[[nodiscard]] MapPartitionKey
+makeCanonicalRequestedTileKey(std::string_view mapId, std::string_view layerId, PartitionId tileId);
 
 /** Normalize an existing map tile key so request matching ignores source layer type. */
-[[nodiscard]] MapTileKey makeCanonicalRequestedTileKey(MapTileKey key);
+[[nodiscard]] MapPartitionKey makeCanonicalRequestedTileKey(MapPartitionKey key);
 
 /** Stable logical key derived from one filter subscription generation. */
 [[nodiscard]] std::string filterSubscriptionKey(
@@ -51,17 +49,14 @@ struct ClientRequestChunk
     uint64_t generation);
 
 /** Decorate queue keys so subset frames do not collide with source tile frames. */
-[[nodiscard]] MapTileKey makeFilterRequestedTileKey(
-    MapTileKey key,
-    std::string_view filterRequestKey);
+[[nodiscard]] MapPartitionKey
+makeFilterRequestedTileKey(MapPartitionKey key, std::string_view filterRequestKey);
 
 /** Build the outgoing-frame key for a plain tile or filter subset. */
-[[nodiscard]] MapTileKey makeRequestedTileKey(
-    MapTileKey key,
-    std::optional<std::string_view> filterRequestKey);
+[[nodiscard]] MapPartitionKey
+makeRequestedTileKey(MapPartitionKey key, std::optional<std::string_view> filterRequestKey);
 
-/** Extract `filterId + generation` from a TileSubsetLayer. */
-[[nodiscard]] std::optional<std::string> filterRequestKey(
-    TileLayer::Ptr const& layer);
+/** Extract `filterId + generation` from a PartitionSubsetLayer. */
+[[nodiscard]] std::optional<std::string> filterRequestKey(PartitionLayer::Ptr const& layer);
 
 } // namespace mapget::detail

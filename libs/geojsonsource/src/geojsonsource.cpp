@@ -390,7 +390,7 @@ enum class TileIdEncoding
     return parseConfiguredTileId(tileIdJson.get<int64_t>(), context, encoding, convertedLegacyTileId);
 }
 
-[[nodiscard]] std::string featureTypeNameForTile(const TileFeatureLayer::Ptr& tile)
+[[nodiscard]] std::string featureTypeNameForTile(const PartitionFeatureLayer::Ptr& tile)
 {
     auto layerInfo = tile->layerInfo();
     if (!layerInfo->featureTypes_.empty())
@@ -480,8 +480,8 @@ locateGeoJsonFeature(LocateRequest const& request, DataSourceInfo const& info)
         // All matching layers are candidates; the service verifies actual feature existence after
         // loading.
         candidates.emplace_back(
-            MapTileKey{LayerType::Features, info.mapId_, layerId, TileId::fromValue(*packed)},
-            formatFeatureIdString(parsed.typeId_, parsed.keyValuePairs_));
+            MapPartitionKey{LayerType::Features, info.mapId_, layerId, TileId::fromValue(*packed)},
+            formatFeatureIdString(parsed.typeId_, parsed.keyValuePairs_, layer.get()));
     }
     if (candidates.empty())
         log().warn(
@@ -492,7 +492,7 @@ locateGeoJsonFeature(LocateRequest const& request, DataSourceInfo const& info)
 }
 
 void fillGeoJsonTile(
-    const TileFeatureLayer::Ptr& tile,
+    const PartitionFeatureLayer::Ptr& tile,
     std::string const& geoJsonBody,
     bool withAttrLayers)
 {
@@ -913,7 +913,7 @@ std::optional<std::string> GeoJsonSource::readTileBody(int32_t tileId, std::stri
     return readExistingFile(path);
 }
 
-void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
+void GeoJsonSource::fill(const mapget::PartitionFeatureLayer::Ptr& tile)
 {
     try {
         auto tileBody = readTileBody(tile->tileId().value(), tile->layerInfo()->layerId_);
@@ -932,7 +932,7 @@ void GeoJsonSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
     }
 }
 
-void GeoJsonSource::fill(mapget::TileSourceDataLayer::Ptr const&)
+void GeoJsonSource::fill(mapget::PartitionSourceDataLayer::Ptr const&)
 {
     // This datasource only serves feature tiles.
 }
@@ -1115,7 +1115,7 @@ std::string GeoJsonEndpointSource::fetchTileBody(int32_t tileId, std::string_vie
     return *decodedBody;
 }
 
-void GeoJsonEndpointSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
+void GeoJsonEndpointSource::fill(const mapget::PartitionFeatureLayer::Ptr& tile)
 {
     try {
         fillGeoJsonTile(
@@ -1133,7 +1133,7 @@ void GeoJsonEndpointSource::fill(const mapget::TileFeatureLayer::Ptr& tile)
     }
 }
 
-void GeoJsonEndpointSource::fill(mapget::TileSourceDataLayer::Ptr const&)
+void GeoJsonEndpointSource::fill(mapget::PartitionSourceDataLayer::Ptr const&)
 {
     // This datasource only serves feature tiles.
 }

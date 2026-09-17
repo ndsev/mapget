@@ -36,14 +36,14 @@ public:
         return static_cast<uint64_t>(maxCachedTiles) * DefaultBytesPerTile;
     }
 
-    /** Retrieve a TileLayer blob for a MapTileKey. */
-    std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override;
+    /** Retrieve a PartitionLayer blob for a MapPartitionKey. */
+    std::optional<std::string> getTileLayerBlob(MapPartitionKey const& k) override;
 
-    /** Upsert a TileLayer blob. */
-    void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
+    /** Upsert a PartitionLayer blob. */
+    void putTileLayerBlob(MapPartitionKey const& k, std::string const& v) override;
 
-    /** Remove a TileLayer blob. */
-    void eraseTileLayerBlob(MapTileKey const& k) override;
+    /** Remove a PartitionLayer blob. */
+    void eraseTileLayerBlob(MapPartitionKey const& k) override;
 
     /** Iterate over cached tile layer blobs. */
     void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;

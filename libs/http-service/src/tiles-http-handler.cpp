@@ -240,9 +240,9 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
             std::move(parsed.mapId),
             std::move(parsed.layerId),
-            detail::collectFilterTileIds(parsed),
+            detail::collectFilterPartitionIds(parsed),
             std::move(*parsed.filterRequest),
-            std::move(parsed.priorityTileIds));
+            std::move(parsed.priorityPartitionIds));
         request->sourceId_ = std::move(parsed.sourceId);
         request->exactRoots_ =
             std::move(parsed.exactRoots);
@@ -265,7 +265,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             std::move(parsed.mapId),
             std::move(parsed.layerId),
             std::move(parsed.tileIds),
-            std::move(parsed.priorityTileIds));
+            std::move(parsed.priorityPartitionIds));
         request->sourceId_ = std::move(parsed.sourceId);
         request->featureIdsByTile_ =
             std::move(parsed.featureIdsByTile);
@@ -364,14 +364,14 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
     }
 
     /** Serialize one backend tile/filter/source layer into the pending HTTP response buffer. */
-    void addResult(TileLayer::Ptr const& result)
+    void addResult(PartitionLayer::Ptr const& result)
     {
         {
             std::unique_lock lock(mutex_);
             if (!waitForPendingCapacityUnlocked(lock))
                 return;
 
-            log().debug("Response ready: {}", MapTileKey(*result).toString());
+            log().debug("Response ready: {}", MapPartitionKey(*result).toString());
             if (responseType_ == binaryMimeType) {
                 writer_->write(result);
             } else {
@@ -683,18 +683,15 @@ void HttpService::Impl::handleTilesLikeRequest(
 
     for (size_t i = 0; i < state->requests_.size(); ++i) {
         auto& request = state->requests_[i];
-        request->onFeatureLayer([state](TileFeatureLayer::Ptr layer) {
-            state->addResult(std::move(layer));
-        });
-        request->onSourceDataLayer([state](TileSourceDataLayer::Ptr layer) {
-            state->addResult(std::move(layer));
-        });
+        request->onFeatureLayer(
+            [state](PartitionFeatureLayer::Ptr layer) { state->addResult(std::move(layer)); });
+        request->onSourceDataLayer(
+            [state](PartitionSourceDataLayer::Ptr layer) { state->addResult(std::move(layer)); });
         request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
     }
     for (auto& request : state->filterRequests_) {
-        request->onFilterResult([state](TileSubsetLayer::Ptr layer) {
-            state->addResult(std::move(layer));
-        });
+        request->onFilterResult(
+            [state](PartitionSubsetLayer::Ptr layer) { state->addResult(std::move(layer)); });
         request->onStatus([state](nlohmann::json const& status) {
             state->addStatus(status);
         });

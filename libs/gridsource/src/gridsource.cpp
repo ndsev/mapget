@@ -862,7 +862,8 @@ std::shared_ptr<TileSpatialContext> GridDataSource::getOrCreateContext(TileId ti
     }
 }
 
-void GridDataSource::fill(TileFeatureLayer::Ptr const& tile) {
+void GridDataSource::fill(PartitionFeatureLayer::Ptr const& tile)
+{
     const std::string layerName = tile->layerInfo()->layerId_;
     mapget::log().debug(
         "GridDataSource::fill() called for layer '{}' tile {}",
@@ -930,12 +931,12 @@ std::vector<LocateCandidate> GridDataSource::locate(const LocateRequest& req) {
         return {};
     }
 
-    // Create the MapTileKey
-    MapTileKey mapTileKey;
+    // Create the MapPartitionKey
+    MapPartitionKey mapTileKey;
     mapTileKey.layer_ = LayerType::Features;
     mapTileKey.mapId_ = req.mapId_;
     mapTileKey.layerId_ = layerId;
-    mapTileKey.tileId_ = TileId::fromValue(static_cast<int32_t>(*tileId));
+    mapTileKey.partitionId_ = TileId::fromValue(static_cast<int32_t>(*tileId));
 
     mapget::log().debug("GridDataSource::locate() - Found feature '{}' in tile {} layer '{}'",
                        req.typeId_, *tileId, layerId);
@@ -947,9 +948,11 @@ std::vector<LocateCandidate> GridDataSource::locate(const LocateRequest& req) {
             req.featureId_))};
 }
 
-void GridDataSource::generateBuildings(TileSpatialContext& ctx,
-                                       const LayerConfig& config,
-                                       TileFeatureLayer::Ptr const& tile) {
+void GridDataSource::generateBuildings(
+    TileSpatialContext& ctx,
+    const LayerConfig& config,
+    PartitionFeatureLayer::Ptr const& tile)
+{
     // Lazily generate road grid first (ensures roads are always generated before buildings)
     generateRoadGrid(ctx, config, tile);
 
@@ -1095,9 +1098,11 @@ void GridDataSource::generateBuildings(TileSpatialContext& ctx,
                        totalBuildings, ctx.blocks.size());
 }
 
-void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
-                                      const LayerConfig& config,
-                                      TileFeatureLayer::Ptr const& tile) {
+void GridDataSource::generateRoadGrid(
+    TileSpatialContext& ctx,
+    const LayerConfig& config,
+    PartitionFeatureLayer::Ptr const& tile)
+{
     // Use std::call_once for thread-safe, exception-safe one-time initialization
     // This handles shutdown edge cases better than manual mutex + flag
     std::call_once(ctx.gridGeneratedOnce, [&]() {
@@ -1222,9 +1227,11 @@ void GridDataSource::generateRoadGrid(TileSpatialContext& ctx,
     });
 }
 
-void GridDataSource::generateRoads(TileSpatialContext& ctx,
-                                   const LayerConfig& config,
-                                   TileFeatureLayer::Ptr const& tile) {
+void GridDataSource::generateRoads(
+    TileSpatialContext& ctx,
+    const LayerConfig& config,
+    PartitionFeatureLayer::Ptr const& tile)
+{
     // Lazily generate road grid structure first
     generateRoadGrid(ctx, config, tile);
 
@@ -1277,9 +1284,11 @@ void GridDataSource::generateRoads(TileSpatialContext& ctx,
     }
 }
 
-void GridDataSource::generateTraffic(TileSpatialContext& ctx,
-                                     const LayerConfig& config,
-                                     TileFeatureLayer::Ptr const& tile) {
+void GridDataSource::generateTraffic(
+    TileSpatialContext& ctx,
+    const LayerConfig& config,
+    PartitionFeatureLayer::Ptr const& tile)
+{
     constexpr size_t maxTrafficFeatures = 10'000;
     const auto& traffic = *config.traffic;
 
@@ -1376,9 +1385,11 @@ void GridDataSource::generateTraffic(TileSpatialContext& ctx,
         tile->tileId().value());
 }
 
-void GridDataSource::generateIntersections(TileSpatialContext& ctx,
-                                          const LayerConfig& config,
-                                          TileFeatureLayer::Ptr const& tile) {
+void GridDataSource::generateIntersections(
+    TileSpatialContext& ctx,
+    const LayerConfig& config,
+    PartitionFeatureLayer::Ptr const& tile)
+{
     // Lazily generate road grid first (which creates intersections)
     generateRoadGrid(ctx, config, tile);
 

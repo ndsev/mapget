@@ -25,12 +25,12 @@ struct BoundModelNode
 
     virtual ModelNode::Ptr node() = 0;
 
-    TileFeatureModelLayerBase& featureModelLayer()
+    PartitionFeatureModelLayerBase& featureModelLayer()
     {
         struct GetTileFeatureModelLayer : public simfil::ModelNode {
             explicit GetTileFeatureModelLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
             auto operator()() {
-                return std::dynamic_pointer_cast<TileFeatureModelLayerBase>(
+                return std::dynamic_pointer_cast<PartitionFeatureModelLayerBase>(
                     std::const_pointer_cast<simfil::Model>(model_));
             }
         };
@@ -43,12 +43,12 @@ struct BoundModelNode
         throw pybind11::value_error("Node is NULL");
     }
 
-    TileFeatureLayer& featureLayer()
+    PartitionFeatureLayer& featureLayer()
     {
         struct GetTileFeatureLayer : public simfil::ModelNode {
             explicit GetTileFeatureLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
             auto operator()() {
-                return std::dynamic_pointer_cast<TileFeatureLayer>(
+                return std::dynamic_pointer_cast<PartitionFeatureLayer>(
                     std::const_pointer_cast<simfil::Model>(model_));
             }
         };
@@ -791,7 +791,7 @@ struct BoundFeature : public BoundModelNode
     static void bind(py::module_& m)
     {
         py::class_<BoundFeature, BoundModelNode>(m, "Feature", R"pbdoc(
-            Map feature root node in a `TileFeatureLayer`.
+            Map feature root node in a `PartitionFeatureLayer`.
 
             A feature has a structured id, geometry, arbitrary object
             attributes, named attribute layers, source-data references, and
@@ -825,7 +825,8 @@ struct BoundFeature : public BoundModelNode
                 "Access this feature's attribute layer collection.")
             .def(
                 "relations",
-                [](BoundFeature& self) {
+                [](BoundFeature& self)
+                {
                     py::list result;
                     self.modelNodePtr_->forEachRelation(
                         [&result](model_ptr<Relation> const& relation) {
@@ -841,10 +842,13 @@ struct BoundFeature : public BoundModelNode
                 "Get the number of relations attached to this feature.")
             .def(
                 "relation_at",
-                [](BoundFeature& self, int64_t i) {
+                [](BoundFeature& self, int64_t i)
+                {
                     auto sz = (int64_t)self.modelNodePtr_->numRelations();
-                    if (i < 0) i += sz;
-                    if (i < 0 || i >= sz) throw py::index_error();
+                    if (i < 0)
+                        i += sz;
+                    if (i < 0 || i >= sz)
+                        throw py::index_error();
                     return BoundRelation(self.modelNodePtr_->getRelation((uint32_t)i));
                 },
                 py::arg("index"),
@@ -859,9 +863,8 @@ struct BoundFeature : public BoundModelNode
                 "Create and attach a named relation to an existing target FeatureId.")
             .def(
                 "add_relation",
-                [](BoundFeature& self, BoundRelation const& relation) {
-                    return BoundRelation(self.modelNodePtr_->addRelation(relation.modelNodePtr_));
-                },
+                [](BoundFeature& self, BoundRelation const& relation)
+                { return BoundRelation(self.modelNodePtr_->addRelation(relation.modelNodePtr_)); },
                 py::arg("relation"),
                 "Attach an existing Relation object to this feature.")
             .def(
@@ -869,7 +872,8 @@ struct BoundFeature : public BoundModelNode
                 [](BoundFeature& self,
                    std::string_view const& name,
                    std::string_view const& targetType,
-                   KeyValuePairVec const& targetIdParts) {
+                   KeyValuePairVec const& targetIdParts)
+                {
                     return BoundRelation(self.modelNodePtr_->addRelation(
                         name,
                         targetType,
@@ -881,7 +885,8 @@ struct BoundFeature : public BoundModelNode
                 "Create and attach a named relation by target type and id parts.")
             .def(
                 "source_data_references",
-                [](BoundFeature& self) -> py::object {
+                [](BoundFeature& self) -> py::object
+                {
                     if (auto refs = self.modelNodePtr_->sourceDataReferences())
                         return py::cast(BoundSourceDataReferenceCollection(refs));
                     return py::none();
@@ -889,44 +894,37 @@ struct BoundFeature : public BoundModelNode
                 "Get source-data references attached to this feature.")
             .def(
                 "set_source_data_references",
-                [](BoundFeature& self, BoundSourceDataReferenceCollection const& refs) {
-                    self.modelNodePtr_->setSourceDataReferences(refs.modelNodePtr_);
-                },
+                [](BoundFeature& self, BoundSourceDataReferenceCollection const& refs)
+                { self.modelNodePtr_->setSourceDataReferences(refs.modelNodePtr_); },
                 py::arg("refs"),
                 "Attach source-data references to this feature.")
             .def(
                 "add_point",
-                [](BoundFeature& self, Point const& p) {
-                    self.modelNodePtr_->addPoint(p);
-                },
+                [](BoundFeature& self, Point const& p) { self.modelNodePtr_->addPoint(p); },
                 py::arg("p"),
                 "Add a point to the feature.")
             .def(
                 "add_points",
-                [](BoundFeature& self, std::vector<Point> const& points) {
-                    self.modelNodePtr_->addPoints(points);
-                },
+                [](BoundFeature& self, std::vector<Point> const& points)
+                { self.modelNodePtr_->addPoints(points); },
                 py::arg("points"),
                 "Add multiple points to the feature.")
             .def(
                 "add_line",
-                [](BoundFeature& self, std::vector<Point> const& points) {
-                    self.modelNodePtr_->addLine(points);
-                },
+                [](BoundFeature& self, std::vector<Point> const& points)
+                { self.modelNodePtr_->addLine(points); },
                 py::arg("points"),
                 "Add a line to the feature.")
             .def(
                 "add_mesh",
-                [](BoundFeature& self, std::vector<Point> const& points) {
-                    self.modelNodePtr_->addMesh(points);
-                },
+                [](BoundFeature& self, std::vector<Point> const& points)
+                { self.modelNodePtr_->addMesh(points); },
                 py::arg("points"),
                 "Add a mesh to the feature, len(points) must be multiple of three.")
             .def(
                 "add_poly",
-                [](BoundFeature& self, std::vector<Point> const& points) {
-                    self.modelNodePtr_->addPoly(points);
-                },
+                [](BoundFeature& self, std::vector<Point> const& points)
+                { self.modelNodePtr_->addPoly(points); },
                 py::arg("points"),
                 "Add a polygon to the feature.");
     }

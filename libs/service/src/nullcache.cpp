@@ -3,17 +3,17 @@
 namespace mapget
 {
 
-std::optional<std::string> NullCache::getTileLayerBlob(MapTileKey const& k)
+std::optional<std::string> NullCache::getTileLayerBlob(MapPartitionKey const& k)
 {
     return std::nullopt;
 }
 
-void NullCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
+void NullCache::putTileLayerBlob(MapPartitionKey const& k, std::string const& v)
 {
     // Do nothing - no caching
 }
 
-void NullCache::eraseTileLayerBlob(MapTileKey const& k)
+void NullCache::eraseTileLayerBlob(MapPartitionKey const& k)
 {
     // No cached tiles.
 }

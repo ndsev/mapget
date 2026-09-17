@@ -26,7 +26,7 @@ namespace
 using detail::FilterMemoryTracker;
 
 /** Map a point-grid cell center to the output tile that permanently owns it. */
-tl::expected<TileId, simfil::Error> pointGroupOwnerTile(
+tl::expected<PartitionId, simfil::Error> pointGroupOwnerTile(
     FeatureLayerPointGroupMember const& member,
     FeatureLayerFilterRequest const& request,
     int level)
@@ -140,7 +140,7 @@ void FilterRequestExecution::SourceTileContribution::addMemoryUsage(MemoryUsageB
 
 void FilterRequestExecution::OutputTileState::addMemoryUsage(MemoryUsageBreakdown& usage) const
 {
-    usage.add("output-source-ids", vectorMemoryUsage(sourceTileIds_));
+    usage.add("output-source-ids", vectorMemoryUsage(sourcePartitionIds_));
     usage.add("output-contributions", vectorMemoryUsage(contributions_));
     for (auto const& contribution : contributions_) {
         if (contribution) {
@@ -245,9 +245,9 @@ void FilterRequestExecution::PendingRelationOutput::addMemoryUsage(MemoryUsageBr
     usage.add(
         "relation-output-targets",
         {
-            (targetTiles_.size() + pendingTargetTiles_.size()) * sizeof(MapTileKey),
+            (targetTiles_.size() + pendingTargetTiles_.size()) * sizeof(MapPartitionKey),
             (targetTiles_.size() + pendingTargetTiles_.size()) *
-                (sizeof(MapTileKey) + 3 * sizeof(void*)),
+                (sizeof(MapPartitionKey) + 3 * sizeof(void*)),
         });
 }
 
@@ -287,15 +287,15 @@ void FilterRequestExecution::RelationTargetTileState::addMemoryUsage(MemoryUsage
         usage.add(
             "live-output-index",
             {
-                request->liveOutputTileIds_.size() * sizeof(TileId),
-                request->liveOutputTileIds_.size() * (sizeof(TileId) + 3 * sizeof(void*)),
+                request->liveOutputPartitionIds_.size() * sizeof(PartitionId),
+                request->liveOutputPartitionIds_.size() * (sizeof(PartitionId) + 3 * sizeof(void*)),
             });
     }
     usage.add(
         "priority-tile-index",
         {
-            request->priorityTileIds_.size() * sizeof(TileId),
-            request->priorityTileIds_.size() * (sizeof(TileId) + 3 * sizeof(void*)),
+            request->priorityPartitionIds_.size() * sizeof(PartitionId),
+            request->priorityPartitionIds_.size() * (sizeof(PartitionId) + 3 * sizeof(void*)),
         });
     usage.add("exact-roots", vectorMemoryUsage(request->exactRoots_));
     for (auto const& root : request->exactRoots_) {
@@ -345,7 +345,7 @@ void FilterRequestExecution::RelationTargetTileState::addMemoryUsage(MemoryUsage
         }
     }
     usage.add("simfil-expression-cache", expressionCache.memoryUsage());
-    usage.add("source-tile-ids", vectorMemoryUsage(sourceTileIds));
+    usage.add("source-tile-ids", vectorMemoryUsage(sourcePartitionIds));
     usage.add(
         "source-index",
         {
@@ -484,15 +484,15 @@ FilterRequestExecution::sourceResultAuxiliaryBytes(FeatureLayerFilterSourceResul
 }
 
 void FilterRequestExecution::configure(
-    std::vector<TileId> const& outputTileIds,
-    std::vector<TileId> processingTileIds)
+    std::vector<PartitionId> const& outputPartitionIds,
+    std::vector<PartitionId> processingPartitionIds)
 {
-    sourceTileIds = std::move(processingTileIds);
-    receivedSourceTiles.resize(sourceTileIds.size(), false);
-    committedSourceTiles.resize(sourceTileIds.size(), false);
-    dependentOutputsBySource.resize(sourceTileIds.size());
-    for (size_t index = 0; index < sourceTileIds.size(); ++index) {
-        sourceIndexByTile.emplace(sourceTileIds[index], index);
+    sourcePartitionIds = std::move(processingPartitionIds);
+    receivedSourceTiles.resize(sourcePartitionIds.size(), false);
+    committedSourceTiles.resize(sourcePartitionIds.size(), false);
+    dependentOutputsBySource.resize(sourcePartitionIds.size());
+    for (size_t index = 0; index < sourcePartitionIds.size(); ++index) {
+        sourceIndexByTile.emplace(sourcePartitionIds[index], index);
     }
     for (auto const& channel : request->filter_.channels_) {
         if (channel.group_) {
@@ -500,24 +500,25 @@ void FilterRequestExecution::configure(
         }
     }
 
-    outputs.reserve(outputTileIds.size());
-    for (size_t outputIndex = 0; outputIndex < outputTileIds.size(); ++outputIndex) {
-        auto const outputTileId = outputTileIds[outputIndex];
-        outputIndexByTile.emplace(outputTileId, outputIndex);
+    outputs.reserve(outputPartitionIds.size());
+    for (size_t outputIndex = 0; outputIndex < outputPartitionIds.size(); ++outputIndex) {
+        auto const outputPartitionId = outputPartitionIds[outputIndex];
+        outputIndexByTile.emplace(outputPartitionId, outputIndex);
 
         OutputTileState output;
-        output.tileId_ = outputTileId;
-        if (hasPointGroups) {
-            std::vector<std::pair<size_t, TileId>> dependenciesBySourceIndex;
+        output.partitionId_ = outputPartitionId;
+        if (hasPointGroups && outputPartitionId.kind() == PartitionKind::Tile) {
+            std::vector<std::pair<size_t, PartitionId>> dependenciesBySourceIndex;
             dependenciesBySourceIndex.reserve(9);
             for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
                 for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
-                    auto const sourceTileId = outputTileId.neighbour(offsetX, offsetY);
+                    auto const sourcePartitionId =
+                        outputPartitionId.tileId().neighbour(offsetX, offsetY);
                     // Sorting nine direct lookups by source index preserves
                     // processing order without scanning the complete source
                     // union once for every output.
                     dependenciesBySourceIndex
-                        .emplace_back(sourceIndexByTile.at(sourceTileId), sourceTileId);
+                        .emplace_back(sourceIndexByTile.at(sourcePartitionId), sourcePartitionId);
                 }
             }
             std::ranges::sort(
@@ -525,28 +526,28 @@ void FilterRequestExecution::configure(
                 {},
                 [](auto const& dependency) { return dependency.first; });
             std::optional<size_t> previousSourceIndex;
-            output.sourceTileIds_.reserve(dependenciesBySourceIndex.size());
-            for (auto const& [sourceIndex, sourceTileId] : dependenciesBySourceIndex) {
+            output.sourcePartitionIds_.reserve(dependenciesBySourceIndex.size());
+            for (auto const& [sourceIndex, sourcePartitionId] : dependenciesBySourceIndex) {
                 // Wrapped neighbours coincide at the lowest tile levels.
                 if (previousSourceIndex == sourceIndex) {
                     continue;
                 }
                 previousSourceIndex = sourceIndex;
-                output.sourceTileIds_.push_back(sourceTileId);
+                output.sourcePartitionIds_.push_back(sourcePartitionId);
             }
         }
         else {
-            output.sourceTileIds_.push_back(outputTileId);
+            output.sourcePartitionIds_.push_back(outputPartitionId);
         }
-        output.contributions_.resize(output.sourceTileIds_.size());
-        output.missingContributions_ = output.sourceTileIds_.size();
+        output.contributions_.resize(output.sourcePartitionIds_.size());
+        output.missingContributions_ = output.sourcePartitionIds_.size();
         outputs.push_back(std::move(output));
     }
 
     for (size_t outputIndex = 0; outputIndex < outputs.size(); ++outputIndex) {
         auto const& output = outputs[outputIndex];
-        for (size_t slotIndex = 0; slotIndex < output.sourceTileIds_.size(); ++slotIndex) {
-            dependentOutputsBySource.at(sourceIndexByTile.at(output.sourceTileIds_[slotIndex]))
+        for (size_t slotIndex = 0; slotIndex < output.sourcePartitionIds_.size(); ++slotIndex) {
+            dependentOutputsBySource.at(sourceIndexByTile.at(output.sourcePartitionIds_[slotIndex]))
                 .push_back({
                     outputIndex,
                     slotIndex,
@@ -581,8 +582,8 @@ bool FilterRequestExecution::sourceNeeded(size_t sourceIndex) const
 
 void FilterRequestExecution::releaseOutputDependenciesLocked(OutputTileState const& output)
 {
-    for (auto const& sourceTileId : output.sourceTileIds_) {
-        auto& count = liveDependentOutputsBySource[sourceIndexByTile.at(sourceTileId)];
+    for (auto const& sourcePartitionId : output.sourcePartitionIds_) {
+        auto& count = liveDependentOutputsBySource[sourceIndexByTile.at(sourcePartitionId)];
         auto const previous = count.load(std::memory_order_relaxed);
         if (previous == 0) {
             raise("Filter source dependency was released more than once.");
@@ -605,7 +606,7 @@ void FilterRequestExecution::releaseReadyOutput(ReadyOutput& output)
     std::lock_guard lock(mutex);
     auto status = makeFilterStatusJson(*request, std::move(state));
     status["outputTilesRequested"] = outputs.size() - prunedOutputTiles;
-    status["sourceTilesQueued"] = sourceTileIds.size();
+    status["sourceTilesQueued"] = sourcePartitionIds.size();
     status["sourceTilesLoaded"] = loadedSourceTiles;
     status["sourceTilesEvaluated"] = evaluatedSourceTiles;
     status["outputTilesReady"] = readyOutputTiles;
@@ -683,17 +684,18 @@ void FilterRequestExecution::cancel()
     abortChildRequests();
 }
 
-void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileIds)
+void FilterRequestExecution::retainOutputs(std::set<PartitionId> const& retainedPartitionIds)
 {
     if (request->isCancelled()) {
         return;
     }
-    auto const [hasLiveOutputs, membershipChanged] = request->retainOutputTileIds(retainedTileIds);
+    auto const [hasLiveOutputs, membershipChanged] =
+        request->retainOutputPartitionIds(retainedPartitionIds);
     if (!hasLiveOutputs || !membershipChanged) {
         return;
     }
 
-    std::set<TileId> retainedSourceTileIds;
+    std::set<PartitionId> retainedSourcePartitionIds;
     std::vector<LayerTilesRequest::Ptr> childrenToAbort;
     LayerTilesRequest::Ptr sourceRequestToPrune;
     bool detachSourceChild = false;
@@ -705,7 +707,7 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
 
         for (size_t outputIndex = 0; outputIndex < outputs.size(); ++outputIndex) {
             auto& output = outputs[outputIndex];
-            if (retainedTileIds.contains(output.tileId_) ||
+            if (retainedPartitionIds.contains(output.partitionId_) ||
                 output.state_ == OutputTileState::State::Emitted ||
                 output.state_ == OutputTileState::State::Pruned)
             {
@@ -725,7 +727,7 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
                 output.wipSubset_.reset();
                 output.wipSubsetBytes_ = 0;
             }
-            decltype(output.sourceTileIds_){}.swap(output.sourceTileIds_);
+            decltype(output.sourcePartitionIds_){}.swap(output.sourcePartitionIds_);
             decltype(output.contributions_){}.swap(output.contributions_);
 
             // Relation-finalization state owns the moved WIP model after the
@@ -760,12 +762,12 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
             target = relationTargetTiles.erase(target);
         }
 
-        for (size_t sourceIndex = 0; sourceIndex < sourceTileIds.size(); ++sourceIndex) {
+        for (size_t sourceIndex = 0; sourceIndex < sourcePartitionIds.size(); ++sourceIndex) {
             if (sourceNeeded(sourceIndex)) {
-                retainedSourceTileIds.insert(sourceTileIds[sourceIndex]);
+                retainedSourcePartitionIds.insert(sourcePartitionIds[sourceIndex]);
             }
         }
-        if (sourceRequest && !sourceRequest->isDone() && retainedSourceTileIds.empty()) {
+        if (sourceRequest && !sourceRequest->isDone() && retainedSourcePartitionIds.empty()) {
             // Every retained output already owns complete source contributions.
             // Remaining source callbacks are obsolete and must not turn their
             // deliberate abort into a parent request failure.
@@ -783,8 +785,8 @@ void FilterRequestExecution::retainOutputs(std::set<TileId> const& retainedTileI
         if (detachSourceChild) {
             impl->scheduler_.abortRequest(sourceRequestToPrune);
         }
-        else if (!retainedSourceTileIds.empty()) {
-            impl->scheduler_.retainRequestOutputs(sourceRequestToPrune, retainedSourceTileIds);
+        else if (!retainedSourcePartitionIds.empty()) {
+            impl->scheduler_.retainRequestOutputs(sourceRequestToPrune, retainedSourcePartitionIds);
         }
     }
     for (auto const& child : childrenToAbort) {
@@ -852,12 +854,12 @@ void FilterRequestExecution::fail(simfil::Error const& error)
     request->setStatus(RequestStatus::Aborted);
 }
 
-void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
+void FilterRequestExecution::collect(PartitionFeatureLayer::Ptr layer)
 {
     if (!layer || request->isCancelled()) {
         return;
     }
-    auto found = sourceIndexByTile.find(layer->tileId());
+    auto found = sourceIndexByTile.find(layer->partitionId());
     if (found == sourceIndexByTile.end()) {
         fail(simfil::Error{
             simfil::Error::InternalError,
@@ -914,7 +916,7 @@ void FilterRequestExecution::collect(TileFeatureLayer::Ptr layer)
 }
 
 tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
-    TileFeatureLayer const& source,
+    PartitionFeatureLayer const& source,
     FeatureLayerFilterSourceResult& result)
 {
     if (result.relationDescriptors_.size() > 100000) {
@@ -959,6 +961,11 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
             continue;
         }
 
+        // Object filtering is deliberately local; unresolved external references stay
+        // on the source feature, without initiating another partition load.
+        if (source.partitionId().kind() == PartitionKind::Object) {
+            continue;
+        }
         LocateRequest
             locateRequest(request->mapId_, descriptor.targetTypeId_, descriptor.targetFeatureId_);
         auto const locationKey = locateRequest.serialize().dump();
@@ -1033,10 +1040,10 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
                 descriptor.targetCandidates_,
                 &FeatureLayerRelationTargetCandidate::resolved_))
         {
-            std::map<std::pair<MapTileKey, std::string>, model_ptr<Feature>> uniqueMatches;
+            std::map<std::pair<MapPartitionKey, std::string>, model_ptr<Feature>> uniqueMatches;
             for (auto const& match : descriptor.targetMatches_) {
                 uniqueMatches.emplace(
-                    std::make_pair(MapTileKey(match->model()), match->id()->toString()),
+                    std::make_pair(MapPartitionKey(match->model()), match->id()->toString()),
                     match);
             }
             if (uniqueMatches.size() != 1) {
@@ -1065,13 +1072,15 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
 tl::expected<std::vector<FilterRequestExecution::ReadyOutput>, simfil::Error>
 FilterRequestExecution::commitSource(
     size_t sourceIndex,
-    TileFeatureLayer const& source,
+    PartitionFeatureLayer const& source,
     uint64_t outputModelBytes,
     FeatureLayerFilterSourceResult result)
 {
     std::map<size_t, std::vector<FeatureLayerPointGroupMember>> membersByOutput;
     for (auto&& member : result.pointGroupMembers_) {
-        auto owner = pointGroupOwnerTile(member, request->filter_, outputLevel);
+        auto owner = source.partitionId().kind() == PartitionKind::Object ?
+            tl::expected<PartitionId, simfil::Error>(source.partitionId()) :
+            pointGroupOwnerTile(member, request->filter_, outputLevel);
         if (!owner) {
             return tl::unexpected(owner.error());
         }
@@ -1105,7 +1114,7 @@ FilterRequestExecution::commitSource(
             });
         }
 
-        auto outputForSource = outputIndexByTile.find(source.tileId());
+        auto outputForSource = outputIndexByTile.find(source.partitionId());
         if (outputForSource != outputIndexByTile.end()) {
             auto& output = outputs[outputForSource->second];
             if (output.state_ == OutputTileState::State::Pending && !result.layer_) {
@@ -1134,7 +1143,7 @@ FilterRequestExecution::commitSource(
         }
 
         auto const dependency = TileSubsetDependency{
-            MapTileKey(source),
+            MapPartitionKey(source),
             result.sourceFeatureCount_,
         };
         for (auto const& dependent : dependentOutputsBySource[sourceIndex]) {
@@ -1152,7 +1161,7 @@ FilterRequestExecution::commitSource(
 
             std::vector<FilterIssue> issues;
             issues.reserve(result.issues_.size());
-            auto const isLocalOutput = output.tileId_ == source.tileId();
+            auto const isLocalOutput = output.partitionId_ == source.partitionId();
             for (auto const& issue : result.issues_) {
                 if (isLocalOutput || groupChannelIds.contains(issue.channelId_)) {
                     issues.push_back(issue);
@@ -1171,7 +1180,7 @@ FilterRequestExecution::commitSource(
                 source.ttl() && source.ttl()->count() > 0 ?
                     std::optional<SourceTileContribution::Lifetime>{
                         SourceTileContribution::Lifetime{
-                            MapTileKey(source),
+                            MapPartitionKey(source),
                             source.timestamp(),
                             *source.ttl(),
                         }} :
@@ -1205,7 +1214,7 @@ FilterRequestExecution::commitSource(
                 // A completed output receives no further source writes. Drop
                 // its fixed dependency storage instead of retaining every
                 // moved-from slot until the whole viewport has completed.
-                decltype(output.sourceTileIds_){}.swap(output.sourceTileIds_);
+                decltype(output.sourcePartitionIds_){}.swap(output.sourcePartitionIds_);
                 decltype(output.contributions_){}.swap(output.contributions_);
                 ready.push_back(std::move(item));
             }
@@ -1220,8 +1229,8 @@ FilterRequestExecution::commitSource(
 
 tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContribution(
     ReadyOutput& output,
-    MapTileKey const& targetKey,
-    TileFeatureLayer const& targetLayer)
+    MapPartitionKey const& targetKey,
+    PartitionFeatureLayer const& targetLayer)
 {
     if (targetLayer.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
         return tl::unexpected(simfil::Error{
@@ -1290,10 +1299,10 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
 {
     using SelectorConsumer =
         std::tuple<FeatureLayerRelationTargetCandidate*, FeatureLayerRelationDescriptor*, size_t>;
-    using TargetBatch =
-        std::tuple<TileFeatureLayer::Ptr, std::optional<std::string>, std::vector<ReadyOutput*>>;
+    using TargetBatch = std::
+        tuple<PartitionFeatureLayer::Ptr, std::optional<std::string>, std::vector<ReadyOutput*>>;
 
-    std::map<MapTileKey, TargetBatch> targetBatches;
+    std::map<MapPartitionKey, TargetBatch> targetBatches;
     for (auto output = ready.begin(); output != ready.end();) {
         if (!outputLive(output->ready_.outputIndex_)) {
             releaseReadyOutput(output->ready_);
@@ -1471,7 +1480,7 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
 
 void FilterRequestExecution::markRelationTargetUnavailableInOutput(
     ReadyOutput& output,
-    MapTileKey const& targetKey,
+    MapPartitionKey const& targetKey,
     std::string const& failureMessage)
 {
     std::map<std::string, uint64_t> affectedByChannel;
@@ -1513,7 +1522,7 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
 {
     std::vector<ReadyOutput> ready;
     std::vector<RelationReadyOutput> relationReady;
-    std::vector<MapTileKey> targetsToSchedule;
+    std::vector<MapPartitionKey> targetsToSchedule;
     {
         std::lock_guard lock(mutex);
         if (terminal || request->isCancelled()) {
@@ -1530,7 +1539,7 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
                 releaseReadyOutput(output);
                 continue;
             }
-            std::set<MapTileKey> targetKeys;
+            std::set<MapPartitionKey> targetKeys;
             for (auto const& contribution : output.contributions_) {
                 for (auto const& descriptor : contribution.relationDescriptors_) {
                     if (descriptor.target_) {
@@ -1550,7 +1559,7 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
                 continue;
             }
 
-            std::set<MapTileKey> pendingKeys;
+            std::set<MapPartitionKey> pendingKeys;
             for (auto const& targetKey : targetKeys) {
                 auto [targetState, inserted] = relationTargetTiles.try_emplace(targetKey);
                 if (inserted && relationTargetTiles.size() > 2048) {
@@ -1611,7 +1620,7 @@ FilterRequestExecution::prepareRelationOutputs(std::vector<ReadyOutput> fixedRea
     return ready;
 }
 
-void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
+void FilterRequestExecution::scheduleRelationTarget(MapPartitionKey const& targetKey)
 {
     {
         std::lock_guard lock(mutex);
@@ -1624,11 +1633,11 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
     auto child = std::make_shared<LayerTilesRequest>(
         targetKey.mapId_,
         targetKey.layerId_,
-        std::vector<TileId>{targetKey.tileId_});
+        std::vector<PartitionId>{targetKey.partitionId_});
     child->sourceId_ = request->sourceId_;
     child->setWorkAdmissionGate(request->workAdmissionGate_);
     auto self = shared_from_this();
-    child->onFeatureLayer([self, targetKey](TileFeatureLayer::Ptr layer)
+    child->onFeatureLayer([self, targetKey](PartitionFeatureLayer::Ptr layer)
                           { self->collectRelationTarget(targetKey, std::move(layer)); });
     child->onDone_ = [self, targetKey](RequestStatus status)
     {
@@ -1692,7 +1701,7 @@ void FilterRequestExecution::scheduleRelationTarget(MapTileKey const& targetKey)
 }
 
 void FilterRequestExecution::completeUnavailableRelationTarget(
-    MapTileKey const& targetKey,
+    MapPartitionKey const& targetKey,
     std::string message)
 {
     if (request->isCancelled()) {
@@ -1745,8 +1754,8 @@ void FilterRequestExecution::completeUnavailableRelationTarget(
 }
 
 void FilterRequestExecution::collectRelationTarget(
-    MapTileKey const& targetKey,
-    TileFeatureLayer::Ptr layer)
+    MapPartitionKey const& targetKey,
+    PartitionFeatureLayer::Ptr layer)
 {
     if (request->isCancelled()) {
         return;
@@ -1840,10 +1849,10 @@ tl::expected<void, simfil::Error> FilterRequestExecution::resolveStoredRelationD
             });
         }
 
-        std::map<std::pair<MapTileKey, std::string>, model_ptr<Feature>> uniqueMatches;
+        std::map<std::pair<MapPartitionKey, std::string>, model_ptr<Feature>> uniqueMatches;
         for (auto const& match : descriptor.targetMatches_) {
             uniqueMatches.emplace(
-                std::make_pair(MapTileKey(match->model()), match->id()->toString()),
+                std::make_pair(MapPartitionKey(match->model()), match->id()->toString()),
                 match);
         }
         if (uniqueMatches.size() == 1) {
@@ -1882,9 +1891,9 @@ tl::expected<void, simfil::Error> FilterRequestExecution::resolveStoredRelationD
     return {};
 }
 
-std::vector<MapTileKey> FilterRequestExecution::liveOutputKeys()
+std::vector<MapPartitionKey> FilterRequestExecution::liveOutputKeys()
 {
-    std::vector<MapTileKey> result;
+    std::vector<MapPartitionKey> result;
     std::lock_guard lock(mutex);
     result.reserve(outputs.size() - prunedOutputTiles);
     for (auto const& output : outputs) {
@@ -1895,7 +1904,7 @@ std::vector<MapTileKey> FilterRequestExecution::liveOutputKeys()
                 LayerType::Features,
                 request->mapId_,
                 request->layerId_,
-                output.tileId_);
+                output.partitionId_);
         }
     }
     return result;
@@ -2098,7 +2107,7 @@ bool FilterRequestExecution::emitCompletedOutputs(std::vector<ReadyOutput> ready
 void FilterRequestExecution::evaluate(
     size_t sourceIndex,
     uint64_t sourceBytes,
-    TileFeatureLayer::Ptr source)
+    PartitionFeatureLayer::Ptr source)
 {
     bool evaluationActive = true;
     uint64_t trackedOutputModelBytes = 0;
@@ -2154,7 +2163,7 @@ void FilterRequestExecution::evaluate(
         {
             std::lock_guard lock(mutex);
             sourceStillNeeded = !terminal && sourceNeeded(sourceIndex);
-            if (auto output = outputIndexByTile.find(source->tileId());
+            if (auto output = outputIndexByTile.find(source->partitionId());
                 output != outputIndexByTile.end()) {
                 materializeOutput = outputs[output->second].state_ ==
                     OutputTileState::State::Pending;
@@ -2250,28 +2259,28 @@ void FilterRequestExecution::evaluate(
         releaseTemporary();
         releaseUntransferredOutputModel();
         finishEvaluation();
-        auto const sourceTileId = source ? source->tileId() : TileId{};
+        auto const sourcePartitionId = source ? source->partitionId() : PartitionId{};
         fail(simfil::Error{
             simfil::Error::InternalError,
             fmt::format(
-                "Filter evaluation failed for {}::{} tile {:x}: {}",
+                "Filter evaluation failed for {}::{} partition {}: {}",
                 request->mapId_,
                 request->layerId_,
-                sourceTileId.value(),
+                sourcePartitionId.toString(),
                 exception.what())});
     }
     catch (...) {
         releaseTemporary();
         releaseUntransferredOutputModel();
         finishEvaluation();
-        auto const sourceTileId = source ? source->tileId() : TileId{};
+        auto const sourcePartitionId = source ? source->partitionId() : PartitionId{};
         fail(simfil::Error{
             simfil::Error::InternalError,
             fmt::format(
-                "Filter evaluation failed for {}::{} tile {:x}: non-standard exception",
+                "Filter evaluation failed for {}::{} partition {}: non-standard exception",
                 request->mapId_,
                 request->layerId_,
-                sourceTileId.value())});
+                sourcePartitionId.toString())});
     }
 }
 
@@ -2307,7 +2316,7 @@ void FilterRequestExecution::childFinished(RequestStatus status)
 FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
     std::string mapId,
     std::string layerId,
-    std::vector<TileId> tiles,
+    std::vector<PartitionId> tiles,
     FeatureLayerFilterRequest filter)
     : FeatureLayerFilterTilesRequest(
           std::move(mapId),
@@ -2321,27 +2330,27 @@ FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
 FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
     std::string mapId,
     std::string layerId,
-    std::vector<TileId> tiles,
+    std::vector<PartitionId> tiles,
     FeatureLayerFilterRequest filter,
-    std::vector<TileId> const& priorityTileIds)
+    std::vector<PartitionId> const& priorityPartitionIds)
     : mapId_(std::move(mapId)),
       layerId_(std::move(layerId)),
       tileIds_(std::move(tiles)),
-      priorityTileIds_({priorityTileIds.begin(), priorityTileIds.end()}),
+      priorityPartitionIds_({priorityPartitionIds.begin(), priorityPartitionIds.end()}),
       filter_(std::move(filter))
 {
-    std::set<TileId> seenTileIds;
-    std::vector<TileId> uniqueTileIds;
-    uniqueTileIds.reserve(tileIds_.size());
+    std::set<PartitionId> seenPartitionIds;
+    std::vector<PartitionId> uniquePartitionIds;
+    uniquePartitionIds.reserve(tileIds_.size());
     for (auto const& tileId : tileIds_) {
-        if (seenTileIds.insert(tileId).second) {
-            uniqueTileIds.push_back(tileId);
+        if (seenPartitionIds.insert(tileId).second) {
+            uniquePartitionIds.push_back(tileId);
         }
     }
-    tileIds_.swap(uniqueTileIds);
-    liveOutputTileIds_.insert(tileIds_.begin(), tileIds_.end());
-    for (auto const& priorityTileId : priorityTileIds_) {
-        if (!seenTileIds.contains(priorityTileId)) {
+    tileIds_.swap(uniquePartitionIds);
+    liveOutputPartitionIds_.insert(tileIds_.begin(), tileIds_.end());
+    for (auto const& priorityPartitionId : priorityPartitionIds_) {
+        if (!seenPartitionIds.contains(priorityPartitionId)) {
             raise("Priority tile IDs must be contained in the request tile IDs.");
         }
     }
@@ -2351,23 +2360,23 @@ FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest(
 }
 
 std::pair<bool, bool>
-FeatureLayerFilterTilesRequest::retainOutputTileIds(std::set<TileId> const& retained)
+FeatureLayerFilterTilesRequest::retainOutputPartitionIds(std::set<PartitionId> const& retained)
 {
     std::lock_guard lock(outputMembershipMutex_);
-    auto const previousSize = liveOutputTileIds_.size();
+    auto const previousSize = liveOutputPartitionIds_.size();
     std::erase_if(
-        liveOutputTileIds_,
-        [&](TileId const& tileId) { return !retained.contains(tileId); });
+        liveOutputPartitionIds_,
+        [&](PartitionId const& tileId) { return !retained.contains(tileId); });
     return {
-        !liveOutputTileIds_.empty(),
-        liveOutputTileIds_.size() != previousSize,
+        !liveOutputPartitionIds_.empty(),
+        liveOutputPartitionIds_.size() != previousSize,
     };
 }
 
-bool FeatureLayerFilterTilesRequest::acceptsOutputTile(TileId tileId) const
+bool FeatureLayerFilterTilesRequest::acceptsOutputTile(PartitionId tileId) const
 {
     std::lock_guard lock(outputMembershipMutex_);
-    return liveOutputTileIds_.contains(tileId);
+    return liveOutputPartitionIds_.contains(tileId);
 }
 
 RequestStatus FeatureLayerFilterTilesRequest::getStatus()
@@ -2400,9 +2409,9 @@ void FeatureLayerFilterTilesRequest::wait()
     }
 }
 
-void FeatureLayerFilterTilesRequest::notifyResult(TileSubsetLayer::Ptr result)
+void FeatureLayerFilterTilesRequest::notifyResult(PartitionSubsetLayer::Ptr result)
 {
-    if (!result || cancelled_ || isDone() || !acceptsOutputTile(result->tileId())) {
+    if (!result || cancelled_ || isDone() || !acceptsOutputTile(result->partitionId())) {
         return;
     }
     if (onFilterResult_) {
@@ -2475,10 +2484,10 @@ tl::expected<void, simfil::Error> detail::FilterRequestExecution::prepareExactRo
     }
 
     auto const requestedOutputs =
-        std::set<TileId>(request->tileIds_.begin(), request->tileIds_.end());
+        std::set<PartitionId>(request->tileIds_.begin(), request->tileIds_.end());
     if (std::ranges::any_of(
             request->exactRoots_,
-            [&](auto const& root) { return !requestedOutputs.contains(root.tileId_); }))
+            [&](auto const& root) { return !requestedOutputs.contains(root.partitionId_); }))
     {
         return tl::unexpected(simfil::Error{
             simfil::Error::InvalidArguments,
@@ -2488,25 +2497,28 @@ tl::expected<void, simfil::Error> detail::FilterRequestExecution::prepareExactRo
     return {};
 }
 
-tl::expected<std::vector<TileId>, simfil::Error> detail::FilterRequestExecution::processingTileIds(
+tl::expected<std::vector<PartitionId>, simfil::Error>
+detail::FilterRequestExecution::processingPartitionIds(
     FeatureLayerFilterTilesRequest const& request,
     bool hasPointGroups,
-    std::set<TileId>& prioritySourceMembership)
+    std::set<PartitionId>& prioritySourceMembership)
 {
-    if (!hasPointGroups) {
+    if (!hasPointGroups ||
+        (!request.tileIds_.empty() && request.tileIds_.front().kind() == PartitionKind::Object))
+    {
         return request.tileIds_;
     }
 
-    auto const level = request.tileIds_.front().level();
+    auto const level = request.tileIds_.front().tileId().level();
     for (auto const& tileId : request.tileIds_) {
-        if (!tileId.isValid() || tileId.level() != level) {
+        if (!tileId.tileId().isValid() || tileId.tileId().level() != level) {
             return tl::unexpected(simfil::Error{
                 simfil::Error::InvalidArguments,
                 "Point-grid outputs must be valid tiles at one common level.",
             });
         }
     }
-    auto const [tileWidth, tileHeight] = request.tileIds_.front().wgs84Size();
+    auto const [tileWidth, tileHeight] = request.tileIds_.front().tileId().wgs84Size();
     for (auto const& channel : request.filter_.channels_) {
         if (!channel.group_) {
             continue;
@@ -2525,31 +2537,32 @@ tl::expected<std::vector<TileId>, simfil::Error> detail::FilterRequestExecution:
         }
     }
 
-    std::set<TileId> sourceTileMembership;
-    std::vector<TileId> result;
+    std::set<PartitionId> sourceTileMembership;
+    std::vector<PartitionId> result;
     result.reserve(request.tileIds_.size());
 
     // Traverse outputs in caller order and insert every source at its first
     // point of need. Appending all halo sources after all outputs retains a
     // viewport-sized set of mutable subsets while sparse dependencies wait.
-    for (auto const& outputTileId : request.tileIds_) {
-        if (sourceTileMembership.insert(outputTileId).second) {
-            result.push_back(outputTileId);
+    for (auto const& outputPartitionId : request.tileIds_) {
+        if (sourceTileMembership.insert(outputPartitionId).second) {
+            result.push_back(outputPartitionId);
         }
-        auto const priorityOutput = request.priorityTileIds_.contains(outputTileId);
+        auto const priorityOutput = request.priorityPartitionIds_.contains(outputPartitionId);
         for (int32_t offsetY = -1; offsetY <= 1; ++offsetY) {
             for (int32_t offsetX = -1; offsetX <= 1; ++offsetX) {
                 if (offsetX == 0 && offsetY == 0) {
                     continue;
                 }
-                auto const sourceTileId = outputTileId.neighbour(offsetX, offsetY);
+                auto const sourcePartitionId =
+                    outputPartitionId.tileId().neighbour(offsetX, offsetY);
                 if (priorityOutput) {
                     // A prioritized output needs its complete halo, so those
                     // dependencies inherit the same scheduling priority.
-                    prioritySourceMembership.insert(sourceTileId);
+                    prioritySourceMembership.insert(sourcePartitionId);
                 }
-                if (sourceTileMembership.insert(sourceTileId).second) {
-                    result.push_back(sourceTileId);
+                if (sourceTileMembership.insert(sourcePartitionId).second) {
+                    result.push_back(sourcePartitionId);
                 }
             }
         }
@@ -2602,6 +2615,10 @@ bool detail::FilterRequestExecution::start(
         return false;
     }
 
+    if (std::ranges::any_of(
+            request->tileIds_,
+            [&](auto const& id) { return id.kind() != context.partitionKind_; }))
+        return rejectStart(request, "Requested partition kind does not match layer metadata.");
     auto const hasPointGroups = std::ranges::any_of(
         request->filter_.channels_,
         [](auto const& channel) { return channel.group_.has_value(); });
@@ -2613,24 +2630,25 @@ bool detail::FilterRequestExecution::start(
         return rejectStart(request, exactRootsPrepared.error().message);
     }
 
-    auto prioritySourceMembership = request->priorityTileIds_;
-    auto tileIdsToProcess = processingTileIds(*request, hasPointGroups, prioritySourceMembership);
+    auto prioritySourceMembership = request->priorityPartitionIds_;
+    auto tileIdsToProcess =
+        processingPartitionIds(*request, hasPointGroups, prioritySourceMembership);
     if (!tileIdsToProcess) {
         return rejectStart(request, tileIdsToProcess.error().message);
     }
 
-    std::vector<TileId> prioritySourceTileIds;
-    prioritySourceTileIds.reserve(prioritySourceMembership.size());
+    std::vector<PartitionId> prioritySourcePartitionIds;
+    prioritySourcePartitionIds.reserve(prioritySourceMembership.size());
     std::ranges::copy_if(
         *tileIdsToProcess,
-        std::back_inserter(prioritySourceTileIds),
+        std::back_inserter(prioritySourcePartitionIds),
         [&](auto const& tileId) { return prioritySourceMembership.contains(tileId); });
 
     auto childRequest = std::make_shared<LayerTilesRequest>(
         request->mapId_,
         request->layerId_,
         *tileIdsToProcess,
-        prioritySourceTileIds);
+        prioritySourcePartitionIds);
     childRequest->sourceId_ = request->sourceId_;
     childRequest->setWorkAdmissionGate(request->workAdmissionGate_);
     {
@@ -2647,7 +2665,9 @@ bool detail::FilterRequestExecution::start(
     state->clientHeaders = clientHeaders;
     state->hasPointGroups = hasPointGroups;
     state->hasStoredRelations = hasStoredRelations;
-    state->outputLevel = request->tileIds_.front().level();
+    state->outputLevel = request->tileIds_.front().kind() == PartitionKind::Tile ?
+        request->tileIds_.front().tileId().level() :
+        0;
     state->sourceRequest = childRequest;
     state->memory = std::make_shared<FilterMemoryTracker>();
     state->memory->mapId = request->mapId_;
@@ -2679,7 +2699,7 @@ bool detail::FilterRequestExecution::start(
     service.scheduler_.addFilterMemoryTracker(state->memory);
 
     childRequest->onFeatureLayer(
-        [state](TileFeatureLayer::Ptr layer) { state->collect(std::move(layer)); });
+        [state](PartitionFeatureLayer::Ptr layer) { state->collect(std::move(layer)); });
     childRequest->onDone_ = [state](RequestStatus status)
     {
         state->childFinished(status);

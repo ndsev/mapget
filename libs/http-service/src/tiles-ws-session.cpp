@@ -101,17 +101,14 @@ constexpr int64_t LOWEST_TILE_PRIORITY = std::numeric_limits<int64_t>::max();
 constexpr bool EMIT_LOAD_STATE_FRAMES = false;
 
 /** Preserve caller order while restricting scheduling hints to retained work. */
-std::vector<TileId> prioritiesWithin(
-    std::vector<TileId> const& tileIds,
-    std::vector<TileId> const& priorityTileIds)
+std::vector<PartitionId> prioritiesWithin(
+    std::vector<PartitionId> const& tileIds,
+    std::vector<PartitionId> const& priorityPartitionIds)
 {
-    std::set<TileId> const membership(
-        tileIds.begin(),
-        tileIds.end());
-    std::vector<TileId> result;
-    result.reserve(
-        std::min(tileIds.size(), priorityTileIds.size()));
-    for (auto const& tileId : priorityTileIds) {
+    std::set<PartitionId> const membership(tileIds.begin(), tileIds.end());
+    std::vector<PartitionId> result;
+    result.reserve(std::min(tileIds.size(), priorityPartitionIds.size()));
+    for (auto const& tileId : priorityPartitionIds) {
         if (membership.contains(tileId)) {
             result.push_back(tileId);
         }
@@ -121,9 +118,9 @@ std::vector<TileId> prioritiesWithin(
 
 [[nodiscard]] bool isTileDataMessage(TileLayerStream::MessageType type)
 {
-    return type == TileLayerStream::MessageType::TileFeatureLayer
-        || type == TileLayerStream::MessageType::TileSourceDataLayer
-        || type == TileLayerStream::MessageType::TileSubsetLayer;
+    return type == TileLayerStream::MessageType::PartitionFeatureLayer ||
+        type == TileLayerStream::MessageType::PartitionSourceDataLayer ||
+        type == TileLayerStream::MessageType::PartitionSubsetLayer;
 }
 
 /** Clamp an atomic metric value to zero to avoid exposing negative snapshots. */
@@ -560,8 +557,8 @@ public:
         }
 
         std::vector<SnapshotRequest> snapshotRequests;
-        std::set<MapTileKey> nextPendingTileKeys;
-        std::map<MapTileKey, int64_t> nextTilePriorityRanks;
+        std::set<MapPartitionKey> nextPendingTileKeys;
+        std::map<MapPartitionKey, int64_t> nextTilePriorityRanks;
         FilterRegistrationState filterRegistrations;
         try {
             snapshotRequests.reserve(requestsIt->size());
@@ -603,11 +600,11 @@ public:
 
         using RetainedLayerOutputs = std::map<
             LayerTilesRequest::Ptr,
-            std::set<TileId>,
+            std::set<PartitionId>,
             std::owner_less<LayerTilesRequest::Ptr>>;
         using RetainedFilterOutputs = std::map<
             FeatureLayerFilterTilesRequest::Ptr,
-            std::set<TileId>,
+            std::set<PartitionId>,
             std::owner_less<FeatureLayerFilterTilesRequest::Ptr>>;
         RetainedLayerOutputs retainedLayerOutputs;
         RetainedFilterOutputs retainedFilterOutputs;
@@ -641,7 +638,7 @@ public:
 
             for (auto owner = activeTileOwners_.begin(); owner != activeTileOwners_.end();) {
                 if (pendingTileKeys_.contains(owner->first)) {
-                    retainedLayerOutputs[owner->second].insert(owner->first.tileId_);
+                    retainedLayerOutputs[owner->second].insert(owner->first.partitionId_);
                     gTilesWsMetrics.retainedOutputs.fetch_add(1, std::memory_order_relaxed);
                     ++owner;
                 }
@@ -652,7 +649,7 @@ public:
             }
             for (auto owner = activeFilterOwners_.begin(); owner != activeFilterOwners_.end();) {
                 if (pendingTileKeys_.contains(owner->first)) {
-                    retainedFilterOutputs[owner->second].insert(owner->first.tileId_);
+                    retainedFilterOutputs[owner->second].insert(owner->first.partitionId_);
                     gTilesWsMetrics.retainedOutputs.fetch_add(1, std::memory_order_relaxed);
                     ++owner;
                 }
@@ -705,7 +702,7 @@ public:
                     continue;
                 }
 
-                std::vector<TileId> additions;
+                std::vector<PartitionId> additions;
                 additions.reserve(snapshot.pendingKeys.size());
                 for (auto const& key : snapshot.pendingKeys) {
                     if (activeTileOwners_.contains(key) || activeFilterOwners_.contains(key)) {
@@ -728,7 +725,7 @@ public:
                     }
                     // requestedTileKeys() has already removed duplicate IDs
                     // within this logical request.
-                    additions.push_back(key.tileId_);
+                    additions.push_back(key.partitionId_);
                 }
                 if (additions.empty()) {
                     continue;
@@ -834,8 +831,8 @@ private:
         std::string layerId;
         std::optional<std::string> sourceId;
         FeatureLayerFilterRequest definition;
-        std::map<TileId, std::vector<FeatureLayerFilterRoot>> rootsByTile;
-        std::set<TileId> pendingTileIds;
+        std::map<PartitionId, std::vector<FeatureLayerFilterRoot>> rootsByTile;
+        std::set<PartitionId> pendingPartitionIds;
     };
     using FilterRegistrationState =
         std::map<std::string, FilterRegistration>;
@@ -845,7 +842,7 @@ private:
     {
         detail::ParsedLayerTilesRequest request;
         LayerRequestContext context;
-        std::vector<MapTileKey> pendingKeys;
+        std::vector<MapPartitionKey> pendingKeys;
     };
 
     /** Lightweight metadata emitted in status payloads for each logical request. */
@@ -855,7 +852,7 @@ private:
         std::string layerId;
         NoDataSourceReason noDataSourceReason = NoDataSourceReason::None;
         RequestStatus admissionStatus = RequestStatus::Success;
-        std::vector<MapTileKey> pendingKeys;
+        std::vector<MapPartitionKey> pendingKeys;
     };
 
     /** Short-lived suppression after bytes leave the bounded payload queue. */
@@ -886,7 +883,7 @@ private:
         std::string bytes;
         TileLayerStream::MessageType type{TileLayerStream::MessageType::None};
         std::optional<std::pair<std::string, simfil::StringId>> stringPoolCommit;
-        std::optional<MapTileKey> requestedTileKey;
+        std::optional<MapPartitionKey> requestedTileKey;
         std::optional<std::chrono::system_clock::time_point> handoffExpiry;
         int64_t priorityRank = LOWEST_TILE_PRIORITY;
         uint64_t trackedCapacityBytes = 0;
@@ -919,9 +916,8 @@ private:
         FeatureLayerFilterRoot const& lhs,
         FeatureLayerFilterRoot const& rhs)
     {
-        return lhs.tileId_ == rhs.tileId_ && lhs.typeId_ == rhs.typeId_ &&
-            lhs.featureId_ == rhs.featureId_ &&
-            lhs.canonicalFeatureId_ == rhs.canonicalFeatureId_;
+        return lhs.partitionId_ == rhs.partitionId_ && lhs.typeId_ == rhs.typeId_ &&
+            lhs.featureId_ == rhs.featureId_ && lhs.canonicalFeatureId_ == rhs.canonicalFeatureId_;
     }
 
     /** Compare the ordered exact-root set affecting one output tile. */
@@ -945,15 +941,15 @@ private:
     }
 
     /** Return whether one registered filtered output still has transient ownership. */
-    [[nodiscard]] bool ownsRegisteredFilterOutputLocked(
-        FilterRegistration const& registration,
-        TileId tileId) const
+    [[nodiscard]] bool
+    ownsRegisteredFilterOutputLocked(FilterRegistration const& registration, PartitionId tileId)
+        const
     {
         auto const filterKey = detail::filterRequestKey(
             registration.definition.filterId_,
             registration.definition.generation_);
         auto const key = makeFilterRequestedTileKey(
-            MapTileKey(
+            MapPartitionKey(
                 REQUEST_TILE_LAYER_TYPE,
                 registration.mapId,
                 registration.layerId,
@@ -978,13 +974,13 @@ private:
                 continue;
             }
             auto const firstOverlap = std::ranges::find_if(
-                next.pendingTileIds,
-                [&](TileId tileId)
+                next.pendingPartitionIds,
+                [&](PartitionId tileId)
                 {
-                    return previous->second.pendingTileIds.contains(tileId) &&
+                    return previous->second.pendingPartitionIds.contains(tileId) &&
                         ownsRegisteredFilterOutputLocked(previous->second, tileId);
                 });
-            if (firstOverlap == next.pendingTileIds.end()) {
+            if (firstOverlap == next.pendingPartitionIds.end()) {
                 continue;
             }
             if (!sameFilterDefinition(previous->second, next)) {
@@ -993,8 +989,8 @@ private:
                     subscriptionKey,
                     firstOverlap->value());
             }
-            for (auto const& tileId : next.pendingTileIds) {
-                if (!previous->second.pendingTileIds.contains(tileId) ||
+            for (auto const& tileId : next.pendingPartitionIds) {
+                if (!previous->second.pendingPartitionIds.contains(tileId) ||
                     !ownsRegisteredFilterOutputLocked(previous->second, tileId))
                 {
                     continue;
@@ -1010,9 +1006,10 @@ private:
                     : nextRoots->second;
                 if (!sameFilterRoots(previousValues, nextValues)) {
                     return fmt::format(
-                        "filter subscription {} changed while tile {} remained pending; advance generation",
+                        "filter subscription {} changed while tile {} remained pending; advance "
+                        "generation",
                         subscriptionKey,
-                        tileId.value());
+                        tileId.toString());
                 }
             }
         }
@@ -1051,11 +1048,11 @@ private:
                     "one filter subscription generation must use one map, layer, source, and definition");
             }
         }
-        std::map<TileId, std::vector<FeatureLayerFilterRoot>> requestRoots;
+        std::map<PartitionId, std::vector<FeatureLayerFilterRoot>> requestRoots;
         for (auto const& root : request.exactRoots) {
-            requestRoots[root.tileId_].push_back(root);
+            requestRoots[root.partitionId_].push_back(root);
         }
-        for (auto const& tileId : collectFilterTileIds(request)) {
+        for (auto const& tileId : collectFilterPartitionIds(request)) {
             auto roots = requestRoots.find(tileId);
             auto const emptyRoots = std::vector<FeatureLayerFilterRoot>{};
             auto const& values = roots == requestRoots.end() ? emptyRoots : roots->second;
@@ -1065,34 +1062,29 @@ private:
                 throw std::runtime_error(
                     "one filter subscription generation must use one exact-root set per output tile");
             }
-            registration->second.pendingTileIds.insert(tileId);
+            registration->second.pendingPartitionIds.insert(tileId);
         }
     }
 
     /** Build the canonical output identity for one filtered tile. */
-    [[nodiscard]] MapTileKey filterRequestedTileKey(
-        detail::ParsedLayerTilesRequest const& request,
-        TileId tileId) const
+    [[nodiscard]] MapPartitionKey
+    filterRequestedTileKey(detail::ParsedLayerTilesRequest const& request, PartitionId tileId) const
     {
         auto const filterKey = detail::filterRequestKey(
             request.filterRequest->filterId_,
             request.filterRequest->generation_);
         return makeRequestedTileKey(
-            MapTileKey(
-                REQUEST_TILE_LAYER_TYPE,
-                request.mapId,
-                request.layerId,
-                tileId),
+            MapPartitionKey(REQUEST_TILE_LAYER_TYPE, request.mapId, request.layerId, tileId),
             std::optional<std::string_view>(filterKey));
     }
 
     /** Expand one parsed request into the output keys owned by the transport. */
-    [[nodiscard]] std::vector<MapTileKey> requestedTileKeys(
-        detail::ParsedLayerTilesRequest const& request) const
+    [[nodiscard]] std::vector<MapPartitionKey>
+    requestedTileKeys(detail::ParsedLayerTilesRequest const& request) const
     {
-        std::vector<MapTileKey> result;
+        std::vector<MapPartitionKey> result;
         if (request.filterRequest) {
-            auto const tileIds = collectFilterTileIds(request);
+            auto const tileIds = collectFilterPartitionIds(request);
             result.reserve(tileIds.size());
             for (auto const& tileId : tileIds) {
                 result.push_back(filterRequestedTileKey(request, tileId));
@@ -1169,13 +1161,15 @@ private:
     {
         auto const weak = weak_from_this();
         auto const weakRequest = std::weak_ptr<FeatureLayerFilterTilesRequest>(request);
-        request->onFilterResult([weak, weakRequest](TileSubsetLayer::Ptr layer) {
-            if (auto self = weak.lock()) {
-                if (auto owner = weakRequest.lock()) {
-                    self->onTileLayer(std::move(layer), owner);
+        request->onFilterResult(
+            [weak, weakRequest](PartitionSubsetLayer::Ptr layer)
+            {
+                if (auto self = weak.lock()) {
+                    if (auto owner = weakRequest.lock()) {
+                        self->onTileLayer(std::move(layer), owner);
+                    }
                 }
-            }
-        });
+            });
         request->onStatus([weak, weakRequest](nlohmann::json const& status) {
             if (auto self = weak.lock()) {
                 if (auto owner = weakRequest.lock()) {
@@ -1195,22 +1189,23 @@ private:
     /** Construct finite filter work for additions in one snapshot request. */
     [[nodiscard]] FeatureLayerFilterTilesRequest::Ptr makeFilterBackendRequest(
         detail::ParsedLayerTilesRequest const& parsedRequest,
-        std::vector<TileId> const& tileIds)
+        std::vector<PartitionId> const& tileIds)
     {
-        auto priorityTileIds = prioritiesWithin(tileIds, parsedRequest.priorityTileIds);
-        auto const membership = std::set<TileId>(tileIds.begin(), tileIds.end());
+        auto priorityPartitionIds = prioritiesWithin(tileIds, parsedRequest.priorityPartitionIds);
+        auto const membership = std::set<PartitionId>(tileIds.begin(), tileIds.end());
         auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
             parsedRequest.mapId,
             parsedRequest.layerId,
             tileIds,
             *parsedRequest.filterRequest,
-            priorityTileIds);
+            priorityPartitionIds);
         request->sourceId_ = parsedRequest.sourceId;
         request->setWorkAdmissionGate(workAdmissionOpen_);
         request->exactRoots_ = parsedRequest.exactRoots;
         std::erase_if(
             request->exactRoots_,
-            [&](FeatureLayerFilterRoot const& root) { return !membership.contains(root.tileId_); });
+            [&](FeatureLayerFilterRoot const& root)
+            { return !membership.contains(root.partitionId_); });
         attachFilterRequestCallbacks(request);
         return request;
     }
@@ -1220,26 +1215,32 @@ private:
     {
         auto const weak = weak_from_this();
         auto const weakRequest = std::weak_ptr<LayerTilesRequest>(request);
-        request->onFeatureLayer([weak, weakRequest](TileFeatureLayer::Ptr layer) {
-            if (auto self = weak.lock()) {
-                if (auto owner = weakRequest.lock()) {
-                    self->onTileLayer(std::move(layer), owner);
-                }
-            }
-        });
-        request->onSourceDataLayer([weak, weakRequest](TileSourceDataLayer::Ptr layer) {
-            if (auto self = weak.lock()) {
-                if (auto owner = weakRequest.lock()) {
-                    self->onTileLayer(std::move(layer), owner);
-                }
-            }
-        });
-        if (EMIT_LOAD_STATE_FRAMES) {
-            request->onLayerLoadStateChanged([weak](MapTileKey const& key, TileLayer::LoadState state) {
+        request->onFeatureLayer(
+            [weak, weakRequest](PartitionFeatureLayer::Ptr layer)
+            {
                 if (auto self = weak.lock()) {
-                    self->onLoadStateChanged(key, state);
+                    if (auto owner = weakRequest.lock()) {
+                        self->onTileLayer(std::move(layer), owner);
+                    }
                 }
             });
+        request->onSourceDataLayer(
+            [weak, weakRequest](PartitionSourceDataLayer::Ptr layer)
+            {
+                if (auto self = weak.lock()) {
+                    if (auto owner = weakRequest.lock()) {
+                        self->onTileLayer(std::move(layer), owner);
+                    }
+                }
+            });
+        if (EMIT_LOAD_STATE_FRAMES) {
+            request->onLayerLoadStateChanged(
+                [weak](MapPartitionKey const& key, PartitionLayer::LoadState state)
+                {
+                    if (auto self = weak.lock()) {
+                        self->onLoadStateChanged(key, state);
+                    }
+                });
         }
         request->onDone_ = [weak, weakRequest](RequestStatus status) {
             if (auto self = weak.lock()) {
@@ -1253,15 +1254,15 @@ private:
     /** Construct finite ordinary tile work for additions in one snapshot request. */
     [[nodiscard]] LayerTilesRequest::Ptr makeLayerBackendRequest(
         detail::ParsedLayerTilesRequest const& parsedRequest,
-        std::vector<TileId> const& tileIds)
+        std::vector<PartitionId> const& tileIds)
     {
-        auto priorityTileIds = prioritiesWithin(tileIds, parsedRequest.priorityTileIds);
-        auto const membership = std::set<TileId>(tileIds.begin(), tileIds.end());
+        auto priorityPartitionIds = prioritiesWithin(tileIds, parsedRequest.priorityPartitionIds);
+        auto const membership = std::set<PartitionId>(tileIds.begin(), tileIds.end());
         auto request = std::make_shared<LayerTilesRequest>(
             parsedRequest.mapId,
             parsedRequest.layerId,
             tileIds,
-            priorityTileIds);
+            priorityPartitionIds);
         request->sourceId_ = parsedRequest.sourceId;
         request->setWorkAdmissionGate(workAdmissionOpen_);
         request->featureIdsByTile_ = parsedRequest.featureIdsByTile;
@@ -1291,13 +1292,15 @@ private:
     }
 
     /** Increment queued/sent reference counters for one canonical tile key. */
-    void incrementFrameRefCount(std::map<MapTileKey, int64_t>& counts, const MapTileKey& key)
+    void
+    incrementFrameRefCount(std::map<MapPartitionKey, int64_t>& counts, const MapPartitionKey& key)
     {
         counts[key] += 1;
     }
 
     /** Decrement queued/sent reference counters and erase exhausted entries. */
-    void decrementFrameRefCount(std::map<MapTileKey, int64_t>& counts, const MapTileKey& key)
+    void
+    decrementFrameRefCount(std::map<MapPartitionKey, int64_t>& counts, const MapPartitionKey& key)
     {
         auto it = counts.find(key);
         if (it == counts.end()) {
@@ -1456,8 +1459,8 @@ private:
     }
 
     /** Match one backend-produced tile key against the current pending snapshot. */
-    [[nodiscard]] std::optional<MapTileKey> matchPendingTileKeyLocked(
-        MapTileKey key,
+    [[nodiscard]] std::optional<MapPartitionKey> matchPendingTileKeyLocked(
+        MapPartitionKey key,
         std::optional<std::string_view> filterKey = std::nullopt) const
     {
         auto requestedTileKey = makeRequestedTileKey(std::move(key), filterKey);
@@ -1523,7 +1526,7 @@ private:
     }
 
     /** Look up the current priority rank for one tile key, defaulting to lowest priority. */
-    [[nodiscard]] int64_t tilePriorityRankLocked(const MapTileKey& tileKey) const
+    [[nodiscard]] int64_t tilePriorityRankLocked(const MapPartitionKey& tileKey) const
     {
         const auto it = tilePriorityRanks_.find(tileKey);
         if (it == tilePriorityRanks_.end()) {
@@ -1749,8 +1752,8 @@ private:
     }
 
     /** Convert one owner-current backend result into queued transport frames. */
-    template<typename Request>
-    void onTileLayer(TileLayer::Ptr const& layer, std::shared_ptr<Request> const& owner)
+    template <typename Request>
+    void onTileLayer(PartitionLayer::Ptr const& layer, std::shared_ptr<Request> const& owner)
     {
         if (cancelled_ || !layer || !owner) {
             return;
@@ -1977,7 +1980,7 @@ private:
     }
 
     /** Forward backend tile load-state changes for tiles still requested by the client. */
-    void onLoadStateChanged(MapTileKey const& key, TileLayer::LoadState state)
+    void onLoadStateChanged(MapPartitionKey const& key, PartitionLayer::LoadState state)
     {
         if (!EMIT_LOAD_STATE_FRAMES) {
             return;
@@ -2038,22 +2041,25 @@ private:
     }
 
     /** Build the JSON payload for `mapget.tiles.load-state`. */
-    [[nodiscard]] std::string buildLoadStatePayload(MapTileKey const& key, TileLayer::LoadState state) const
+    [[nodiscard]] std::string
+    buildLoadStatePayload(MapPartitionKey const& key, PartitionLayer::LoadState state) const
     {
         uint64_t requestId = 0;
         {
             std::lock_guard lock(mutex_);
             requestId = requestId_;
         }
-        return nlohmann::json::object({
-            {"type", "mapget.tiles.load-state"},
-            {"requestId", requestId},
-            {"mapId", key.mapId_},
-            {"layerId", key.layerId_},
-            {"tileId", key.tileId_.value()},
-            {"state", static_cast<uint8_t>(state)},
-            {"stateText", std::string(loadStateToString(state))},
-        }).dump();
+        return nlohmann::json::object(
+                   {
+                       {"type", "mapget.tiles.load-state"},
+                       {"requestId", requestId},
+                       {"mapId", key.mapId_},
+                       {"layerId", key.layerId_},
+                       {"partition", key.partitionId_.toJson()},
+                       {"state", static_cast<uint8_t>(state)},
+                       {"stateText", std::string(loadStateToString(state))},
+                   })
+            .dump();
     }
 
     /** Build the JSON payload for `mapget.tiles.request-context`. */
@@ -2121,13 +2127,13 @@ private:
     std::vector<RequestStatus> requestStatuses_;
     std::vector<LayerTilesRequest::Ptr> activeRequests_;
     std::vector<FeatureLayerFilterTilesRequest::Ptr> activeFilterRequests_;
-    std::map<MapTileKey, LayerTilesRequest::Ptr> activeTileOwners_;
-    std::map<MapTileKey, FeatureLayerFilterTilesRequest::Ptr> activeFilterOwners_;
-    std::map<MapTileKey, RequestStatus> terminalOutputStatuses_;
-    std::set<MapTileKey> pendingTileKeys_;
-    std::map<MapTileKey, int64_t> tilePriorityRanks_;
-    std::map<MapTileKey, int64_t> queuedTileFrameRefCount_;
-    std::map<MapTileKey, HandoffRecord> handoffRecords_;
+    std::map<MapPartitionKey, LayerTilesRequest::Ptr> activeTileOwners_;
+    std::map<MapPartitionKey, FeatureLayerFilterTilesRequest::Ptr> activeFilterOwners_;
+    std::map<MapPartitionKey, RequestStatus> terminalOutputStatuses_;
+    std::set<MapPartitionKey> pendingTileKeys_;
+    std::map<MapPartitionKey, int64_t> tilePriorityRanks_;
+    std::map<MapPartitionKey, int64_t> queuedTileFrameRefCount_;
+    std::map<MapPartitionKey, HandoffRecord> handoffRecords_;
     FilterRegistrationState filterRegistrations_;
     bool statusEmissionEnabled_ = false;
     std::optional<StagedRequest> stagedRequest_;

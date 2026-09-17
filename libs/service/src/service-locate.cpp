@@ -15,7 +15,7 @@ LocateRequestExecution::LocateRequestExecution(Service::Impl& service, LocateReq
 std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::planCandidates() const
 {
     std::vector<CandidateGroup> groups;
-    std::map<std::pair<std::string, MapTileKey>, size_t> groupIndex;
+    std::map<std::pair<std::string, MapPartitionKey>, size_t> groupIndex;
     for (auto const& source : service_.dataSources_.snapshot()) {
         if (source->info->mapId_ != request_.mapId_ || source->info->isAddOn_) {
             continue;
@@ -23,9 +23,14 @@ std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::plan
         auto appendCandidates = [&](LocateRequest const& resolvedRequest)
         {
             for (auto&& candidate : source->dataSource->locate(resolvedRequest)) {
+                if ((request_.layerId_ && candidate.tileKey_.layerId_ != *request_.layerId_) ||
+                    (request_.partition_ &&
+                     candidate.tileKey_.partitionId_ != *request_.partition_))
+                    continue;
+                auto layer = source->info->getLayer(candidate.tileKey_.layerId_, false);
                 if (candidate.tileKey_.layer_ != LayerType::Features ||
-                    candidate.tileKey_.mapId_ != request_.mapId_ ||
-                    !source->info->getLayer(candidate.tileKey_.layerId_))
+                    candidate.tileKey_.mapId_ != request_.mapId_ || !layer ||
+                    layer->partitionKind_ != candidate.tileKey_.partitionId_.kind())
                 {
                     log().warn(
                         "Datasource returned an invalid locate candidate for {}.",
@@ -54,11 +59,13 @@ std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::plan
             }
             ParsedFeatureId parsed;
             if (parseFeatureIdString(*request_.canonicalFeatureId_, *layerInfo, parsed)) {
-                appendCandidates(LocateRequest{
+                auto resolved = LocateRequest{
                     request_.mapId_,
                     std::move(parsed.typeId_),
-                    std::move(parsed.keyValuePairs_),
-                });
+                    std::move(parsed.keyValuePairs_)};
+                resolved.layerId_ = request_.layerId_;
+                resolved.partition_ = request_.partition_;
+                appendCandidates(resolved);
             }
         }
     }
@@ -73,12 +80,12 @@ std::vector<LocateResponse> LocateRequestExecution::run()
         auto child = std::make_shared<LayerTilesRequest>(
             group.tileKey.mapId_,
             group.tileKey.layerId_,
-            std::vector<TileId>{group.tileKey.tileId_});
+            std::vector<PartitionId>{group.tileKey.partitionId_});
         if (!group.sourceId.empty()) {
             child->sourceId_ = group.sourceId;
         }
         child->onFeatureLayer(
-            [this, group = std::move(group)](TileFeatureLayer::Ptr tile)
+            [this, group = std::move(group)](PartitionFeatureLayer::Ptr tile)
             {
                 if (!tile || tile->id() != group.tileKey) {
                     return;

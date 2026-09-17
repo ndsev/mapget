@@ -940,8 +940,16 @@ struct FetchCommand
         int port = std::stoi(server_.substr(delimiterPos + 1, server_.size()));
 
         mapget::HttpClient cli(host, port, {}, !noCompression_);
-        auto request = std::make_shared<
-            LayerTilesRequest>(map_, layer_, std::vector<TileId>{tiles_.begin(), tiles_.end()});
+        auto request = std::make_shared<LayerTilesRequest>(
+            map_,
+            layer_,
+            [&]
+            {
+                std::vector<PartitionId> ids;
+                for (auto value : tiles_)
+                    ids.push_back(PartitionId::fromJson({{"kind", "tile"}, {"id", value}}));
+                return ids;
+            }());
         auto fn = [this](auto const& tile)
         {
             if (!mute_)

@@ -33,10 +33,11 @@ public:
      * The callback argument is a fresh Tile*Layer instance, which the callback
      * must fill according to the set Tile*Layer's layer info and tile id.
      * If an error occurs while filling the tile, the callback can use
-     * TileLayer::setError(...) to signal the error downstream.
+     * PartitionLayer::setError(...) to signal the error downstream.
      */
-    DataSourceServer& onTileFeatureRequest(std::function<void(TileFeatureLayer::Ptr)> const&);
-    DataSourceServer& onTileSourceDataRequest(std::function<void(TileSourceDataLayer::Ptr)> const&);
+    DataSourceServer& onTileFeatureRequest(std::function<void(PartitionFeatureLayer::Ptr)> const&);
+    DataSourceServer&
+    onTileSourceDataRequest(std::function<void(PartitionSourceDataLayer::Ptr)> const&);
 
     /**
      * Set the callback which will be invoked when a `/locate`-request is received.
@@ -49,6 +50,10 @@ public:
             std::vector<LocateCandidate>(
                 LocateRequest const&)> const&);
 
+    /** Install object association lookup; successful empty lists differ from unavailable data. */
+    DataSourceServer& onObjectDiscoveryRequest(
+        std::function<ObjectDiscoveryResult(ObjectDiscoveryRequest const&)> const&);
+
     /** Set the callback which produces separately transferred tile attachments. */
     DataSourceServer& onAttachmentRequest(
         std::function<std::optional<AttachmentResponse>(
@@ -59,7 +64,7 @@ public:
      * cached tile for this remote datasource expired and is being refreshed.
      */
     DataSourceServer& onCacheExpired(
-        std::function<void(MapTileKey const&, std::chrono::system_clock::time_point)> const&);
+        std::function<void(MapPartitionKey const&, std::chrono::system_clock::time_point)> const&);
 
     /**
      * Get the DataSourceInfo metadata which this instance was constructed with.

@@ -77,6 +77,8 @@ std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
     result->canRead_ = info.canRead_;
     result->canWrite_ = info.canWrite_;
     result->version_ = info.version_;
+    result->partitionKind_ = info.partitionKind_;
+    result->tileAssociationLevel_ = info.tileAssociationLevel_;
     result->featureModelSchema_ = info.featureModelSchema_ ?
         info.featureModelSchema_->detachedCopy() :
         nullptr;
@@ -834,6 +836,7 @@ LayerRequestContext Service::Impl::resolveLayerRequest(
         if (!foundAuthorized) {
             result.status_ = RequestStatus::Success;
             result.layerType_ = type;
+            result.partitionKind_ = source->info->layers_.at(layerId)->partitionKind_;
             foundAuthorized = true;
         }
         else if (result.layerType_ != type) {

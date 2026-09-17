@@ -94,15 +94,12 @@ int main()
                     ? 131077
                     : 131073;
             return {LocateCandidate(
-                MapTileKey{
+                MapPartitionKey{
                     LayerType::Features,
                     "Tropico",
                     "WayLayer",
-                    TileId::fromValue(
-                        tileId)},
-                fmt::format(
-                    "Way.Area42.{}",
-                    wayId))};
+                    TileId::fromValue(tileId)},
+                fmt::format("Way.Area42.{}", wayId))};
         });
     ds.onAttachmentRequest(
         [](AttachmentRequest const& request)

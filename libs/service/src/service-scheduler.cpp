@@ -132,7 +132,7 @@ void ServiceScheduler::abortRequest(LayerTilesRequest::Ptr const& request)
 
 void ServiceScheduler::retainRequestOutputs(
     LayerTilesRequest::Ptr const& request,
-    std::set<TileId> const& retainedTileIds)
+    std::set<PartitionId> const& retainedPartitionIds)
 {
     if (!request || request->isDone()) {
         return;
@@ -144,19 +144,21 @@ void ServiceScheduler::retainRequestOutputs(
     {
         std::lock_guard lock(mutex_);
         std::tie(hasLiveOutputs, allLiveOutputsComplete, membershipChanged) =
-            request->retainOutputTileIds(retainedTileIds);
+            request->retainOutputPartitionIds(retainedPartitionIds);
         if (!membershipChanged) {
             return;
         }
         std::erase_if(
             request->resolvedTileKeys_,
-            [&](MapTileKey const& key) { return !retainedTileIds.contains(key.tileId_); });
+            [&](MapPartitionKey const& key)
+            { return !retainedPartitionIds.contains(key.partitionId_); });
         request->nextTileIndex_ = 0;
         std::erase_if(
             request->tileKeysNotStarted_,
-            [&](MapTileKey const& key) { return !retainedTileIds.contains(key.tileId_); });
+            [&](MapPartitionKey const& key)
+            { return !retainedPartitionIds.contains(key.partitionId_); });
         for (auto& [key, job] : inFlightTiles_) {
-            if (!retainedTileIds.contains(key.tileId_)) {
+            if (!retainedPartitionIds.contains(key.partitionId_)) {
                 std::erase(job->waitingRequests, request);
             }
         }
@@ -188,9 +190,19 @@ void ServiceScheduler::addFilterMemoryTracker(std::shared_ptr<FilterMemoryTracke
 void ServiceScheduler::invalidateMap(std::string const& mapId)
 {
     std::vector<LayerTilesRequest::Ptr> abortedRequests;
+    std::list<DiscoveryJob> cancelledDiscovery;
     {
         std::lock_guard lock(mutex_);
         ++mapEpochs_[mapId];
+        for (auto job = discoveryJobs_.begin(); job != discoveryJobs_.end();) {
+            if (job->request.mapId_ == mapId) {
+                auto cancelled = job++;
+                cancelledDiscovery.splice(cancelledDiscovery.end(), discoveryJobs_, cancelled);
+            }
+            else {
+                ++job;
+            }
+        }
 
         for (auto request = requests_.begin(); request != requests_.end();) {
             if (*request && (*request)->mapId_ == mapId) {
@@ -221,6 +233,8 @@ void ServiceScheduler::invalidateMap(std::string const& mapId)
     std::ranges::sort(abortedRequests, {}, [](auto const& request) { return request.get(); });
     abortedRequests
         .erase(std::unique(abortedRequests.begin(), abortedRequests.end()), abortedRequests.end());
+    for (auto& job : cancelledDiscovery)
+        job.run(true);
     for (auto const& request : abortedRequests) {
         if (request && !request->isDone()) {
             request->setStatus(RequestStatus::Aborted);
@@ -232,12 +246,14 @@ void ServiceScheduler::invalidateMap(std::string const& mapId)
 void ServiceScheduler::stop() noexcept
 {
     std::vector<LayerTilesRequest::Ptr> abortedRequests;
+    std::list<DiscoveryJob> cancelledDiscovery;
     {
         std::lock_guard lock(mutex_);
         if (stopping_) {
             return;
         }
         stopping_ = true;
+        cancelledDiscovery.splice(cancelledDiscovery.end(), discoveryJobs_);
         abortedRequests.assign(requests_.begin(), requests_.end());
         requests_.clear();
         for (auto& [_, job] : inFlightTiles_) {
@@ -249,6 +265,8 @@ void ServiceScheduler::stop() noexcept
         }
     }
 
+    for (auto& job : cancelledDiscovery)
+        job.run(true);
     for (auto const& request : abortedRequests) {
         if (request && !request->isDone()) {
             try {
@@ -274,30 +292,98 @@ void ServiceScheduler::stop() noexcept
     workers_.clear();
 }
 
+void ServiceScheduler::enqueueDiscovery(
+    RegisteredDataSource::Ptr source,
+    ObjectDiscoveryRequest request,
+    std::function<void(ObjectDiscoveryResult)> callback)
+{
+    DiscoveryJob job{std::move(source), std::move(request), std::move(callback)};
+    {
+        std::lock_guard lock(mutex_);
+        // Admission is bounded; completed work is never dropped by an outbox watermark.
+        if (!stopping_ && discoveryJobs_.size() < 4096) {
+            discoveryJobs_.push_back(std::move(job));
+            jobsAvailable_.notify_one();
+            return;
+        }
+    }
+    job.run(true);
+}
+
+void ServiceScheduler::DiscoveryJob::run(bool cancelled) noexcept
+{
+    ObjectDiscoveryResult result;
+    try {
+        if (cancelled)
+            throw std::runtime_error("Discovery cancelled, datasource removed, or queue full.");
+        result = source->dataSource->discoverObjects(request);
+        result.validate();
+    }
+    catch (std::exception const& error) {
+        result = ObjectDiscoveryResult{};
+        result.status_ = ObjectDiscoveryResult::Status::Failed;
+        result.message_ = error.what();
+    }
+    catch (...) {
+        result = ObjectDiscoveryResult{};
+        result.status_ = ObjectDiscoveryResult::Status::Failed;
+        result.message_ = "Non-standard discovery exception.";
+    }
+    try {
+        callback(std::move(result));
+    }
+    catch (...) { /* A disconnected consumer must not terminate a worker. */
+    }
+}
+
 void ServiceScheduler::workerLoop()
 {
     while (true) {
         std::unique_ptr<TileLoadJob> job;
+        std::optional<DiscoveryJob> discovery;
+        std::shared_ptr<SourceConcurrency> permit;
         {
             std::unique_lock lock(mutex_);
             jobsAvailable_.wait(lock, [this] { return stopping_ || hasRunnableWorkLocked(); });
-            if (stopping_) {
+            if (stopping_)
                 return;
-            }
-            job = takeNextTileJobLocked(lock);
-            if (!job) {
+            auto takeDiscovery = [&]
+            {
+                for (auto it = discoveryJobs_.begin(); it != discoveryJobs_.end(); ++it) {
+                    auto source = std::ranges::find_if(
+                        sources_,
+                        [&](auto const& s) { return s->source == it->source; });
+                    if (source != sources_.end() && (*source)->enabled) {
+                        if ((*source)->running >= (*source)->limit)
+                            continue;
+                        permit = *source;
+                        ++permit->running;
+                    }
+                    discovery = std::move(*it);
+                    discoveryJobs_.erase(it);
+                    return true;
+                }
+                return false;
+            };
+            // Alternate job kinds so association requests cannot starve payload loads.
+            if (!preferDiscovery_ || !takeDiscovery())
+                job = takeNextTileJobLocked(lock);
+            if (!job && !discovery)
+                takeDiscovery();
+            if (!job && !discovery)
                 continue;
-            }
+            preferDiscovery_ = !discovery.has_value();
             ++runningJobs_;
         }
-
-        job->run();
-
+        if (discovery) {
+            discovery->run(!permit);
+            releaseSourcePermit(permit);
+        }
+        else
+            job->run();
         {
             std::lock_guard lock(mutex_);
-            if (runningJobs_ > 0) {
-                --runningJobs_;
-            }
+            --runningJobs_;
         }
         jobsAvailable_.notify_all();
     }
@@ -305,6 +391,13 @@ void ServiceScheduler::workerLoop()
 
 bool ServiceScheduler::hasRunnableWorkLocked() const
 {
+    for (auto const& job : discoveryJobs_) {
+        auto source =
+            std::ranges::find_if(sources_, [&](auto const& s) { return s->source == job.source; });
+        if (source == sources_.end() || !(*source)->enabled ||
+            (*source)->running < (*source)->limit)
+            return true;
+    }
     for (auto const& source : sources_) {
         if (!source->enabled || source->running >= source->limit) {
             continue;
@@ -478,7 +571,7 @@ bool ServiceScheduler::requestMatchesSourceLocked(
 void ServiceScheduler::attachMatchingRequestsLocked(
     LayerTilesRequest::Ptr const& selectedRequest,
     SourceConcurrency const& source,
-    MapTileKey const& tileKey,
+    MapPartitionKey const& tileKey,
     std::vector<LayerTilesRequest::Ptr>& waitingRequests) const
 {
     for (auto const& request : requests_) {
@@ -504,7 +597,7 @@ void ServiceScheduler::removeCompletedRequestsLocked()
 
 void ServiceScheduler::completeTileJob(
     TileLoadState const& job,
-    TileLayer::Ptr const& layer,
+    PartitionLayer::Ptr const& layer,
     bool updateCache)
 {
     std::vector<LayerTilesRequest::Ptr> notifyRequests;
@@ -559,7 +652,7 @@ void ServiceScheduler::failTileJob(TileLoadState const& job)
     jobsAvailable_.notify_all();
 }
 
-void ServiceScheduler::notifyTileLoadState(TileLoadState& job, TileLayer::LoadState state)
+void ServiceScheduler::notifyTileLoadState(TileLoadState& job, PartitionLayer::LoadState state)
 {
     std::vector<LayerTilesRequest::Ptr> waiting;
     {
@@ -590,6 +683,7 @@ ServiceSchedulerStatistics ServiceScheduler::statistics() const
         .runningJobs = runningJobs_,
         .activeTileRequests = requests_.size(),
         .queuedTileWorkItems = queuedTileWorkItems,
+        .queuedDiscoveryJobs = discoveryJobs_.size(),
         .inFlightTileJobs = inFlightTiles_.size(),
     };
 }
@@ -615,7 +709,7 @@ void ServiceScheduler::collectMemoryUsage(
     MemoryUsageBreakdown& telemetry,
     std::vector<std::shared_ptr<FilterMemoryTracker>>& filterTrackers)
 {
-    auto accountMapTileKey = [](MemoryUsageBreakdown& target, MapTileKey const& key)
+    auto accountMapTileKey = [](MemoryUsageBreakdown& target, MapPartitionKey const& key)
     {
         target.add("map-tile-key-strings", stringMemoryUsage(key.mapId_));
         target.add("map-tile-key-strings", stringMemoryUsage(key.layerId_));
@@ -636,8 +730,8 @@ void ServiceScheduler::collectMemoryUsage(
         scheduler.add(
             "priority-tile-index",
             {
-                request.priorityTileIds_.size() * sizeof(TileId),
-                request.priorityTileIds_.size() * (sizeof(TileId) + 3 * sizeof(void*)),
+                request.priorityPartitionIds_.size() * sizeof(PartitionId),
+                request.priorityPartitionIds_.size() * (sizeof(PartitionId) + 3 * sizeof(void*)),
             });
         scheduler.add("resolved-tile-keys", vectorMemoryUsage(request.resolvedTileKeys_));
         for (auto const& key : request.resolvedTileKeys_) {
@@ -646,8 +740,8 @@ void ServiceScheduler::collectMemoryUsage(
         scheduler.add(
             "not-started-tile-index",
             {
-                request.tileKeysNotStarted_.size() * sizeof(MapTileKey),
-                request.tileKeysNotStarted_.size() * (sizeof(MapTileKey) + 3 * sizeof(void*)),
+                request.tileKeysNotStarted_.size() * sizeof(MapPartitionKey),
+                request.tileKeysNotStarted_.size() * (sizeof(MapPartitionKey) + 3 * sizeof(void*)),
             });
         for (auto const& key : request.tileKeysNotStarted_) {
             accountMapTileKey(scheduler, key);
@@ -657,8 +751,8 @@ void ServiceScheduler::collectMemoryUsage(
             scheduler.add(
                 std::string(name),
                 {
-                    index.size() * sizeof(MapTileKey),
-                    index.size() * (sizeof(MapTileKey) + 3 * sizeof(void*)),
+                    index.size() * sizeof(MapPartitionKey),
+                    index.size() * (sizeof(MapPartitionKey) + 3 * sizeof(void*)),
                 });
             for (auto const& key : index) {
                 accountMapTileKey(scheduler, key);
@@ -687,6 +781,16 @@ void ServiceScheduler::collectMemoryUsage(
             requests_.size() * sizeof(LayerTilesRequest::Ptr),
             requests_.size() * (sizeof(LayerTilesRequest::Ptr) + 2 * sizeof(void*)),
         });
+    scheduler.add(
+        "discovery-jobs",
+        {discoveryJobs_.size() * sizeof(DiscoveryJob),
+         discoveryJobs_.size() * (sizeof(DiscoveryJob) + 2 * sizeof(void*))});
+    for (auto const& job : discoveryJobs_) {
+        scheduler.add("discovery-map-ids", stringMemoryUsage(job.request.mapId_));
+        scheduler.add("discovery-layer-ids", stringMemoryUsage(job.request.layerId_));
+        if (job.request.sourceId_)
+            scheduler.add("discovery-source-ids", stringMemoryUsage(*job.request.sourceId_));
+    }
     std::unordered_set<LayerTilesRequest const*> measuredRequests;
     for (auto const& request : requests_) {
         if (request && measuredRequests.insert(request.get()).second) {

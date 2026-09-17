@@ -62,12 +62,12 @@ using Array = simfil::Array;
 /**
  * Common ModelPool base for tile layers that store map feature identifiers and geometry.
  *
- * The base owns the concrete columns shared by TileFeatureLayer and
- * TileSubsetLayer: detached feature ids, reusable geometry storage, and
+ * The base owns the concrete columns shared by PartitionFeatureLayer and
+ * PartitionSubsetLayer: detached feature ids, reusable geometry storage, and
  * source-data references. Concrete layers add only their root-specific columns
  * and feature/subset-specific behavior on top.
  */
-class TileFeatureModelLayerBase : public TileLayer, public simfil::ModelPool
+class PartitionFeatureModelLayerBase : public PartitionLayer, public simfil::ModelPool
 {
     friend class FeatureId;
     friend class Geometry;
@@ -84,10 +84,10 @@ class TileFeatureModelLayerBase : public TileLayer, public simfil::ModelPool
     friend class Validity;
     friend struct MultiValidity;
     template<class, class, class> friend class MergedArrayView;
-    template<typename Target>
+    template <typename Target>
     friend model_ptr<Target> resolveInternal(
         simfil::res::tag<Target>,
-        TileFeatureModelLayerBase const&,
+        PartitionFeatureModelLayerBase const&,
         simfil::ModelNode const&);
 
 public:
@@ -237,14 +237,14 @@ public:
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const override;
 
 protected:
-    TileFeatureModelLayerBase(
-        TileId tileId,
+    PartitionFeatureModelLayerBase(
+        PartitionId tileId,
         std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& strings);
 
-    TileFeatureModelLayerBase(
+    PartitionFeatureModelLayerBase(
         std::vector<uint8_t> const& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter,
@@ -342,10 +342,10 @@ protected:
 };
 
 // Primary template for ADL-based resolve hooks shared by feature-model layers.
-template<typename Target>
+template <typename Target>
 simfil::model_ptr<Target> resolveInternal(
     simfil::res::tag<Target>,
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     simfil::ModelNode const& node);
 
 } // namespace mapget

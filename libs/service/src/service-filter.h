@@ -29,7 +29,7 @@ public:
         std::optional<AuthHeaders> const& clientHeaders);
 
     /** Prune removed outputs while retaining shared source and relation work. */
-    void retainOutputs(std::set<TileId> const& retainedTileIds);
+    void retainOutputs(std::set<PartitionId> const& retainedPartitionIds);
 
     /** Stop coordinated work and break request/child callback ownership cycles. */
     void cancel();
@@ -50,17 +50,17 @@ private:
     prepareExactRoots(FeatureLayerFilterTilesRequest::Ptr const& request, bool hasStoredRelations);
 
     /** Expand requested outputs into the source tiles required by point groups. */
-    static tl::expected<std::vector<TileId>, simfil::Error> processingTileIds(
+    static tl::expected<std::vector<PartitionId>, simfil::Error> processingPartitionIds(
         FeatureLayerFilterTilesRequest const& request,
         bool hasPointGroups,
-        std::set<TileId>& prioritySourceMembership);
+        std::set<PartitionId>& prioritySourceMembership);
 
     /** Source-local output retained until every dependent output is complete. */
     struct SourceTileContribution
     {
         struct Lifetime
         {
-            MapTileKey sourceKey_;
+            MapPartitionKey sourceKey_;
             std::chrono::system_clock::time_point timestamp_;
             std::chrono::milliseconds ttl_;
 
@@ -92,9 +92,9 @@ private:
             Pruned,
         };
 
-        TileId tileId_;
-        TileSubsetLayer::Ptr wipSubset_;
-        std::vector<TileId> sourceTileIds_;
+        PartitionId partitionId_;
+        PartitionSubsetLayer::Ptr wipSubset_;
+        std::vector<PartitionId> sourcePartitionIds_;
         std::vector<std::optional<SourceTileContribution>> contributions_;
         size_t missingContributions_ = 0;
         State state_ = State::Pending;
@@ -114,7 +114,7 @@ private:
     /** Fully source-complete output ready for relation/group finalization. */
     struct ReadyOutput
     {
-        ReadyOutput(size_t outputIndex, TileSubsetLayer::Ptr layer, uint64_t layerBytes)
+        ReadyOutput(size_t outputIndex, PartitionSubsetLayer::Ptr layer, uint64_t layerBytes)
             : outputIndex_(outputIndex), layer_(std::move(layer)), layerBytes_(layerBytes)
         {
         }
@@ -142,10 +142,10 @@ private:
         void addMemoryUsage(MemoryUsageBreakdown& usage) const;
 
         size_t outputIndex_ = 0;
-        TileSubsetLayer::Ptr layer_;
+        PartitionSubsetLayer::Ptr layer_;
         uint64_t layerBytes_ = 0;
         std::vector<SourceTileContribution> contributions_;
-        std::map<MapTileKey, SourceTileContribution> dynamicContributions_;
+        std::map<MapPartitionKey, SourceTileContribution> dynamicContributions_;
         std::vector<FilterIssue> issues_;
         std::map<std::string, simfil::Trace> traces_;
         std::optional<SourceTileContribution::Lifetime> limitingLifetime_;
@@ -155,8 +155,8 @@ private:
     struct PendingRelationOutput
     {
         ReadyOutput ready_;
-        std::set<MapTileKey> targetTiles_;
-        std::set<MapTileKey> pendingTargetTiles_;
+        std::set<MapPartitionKey> targetTiles_;
+        std::set<MapPartitionKey> pendingTargetTiles_;
 
         /** Add request-orchestration allocations retained while targets load. */
         void addMemoryUsage(MemoryUsageBreakdown& usage) const;
@@ -165,8 +165,8 @@ private:
     /** Immutable terminal target state carried beyond the coordination lock. */
     struct RelationTargetSnapshot
     {
-        MapTileKey key_;
-        TileFeatureLayer::Ptr layer_;
+        MapPartitionKey key_;
+        PartitionFeatureLayer::Ptr layer_;
         std::optional<std::string> failureMessage_;
     };
 
@@ -188,7 +188,7 @@ private:
     {
         bool scheduled_ = false;
         bool terminal_ = false;
-        TileFeatureLayer::Ptr layer_;
+        PartitionFeatureLayer::Ptr layer_;
         std::optional<std::string> failureMessage_;
         std::set<size_t> dependentOutputs_;
         LayerTilesRequest::Ptr childRequest_;
@@ -210,9 +210,9 @@ private:
     bool hasStoredRelations = false;
     int outputLevel = 0;
 
-    std::vector<TileId> sourceTileIds;
-    std::map<TileId, size_t> sourceIndexByTile;
-    std::map<TileId, size_t> outputIndexByTile;
+    std::vector<PartitionId> sourcePartitionIds;
+    std::map<PartitionId, size_t> sourceIndexByTile;
+    std::map<PartitionId, size_t> outputIndexByTile;
     std::vector<OutputTileState> outputs;
     std::vector<std::vector<DependentOutputSlot>> dependentOutputsBySource;
     std::unique_ptr<std::atomic_size_t[]> liveDependentOutputsBySource;
@@ -223,7 +223,7 @@ private:
     std::map<std::string, std::vector<LocateCandidate>> relationLocationCache;
     std::mutex relationLocationMutex;
     std::map<size_t, PendingRelationOutput> pendingRelationOutputs;
-    std::map<MapTileKey, RelationTargetTileState> relationTargetTiles;
+    std::map<MapPartitionKey, RelationTargetTileState> relationTargetTiles;
     std::map<std::string, SharedSelectorResolution> relationSelectorCache;
     mutable std::mutex relationSelectorCacheMutex;
     std::mutex mutex;
@@ -247,7 +247,9 @@ private:
     sourceResultAuxiliaryBytes(FeatureLayerFilterSourceResult const& result);
 
     /** Build source/output dependency indexes before child loading starts. */
-    void configure(std::vector<TileId> const& outputTileIds, std::vector<TileId> processingTileIds);
+    void configure(
+        std::vector<PartitionId> const& outputPartitionIds,
+        std::vector<PartitionId> processingPartitionIds);
 
     /** Return whether one output can still be completed and emitted. */
     [[nodiscard]] bool outputLive(size_t outputIndex);
@@ -280,16 +282,17 @@ private:
     void fail(simfil::Error const& error);
 
     /** Evaluate one source tile on the worker that delivered it. */
-    void collect(TileFeatureLayer::Ptr layer);
+    void collect(PartitionFeatureLayer::Ptr layer);
 
     /** Locate unresolved stored-relation targets without loading their tiles. */
-    tl::expected<void, simfil::Error>
-    locateRelationTargets(TileFeatureLayer const& source, FeatureLayerFilterSourceResult& result);
+    tl::expected<void, simfil::Error> locateRelationTargets(
+        PartitionFeatureLayer const& source,
+        FeatureLayerFilterSourceResult& result);
 
     /** Commit one evaluated source into every output that depends on it. */
     tl::expected<std::vector<ReadyOutput>, simfil::Error> commitSource(
         size_t sourceIndex,
-        TileFeatureLayer const& source,
+        PartitionFeatureLayer const& source,
         uint64_t outputModelBytes,
         FeatureLayerFilterSourceResult result);
 
@@ -304,13 +307,13 @@ private:
     /** Record one loaded relation target as a dependency of a completed output. */
     tl::expected<void, simfil::Error> addRelationTargetContribution(
         ReadyOutput& output,
-        MapTileKey const& targetKey,
-        TileFeatureLayer const& targetLayer);
+        MapPartitionKey const& targetKey,
+        PartitionFeatureLayer const& targetLayer);
 
     /** Convert an unavailable target tile into per-channel output issues. */
     void markRelationTargetUnavailableInOutput(
         ReadyOutput& output,
-        MapTileKey const& targetKey,
+        MapPartitionKey const& targetKey,
         std::string const& failureMessage);
 
     /** Resolve or schedule relation targets and return immediately finalizable outputs. */
@@ -318,13 +321,13 @@ private:
     prepareRelationOutputs(std::vector<ReadyOutput> fixedReady);
 
     /** Schedule an ordinary coalescible request for one relation target tile. */
-    void scheduleRelationTarget(MapTileKey const& targetKey);
+    void scheduleRelationTarget(MapPartitionKey const& targetKey);
 
     /** Complete outputs waiting on a relation target that could not load. */
-    void completeUnavailableRelationTarget(MapTileKey const& targetKey, std::string message);
+    void completeUnavailableRelationTarget(MapPartitionKey const& targetKey, std::string message);
 
     /** Commit a loaded relation target to every dependent output. */
-    void collectRelationTarget(MapTileKey const& targetKey, TileFeatureLayer::Ptr layer);
+    void collectRelationTarget(MapPartitionKey const& targetKey, PartitionFeatureLayer::Ptr layer);
 
     /** Resolve located relation candidates and add non-fatal ambiguity issues. */
     tl::expected<void, simfil::Error> resolveStoredRelationDescriptors(
@@ -332,7 +335,7 @@ private:
         std::vector<FeatureLayerRelationDescriptor>& descriptors);
 
     /** Snapshot output keys that may still own a completed relation. */
-    [[nodiscard]] std::vector<MapTileKey> liveOutputKeys();
+    [[nodiscard]] std::vector<MapPartitionKey> liveOutputKeys();
 
     /** Materialize point groups and merge their output metadata. */
     tl::expected<bool, simfil::Error>
@@ -350,7 +353,7 @@ private:
     bool emitCompletedOutputs(std::vector<ReadyOutput> ready);
 
     /** Evaluate and commit one source while maintaining memory gauges. */
-    void evaluate(size_t sourceIndex, uint64_t sourceBytes, TileFeatureLayer::Ptr source);
+    void evaluate(size_t sourceIndex, uint64_t sourceBytes, PartitionFeatureLayer::Ptr source);
 
     /** Process the terminal state of the ordinary source-tile child request. */
     void childFinished(RequestStatus status);

@@ -35,9 +35,9 @@ TileId secondTile()
     return TileId::fromTileXY(2, 0, 1);
 }
 
-std::vector<TileId> tileSequence(size_t count)
+std::vector<PartitionId> tileSequence(size_t count)
 {
-    std::vector<TileId> result;
+    std::vector<PartitionId> result;
     result.reserve(count);
     for (size_t index = 0; index < count; ++index) {
         result.push_back(TileId::fromTileXY(static_cast<int>(index + 1), 0, 6));
@@ -109,7 +109,7 @@ public:
         return info_;
     }
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         {
             std::lock_guard lock(mutex_);
@@ -140,13 +140,13 @@ public:
             tile->newValue(int64_t{80}));
     }
 
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw std::runtime_error(
             "FilterDataSource does not provide source-data tiles");
     }
 
-    std::vector<TileId> requestedTiles() const
+    std::vector<PartitionId> requestedTiles() const
     {
         std::lock_guard lock(mutex_);
         return requestedTiles_;
@@ -155,7 +155,7 @@ public:
 private:
     DataSourceInfo info_;
     mutable std::mutex mutex_;
-    std::vector<TileId> requestedTiles_;
+    std::vector<PartitionId> requestedTiles_;
 };
 
 class FailingFilterDataSource : public FilterDataSource
@@ -165,7 +165,7 @@ public:
         : FilterDataSource("FailingFilterPool")
     {}
 
-    void fill(TileFeatureLayer::Ptr const&) override
+    void fill(PartitionFeatureLayer::Ptr const&) override
     {
         ++attempts_;
         throw std::runtime_error(
@@ -218,7 +218,7 @@ public:
           revision_(std::move(revision))
     {}
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         FilterDataSource::fill(tile);
         tile->setInfo(
@@ -243,7 +243,7 @@ public:
           ttl_(ttl)
     {}
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         FilterDataSource::fill(tile);
         tile->setTimestamp(timestamp_);
@@ -262,7 +262,7 @@ public:
         : FilterDataSource("BlockingResetPool")
     {}
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         auto const fillNumber =
             fillCount_.fetch_add(1) + 1;
@@ -328,7 +328,7 @@ public:
         return info_;
     }
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         if (tile->tileId() == firstTile()) {
             FilterDataSource::fill(tile);
@@ -399,14 +399,8 @@ public:
         requestedTypeId_ = request.typeId_;
         requestedFeatureId_ = request.featureId_;
         return {LocateCandidate(
-            MapTileKey{
-                LayerType::Features,
-                "FilterMap",
-                "Road",
-                firstTile()},
-            formatFeatureIdString(
-                request.typeId_,
-                request.featureId_))};
+            MapPartitionKey{LayerType::Features, "FilterMap", "Road", firstTile()},
+            formatFeatureIdString(request.typeId_, request.featureId_))};
     }
 
     std::string requestedTypeId_;
@@ -420,7 +414,7 @@ public:
         : FilterDataSource("AttachmentFilterPool")
     {}
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         FilterDataSource::fill(tile);
         tile->setGlbAttachmentName(
@@ -480,7 +474,7 @@ public:
         return info_;
     }
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         {
             std::lock_guard lock(mutex_);
@@ -526,13 +520,13 @@ public:
         feature->addGeometry(geometry);
     }
 
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw std::runtime_error(
             "PointGroupDataSource does not provide source-data tiles");
     }
 
-    std::vector<TileId> requestedTiles() const
+    std::vector<PartitionId> requestedTiles() const
     {
         std::lock_guard lock(mutex_);
         return requestedTiles_;
@@ -546,7 +540,7 @@ private:
     Point easternPoint_;
     std::optional<TileId> limitingLifetimeTile_;
     mutable std::mutex mutex_;
-    std::vector<TileId> requestedTiles_;
+    std::vector<PartitionId> requestedTiles_;
 };
 
 class RelationDataSource : public DataSource
@@ -573,7 +567,7 @@ public:
         return info_;
     }
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         {
             std::lock_guard lock(mutex_);
@@ -643,7 +637,7 @@ public:
             });
     }
 
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw std::runtime_error(
             "RelationDataSource does not provide source-data tiles");
@@ -661,7 +655,7 @@ public:
         return locateCalls_;
     }
 
-    std::vector<TileId> requestedTiles() const
+    std::vector<PartitionId> requestedTiles() const
     {
         std::lock_guard lock(mutex_);
         return requestedTiles_;
@@ -683,19 +677,15 @@ private:
             return {};
         }
         return {LocateCandidate::fromFeatureIdExpression(
-            MapTileKey(
+            MapPartitionKey(
                 LayerType::Features,
                 "FilterMap",
                 "Road",
-                TileId::fromValue(
-                    static_cast<int32_t>(
-                        *tileId))),
+                TileId::fromValue(static_cast<int32_t>(*tileId))),
             "Road",
             "$features.*{typeId == 'Road' and roadId == locateRoadId}.id",
             {
-                {
-                    "locateRoadId",
-                    *externalRoadId},
+                {"locateRoadId", *externalRoadId},
             })};
     }
 
@@ -705,7 +695,7 @@ private:
     std::optional<TileId> failingTile_;
     std::optional<TileId> limitingLifetimeTile_;
     mutable std::mutex mutex_;
-    std::vector<TileId> requestedTiles_;
+    std::vector<PartitionId> requestedTiles_;
     std::atomic_size_t locateCalls_ = 0;
 };
 
@@ -749,18 +739,18 @@ TEST_CASE(
     auto dataSource = std::make_shared<FilterDataSource>();
     service.add(dataSource);
 
-    auto request =
-        std::make_shared<FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{firstTile(), secondTile()},
-            filterDefinition());
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{firstTile(), secondTile()},
+        filterDefinition());
 
     std::mutex callbackMutex;
-    std::vector<TileSubsetLayer::Ptr> results;
+    std::vector<PartitionSubsetLayer::Ptr> results;
     std::vector<nlohmann::json> statuses;
     request->onFilterResult(
-        [&](TileSubsetLayer::Ptr layer) {
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
             std::lock_guard lock(callbackMutex);
             results.push_back(std::move(layer));
         });
@@ -775,8 +765,7 @@ TEST_CASE(
 
     REQUIRE(request->getStatus() == RequestStatus::Success);
     REQUIRE(results.size() == 2);
-    REQUIRE(dataSource->requestedTiles() ==
-            std::vector<TileId>{firstTile(), secondTile()});
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{firstTile(), secondTile()});
     for (auto const& subset : results) {
         REQUIRE(subset->filterId() == "style:roads");
         REQUIRE(subset->generation() == 4);
@@ -826,24 +815,24 @@ TEST_CASE(
     auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
         "FilterMap",
         "Road",
-        std::vector<TileId>{firstTile()},
+        std::vector<PartitionId>{firstTile()},
         filterDefinition());
     request->setWorkAdmissionGate(admissionOpen);
 
     REQUIRE(service.request(request));
-    auto liveRequest =
-        std::make_shared<LayerTilesRequest>("FilterMap", "Road", std::vector<TileId>{secondTile()});
+    auto liveRequest = std::make_shared<
+        LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{secondTile()});
     REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{liveRequest}));
     liveRequest->wait();
     REQUIRE(liveRequest->getStatus() == RequestStatus::Success);
-    REQUIRE(dataSource->requestedTiles() == std::vector<TileId>{secondTile()});
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{secondTile()});
 
     admissionOpen->store(true);
     service.notifyWorkAvailable();
     request->wait();
 
     REQUIRE(request->getStatus() == RequestStatus::Success);
-    REQUIRE(dataSource->requestedTiles() == std::vector<TileId>{secondTile(), firstTile()});
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{secondTile(), firstTile()});
 }
 
 TEST_CASE(
@@ -857,17 +846,17 @@ TEST_CASE(
         std::make_shared<OutOfOrderFilterDataSource>();
     service.add(dataSource);
 
-    auto request =
-        std::make_shared<FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{firstTile(), secondTile()},
-            filterDefinition());
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{firstTile(), secondTile()},
+        filterDefinition());
     std::mutex resultMutex;
     std::condition_variable resultChanged;
-    std::vector<TileId> resultOrder;
+    std::vector<PartitionId> resultOrder;
     request->onFilterResult(
-        [&](TileSubsetLayer::Ptr layer) {
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
             {
                 std::lock_guard lock(resultMutex);
                 resultOrder.push_back(layer->tileId());
@@ -898,10 +887,8 @@ TEST_CASE(
 
     REQUIRE(secondEmittedBeforeFirstCompleted);
     REQUIRE(request->getStatus() == RequestStatus::Success);
-    REQUIRE(resultOrder ==
-            std::vector<TileId>{secondTile(), firstTile()});
-    REQUIRE(dataSource->requestedTiles() ==
-            std::vector<TileId>{firstTile(), secondTile()});
+    REQUIRE(resultOrder == std::vector<PartitionId>{secondTile(), firstTile()});
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{firstTile(), secondTile()});
 
     bool trackerReleased = false;
     for (size_t attempt = 0; attempt < 200; ++attempt) {
@@ -967,14 +954,14 @@ TEST_CASE(
     auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
         "FilterMap",
         "Road",
-        std::vector<TileId>{firstTile(), secondTile()},
+        std::vector<PartitionId>{firstTile(), secondTile()},
         filterDefinition());
     std::mutex callbackMutex;
     std::condition_variable callbackChanged;
     bool firstCallbackStarted = false;
     bool releaseFirstCallback = false;
     request->onFilterResult(
-        [&](TileSubsetLayer::Ptr)
+        [&](PartitionSubsetLayer::Ptr)
         {
             std::unique_lock lock(callbackMutex);
             if (firstCallbackStarted) {
@@ -1023,14 +1010,14 @@ TEST_CASE(
     auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
         "FilterMap",
         "Road",
-        std::vector<TileId>{firstTile(), secondTile()},
+        std::vector<PartitionId>{firstTile(), secondTile()},
         filterDefinition());
     std::mutex callbackMutex;
     std::condition_variable callbackChanged;
     bool callbackStarted = false;
     bool releaseCallback = false;
     request->onFilterResult(
-        [&](TileSubsetLayer::Ptr)
+        [&](PartitionSubsetLayer::Ptr)
         {
             std::unique_lock lock(callbackMutex);
             callbackStarted = true;
@@ -1075,10 +1062,10 @@ TEST_CASE(
     auto request = std::make_shared<LayerTilesRequest>(
         "FilterMap",
         "Road",
-        std::vector<TileId>{firstTile(), secondTile()});
-    std::vector<TileId> results;
+        std::vector<PartitionId>{firstTile(), secondTile()});
+    std::vector<PartitionId> results;
     request->onFeatureLayer(
-        [&](TileFeatureLayer::Ptr layer) { results.push_back(layer->tileId()); });
+        [&](PartitionFeatureLayer::Ptr layer) { results.push_back(layer->tileId()); });
 
     REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{request}));
     REQUIRE(dataSource->waitForFirstStart());
@@ -1087,10 +1074,8 @@ TEST_CASE(
     request->wait();
 
     REQUIRE(request->getStatus() == RequestStatus::Success);
-    REQUIRE(results == std::vector<TileId>{secondTile()});
-    REQUIRE(
-        dataSource->requestedTiles() ==
-        std::vector<TileId>{firstTile(), secondTile()});
+    REQUIRE(results == std::vector<PartitionId>{secondTile()});
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{firstTile(), secondTile()});
 }
 
 TEST_CASE(
@@ -1104,11 +1089,11 @@ TEST_CASE(
     auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
         "FilterMap",
         "Road",
-        std::vector<TileId>{firstTile(), secondTile()},
+        std::vector<PartitionId>{firstTile(), secondTile()},
         filterDefinition());
-    std::vector<TileId> results;
+    std::vector<PartitionId> results;
     request->onFilterResult(
-        [&](TileSubsetLayer::Ptr layer) { results.push_back(layer->tileId()); });
+        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(layer->tileId()); });
 
     REQUIRE(service.request(request));
     REQUIRE(dataSource->waitForFirstStart());
@@ -1117,10 +1102,8 @@ TEST_CASE(
     request->wait();
 
     REQUIRE(request->getStatus() == RequestStatus::Success);
-    REQUIRE(results == std::vector<TileId>{secondTile()});
-    REQUIRE(
-        dataSource->requestedTiles() ==
-        std::vector<TileId>{firstTile(), secondTile()});
+    REQUIRE(results == std::vector<PartitionId>{secondTile()});
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{firstTile(), secondTile()});
 
     for (size_t attempt = 0; attempt < 200; ++attempt) {
         if (service.getMemoryStatistics()["active-filters"].empty()) {
@@ -1151,15 +1134,10 @@ TEST_CASE(
         std::chrono::seconds{2},
         true));
 
-    auto request = std::make_shared<LayerTilesRequest>(
-        "FilterMap",
-        "Road",
-        std::vector<TileId>{firstTile()});
-    TileFeatureLayer::Ptr result;
-    request->onFeatureLayer(
-        [&](TileFeatureLayer::Ptr layer) {
-            result = std::move(layer);
-        });
+    auto request = std::make_shared<
+        LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
+    PartitionFeatureLayer::Ptr result;
+    request->onFeatureLayer([&](PartitionFeatureLayer::Ptr layer) { result = std::move(layer); });
 
     REQUIRE(service.request(
         std::vector<LayerTilesRequest::Ptr>{request}));
@@ -1196,52 +1174,36 @@ TEST_CASE(
         false);
     service.add(dataSource);
 
-    auto request =
-        std::make_shared<FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{
-                westernTile,
-                easternTile},
-            FeatureLayerFilterRequest{
-                .filterId_ = "merged-roads",
-                .generation_ = 3,
-                .channels_ = {
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{westernTile, easternTile},
+        FeatureLayerFilterRequest{
+            .filterId_ = "merged-roads",
+            .generation_ = 3,
+            .channels_ =
+                {
                     FeatureLayerFilterChannel{
                         .channelId_ = "merged",
-                        .featureFilter_ =
-                            "typeId == 'Road'",
-                        .scope_ =
-                            FeatureLayerFilterScope::Feature,
+                        .featureFilter_ = "typeId == 'Road'",
+                        .scope_ = FeatureLayerFilterScope::Feature,
                         .featureTypes_ = {"Road"},
-                        .entryFields_ = {
-                            "count($features.*)"},
-                        .geometryTypes_ =
-                            uint32_t{1}
-                            << static_cast<uint8_t>(
-                                   GeomType::Points),
+                        .entryFields_ = {"count($features.*)"},
+                        .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points),
                         .geometryName_ = "merge",
                         .group_ =
                             FeatureLayerPointGridGroup{
-                                .origin_ = {
-                                    boundary - 1.0,
-                                    latitude - 1.0,
-                                    -5.0},
-                                .cellSize_ = {
-                                    2.0,
-                                    2.0,
-                                    10.0},
+                                .origin_ = {boundary - 1.0, latitude - 1.0, -5.0},
+                                .cellSize_ = {2.0, 2.0, 10.0},
                             },
                     },
                 },
-            },
-            std::vector<TileId>{easternTile});
+        },
+        std::vector<PartitionId>{easternTile});
 
-    std::vector<TileSubsetLayer::Ptr> results;
+    std::vector<PartitionSubsetLayer::Ptr> results;
     request->onFilterResult(
-        [&](TileSubsetLayer::Ptr layer) {
-            results.push_back(std::move(layer));
-        });
+        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
     REQUIRE(service.request(request));
     request->wait();
     REQUIRE(
@@ -1251,11 +1213,7 @@ TEST_CASE(
     auto const requestedSources =
         dataSource->requestedTiles();
     REQUIRE(requestedSources.size() == 12);
-    REQUIRE(
-        std::set<TileId>(
-            requestedSources.begin(),
-            requestedSources.end())
-            .size() == 12);
+    REQUIRE(std::set<PartitionId>(requestedSources.begin(), requestedSources.end()).size() == 12);
     // The eastern priority propagates to its complete source halo. The first
     // requested output remains first, while first-needed dependency sources
     // are interleaved instead of accumulating after every output.
@@ -1267,8 +1225,8 @@ TEST_CASE(
     REQUIRE(std::distance(requestedSources.begin(), easternSource) > 1);
 
     REQUIRE(results.size() == 2);
-    TileSubsetLayer::Ptr westernResult;
-    TileSubsetLayer::Ptr easternResult;
+    PartitionSubsetLayer::Ptr westernResult;
+    PartitionSubsetLayer::Ptr easternResult;
     for (auto const& result : results) {
         REQUIRE(result->dependencies().size() == 9);
         if (result->tileId() == westernTile) {
@@ -1361,14 +1319,11 @@ TEST_CASE(
                     std::nullopt,
                     easternTile);
             service.add(dataSource);
-            auto request =
-                std::make_shared<
-                    FeatureLayerFilterTilesRequest>(
-                    "FilterMap",
-                    "Road",
-                    std::vector<TileId>{
-                        outputTile},
-                    relationFilter);
+            auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+                "FilterMap",
+                "Road",
+                std::vector<PartitionId>{outputTile},
+                relationFilter);
             if (exactRoot) {
                 request->exactRoots_.push_back(
                     FeatureLayerFilterRoot{
@@ -1390,13 +1345,9 @@ TEST_CASE(
                         0,
                     });
             }
-            std::vector<TileSubsetLayer::Ptr>
-                results;
+            std::vector<PartitionSubsetLayer::Ptr> results;
             request->onFilterResult(
-                [&](TileSubsetLayer::Ptr layer) {
-                    results.push_back(
-                        std::move(layer));
-                });
+                [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
             REQUIRE(service.request(request));
             request->wait();
             REQUIRE(
@@ -1405,11 +1356,9 @@ TEST_CASE(
             REQUIRE(results.size() == 1);
             REQUIRE(
                 dataSource->requestedTiles() ==
-                std::vector<TileId>{
+                std::vector<PartitionId>{
                     outputTile,
-                    outputTile == westernTile
-                        ? easternTile
-                        : westernTile});
+                    outputTile == westernTile ? easternTile : westernTile});
             REQUIRE(dataSource->locateCalls() == 1);
             return results.front();
         };
@@ -1461,37 +1410,31 @@ TEST_CASE(
             easternTile);
     service.add(dataSource);
 
-    auto request =
-        std::make_shared<
-            FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{
-                westernTile,
-                easternTile},
-            FeatureLayerFilterRequest{
-                .filterId_ = "selected-relations",
-                .generation_ = 1,
-                .channels_ = {
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{westernTile, easternTile},
+        FeatureLayerFilterRequest{
+            .filterId_ = "selected-relations",
+            .generation_ = 1,
+            .channels_ =
+                {
                     FeatureLayerFilterChannel{
                         .channelId_ = "connected",
-                        .featureFilter_ =
-                            "typeId == 'Road'",
+                        .featureFilter_ = "typeId == 'Road'",
                         .entryFilter_ = "$twoway",
-                        .scope_ =
-                            FeatureLayerFilterScope::Relation,
+                        .scope_ = FeatureLayerFilterScope::Relation,
                         .featureTypes_ = {"Road"},
                         .geometryName_ = "relation",
                         .relation_ =
                             FeatureLayerStoredRelationOptions{
-                                .relationNamePattern_ =
-                                    "connected",
+                                .relationNamePattern_ = "connected",
                                 .recursive_ = true,
                                 .mergeTwoway_ = true,
                             },
                     },
                 },
-            });
+        });
     auto root = [](TileId tileId, int64_t roadId) {
         return FeatureLayerFilterRoot{
             tileId,
@@ -1513,11 +1456,9 @@ TEST_CASE(
         root(westernTile, 1),
     };
 
-    std::vector<TileSubsetLayer::Ptr> results;
+    std::vector<PartitionSubsetLayer::Ptr> results;
     request->onFilterResult(
-        [&](TileSubsetLayer::Ptr layer) {
-            results.push_back(std::move(layer));
-        });
+        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
     REQUIRE(service.request(request));
     request->wait();
     REQUIRE(
@@ -1559,42 +1500,34 @@ TEST_CASE(
             easternTile);
     service.add(dataSource);
 
-    auto request =
-        std::make_shared<
-            FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{westernTile},
-            FeatureLayerFilterRequest{
-                .filterId_ =
-                    "unavailable-relation-target",
-                .generation_ = 1,
-                .channels_ = {
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{westernTile},
+        FeatureLayerFilterRequest{
+            .filterId_ = "unavailable-relation-target",
+            .generation_ = 1,
+            .channels_ =
+                {
                     FeatureLayerFilterChannel{
                         .channelId_ = "connected",
-                        .featureFilter_ =
-                            "typeId == 'Road'",
+                        .featureFilter_ = "typeId == 'Road'",
                         .entryFilter_ = "$twoway",
-                        .scope_ =
-                            FeatureLayerFilterScope::
-                                Relation,
+                        .scope_ = FeatureLayerFilterScope::Relation,
                         .featureTypes_ = {"Road"},
                         .geometryName_ = "relation",
                         .relation_ =
                             FeatureLayerStoredRelationOptions{
-                                .relationNamePattern_ =
-                                    "connected",
+                                .relationNamePattern_ = "connected",
                                 .recursive_ = true,
                                 .mergeTwoway_ = true,
                             },
                     },
                 },
-            });
-    std::vector<TileSubsetLayer::Ptr> results;
-    request->onFilterResult(
-        [&](TileSubsetLayer::Ptr layer) {
-            results.push_back(std::move(layer));
         });
+    std::vector<PartitionSubsetLayer::Ptr> results;
+    request->onFilterResult(
+        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
 
     REQUIRE(service.request(request));
     request->wait();
@@ -1668,15 +1601,8 @@ TEST_CASE(
         });
     REQUIRE(
         responses.front().tileKey_ ==
-        MapTileKey{
-            LayerType::Features,
-            "FilterMap",
-            "Road",
-            firstTile()});
-    REQUIRE(
-        dataSource->requestedTiles() ==
-        std::vector<TileId>{
-            firstTile()});
+        MapPartitionKey{LayerType::Features, "FilterMap", "Road", firstTile()});
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{firstTile()});
 }
 
 TEST_CASE(
@@ -1694,12 +1620,11 @@ TEST_CASE(
     REQUIRE_FALSE(sourceId.empty());
     REQUIRE(sourceId != "FilterServicePool");
 
-    auto matching =
-        std::make_shared<FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{firstTile()},
-            filterDefinition());
+    auto matching = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{firstTile()},
+        filterDefinition());
     matching->sourceId_ = sourceId;
     REQUIRE(service.request(matching));
     matching->wait();
@@ -1707,12 +1632,11 @@ TEST_CASE(
         matching->getStatus() ==
         RequestStatus::Success);
 
-    auto mismatching =
-        std::make_shared<FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{secondTile()},
-            filterDefinition());
+    auto mismatching = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{secondTile()},
+        filterDefinition());
     mismatching->sourceId_ = "not-this-source";
     REQUIRE_FALSE(service.request(mismatching));
     REQUIRE(
@@ -1738,12 +1662,11 @@ TEST_CASE(
     REQUIRE(
         addOnEntry !=
         catalogWithAddOn.sources.end());
-    auto addOnOnly =
-        std::make_shared<FeatureLayerFilterTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{secondTile()},
-            filterDefinition());
+    auto addOnOnly = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{secondTile()},
+        filterDefinition());
     addOnOnly->sourceId_ =
         addOnEntry->descriptor.sourceId;
     REQUIRE_FALSE(service.request(addOnOnly));
@@ -1764,30 +1687,19 @@ TEST_CASE(
             "first");
     service.add(firstSource);
 
-    auto loadRevision =
-        [&](std::string expectedRevision) {
-            auto request =
-                std::make_shared<LayerTilesRequest>(
-                    "FilterMap",
-                    "Road",
-                    std::vector<TileId>{firstTile()});
-            std::string actualRevision;
-            request->onFeatureLayer(
-                [&](TileFeatureLayer::Ptr layer) {
-                    actualRevision =
-                        layer->info().at(
-                            "Producer/revision")
-                            .get<std::string>();
-                });
-            REQUIRE(service.request(
-                std::vector<LayerTilesRequest::Ptr>{
-                    request}));
-            request->wait();
-            REQUIRE(
-                request->getStatus() ==
-                RequestStatus::Success);
-            REQUIRE(actualRevision == expectedRevision);
-        };
+    auto loadRevision = [&](std::string expectedRevision)
+    {
+        auto request = std::make_shared<
+            LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
+        std::string actualRevision;
+        request->onFeatureLayer(
+            [&](PartitionFeatureLayer::Ptr layer)
+            { actualRevision = layer->info().at("Producer/revision").get<std::string>(); });
+        REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{request}));
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(actualRevision == expectedRevision);
+    };
 
     loadRevision("first");
     service.remove(firstSource);
@@ -1813,12 +1725,10 @@ TEST_CASE(
         std::regex("^resetter$"));
     service.add(source);
 
-    auto load = [&] {
-        auto request =
-            std::make_shared<LayerTilesRequest>(
-                "FilterMap",
-                "Road",
-                std::vector<TileId>{firstTile()});
+    auto load = [&]
+    {
+        auto request = std::make_shared<
+            LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
         REQUIRE(service.request(
             std::vector<LayerTilesRequest::Ptr>{request},
             AuthHeaders{{"X-User-Role", "resetter"}}));
@@ -1854,11 +1764,8 @@ TEST_CASE(
         std::make_shared<BlockingResetDataSource>();
     service.add(source);
 
-    auto staleRequest =
-        std::make_shared<LayerTilesRequest>(
-            "FilterMap",
-            "Road",
-            std::vector<TileId>{firstTile()});
+    auto staleRequest = std::make_shared<
+        LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
     REQUIRE(service.request(
         std::vector<LayerTilesRequest::Ptr>{
             staleRequest}));
@@ -1875,19 +1782,14 @@ TEST_CASE(
         staleRequest->getStatus() ==
         RequestStatus::Aborted);
 
-    auto loadRevision = [&] {
-        auto request =
-            std::make_shared<LayerTilesRequest>(
-                "FilterMap",
-                "Road",
-                std::vector<TileId>{firstTile()});
+    auto loadRevision = [&]
+    {
+        auto request = std::make_shared<
+            LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
         std::string revision;
         request->onFeatureLayer(
-            [&](TileFeatureLayer::Ptr layer) {
-                revision = layer->info()
-                    .at("Producer/revision")
-                    .get<std::string>();
-            });
+            [&](PartitionFeatureLayer::Ptr layer)
+            { revision = layer->info().at("Producer/revision").get<std::string>(); });
         REQUIRE(service.request(
             std::vector<LayerTilesRequest::Ptr>{
                 request}));
@@ -1913,13 +1815,13 @@ TEST_CASE(
         std::make_shared<FailingFilterDataSource>();
     service.add(dataSource);
 
-    auto run = [&]() {
-        auto request =
-            std::make_shared<FeatureLayerFilterTilesRequest>(
-                "FilterMap",
-                "Road",
-                std::vector<TileId>{firstTile()},
-                filterDefinition());
+    auto run = [&]()
+    {
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap",
+            "Road",
+            std::vector<PartitionId>{firstTile()},
+            filterDefinition());
         REQUIRE(service.request(request));
         request->wait();
         REQUIRE(
@@ -2041,9 +1943,7 @@ TEST_CASE(
                 "optional-source-assertion"});
     REQUIRE(parsed.filterRequest.has_value());
     REQUIRE(parsed.exactRoots.size() == 1);
-    REQUIRE(
-        parsed.exactRoots[0].tileId_ ==
-        firstTile());
+    REQUIRE(parsed.exactRoots[0].partitionId_ == firstTile());
     REQUIRE(
         parsed.exactRoots[0].typeId_ ==
         "Road");
@@ -2067,8 +1967,8 @@ TEST_CASE(
     REQUIRE(relation.relation_->recursive_);
     REQUIRE(relation.relation_->mergeTwoway_);
     REQUIRE(
-        detail::collectFilterTileIds(parsed) ==
-        std::vector<TileId>{firstTile(), secondTile()});
+        detail::collectFilterPartitionIds(parsed) ==
+        std::vector<PartitionId>{firstTile(), secondTile()});
 
     auto serialized =
         detail::filterRequestToJson(
@@ -2154,8 +2054,8 @@ TEST_CASE(
             definition);
     REQUIRE(parsed.filterRequest.has_value());
     REQUIRE(
-        detail::collectFilterTileIds(parsed) ==
-        std::vector<TileId>{firstTile(), secondTile()});
+        detail::collectFilterPartitionIds(parsed) ==
+        std::vector<PartitionId>{firstTile(), secondTile()});
 
     request["channels"] = nlohmann::json::array();
     REQUIRE_THROWS(
@@ -2226,11 +2126,8 @@ TEST_CASE(
         secondTile().value(),
     };
     requireError(
-        [&] {
-            (void)detail::parseLayerTilesRequestJson(
-                request);
-        },
-        "priorityTileIds must be contained in tileIds");
+        [&] { (void)detail::parseLayerTilesRequestJson(request); },
+        "priorityPartitionIds must be contained in tileIds");
 
     request.erase("priorityTileIds");
     request["roots"] = {{
@@ -2281,11 +2178,7 @@ TEST_CASE(
     service.add(source);
 
     auto request = AttachmentRequest{
-        .tileKey_ = MapTileKey(
-            LayerType::Features,
-            "FilterMap",
-            "Road",
-            firstTile()),
+        .tileKey_ = MapPartitionKey(LayerType::Features, "FilterMap", "Road", firstTile()),
         .name_ = "synthetic.glb",
     };
     auto result = service.attachment(request);

@@ -46,8 +46,8 @@ private:
 };
 
 /**
- * View onto a feature which belongs to a TileFeatureLayer.
- * You can create a feature through the TileFeatureLayer::newFeature function.
+ * View onto a feature which belongs to a PartitionFeatureLayer.
+ * You can create a feature through the PartitionFeatureLayer::newFeature function.
  * A Feature object maps to a GeoJSON feature object in the following way:
  *
  *   {
@@ -79,10 +79,10 @@ private:
  *     ]
  *   }
  */
-class Feature : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class Feature : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
     friend class bitsery::Access;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
     friend class BoundFeature;
     friend class RelationArrayView;
     friend class GeometryCollection;
@@ -158,9 +158,9 @@ public:
     nlohmann::json toJson() const override;
 
     /**
-     * Expose access to underlying TileFeatureLayer.
+     * Expose access to underlying PartitionFeatureLayer.
      */
-    using simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>::model;
+    using simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>::model;
 
     /**
      * Create a new named relation and immediately insert it into the feature.
@@ -251,7 +251,9 @@ protected:
 
 public:
     explicit Feature(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
+    {
+    }
     Feature(BasicData& d,
             ComplexData* c,
             simfil::ModelConstPtr l,
@@ -286,7 +288,8 @@ protected:
         bool fixedSize = false);
 
 public:
-    struct MergedBasicAttributesView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+    struct MergedBasicAttributesView
+        : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
         [[nodiscard]] simfil::SchemaId schema() const override;
@@ -297,7 +300,9 @@ public:
         [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
         explicit MergedBasicAttributesView(simfil::detail::mp_key key)
-            : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+            : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
+        {
+        }
         MergedBasicAttributesView(
             simfil::ModelConstPtr model,
             simfil::ModelNodeAddress address,
@@ -314,7 +319,7 @@ public:
     };
 
 protected:
-    struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+    struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
         [[nodiscard]] simfil::SchemaId schema() const override;
@@ -325,7 +330,9 @@ protected:
         [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
         explicit FeaturePropertyView(simfil::detail::mp_key key)
-            : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key) {}
+            : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
+        {
+        }
         FeaturePropertyView(model_ptr<Feature> feature,
                             simfil::detail::mp_key key);
         FeaturePropertyView() = delete;

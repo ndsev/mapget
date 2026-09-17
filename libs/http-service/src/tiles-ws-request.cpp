@@ -62,12 +62,10 @@ ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j)
 }
 
 /** Build the canonical key used for matching client tile requests to backend frames. */
-MapTileKey makeCanonicalRequestedTileKey(
-    std::string_view mapId,
-    std::string_view layerId,
-    TileId tileId)
+MapPartitionKey
+makeCanonicalRequestedTileKey(std::string_view mapId, std::string_view layerId, PartitionId tileId)
 {
-    return MapTileKey(
+    return MapPartitionKey(
         REQUEST_TILE_LAYER_TYPE,
         std::string(mapId),
         std::string(layerId),
@@ -75,7 +73,7 @@ MapTileKey makeCanonicalRequestedTileKey(
 }
 
 /** Normalize an existing backend tile key into the request-key namespace. */
-MapTileKey makeCanonicalRequestedTileKey(MapTileKey key)
+MapPartitionKey makeCanonicalRequestedTileKey(MapPartitionKey key)
 {
     key.layer_ = REQUEST_TILE_LAYER_TYPE;
     return key;
@@ -97,9 +95,7 @@ std::string filterRequestKey(
 }
 
 /** Decorate a canonical tile key so concurrent subsets do not collide. */
-MapTileKey makeFilterRequestedTileKey(
-    MapTileKey key,
-    std::string_view filterKey)
+MapPartitionKey makeFilterRequestedTileKey(MapPartitionKey key, std::string_view filterKey)
 {
     key = makeCanonicalRequestedTileKey(std::move(key));
     key.layerId_.append("#filter:");
@@ -108,9 +104,7 @@ MapTileKey makeFilterRequestedTileKey(
 }
 
 /** Build either a normal tile key or filter-specific key for the same source tile. */
-MapTileKey makeRequestedTileKey(
-    MapTileKey key,
-    std::optional<std::string_view> filterKey)
+MapPartitionKey makeRequestedTileKey(MapPartitionKey key, std::optional<std::string_view> filterKey)
 {
     if (filterKey && !filterKey->empty()) {
         return makeFilterRequestedTileKey(std::move(key), *filterKey);
@@ -119,9 +113,9 @@ MapTileKey makeRequestedTileKey(
 }
 
 /** Extract the subscription identity carried by a subset layer. */
-std::optional<std::string> filterRequestKey(TileLayer::Ptr const& layer)
+std::optional<std::string> filterRequestKey(PartitionLayer::Ptr const& layer)
 {
-    auto subset = std::dynamic_pointer_cast<TileSubsetLayer>(layer);
+    auto subset = std::dynamic_pointer_cast<PartitionSubsetLayer>(layer);
     if (!subset) {
         return std::nullopt;
     }

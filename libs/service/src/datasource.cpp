@@ -53,23 +53,23 @@ bool authHeadersMatch(
     return false;
 }
 
-TileLayer::Ptr DataSource::get(
-    const MapTileKey& k,
+PartitionLayer::Ptr DataSource::get(
+    const MapPartitionKey& k,
     Cache::Ptr& cache,
     DataSourceInfo const& info,
-    TileLayer::LoadStateCallback loadStateCallback)
+    PartitionLayer::LoadStateCallback loadStateCallback)
 {
     auto layerInfo = info.getLayer(k.layerId_);
     if (!layerInfo)
         throw std::runtime_error("Layer info is null");
 
-    auto result = TileLayer::Ptr{};
+    auto result = PartitionLayer::Ptr{};
 
     auto start = std::chrono::steady_clock::now();
     switch (layerInfo->type_) {
     case mapget::LayerType::Features: {
-        auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
-            k.tileId_,
+        auto tileFeatureLayer = std::make_shared<PartitionFeatureLayer>(
+            k.partitionId_,
             info.stringPoolId_,
             info.mapId_,
             info.getLayer(k.layerId_),
@@ -82,8 +82,8 @@ TileLayer::Ptr DataSource::get(
         break;
     }
     case mapget::LayerType::SourceData: {
-        auto tileSourceDataLayer = std::make_shared<TileSourceDataLayer>(
-            k.tileId_,
+        auto tileSourceDataLayer = std::make_shared<PartitionSourceDataLayer>(
+            k.partitionId_,
             info.stringPoolId_,
             info.mapId_,
             info.getLayer(k.layerId_),
@@ -142,6 +142,14 @@ std::vector<LocateCandidate> DataSource::locate(
     LocateRequest const&)
 {
     return {};
+}
+
+ObjectDiscoveryResult DataSource::discoverObjects(ObjectDiscoveryRequest const&)
+{
+    ObjectDiscoveryResult result;
+    result.status_ = ObjectDiscoveryResult::Status::Unavailable;
+    result.message_ = "Datasource does not provide object discovery.";
+    return result;
 }
 
 std::optional<AttachmentResponse> DataSource::attachment(

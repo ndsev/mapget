@@ -129,6 +129,11 @@ struct HttpService::Impl
     /** Execute interactive reconciliation without occupying Drogon's I/O loop. */
     void runInteractiveControlLoop();
 
+    /** Discover object references per tile without loading/converting object payloads. */
+    void handleObjectDiscoveryRequest(
+        drogon::HttpRequestPtr const& req,
+        std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
+
     void handleLocateRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;

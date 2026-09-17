@@ -37,8 +37,8 @@ struct TestDataSource : public DataSource
         )"_json);
     };
 
-    void fill(TileFeatureLayer::Ptr const&) override {};
-    void fill(TileSourceDataLayer::Ptr const&) override {};
+    void fill(PartitionFeatureLayer::Ptr const&) override{};
+    void fill(PartitionSourceDataLayer::Ptr const&) override{};
 };
 
 struct NamedTestDataSource : public DataSource
@@ -53,8 +53,8 @@ struct NamedTestDataSource : public DataSource
         }));
     }
 
-    void fill(TileFeatureLayer::Ptr const&) override {};
-    void fill(TileSourceDataLayer::Ptr const&) override {};
+    void fill(PartitionFeatureLayer::Ptr const&) override{};
+    void fill(PartitionSourceDataLayer::Ptr const&) override{};
 
     std::string mapId_;
 };

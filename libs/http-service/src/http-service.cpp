@@ -89,6 +89,14 @@ void HttpService::setup(drogon::HttpAppFramework& app)
         {drogon::Post});
 
     app.registerHandler(
+        "/objects/discover",
+        [this](
+            drogon::HttpRequestPtr const& req,
+            std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+        { impl_->handleObjectDiscoveryRequest(req, std::move(callback)); },
+        {drogon::Post});
+
+    app.registerHandler(
         "/locate",
         [this](
             const drogon::HttpRequestPtr& req,

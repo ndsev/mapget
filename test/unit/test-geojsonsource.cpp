@@ -203,7 +203,7 @@ TEST_CASE(
     for (auto const& candidate : candidates) {
         CHECK(candidate.tileKey_.layer_ == LayerType::Features);
         CHECK(candidate.tileKey_.mapId_ == "LocateGeoJson");
-        CHECK(candidate.tileKey_.tileId_ == expectedTile);
+        CHECK(candidate.tileKey_.partitionId_ == expectedTile);
         CHECK(candidate.selector_.canonicalFeatureId_ == expectedId);
         CHECK(LocateCandidate(candidate.serialize()).serialize() == candidate.serialize());
         layers.insert(candidate.tileKey_.layerId_);
@@ -229,7 +229,7 @@ TEST_CASE(
         {{"tileId", int64_t(largeTileId)}, {"featureIndex", int64_t(0)}}};
     auto const results = service.locate(request);
     REQUIRE(results.size() == 1);
-    CHECK(results.front().tileKey_.tileId_ == TileId::fromValue(largeTileId));
+    CHECK(results.front().tileKey_.partitionId_ == TileId::fromValue(largeTileId));
     CHECK(results.front().tileKey_.layerId_ == "GeoJsonAny");
     auto const canonicalId = fmt::format("AnyFeature.{}.0", largeTileId);
     CHECK(results.front().resolvedCanonicalFeatureId_ == canonicalId);
@@ -269,9 +269,9 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer != nullptr);
         REQUIRE(!layer->coverage_.empty());
 
-        // Create a TileFeatureLayer to fill
+        // Create a PartitionFeatureLayer to fill
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -321,7 +321,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -375,7 +375,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         // Fill Road layer
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto roadTile = std::make_shared<TileFeatureLayer>(
+        auto roadTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -386,7 +386,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(roadTile->numRoots() > 0);
 
         // Fill Lane layer
-        auto laneTile = std::make_shared<TileFeatureLayer>(
+        auto laneTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -452,7 +452,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromTileXY(0x01fa, 0x0888, 13),
             info.stringPoolId_,
             info.mapId_,
@@ -588,7 +588,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer->coverage_.front().min_ == TileId::fromTileXY(0x01fa, 0x0888, 13));
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromTileXY(0x01fa, 0x0888, 13),
             info.stringPoolId_,
             info.mapId_,
@@ -660,7 +660,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         // Fill both tiles
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
 
-        auto tile1 = std::make_shared<TileFeatureLayer>(
+        auto tile1 = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -669,7 +669,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE_NOTHROW(source.fill(tile1));
         REQUIRE(tile1->numRoots() > 0);
 
-        auto tile2 = std::make_shared<TileFeatureLayer>(
+        auto tile2 = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(secondTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -726,7 +726,7 @@ layers:
         REQUIRE(info.getLayer("Lane") != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto roadTile = std::make_shared<TileFeatureLayer>(
+        auto roadTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -735,7 +735,7 @@ layers:
         REQUIRE_NOTHROW(source.fill(roadTile));
         REQUIRE(roadTile->numRoots() > 0);
 
-        auto laneTile = std::make_shared<TileFeatureLayer>(
+        auto laneTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -776,7 +776,7 @@ layers:
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -811,7 +811,7 @@ layers:
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(secondTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -855,7 +855,7 @@ layers:
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -915,7 +915,7 @@ layers:
         REQUIRE(roadLayer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto roadTile = std::make_shared<TileFeatureLayer>(
+        auto roadTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -940,7 +940,7 @@ layers:
         REQUIRE(anyLayer->coverage_.empty());
 
         auto fallbackStrings = std::make_shared<StringPool>(fallbackInfo.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             fallbackInfo.stringPoolId_,
             fallbackInfo.mapId_,

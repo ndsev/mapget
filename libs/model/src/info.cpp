@@ -1,7 +1,8 @@
 #include "info.h"
-#include "stream.h"
-#include "mapget/log.h"
+#include <bit>
 #include "layerschema.h"
+#include "mapget/log.h"
+#include "stream.h"
 
 #include <tuple>
 #include <random>
@@ -366,6 +367,20 @@ bool IdPart::validate(std::variant<int64_t, std::string>& val, std::string* erro
 
 bool IdPart::validate(std::variant<int64_t, std::string_view>& val, std::string* error) const
 {
+    // U64 nodes deliberately project through simfil's signed scalar storage.
+    // Decimal transport still parses the full unsigned domain without overflow.
+    if (datatype_ == IdPartDataType::U64) {
+        if (auto text = std::get_if<std::string_view>(&val)) {
+            auto parsed = from_chars<uint64_t>(*text);
+            if (!parsed) {
+                if (error)
+                    *error = "Expected an unsigned 64-bit decimal ID.";
+                return false;
+            }
+            val = std::bit_cast<int64_t>(*parsed);
+        }
+        return true;
+    }
     std::optional<int64_t> intVal;
     if (std::holds_alternative<std::string_view>(val)) {
         intVal = from_chars<int64_t>(std::get<std::string_view>(val));
@@ -526,6 +541,16 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         auto result = std::make_shared<LayerInfo>();
         result->layerId_ = j.value("layerId", layerId);
         result->type_ = type;
+        auto kind = j.value("partitionKind", std::string("tile"));
+        if (kind != "tile" && kind != "object")
+            throw std::invalid_argument("Unknown layer partitionKind.");
+        result->partitionKind_ = kind == "object" ? PartitionKind::Object : PartitionKind::Tile;
+        if (j.contains("tileAssociationLevel")) {
+            auto const& level = j.at("tileAssociationLevel");
+            if (!level.is_number_integer() || level < 0 || level > 15)
+                throw std::invalid_argument("tileAssociationLevel must be an integer in 0..15.");
+            result->tileAssociationLevel_ = level.get<int>();
+        }
         result->featureTypes_ = std::move(featureTypes);
         result->zoomLevels_ = j.value("zoomLevels", std::vector<int>());
         result->coverage_ = std::move(coverages);
@@ -567,6 +592,9 @@ nlohmann::json LayerInfo::toJson() const
         {"canWrite", canWrite_},
         {"version", version_.toJson()}};
 
+    result["partitionKind"] = partitionKind_ == PartitionKind::Object ? "object" : "tile";
+    if (tileAssociationLevel_)
+        result["tileAssociationLevel"] = *tileAssociationLevel_;
     if (featureModelSchema_) {
         result["featureModelSchema"] = featureModelSchema_->toJsonSchema();
     }
@@ -611,6 +639,13 @@ std::shared_ptr<LayerSchema const> LayerInfo::layerSchema() const
 
 void LayerInfo::validateIdentifiers() const
 {
+    if (partitionKind_ != PartitionKind::Tile && partitionKind_ != PartitionKind::Object)
+        throw std::invalid_argument("Unknown layer partition kind.");
+    if (partitionKind_ == PartitionKind::Object &&
+        (!tileAssociationLevel_ || *tileAssociationLevel_ < 0 || *tileAssociationLevel_ > 15))
+        throw std::invalid_argument("Object layer requires tileAssociationLevel in 0..15.");
+    if (partitionKind_ == PartitionKind::Tile && tileAssociationLevel_)
+        throw std::invalid_argument("Tile layers do not have an object association level.");
     validateIdentifierName("layer id", layerId_);
     for (auto const& featureType : featureTypes_) {
         validateIdentifierName("feature type name", featureType.name_, ".");
