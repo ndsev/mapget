@@ -20,9 +20,9 @@ class Feature;
  * as speed limits, might belong to the same attribute layer.
  * TODO: Convert to use BaseObject
  */
-class AttributeLayer : public simfil::BaseObject<TileFeatureLayer, Attribute>
+class AttributeLayer : public simfil::BaseObject<PartitionFeatureLayer, Attribute>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
     friend class bitsery::Access;
 
 public:
@@ -81,7 +81,7 @@ public:
  */
 class AttributeLayerList : public MergedArrayView<AttributeLayerList, AttributeLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
     friend class bitsery::Access;
     friend class Feature;
 

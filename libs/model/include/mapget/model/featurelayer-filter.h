@@ -128,7 +128,7 @@ struct FeatureLayerFilterChannel
 /** One exact relation-traversal root, retained in stable request order. */
 struct FeatureLayerFilterRoot
 {
-    TileId tileId_;
+    PartitionId partitionId_;
     std::string typeId_;
     KeyValuePairs featureId_;
     size_t requestOrdinal_ = 0;
@@ -166,7 +166,7 @@ struct FeatureLayerPointGroupMember
 /** One portable candidate awaiting in-tile relation-target resolution. */
 struct FeatureLayerRelationTargetCandidate
 {
-    MapTileKey tileKey_;
+    MapPartitionKey tileKey_;
     FeatureLayerSelector selector_;
     bool resolved_ = false;
 };
@@ -184,7 +184,7 @@ struct FeatureLayerRelationDescriptor
     std::string targetTypeId_;
     KeyValuePairs targetFeatureId_;
     model_ptr<Feature> target_;
-    std::optional<MapTileKey> targetTileKey_;
+    std::optional<MapPartitionKey> targetTileKey_;
     std::vector<FeatureLayerRelationTargetCandidate> targetCandidates_;
     std::vector<model_ptr<Feature>> targetMatches_;
     size_t rootOrdinal_ = 0;
@@ -201,7 +201,7 @@ struct FeatureLayerRelationDescriptor
  */
 struct FeatureLayerFilterSourceResult
 {
-    TileSubsetLayer::Ptr layer_;
+    PartitionSubsetLayer::Ptr layer_;
     std::vector<FeatureLayerPointGroupMember> pointGroupMembers_;
     std::vector<FeatureLayerRelationDescriptor> relationDescriptors_;
     std::vector<FilterIssue> issues_;
@@ -252,7 +252,7 @@ struct FeatureLayerFilterRequest
      * source tiles; standalone callers may omit it for one-operation caching.
      */
     [[nodiscard]] tl::expected<FeatureLayerFilterSourceResult, simfil::Error> filterSource(
-        TileFeatureLayer const& sourceLayer,
+        PartitionFeatureLayer const& sourceLayer,
         bool materializeOutput,
         std::span<FeatureLayerFilterRoot const> exactRoots = {},
         FeatureLayerFilterCancellationCheck const& cancellationCheck = {},
@@ -263,7 +263,7 @@ struct FeatureLayerFilterRequest
      * Reusing the source-pass expression cache avoids recompiling projections.
      */
     [[nodiscard]] tl::expected<FeatureLayerPointGroupCompletion, simfil::Error> completePointGroups(
-        TileSubsetLayer& outputLayer,
+        PartitionSubsetLayer& outputLayer,
         std::span<FeatureLayerPointGroupMember const> members,
         FeatureLayerFilterCancellationCheck const& cancellationCheck = {},
         SimfilExpressionCache* expressionCache = nullptr) const;
@@ -277,9 +277,9 @@ struct FeatureLayerFilterRequest
      * Reusing the request cache shares compilation across endpoint tiles.
      */
     [[nodiscard]] tl::expected<FeatureLayerRelationCompletion, simfil::Error> completeRelations(
-        TileSubsetLayer& outputLayer,
+        PartitionSubsetLayer& outputLayer,
         std::span<FeatureLayerRelationDescriptor const> descriptors,
-        std::span<MapTileKey const> requestedOutputKeys,
+        std::span<MapPartitionKey const> requestedOutputKeys,
         std::span<FeatureLayerFilterRoot const> exactRoots = {},
         FeatureLayerFilterCancellationCheck const& cancellationCheck = {},
         SimfilExpressionCache* expressionCache = nullptr) const;
@@ -290,8 +290,8 @@ struct FeatureLayerFilterRequest
      * Point grouping and stored relations require service coordination and are
      * rejected by this convenience operation.
      */
-    [[nodiscard]] tl::expected<TileSubsetLayer::Ptr, simfil::Error>
-    filter(TileFeatureLayer const& sourceLayer) const;
+    [[nodiscard]] tl::expected<PartitionSubsetLayer::Ptr, simfil::Error>
+    filter(PartitionFeatureLayer const& sourceLayer) const;
 
 private:
     class ExpressionEvaluator;
@@ -300,11 +300,11 @@ private:
 
     /** Validate request invariants that depend on one concrete source layer. */
     [[nodiscard]] tl::expected<void, simfil::Error>
-    validate(TileFeatureLayer const& sourceLayer) const;
+    validate(PartitionFeatureLayer const& sourceLayer) const;
 
     /** Copy effective relation validity geometry into one subset result. */
     [[nodiscard]] static model_ptr<GeometryCollection> copyRelationEffectiveGeometry(
-        TileSubsetLayer& target,
+        PartitionSubsetLayer& target,
         model_ptr<Feature> const& feature,
         model_ptr<MultiValidity> const& validities,
         FeatureLayerFilterChannel const& channel,

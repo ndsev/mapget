@@ -14,9 +14,9 @@ class Geometry;
  * AttributeLayer, and may have reference several
  * `Validity` objects in addition to other arbitrary object fields.
  */
-class Attribute : public simfil::ProceduralObject<2, Attribute, TileFeatureLayer>
+class Attribute : public simfil::ProceduralObject<2, Attribute, PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     /**
@@ -58,7 +58,9 @@ protected:
 
 public:
     explicit Attribute(simfil::detail::mp_key key)
-        : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(key) {}
+        : simfil::ProceduralObject<2, Attribute, PartitionFeatureLayer>(key)
+    {
+    }
     Attribute(Data* data,
               simfil::ModelConstPtr l,
               simfil::ModelNodeAddress a,

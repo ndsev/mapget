@@ -1,6 +1,6 @@
 # HTTP / WebSocket API Guide
 
-Mapget protocol 4 exposes complete source tiles to trusted clients and
+Mapget protocol 5 exposes complete source partitions to trusted clients and
 server-evaluated `TileSubsetLayer` values to interactive renderers. There is no
 staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
@@ -20,13 +20,105 @@ support:
 `stringPoolOffsets`, keyed by datasource `stringPoolId`, to suppress string
 pool entries they already possess.
 
-Protocol-3 `MapTileKey` values contain exactly four parts:
+Tile `MapPartitionKey` values retain four parts:
 
 ```text
 <LayerType>:<percent-escaped mapId>:<percent-escaped layerId>:<signed tileId>
 ```
 
 The removed stage suffix is not accepted.
+
+## Object partitions
+
+All payload requests use the same `/tiles`, `/filter`, and `/interactive`
+paths. Tile-only callers may retain `tileIds` and `priorityTileIds`. Generic
+callers use `partitions` and `priorityPartitions` instead:
+
+```json
+{
+  "requests": [{
+    "mapId": "City",
+    "layerId": "Road",
+    "partitions": [{"kind": "object", "id": "18446744073709551615"}]
+  }],
+  "responseType": "binary"
+}
+```
+
+A tile partition is `{"kind":"tile","id":131073}`. Object IDs must be
+unsigned decimal strings, never JavaScript numbers. Do not supply both
+coverage forms. Priority partitions must belong to the requested set. The
+layer's advertised `partitionKind` must match every requested partition.
+C++/Python clients serialize the tagged form, including tile requests.
+Exact roots and feature-ID restrictions accept `partition` instead of
+`tileId`. `/locate` accepts optional `layerId` and `partition` restrictions;
+its candidates/results use `partitionKey`. Object keys have the form
+`Features:City:Road:object/18446744073709551615`.
+
+Attachments accept a URL-encoded tagged JSON `partition` query parameter in
+place of `tileId`. Binary feature, subset and source-data payloads carry the
+same identity; string pools remain datasource-owned, not object-owned.
+
+Object filtering is object-local: no tile halos, adjacent-object matching,
+or automatic cross-partition relation-target fetches. Intra-object relations
+and point groups are supported. External references remain in the source
+model, but unresolved relations are not synthesized into drawable outputs.
+
+### `POST /objects/discover`
+
+Discover associations without loading or converting object payloads:
+
+```json
+{
+  "requests": [{
+    "mapId": "City",
+    "layerId": "Road",
+    "tileIds": [536870912, 536870913]
+  }]
+}
+```
+
+Use valid packed tiles at the layer's `tileAssociationLevel`. An optional
+`sourceId` has the same routing/assertion meaning as on payload requests.
+Batches contain 1..256 discovery tiles; responses preserve their input order.
+The endpoint applies datasource authorization before scheduling discovery.
+
+```json
+{
+  "responses": [{
+    "mapId": "City",
+    "layerId": "Road",
+    "tileId": 536870912,
+    "status": "success",
+    "objects": [{"id": "18446744073709551615", "bounds": [11, 48, 12, 49]}],
+    "message": "",
+    "timestamp": 1789632000000,
+    "ttlMs": 5000
+  }]
+}
+```
+
+Each input tile gets one response. `bounds` is optional WGS84
+[west,south,east,north]; west > east denotes an antimeridian crossing.
+Duplicate object references within one association list are removed on the
+wire. `success` with an empty list means known empty coverage; `unavailable`
+means missing association data; `failed` reports a backend, authorization,
+metadata or admission error. Failed/unavailable results contain no objects.
+Malformed request syntax returns HTTP 400. Per-tile failures remain in the
+HTTP 200 batch so other discovery tiles can succeed.
+
+`timestamp` is Unix milliseconds; `ttlMs` describes association freshness,
+not object-payload freshness (zero means no expiry). Responses use
+`Cache-Control: no-store`; consumers explicitly retain associations according
+to this freshness. Mapget does not add a second unbounded association cache.
+Clients form the union of discovered IDs and request wanted objects through
+the ordinary payload/filter paths. A disappeared discovery tile does not
+remove an object still referenced by another visible tile.
+
+Discovery uses the global worker cap and datasource concurrency permits.
+Pending discovery is bounded to 4096 jobs; overload/removal/shutdown produces
+failed results rather than retaining an unbounded callback queue. No second
+worker pool is created. Running datasource calls must finish before shutdown.
 
 ## `GET /sources`
 
@@ -382,7 +474,7 @@ after the final chunk. Omitting a handed-off key releases its bookkeeping; if
 the handed-off value's own timestamp plus positive TTL has expired, repeating
 the key follows the ordinary cache/refresh path without an omit/re-add cycle.
 Missing or zero TTL has no session-side expiry. The removed `renewals`,
-`deliveryEpoch`, and `deliveryEpochs` fields are rejected by protocol 4.
+`deliveryEpoch`, and `deliveryEpochs` fields remain rejected since protocol 4.
 
 Completed snapshots are consumed through a latest-wins mailbox outside the
 WebSocket I/O thread. If several complete snapshots arrive faster than mapget

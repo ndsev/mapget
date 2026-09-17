@@ -168,19 +168,19 @@ void Service::abort(const FeatureLayerFilterTilesRequest::Ptr& r)
 
 void Service::retainOutputs(
     LayerTilesRequest::Ptr const& request,
-    std::set<TileId> const& retainedTileIds)
+    std::set<PartitionId> const& retainedPartitionIds)
 {
-    impl_->scheduler_.retainRequestOutputs(request, retainedTileIds);
+    impl_->scheduler_.retainRequestOutputs(request, retainedPartitionIds);
 }
 
 void Service::retainOutputs(
     FeatureLayerFilterTilesRequest::Ptr const& request,
-    std::set<TileId> const& retainedTileIds)
+    std::set<PartitionId> const& retainedPartitionIds)
 {
     if (!request || request->isDone()) {
         return;
     }
-    if (retainedTileIds.empty()) {
+    if (retainedPartitionIds.empty()) {
         abort(request);
         return;
     }
@@ -190,7 +190,7 @@ void Service::retainOutputs(
         execution = request->execution_.lock();
     }
     if (execution) {
-        execution->retainOutputs(retainedTileIds);
+        execution->retainOutputs(retainedPartitionIds);
     }
 }
 

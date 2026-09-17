@@ -20,9 +20,8 @@ namespace
 {
 /** Return a scalar node owned by the same model as the supplied mapget node. */
 template <typename Value>
-simfil::ModelNode::Ptr valueNode(
-    simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer> const& owner,
-    Value&& value)
+simfil::ModelNode::Ptr
+valueNode(simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer> const& owner, Value&& value)
 {
     return model_ptr<simfil::ValueNode>::make(
         std::forward<Value>(value),
@@ -140,10 +139,7 @@ AttrPoint::AttrPoint(
     simfil::ModelConstPtr model,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
-          std::move(model),
-          address,
-          key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(model), address, key)
 {
 }
 
@@ -232,10 +228,7 @@ AttrPointArray::AttrPointArray(
     simfil::ModelConstPtr model,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
-          std::move(model),
-          address,
-          key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(model), address, key)
 {
 }
 
@@ -249,7 +242,7 @@ model_ptr<AttrPoint> AttrPointArray::attrPointAt(uint32_t index) const
             sequence.attrPointCount_);
     }
     return model().resolve<AttrPoint>(simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::AttrPoints,
+        PartitionFeatureLayer::ColumnId::AttrPoints,
         sequence.firstAttrPoint_ + index});
 }
 
@@ -279,10 +272,7 @@ AttrPointSequence::AttrPointSequence(
     simfil::ModelConstPtr model,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
-          std::move(model),
-          address,
-          key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(model), address, key)
 {
 }
 
@@ -338,7 +328,7 @@ uint32_t AttrPointSequence::geometryIndex() const
 model_ptr<AttrPointArray> AttrPointSequence::attrPoints() const
 {
     return model().resolve<AttrPointArray>(simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::AttrPointArrayView,
+        PartitionFeatureLayer::ColumnId::AttrPointArrayView,
         addr().index()});
 }
 
@@ -448,7 +438,7 @@ void AttrPointSequence::setSourceDataReferences(
     model_ptr<SourceDataReferenceCollection> const& sourceData)
 {
     if (sourceData && sourceData->owningModel().get() != &model()) {
-        raise("AttrPointSequence source-data references must belong to its TileFeatureLayer.");
+        raise("AttrPointSequence source-data references must belong to its PartitionFeatureLayer.");
     }
     model().attrPointSequenceData(addr().index()).sourceData_ =
         sourceData ? sourceData->addr() : simfil::ModelNodeAddress{};
@@ -531,10 +521,7 @@ AttrPointSequenceReference::AttrPointSequenceReference(
     simfil::ModelConstPtr model,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
-          std::move(model),
-          address,
-          key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(model), address, key)
 {
 }
 

@@ -20,7 +20,7 @@ private:
     struct CandidateGroup
     {
         std::string sourceId;
-        MapTileKey tileKey;
+        MapPartitionKey tileKey;
         std::vector<LocateCandidate> candidates;
     };
 

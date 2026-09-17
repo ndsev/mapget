@@ -1,6 +1,6 @@
 # Mapget Developer Guide
 
-This guide describes the protocol-3 implementation: complete source tiles,
+This guide describes the protocol-5 implementation: complete source partitions,
 server-evaluated subset layers, semantic geometry names, and lazy attachments.
 
 ## Components
@@ -17,6 +17,42 @@ server-evaluated subset layers, semantic geometry names, and lazy attachments.
 - `libs/pymapget` exposes the same model/service contracts to Python.
 
 `apps/mapget` wires these libraries into the CLI.
+
+## Object datasource integration
+
+Existing tile datasources can keep `fill(TileFeatureLayer::Ptr const&)` and
+`fill(TileSourceDataLayer::Ptr const&)`: these are aliases of the generic
+partition models. Object-aware fills inspect `layer->partitionId()` and use
+`objectId()`; do not call `tileId()` for objects. Publish object addressing and
+`tileAssociationLevel` in each relevant `LayerInfo`, including source-data
+layers, and choose an explicit geometry anchor before inserting points.
+
+Override `DataSource::discoverObjects(ObjectDiscoveryRequest const&)` to
+return an `ObjectDiscoveryResult`. The default reports unavailable, not empty.
+It returns associations only; ordinary fills still load object payloads.
+Exceptions and invalid result bounds/TTL become failed discovery responses.
+The scheduler shares datasource permits and worker threads with tile/object
+loads, alternates discovery and payload selection, and cancels queued
+association work on invalidation/shutdown. `/status-data` includes
+`queued-discovery-jobs` and accounts queued request storage.
+
+Remote/process sources use the same discovery hook through
+`DataSourceServer::onObjectDiscoveryRequest`. Their `/objects/discover`
+request is a single `{layerId,tileId}` query because the remote endpoint owns
+one datasource; the public service endpoint supports map-scoped batches.
+Remote `/tile` and `/attachment` accept the URL-encoded tagged `partition`.
+Python exposes `PartitionId`, `PartitionKind`, `MapPartitionKey`,
+`ObjectDiscoveryRequest`, `ObjectReference`, `ObjectDiscoveryResult`,
+`ObjectDiscoveryStatus`, `Client.discover_objects`, and
+`DataSourceServer.on_object_discovery_request`. Legacy tile model names refer
+to the same Python classes; `Request`/`FilterRequest` accept PackedTileId or
+PartitionId values in their existing `tiles` argument.
+
+Feature-ID integer parts use signed int64 in the shared simfil model. For an
+object's full uint64 identity, project its bits rather than converting through
+a double; use the U64 ID-part declaration so canonical IDs format unsigned.
+Native locate implementations return generic partition keys. Optional layer
+and partition restrictions prevent guessing when several layers reuse IDs.
 
 ## Development setup
 
@@ -174,7 +210,10 @@ feature; `entryFields` run against the terminal context.
 All expressions are schema-compiled. `rewrite` controls only optional
 `LayerSchema::normalizeSearchQuery()` processing of `entryFilter`. Native
 SIMFIL truthiness is used. A candidate-local error becomes an aggregated
-`FilterIssue`; structural/compile failures abort the request.
+`FilterIssue`; structural/compile failures abort the request. Source tiles
+carrying an error also abort with a `Failed` status and the source error text;
+they must not be evaluated as successful empty tiles. An expired error tile can
+be loaded again after its datasource recovers.
 
 `FilterRequestExecution` owns one bounded `SimfilExpressionCache` for the
 request lifetime. Source scans, group/relation completion, and relation-target

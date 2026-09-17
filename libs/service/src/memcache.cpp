@@ -15,7 +15,7 @@ MemCache::MemCache(uint32_t maxCachedTiles, uint64_t maxCachedBytes)
       maxCachedBytes_(maxCachedBytes)
 {}
 
-std::optional<std::string> MemCache::getTileLayerBlob(const MapTileKey& k)
+std::optional<std::string> MemCache::getTileLayerBlob(const MapPartitionKey& k)
 {
     std::shared_lock cacheLock(cacheMutex_);
     auto cacheIt = cachedTiles_.find(k.toString());
@@ -24,7 +24,7 @@ std::optional<std::string> MemCache::getTileLayerBlob(const MapTileKey& k)
     return {};
 }
 
-void MemCache::putTileLayerBlob(const MapTileKey& k, const std::string& v)
+void MemCache::putTileLayerBlob(const MapPartitionKey& k, const std::string& v)
 {
     std::unique_lock cacheLock(cacheMutex_);
     auto ks = k.toString();
@@ -64,7 +64,7 @@ void MemCache::putTileLayerBlob(const MapTileKey& k, const std::string& v)
     }
 }
 
-void MemCache::eraseTileLayerBlob(MapTileKey const& k)
+void MemCache::eraseTileLayerBlob(MapPartitionKey const& k)
 {
     std::unique_lock cacheLock(cacheMutex_);
     auto const key = k.toString();
@@ -79,7 +79,7 @@ void MemCache::forEachTileLayerBlob(const TileBlobVisitor& cb) const
 {
     std::shared_lock cacheLock(cacheMutex_);
     for (const auto& [key, value] : cachedTiles_) {
-        cb(MapTileKey(key), value);
+        cb(MapPartitionKey(key), value);
     }
 }
 

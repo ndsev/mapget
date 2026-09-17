@@ -374,6 +374,47 @@ sources:
 
 If `dataSourceInfo` is omitted, mapget emits a strong warning and falls back to a synthesized single-layer `GeoJsonAny` datasource with empty coverage. In that fallback mode, conversion is still attempted, but service discovery remains intentionally limited.
 
+### GeoJSON feature lookup
+
+Both `GeoJsonFolder` and `GeoJsonEndpoint` support locating features whose
+**primary ID composition contains an integer `tileId`**. This enables reference
+resolution used by hover information, relations, and feature navigation.
+Locate first returns candidates for every feature layer whose metadata matches
+the requested ID. It does not read files or fetch tiles during candidate
+planning; the service loads candidate tiles through its ordinary cache/scheduler
+and checks that the exact feature exists before returning a location.
+
+Declare the actual feature types and ID parts in `dataSourceInfo`, for example:
+
+```yaml
+layers:
+  Roads:
+    featureTypes:
+      - name: Road
+        uniqueIdCompositions:
+          - - partId: tileId
+              datatype: I64
+            - partId: roadId
+              datatype: STR
+```
+
+The first composition must describe the IDs stored in the GeoJSON, in their
+original order. Use `I64` for `tileId` to accommodate negative packed tile IDs
+and legacy mapget tile IDs. Canonical strings such as
+`Road.-2147483648.main%2Estreet` and structured ID-part requests are supported.
+Convertible legacy tile parts are translated for tile routing only; the feature
+ID itself is preserved. Synthesized metadata already uses a primary composition
+of `tileId` and `featureIndex`.
+
+Loading a tile successfully does not guarantee that all references in it are
+resolvable. A reference may name an undeclared feature type, use a secondary ID,
+or omit `tileId`. Merely declaring a secondary composition does not describe how
+to translate it to a stored primary ID. These cases require matching metadata
+and primary references, or a custom datasource `locate()` resolver. The generic
+implementation does not scan the whole source or guess secondary-to-primary
+mappings. Unsupported requests reaching the GeoJSON resolver log the requested
+reference and the reason it cannot be routed.
+
 ## HTTP settings for tools and UIs
 
 The optional `http-settings` top‑level key is reserved for HTTP‑related configuration used by tools and user interfaces. It is typically a list of objects that may contain fields such as `scope`, `api-key` or `password`.

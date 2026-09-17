@@ -39,10 +39,10 @@ std::shared_ptr<LayerInfo> filterLayerInfo()
     })"_json);
 }
 
-TileFeatureLayer::Ptr makeFilterSource()
+PartitionFeatureLayer::Ptr makeFilterSource()
 {
     auto strings = std::make_shared<StringPool>("FilterPool");
-    auto source = std::make_shared<TileFeatureLayer>(
+    auto source = std::make_shared<PartitionFeatureLayer>(
         TileId::fromTileXY(1, 0, 1),
         strings->stringPoolId_,
         "FilterMap",
@@ -61,11 +61,15 @@ TileFeatureLayer::Ptr makeFilterSource()
     return source;
 }
 
-TileFeatureLayer::Ptr makePointGroupSource(TileId tileId, int64_t roadId, Point point)
+PartitionFeatureLayer::Ptr makePointGroupSource(TileId tileId, int64_t roadId, Point point)
 {
     auto strings = std::make_shared<StringPool>("FilterPool");
-    auto source = std::make_shared<
-        TileFeatureLayer>(tileId, strings->stringPoolId_, "FilterMap", filterLayerInfo(), strings);
+    auto source = std::make_shared<PartitionFeatureLayer>(
+        tileId,
+        strings->stringPoolId_,
+        "FilterMap",
+        filterLayerInfo(),
+        strings);
     auto road = source->newFeature(
         "Road",
         {
@@ -79,10 +83,10 @@ TileFeatureLayer::Ptr makePointGroupSource(TileId tileId, int64_t roadId, Point 
     return source;
 }
 
-TileFeatureLayer::Ptr makeTransitionFilterSource()
+PartitionFeatureLayer::Ptr makeTransitionFilterSource()
 {
     auto strings = std::make_shared<StringPool>("FilterPool");
-    auto source = std::make_shared<TileFeatureLayer>(
+    auto source = std::make_shared<PartitionFeatureLayer>(
         TileId::fromTileXY(1, 0, 1),
         strings->stringPoolId_,
         "FilterMap",
@@ -112,10 +116,10 @@ TileFeatureLayer::Ptr makeTransitionFilterSource()
     return source;
 }
 
-TileFeatureLayer::Ptr makeAttrPointFilterSource()
+PartitionFeatureLayer::Ptr makeAttrPointFilterSource()
 {
     auto strings = std::make_shared<StringPool>("FilterPool");
-    auto source = std::make_shared<TileFeatureLayer>(
+    auto source = std::make_shared<PartitionFeatureLayer>(
         TileId::fromTileXY(1, 0, 1),
         strings->stringPoolId_,
         "FilterMap",
@@ -137,10 +141,10 @@ TileFeatureLayer::Ptr makeAttrPointFilterSource()
     return source;
 }
 
-TileFeatureLayer::Ptr makeRelationSource()
+PartitionFeatureLayer::Ptr makeRelationSource()
 {
     auto strings = std::make_shared<StringPool>("FilterPool");
-    auto source = std::make_shared<TileFeatureLayer>(
+    auto source = std::make_shared<PartitionFeatureLayer>(
         TileId::fromTileXY(1, 0, 1),
         strings->stringPoolId_,
         "FilterMap",
@@ -469,7 +473,7 @@ TEST_CASE(
 {
     auto strings = std::make_shared<StringPool>("FilterPool");
     auto info = filterLayerInfo();
-    auto emptySource = std::make_shared<TileFeatureLayer>(
+    auto emptySource = std::make_shared<PartitionFeatureLayer>(
         TileId::fromTileXY(0, 0, 1),
         strings->stringPoolId_,
         "FilterMap",
@@ -500,7 +504,7 @@ TEST_CASE(
         writer([&](std::string bytes, auto) { framedBytes.append(bytes); }, offsets);
     writer.write(*emptyResult);
 
-    auto populatedSource = std::make_shared<TileFeatureLayer>(
+    auto populatedSource = std::make_shared<PartitionFeatureLayer>(
         TileId::fromTileXY(1, 0, 1),
         strings->stringPoolId_,
         "FilterMap",
@@ -512,11 +516,11 @@ TEST_CASE(
     REQUIRE(*populatedResult);
     writer.write(*populatedResult);
 
-    std::vector<TileSubsetLayer::Ptr> streamed;
+    std::vector<PartitionSubsetLayer::Ptr> streamed;
     TileLayerStream::Reader reader(
         [&](auto const&, auto const&) { return info; },
-        [&](TileLayer::Ptr layer)
-        { streamed.push_back(std::dynamic_pointer_cast<TileSubsetLayer>(std::move(layer))); });
+        [&](PartitionLayer::Ptr layer)
+        { streamed.push_back(std::dynamic_pointer_cast<PartitionSubsetLayer>(std::move(layer))); });
     reader.read(framedBytes);
 
     REQUIRE(streamed.size() == 2);
@@ -877,7 +881,7 @@ TEST_CASE(
     auto completion = request.completeRelations(
         *sourceResult->layer_,
         sourceResult->relationDescriptors_,
-        std::array<MapTileKey, 1>{MapTileKey(*source)});
+        std::array<MapPartitionKey, 1>{MapPartitionKey(*source)});
     REQUIRE(completion.has_value());
     REQUIRE(completion->issues_.empty());
     REQUIRE(completion->entriesAdded_ == 1);

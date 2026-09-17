@@ -17,6 +17,7 @@
 #include <optional>
 #include <set>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -135,6 +136,7 @@ struct LayerRequestContext
     RequestStatus status_ = RequestStatus::NoDataSource;
     NoDataSourceReason noDataSourceReason_ = NoDataSourceReason::MissingMapOrLayer;
     LayerType layerType_ = LayerType::Features;
+    PartitionKind partitionKind_ = PartitionKind::Tile;
 };
 
 /**
@@ -168,14 +170,25 @@ public:
     using Ptr = std::shared_ptr<LayerTilesRequest>;
 
     /** Construct a request for tiles with the relevant parameters. */
-    LayerTilesRequest(std::string mapId, std::string layerId, std::vector<TileId> tiles);
+    LayerTilesRequest(std::string mapId, std::string layerId, std::vector<PartitionId> tiles);
 
     /** Construct a request with foreground tile IDs prioritized for scheduling. */
     LayerTilesRequest(
         std::string mapId,
         std::string layerId,
-        std::vector<TileId> tiles,
-        std::vector<TileId> const& priorityTileIds);
+        std::vector<PartitionId> tiles,
+        std::vector<PartitionId> const& priorityPartitionIds);
+
+    /** Adapt an existing tile-datasource request to generic partition scheduling. */
+    template <class T>
+    requires std::is_same_v<T, TileId>
+    LayerTilesRequest(std::string map, std::string layer, std::vector<T> const& tiles)
+        : LayerTilesRequest(
+              std::move(map),
+              std::move(layer),
+              std::vector<PartitionId>(tiles.begin(), tiles.end()))
+    {
+    }
 
     /** Get the current status of the request. */
     RequestStatus getStatus() const;
@@ -200,25 +213,25 @@ public:
     /** The map layer id for which this request is dedicated. */
     std::string layerId_;
 
-    /** Optional catalog source selector/assertion; never part of MapTileKey. */
+    /** Optional catalog source selector/assertion; never part of MapPartitionKey. */
     std::optional<std::string> sourceId_;
 
     /** Map tile IDs for this request, in caller-specified processing order. */
-    std::vector<TileId> tileIds_;
+    std::vector<PartitionId> tileIds_;
 
     /**
      * Tile IDs within this request that should be scheduled before regular
      * tiles. This is a scheduling hint only; it does not add tiles to the
      * request by itself.
      */
-    std::set<TileId> priorityTileIds_;
+    std::set<PartitionId> priorityPartitionIds_;
 
     /**
      * Optional canonical feature IDs to retain in each returned feature tile.
      * Source loading and caching remain tile-granular; restriction is applied
      * only to this request's immutable response value.
      */
-    std::map<TileId, std::vector<std::string>> featureIdsByTile_;
+    std::map<PartitionId, std::vector<std::string>> featureIdsByTile_;
 
     /**
      * The callback function which is called when all tiles have been processed.
@@ -253,8 +266,8 @@ public:
     }
 
 protected:
-    virtual void notifyResult(TileLayer::Ptr);
-    void notifyLoadState(MapTileKey const& key, TileLayer::LoadState state) const;
+    virtual void notifyResult(PartitionLayer::Ptr);
+    void notifyLoadState(MapPartitionKey const& key, PartitionLayer::LoadState state) const;
     void setStatus(RequestStatus s);
     void notifyStatus();
     nlohmann::json toJson();
@@ -267,15 +280,15 @@ private:
     void prepareResolvedLayer(LayerType layerType);
 
     /** Restrict output membership and report live, complete, and changed state. */
-    [[nodiscard]] std::tuple<bool, bool, bool> retainOutputTileIds(
-        std::set<TileId> const& retained);
+    [[nodiscard]] std::tuple<bool, bool, bool>
+    retainOutputPartitionIds(std::set<PartitionId> const& retained);
 
     /**
      * The callback functions which are called when a result tile is available.
      */
-    std::function<void(TileFeatureLayer::Ptr)> onFeatureLayer_;
-    std::function<void(TileSourceDataLayer::Ptr)> onSourceDataLayer_;
-    std::function<void(MapTileKey const&, TileLayer::LoadState)> onLoadStateChanged_;
+    std::function<void(PartitionFeatureLayer::Ptr)> onFeatureLayer_;
+    std::function<void(PartitionSourceDataLayer::Ptr)> onSourceDataLayer_;
+    std::function<void(MapPartitionKey const&, PartitionLayer::LoadState)> onLoadStateChanged_;
     std::shared_ptr<std::atomic_bool const> workAdmissionGate_;
 
     // So the service can track which tile index from resolvedTileKeys_
@@ -283,16 +296,16 @@ private:
     size_t nextTileIndex_ = 0;
 
     // Resolved tile keys in scheduling order.
-    std::vector<MapTileKey> resolvedTileKeys_;
+    std::vector<MapPartitionKey> resolvedTileKeys_;
 
     // Track which resolved tile keys still need to be scheduled/served.
-    std::set<MapTileKey> tileKeysNotStarted_;
+    std::set<MapPartitionKey> tileKeysNotStarted_;
 
     // Output membership is separate from scheduler state so a callback copied
     // just before pruning can still be rejected safely.
-    std::set<MapTileKey> liveTileKeys_;
-    std::set<MapTileKey> claimedTileKeys_;
-    std::set<MapTileKey> completedTileKeys_;
+    std::set<MapPartitionKey> liveTileKeys_;
+    std::set<MapPartitionKey> claimedTileKeys_;
+    std::set<MapPartitionKey> completedTileKeys_;
 
     // Mutex/condition variable for reading/setting request status.
     mutable std::mutex statusMutex_;
@@ -320,16 +333,31 @@ public:
     FeatureLayerFilterTilesRequest(
         std::string mapId,
         std::string layerId,
-        std::vector<TileId> tiles,
+        std::vector<PartitionId> tiles,
         FeatureLayerFilterRequest filter);
 
     /** Construct a filter request with foreground tile IDs prioritized for source loads. */
     FeatureLayerFilterTilesRequest(
         std::string mapId,
         std::string layerId,
-        std::vector<TileId> tiles,
+        std::vector<PartitionId> tiles,
         FeatureLayerFilterRequest filter,
-        std::vector<TileId> const& priorityTileIds);
+        std::vector<PartitionId> const& priorityPartitionIds);
+
+    /** Adapt tile-only callers without introducing a second request implementation. */
+    template <class T>
+    requires std::is_same_v<T, TileId> FeatureLayerFilterTilesRequest(
+        std::string map,
+        std::string layer,
+        std::vector<T> const& tiles,
+        FeatureLayerFilterRequest filter)
+        : FeatureLayerFilterTilesRequest(
+              std::move(map),
+              std::move(layer),
+              std::vector<PartitionId>(tiles.begin(), tiles.end()),
+              std::move(filter))
+    {
+    }
 
     /** Get the current status of the filter request. */
     RequestStatus getStatus();
@@ -362,10 +390,10 @@ public:
     std::optional<std::string> sourceId_;
 
     /** Requested output/source tile IDs, retained in client order. */
-    std::vector<TileId> tileIds_;
+    std::vector<PartitionId> tileIds_;
 
     /** Source tile IDs that should be scheduled first. */
-    std::set<TileId> priorityTileIds_;
+    std::set<PartitionId> priorityPartitionIds_;
 
     /** Ordered channel bundle, scalar bindings, and transport identity. */
     FeatureLayerFilterRequest filter_;
@@ -373,7 +401,7 @@ public:
     /** Optional exact relation roots grouped by their requested origin tile. */
     std::vector<FeatureLayerFilterRoot> exactRoots_;
 
-    /** Callback for each emitted TileSubsetLayer. */
+    /** Callback for each emitted PartitionSubsetLayer. */
     template <class Fun>
     FeatureLayerFilterTilesRequest& onFilterResult(Fun&& callback)
     {
@@ -393,7 +421,7 @@ public:
     std::function<void(RequestStatus)> onDone_;
 
 protected:
-    virtual void notifyResult(TileSubsetLayer::Ptr);
+    virtual void notifyResult(PartitionSubsetLayer::Ptr);
     void notifyProgress(nlohmann::json const& status);
     void setStatus(RequestStatus s);
     void notifyStatus();
@@ -401,17 +429,17 @@ protected:
 
 private:
     /** Restrict live output membership and report whether anything changed. */
-    [[nodiscard]] std::pair<bool, bool> retainOutputTileIds(
-        std::set<TileId> const& retained);
+    [[nodiscard]] std::pair<bool, bool>
+    retainOutputPartitionIds(std::set<PartitionId> const& retained);
 
     /** Return whether a result tile still belongs to this request. */
-    [[nodiscard]] bool acceptsOutputTile(TileId tileId) const;
+    [[nodiscard]] bool acceptsOutputTile(PartitionId tileId) const;
 
-    std::function<void(TileSubsetLayer::Ptr)> onFilterResult_;
+    std::function<void(PartitionSubsetLayer::Ptr)> onFilterResult_;
     std::function<void(nlohmann::json const&)> onStatus_;
     std::shared_ptr<std::atomic_bool const> workAdmissionGate_;
     mutable std::mutex outputMembershipMutex_;
-    std::set<TileId> liveOutputTileIds_;
+    std::set<PartitionId> liveOutputPartitionIds_;
     std::weak_ptr<detail::FilterRequestExecution> execution_;
     std::mutex childRequestsMutex_;
     std::vector<LayerTilesRequest::Ptr> childRequests_;
@@ -513,7 +541,7 @@ public:
     /**
      * Request server-side filtering over source feature tiles.
      *
-     * The returned binary chunks are TileSubsetLayer instances produced
+     * The returned binary chunks are PartitionSubsetLayer instances produced
      * via FeatureLayerFilterTilesRequest::onFilterResult.
      */
     bool request(
@@ -549,6 +577,12 @@ public:
      */
     std::vector<LocateResponse> locate(LocateRequest const& req);
 
+    /** Queue one bounded discovery operation without blocking the caller or creating a thread. */
+    void discoverObjects(
+        ObjectDiscoveryRequest request,
+        std::function<void(ObjectDiscoveryResult)> callback,
+        std::optional<AuthHeaders> const& clientHeaders = {});
+
     /**
      * Abort the given request. The request will be removed from
      * the processing queue, and forcefully marked as done.
@@ -566,7 +600,7 @@ public:
      */
     void retainOutputs(
         LayerTilesRequest::Ptr const& request,
-        std::set<TileId> const& retainedTileIds);
+        std::set<PartitionId> const& retainedPartitionIds);
 
     /**
      * Keep only the listed outputs of a live filter request.
@@ -576,7 +610,7 @@ public:
      */
     void retainOutputs(
         FeatureLayerFilterTilesRequest::Ptr const& request,
-        std::set<TileId> const& retainedTileIds);
+        std::set<PartitionId> const& retainedPartitionIds);
 
     /** Wake workers after an external request-admission gate may have opened. */
     void notifyWorkAvailable();

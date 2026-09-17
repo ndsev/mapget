@@ -1,6 +1,49 @@
 # Layered Data Model
 
-Mapget represents all map content as tiles of structured features. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance. 
+Mapget represents map content as partitions of structured features: spatial tiles or opaque objects. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance.
+
+## Tile and object partitions
+
+`PartitionId` is a tagged identity: `PartitionId::tile(TileId)` or
+`PartitionId::object(uint64_t)`. The tag is never inferred from the value.
+Object zero and tile zero are different identities; tile zero retains its
+metadata/source-data sentinel meaning. `tileId()` and `objectId()` reject
+access through the wrong tag. Object IDs retain all 64 bits natively and in
+binary streams; JSON carries object IDs as unsigned decimal **strings**.
+
+`MapPartitionKey` combines payload type, map, layer and partition identity.
+Tiles retain the existing four-component key. Object keys use `object/` in
+the final component, for example `Features:City:Road:object/18446744073709551615`.
+This prevents collisions even when a tile and object have the same numeric ID.
+
+There is one implementation of each payload: `PartitionFeatureLayer`,
+`PartitionSubsetLayer` and `PartitionSourceDataLayer`, all based on
+`PartitionLayer`. The existing `Tile*Layer` names and `MapTileKey` are aliases;
+existing include paths and tile-taking constructors remain usable. Code that
+accessed the public key member `tileId_` must migrate to `partitionId_` and
+use its checked `tileId()` accessor for spatial operations. `id()` and
+`partitionKey()` both return the generic key.
+
+Each `LayerInfo` declares `partitionKind` (`tile` by default, or `object`).
+Object layers additionally require `tileAssociationLevel` in 0..15. That level
+selects **discovery coverage**, not object resolution, geometry or identity.
+Objects discovered through several tiles are loaded and cached under one key.
+
+Object geometry must not be anchored to a discovery tile. Call
+`setGeometryAnchor()` before adding geometry; feature/subset layers serialize
+that anchor explicitly. The initial object anchor is (0,0,0).
+
+Feature IDs remain schema-defined. A container-scoped ID part may retain its
+existing name `tileId`, declared `U64` for object layers. Simfil stores integer
+values as signed int64; use `std::bit_cast<int64_t>(objectId)` to preserve all
+bits. Canonical feature-ID strings use the unsigned decimal value according
+to the ID composition. Numeric model fields retain the signed projection;
+this is not unsigned arithmetic in simfil.
+
+Protocol **5.0** writes a partition tag and a 32-bit tile or 64-bit object ID
+in each layer header. Feature GeoJSON includes `partition`; tile exports also
+retain `mapgetTileId`. Old binary readers must be rebuilt/upgraded; there is
+no old-binary object compatibility mode.
 
 ## Features and properties
 

@@ -42,15 +42,12 @@ std::string_view noDataSourceReasonToString(NoDataSourceReason reason)
 }
 
 /** Convert tile load-state updates into stable load-state-frame strings. */
-std::string_view loadStateToString(TileLayer::LoadState state)
+std::string_view loadStateToString(PartitionLayer::LoadState state)
 {
     switch (state) {
-    case TileLayer::LoadState::LoadingQueued:
-        return "LoadingQueued";
-    case TileLayer::LoadState::BackendFetching:
-        return "BackendFetching";
-    case TileLayer::LoadState::BackendConverting:
-        return "BackendConverting";
+    case PartitionLayer::LoadState::LoadingQueued: return "LoadingQueued";
+    case PartitionLayer::LoadState::BackendFetching: return "BackendFetching";
+    case PartitionLayer::LoadState::BackendConverting: return "BackendConverting";
     }
     return "Unknown";
 }

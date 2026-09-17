@@ -2,6 +2,7 @@ project(test.mapget.unit CXX)
 
 add_executable(test.mapget
   test-main.cpp
+  test-object-partitions.cpp
   test-model.cpp
   test-model-geometry.cpp
   test-filter-service.cpp

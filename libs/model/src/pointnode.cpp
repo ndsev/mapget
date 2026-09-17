@@ -30,7 +30,7 @@ PointNode::PointNode(
     ModelNode const& baseNode,
     simfil::ArrayIndex vertexArray,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(baseNode, key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key)
 {
     auto i = std::get<int64_t>(data_);
     point_ = model().geometryAnchor();
@@ -43,10 +43,11 @@ PointNode::PointNode(
     point_ += vertexResult->get();
 }
 
-PointNode::PointNode(ModelNode const& baseNode,
+PointNode::PointNode(
+    ModelNode const& baseNode,
     Validity::Data const* geomData,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(baseNode, key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key)
 {
     auto i = std::get<int64_t>(data_);
     // The extracted point index may point to a validity's single point
@@ -61,7 +62,7 @@ PointNode::PointNode(ModelNode const& baseNode,
 }
 
 PointNode::PointNode(ModelNode const& baseNode, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(baseNode, key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key)
 {
     auto const encoded = std::get<int64_t>(data_);
     auto const baseGeometryAddress = decodeGeometryHelperBaseAddress(addr_, encoded);

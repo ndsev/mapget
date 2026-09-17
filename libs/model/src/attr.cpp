@@ -8,7 +8,7 @@ namespace mapget
 namespace
 {
 simfil::ModelNode::Ptr exposedValidityNode(
-    TileFeatureLayer const& model,
+    PartitionFeatureLayer const& model,
     simfil::ModelNodeAddress const& validityCollectionAddress)
 {
     auto validities = model.resolve<MultiValidity>(validityCollectionAddress);
@@ -21,11 +21,16 @@ simfil::ModelNode::Ptr exposedValidityNode(
 }
 }
 
-Attribute::Attribute(Attribute::Data* data,
+Attribute::Attribute(
+    Attribute::Data* data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<2, Attribute, TileFeatureLayer>(data->fields_, std::move(l), a, key),
+    : simfil::ProceduralObject<2, Attribute, PartitionFeatureLayer>(
+          data->fields_,
+          std::move(l),
+          a,
+          key),
       data_(data)
 {
     if (data_->validities_)

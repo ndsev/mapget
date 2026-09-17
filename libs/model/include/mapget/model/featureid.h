@@ -15,10 +15,10 @@ namespace mapget
  * The string form is dot-separated and may elide a shared tile prefix when the
  * backing storage uses `useCommonTilePrefix_`.
  */
-class FeatureId : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class FeatureId : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Feature;
     friend class Relation;
     friend class bitsery::Access;
@@ -59,7 +59,9 @@ protected:
 
 public:
     explicit FeatureId(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
     FeatureId(Data& data,
               simfil::ModelConstPtr l,
               simfil::ModelNodeAddress a,
@@ -104,6 +106,6 @@ bool parseFeatureIdString(
 /** Format typed parts into the same canonical string emitted by FeatureId::toString(). */
 std::string formatFeatureIdString(
     std::string_view typeId,
-    KeyValuePairs const& featureIdParts);
-
+    KeyValuePairs const& featureIdParts,
+    LayerInfo const* layerInfo = nullptr);
 }

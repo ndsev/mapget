@@ -83,8 +83,8 @@ auto makeTile() {
     // Create empty shared autofilled field-name dictionary
     auto strings = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
-    // Create a basic TileFeatureLayer
-    auto tile = std::make_shared<TileFeatureLayer>(
+    // Create a basic PartitionFeatureLayer
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "TastyTomatoSaladNode",
         "Tropico",
@@ -287,14 +287,10 @@ TEST_CASE("Semantic geometry names roundtrip independently of presentation", "[g
     std::stringstream bytes;
     tile->write(bytes);
     auto const serialized = bytes.str();
-    auto roundtripped = std::make_shared<TileFeatureLayer>(
+    auto roundtripped = std::make_shared<PartitionFeatureLayer>(
         std::vector<uint8_t>(serialized.begin(), serialized.end()),
-        [&](auto&&, auto&&) {
-            return tile->layerInfo();
-        },
-        [&](auto&&) {
-            return tile->strings();
-        });
+        [&](auto&&, auto&&) { return tile->layerInfo(); },
+        [&](auto&&) { return tile->strings(); });
 
     auto roundtrippedFeature = roundtripped->at(0);
     std::vector<std::optional<std::string>> names;
@@ -397,7 +393,7 @@ TEST_CASE("AttrPointSequence preserves interwoven validity semantics", "[validit
     std::stringstream bytes;
     REQUIRE(tile->write(bytes));
     auto const serialized = bytes.str();
-    auto roundtripped = std::make_shared<TileFeatureLayer>(
+    auto roundtripped = std::make_shared<PartitionFeatureLayer>(
         std::vector<uint8_t>(serialized.begin(), serialized.end()),
         [&](auto&&, auto&&) { return tile->layerInfo(); },
         [&](auto&&) { return tile->strings(); });
@@ -546,14 +542,10 @@ TEST_CASE("AABB geometry roundtrip and JSON exposure", "[geom.aabb]")
     tile->write(tileBytes);
     auto serializedTile = tileBytes.str();
     std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
-    auto deserializedTile = std::make_shared<TileFeatureLayer>(
+    auto deserializedTile = std::make_shared<PartitionFeatureLayer>(
         tileBuffer,
-        [&](auto&&, auto&&) {
-            return tile->layerInfo();
-        },
-        [&](auto&&) {
-            return tile->strings();
-        });
+        [&](auto&&, auto&&) { return tile->layerInfo(); },
+        [&](auto&&) { return tile->strings(); });
 
     auto roundTrippedFeature = deserializedTile->at(0);
     model_ptr<Geometry> roundTrippedAabb;
@@ -613,14 +605,10 @@ TEST_CASE("GltfNodeIndex geometry roundtrip and JSON exposure", "[geom.gltf]")
     tile->write(tileBytes);
     auto serializedTile = tileBytes.str();
     std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
-    auto deserializedTile = std::make_shared<TileFeatureLayer>(
+    auto deserializedTile = std::make_shared<PartitionFeatureLayer>(
         tileBuffer,
-        [&](auto&&, auto&&) {
-            return tile->layerInfo();
-        },
-        [&](auto&&) {
-            return tile->strings();
-        });
+        [&](auto&&, auto&&) { return tile->layerInfo(); },
+        [&](auto&&) { return tile->strings(); });
 
     auto roundTrippedFeature = deserializedTile->at(0);
     REQUIRE(roundTrippedFeature->geomOrNull()->numGeometries() == 2);
@@ -647,7 +635,7 @@ TEST_CASE("Feature Geometry Direct Storage Upgrade", "[geom.collection][feature]
 
     auto single = feature->geomOrNull();
     REQUIRE(single);
-    REQUIRE(single->addr().column() == TileFeatureLayer::ColumnId::PointGeometries);
+    REQUIRE(single->addr().column() == PartitionFeatureLayer::ColumnId::PointGeometries);
     REQUIRE(single->numGeometries() == 1);
 
     auto singleAsGeometry = modelPool->resolve<Geometry>(single->addr());
@@ -660,7 +648,7 @@ TEST_CASE("Feature Geometry Direct Storage Upgrade", "[geom.collection][feature]
 
     auto upgraded = feature->geomOrNull();
     REQUIRE(upgraded);
-    REQUIRE(upgraded->addr().column() == TileFeatureLayer::ColumnId::GeometryCollections);
+    REQUIRE(upgraded->addr().column() == PartitionFeatureLayer::ColumnId::GeometryCollections);
     REQUIRE(upgraded->numGeometries() == 2);
 
     auto upgradedGeoms = asModelNode(upgraded).get(StringPool::GeometriesStr);
@@ -809,7 +797,7 @@ TEST_CASE("Simple Validity Self Upgrade", "[validity]") {
     auto validities = modelPool->newValidityCollection();
 
     auto simple = validities->newDirection(Validity::Direction::Positive);
-    REQUIRE(simple->addr().column() == TileFeatureLayer::ColumnId::SimpleValidity);
+    REQUIRE(simple->addr().column() == PartitionFeatureLayer::ColumnId::SimpleValidity);
     REQUIRE(simple->geometryDescriptionType() == Validity::NoGeometry);
 
     // Any geometry/feature setter must materialize the simple validity.
@@ -818,7 +806,7 @@ TEST_CASE("Simple Validity Self Upgrade", "[validity]") {
     auto firstNode = validities->at(0);
     REQUIRE(firstNode);
     auto upgraded = modelPool->resolve<Validity>(*firstNode);
-    REQUIRE(upgraded->addr().column() == TileFeatureLayer::ColumnId::Validities);
+    REQUIRE(upgraded->addr().column() == PartitionFeatureLayer::ColumnId::Validities);
     REQUIRE(upgraded->direction() == Validity::Direction::Positive);
     REQUIRE(upgraded->geometryDescriptionType() == Validity::OffsetPointValidity);
     REQUIRE(upgraded->geometryOffsetType() == Validity::BufferOffset);

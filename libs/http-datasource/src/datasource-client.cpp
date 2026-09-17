@@ -73,24 +73,23 @@ DataSourceInfo RemoteDataSource::info()
     return info_;
 }
 
-void RemoteDataSource::fill(const TileFeatureLayer::Ptr& featureTile)
+void RemoteDataSource::fill(const PartitionFeatureLayer::Ptr& featureTile)
 {
     // If we get here, an error occurred.
     featureTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
 }
 
-void RemoteDataSource::fill(const TileSourceDataLayer::Ptr& blobTile)
+void RemoteDataSource::fill(const PartitionSourceDataLayer::Ptr& blobTile)
 {
     // If we get here, an error occurred.
     blobTile->setError(fmt::format("Error while contacting remote data source: {}", error_));
 }
 
-TileLayer::Ptr
-RemoteDataSource::get(
-    const MapTileKey& k,
+PartitionLayer::Ptr RemoteDataSource::get(
+    const MapPartitionKey& k,
     Cache::Ptr& cache,
     const DataSourceInfo& info,
-    TileLayer::LoadStateCallback loadStateCallback)
+    PartitionLayer::LoadStateCallback loadStateCallback)
 {
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
@@ -98,17 +97,19 @@ RemoteDataSource::get(
     // Send a GET tile request.
     auto tileReq = drogon::HttpRequest::newHttpRequest();
     tileReq->setMethod(drogon::Get);
-    tileReq->setPath(fmt::format(
-        "/tile?layer={}&tileId={}&stringPoolOffset={}",
-        k.layerId_,
-        k.tileId_.value(),
-        cachedStringPoolOffset(info.stringPoolId_, cache)));
+    tileReq->setPath("/tile");
+    // Drogon encodes parameter values; pre-encoding JSON would escape '%' twice.
+    tileReq->setParameter("layer", k.layerId_);
+    tileReq->setParameter("partition", k.partitionId_.toJson().dump());
+    tileReq->setParameter(
+        "stringPoolOffset",
+        std::to_string(cachedStringPoolOffset(info.stringPoolId_, cache)));
     auto [resultCode, tileResponse] = client->sendRequest(tileReq);
 
     // Check that the response is OK.
     if (resultCode != drogon::ReqResult::Ok || !tileResponse || (int)tileResponse->statusCode() >= 300) {
         // Forward to base class get(). This will instantiate a
-        // default TileLayer and call fill(). In our implementation
+        // default PartitionLayer and call fill(). In our implementation
         // of fill, we set an error.
 
         if (resultCode != drogon::ReqResult::Ok) {
@@ -125,7 +126,7 @@ RemoteDataSource::get(
     }
 
     // Check the response body for expected content.
-    TileLayer::Ptr result;
+    PartitionLayer::Ptr result;
     TileLayerStream::Reader reader(
         [&](auto&& mapId, auto&& layerId) { return info.getLayer(std::string(layerId)); },
         [&](auto&& tile) { result = tile; },
@@ -171,6 +172,27 @@ std::vector<LocateCandidate> RemoteDataSource::locate(
     return responseVector;
 }
 
+ObjectDiscoveryResult RemoteDataSource::discoverObjects(ObjectDiscoveryRequest const& request)
+{
+    auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
+    auto http = drogon::HttpRequest::newHttpRequest();
+    http->setMethod(drogon::Post);
+    http->setPath("/objects/discover");
+    http->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    http->setBody(
+        nlohmann::json{{"layerId", request.layerId_}, {"tileId", request.tileId_.value()}}.dump());
+    auto [status, response] = client->sendRequest(http);
+    if (status != drogon::ReqResult::Ok || !response || response->statusCode() != drogon::k200OK)
+        throw std::runtime_error("Remote object discovery failed.");
+    return ObjectDiscoveryResult::fromJson(nlohmann::json::parse(response->body()));
+}
+
+ObjectDiscoveryResult
+RemoteDataSourceProcess::discoverObjects(ObjectDiscoveryRequest const& request)
+{
+    return remoteSource_->discoverObjects(request);
+}
+
 std::optional<AttachmentResponse>
 RemoteDataSource::attachment(
     AttachmentRequest const& request)
@@ -182,14 +204,10 @@ RemoteDataSource::attachment(
         drogon::HttpRequest::newHttpRequest();
     attachmentRequest->setMethod(
         drogon::Get);
-    attachmentRequest->setPath(
-        fmt::format(
-            "/attachment?layer={}&tileId={}&name={}",
-            drogon::utils::urlEncodeComponent(
-                request.tileKey_.layerId_),
-            request.tileKey_.tileId_.value(),
-            drogon::utils::urlEncodeComponent(
-                request.name_)));
+    attachmentRequest->setPath("/attachment");
+    attachmentRequest->setParameter("layer", request.tileKey_.layerId_);
+    attachmentRequest->setParameter("partition", request.tileKey_.partitionId_.toJson().dump());
+    attachmentRequest->setParameter("name", request.name_);
     auto [resultCode, response] =
         client->sendRequest(
             attachmentRequest);
@@ -224,7 +242,7 @@ RemoteDataSource::attachment(
 }
 
 void RemoteDataSource::onCacheExpired(
-    MapTileKey const& tileKey,
+    MapPartitionKey const& tileKey,
     std::chrono::system_clock::time_point expiredAt)
 {
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
@@ -328,26 +346,25 @@ DataSourceInfo RemoteDataSourceProcess::info()
     return remoteSource_->info();
 }
 
-void RemoteDataSourceProcess::fill(TileFeatureLayer::Ptr const& featureTile)
+void RemoteDataSourceProcess::fill(PartitionFeatureLayer::Ptr const& featureTile)
 {
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
     remoteSource_->fill(featureTile);
 }
 
-void RemoteDataSourceProcess::fill(TileSourceDataLayer::Ptr const& sourceDataLayer)
+void RemoteDataSourceProcess::fill(PartitionSourceDataLayer::Ptr const& sourceDataLayer)
 {
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
     remoteSource_->fill(sourceDataLayer);
 }
 
-TileLayer::Ptr
-RemoteDataSourceProcess::get(
-    MapTileKey const& k,
+PartitionLayer::Ptr RemoteDataSourceProcess::get(
+    MapPartitionKey const& k,
     Cache::Ptr& cache,
     DataSourceInfo const& info,
-    TileLayer::LoadStateCallback loadStateCallback)
+    PartitionLayer::LoadStateCallback loadStateCallback)
 {
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
@@ -373,7 +390,7 @@ RemoteDataSourceProcess::attachment(
 }
 
 void RemoteDataSourceProcess::onCacheExpired(
-    MapTileKey const& tileKey,
+    MapPartitionKey const& tileKey,
     std::chrono::system_clock::time_point expiredAt)
 {
     if (!remoteSource_)

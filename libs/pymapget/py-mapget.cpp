@@ -22,11 +22,18 @@ PYBIND11_MODULE(pymapget, m)
     m.doc() = "";
 
     bindTileId(m);
+    bindPartitionId(m);
     bindModel(m);
     bindTileLayer(m);
     bindDataSourceServer(m);
     bindHttpService(m);
     bindHttpClient(m);
+    // Familiar tile names are aliases, not separate model implementations.
+    m.attr("TileLayer") = m.attr("PartitionLayer");
+    m.attr("TileFeatureLayer") = m.attr("PartitionFeatureLayer");
+    m.attr("TileSubsetLayer") = m.attr("PartitionSubsetLayer");
+    m.attr("TileSourceDataLayer") = m.attr("PartitionSourceDataLayer");
+    m.attr("MapTileKey") = m.attr("MapPartitionKey");
 
     // Note: We only expose the first two parameters of runFromCommandLine.
     // The third parameter (additionalCommandLineSetupFun) is an advanced C++

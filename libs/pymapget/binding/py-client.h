@@ -26,10 +26,10 @@ py::object json_to_py_value(const json& j)
         return py::bool_(j.get<bool>());
     }
     case json::value_t::number_integer: {
-        return py::int_(j.get<int>());
+        return py::int_(j.get<int64_t>());
     }
     case json::value_t::number_unsigned: {
-        return py::int_(j.get<unsigned int>());
+        return py::int_(j.get<uint64_t>());
     }
     case json::value_t::number_float: {
         return py::float_(j.get<double>());
@@ -123,14 +123,16 @@ class PyRequest : public LayerTilesRequest
 public:
     using LayerTilesRequest::LayerTilesRequest;
 
-    void notifyResult(TileLayer::Ptr result) override {
+    void notifyResult(PartitionLayer::Ptr result) override
+    {
         std::unique_lock lock(bufferMutex_);
         buffer_.push(result);
         bufferSignal_.notify_one(); // Signal that a new result is available
         LayerTilesRequest::notifyResult(result);
     }
 
-    TileLayer::Ptr next() {
+    PartitionLayer::Ptr next()
+    {
         std::unique_lock lock(bufferMutex_);
         bufferSignal_.wait(lock, [this](){ return !buffer_.empty() ||
                                  this->getStatus() != RequestStatus::Open; });
@@ -144,7 +146,7 @@ public:
     }
 
 private:
-    std::queue<TileLayer::Ptr> buffer_;
+    std::queue<PartitionLayer::Ptr> buffer_;
     std::mutex bufferMutex_;
     std::condition_variable bufferSignal_;
 };
@@ -154,14 +156,16 @@ class PyFilterRequest : public FeatureLayerFilterTilesRequest
 public:
     using FeatureLayerFilterTilesRequest::FeatureLayerFilterTilesRequest;
 
-    void notifyResult(TileSubsetLayer::Ptr result) override {
+    void notifyResult(PartitionSubsetLayer::Ptr result) override
+    {
         std::unique_lock lock(bufferMutex_);
         buffer_.push(result);
         bufferSignal_.notify_one();
         FeatureLayerFilterTilesRequest::notifyResult(std::move(result));
     }
 
-    TileSubsetLayer::Ptr next() {
+    PartitionSubsetLayer::Ptr next()
+    {
         std::unique_lock lock(bufferMutex_);
         bufferSignal_.wait(lock, [this](){ return !buffer_.empty() ||
                                  this->getStatus() != RequestStatus::Open; });
@@ -175,7 +179,7 @@ public:
     }
 
 private:
-    std::queue<TileSubsetLayer::Ptr> buffer_;
+    std::queue<PartitionSubsetLayer::Ptr> buffer_;
     std::mutex bufferMutex_;
     std::condition_variable bufferSignal_;
 };
@@ -233,22 +237,18 @@ void bindHttpClient(py::module_& m)
             py::arg("recursive") = false,
             py::arg("merge_twoway") = false);
 
-    py::class_<FeatureLayerFilterRoot>(
-        m,
-        "FilterRoot")
+    py::class_<FeatureLayerFilterRoot>(m, "FilterRoot")
         .def(
             py::init(
-                [](TileId tileId,
+                [](py::object tileId,
                    std::string typeId,
                    KeyValuePairVec const& featureId,
                    size_t requestOrdinal)
                 {
                     return FeatureLayerFilterRoot{
-                        tileId,
+                        partitionIdFromPython(tileId),
                         std::move(typeId),
-                        castToKeyValue(
-                            castToKeyValueView(
-                                featureId)),
+                        castToKeyValue(castToKeyValueView(featureId)),
                         requestOrdinal,
                     };
                 }),
@@ -336,15 +336,13 @@ void bindHttpClient(py::module_& m)
             py::init(
                 [](const std::string& mapId,
                    const std::string& layerId,
-                   std::vector<TileId> tiles,
-                   std::function<void(TileFeatureLayer::Ptr)> onFeatureResult,
-                   std::function<void(TileSourceDataLayer::Ptr)> onSourceDataResult,
+                   py::iterable tiles,
+                   std::function<void(PartitionFeatureLayer::Ptr)> onFeatureResult,
+                   std::function<void(PartitionSourceDataLayer::Ptr)> onSourceDataResult,
                    std::optional<std::string> sourceId)
                 {
-                    auto req = std::make_shared<PyRequest>(
-                        mapId,
-                        layerId,
-                        std::move(tiles));
+                    auto req =
+                        std::make_shared<PyRequest>(mapId, layerId, partitionIdsFromPython(tiles));
                     req->sourceId_ = std::move(sourceId);
                     req->onFeatureLayer(std::move(onFeatureResult));
                     req->onSourceDataLayer(std::move(onSourceDataResult));
@@ -363,7 +361,7 @@ void bindHttpClient(py::module_& m)
             Args:
                 map_id: The map id for which this request is dedicated.
                 layer_id: The map layer id for which this request is dedicated.
-                tiles: The ndslive.math.PackedTileId values for which this request is dedicated.
+                tiles: PackedTileId or PartitionId values to load.
                 on_feature_result: The callback function to be called when a result feature tile is available.
                 You can also iterate over this Request object instead of providing the callback.
                 on_sourcedata_result: The callback function to be callend when a result source-data tile
@@ -372,10 +370,16 @@ void bindHttpClient(py::module_& m)
 
             Note: The provided tile ids are processed in the given order.
         )pbdoc")
-        .def("__iter__", [](PyRequest &r) { return &r; }, R"pbdoc(
+        .def(
+            "__iter__",
+            [](PyRequest& r) { return &r; },
+            R"pbdoc(
             Return the iterator object (self).
         )pbdoc")
-        .def("__next__", &PyRequest::next, R"pbdoc(
+        .def(
+            "__next__",
+            &PyRequest::next,
+            R"pbdoc(
             Get the next available result.
 
             This function blocks until a result is available. If the Request is exhausted,
@@ -383,31 +387,36 @@ void bindHttpClient(py::module_& m)
 
             Returns:
                 The next available result.
-        )pbdoc", py::call_guard<py::gil_scoped_release>())
-        .def("wait", &PyRequest::wait, R"pbdoc(
+        )pbdoc",
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "wait",
+            &PyRequest::wait,
+            R"pbdoc(
             Wait for the request to be done.
 
             This function blocks until all results have been processed.
-        )pbdoc", py::call_guard<py::gil_scoped_release>());
+        )pbdoc",
+            py::call_guard<py::gil_scoped_release>());
 
     py::class_<PyFilterRequest, std::shared_ptr<PyFilterRequest>>(m, "FilterRequest", R"pbdoc(
         Client request for server-side filter evaluation evaluation.
 
         FilterRequest posts a simplified REST /filter request. Results are
-        TileSubsetLayer objects and can be consumed with a callback or by
+        PartitionSubsetLayer objects and can be consumed with a callback or by
         iterating over the request object returned by Client.filter().
     )pbdoc")
         .def(
             py::init(
                 [](const std::string& mapId,
                    const std::string& layerId,
-                   std::vector<TileId> tiles,
+                   py::iterable tiles,
                    std::string filterId,
                    uint64_t generation,
                    std::vector<FeatureLayerFilterChannel> channels,
                    py::dict const& bindings,
                    std::vector<FeatureLayerFilterRoot> exactRoots,
-                   std::function<void(TileSubsetLayer::Ptr)> onResult,
+                   std::function<void(PartitionSubsetLayer::Ptr)> onResult,
                    std::function<void(py::object)> onStatus,
                    std::optional<std::string> sourceId)
                 {
@@ -426,7 +435,7 @@ void bindHttpClient(py::module_& m)
                     auto req = std::make_shared<PyFilterRequest>(
                         mapId,
                         layerId,
-                        std::move(tiles),
+                        partitionIdsFromPython(tiles),
                         std::move(filter));
                     req->sourceId_ = std::move(sourceId);
                     req->exactRoots_ =
@@ -446,9 +455,7 @@ void bindHttpClient(py::module_& m)
             py::arg("generation"),
             py::arg("channels"),
             py::arg("bindings") = py::dict(),
-            py::arg("exact_roots") =
-                std::vector<
-                    FeatureLayerFilterRoot>{},
+            py::arg("exact_roots") = std::vector<FeatureLayerFilterRoot>{},
             py::arg("on_result") = py::none(),
             py::arg("on_status") = py::none(),
             py::arg("source_id") = py::none(),
@@ -459,25 +466,36 @@ void bindHttpClient(py::module_& m)
             Args:
                 map_id: The source map id to filter.
                 layer_id: The source feature layer id to filter.
-                tiles: Source ndslive.math.PackedTileId values to filter.
+                tiles: PackedTileId or PartitionId values to filter.
                 filter_id: Stable identity of this filter subscription.
                 generation: Definition/root revision for stale-result rejection; pending coverage changes retain it.
                 channels: Ordered FilterChannel instances; channels are never conflated.
                 bindings: Scalar SIMFIL constants/overlay fields shared by all channels.
                 exact_roots: Optional indexed roots for relation traversal.
-                on_result: Optional callback for each TileSubsetLayer.
+                on_result: Optional callback for each PartitionSubsetLayer.
                 on_status: Optional callback for progress/status dictionaries.
                 source_id: Optional catalog source assertion.
         )pbdoc")
-        .def("__iter__", [](PyFilterRequest &r) { return &r; }, R"pbdoc(
+        .def(
+            "__iter__",
+            [](PyFilterRequest& r) { return &r; },
+            R"pbdoc(
             Return the iterator object (self).
         )pbdoc")
-        .def("__next__", &PyFilterRequest::next, R"pbdoc(
+        .def(
+            "__next__",
+            &PyFilterRequest::next,
+            R"pbdoc(
             Get the next available subset layer.
-        )pbdoc", py::call_guard<py::gil_scoped_release>())
-        .def("wait", &PyFilterRequest::wait, R"pbdoc(
+        )pbdoc",
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "wait",
+            &PyFilterRequest::wait,
+            R"pbdoc(
             Wait for the filter request to be done.
-        )pbdoc", py::call_guard<py::gil_scoped_release>());
+        )pbdoc",
+            py::call_guard<py::gil_scoped_release>());
 
     py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client", R"pbdoc(
         Synchronous HTTP client for a running mapget service.
@@ -486,8 +504,16 @@ void bindHttpClient(py::module_& m)
         resulting layer metadata for request decoding, and can submit tile and
         server-side filter requests.
     )pbdoc")
-        .def(py::init<const std::string&, uint16_t, AuthHeaders, bool>(),
-             R"pbdoc(
+        .def(
+            "discover_objects",
+            &HttpClient::discoverObjects,
+            py::arg("request"),
+            py::call_guard<py::gil_scoped_release>(),
+            "Fetch object associations synchronously, without loading object payloads. Transport "
+            "failures raise.")
+        .def(
+            py::init<const std::string&, uint16_t, AuthHeaders, bool>(),
+            R"pbdoc(
                 Connect to a running mapget HTTP service.
 
                 The constructor immediately calls `/sources` and caches the
@@ -501,22 +527,26 @@ void bindHttpClient(py::module_& m)
                     enable_compression: Request gzip responses unless the
                         headers already contain an `Accept-Encoding` override.
             )pbdoc",
-             py::arg("host"),
-             py::arg("port"),
-             py::arg("headers") = AuthHeaders{},
-             py::arg("enable_compression") = true)
-        .def("sources", [](HttpClient& self){
+            py::arg("host"),
+            py::arg("port"),
+            py::arg("headers") = AuthHeaders{},
+            py::arg("enable_compression") = true)
+        .def(
+            "sources",
+            [](HttpClient& self)
+            {
                 auto jsonArray = nlohmann::json::array();
                 for (auto const& dsInfo : self.sources())
                     jsonArray.push_back(dsInfo.toJson());
                 return json_to_py_value(jsonArray);
             },
-             R"pbdoc(
+            R"pbdoc(
                 Get the sources as they were retrieved when the Client was instantiated.
             )pbdoc")
         .def(
             "request",
-            [](HttpClient& self, std::shared_ptr<PyRequest> request) {
+            [](HttpClient& self, std::shared_ptr<PyRequest> request)
+            {
                 self.request(request);
                 return std::move(request);
             },
@@ -527,7 +557,8 @@ void bindHttpClient(py::module_& m)
             py::arg("request"))
         .def(
             "filter",
-            [](HttpClient& self, std::shared_ptr<PyFilterRequest> request) {
+            [](HttpClient& self, std::shared_ptr<PyFilterRequest> request)
+            {
                 self.filter(request);
                 return std::move(request);
             },

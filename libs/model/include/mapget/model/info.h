@@ -1,5 +1,7 @@
 #pragma once
 
+#include "partitionid.h"
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,7 +59,7 @@ std::string generateNodeHexUuid();
  * Percent-escape one identifier component before embedding it into a
  * delimiter-separated protocol string.
  *
- * This is intended for reversible string forms such as MapTileKey and
+ * This is intended for reversible string forms such as MapPartitionKey and
  * FeatureId, not for mutating model metadata names.
  */
 std::string escapeIdentifierComponent(std::string_view input, std::string_view extraReserved = {});
@@ -98,8 +100,8 @@ KeyValuePairs castToKeyValue(KeyValueViewPairs const& kvp);
 
 /**
  * Version Definition - This is used to recognize whether a stored blob of a
- * TileFeatureLayer should be parsed by this version of the mapget library.
- * When a TileFeatureLayer is serialized, the current Version value for the
+ * PartitionFeatureLayer should be parsed by this version of the mapget library.
+ * When a PartitionFeatureLayer is serialized, the current Version value for the
  * map layer and the stream protocol are also stored. Upon deserialization,
  * the Major-Minor version values must match the parsed version Major-Minor
  * values, for both the map layer and the stream protocol.
@@ -345,6 +347,11 @@ struct LayerInfo
 
     /** Typed feature-model schema describing one emitted feature object for this layer. */
     std::shared_ptr<LayerSchema const> featureModelSchema_;
+
+    /** Addressing of payloads; discovery tiles are independent of object identity. */
+    PartitionKind partitionKind_ = PartitionKind::Tile;
+    /** Required discovery grid level for object-backed layers, not object resolution. */
+    std::optional<int> tileAssociationLevel_;
 
     /**
      * Return the typed feature-model schema for this layer.

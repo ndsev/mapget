@@ -35,6 +35,10 @@ public:
     FeatureLayerFilterTilesRequest::Ptr filter(
         FeatureLayerFilterTilesRequest::Ptr const& request);
 
+    /** Discover object associations without fetching object payloads. Blocks until the response
+     * arrives. */
+    ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request);
+
     /** Fetch one separately transferred named tile attachment. */
     std::optional<AttachmentResponse> attachment(
         AttachmentRequest const& request);

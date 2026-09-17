@@ -186,42 +186,39 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
     }
 }
 
-TEST_CASE("MapTileKey percent-escapes map and layer identifier components", "[DataSourceInfo]")
+TEST_CASE("MapPartitionKey percent-escapes map and layer identifier components", "[DataSourceInfo]")
 {
-    MapTileKey key(
-        LayerType::Features,
-        "Map.A:B/C,D~%",
-        "Layer:X/Y,Z~%",
-        TileId::fromTileXY(1, 0, 1));
+    MapPartitionKey
+        key(LayerType::Features, "Map.A:B/C,D~%", "Layer:X/Y,Z~%", TileId::fromTileXY(1, 0, 1));
 
     auto const encoded = key.toString();
     REQUIRE(encoded == "Features:Map.A%3AB%2FC%2CD%7E%25:Layer%3AX%2FY%2CZ%7E%25:131073");
 
-    auto const parsed = MapTileKey(encoded);
+    auto const parsed = MapPartitionKey(encoded);
     REQUIRE(parsed.layer_ == key.layer_);
     REQUIRE(parsed.mapId_ == key.mapId_);
     REQUIRE(parsed.layerId_ == key.layerId_);
-    REQUIRE(parsed.tileId_ == key.tileId_);
-    REQUIRE_THROWS(MapTileKey(encoded + ":2"));
+    REQUIRE(parsed.partitionId_ == key.partitionId_);
+    REQUIRE_THROWS(MapPartitionKey(encoded + ":2"));
 }
 
-TEST_CASE("MapTileKey accepts removed mapget tile-id layout", "[DataSourceInfo]")
+TEST_CASE("MapPartitionKey accepts removed mapget tile-id layout", "[DataSourceInfo]")
 {
     auto const legacyTileId = (int64_t{1} << 32) | int64_t{1};
-    auto const parsed = MapTileKey("Features:Map:Layer:" + std::to_string(legacyTileId));
-    REQUIRE(parsed.tileId_ == TileId::fromTileXY(3, 0, 1));
+    auto const parsed = MapPartitionKey("Features:Map:Layer:" + std::to_string(legacyTileId));
+    REQUIRE(parsed.partitionId_ == TileId::fromTileXY(3, 0, 1));
 }
 
-TEST_CASE("MapTileKey accepts removed hexadecimal mapget tile-id layout", "[DataSourceInfo]")
+TEST_CASE("MapPartitionKey accepts removed hexadecimal mapget tile-id layout", "[DataSourceInfo]")
 {
-    auto const parsed = MapTileKey("Features:Map:Layer:21fa0777000d");
-    REQUIRE(parsed.tileId_ == TileId::fromTileXY(0x01fa, 0x0888, 13));
+    auto const parsed = MapPartitionKey("Features:Map:Layer:21fa0777000d");
+    REQUIRE(parsed.partitionId_ == TileId::fromTileXY(0x01fa, 0x0888, 13));
 }
 
-TEST_CASE("MapTileKey keeps SourceData tile zero as metadata sentinel", "[DataSourceInfo]")
+TEST_CASE("MapPartitionKey keeps SourceData tile zero as metadata sentinel", "[DataSourceInfo]")
 {
-    auto const parsed = MapTileKey("SourceData:Map:Layer:0");
-    REQUIRE(parsed.tileId_.value() == 0);
+    auto const parsed = MapPartitionKey("SourceData:Map:Layer:0");
+    REQUIRE(parsed.partitionId_.value() == 0);
 }
 
 TEST_CASE("DataSourceInfo validates reserved characters in raw metadata identifiers", "[DataSourceInfo]")
@@ -324,7 +321,9 @@ TEST_CASE("LayerInfo roundtrips featureModelSchema", "[DataSourceInfo]")
     REQUIRE(LayerInfo::fromJson(json)->toJson() == json);
 }
 
-TEST_CASE("TileFeatureLayer validates emitted features against LayerInfo schema", "[DataSourceInfo]")
+TEST_CASE(
+    "PartitionFeatureLayer validates emitted features against LayerInfo schema",
+    "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(R"({
         "layerId": "WayLayer",
@@ -355,7 +354,7 @@ TEST_CASE("TileFeatureLayer validates emitted features against LayerInfo schema"
         }
     })"_json);
 
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "SchemaTestNode",
         "SchemaTestMap",
@@ -451,7 +450,7 @@ TEST_CASE("LayerSchema does not mutate datasource StringPool", "[DataSourceInfo]
     REQUIRE(strings->highest() == highestBefore);
     REQUIRE(strings->size() == sizeBefore);
 
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "LayerSchemaReadonlyNode",
         "LayerSchemaReadonlyMap",
@@ -535,11 +534,14 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     REQUIRE(schemaEmitterCalls == 1);
 }
 
-TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mutating datasource strings", "[DataSourceInfo]")
+TEST_CASE(
+    "PartitionFeatureLayer completes schema fields and enum symbols without mutating datasource "
+    "strings",
+    "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
     auto strings = std::make_shared<StringPool>("SchemaCompletionNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "SchemaCompletionNode",
         "SchemaCompletionMap",
@@ -569,11 +571,11 @@ TEST_CASE("TileFeatureLayer completes schema fields and enum symbols without mut
     REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
 }
 
-TEST_CASE("TileFeatureLayer schema rewrites use enum paths", "[DataSourceInfo]")
+TEST_CASE("PartitionFeatureLayer schema rewrites use enum paths", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
     auto strings = std::make_shared<StringPool>("SchemaRewriteNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "SchemaRewriteNode",
         "SchemaRewriteMap",
@@ -761,10 +763,10 @@ TEST_CASE("LayerSchema classifies feature and attribute path owners", "[DataSour
     REQUIRE(invalidAttributeRootOwner.kind_ == LayerSchema::PathOwnerKind::Unknown);
 }
 
-TEST_CASE("TileFeatureLayer exposes SchemaIds on feature-model nodes", "[DataSourceInfo]")
+TEST_CASE("PartitionFeatureLayer exposes SchemaIds on feature-model nodes", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "SchemaNode",
         "SchemaMap",

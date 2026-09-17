@@ -14,16 +14,18 @@ namespace mapget
 
 /** Vertex Node */
 
-class PointNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class PointNode final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Geometry;
     friend class PointBufferNode;
 
     explicit PointNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -59,9 +61,7 @@ bool Geometry::forEachPoint(LambdaType const& callback) const {
         begin = view->offset_;
         end = begin + view->size_;
         baseAddress = view->baseGeometry_;
-        while (baseAddress.column() ==
-               TileFeatureModelLayerBase::ColumnId::GeometryViews)
-        {
+        while (baseAddress.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews) {
             view = model().geometryViewData(baseAddress);
             if (!view) {
                 throw std::runtime_error(
@@ -72,7 +72,7 @@ bool Geometry::forEachPoint(LambdaType const& callback) const {
             baseAddress = view->baseGeometry_;
         }
         auto const column = baseAddress.column();
-        using Columns = TileFeatureModelLayerBase::ColumnId;
+        using Columns = PartitionFeatureModelLayerBase::ColumnId;
         if (column != Columns::PointGeometries &&
             column != Columns::LineGeometries &&
             column != Columns::PolygonGeometries &&
@@ -104,8 +104,7 @@ bool Geometry::forEachPoint(LambdaType const& callback) const {
                 return false;
             }
             Point point{storedPoint};
-            if (baseAddress.column() !=
-                    TileFeatureModelLayerBase::ColumnId::AabbGeometries ||
+            if (baseAddress.column() != PartitionFeatureModelLayerBase::ColumnId::AabbGeometries ||
                 currentIndex != 1U)
             {
                 point.x += anchor.x;

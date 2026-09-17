@@ -93,7 +93,7 @@ TileId parseTileIdComponent(
 
 } // namespace
 
-MapTileKey::MapTileKey(const std::string& str)
+MapPartitionKey::MapPartitionKey(const std::string& str)
 {
     std::vector<std::string_view> parts;
     size_t start = 0;
@@ -115,53 +115,62 @@ MapTileKey::MapTileKey(const std::string& str)
         raise(fmt::format("Invalid cache tile id '{}': {}", str, error));
     }
 
-    tileId_ = parseTileIdComponent(parts[3], str, layer_);
-
+    if (parts[3].starts_with("object/"))
+        partitionId_ =
+            PartitionId::fromJson({{"kind", "object"}, {"id", std::string(parts[3].substr(7))}});
+    else
+        partitionId_ = parseTileIdComponent(parts[3], str, layer_);
 }
 
-MapTileKey::MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId) :
-    layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), tileId_(tileId)
+MapPartitionKey::MapPartitionKey(
+    LayerType layer,
+    std::string mapId,
+    std::string layerId,
+    PartitionId tileId)
+    : layer_(layer), mapId_(std::move(mapId)), layerId_(std::move(layerId)), partitionId_(tileId)
 {}
 
-MapTileKey::MapTileKey(const TileLayer& data)
+MapPartitionKey::MapPartitionKey(const PartitionLayer& data)
 {
     layer_ = data.layerInfo()->type_;
     mapId_ = data.mapId();
     layerId_ = data.layerInfo()->layerId_;
-    tileId_ = data.tileId();
+    partitionId_ = data.partitionId();
 }
 
-std::string MapTileKey::toString() const
+std::string MapPartitionKey::toString() const
 {
     return fmt::format(
         "{}:{}:{}:{}",
         nlohmann::json(layer_).get<std::string>(),
         escapeIdentifierComponent(mapId_),
         escapeIdentifierComponent(layerId_),
-        tileId_.value());
+        partitionId_.kind() == PartitionKind::Object ?
+            "object/" + partitionId_.toString() :
+            partitionId_.toString());
 }
 
-bool MapTileKey::operator<(const MapTileKey& other) const
+bool MapPartitionKey::operator<(const MapPartitionKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_) <
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+    return std::tie(layer_, mapId_, layerId_, partitionId_) <
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.partitionId_);
 }
 
-bool MapTileKey::operator==(const MapTileKey& other) const
+bool MapPartitionKey::operator==(const MapPartitionKey& other) const
 {
-    return std::tie(layer_, mapId_, layerId_, tileId_) ==
-        std::tie(other.layer_, other.mapId_, other.layerId_, other.tileId_);
+    return std::tie(layer_, mapId_, layerId_, partitionId_) ==
+        std::tie(other.layer_, other.mapId_, other.layerId_, other.partitionId_);
 }
 
-bool MapTileKey::operator!=(const MapTileKey& other) const
+bool MapPartitionKey::operator!=(const MapPartitionKey& other) const
 {
     return !(*this == other);
 }
 
-MemoryUsageBreakdown TileLayer::memoryUsage() const
+MemoryUsageBreakdown PartitionLayer::memoryUsage() const
 {
     MemoryUsageBreakdown result;
-    result.add("object", {sizeof(TileLayer), sizeof(TileLayer)});
+    result.add("object", {sizeof(PartitionLayer), sizeof(PartitionLayer)});
     result.add("string-pool-id", stringMemoryUsage(stringPoolId_));
     result.add("map-id", stringMemoryUsage(mapId_));
     if (error_) {
@@ -174,26 +183,27 @@ MemoryUsageBreakdown TileLayer::memoryUsage() const
     return result;
 }
 
-TileLayer::TileLayer(
-    const TileId& id,
+PartitionLayer::PartitionLayer(
+    const PartitionId& id,
     std::string stringPoolId,
     std::string mapId,
-    const std::shared_ptr<LayerInfo>& info
-)
-    : tileId_(id),
+    const std::shared_ptr<LayerInfo>& info)
+    : partitionId_(id),
       stringPoolId_(std::move(stringPoolId)),
       mapId_(std::move(mapId)),
       layerInfo_(info),
       timestamp_(std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::system_clock::now().time_since_epoch()))
 {
+    if (id.kind() != info->partitionKind_)
+        throw std::invalid_argument("Partition kind does not match layer metadata.");
 }
 
-TileLayer::TileLayer(
+PartitionLayer::PartitionLayer(
     const std::vector<uint8_t>& input,
     const LayerInfoResolveFun& layerInfoResolveFun,
-    size_t* bytesRead
-) : tileId_()
+    size_t* bytesRead)
+    : partitionId_()
 {
     using namespace std::chrono;
     using namespace nlohmann;
@@ -215,12 +225,9 @@ TileLayer::TileLayer(
             layerInfo_->version_.toString()));
     }
 
-    int32_t rawTileId = 0;
-    s.value4b(rawTileId);
-    tileId_ = parseRawTileIdValue(
-        rawTileId,
-        fmt::format("serialized layer '{}:{}'", mapId_, layerName),
-        layerInfo_->type_);
+    s.object(partitionId_);
+    if (partitionId_.kind() != layerInfo_->partitionKind_)
+        throw std::invalid_argument("Partition kind does not match layer metadata.");
     s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
 
     int64_t timestamp = 0;
@@ -262,7 +269,7 @@ TileLayer::TileLayer(
 
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raise(fmt::format(
-            "Failed to read TileLayer: Error {}",
+            "Failed to read PartitionLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
     if (bytesRead != nullptr) {
@@ -270,113 +277,136 @@ TileLayer::TileLayer(
     }
 }
 
-TileId TileLayer::tileId() const {
-    return tileId_;
+TileId PartitionLayer::tileId() const
+{
+    return partitionId_.tileId();
 }
 
-std::string TileLayer::stringPoolId() const {
+std::string PartitionLayer::stringPoolId() const
+{
     return stringPoolId_;
 }
 
-std::string TileLayer::mapId() const {
+std::string PartitionLayer::mapId() const
+{
     return mapId_;
 }
 
-std::shared_ptr<LayerInfo> TileLayer::layerInfo() const {
+std::shared_ptr<LayerInfo> PartitionLayer::layerInfo() const
+{
     return layerInfo_;
 }
 
-std::optional<std::string> TileLayer::error() const {
+std::optional<std::string> PartitionLayer::error() const
+{
     return error_;
 }
 
-std::chrono::time_point<std::chrono::system_clock> TileLayer::timestamp() const {
+std::chrono::time_point<std::chrono::system_clock> PartitionLayer::timestamp() const
+{
     return timestamp_;
 }
 
-std::optional<std::chrono::milliseconds> TileLayer::ttl() const {
+std::optional<std::chrono::milliseconds> PartitionLayer::ttl() const
+{
     return ttl_;
 }
 
-Version TileLayer::mapVersion() const {
+Version PartitionLayer::mapVersion() const
+{
     return mapVersion_;
 }
 
-nlohmann::json TileLayer::info() const {
+nlohmann::json PartitionLayer::info() const
+{
     return info_;
 }
 
-void TileLayer::setInfo(nlohmann::json const& info) {
+void PartitionLayer::setInfo(nlohmann::json const& info)
+{
     info_ = info;
 }
 
-std::optional<std::string> TileLayer::legalInfo() const
+std::optional<std::string> PartitionLayer::legalInfo() const
 {
     return legalInfo_;
 }
 
-void TileLayer::setTileId(const TileId& id) {
-    tileId_ = id;
+void PartitionLayer::setTileId(const TileId& id)
+{
+    if (layerInfo_->partitionKind_ != PartitionKind::Tile)
+        throw std::logic_error("Cannot set a tile ID on an object layer.");
+    partitionId_ = id;
 }
 
-void TileLayer::setStringPoolId(const std::string& id) {
+void PartitionLayer::setStringPoolId(const std::string& id)
+{
     stringPoolId_ = id;
 }
 
-void TileLayer::setMapId(const std::string& id) {
+void PartitionLayer::setMapId(const std::string& id)
+{
     mapId_ = id;
 }
 
-void TileLayer::setLayerInfo(const std::shared_ptr<LayerInfo>& info) {
+void PartitionLayer::setLayerInfo(const std::shared_ptr<LayerInfo>& info)
+{
     layerInfo_ = info;
 }
 
-void TileLayer::setError(const std::optional<std::string>& err) {
+void PartitionLayer::setError(const std::optional<std::string>& err)
+{
     error_ = err;
 }
 
-std::optional<int> TileLayer::errorCode() const {
+std::optional<int> PartitionLayer::errorCode() const
+{
     return errorCode_;
 }
 
-void TileLayer::setErrorCode(const std::optional<int>& code) {
+void PartitionLayer::setErrorCode(const std::optional<int>& code)
+{
     errorCode_ = code;
 }
 
-void TileLayer::setTimestamp(const std::chrono::time_point<std::chrono::system_clock>& ts) {
+void PartitionLayer::setTimestamp(const std::chrono::time_point<std::chrono::system_clock>& ts)
+{
     timestamp_ = ts;
 }
 
-void TileLayer::setTtl(const std::optional<std::chrono::milliseconds>& timeToLive) {
+void PartitionLayer::setTtl(const std::optional<std::chrono::milliseconds>& timeToLive)
+{
     ttl_ = timeToLive;
 }
 
-void TileLayer::setMapVersion(Version v) {
+void PartitionLayer::setMapVersion(Version v)
+{
     mapVersion_ = v;
 }
 
-void TileLayer::setInfo(std::string const& k, nlohmann::json const& v) {
+void PartitionLayer::setInfo(std::string const& k, nlohmann::json const& v)
+{
     info_[k] = v;
 }
 
-void TileLayer::setLegalInfo(const std::string& legalInfoString)
+void PartitionLayer::setLegalInfo(const std::string& legalInfoString)
 {
     legalInfo_ = legalInfoString;
 }
 
-void TileLayer::setLoadStateCallback(LoadStateCallback cb)
+void PartitionLayer::setLoadStateCallback(LoadStateCallback cb)
 {
     onLoadStateChanged_ = std::move(cb);
 }
 
-void TileLayer::setLoadState(LoadState state)
+void PartitionLayer::setLoadState(LoadState state)
 {
     if (onLoadStateChanged_) {
         onLoadStateChanged_(state);
     }
 }
 
-tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
+tl::expected<void, simfil::Error> PartitionLayer::write(std::ostream& outputStream)
 {
     using namespace std::chrono;
     using namespace nlohmann;
@@ -385,8 +415,7 @@ tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
     s.text1b(mapId_, std::numeric_limits<uint32_t>::max());
     s.text1b(layerInfo_->layerId_, std::numeric_limits<uint32_t>::max());
     s.object(mapVersion_);
-    auto rawTileId = tileId_.value();
-    s.value4b(rawTileId);
+    s.object(partitionId_);
     s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
     s.value8b(duration_cast<microseconds>(timestamp_.time_since_epoch()).count());
     s.value1b(ttl_.has_value());
@@ -407,12 +436,12 @@ tl::expected<void, simfil::Error> TileLayer::write(std::ostream& outputStream)
     return {};
 }
 
-MapTileKey TileLayer::id() const
+MapPartitionKey PartitionLayer::id() const
 {
-    return MapTileKey(*this);
+    return MapPartitionKey(*this);
 }
 
-nlohmann::json TileLayer::toJson() const
+nlohmann::json PartitionLayer::toJson() const
 {
     return {};
 }

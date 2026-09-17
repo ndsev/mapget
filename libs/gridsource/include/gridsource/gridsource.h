@@ -334,8 +334,9 @@ public:
         Clock clock = [] { return std::chrono::system_clock::now(); });
 
     mapget::DataSourceInfo info() override;
-    void fill(mapget::TileFeatureLayer::Ptr const& tile) override;
-    void fill(mapget::TileSourceDataLayer::Ptr const& tile) override {
+    void fill(mapget::PartitionFeatureLayer::Ptr const& tile) override;
+    void fill(mapget::PartitionSourceDataLayer::Ptr const& tile) override
+    {
         throw std::runtime_error("SourceDataLayer not supported by GridDataSource");
     }
     std::vector<mapget::LocateCandidate> locate(
@@ -358,25 +359,30 @@ private:
     std::shared_ptr<gridsource::TileSpatialContext> getOrCreateContext(mapget::TileId tileId) const;
 
     // Layer generation methods
-    void generateRoadGrid(gridsource::TileSpatialContext& ctx,
-                         const gridsource::LayerConfig& config,
-                         mapget::TileFeatureLayer::Ptr const& tile);
+    void generateRoadGrid(
+        gridsource::TileSpatialContext& ctx,
+        const gridsource::LayerConfig& config,
+        mapget::PartitionFeatureLayer::Ptr const& tile);
 
-    void generateBuildings(gridsource::TileSpatialContext& ctx,
-                          const gridsource::LayerConfig& config,
-                          mapget::TileFeatureLayer::Ptr const& tile);
+    void generateBuildings(
+        gridsource::TileSpatialContext& ctx,
+        const gridsource::LayerConfig& config,
+        mapget::PartitionFeatureLayer::Ptr const& tile);
 
-    void generateRoads(gridsource::TileSpatialContext& ctx,
-                      const gridsource::LayerConfig& config,
-                      mapget::TileFeatureLayer::Ptr const& tile);
+    void generateRoads(
+        gridsource::TileSpatialContext& ctx,
+        const gridsource::LayerConfig& config,
+        mapget::PartitionFeatureLayer::Ptr const& tile);
 
-    void generateIntersections(gridsource::TileSpatialContext& ctx,
-                              const gridsource::LayerConfig& config,
-                              mapget::TileFeatureLayer::Ptr const& tile);
+    void generateIntersections(
+        gridsource::TileSpatialContext& ctx,
+        const gridsource::LayerConfig& config,
+        mapget::PartitionFeatureLayer::Ptr const& tile);
 
-    void generateTraffic(gridsource::TileSpatialContext& ctx,
-                         const gridsource::LayerConfig& config,
-                         mapget::TileFeatureLayer::Ptr const& tile);
+    void generateTraffic(
+        gridsource::TileSpatialContext& ctx,
+        const gridsource::LayerConfig& config,
+        mapget::PartitionFeatureLayer::Ptr const& tile);
 
     // Attribute generation
     void generateAttributes(mapget::model_ptr<mapget::Feature> feature,

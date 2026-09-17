@@ -42,12 +42,12 @@ layers:
     return YAML::Load(source);
 }
 
-TileFeatureLayer::Ptr makeTile(
+PartitionFeatureLayer::Ptr makeTile(
     DataSourceInfo const& info,
     std::string const& layerId,
     TileId tileId = TileId::fromWgs84(11.0, 48.0, 13))
 {
-    return std::make_shared<TileFeatureLayer>(
+    return std::make_shared<PartitionFeatureLayer>(
         tileId,
         info.stringPoolId_,
         info.mapId_,
@@ -247,7 +247,7 @@ TEST_CASE("Grid traffic metadata and locate expose the traffic layer", "[gridsou
         {{"tileId", int64_t{tileId}}, {"DevSrc-TrafficId", int64_t{1000}}}});
     REQUIRE(candidates.size() == 1);
     REQUIRE(candidates.front().tileKey_.layerId_ == "DevSrc-TrafficLayer");
-    REQUIRE(candidates.front().tileKey_.tileId_.value() == tileId);
+    REQUIRE(candidates.front().tileKey_.partitionId_.value() == tileId);
 }
 
 TEST_CASE("Grid traffic snapshots are stable within an epoch", "[gridsource][traffic]")
@@ -315,7 +315,7 @@ TEST_CASE("Grid traffic generation is thread-safe and bounded below its minimum 
     REQUIRE(road->numRoots() == traffic->numRoots());
     REQUIRE(elapsed < 1s);
 
-    std::vector<std::future<TileFeatureLayer::Ptr>> fanout;
+    std::vector<std::future<PartitionFeatureLayer::Ptr>> fanout;
     for (size_t index = 0; index < 8; ++index) {
         fanout.push_back(std::async(std::launch::async, [&source, &info, tileId] {
             auto tile = makeTile(info, "DevSrc-TrafficLayer", tileId);
@@ -344,7 +344,9 @@ TEST_CASE("Grid traffic corrects a bucket crossed during sampling", "[gridsource
     source.fill(tile);
 
     REQUIRE(tile->timestamp() == std::chrono::system_clock::time_point{105s});
-    for (const auto& feature : tile->toJson()["features"]) {
+    // Keep the JSON owner alive while iterating its feature array.
+    const auto json = tile->toJson();
+    for (const auto& feature : json["features"]) {
         REQUIRE(feature["properties"]["trafficEpoch"] == 21);
     }
 }

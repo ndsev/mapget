@@ -89,7 +89,7 @@ namespace
 {
 bool isBufferedGeometryColumn(uint8_t column)
 {
-    using Col = TileFeatureLayer::ColumnId;
+    using Col = PartitionFeatureLayer::ColumnId;
     return column == Col::LineGeometries ||
            column == Col::PolygonGeometries ||
            column == Col::MeshGeometries ||
@@ -99,7 +99,7 @@ bool isBufferedGeometryColumn(uint8_t column)
 
 bool isBaseGeometryColumn(uint8_t column)
 {
-    using Col = TileFeatureLayer::ColumnId;
+    using Col = PartitionFeatureLayer::ColumnId;
     return column == Col::PointGeometries ||
            column == Col::GltfNodeIndexGeometries ||
            isBufferedGeometryColumn(column);
@@ -107,7 +107,7 @@ bool isBaseGeometryColumn(uint8_t column)
 
 GeomType geometryTypeForColumn(uint8_t column)
 {
-    using Col = TileFeatureLayer::ColumnId;
+    using Col = PartitionFeatureLayer::ColumnId;
     switch (column) {
     case Col::PointGeometries:
         return GeomType::Points;
@@ -200,7 +200,8 @@ struct FeatureAddrWithIdHash
     }
 };
 
-struct TileFeatureLayer::Impl {
+struct PartitionFeatureLayer::Impl
+{
     ModelNodeAddress featureIdPrefix_;
     Point geometryAnchor_{};
     std::optional<std::string> glbAttachmentName_;
@@ -310,33 +311,41 @@ struct TileFeatureLayer::Impl {
           expressionEnvironment_(makeSchemaAwareEnvironment(std::move(stringPool), layerSchema_))
     {
     }
-
 };
 
-TileFeatureLayer::TileFeatureLayer(
-    TileId tileId,
+PartitionFeatureLayer::PartitionFeatureLayer(
+    PartitionId tileId,
     std::string const& stringPoolId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    std::shared_ptr<simfil::StringPool> const& strings) :
-    TileFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
-    impl_(std::make_unique<Impl>(strings, layerInfo))
+    std::shared_ptr<simfil::StringPool> const& strings)
+    : PartitionFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
+      impl_(std::make_unique<Impl>(strings, layerInfo))
 {
-    impl_->geometryAnchor_ = Point(tileId.centerWgs84());
+    impl_->geometryAnchor_ = Point(
+        tileId.kind() == PartitionKind::Tile ?
+            tileId.tileId().centerWgs84() :
+            std::pair<double, double>{});
 }
 
-TileFeatureLayer::TileFeatureLayer(
+PartitionFeatureLayer::PartitionFeatureLayer(
     const std::vector<uint8_t>& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringPoolResolveFun const& stringPoolGetter
-) :
-    TileFeatureModelLayerBase(input, layerInfoResolveFun, stringPoolGetter, &deserializationOffsetBytes_),
-    impl_(std::make_unique<Impl>(strings(), layerInfo_))
+    StringPoolResolveFun const& stringPoolGetter)
+    : PartitionFeatureModelLayerBase(
+          input,
+          layerInfoResolveFun,
+          stringPoolGetter,
+          &deserializationOffsetBytes_),
+      impl_(std::make_unique<Impl>(strings(), layerInfo_))
 {
-    impl_->geometryAnchor_ = Point(tileId_.centerWgs84());
+    impl_->geometryAnchor_ = Point(
+        partitionId_.kind() == PartitionKind::Tile ?
+            partitionId_.tileId().centerWgs84() :
+            std::pair<double, double>{});
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
-        raise("Failed to read TileFeatureLayer: invalid deserialization offset.");
+        raise("Failed to read PartitionFeatureLayer: invalid deserialization offset.");
     }
     bitsery::Deserializer<Adapter> s(Adapter(
         input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
@@ -345,7 +354,7 @@ TileFeatureLayer::TileFeatureLayer(
     readWriteCommonColumns(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raise(fmt::format(
-            "Failed to read TileFeatureLayer: Error {}",
+            "Failed to read PartitionFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error())));
     }
     validateGeometryNameStorage();
@@ -355,24 +364,24 @@ TileFeatureLayer::TileFeatureLayer(
     }
 }
 
-Point TileFeatureLayer::geometryAnchor() const
+Point PartitionFeatureLayer::geometryAnchor() const
 {
     return impl_->geometryAnchor_;
 }
 
-void TileFeatureLayer::setGeometryAnchor(Point const& anchor)
+void PartitionFeatureLayer::setGeometryAnchor(Point const& anchor)
 {
     impl_->geometryAnchor_ = anchor;
 }
 
-TileFeatureLayer::~TileFeatureLayer() = default;
+PartitionFeatureLayer::~PartitionFeatureLayer() = default;
 
-std::optional<std::string> const& TileFeatureLayer::glbAttachmentName() const
+std::optional<std::string> const& PartitionFeatureLayer::glbAttachmentName() const
 {
     return impl_->glbAttachmentName_;
 }
 
-void TileFeatureLayer::setGlbAttachmentName(std::optional<std::string> name)
+void PartitionFeatureLayer::setGlbAttachmentName(std::optional<std::string> name)
 {
     if (name && name->empty()) {
         raise("GLB attachment name must not be empty.");
@@ -380,7 +389,8 @@ void TileFeatureLayer::setGlbAttachmentName(std::optional<std::string> name)
     impl_->glbAttachmentName_ = std::move(name);
 }
 
-Feature::ComplexData const* TileFeatureLayer::featureComplexDataOrNull(uint32_t featureIndex) const
+Feature::ComplexData const*
+PartitionFeatureLayer::featureComplexDataOrNull(uint32_t featureIndex) const
 {
     if (featureIndex >= impl_->complexFeatureDataRefs_.size()) {
         return nullptr;
@@ -398,13 +408,13 @@ Feature::ComplexData const* TileFeatureLayer::featureComplexDataOrNull(uint32_t 
     return &impl_->complexFeatureData_.at(addr.index());
 }
 
-Feature::ComplexData* TileFeatureLayer::featureComplexDataOrNull(uint32_t featureIndex)
+Feature::ComplexData* PartitionFeatureLayer::featureComplexDataOrNull(uint32_t featureIndex)
 {
     return const_cast<Feature::ComplexData*>(
-        static_cast<TileFeatureLayer const&>(*this).featureComplexDataOrNull(featureIndex));
+        static_cast<PartitionFeatureLayer const&>(*this).featureComplexDataOrNull(featureIndex));
 }
 
-Feature::ComplexData& TileFeatureLayer::ensureFeatureComplexData(uint32_t featureIndex)
+Feature::ComplexData& PartitionFeatureLayer::ensureFeatureComplexData(uint32_t featureIndex)
 {
     ensureFeatureComplexDataRefCapacity(impl_->complexFeatureDataRefs_, featureIndex);
     auto& addr = impl_->complexFeatureDataRefs_.at(featureIndex);
@@ -483,7 +493,7 @@ stripOptionalIdParts(KeyValueViewPairs const& keysAndValues, std::vector<IdPart>
  * stored as null sentinels to keep the local feature ID shape stable.
  */
 simfil::ArrayIndex idPartValuesToArrayIndex(
-    TileFeatureLayer& layer,
+    PartitionFeatureLayer& layer,
     std::vector<IdPart> const& composition,
     KeyValueViewPairs const& idParts,
     uint32_t compositionStartIndex = 0)
@@ -532,7 +542,7 @@ simfil::ArrayIndex idPartValuesToArrayIndex(
 
 }  // namespace
 
-simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
+simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
     const std::string_view& typeId,
     const KeyValueViewPairs& featureIdParts)
 {
@@ -628,8 +638,7 @@ simfil::model_ptr<Feature> TileFeatureLayer::newFeature(
     return result;
 }
 
-model_ptr<FeatureId>
-TileFeatureLayer::newFeatureId(
+model_ptr<FeatureId> PartitionFeatureLayer::newFeatureId(
     const std::string_view& typeId,
     const KeyValueViewPairs& featureIdParts,
     std::optional<std::string_view> externalMapId)
@@ -673,7 +682,7 @@ TileFeatureLayer::newFeatureId(
 }
 
 model_ptr<Relation>
-TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
+PartitionFeatureLayer::newRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
 {
     auto relationIndex = impl_->relations_.size();
     auto nameStringId = strings()->emplace(name);
@@ -691,7 +700,7 @@ TileFeatureLayer::newRelation(const std::string_view& name, const model_ptr<Feat
 }
 
 model_ptr<RelationReference>
-TileFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
+PartitionFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
 {
     if (!relation) {
         raise("Cannot create RelationReference for null relation.");
@@ -700,7 +709,7 @@ TileFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
         raise("RelationReference target must be a canonical Relation node.");
     }
     if (relation->owningModel().get() != this) {
-        raise("RelationReference target must belong to this TileFeatureLayer.");
+        raise("RelationReference target must belong to this PartitionFeatureLayer.");
     }
     if (relation->addr().index() >= impl_->relations_.size()) {
         raise("RelationReference target index is out of range.");
@@ -711,7 +720,7 @@ TileFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
         mpKey_);
 }
 
-model_ptr<AttrPointSequence> TileFeatureLayer::newAttrPointSequence(
+model_ptr<AttrPointSequence> PartitionFeatureLayer::newAttrPointSequence(
     model_ptr<Feature> const& feature,
     model_ptr<Geometry> const& geometry)
 {
@@ -719,7 +728,7 @@ model_ptr<AttrPointSequence> TileFeatureLayer::newAttrPointSequence(
         raise("AttrPointSequence requires a feature and geometry.");
     }
     if (feature->owningModel().get() != this || geometry->owningModel().get() != this) {
-        raise("AttrPointSequence feature and geometry must belong to this TileFeatureLayer.");
+        raise("AttrPointSequence feature and geometry must belong to this PartitionFeatureLayer.");
     }
     if (geometry->geomType() != GeomType::Line) {
         raise("AttrPointSequence currently requires a line geometry.");
@@ -751,12 +760,12 @@ model_ptr<AttrPointSequence> TileFeatureLayer::newAttrPointSequence(
         mpKey_);
 }
 
-uint32_t TileFeatureLayer::numAttrPointSequences() const
+uint32_t PartitionFeatureLayer::numAttrPointSequences() const
 {
     return static_cast<uint32_t>(impl_->attrPointSequences_.size());
 }
 
-model_ptr<AttrPointSequence> TileFeatureLayer::attrPointSequenceAt(uint32_t index) const
+model_ptr<AttrPointSequence> PartitionFeatureLayer::attrPointSequenceAt(uint32_t index) const
 {
     if (index >= impl_->attrPointSequences_.size()) {
         raiseFmt(
@@ -770,7 +779,7 @@ model_ptr<AttrPointSequence> TileFeatureLayer::attrPointSequenceAt(uint32_t inde
         mpKey_);
 }
 
-AttrPoint::Data const& TileFeatureLayer::attrPointData(uint32_t index) const
+AttrPoint::Data const& PartitionFeatureLayer::attrPointData(uint32_t index) const
 {
     if (index >= impl_->attrPoints_.size()) {
         raiseFmt(
@@ -781,7 +790,7 @@ AttrPoint::Data const& TileFeatureLayer::attrPointData(uint32_t index) const
     return impl_->attrPoints_.at(index);
 }
 
-AttrPointSequence::Data const& TileFeatureLayer::attrPointSequenceData(uint32_t index) const
+AttrPointSequence::Data const& PartitionFeatureLayer::attrPointSequenceData(uint32_t index) const
 {
     if (index >= impl_->attrPointSequences_.size()) {
         raiseFmt(
@@ -792,20 +801,20 @@ AttrPointSequence::Data const& TileFeatureLayer::attrPointSequenceData(uint32_t 
     return impl_->attrPointSequences_.at(index);
 }
 
-AttrPointSequence::Data& TileFeatureLayer::attrPointSequenceData(uint32_t index)
+AttrPointSequence::Data& PartitionFeatureLayer::attrPointSequenceData(uint32_t index)
 {
     return const_cast<AttrPointSequence::Data&>(
-        static_cast<TileFeatureLayer const&>(*this).attrPointSequenceData(index));
+        static_cast<PartitionFeatureLayer const&>(*this).attrPointSequenceData(index));
 }
 
-model_ptr<AttrPoint> TileFeatureLayer::appendAttrPoint(
+model_ptr<AttrPoint> PartitionFeatureLayer::appendAttrPoint(
     uint32_t sequenceIndex,
     uint32_t logicalIndex,
     Point const& point,
     model_ptr<SourceDataReferenceCollection> const& sourceData)
 {
     if (sourceData && sourceData->owningModel().get() != this) {
-        raise("AttrPoint source-data references must belong to this TileFeatureLayer.");
+        raise("AttrPoint source-data references must belong to this PartitionFeatureLayer.");
     }
     auto& sequence = attrPointSequenceData(sequenceIndex);
     if (sequence.firstAttrPoint_ + sequence.attrPointCount_ != impl_->attrPoints_.size()) {
@@ -850,20 +859,19 @@ model_ptr<AttrPoint> TileFeatureLayer::appendAttrPoint(
         mpKey_);
 }
 
-model_ptr<Object> TileFeatureLayer::getIdPrefix()
+model_ptr<Object> PartitionFeatureLayer::getIdPrefix()
 {
-    return static_cast<TileFeatureLayer const&>(*this).getIdPrefix();
+    return static_cast<PartitionFeatureLayer const&>(*this).getIdPrefix();
 }
 
-model_ptr<Object> TileFeatureLayer::getIdPrefix() const
+model_ptr<Object> PartitionFeatureLayer::getIdPrefix() const
 {
     if (impl_->featureIdPrefix_)
         return resolve<simfil::Object>(impl_->featureIdPrefix_);
     return {};
 }
 
-model_ptr<Attribute>
-TileFeatureLayer::newAttribute(
+model_ptr<Attribute> PartitionFeatureLayer::newAttribute(
     const std::string_view& name,
     size_t initialCapacity,
     bool fixedSize)
@@ -884,7 +892,8 @@ TileFeatureLayer::newAttribute(
         mpKey_);
 }
 
-model_ptr<AttributeLayer> TileFeatureLayer::newAttributeLayer(size_t initialCapacity, bool fixedSize)
+model_ptr<AttributeLayer>
+PartitionFeatureLayer::newAttributeLayer(size_t initialCapacity, bool fixedSize)
 {
     auto layerIndex = impl_->attrLayers_.size();
     impl_->attrLayers_.emplace_back(objectMemberStorage().new_array(initialCapacity, fixedSize));
@@ -895,7 +904,8 @@ model_ptr<AttributeLayer> TileFeatureLayer::newAttributeLayer(size_t initialCapa
         mpKey_);
 }
 
-model_ptr<AttributeLayerList> TileFeatureLayer::newAttributeLayers(size_t initialCapacity, bool fixedSize)
+model_ptr<AttributeLayerList>
+PartitionFeatureLayer::newAttributeLayers(size_t initialCapacity, bool fixedSize)
 {
     auto listIndex = impl_->attrLayerLists_.size();
     impl_->attrLayerLists_.emplace_back(objectMemberStorage().new_array(initialCapacity, fixedSize));
@@ -906,7 +916,8 @@ model_ptr<AttributeLayerList> TileFeatureLayer::newAttributeLayers(size_t initia
         mpKey_);
 }
 
-model_ptr<GeometryCollection> TileFeatureLayer::newGeometryCollection(size_t initialCapacity, bool fixedSize)
+model_ptr<GeometryCollection>
+PartitionFeatureLayer::newGeometryCollection(size_t initialCapacity, bool fixedSize)
 {
     auto listIndex = arrayMemberStorage().new_array(initialCapacity, fixedSize);
     return GeometryCollection(
@@ -915,10 +926,8 @@ model_ptr<GeometryCollection> TileFeatureLayer::newGeometryCollection(size_t ini
         mpKey_);
 }
 
-model_ptr<Geometry> TileFeatureLayer::newGeometry(
-    GeomType geomType,
-    size_t initialCapacity,
-    bool fixedSize)
+model_ptr<Geometry>
+PartitionFeatureLayer::newGeometry(GeomType geomType, size_t initialCapacity, bool fixedSize)
 {
     initialCapacity = std::max<size_t>(1, initialCapacity);
 
@@ -966,7 +975,7 @@ model_ptr<Geometry> TileFeatureLayer::newGeometry(
     return {};
 }
 
-model_ptr<Geometry> TileFeatureLayer::newGeometryView(
+model_ptr<Geometry> PartitionFeatureLayer::newGeometryView(
     GeomType geomType,
     uint32_t offset,
     uint32_t size,
@@ -986,7 +995,8 @@ model_ptr<Geometry> TileFeatureLayer::newGeometryView(
         mpKey_);
 }
 
-model_ptr<SourceDataReferenceCollection> TileFeatureLayer::newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list)
+model_ptr<SourceDataReferenceCollection> PartitionFeatureLayer::newSourceDataReferenceCollection(
+    std::span<QualifiedSourceDataReference> list)
 {
     auto& arena = sourceDataReferences_;
     const auto index = arena.size();
@@ -1000,7 +1010,7 @@ model_ptr<SourceDataReferenceCollection> TileFeatureLayer::newSourceDataReferenc
         mpKey_)};
 }
 
-model_ptr<Validity> TileFeatureLayer::newValidity()
+model_ptr<Validity> PartitionFeatureLayer::newValidity()
 {
     impl_->validities_.emplace_back();
     return Validity(
@@ -1010,7 +1020,8 @@ model_ptr<Validity> TileFeatureLayer::newValidity()
         mpKey_);
 }
 
-model_ptr<MultiValidity> TileFeatureLayer::newValidityCollection(size_t initialCapacity, bool fixedSize)
+model_ptr<MultiValidity>
+PartitionFeatureLayer::newValidityCollection(size_t initialCapacity, bool fixedSize)
 {
     auto validityArrId = arrayMemberStorage().new_array(initialCapacity, fixedSize);
     return MultiValidity(
@@ -1019,7 +1030,7 @@ model_ptr<MultiValidity> TileFeatureLayer::newValidityCollection(size_t initialC
         mpKey_);
 }
 
-ModelNodeAddress TileFeatureLayer::materializeSimpleValidity(
+ModelNodeAddress PartitionFeatureLayer::materializeSimpleValidity(
     ModelNodeAddress simpleAddress,
     simfil::ArrayIndex ownerMembers,
     uint32_t ownerElementIndex,
@@ -1050,10 +1061,11 @@ ModelNodeAddress TileFeatureLayer::materializeSimpleValidity(
 using simfil::ModelNode;
 using simfil::res::tag;
 
-template<>
-model_ptr<AttributeLayer> resolveInternal(tag<AttributeLayer>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<AttributeLayer>
+resolveInternal(tag<AttributeLayer>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttributeLayers)
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttributeLayers)
         raise("Cannot cast this node to an AttributeLayer.");
     return AttributeLayer(
         model.impl_->attrLayers_[node.addr().index()],
@@ -1062,25 +1074,27 @@ model_ptr<AttributeLayer> resolveInternal(tag<AttributeLayer>, TileFeatureLayer 
         model.mpKey_);
 }
 
-template<>
-model_ptr<AttributeLayerList> resolveInternal(tag<AttributeLayerList>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<AttributeLayerList>
+resolveInternal(tag<AttributeLayerList>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttributeLayerLists &&
-        node.addr().column() != TileFeatureLayer::ColumnId::FeatureAttributeLayerListView)
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttributeLayerLists &&
+        node.addr().column() != PartitionFeatureLayer::ColumnId::FeatureAttributeLayerListView)
         raise("Cannot cast this node to an AttributeLayerList.");
     return AttributeLayerList(
-        node.addr().column() == TileFeatureLayer::ColumnId::AttributeLayerLists
-            ? model.impl_->attrLayerLists_[node.addr().index()]
-            : simfil::InvalidArrayIndex,
+        node.addr().column() == PartitionFeatureLayer::ColumnId::AttributeLayerLists ?
+            model.impl_->attrLayerLists_[node.addr().index()] :
+            simfil::InvalidArrayIndex,
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
 }
 
-template<>
-model_ptr<Attribute> resolveInternal(tag<Attribute>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<Attribute>
+resolveInternal(tag<Attribute>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::Attributes)
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::Attributes)
         raise("Cannot cast this node to an Attribute.");
     return Attribute(
         &model.impl_->attributes_[node.addr().index()],
@@ -1089,14 +1103,15 @@ model_ptr<Attribute> resolveInternal(tag<Attribute>, TileFeatureLayer const& mod
         model.mpKey_);
 }
 
-template<>
-model_ptr<Feature> resolveInternal(tag<Feature>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<Feature>
+resolveInternal(tag<Feature>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::Features) {
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::Features) {
         raise("Cannot cast this node to a Feature.");
     }
     auto* complexData =
-        const_cast<TileFeatureLayer&>(model).featureComplexDataOrNull(node.addr().index());
+        const_cast<PartitionFeatureLayer&>(model).featureComplexDataOrNull(node.addr().index());
     model_ptr<Feature> result = Feature(
         model.impl_->features_[node.addr().index()],
         complexData,
@@ -1107,10 +1122,11 @@ model_ptr<Feature> resolveInternal(tag<Feature>, TileFeatureLayer const& model, 
     return result;
 }
 
-template<>
-model_ptr<RelationArrayView> resolveInternal(tag<RelationArrayView>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<RelationArrayView>
+resolveInternal(tag<RelationArrayView>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::FeatureRelationsView)
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::FeatureRelationsView)
         raise("Cannot cast this node to a RelationArrayView.");
 
     auto result = RelationArrayView(
@@ -1120,10 +1136,10 @@ model_ptr<RelationArrayView> resolveInternal(tag<RelationArrayView>, TileFeature
     return result;
 }
 
-model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& node) const
+model_ptr<FeatureId> PartitionFeatureLayer::resolveFeatureIdNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::FeatureIds: {
+    case PartitionFeatureLayer::ColumnId::FeatureIds: {
         auto const featureIndex = node.addr().index();
         if (featureIndex >= impl_->features_.size()) {
             raiseFmt(
@@ -1143,7 +1159,7 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& nod
             node.addr(),
             mpKey_);
     }
-    case TileFeatureLayer::ColumnId::ExternalFeatureIds: {
+    case PartitionFeatureLayer::ColumnId::ExternalFeatureIds: {
         auto const featureIdIndex = node.addr().index();
         if (featureIdIndex >= featureIds_.size()) {
             raiseFmt(
@@ -1162,10 +1178,11 @@ model_ptr<FeatureId> TileFeatureLayer::resolveFeatureIdNode(ModelNode const& nod
     }
 }
 
-template<>
-model_ptr<Relation> resolveInternal(tag<Relation>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<Relation>
+resolveInternal(tag<Relation>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::Relations)
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::Relations)
         raise("Cannot cast this node to a Relation.");
     if (node.addr().index() >= model.impl_->relations_.size())
         raise("Relation index is out of range.");
@@ -1176,10 +1193,11 @@ model_ptr<Relation> resolveInternal(tag<Relation>, TileFeatureLayer const& model
         model.mpKey_);
 }
 
-template<>
-model_ptr<RelationReference> resolveInternal(tag<RelationReference>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<RelationReference>
+resolveInternal(tag<RelationReference>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::RelationReferences)
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::RelationReferences)
         raise("Cannot cast this node to a RelationReference.");
     if (node.addr().index() >= model.impl_->relations_.size())
         raise("RelationReference target index is out of range.");
@@ -1189,53 +1207,57 @@ model_ptr<RelationReference> resolveInternal(tag<RelationReference>, TileFeature
         model.mpKey_);
 }
 
-template<>
-model_ptr<AttrPoint> resolveInternal(tag<AttrPoint>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<AttrPoint>
+resolveInternal(tag<AttrPoint>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPoints) {
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttrPoints) {
         raise("Cannot cast this node to an AttrPoint.");
     }
     (void)model.attrPointData(node.addr().index());
     return AttrPoint(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
-template<>
-model_ptr<AttrPointArray> resolveInternal(tag<AttrPointArray>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<AttrPointArray>
+resolveInternal(tag<AttrPointArray>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointArrayView) {
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttrPointArrayView) {
         raise("Cannot cast this node to an AttrPointArray.");
     }
     (void)model.attrPointSequenceData(node.addr().index());
     return AttrPointArray(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
-template<>
-model_ptr<AttrPointSequence> resolveInternal(tag<AttrPointSequence>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<AttrPointSequence>
+resolveInternal(tag<AttrPointSequence>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointSequences) {
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttrPointSequences) {
         raise("Cannot cast this node to an AttrPointSequence.");
     }
     (void)model.attrPointSequenceData(node.addr().index());
     return AttrPointSequence(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
-template<>
+template <>
 model_ptr<AttrPointSequenceReference> resolveInternal(
     tag<AttrPointSequenceReference>,
-    TileFeatureLayer const& model,
+    PartitionFeatureLayer const& model,
     ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointSequenceReferences) {
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttrPointSequenceReferences) {
         raise("Cannot cast this node to an AttrPointSequenceReference.");
     }
     (void)model.attrPointSequenceData(node.addr().index());
     return AttrPointSequenceReference(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
-template<>
-model_ptr<AttrPointIndex> resolveInternal(tag<AttrPointIndex>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<AttrPointIndex>
+resolveInternal(tag<AttrPointIndex>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointIndexView) {
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttrPointIndexView) {
         raise("Cannot cast this node to an AttrPointIndex.");
     }
     if (node.addr().index() >= model.impl_->validities_.size() ||
@@ -1246,13 +1268,11 @@ model_ptr<AttrPointIndex> resolveInternal(tag<AttrPointIndex>, TileFeatureLayer 
     return AttrPointIndex(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
-template<>
-model_ptr<AttrPointIndexRange> resolveInternal(
-    tag<AttrPointIndexRange>,
-    TileFeatureLayer const& model,
-    ModelNode const& node)
+template <>
+model_ptr<AttrPointIndexRange>
+resolveInternal(tag<AttrPointIndexRange>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureLayer::ColumnId::AttrPointIndexRangeView) {
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::AttrPointIndexRangeView) {
         raise("Cannot cast this node to an AttrPointIndexRange.");
     }
     if (node.addr().index() >= model.impl_->validities_.size() ||
@@ -1263,28 +1283,28 @@ model_ptr<AttrPointIndexRange> resolveInternal(
     return AttrPointIndexRange(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
-model_ptr<PointNode> TileFeatureLayer::resolvePointNode(ModelNode const& node) const
+model_ptr<PointNode> PartitionFeatureLayer::resolvePointNode(ModelNode const& node) const
 {
     switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::Points:
+    case PartitionFeatureLayer::ColumnId::Points:
         return PointNode(
             node,
             static_cast<simfil::ArrayIndex>(node.addr().index()),
             mpKey_);
-    case TileFeatureLayer::ColumnId::ValidityPoints:
+    case PartitionFeatureLayer::ColumnId::ValidityPoints:
         return PointNode(node, &impl_->validities_.at(node.addr().index()), mpKey_);
-    case TileFeatureLayer::ColumnId::GeometryPointView:
-        return PointNode(node, mpKey_);
+    case PartitionFeatureLayer::ColumnId::GeometryPointView: return PointNode(node, mpKey_);
     default:
         raise("Cannot cast this node to a Point.");
     }
 }
 
-template<>
-model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model, ModelNode const& node)
+template <>
+model_ptr<Validity>
+resolveInternal(tag<Validity>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
     switch (node.addr().column()) {
-    case TileFeatureLayer::ColumnId::Validities: {
+    case PartitionFeatureLayer::ColumnId::Validities: {
         auto const validityIndex = node.addr().index();
         if (validityIndex >= model.impl_->validities_.size()) {
             raiseFmt(
@@ -1298,7 +1318,7 @@ model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model
             node.addr(),
             model.mpKey_);
     }
-    case TileFeatureLayer::ColumnId::SimpleValidity: {
+    case PartitionFeatureLayer::ColumnId::SimpleValidity: {
         auto const direction = static_cast<Validity::Direction>(node.addr().index());
         if (direction < Validity::Empty || direction > Validity::None) {
             raiseFmt(
@@ -1317,7 +1337,8 @@ model_ptr<Validity> resolveInternal(tag<Validity>, TileFeatureLayer const& model
     }
 }
 
-tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveFn& cb) const
+tl::expected<void, simfil::Error>
+PartitionFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveFn& cb) const
 {
     // Merged views may return nodes copied from overlay tiles. Resolve those
     // through their owner instead of interpreting overlay addresses locally.
@@ -1458,8 +1479,11 @@ tl::expected<void, simfil::Error> TileFeatureLayer::resolve(const ModelNode& n, 
     return ModelPool::resolve(n, cb);
 }
 
-tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
-TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool anyMode, bool autoWildcard)
+tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error> PartitionFeatureLayer::evaluate(
+    std::string_view query,
+    ModelNode const& node,
+    bool anyMode,
+    bool autoWildcard)
 {
     auto const rewriteMode = autoWildcard && node.schema() != simfil::NoSchemaId ?
         simfil::RewriteMode::Schema :
@@ -1492,8 +1516,8 @@ TileFeatureLayer::evaluate(std::string_view query, ModelNode const& node, bool a
     return result;
 }
 
-tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
-TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildcard)
+tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error>
+PartitionFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildcard)
 {
     auto rootResult = root(0);
     if (!rootResult) {
@@ -1502,8 +1526,8 @@ TileFeatureLayer::evaluate(std::string_view query, bool anyMode, bool autoWildca
     return evaluate(query, **rootResult, anyMode, autoWildcard);
 }
 
-tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error>
-TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode)
+tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error> PartitionFeatureLayer::
+    collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode)
 {
     auto rootResult = root(0);
     auto rootSchema = rootResult && *rootResult
@@ -1524,14 +1548,18 @@ TileFeatureLayer::collectQueryDiagnostics(std::string_view query, const simfil::
 }
 
 tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error>
-TileFeatureLayer::complete(std::string_view query, int point, ModelNode const& node, simfil::CompletionOptions const& opts)
+PartitionFeatureLayer::complete(
+    std::string_view query,
+    int point,
+    ModelNode const& node,
+    simfil::CompletionOptions const& opts)
 {
     auto completionStrings = std::make_shared<simfil::StringPool>(*strings());
     auto completionEnv = Impl::makeSchemaAwareCompletionEnvironment(std::move(completionStrings), impl_->layerSchema_);
     return simfil::complete(*completionEnv, query, point, node, opts);
 }
 
-void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
+void PartitionFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
 {
     // The prefix must be set, before any feature is added.
     if (numRoots() > 0)
@@ -1569,31 +1597,33 @@ void TileFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
     impl_->featureIdPrefix_ = idPrefix->addr();
 }
 
-TileFeatureLayer::Iterator TileFeatureLayer::begin() const
+PartitionFeatureLayer::Iterator PartitionFeatureLayer::begin() const
 {
-    return TileFeatureLayer::Iterator{*this, 0};
+    return PartitionFeatureLayer::Iterator{*this, 0};
 }
 
-TileFeatureLayer::Iterator TileFeatureLayer::end() const
+PartitionFeatureLayer::Iterator PartitionFeatureLayer::end() const
 {
-    return TileFeatureLayer::Iterator{*this, size()};
+    return PartitionFeatureLayer::Iterator{*this, size()};
 }
 
-tl::expected<void, simfil::Error> TileFeatureLayer::write(std::ostream& outputStream)
+tl::expected<void, simfil::Error> PartitionFeatureLayer::write(std::ostream& outputStream)
 {
-    TileLayer::write(outputStream);
+    PartitionLayer::write(outputStream);
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     impl_->readWrite(s);
     readWriteCommonColumns(s);
     return ModelPool::write(outputStream);
 }
 
-nlohmann::json TileFeatureLayer::toJson() const
+nlohmann::json PartitionFeatureLayer::toJson() const
 {
     auto result = nlohmann::json::object();
 
     result["type"] = "FeatureCollection";
-    result["mapgetTileId"] = tileId_.value();
+    result["partition"] = partitionId_.toJson();
+    if (partitionId_.kind() == PartitionKind::Tile)
+        result["mapgetTileId"] = partitionId_.value();
     result["mapId"] = mapId_;
     result["mapgetLayerId"] = layerInfo_->layerId_;
     result["geometryAnchor"] = {
@@ -1641,10 +1671,10 @@ nlohmann::json TileFeatureLayer::toJson() const
     return result;
 }
 
-void TileFeatureLayer::validateSchema() const
+void PartitionFeatureLayer::validateSchema() const
 {
     if (!layerInfo_ || !layerInfo_->featureModelSchema_) {
-        raise("TileFeatureLayer::validateSchema: layer has no featureModelSchema.");
+        raise("PartitionFeatureLayer::validateSchema: layer has no featureModelSchema.");
     }
 
     nlohmann::json_schema::json_validator validator;
@@ -1654,37 +1684,39 @@ void TileFeatureLayer::validateSchema() const
     }
 }
 
-std::shared_ptr<LayerSchema const> TileFeatureLayer::layerSchema() const
+std::shared_ptr<LayerSchema const> PartitionFeatureLayer::layerSchema() const
 {
     return impl_->layerSchema_;
 }
 
-LayerSchema::Entry const* TileFeatureLayer::getSchema(std::string_view typeName) const
+LayerSchema::Entry const* PartitionFeatureLayer::getSchema(std::string_view typeName) const
 {
     return impl_->layerSchema_ ? impl_->layerSchema_->getSchema(typeName) : nullptr;
 }
 
-simfil::SchemaId TileFeatureLayer::featureSchemaId(std::string_view featureType) const
+simfil::SchemaId PartitionFeatureLayer::featureSchemaId(std::string_view featureType) const
 {
     return impl_->layerSchema_ ? impl_->layerSchema_->featureSchema(featureType) : simfil::NoSchemaId;
 }
 
-simfil::SchemaId TileFeatureLayer::featurePropertiesSchemaId(std::string_view featureType) const
+simfil::SchemaId
+PartitionFeatureLayer::featurePropertiesSchemaId(std::string_view featureType) const
 {
     return impl_->layerSchema_ ? impl_->layerSchema_->featurePropertiesSchema(featureType) : simfil::NoSchemaId;
 }
 
-simfil::SchemaId TileFeatureLayer::attributeLayerMapSchemaId(std::string_view featureType) const
+simfil::SchemaId
+PartitionFeatureLayer::attributeLayerMapSchemaId(std::string_view featureType) const
 {
     return impl_->layerSchema_ ? impl_->layerSchema_->attributeLayerMapSchema(featureType) : simfil::NoSchemaId;
 }
 
-simfil::SchemaId TileFeatureLayer::schemaIdForKey(std::string_view key) const
+simfil::SchemaId PartitionFeatureLayer::schemaIdForKey(std::string_view key) const
 {
     return impl_->layerSchema_ ? impl_->layerSchema_->schemaId(key) : simfil::NoSchemaId;
 }
 
-simfil::SchemaId TileFeatureLayer::childSchemaId(
+simfil::SchemaId PartitionFeatureLayer::childSchemaId(
     simfil::SchemaId parent,
     std::string_view fieldName,
     std::optional<simfil::Schema::Kind> preferredKind) const
@@ -1694,7 +1726,7 @@ simfil::SchemaId TileFeatureLayer::childSchemaId(
         : simfil::NoSchemaId;
 }
 
-simfil::SchemaId TileFeatureLayer::childSchemaId(
+simfil::SchemaId PartitionFeatureLayer::childSchemaId(
     simfil::SchemaId parent,
     simfil::StringId field,
     std::optional<simfil::Schema::Kind> preferredKind) const
@@ -1708,7 +1740,8 @@ simfil::SchemaId TileFeatureLayer::childSchemaId(
         : simfil::NoSchemaId;
 }
 
-void TileFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId) const
+void PartitionFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId)
+    const
 {
     if (schemaId == simfil::NoSchemaId) {
         return;
@@ -1722,7 +1755,7 @@ void TileFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::SchemaI
     }
 }
 
-void TileFeatureLayer::applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const
+void PartitionFeatureLayer::applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const
 {
     if (schemaId == simfil::NoSchemaId) {
         return;
@@ -1736,7 +1769,7 @@ void TileFeatureLayer::applyArraySchema(simfil::Array& array, simfil::SchemaId s
     }
 }
 
-nlohmann::json TileFeatureLayer::serializationSizeStats() const
+nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
 {
     auto featureLayer = nlohmann::json::object();
 
@@ -2094,13 +2127,15 @@ nlohmann::json TileFeatureLayer::serializationSizeStats() const
     };
 }
 
-MemoryUsageBreakdown TileFeatureLayer::memoryUsage() const
+MemoryUsageBreakdown PartitionFeatureLayer::memoryUsage() const
 {
-    auto result = TileFeatureModelLayerBase::memoryUsage();
-    result.add("feature-layer-object", {
-        sizeof(TileFeatureLayer) - sizeof(TileFeatureModelLayerBase),
-        sizeof(TileFeatureLayer) - sizeof(TileFeatureModelLayerBase),
-    });
+    auto result = PartitionFeatureModelLayerBase::memoryUsage();
+    result.add(
+        "feature-layer-object",
+        {
+            sizeof(PartitionFeatureLayer) - sizeof(PartitionFeatureModelLayerBase),
+            sizeof(PartitionFeatureLayer) - sizeof(PartitionFeatureModelLayerBase),
+        });
     result.add("feature-layer-impl", {sizeof(Impl), sizeof(Impl)});
     result.add("feature-layer.features", impl_->features_.memory_usage());
     result.add("feature-layer.complex-data", impl_->complexFeatureData_.memory_usage());
@@ -2120,17 +2155,17 @@ MemoryUsageBreakdown TileFeatureLayer::memoryUsage() const
     return result;
 }
 
-size_t TileFeatureLayer::size() const
+size_t PartitionFeatureLayer::size() const
 {
     return numRoots();
 }
 
-uint64_t TileFeatureLayer::numVertices() const
+uint64_t PartitionFeatureLayer::numVertices() const
 {
     return geometryVertexCount();
 }
 
-model_ptr<Feature> TileFeatureLayer::at(size_t i) const
+model_ptr<Feature> PartitionFeatureLayer::at(size_t i) const
 {
     auto rootResult = root(i);
     if (!rootResult)
@@ -2139,7 +2174,8 @@ model_ptr<Feature> TileFeatureLayer::at(size_t i) const
 }
 
 model_ptr<Feature>
-TileFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& queryIdParts) const
+PartitionFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& queryIdParts)
+    const
 {
     auto const& primaryIdComposition = getPrimaryIdComposition(type);
     auto queryIdPartsStripped = stripOptionalIdParts(queryIdParts, primaryIdComposition);
@@ -2181,12 +2217,13 @@ TileFeatureLayer::find(const std::string_view& type, const KeyValueViewPairs& qu
 }
 
 model_ptr<Feature>
-TileFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryIdParts) const
+PartitionFeatureLayer::find(const std::string_view& type, const KeyValuePairs& queryIdParts) const
 {
     return find(type, castToKeyValueView(queryIdParts));
 }
 
-std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::string_view& typeId) const
+std::vector<IdPart> const&
+PartitionFeatureLayer::getPrimaryIdComposition(const std::string_view& typeId) const
 {
     auto typeIt = this->layerInfo_->featureTypes_.begin();
     while (typeIt != this->layerInfo_->featureTypes_.end()) {
@@ -2204,7 +2241,7 @@ std::vector<IdPart> const& TileFeatureLayer::getPrimaryIdComposition(const std::
 }
 
 tl::expected<void, simfil::Error>
-TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
+PartitionFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     auto oldDict = strings();
     // String IDs are environment-local, so discard both bound runtime state and
@@ -2265,18 +2302,18 @@ TileFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
     return {};
 }
 
-ModelNode::Ptr TileFeatureLayer::clone(
+ModelNode::Ptr PartitionFeatureLayer::clone(
     CloneCache& cache,
-    const TileFeatureLayer::Ptr& otherLayer,
+    const PartitionFeatureLayer::Ptr& otherLayer,
     const ModelNode::Ptr& otherNode)
 {
     return cloneNode({}, cache, otherLayer, otherNode);
 }
 
-ModelNode::Ptr TileFeatureLayer::cloneNode(
+ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     CloneContext const& context,
     CloneCache& cache,
-    TileFeatureLayer::Ptr const& otherLayer,
+    PartitionFeatureLayer::Ptr const& otherLayer,
     ModelNode::Ptr const& otherNode)
 {
     auto const targetFeatureAddress =
@@ -2705,9 +2742,9 @@ ModelNode::Ptr TileFeatureLayer::cloneNode(
     return newCacheNode;
 }
 
-void TileFeatureLayer::clone(
+void PartitionFeatureLayer::clone(
     CloneCache& clonedModelNodes,
-    const TileFeatureLayer::Ptr& otherLayer,
+    const PartitionFeatureLayer::Ptr& otherLayer,
     const Feature& otherFeature,
     const std::string_view& type,
     KeyValueViewPairs idParts)
@@ -2732,10 +2769,9 @@ void TileFeatureLayer::clone(
         return cloneNode(context, clonedModelNodes, otherLayer, n);
     };
 
-    auto owningLayer =
-        [](auto const& nodePtr) -> TileFeatureLayer::Ptr
+    auto owningLayer = [](auto const& nodePtr) -> PartitionFeatureLayer::Ptr
     {
-        return std::static_pointer_cast<TileFeatureLayer>(nodePtr->model().shared_from_this());
+        return std::static_pointer_cast<PartitionFeatureLayer>(nodePtr->model().shared_from_this());
     };
 
     if (auto refs = otherFeature.sourceDataReferences()) {
@@ -2811,7 +2847,7 @@ void TileFeatureLayer::clone(
     }
 }
 
-model_ptr<Feature> TileFeatureLayer::find(const std::string_view& featureId) const
+model_ptr<Feature> PartitionFeatureLayer::find(const std::string_view& featureId) const
 {
     ParsedFeatureId parsed;
     if (!parseFeatureIdString(featureId, *layerInfo_, parsed)) {

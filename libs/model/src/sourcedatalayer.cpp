@@ -27,7 +27,7 @@ using simfil::ModelNodeAddress;
 namespace mapget
 {
 
-struct TileSourceDataLayer::Impl
+struct PartitionSourceDataLayer::Impl
 {
     SourceDataAddressFormat format_;
     simfil::ModelColumn<SourceDataCompoundNode::Data, simfil::detail::ColumnPageSize / 4> compounds_;
@@ -50,29 +50,28 @@ struct TileSourceDataLayer::Impl
     }
 };
 
-TileSourceDataLayer::TileSourceDataLayer(
-    TileId tileId,
+PartitionSourceDataLayer::PartitionSourceDataLayer(
+    PartitionId tileId,
     std::string const& stringPoolId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
-    std::shared_ptr<simfil::StringPool> const& stringPool) :
-    TileLayer(tileId, stringPoolId, mapId, layerInfo),
-    ModelPool(stringPool),
-    impl_(std::make_unique<Impl>(stringPool))
+    std::shared_ptr<simfil::StringPool> const& stringPool)
+    : PartitionLayer(tileId, stringPoolId, mapId, layerInfo),
+      ModelPool(stringPool),
+      impl_(std::make_unique<Impl>(stringPool))
 {}
 
-TileSourceDataLayer::TileSourceDataLayer(
+PartitionSourceDataLayer::PartitionSourceDataLayer(
     const std::vector<uint8_t>& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringPoolResolveFun const& stringPoolGetter
-) :
-    TileLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
-    ModelPool(stringPoolGetter(stringPoolId_)),
-    impl_(std::make_unique<Impl>(stringPoolGetter(stringPoolId_)))
+    StringPoolResolveFun const& stringPoolGetter)
+    : PartitionLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
+      ModelPool(stringPoolGetter(stringPoolId_)),
+      impl_(std::make_unique<Impl>(stringPoolGetter(stringPoolId_)))
 {
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
-        raise("Failed to read TileSourceDataLayer: invalid deserialization offset.");
+        raise("Failed to read PartitionSourceDataLayer: invalid deserialization offset.");
     }
     bitsery::Deserializer<Adapter> s(Adapter(
         input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
@@ -80,7 +79,7 @@ TileSourceDataLayer::TileSourceDataLayer(
     impl_->readWrite(s);
     if (s.adapter().error() != bitsery::ReaderError::NoError) {
         raiseFmt(
-            "Failed to read TileFeatureLayer: Error {}",
+            "Failed to read PartitionFeatureLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(s.adapter().error()));
     }
     const auto modelOffset = deserializationOffsetBytes_ + s.adapter().currentReadPos();
@@ -89,21 +88,21 @@ TileSourceDataLayer::TileSourceDataLayer(
     }
 }
 
-TileSourceDataLayer::~TileSourceDataLayer() = default;
+PartitionSourceDataLayer::~PartitionSourceDataLayer() = default;
 
-simfil::Environment& TileSourceDataLayer::evaluationEnvironment()
+simfil::Environment& PartitionSourceDataLayer::evaluationEnvironment()
 {
     return *impl_->expressionEnvironment_;
 }
 
-model_ptr<SourceDataCompoundNode> TileSourceDataLayer::newCompound(size_t initialSize)
+model_ptr<SourceDataCompoundNode> PartitionSourceDataLayer::newCompound(size_t initialSize)
 {
     auto index = impl_->compounds_.size();
     auto& data = impl_->compounds_.emplace_back(SourceDataCompoundNode::Data{});
 
     return SourceDataCompoundNode(
         &data,
-        std::static_pointer_cast<TileSourceDataLayer>(shared_from_this()),
+        std::static_pointer_cast<PartitionSourceDataLayer>(shared_from_this()),
         ModelNodeAddress(Compound, static_cast<uint32_t>(index)),
         initialSize,
         mpKey_);
@@ -113,20 +112,24 @@ model_ptr<SourceDataCompoundNode> TileSourceDataLayer::newCompound(size_t initia
 using simfil::ModelNode;
 using simfil::res::tag;
 
-template<>
-model_ptr<SourceDataCompoundNode> resolveInternal(tag<SourceDataCompoundNode>, TileSourceDataLayer const& model, ModelNode const& node)
+template <>
+model_ptr<SourceDataCompoundNode> resolveInternal(
+    tag<SourceDataCompoundNode>,
+    PartitionSourceDataLayer const& model,
+    ModelNode const& node)
 {
-    assert(node.addr().column() == TileSourceDataLayer::Compound && "Unexpected column type!");
+    assert(node.addr().column() == PartitionSourceDataLayer::Compound && "Unexpected column type!");
 
     auto& data = model.impl_->compounds_.at(node.addr().index());
     return SourceDataCompoundNode(
         &data,
-        std::static_pointer_cast<const TileSourceDataLayer>(model.shared_from_this()),
+        std::static_pointer_cast<const PartitionSourceDataLayer>(model.shared_from_this()),
         node.addr(),
         model.mpKey_);
 }
 
-tl::expected<void, simfil::Error> TileSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
+tl::expected<void, simfil::Error>
+PartitionSourceDataLayer::resolve(const simfil::ModelNode& n, const ResolveFn& cb) const
 {
     // Merged/container views can surface child nodes from another model. Always
     // let the owning model interpret its own column/index address.
@@ -141,26 +144,28 @@ tl::expected<void, simfil::Error> TileSourceDataLayer::resolve(const simfil::Mod
     return ModelPool::resolve(n, cb);
 }
 
-tl::expected<void, simfil::Error> TileSourceDataLayer::write(std::ostream& outputStream)
+tl::expected<void, simfil::Error> PartitionSourceDataLayer::write(std::ostream& outputStream)
 {
-    TileLayer::write(outputStream);
+    PartitionLayer::write(outputStream);
     bitsery::Serializer<bitsery::OutputStreamAdapter> s(outputStream);
     impl_->readWrite(s);
     return ModelPool::write(outputStream);
 }
 
-nlohmann::json TileSourceDataLayer::toJson() const
+nlohmann::json PartitionSourceDataLayer::toJson() const
 {
     return ModelPool::toJson();
 }
 
-MemoryUsageBreakdown TileSourceDataLayer::memoryUsage() const
+MemoryUsageBreakdown PartitionSourceDataLayer::memoryUsage() const
 {
-    auto result = TileLayer::memoryUsage();
-    result.add("source-data-layer-object", {
-        sizeof(TileSourceDataLayer) - sizeof(TileLayer),
-        sizeof(TileSourceDataLayer) - sizeof(TileLayer),
-    });
+    auto result = PartitionLayer::memoryUsage();
+    result.add(
+        "source-data-layer-object",
+        {
+            sizeof(PartitionSourceDataLayer) - sizeof(PartitionLayer),
+            sizeof(PartitionSourceDataLayer) - sizeof(PartitionLayer),
+        });
     result.add("source-data-layer-impl", {sizeof(Impl), sizeof(Impl)});
 
     auto const model = ModelPool::memoryUsageStats();
@@ -181,7 +186,7 @@ MemoryUsageBreakdown TileSourceDataLayer::memoryUsage() const
 }
 
 tl::expected<void, simfil::Error>
-TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
+PartitionSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDict)
 {
     for (auto& compound : impl_->compounds_) {
         if (auto str = strings()->resolve(compound.schemaName_)) {
@@ -198,17 +203,18 @@ TileSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& newDi
     return ModelPool::setStrings(newDict);
 }
 
-void TileSourceDataLayer::setSourceDataAddressFormat(SourceDataAddressFormat f)
+void PartitionSourceDataLayer::setSourceDataAddressFormat(SourceDataAddressFormat f)
 {
     impl_->format_ = f;
 }
 
-TileSourceDataLayer::SourceDataAddressFormat TileSourceDataLayer::sourceDataAddressFormat() const
+PartitionSourceDataLayer::SourceDataAddressFormat
+PartitionSourceDataLayer::sourceDataAddressFormat() const
 {
     return impl_->format_;
 }
 
-void TileSourceDataLayer::setSourceDataAddressScope(uint32_t compoundIndex, bool enabled)
+void PartitionSourceDataLayer::setSourceDataAddressScope(uint32_t compoundIndex, bool enabled)
 {
     while (impl_->addressScopeFlags_.size() <= compoundIndex) {
         impl_->addressScopeFlags_.emplace_back(0);
@@ -216,7 +222,7 @@ void TileSourceDataLayer::setSourceDataAddressScope(uint32_t compoundIndex, bool
     impl_->addressScopeFlags_.at(compoundIndex) = enabled ? 1 : 0;
 }
 
-bool TileSourceDataLayer::isSourceDataAddressScope(uint32_t compoundIndex) const
+bool PartitionSourceDataLayer::isSourceDataAddressScope(uint32_t compoundIndex) const
 {
     return compoundIndex < impl_->addressScopeFlags_.size()
         && impl_->addressScopeFlags_.at(compoundIndex) != 0;

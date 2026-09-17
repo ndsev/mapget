@@ -15,6 +15,6 @@ namespace mapget::detail
 [[nodiscard]] std::string_view noDataSourceReasonToString(NoDataSourceReason reason);
 
 /** Convert tile load-state enum values to stable UI-facing strings. */
-[[nodiscard]] std::string_view loadStateToString(TileLayer::LoadState state);
+[[nodiscard]] std::string_view loadStateToString(PartitionLayer::LoadState state);
 
 } // namespace mapget::detail

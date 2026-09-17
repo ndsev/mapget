@@ -50,6 +50,106 @@ void bindDataSourceServer(py::module_& m)
     using namespace mapget;
     using namespace simfil;
 
+    py::class_<ObjectDiscoveryRequest>(
+        m,
+        "ObjectDiscoveryRequest",
+        "One spatial association query, independent of object payload loading.")
+        .def(
+            py::init<std::string, std::string, TileId, std::optional<std::string>>(),
+            py::arg("map_id"),
+            py::arg("layer_id"),
+            py::arg("tile_id"),
+            py::arg("source_id") = py::none(),
+            "Select a discovery tile at the layer's advertised association level.")
+        .def_readwrite("map_id", &ObjectDiscoveryRequest::mapId_, "Map to query.")
+        .def_readwrite(
+            "layer_id",
+            &ObjectDiscoveryRequest::layerId_,
+            "Object-backed layer to query.")
+        .def_readwrite(
+            "tile_id",
+            &ObjectDiscoveryRequest::tileId_,
+            "Discovery coverage, not an object identity.")
+        .def_readwrite(
+            "source_id",
+            &ObjectDiscoveryRequest::sourceId_,
+            "Optional datasource assertion.");
+    py::enum_<ObjectDiscoveryResult::Status>(
+        m,
+        "ObjectDiscoveryStatus",
+        "Distinguish successful emptiness from missing associations or failure.")
+        .value("SUCCESS", ObjectDiscoveryResult::Status::Success)
+        .value("UNAVAILABLE", ObjectDiscoveryResult::Status::Unavailable)
+        .value("FAILED", ObjectDiscoveryResult::Status::Failed);
+    py::class_<ObjectDiscoveryResult::Reference>(
+        m,
+        "ObjectReference",
+        "Unsigned object identity with optional WGS84 bounds.")
+        .def(
+            py::init<uint64_t, std::optional<std::array<double, 4>>>(),
+            py::arg("object_id"),
+            py::arg("bounds") = py::none(),
+            "Construct a reference; bounds are [west,south,east,north], with west>east allowed at "
+            "the antimeridian.")
+        .def_readwrite(
+            "object_id",
+            &ObjectDiscoveryResult::Reference::objectId_,
+            "Exact integer in 0..2**64-1.")
+        .def_readwrite(
+            "bounds",
+            &ObjectDiscoveryResult::Reference::bounds_,
+            "Optional WGS84 spatial bounds.");
+    py::class_<ObjectDiscoveryResult>(
+        m,
+        "ObjectDiscoveryResult",
+        "Associations and independent freshness for one discovery tile.")
+        .def(py::init<>(), "Construct an empty successful result with the current timestamp.")
+        .def_readwrite(
+            "status",
+            &ObjectDiscoveryResult::status_,
+            "Success, unavailable, or failed.")
+        .def_readwrite(
+            "objects",
+            &ObjectDiscoveryResult::objects_,
+            "Referenced objects; identity deduplicated on serialization.")
+        .def_readwrite(
+            "message",
+            &ObjectDiscoveryResult::message_,
+            "Optional diagnostic explaining availability or failure.")
+        .def_property(
+            "ttl_ms",
+            [](ObjectDiscoveryResult const& result) { return result.ttl_.count(); },
+            [](ObjectDiscoveryResult& result, int64_t ms)
+            {
+                if (ms < 0)
+                    throw py::value_error("TTL must be nonnegative.");
+                result.ttl_ = std::chrono::milliseconds(ms);
+            },
+            "Association freshness in milliseconds; zero means no expiry.")
+        .def_property(
+            "timestamp_ms",
+            [](ObjectDiscoveryResult const& result)
+            {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(
+                           result.timestamp_.time_since_epoch())
+                    .count();
+            },
+            [](ObjectDiscoveryResult& result, int64_t ms) {
+                result.timestamp_ =
+                    std::chrono::system_clock::time_point(std::chrono::milliseconds(ms));
+            },
+            "Unix timestamp in milliseconds, independent of object-payload freshness.")
+        .def(
+            "to_json",
+            [](ObjectDiscoveryResult const& result) { return result.toJson().dump(); },
+            "Serialize exact object IDs as decimal strings.")
+        .def_static(
+            "from_json",
+            [](std::string const& json)
+            { return ObjectDiscoveryResult::fromJson(nlohmann::json::parse(json)); },
+            py::arg("json"),
+            "Parse and validate an association response.");
+
     py::enum_<LayerType>(m, "LayerType", R"pbdoc(
         Mapget layer category.
 
@@ -62,26 +162,48 @@ void bindDataSourceServer(py::module_& m)
         .value("GLTF", LayerType::GLTF)
         .value("SOURCE_DATA", LayerType::SourceData);
 
-    py::class_<MapTileKey>(m, "MapTileKey", R"pbdoc(
+    py::class_<MapPartitionKey>(m, "MapPartitionKey", R"pbdoc(
         Fully qualified tile address used by datasource, cache and locate APIs.
 
         A key contains the layer type, map id, layer id, and
         ndslive.math.PackedTileId.
     )pbdoc")
         .def(py::init<>(), "Construct an empty map tile key.")
-        .def(py::init<std::string const&>(), py::arg("value"), "Parse a map tile key from its string form.")
-        .def(py::init<LayerType, std::string, std::string, TileId>(),
+        .def(
+            py::init<std::string const&>(),
+            py::arg("value"),
+            "Parse a map tile key from its string form.")
+        .def(
+            py::init<LayerType, std::string, std::string, TileId>(),
             py::arg("layer_type"),
             py::arg("map_id"),
             py::arg("layer_id"),
             py::arg("tile_id"),
             "Construct a map tile key from individual components.")
-        .def_readwrite("layer_type", &MapTileKey::layer_, "Layer category addressed by this key.")
-        .def_readwrite("map_id", &MapTileKey::mapId_, "Map identifier addressed by this key.")
-        .def_readwrite("layer_id", &MapTileKey::layerId_, "Layer identifier addressed by this key.")
-        .def_readwrite("tile_id", &MapTileKey::tileId_, "Packed tile id addressed by this key.")
-        .def("to_string", &MapTileKey::toString, "Convert this key to its stable string form.")
-        .def("__str__", &MapTileKey::toString);
+        .def_readwrite(
+            "layer_type",
+            &MapPartitionKey::layer_,
+            "Layer category addressed by this key.")
+        .def_readwrite("map_id", &MapPartitionKey::mapId_, "Map identifier addressed by this key.")
+        .def_readwrite(
+            "layer_id",
+            &MapPartitionKey::layerId_,
+            "Layer identifier addressed by this key.")
+        .def(
+            py::init<LayerType, std::string, std::string, PartitionId>(),
+            py::arg("layer_type"),
+            py::arg("map_id"),
+            py::arg("layer_id"),
+            py::arg("partition_id"),
+            "Construct a fully qualified tile or object key.")
+        .def_readwrite("partition_id", &MapPartitionKey::partitionId_, "Tagged partition identity.")
+        .def_property(
+            "tile_id",
+            [](MapPartitionKey const& key) { return key.partitionId_.tileId(); },
+            [](MapPartitionKey& key, TileId id) { key.partitionId_ = id; },
+            "Tile-only convenience; raises for objects.")
+        .def("to_string", &MapPartitionKey::toString, "Convert this key to its stable string form.")
+        .def("__str__", &MapPartitionKey::toString);
 
     py::class_<LocateRequest>(m, "LocateRequest", R"pbdoc(
         Request asking a datasource to locate a feature id in map tiles.
@@ -89,24 +211,43 @@ void bindDataSourceServer(py::module_& m)
         Datasources return cheap tile candidates with portable selectors;
         mapget resolves secondary ids against normally loaded complete tiles.
     )pbdoc")
-        .def(py::init([](std::string mapId, std::string typeId, KeyValuePairVec const& featureIdParts) {
-                return LocateRequest(std::move(mapId), std::move(typeId), castToKeyValue(castToKeyValueView(featureIdParts)));
-            }),
+        .def(
+            py::init(
+                [](std::string mapId, std::string typeId, KeyValuePairVec const& featureIdParts)
+                {
+                    return LocateRequest(
+                        std::move(mapId),
+                        std::move(typeId),
+                        castToKeyValue(castToKeyValueView(featureIdParts)));
+                }),
             py::arg("map_id"),
             py::arg("type_id"),
             py::arg("feature_id_parts"),
             "Construct a locate request for a feature id.")
-        .def(py::init([](py::dict const& dict) {
-                py::module jsonModule = py::module::import("json");
-                auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
-                return LocateRequest(nlohmann::json::parse(jsonString));
-            }),
+        .def(
+            py::init(
+                [](py::dict const& dict)
+                {
+                    py::module jsonModule = py::module::import("json");
+                    auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
+                    return LocateRequest(nlohmann::json::parse(jsonString));
+                }),
             py::arg("dict"),
             "Construct a locate request from a Python dictionary.")
-        .def_readwrite("map_id", &LocateRequest::mapId_, "Map in which the feature should be located.")
+        .def_readwrite(
+            "map_id",
+            &LocateRequest::mapId_,
+            "Map in which the feature should be located.")
+        .def_readwrite("layer_id", &LocateRequest::layerId_, "Optional layer restriction.")
+        .def_readwrite(
+            "partition",
+            &LocateRequest::partition_,
+            "Optional explicit partition restriction.")
         .def_readwrite("type_id", &LocateRequest::typeId_, "Feature type id to locate.")
-        .def_property("feature_id_parts",
-            [](LocateRequest const& self) {
+        .def_property(
+            "feature_id_parts",
+            [](LocateRequest const& self)
+            {
                 KeyValuePairVec result;
                 for (auto const& [key, value] : self.featureId_) {
                     std::visit(
@@ -117,26 +258,32 @@ void bindDataSourceServer(py::module_& m)
                 }
                 return result;
             },
-            [](LocateRequest& self, KeyValuePairVec const& parts) {
-                self.setFeatureId(castToKeyValueView(parts));
-            },
+            [](LocateRequest& self, KeyValuePairVec const& parts)
+            { self.setFeatureId(castToKeyValueView(parts)); },
             "Feature-id parts as `(part_id, value)` pairs.")
-        .def("set_feature_id", [](LocateRequest& self, KeyValuePairVec const& parts) {
-                self.setFeatureId(castToKeyValueView(parts));
-            },
+        .def(
+            "set_feature_id",
+            [](LocateRequest& self, KeyValuePairVec const& parts)
+            { self.setFeatureId(castToKeyValueView(parts)); },
             py::arg("feature_id_parts"),
             "Replace the feature-id parts.")
-        .def("get_int_id_part", &LocateRequest::getIntIdPart,
+        .def(
+            "get_int_id_part",
+            &LocateRequest::getIntIdPart,
             py::arg("part_id"),
             "Get an integer id part by name.")
-        .def("get_str_id_part", &LocateRequest::getStrIdPart,
+        .def(
+            "get_str_id_part",
+            &LocateRequest::getStrIdPart,
             py::arg("part_id"),
             "Get a string id part by name.")
-        .def("to_dict", [](LocateRequest const& self) {
-                return datasourceJsonToPython(self.serialize());
-            },
+        .def(
+            "to_dict",
+            [](LocateRequest const& self) { return datasourceJsonToPython(self.serialize()); },
             "Serialize the request to a Python dictionary.")
-        .def("to_json", [](LocateRequest const& self) { return self.serialize().dump(); },
+        .def(
+            "to_json",
+            [](LocateRequest const& self) { return self.serialize().dump(); },
             "Serialize the request to a JSON string.");
 
     py::class_<LocateResponse, LocateRequest>(m, "LocateResponse", R"pbdoc(
@@ -171,15 +318,13 @@ void bindDataSourceServer(py::module_& m)
         normally and applies the portable selector inside that tile.
     )pbdoc")
         .def(
-            py::init<
-                MapTileKey,
-                std::string>(),
+            py::init<MapPartitionKey, std::string>(),
             py::arg("tile_key"),
             py::arg("canonical_feature_id"),
             "Construct an exact-primary-id candidate.")
         .def(
             py::init(
-                [](MapTileKey tileKey,
+                [](MapPartitionKey tileKey,
                    std::string typeId,
                    std::string featureFilter,
                    py::dict const& bindings)
@@ -222,7 +367,7 @@ void bindDataSourceServer(py::module_& m)
             "Construct a typed SIMFIL candidate with scalar bindings.")
         .def_static(
             "from_feature_id_expression",
-            [](MapTileKey tileKey,
+            [](MapPartitionKey tileKey,
                std::string typeId,
                std::string featureIdExpression,
                py::dict const& bindings)
@@ -251,30 +396,25 @@ void bindDataSourceServer(py::module_& m)
             bindings. Its returned IDs are resolved through the candidate tile's
             primary feature index instead of scanning the target type.
             )pbdoc")
-        .def(py::init([](py::dict const& dict) {
-                py::module jsonModule =
-                    py::module::import("json");
-                auto jsonString =
-                    jsonModule.attr("dumps")(dict)
-                        .cast<std::string>();
-                return LocateCandidate(
-                    nlohmann::json::parse(
-                        jsonString));
-            }),
+        .def(
+            py::init(
+                [](py::dict const& dict)
+                {
+                    py::module jsonModule = py::module::import("json");
+                    auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
+                    return LocateCandidate(nlohmann::json::parse(jsonString));
+                }),
             py::arg("dict"),
             "Construct an exact, filtered, or feature-ID-expression candidate from its "
             "wire dictionary.")
-        .def_readwrite(
-            "tile_key",
-            &LocateCandidate::tileKey_)
-        .def("to_dict", [](LocateCandidate const& self) {
-                return datasourceJsonToPython(
-                    self.serialize());
-            },
+        .def_readwrite("tile_key", &LocateCandidate::tileKey_)
+        .def(
+            "to_dict",
+            [](LocateCandidate const& self) { return datasourceJsonToPython(self.serialize()); },
             "Serialize the candidate to its portable wire dictionary.")
-        .def("to_json", [](LocateCandidate const& self) {
-                return self.serialize().dump();
-            },
+        .def(
+            "to_json",
+            [](LocateCandidate const& self) { return self.serialize().dump(); },
             "Serialize the candidate to a JSON string.");
 
     py::class_<AttachmentRequest>(
@@ -390,9 +530,11 @@ void bindDataSourceServer(py::module_& m)
             py::arg("info_dict"))
         .def(
             "on_tile_feature_request",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            {
                 return self.onTileFeatureRequest(
-                    [callback = std::move(callback)](TileFeatureLayer::Ptr tile) {
+                    [callback = std::move(callback)](PartitionFeatureLayer::Ptr tile)
+                    {
                         py::gil_scoped_acquire gil;
                         callback(std::move(tile));
                     });
@@ -401,16 +543,18 @@ void bindDataSourceServer(py::module_& m)
             R"pbdoc(
             Set the Callback which will be invoked when a `/tile`-request for a
             feature layer is received.
-            The callback argument is a fresh TileFeatureLayer, which the callback must
-            fill according to the set TileFeatureLayer's layer info and tile id. If an
+            The callback argument is a fresh PartitionFeatureLayer, which the callback must
+            fill according to the set PartitionFeatureLayer's layer info and tile id. If an
             error occurs while filling the tile, the callback can use
-            TileFeatureLayer::setError(...) to signal the error downstream.
+            PartitionFeatureLayer::setError(...) to signal the error downstream.
         )pbdoc")
         .def(
             "on_tile_sourcedata_request",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            {
                 return self.onTileSourceDataRequest(
-                    [callback = std::move(callback)](TileSourceDataLayer::Ptr tile) {
+                    [callback = std::move(callback)](PartitionSourceDataLayer::Ptr tile)
+                    {
                         py::gil_scoped_acquire gil;
                         callback(std::move(tile));
                     });
@@ -419,14 +563,22 @@ void bindDataSourceServer(py::module_& m)
             R"pbdoc(
             Set the Callback which will be invoked when a `/tile`-request for a
             source-data layer is received.
-            The callback argument is a fresh TileSourceDataLayer, which the callback must
-            fill according to the set TileSourceDataLayer's layer info and tile id. If an
+            The callback argument is a fresh PartitionSourceDataLayer, which the callback must
+            fill according to the set PartitionSourceDataLayer's layer info and tile id. If an
             error occurs while filling the tile, the callback can use
-            TileSourceDataLayer::setError(...) to signal the error downstream.
+            PartitionSourceDataLayer::setError(...) to signal the error downstream.
         )pbdoc")
         .def(
+            "on_object_discovery_request",
+            &DataSourceServer::onObjectDiscoveryRequest,
+            py::arg("callback"),
+            py::return_value_policy::reference_internal,
+            "Set an ObjectDiscoveryRequest -> ObjectDiscoveryResult callback; never load payloads "
+            "here.")
+        .def(
             "on_locate_request",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            {
                 return self.onLocateRequest(
                     [callback = std::move(callback)](LocateRequest const& request) {
                         py::gil_scoped_acquire gil;
@@ -442,9 +594,7 @@ void bindDataSourceServer(py::module_& m)
         )pbdoc")
         .def(
             "on_attachment_request",
-            [](DataSourceServer& self,
-               py::function callback)
-                -> DataSourceServer&
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
             {
                 return self.onAttachmentRequest(
                     [callback =
@@ -471,11 +621,13 @@ void bindDataSourceServer(py::module_& m)
         )pbdoc")
         .def(
             "on_cache_expired",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer& {
+            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            {
                 return self.onCacheExpired(
                     [callback = std::move(callback)](
-                        MapTileKey const& tileKey,
-                        std::chrono::system_clock::time_point expiredAt) {
+                        MapPartitionKey const& tileKey,
+                        std::chrono::system_clock::time_point expiredAt)
+                    {
                         py::gil_scoped_acquire gil;
                         auto expiredAtUs = std::chrono::duration_cast<std::chrono::microseconds>(
                             expiredAt.time_since_epoch()).count();
@@ -486,7 +638,7 @@ void bindDataSourceServer(py::module_& m)
             R"pbdoc(
             Set the callback invoked when a service reports that an expired cached
             tile for this datasource is being refreshed. The callback receives
-            (MapTileKey, expired_at_unix_microseconds).
+            (MapPartitionKey, expired_at_unix_microseconds).
         )pbdoc")
         .def(
             "go",

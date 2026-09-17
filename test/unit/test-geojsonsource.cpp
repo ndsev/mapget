@@ -1,13 +1,17 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <unordered_map>
 
-#include "geojsonsource/geojsonsource.h"
-#include "mapget/model/featurelayer.h"
 #include <fmt/format.h>
+#include "geojsonsource/geojsonsource.h"
+#include "mapget/model/featureid.h"
+#include "mapget/model/featurelayer.h"
+#include "mapget/service/service.h"
 
 using namespace mapget;
 
@@ -80,6 +84,167 @@ void writeFile(const std::filesystem::path& path, const std::string& content)
 
 }  // namespace
 
+TEST_CASE(
+    "GeoJSON locate plans primary-ID candidates without tile I/O",
+    "[GeoJsonSource][GeoJsonLocate]")
+{
+    auto const endpoint = GENERATE(false, true);
+    CAPTURE(endpoint);
+    auto metadata = nlohmann::json::parse(R"({
+        "mapId": "LocateGeoJson",
+        "layers": {
+            "Roads": {
+                "featureTypes": [{
+                    "name": "Road",
+                    "uniqueIdCompositions": [
+                        [{"partId":"tileId", "datatype":"I64"}, {"partId":"roadId", "datatype":"STR"}],
+                        [{"partId":"tileId", "datatype":"I64"}, {"partId":"externalId", "datatype":"U32"}]
+                    ]
+                }, {
+                    "name": "Global",
+                    "uniqueIdCompositions": [[{"partId":"globalId", "datatype":"I64"}]]
+                }, {
+                    "name": "TextTile",
+                    "uniqueIdCompositions": [[{"partId":"tileId", "datatype":"STR"}]]
+                }]
+            }
+        }
+    })");
+    metadata["layers"]["OtherRoads"] = metadata["layers"]["Roads"];
+
+    size_t fetches = 0;
+    std::unique_ptr<DataSource> source;
+    auto const tempDir = createTempDir();
+    if (endpoint) {
+        geojsonsource::GeoJsonEndpointSourceOptions options;
+        options.baseUrl = testEndpointBaseUrl();
+        options.dataSourceInfoJson = metadata;
+        options.fetchText = [&](std::string const&)
+        {
+            ++fetches;
+            return std::string(sampleGeoJson2);
+        };
+        source = std::make_unique<geojsonsource::GeoJsonEndpointSource>(std::move(options));
+    }
+    else {
+        geojsonsource::GeoJsonSourceOptions options;
+        options.dataSourceInfoJson = metadata;
+        source =
+            std::make_unique<geojsonsource::GeoJsonSource>(tempDir.string(), std::move(options));
+    }
+
+    LocateRequest request{
+        "LocateGeoJson",
+        "Road",
+        {{"tileId", int64_t(largeTileId)}, {"roadId", std::string("a.b%c")}}};
+    auto expectedTile = TileId::fromValue(largeTileId);
+    auto expectedId = std::string("Road.-2147483648.a%2Eb%25c");
+    bool supported = true;
+    SECTION("signed packed ID and all matching layers") {}
+    SECTION("canonical ID with escaped string parts")
+    {
+        request =
+            LocateRequest(nlohmann::json{{"mapId", "LocateGeoJson"}, {"featureId", expectedId}});
+    }
+    SECTION("legacy tile part routes to packed tile without rewriting identity")
+    {
+        request.featureId_[0].second = legacyMapgetTileId;
+        expectedTile = legacyTileIdToPacked(legacyMapgetTileId);
+        expectedId = fmt::format("Road.{}.a%2Eb%25c", legacyMapgetTileId);
+    }
+    SECTION("unknown map")
+    {
+        request.mapId_ = "OtherMap";
+        supported = false;
+    }
+    SECTION("unknown feature type")
+    {
+        request.typeId_ = "Missing";
+        supported = false;
+    }
+    SECTION("invalid ID composition")
+    {
+        request.featureId_[1].first = "unknownId";
+        supported = false;
+    }
+    SECTION("secondary IDs need a custom resolver, not an exact-primary-ID guess")
+    {
+        request.featureId_[1] = {"externalId", int64_t(42)};
+        supported = false;
+    }
+    SECTION("IDs without a tile part do not trigger a source scan")
+    {
+        request = LocateRequest{"LocateGeoJson", "Global", {{"globalId", int64_t(42)}}};
+        supported = false;
+    }
+    SECTION("string tile IDs are not silently coerced")
+    {
+        request =
+            LocateRequest{"LocateGeoJson", "TextTile", {{"tileId", std::to_string(largeTileId)}}};
+        supported = false;
+    }
+    SECTION("out-of-range tile IDs are not truncated")
+    {
+        request.featureId_[0].second = int64_t(-2147483649LL);
+        supported = false;
+    }
+    SECTION("malformed canonical ID")
+    {
+        request = LocateRequest(nlohmann::json{
+            {"mapId", "LocateGeoJson"},
+            {"featureId", "Road.invalid.id"}});
+        supported = false;
+    }
+
+    auto const candidates = source->locate(request);
+    REQUIRE(fetches == 0);
+    REQUIRE(candidates.size() == (supported ? 2 : 0));
+    std::set<std::string> layers;
+    for (auto const& candidate : candidates) {
+        CHECK(candidate.tileKey_.layer_ == LayerType::Features);
+        CHECK(candidate.tileKey_.mapId_ == "LocateGeoJson");
+        CHECK(candidate.tileKey_.partitionId_ == expectedTile);
+        CHECK(candidate.selector_.canonicalFeatureId_ == expectedId);
+        CHECK(LocateCandidate(candidate.serialize()).serialize() == candidate.serialize());
+        layers.insert(candidate.tileKey_.layerId_);
+    }
+    if (supported)
+        CHECK(layers == std::set<std::string>{"Roads", "OtherRoads"});
+    std::filesystem::remove_all(tempDir);
+}
+
+TEST_CASE(
+    "GeoJSON locate verifies candidates through the normal service path",
+    "[GeoJsonSource][GeoJsonLocate]")
+{
+    auto const tempDir = createTempDir();
+    writeFile(tempDir / (std::to_string(largeTileId) + ".geojson"), sampleGeoJson2);
+    auto source =
+        std::make_shared<geojsonsource::GeoJsonSource>(tempDir.string(), false, "LocateGeoJson");
+    Service service(std::make_shared<MemCache>(), false, std::chrono::milliseconds{0}, 2);
+    service.add(source);
+    LocateRequest request{
+        "LocateGeoJson",
+        "AnyFeature",
+        {{"tileId", int64_t(largeTileId)}, {"featureIndex", int64_t(0)}}};
+    auto const results = service.locate(request);
+    REQUIRE(results.size() == 1);
+    CHECK(results.front().tileKey_.partitionId_ == TileId::fromValue(largeTileId));
+    CHECK(results.front().tileKey_.layerId_ == "GeoJsonAny");
+    auto const canonicalId = fmt::format("AnyFeature.{}.0", largeTileId);
+    CHECK(results.front().resolvedCanonicalFeatureId_ == canonicalId);
+    CHECK(
+        service
+            .locate(LocateRequest(
+                nlohmann::json{{"mapId", "LocateGeoJson"}, {"featureId", canonicalId}}))
+            .size() == 1);
+
+    // A plausible candidate is not a successful locate unless the feature actually exists.
+    request.featureId_[1].second = int64_t(99);
+    CHECK(service.locate(request).empty());
+    std::filesystem::remove_all(tempDir);
+}
+
 TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 {
     SECTION("signed packed tile ID support (legacy mode)")
@@ -104,9 +269,9 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer != nullptr);
         REQUIRE(!layer->coverage_.empty());
 
-        // Create a TileFeatureLayer to fill
+        // Create a PartitionFeatureLayer to fill
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -156,7 +321,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -210,7 +375,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
 
         // Fill Road layer
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto roadTile = std::make_shared<TileFeatureLayer>(
+        auto roadTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -221,7 +386,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(roadTile->numRoots() > 0);
 
         // Fill Lane layer
-        auto laneTile = std::make_shared<TileFeatureLayer>(
+        auto laneTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -287,7 +452,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromTileXY(0x01fa, 0x0888, 13),
             info.stringPoolId_,
             info.mapId_,
@@ -423,7 +588,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(layer->coverage_.front().min_ == TileId::fromTileXY(0x01fa, 0x0888, 13));
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromTileXY(0x01fa, 0x0888, 13),
             info.stringPoolId_,
             info.mapId_,
@@ -495,7 +660,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         // Fill both tiles
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
 
-        auto tile1 = std::make_shared<TileFeatureLayer>(
+        auto tile1 = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -504,7 +669,7 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE_NOTHROW(source.fill(tile1));
         REQUIRE(tile1->numRoots() > 0);
 
-        auto tile2 = std::make_shared<TileFeatureLayer>(
+        auto tile2 = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(secondTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -561,7 +726,7 @@ layers:
         REQUIRE(info.getLayer("Lane") != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto roadTile = std::make_shared<TileFeatureLayer>(
+        auto roadTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -570,7 +735,7 @@ layers:
         REQUIRE_NOTHROW(source.fill(roadTile));
         REQUIRE(roadTile->numRoots() > 0);
 
-        auto laneTile = std::make_shared<TileFeatureLayer>(
+        auto laneTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -611,7 +776,7 @@ layers:
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -646,7 +811,7 @@ layers:
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(secondTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -690,7 +855,7 @@ layers:
         REQUIRE(layer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -750,7 +915,7 @@ layers:
         REQUIRE(roadLayer != nullptr);
 
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);
-        auto roadTile = std::make_shared<TileFeatureLayer>(
+        auto roadTile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             info.stringPoolId_,
             info.mapId_,
@@ -775,7 +940,7 @@ layers:
         REQUIRE(anyLayer->coverage_.empty());
 
         auto fallbackStrings = std::make_shared<StringPool>(fallbackInfo.stringPoolId_);
-        auto tile = std::make_shared<TileFeatureLayer>(
+        auto tile = std::make_shared<PartitionFeatureLayer>(
             TileId::fromValue(largeTileId),
             fallbackInfo.stringPoolId_,
             fallbackInfo.mapId_,

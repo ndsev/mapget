@@ -14,14 +14,14 @@ class NullCache : public Cache
 public:
     using Ptr = std::shared_ptr<Cache>;
 
-    /** Retrieve a TileLayer blob for a MapTileKey - always returns empty. */
-    std::optional<std::string> getTileLayerBlob(MapTileKey const& k) override;
+    /** Retrieve a PartitionLayer blob for a MapPartitionKey - always returns empty. */
+    std::optional<std::string> getTileLayerBlob(MapPartitionKey const& k) override;
 
-    /** Upsert a TileLayer blob - does nothing. */
-    void putTileLayerBlob(MapTileKey const& k, std::string const& v) override;
+    /** Upsert a PartitionLayer blob - does nothing. */
+    void putTileLayerBlob(MapPartitionKey const& k, std::string const& v) override;
 
-    /** Remove a TileLayer blob - does nothing. */
-    void eraseTileLayerBlob(MapTileKey const& k) override;
+    /** Remove a PartitionLayer blob - does nothing. */
+    void eraseTileLayerBlob(MapPartitionKey const& k) override;
 
     /** Iterate cached tile blobs - no-op. */
     void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;
