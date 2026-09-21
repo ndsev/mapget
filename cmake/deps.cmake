@@ -175,6 +175,12 @@ endif()
 
     CPMAddPackage(
         URI "gh:drogonframework/drogon@1.9.7"
+        # Backport upstream #2527 until a tagged release supports async streams
+        # with Connection: close. Keep streaming rather than buffering responses.
+        PATCH_COMMAND "${CMAKE_COMMAND}"
+            "-DSOURCE_DIR=<SOURCE_DIR>"
+            "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/drogon-async-close.patch"
+            -P "${CMAKE_CURRENT_LIST_DIR}/apply-dependency-patch.cmake"
         OPTIONS
             "BUILD_CTL OFF"
             "BUILD_EXAMPLES OFF"

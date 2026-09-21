@@ -1,0 +1,58 @@
+Backport HTTP/1.1 async streams with Connection: close from Drogon PR #2527:
+https://github.com/drogonframework/drogon/commit/c9db379743f8a095b7a2a561b26fc1745628a453
+
+Keep synchronous close-delimited streams unchanged: their send path in 1.9.7
+only applies chunk framing to keep-alive responses. Async ResponseStream always
+frames chunks, independently of whether the connection closes afterward.
+Remove this patch when upgrading to a Drogon release containing the fix.
+
+--- a/lib/src/HttpResponseImpl.cc
++++ b/lib/src/HttpResponseImpl.cc
+@@ -529,7 +529,8 @@
+         {
+             // When the headers are created, it is time to set the transfer
+             // encoding to chunked if the contents size is not specified
+-            if (!ifCloseConnection() &&
++            if (version_ != Version::kHttp10 &&
++                (asyncStreamCallback_ || !ifCloseConnection()) &&
+                 headers_.find("content-length") == headers_.end())
+             {
+                 LOG_DEBUG << "send stream with transfer-encoding chunked";
+--- a/lib/src/HttpServer.cc
++++ b/lib/src/HttpServer.cc
+@@ -969,7 +969,7 @@
+         auto &asyncStreamCallback = respImplPtr->asyncStreamCallback();
+         if (asyncStreamCallback)
+         {
+-            if (!respImplPtr->ifCloseConnection())
++            if (respImplPtr->version() != Version::kHttp10)
+             {
+                 asyncStreamCallback(
+                     std::make_unique<ResponseStream>(conn->sendAsyncStream(
+@@ -977,7 +977,7 @@
+             }
+             else
+             {
+-                LOG_INFO << "Chunking Set CloseConnection !!!";
++                LOG_INFO << "Async stream not supported for HTTP/1.0";
+             }
+         }
+         auto &streamCallback = respImplPtr->streamCallback();
+@@ -1051,7 +1051,7 @@
+             {
+                 conn->send(buffer);
+                 buffer.retrieveAll();
+-                if (!respImplPtr->ifCloseConnection())
++                if (respImplPtr->version() != Version::kHttp10)
+                 {
+                     asyncStreamCallback(
+                         std::make_unique<ResponseStream>(conn->sendAsyncStream(
+@@ -1059,7 +1059,7 @@
+                 }
+                 else
+                 {
+-                    LOG_INFO << "Chunking Set CloseConnection !!!";
++                    LOG_INFO << "Async stream not supported for HTTP/1.0";
+                 }
+             }
+             auto &streamCallback = respImplPtr->streamCallback();

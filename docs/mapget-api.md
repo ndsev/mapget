@@ -26,6 +26,12 @@ layer. Its `partition` is tagged for tiles and objects. Dependency field
 `stringPoolOffsets`, keyed by datasource `stringPoolId`, to suppress string
 pool entries they already possess.
 
+Streaming responses require HTTP/1.1 and use chunked transfer encoding. Both
+keep-alive and `Connection: close` requests are supported: `close` closes the
+connection **after** the complete response, not before asynchronous results
+arrive. Clients must consume the terminating chunk (and gzip trailer when
+compressed); an early disconnect cancels the outstanding request.
+
 Tile `MapPartitionKey` values retain four parts:
 
 ```text
