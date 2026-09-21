@@ -350,7 +350,7 @@ struct LayerInfo
 
     /** Addressing of payloads; discovery tiles are independent of object identity. */
     PartitionKind partitionKind_ = PartitionKind::Tile;
-    /** Required discovery grid level for object-backed layers, not object resolution. */
+    /** Required level in 0..15 for object discovery, not object resolution; absent on tile layers. */
     std::optional<int> tileAssociationLevel_;
 
     /**

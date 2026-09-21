@@ -10,7 +10,7 @@
 
 namespace mapget
 {
-/** One discovery query. Its tile is spatial coverage, never an object's identity. */
+/** One map/layer association query. Its tile is discovery coverage, never an object's identity. */
 struct ObjectDiscoveryRequest
 {
     std::string mapId_;
@@ -22,7 +22,11 @@ struct ObjectDiscoveryRequest
 /** Associations for one discovery tile; failure is not an empty successful list. */
 struct ObjectDiscoveryResult
 {
-    /** An object reference with optional [west, south, east, north] WGS84 bounds. */
+    /**
+     * A map/layer-scoped object identity with optional [west, south, east, north] WGS84 bounds.
+     * Bounds must be finite and ordered south <= north; west > east denotes an antimeridian
+     * crossing. Bounds do not define the object's geometry anchor or clip its payload.
+     */
     struct Reference
     {
         uint64_t objectId_ = 0;
@@ -40,7 +44,10 @@ struct ObjectDiscoveryResult
     /** Reject invalid freshness, bounds, or successful-looking payloads on failed responses. */
     void validate() const;
 
-    /** Serialize unsigned identities without browser precision loss. */
+    /**
+     * Validate and serialize IDs as unsigned decimal strings and timestamps as Unix milliseconds.
+     * Duplicate object IDs are collapsed, retaining the first reference (including its bounds).
+     */
     nlohmann::json toJson() const;
     /** Parse a datasource response, preserving unavailable/empty distinction. */
     static ObjectDiscoveryResult fromJson(nlohmann::json const& json);

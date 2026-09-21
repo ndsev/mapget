@@ -32,6 +32,27 @@ the on-disk database.
 
 Cache hits and misses are decided per tile: if a tile for the requested map, layer and tile ID exists in the cache, the service returns it immediately; otherwise the corresponding datasource is asked to produce the tile and the result is inserted into the cache.
 
+## Object partition caching
+
+The same cache stores complete object partitions. The key is
+`MapPartitionKey`: payload type, map, layer, and **tagged** partition identity.
+An object and tile with the same numeric value are different entries. Multiple
+discovery tiles referring to one object do not create multiple cached copies;
+payload loads also share the ordinary in-flight coalescing index.
+
+The existing `--cache-max-tiles` name counts partition entries, including
+objects. The memory byte budget applies to serialized object payloads too;
+it is not a per-object size limit on datasource loading or filtering. Filters
+reuse complete source objects, not cached subsets.
+
+Discovery associations are not stored in this cache and discovery calls are
+not coalesced. Their response `timestamp`/`ttlMs` tells the client when to
+refresh associations, independently of payload freshness. Payload TTL
+precedence remains partition-specific, then datasource, then service default;
+zero means no expiry. An association disappearing does not evict the object.
+Map reset covers object payloads as well as tiles, and fails queued discovery
+work for that map; it cannot interrupt discovery calls already running.
+
 ## Resetting one map at runtime
 
 Administrators can opt into the guarded `POST /cache/reset` endpoint with

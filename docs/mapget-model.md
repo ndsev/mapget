@@ -27,6 +27,7 @@ use its checked `tileId()` accessor for spatial operations. `id()` and
 Each `LayerInfo` declares `partitionKind` (`tile` by default, or `object`).
 Object layers additionally require `tileAssociationLevel` in 0..15. That level
 selects **discovery coverage**, not object resolution, geometry or identity.
+Tile layers must omit `tileAssociationLevel`.
 Objects discovered through several tiles are loaded and cached under one key.
 
 Object geometry must not be anchored to a discovery tile. Call
@@ -45,6 +46,15 @@ in each layer header. Feature GeoJSON includes `partition`; tile exports also
 retain `mapgetTileId`. Old binary readers must be rebuilt/upgraded; there is
 no old-binary object compatibility mode.
 
+Subset JSON uses `type: "PartitionSubsetLayer"` and tagged `partition` too.
+Its dependency field `sourceTileKey` retains its name but carries a generic
+`MapPartitionKey`. Source-data JSON remains an array of roots; source-data
+partition identity travels in the binary layer header, not in that JSON array.
+
+See the [HTTP discovery contract](mapget-api.md#post-objectsdiscover) and
+[datasource integration guide](mapget-dev-guide.md#object-datasource-integration)
+for the discovery/load sequence and a runnable example.
+
 ## Features and properties
 
 The atomic unit of data in mapget is the feature. Conceptually, a feature is close to a GeoJSON feature: it has a unique identifier, one or more geometries and a flexible set of attributes. Mapget adds two ideas on top of plain GeoJSON:
@@ -58,7 +68,7 @@ To make this as fast as possible, mapget uses the simfil binary format with a sm
 
 ## Datasource metadata
 
-Tiles do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
+Partitions do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
 
 ```mermaid
 classDiagram
@@ -75,6 +85,8 @@ classDiagram
   class LayerInfo {
     +string layerId
     +LayerType type
+    +PartitionKind partitionKind
+    +optional~int~ tileAssociationLevel
     +vector<int> zoomLevels
     +vector<Coverage> coverage
     +bool canRead
@@ -110,8 +122,10 @@ classDiagram
 
 - **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
 - **`LayerInfo`** describes a single layer: type (`Features` or
-  `SourceData`), advertised zoom levels, coverage rectangles, read/write
-  flags, semantic version and optional `featureModelSchema`. The service uses
+  `SourceData`), partition kind, advertised zoom levels, coverage rectangles,
+  read/write flags, semantic version and optional `featureModelSchema`. Object
+  layers also declare `tileAssociationLevel`; their coverage describes discovery
+  tiles, not a spatial encoding of their opaque IDs. The service uses
   this to validate requests, and the reader/writer uses it when parsing tile
   streams.
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
@@ -358,21 +372,40 @@ Features are stored in `TileFeatureLayer` objects, and optional raw data is stor
 
 ## Model structure and simfil integration
 
-Internally, mapget’s model is expressed as a tree of simfil model nodes that hang off a tile. The main entry points are `TileFeatureLayer` for feature tiles and `TileSourceDataLayer` for source data tiles. Both derive from `simfil::ModelPool`, which provides the storage for model nodes and ties them into the simfil query engine.
+Internally, mapget models features, subsets, and source data as trees of simfil
+model nodes owned by a partition. `PartitionFeatureLayer` and
+`PartitionSubsetLayer` share `PartitionFeatureModelLayerBase`, which owns common
+feature-ID and geometry storage and derives from both `PartitionLayer` and
+`simfil::ModelPool`. `PartitionSourceDataLayer` derives directly from those two
+bases. The familiar `Tile*Layer` names are aliases, not additional classes or
+separate object/tile implementations.
 
-The most important model classes and their relationships are summarised here:
+The most important model classes and their relationships are summarised here.
+The two `PartitionId` accessors are checked alternatives: calling `tileId()`
+on an object throws, and vice versa.
 
 ```mermaid
 classDiagram
-  class TileLayer {
-    +TileId tileId
+  class PartitionLayer {
+    +PartitionId partitionId()
+    +TileId tileId()
     +string stringPoolId
     +string mapId
     +LayerInfo~&~ layerInfo()
     +nlohmann::json toJson()
   }
 
-  class TileFeatureLayer {
+  class PartitionId {
+    +PartitionKind kind()
+    +TileId tileId()
+    +uint64_t objectId()
+  }
+
+  class PartitionFeatureModelLayerBase {
+    +Point geometryAnchor()
+  }
+
+  class PartitionFeatureLayer {
     +Feature::Ptr newFeature(typeId, idParts)
     +model_ptr~Feature~ at(index)
     +size_t size()
@@ -380,7 +413,7 @@ classDiagram
     +complete(query, point, opts)
   }
 
-  class TileSubsetLayer {
+  class PartitionSubsetLayer {
     +FilterIdentity filterIdentity()
     +vector~TileSubsetChannel~ channels
     +vector~TileSubsetDependency~ dependencies
@@ -399,7 +432,7 @@ classDiagram
     +forEachGroupEntry(cb)
   }
 
-  class TileSourceDataLayer {
+  class PartitionSourceDataLayer {
     +model_ptr~SourceDataCompoundNode~ newCompound(initialSize)
     +Environment& evaluationEnvironment()
   }
@@ -486,14 +519,15 @@ classDiagram
     <<simfil::ModelNode>>
   }
 
-  TileLayer <|-- TileFeatureLayer
-  TileLayer <|-- TileSubsetLayer
-  TileLayer <|-- TileSourceDataLayer
-  TileSourceDataLayer "1" *-- "many" SourceDataCompoundNode
+  PartitionLayer "1" *-- "1" PartitionId
+  PartitionLayer <|-- PartitionFeatureModelLayerBase
+  PartitionFeatureModelLayerBase <|-- PartitionFeatureLayer
+  PartitionFeatureModelLayerBase <|-- PartitionSubsetLayer
+  PartitionLayer <|-- PartitionSourceDataLayer
+  PartitionSourceDataLayer "1" *-- "many" SourceDataCompoundNode
 
-  simfil_ModelPool <|-- TileFeatureLayer
-  simfil_ModelPool <|-- TileSubsetLayer
-  simfil_ModelPool <|-- TileSourceDataLayer
+  simfil_ModelPool <|-- PartitionFeatureModelLayerBase
+  simfil_ModelPool <|-- PartitionSourceDataLayer
 
   simfil_ModelNode <|-- Feature
   simfil_ModelNode <|-- GeometryCollection
@@ -507,8 +541,8 @@ classDiagram
   simfil_ModelNode <|-- SourceDataReferenceCollection
   simfil_ModelNode <|-- SourceDataReferenceItem
 
-  TileFeatureLayer "1" *-- "many" Feature
-  TileSubsetLayer "1" *-- "many" TileSubsetChannel
+  PartitionFeatureLayer "1" *-- "many" Feature
+  PartitionSubsetLayer "1" *-- "many" TileSubsetChannel
   Feature "1" *-- "0..1" GeometryCollection
   GeometryCollection "1" *-- "many" Geometry
   Feature "1" *-- "0..1" AttributeLayerList

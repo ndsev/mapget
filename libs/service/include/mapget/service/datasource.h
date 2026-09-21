@@ -98,7 +98,14 @@ public:
      */
     virtual std::vector<LocateCandidate> locate(LocateRequest const& req);
 
-    /** Discover object associations for one tile; called under the ordinary datasource permit. */
+    /**
+     * Return object associations at the layer's tileAssociationLevel, without loading payloads.
+     * The default reports Unavailable, distinct from Success with an empty object list.
+     * Service calls run on shared workers under the same datasource permits as fill(), and may
+     * overlap other datasource calls up to maxParallelJobs. Keep shared state thread-safe and
+     * bound backend I/O: running discovery is not interruptible by the service.
+     * Exceptions and invalid results become Failed responses at the service boundary.
+     */
     virtual ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request);
 
     /**

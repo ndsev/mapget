@@ -577,7 +577,17 @@ public:
      */
     std::vector<LocateResponse> locate(LocateRequest const& req);
 
-    /** Queue one bounded discovery operation without blocking the caller or creating a thread. */
+    /**
+     * Discover associations without loading payloads, using the shared worker/permit budget.
+     * A nonempty callback receives one result, possibly before this call returns: validation
+     * or admission failures complete inline, accepted queries on a worker, and queued
+     * cancellations on the invalidation/shutdown thread. Callbacks run outside the scheduler
+     * mutex; keep them short, thread-safe, nonthrowing, and independent of the submitting stack.
+     * A worker retains its datasource permit through the callback, so do not wait there for
+     * further service work. An empty callback submits nothing.
+     * There is no per-query cancellation handle. Map invalidation/shutdown fails queued work;
+     * already running datasource calls finish normally and may still deliver results.
+     */
     void discoverObjects(
         ObjectDiscoveryRequest request,
         std::function<void(ObjectDiscoveryResult)> callback,

@@ -50,7 +50,12 @@ public:
             std::vector<LocateCandidate>(
                 LocateRequest const&)> const&);
 
-    /** Install object association lookup; successful empty lists differ from unavailable data. */
+    /**
+     * Install lookup for the remote single-query /objects/discover endpoint ({layerId, tileId}).
+     * Return associations only, not object payloads; successful empty lists differ from
+     * Unavailable. The callback may overlap fill/other requests, so synchronize shared state
+     * and use bounded I/O. This is not the public service's map-scoped batch endpoint.
+     */
     DataSourceServer& onObjectDiscoveryRequest(
         std::function<ObjectDiscoveryResult(ObjectDiscoveryRequest const&)> const&);
 
