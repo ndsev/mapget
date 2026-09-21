@@ -65,6 +65,9 @@ class DataSource
 public:
     using Ptr = std::shared_ptr<DataSource>;
 
+    /** Release derived datasource resources when owned through the base interface. */
+    virtual ~DataSource() = default;
+
     /**
      * Method which is called by a service to determine which map layers
      * can be served by this DataSource, and how many concurrent jobs this
