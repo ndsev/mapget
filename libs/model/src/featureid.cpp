@@ -549,9 +549,11 @@ std::string formatFeatureIdString(
             composition = &layerInfo->getTypeInfo(typeId)->uniqueIdCompositions_[*index];
     }
     std::string result(typeId);
-    for (auto const& [key, value] : featureIdParts) {
+    // Older AppleClang cannot capture structured bindings in the nested lambdas below.
+    for (auto const& idPart : featureIdParts) {
         std::visit(
-            [&](auto&& part) {
+            [&](auto&& part)
+            {
                 using T = std::decay_t<decltype(part)>;
                 if constexpr (std::is_same_v<T, std::string_view> ||
                               std::is_same_v<T, std::string>) {
@@ -564,7 +566,7 @@ std::string formatFeatureIdString(
                     bool unsignedPart = composition &&
                         std::ranges::any_of(*composition,
                                             [&](auto const& item) {
-                                                return item.idPartLabel_ == key &&
+                                                return item.idPartLabel_ == idPart.first &&
                                                     item.datatype_ == IdPartDataType::U64;
                                             });
                     if (unsignedPart)
@@ -576,7 +578,7 @@ std::string formatFeatureIdString(
                         fmt::format_to(std::back_inserter(result), ".{}", part);
                 }
             },
-            value);
+            idPart.second);
     }
     return result;
 }
