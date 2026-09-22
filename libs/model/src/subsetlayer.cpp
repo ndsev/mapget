@@ -1438,6 +1438,7 @@ void PartitionSubsetLayer::adoptSourceInfo(PartitionFeatureLayer const& source)
     setTimestamp(source.timestamp());
     setTtl(source.ttl());
     setInfo(source.info());
+    setLegalInfo(source.legalInfo());
 }
 
 void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dependencies)

@@ -13,6 +13,7 @@
 #include <string_view>
 #include <charconv>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "nlohmann/json.hpp"
@@ -389,9 +390,9 @@ void PartitionLayer::setInfo(std::string const& k, nlohmann::json const& v)
     info_[k] = v;
 }
 
-void PartitionLayer::setLegalInfo(const std::string& legalInfoString)
+void PartitionLayer::setLegalInfo(std::optional<std::string> legalInfoString)
 {
-    legalInfo_ = legalInfoString;
+    legalInfo_ = std::move(legalInfoString);
 }
 
 void PartitionLayer::setLoadStateCallback(LoadStateCallback cb)

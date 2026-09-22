@@ -515,6 +515,15 @@ void bindTileLayer(py::module_& m)
             py::arg("time_to_live_in_ms"),
             "Set the tile TTL in milliseconds, or -1 to clear it.")
         .def(
+            "legal_info",
+            &PartitionLayer::legalInfo,
+            "Get the copyright information, or None if unset.")
+        .def(
+            "set_legal_info",
+            &PartitionLayer::setLegalInfo,
+            py::arg("legal_info"),
+            "Set the copyright information, or pass None to clear it.")
+        .def(
             "set_info",
             [](PartitionLayer& self, std::string const& key, simfil::ScalarValueType const& value)
             {

@@ -53,6 +53,13 @@ def main() -> int:
     requested_tiles: list[int] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
+        assert tile.legal_info() is None
+        tile.set_legal_info("Source copyright and terms")
+        assert tile.legal_info() == "Source copyright and terms"
+        tile.set_legal_info("")
+        assert tile.legal_info() == ""
+        tile.set_legal_info(None)
+        assert tile.legal_info() is None
         if tile.partition_id().kind == mapget.PartitionKind.OBJECT:
             assert tile.partition_id().object_id == object_id
             tile.set_geometry_anchor(point(11, 48, 0))

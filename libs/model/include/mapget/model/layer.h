@@ -203,9 +203,10 @@ public:
 
     /**
      * Getter and setter for this tile's copyright information.
+     * Set std::nullopt to clear the information.
      */
     [[nodiscard]] std::optional<std::string> legalInfo() const;
-    void setLegalInfo(const std::string& legalInfoString);
+    void setLegalInfo(std::optional<std::string> legalInfoString);
 
     /** Serialization */
     virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);

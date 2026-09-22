@@ -34,6 +34,15 @@ Object geometry must not be anchored to a discovery tile. Call
 `setGeometryAnchor()` before adding geometry; feature/subset layers serialize
 that anchor explicitly. The initial object anchor is (0,0,0).
 
+Filtered subsets retain the source layer's legal notice alongside its timestamp,
+TTL and diagnostic information. The notice travels in the existing binary layer
+header so clients can show copyright and terms when rendering either tile or
+object partitions.
+
+`PartitionLayer::setLegalInfo()` accepts an optional string; pass `std::nullopt`
+to clear the notice. In Python, use `legal_info()` and `set_legal_info()`, with
+`None` to clear it. An empty string remains a present notice.
+
 Feature IDs remain schema-defined. A container-scoped ID part may retain its
 existing name `tileId`, declared `U64` for object layers. Simfil stores integer
 values as signed int64; use `std::bit_cast<int64_t>(objectId)` to preserve all

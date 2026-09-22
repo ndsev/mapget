@@ -105,6 +105,7 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
     source->setTimestamp(
         std::chrono::system_clock::time_point{1'725'000'000s});
     source->setTtl(4500ms);
+    source->setLegalInfo("Source copyright and terms: https://example.org/terms");
 
     auto subset = std::make_shared<
         PartitionSubsetLayer>(tileId, "SubsetNode", "TestMap", info, strings, "styled-roads", 7);
@@ -239,6 +240,7 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
     REQUIRE(subset->generation() == 7);
     REQUIRE(subset->timestamp() == source->timestamp());
     REQUIRE(subset->ttl() == source->ttl());
+    REQUIRE(subset->legalInfo() == source->legalInfo());
     REQUIRE(subset->size() == 4);
     REQUIRE(subset->info()["Load/Backend#us"] == 42);
     REQUIRE(subset->localSourceFeatureCount() == 11);
@@ -326,6 +328,7 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
     REQUIRE(parsed->generation() == subset->generation());
     REQUIRE(parsed->timestamp() == source->timestamp());
     REQUIRE(parsed->ttl() == source->ttl());
+    REQUIRE(parsed->legalInfo() == source->legalInfo());
     REQUIRE(parsed->toJson() == subset->toJson());
     REQUIRE(parsed->at(2)->scope() == Scope::Relation);
     REQUIRE(parsed->at(2)->featureEntryCount() == 2);
