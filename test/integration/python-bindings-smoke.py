@@ -62,6 +62,12 @@ def main() -> int:
         assert tile.tile_id().value == 65536
         requested_tiles.append(tile.tile_id().value)
         feature = tile.new_feature("Way", [("wayId", 1)])
+        try:
+            tile.new_feature("Way", [("wayId", 1)])
+        except RuntimeError as error:
+            assert "Duplicate feature ID" in str(error)
+        else:
+            raise AssertionError("new_feature accepted a duplicate ID")
 
         geometry = feature.geom().new_geometry(mapget.GeomType.LINE)
         geometry.append(point(1.0, 2.0))

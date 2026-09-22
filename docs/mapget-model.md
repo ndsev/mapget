@@ -66,6 +66,29 @@ The `properties.layers` tree in a feature holds these layered attributes and the
 
 To make this as fast as possible, mapget uses the simfil binary format with a small VTLV (Version-Type-Length-Value) message wrapper. This is explained in the following section.
 
+### Feature identity and uniqueness
+
+`PartitionFeatureLayer::newFeature()` rejects an existing identity before changing
+model storage or the string pool. Identity consists of the feature type and the
+required primary ID components, including any shared ID prefix. Optional ID
+components do not distinguish features. The scope is one feature layer in one
+partition; different types or partitions may reuse the same component values.
+GeoJSON import uses the same check. Repeated detached feature references remain
+valid, and `clone()` intentionally merges into an existing feature.
+
+Insertion and `find()` share one hash multimap. Hash collisions are resolved by
+comparing the actual identities. Protocol **5.1** serializes eight-byte
+address/hash records without sorting; readers reserve and reconstruct the index.
+Older stream readers reject this protocol because they require sorted entries.
+The runtime index uses additional bucket/node memory compared with its wire form;
+memory accounting reports that separately from serialized payload size.
+
+Binary construction checks the index count and address bounds, but does not run
+full semantic validation. After constructing a shared layer, call `validate()`
+or `checkForErrors()` to detect duplicate IDs and inconsistent index entries in
+untrusted or externally produced layers. `validateSchema()` is a separate check
+against the optional feature-model JSON schema.
+
 ## Datasource metadata
 
 Partitions do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
@@ -131,7 +154,7 @@ classDiagram
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
 - **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
 
-When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` and uses it to validate feature IDs and field layouts. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
+When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` for interpreting feature IDs and field layouts. Full feature-ID validation is explicit, as described above. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
 
 ### Feature Model Schema
 

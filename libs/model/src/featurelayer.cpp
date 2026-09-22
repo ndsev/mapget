@@ -182,24 +182,6 @@ void ensureFeatureComplexDataRefCapacity(
 }
 }
 
-struct FeatureAddrWithIdHash
-{
-    MODEL_COLUMN_TYPE(8);
-
-    ModelNodeAddress featureAddr_{};
-    uint32_t idHash_ = 0;
-
-    FeatureAddrWithIdHash() = default;
-    FeatureAddrWithIdHash(ModelNodeAddress featureAddr, uint32_t idHash)
-        : featureAddr_(featureAddr),
-          idHash_(idHash)
-    {}
-
-    bool operator< (FeatureAddrWithIdHash const& other) const {
-        return std::tie(idHash_, featureAddr_) < std::tie(other.idHash_, other.featureAddr_);
-    }
-};
-
 struct PartitionFeatureLayer::Impl
 {
     ModelNodeAddress featureIdPrefix_;
@@ -217,19 +199,48 @@ struct PartitionFeatureLayer::Impl
     simfil::ModelColumn<AttrPoint::Data, simfil::detail::ColumnPageSize> attrPoints_;
     simfil::ModelColumn<AttrPointSequence::Data, simfil::detail::ColumnPageSize> attrPointSequences_;
 
-    /**
-     * Indexing of features by their id hash. The hash-feature pairs are kept
-     * in a vector, which is kept in a sorted state. This allows finding a
-     * feature by its id in O(log(n)) time.
-     */
-    simfil::ModelColumn<FeatureAddrWithIdHash, simfil::detail::ColumnPageSize / 4> featureHashIndex_;
-    bool featureHashIndexNeedsSorting_ = false;
+    /** Shared insertion/lookup index; equal hashes still require full identity comparison. */
+    std::unordered_multimap<uint32_t, ModelNodeAddress> featureHashIndex_;
 
-    void sortFeatureHashIndex() {
-        if (!featureHashIndexNeedsSorting_)
-            return;
-        featureHashIndexNeedsSorting_ = false;
-        std::sort(featureHashIndex_.begin(), featureHashIndex_.end());
+    /** Restore or write index entries directly, without materializing a second index. */
+    template <typename S>
+    void readWriteFeatureIndex(S& s)
+    {
+        // Keep the compact address/hash records, but no longer require sorted wire order.
+        uint64_t payloadBytes = featureHashIndex_.size() * 8ULL;
+        s.value8b(payloadBytes);
+        if constexpr (simfil::detail::bitsery_input_archive<S>) {
+            if (s.adapter().error() != bitsery::ReaderError::NoError)
+                return;
+            // Check the input before reserving: a corrupt count must not trigger a huge allocation.
+            if (payloadBytes != features_.size() * 8ULL ||
+                payloadBytes > simfil::bitsery_max_column_payload_bytes ||
+                payloadBytes > s.adapter().currentReadEndPos() - s.adapter().currentReadPos())
+            {
+                simfil::detail::mark_bitsery_invalid_data(s);
+                return;
+            }
+            featureHashIndex_.reserve(features_.size());
+            for (size_t i = 0; i < features_.size(); ++i) {
+                ModelNodeAddress address;
+                uint32_t hash = 0;
+                s.object(address);
+                s.value4b(hash);
+                if (address.column() != ColumnId::Features || address.index() >= features_.size()) {
+                    simfil::detail::mark_bitsery_invalid_data(s);
+                    return;
+                }
+                featureHashIndex_.emplace(hash, address);
+            }
+        }
+        else {
+            for (auto const& [hash, address] : featureHashIndex_) {
+                auto wireAddress = address;
+                auto wireHash = hash;
+                s.object(wireAddress);
+                s.value4b(wireHash);
+            }
+        }
     }
 
     // SIMFIL schema lookup, runtime environment, and immutable compile cache.
@@ -300,8 +311,7 @@ struct PartitionFeatureLayer::Impl
         s.object(relations_);
         s.object(attrPoints_);
         s.object(attrPointSequences_);
-        sortFeatureHashIndex();
-        s.object(featureHashIndex_);
+        readWriteFeatureIndex(s);
     }
 
     Impl(
@@ -592,6 +602,15 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
             typeId,
             idPartsToString(fullFeatureIdParts)));
     }
+    // Reject duplicates before allocating values, interning strings, or appending a root.
+    if (find(typeId, fullFeatureIdParts)) {
+        raiseFmt(
+            "Duplicate feature ID of type '{}' with parts {} in map '{}' layer '{}'.",
+            typeId,
+            idPartsToString(fullFeatureIdParts),
+            mapId_,
+            layerInfo_->layerId_);
+    }
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
     // Stored feature ids omit the common tile prefix to save space, so we first
     // determine where the feature-local suffix starts within the composition.
@@ -627,8 +646,7 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
     // Add feature hash index entry.
     auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
     auto hash = static_cast<uint32_t>(Hash().mix(typeId).mix(fullStrippedFeatureId).value());
-    impl_->featureHashIndex_.emplace_back(FeatureAddrWithIdHash{result.addr(), hash});
-    impl_->featureHashIndexNeedsSorting_ = true;
+    impl_->featureHashIndex_.emplace(hash, result.addr());
 
     // Note: Here we rely on the assertion that the root_ collection
     // contains only references to feature nodes, in the order
@@ -1684,6 +1702,65 @@ void PartitionFeatureLayer::validateSchema() const
     }
 }
 
+std::vector<std::string> PartitionFeatureLayer::checkForErrors() const
+{
+    auto errors = ModelPool::checkForErrors();
+    if (impl_->featureHashIndex_.size() != impl_->features_.size())
+        errors.emplace_back("Feature ID index entry count does not match feature count.");
+
+    // Explicit validation can resolve nodes normally; binary construction only checks index
+    // structure.
+    for (uint32_t i = 0; i < impl_->features_.size(); ++i) {
+        try {
+            auto feature = resolve<Feature>(ModelNodeAddress{ColumnId::Features, i});
+            auto id = feature->id();
+            auto parts = id->keyValuePairs();
+            if (!layerInfo_->validFeatureId(id->typeId(), parts, true)) {
+                errors.emplace_back(fmt::format("Invalid feature ID at feature {}.", i));
+                continue;
+            }
+            auto const& composition = getPrimaryIdComposition(id->typeId());
+            auto requiredParts = stripOptionalIdParts(parts, composition);
+            auto hash = static_cast<uint32_t>(Hash().mix(id->typeId()).mix(requiredParts).value());
+            auto const [begin, end] = impl_->featureHashIndex_.equal_range(hash);
+            size_t references = 0;
+            for (auto entry = begin; entry != end; ++entry) {
+                if (entry->second.value_ == feature->addr().value_) {
+                    ++references;
+                }
+                // Report each duplicate pair once, while allowing unrelated identities with equal
+                // hashes.
+                else if (entry->second.index() > i) {
+                    auto otherId = resolve<Feature>(entry->second)->id();
+                    if (otherId->typeId() == id->typeId() &&
+                        stripOptionalIdParts(otherId->keyValuePairs(), composition) ==
+                            requiredParts)
+                    {
+                        errors.emplace_back(fmt::format(
+                            "Duplicate feature ID '{}' at features {} and {}.",
+                            id->toString(),
+                            i,
+                            entry->second.index()));
+                    }
+                }
+            }
+            // This also detects missing entries, duplicated addresses, and hashes that disagree
+            // with storage.
+            if (references != 1) {
+                errors.emplace_back(fmt::format(
+                    "Feature ID index must reference feature {} exactly once under its correct "
+                    "hash.",
+                    i));
+            }
+        }
+        catch (std::exception const& error) {
+            errors
+                .emplace_back(fmt::format("Invalid feature ID at feature {}: {}", i, error.what()));
+        }
+    }
+    return errors;
+}
+
 std::shared_ptr<LayerSchema const> PartitionFeatureLayer::layerSchema() const
 {
     return impl_->layerSchema_;
@@ -1784,7 +1861,7 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
     featureLayer["relations"] = impl_->relations_.byte_size();
     featureLayer["attr-points"] = impl_->attrPoints_.byte_size();
     featureLayer["attr-point-sequences"] = impl_->attrPointSequences_.byte_size();
-    featureLayer["feature-hash-index"] = impl_->featureHashIndex_.byte_size();
+    featureLayer["feature-hash-index"] = impl_->featureHashIndex_.size() * 8ULL;
     featureLayer["point-geometries"] = 0;
     featureLayer["geometries"] = geomViews_.byte_size();
     featureLayer["geometry-source-data-references"] = geomSourceDataRefs_.byte_size();
@@ -2147,7 +2224,13 @@ MemoryUsageBreakdown PartitionFeatureLayer::memoryUsage() const
     result.add("feature-layer.relations", impl_->relations_.memory_usage());
     result.add("feature-layer.attr-points", impl_->attrPoints_.memory_usage());
     result.add("feature-layer.attr-point-sequences", impl_->attrPointSequences_.memory_usage());
-    result.add("feature-layer.feature-hash-index", impl_->featureHashIndex_.memory_usage());
+    auto const& index = impl_->featureHashIndex_;
+    auto const entryBytes = index.size() * sizeof(decltype(Impl::featureHashIndex_)::value_type);
+    // Account for buckets and per-node links/hash storage; allocator bookkeeping is not observable.
+    result.add(
+        "feature-layer.feature-hash-index",
+        {entryBytes,
+         entryBytes + index.size() * 2 * sizeof(void*) + index.bucket_count() * sizeof(void*)});
     if (impl_->glbAttachmentName_) {
         result.add("feature-layer.glb-attachment-name", stringMemoryUsage(*impl_->glbAttachmentName_));
     }
@@ -2181,36 +2264,15 @@ PartitionFeatureLayer::find(const std::string_view& type, const KeyValueViewPair
     auto queryIdPartsStripped = stripOptionalIdParts(queryIdParts, primaryIdComposition);
     auto hash = static_cast<uint32_t>(Hash().mix(type).mix(queryIdPartsStripped).value());
 
-    impl_->sortFeatureHashIndex();
-    auto it = std::lower_bound(
-        impl_->featureHashIndex_.begin(),
-        impl_->featureHashIndex_.end(),
-        FeatureAddrWithIdHash{ModelNodeAddress{0, 0}, hash},
-        [](auto&& l, auto&& r) { return l.idHash_ < r.idHash_; });
-
-    // Iterate through potential matches to handle hash collisions.
-    while (it != impl_->featureHashIndex_.end() && it->idHash_ == hash)
-    {
-        auto feature = resolve<Feature>(it->featureAddr_);
+    auto const [begin, end] = impl_->featureHashIndex_.equal_range(hash);
+    // A hash collision is not an identity collision: compare the actual required parts.
+    for (auto it = begin; it != end; ++it) {
+        auto feature = resolve<Feature>(it->second);
         if (feature->id()->typeId() == type) {
             auto featureIdParts = stripOptionalIdParts(feature->id()->keyValuePairs(), primaryIdComposition);
-            // Ensure that ID parts match exactly, not just the hash.
-            if (featureIdParts.size() != queryIdPartsStripped.size()) {
-                ++it;
-                continue;
-            }
-            bool exactMatch = true;
-            for (auto i = 0; i < featureIdParts.size(); ++i) {
-                if (featureIdParts[i] != queryIdPartsStripped[i]) {
-                    exactMatch = false;
-                    break;
-                }
-            }
-            if (exactMatch)
+            if (featureIdParts == queryIdPartsStripped)
                 return feature;
         }
-        // Move to the next potential match.
-        ++it;
     }
 
     return {};

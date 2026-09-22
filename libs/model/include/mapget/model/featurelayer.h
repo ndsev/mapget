@@ -122,6 +122,8 @@ public:
 
     /**
      * Constructor which parses a PartitionFeatureLayer from a binary byte buffer.
+     * Checks index structure; call validate() after shared construction to check
+     * feature-ID uniqueness and index consistency against stored ID values.
      * @param input The binary bytes to parse.
      * @param layerInfoResolveFun Function which will be called to retrieve
      *  a layerInfo object for the layer name stored for the tile.
@@ -149,6 +151,8 @@ public:
      * The featureIdParts (which do not include the getIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
      * within the associated layer, or a runtime error will be raised.
+     * An existing feature with the same type and required primary ID parts
+     * causes an error before storage is changed. Optional parts do not distinguish IDs.
      * @param typeId Specifies the type of the feature.
      * @param featureIdParts Uniquely identifying information for the feature,
      * according to the requirements of typeId. Do not include the tile feature
@@ -301,6 +305,9 @@ public:
     /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo.
      */
     void validateSchema() const;
+
+    /** Check model storage, feature-ID uniqueness, and index consistency after construction. */
+    [[nodiscard]] std::vector<std::string> checkForErrors() const override;
 
     /** Return the layer schema attached through this tile's LayerInfo, if available. */
     [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;

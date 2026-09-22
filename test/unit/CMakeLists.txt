@@ -4,6 +4,7 @@ add_executable(test.mapget
   test-main.cpp
   test-object-partitions.cpp
   test-model.cpp
+  test-feature-id-index.cpp
   test-model-geometry.cpp
   test-filter-service.cpp
   test-subsetlayer.cpp

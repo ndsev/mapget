@@ -118,8 +118,10 @@ public:
      *     ownership is now represented by pending snapshots and handoff state.
      * - Version 5.0:
      *   + Tagged tile/object partition identities in layers and subset dependencies.
+     * - Version 5.1:
+     *   - Feature ID index entries no longer require sorted wire order.
      */
-    static constexpr Version CurrentProtocolVersion{5, 0, 0};
+    static constexpr Version CurrentProtocolVersion{5, 1, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

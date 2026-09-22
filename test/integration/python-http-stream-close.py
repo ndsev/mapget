@@ -154,7 +154,7 @@ class HttpStreamCloseTest(unittest.TestCase):
         while offset < len(payload):
             self.assertGreaterEqual(len(payload) - offset, header.size)
             major, minor, patch, kind, size = header.unpack_from(payload, offset)
-            self.assertEqual((major, minor), (5, 0))
+            self.assertEqual((major, minor), (5, 1))
             offset += header.size + size
             self.assertLessEqual(offset, len(payload), "Truncated VTLV payload")
             frames.append((kind, size))

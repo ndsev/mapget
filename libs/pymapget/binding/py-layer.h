@@ -701,6 +701,9 @@ void bindTileLayer(py::module_& m)
             Creates a new feature and insert it into this tile layer. The unique identifying
             information, prepended with the getIdPrefix, must conform to an existing
             UniqueIdComposition for the feature typeId within the associated layer.
+            Raises RuntimeError without changing storage if the same feature type and
+            required primary ID parts already exist. Optional ID parts do not distinguish
+            features. Use find() when an existing feature should be reused.
         )pbdoc")
         .def(
             "new_feature_id",
