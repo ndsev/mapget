@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -900,6 +901,84 @@ TEST_CASE("FeatureLayer clone preserves source-data references",
         ["$mapgetAttrPointSequence"] == 1);
     REQUIRE(secondValidity["attrPointIndexRange"]["sequence"]
         ["$mapgetAttrPointSequence"] == 2);
+}
+
+TEST_CASE("FeatureLayer clone owns its byte-array values", "[test.featurelayer][byte-array-clone]")
+{
+    auto const hex = GENERATE("", "012b20825d4a00d50000000000000000", "ff00807f01");
+    auto const seedDestination = GENERATE(false, true);
+    CAPTURE(hex, seedDestination);
+    auto const bytes = simfil::ByteArray::fromHex(hex).value();
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [{
+            "name": "Way",
+            "uniqueIdCompositions": [[{"partId": "wayId", "datatype": "U32"}]]
+        }]
+    })"_json);
+    auto strings = std::make_shared<StringPool>("CloneTargetNode");
+    auto target = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "CloneTargetNode",
+        "CloneMap",
+        layerInfo,
+        strings);
+    if (seedDestination) {
+        // Reusing the source's byte-array index must not alias an unrelated destination value.
+        target->newValue(simfil::ByteArray{"unrelated bytes"});
+    }
+
+    nlohmann::json expected;
+    {
+        auto source = std::make_shared<PartitionFeatureLayer>(
+            target->tileId(),
+            "CloneSourceNode",
+            "CloneMap",
+            layerInfo,
+            std::make_shared<StringPool>("CloneSourceNode"));
+        auto feature = source->newFeature("Way", {{"wayId", int64_t{42}}});
+        auto value = source->newValue(bytes);
+        feature->attributes()->addField("blob", value);
+        auto values = source->newArray(2, true);
+        values->append(value);
+        values->append(value);
+        feature->attributeLayers()
+            ->newLayer("Attributes")
+            ->newAttribute("Identifier")
+            ->addField("values", values);
+        expected = feature->toJson();
+
+        PartitionFeatureLayer::CloneCache cache;
+        target->clone(cache, source, *feature, "Way", {{"wayId", int64_t{42}}});
+    }
+
+    // All source views and their model are gone: the clone must own the scalar and nested bytes.
+    auto feature = target->at(0);
+    auto value = feature->attributesOrNull()->get("blob").value();
+    REQUIRE(value->type() == simfil::ValueType::Bytes);
+    CHECK(std::get<simfil::ByteArray>(value->value()) == bytes);
+    auto values =
+        feature->attributeLayersOrNull()
+            ->at(0)
+            ->get(strings->get("Identifier"))
+            ->get(strings->get("values"));
+    REQUIRE(values->size() == 2);
+    CHECK(values->at(0)->addr() == value->addr());
+    CHECK(values->at(1)->addr() == value->addr());
+    CHECK(feature->toJson() == expected);
+
+    std::stringstream stream;
+    REQUIRE(target->write(stream));
+    auto serialized = stream.str();
+    auto restored = std::make_shared<PartitionFeatureLayer>(
+        std::vector<uint8_t>(serialized.begin(), serialized.end()),
+        [&](auto const&, auto const&) { return layerInfo; },
+        [&](auto const&) { return strings; });
+    CHECK(restored->at(0)->toJson() == expected);
+    auto restoredValue = restored->at(0)->attributesOrNull()->get("blob").value();
+    REQUIRE(restoredValue->type() == simfil::ValueType::Bytes);
+    CHECK(std::get<simfil::ByteArray>(restoredValue->value()) == bytes);
 }
 
 TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test.feature.id.optionals]")

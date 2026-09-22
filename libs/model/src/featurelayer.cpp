@@ -2511,6 +2511,14 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
         }));
         break;
     }
+    case ByteArray: {
+        // Byte-array indices belong to the source pool; copy their payload into this pool.
+        otherLayer->resolve(
+            *otherNode,
+            Lambda([this, &newCacheNode](auto&& resolved)
+                   { newCacheNode = newValue(std::get<simfil::ByteArray>(resolved.value())); }));
+        break;
+    }
     case ColumnId::Features:
     case ColumnId::FeatureProperties: {
         raise("Cannot clone entire feature yet.");

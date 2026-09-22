@@ -731,6 +731,74 @@ FeatureLayerFilterRequest filterDefinition()
 } // namespace
 
 TEST_CASE(
+    "Feature-restricted inspection responses preserve binary attribute values",
+    "[Service][byte-array-clone]")
+{
+    /** Model a road-location ID and an unselected feature in the same cached source tile. */
+    class BinaryAttributeDataSource : public FilterDataSource
+    {
+    public:
+        /** Populate the normal geometry plus a nested 16-byte road-location identifier. */
+        void fill(PartitionFeatureLayer::Ptr const& tile) override
+        {
+            FilterDataSource::fill(tile);
+            auto locationId = tile->newObject();
+            locationId->addField(
+                "value",
+                tile->newValue(
+                    simfil::ByteArray::fromHex("012b20825d4a00d50000000000000000").value()));
+            locationId->addField("branchId", tile->newValue(int64_t{0}));
+            auto assignment = tile->newObject();
+            assignment->addField("locationId", locationId);
+            auto attributeValue = tile->newObject();
+            attributeValue->addField("roadLocationId", assignment);
+            tile->at(0)
+                ->attributeLayers()
+                ->newLayer("RoadCharacteristicsLayer")
+                ->newAttribute("ROAD_LOCATION_ID")
+                ->addField("attributeValue", attributeValue);
+            tile->newFeature(
+                "Road",
+                {{"tileId", int64_t{tile->tileId().value()}}, {"roadId", int64_t{43}}});
+        }
+    };
+
+    Service service(std::make_shared<MemCache>(32), false);
+    auto dataSource = std::make_shared<BinaryAttributeDataSource>();
+    service.add(dataSource);
+    auto const featureId = "Road." + std::to_string(firstTile().value()) + ".42";
+    /** Exercise the same response restriction used by inspection, without modifying the cache. */
+    auto requestTile = [&](bool restricted)
+    {
+        auto request = std::make_shared<
+            LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
+        if (restricted) {
+            request->featureIdsByTile_[firstTile()] = {featureId};
+        }
+        PartitionFeatureLayer::Ptr result;
+        request->onFeatureLayer([&](PartitionFeatureLayer::Ptr tile) { result = std::move(tile); });
+        REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{request}));
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(result);
+        return result;
+    };
+
+    auto full = requestTile(false);
+    REQUIRE(full->size() == 2);
+    auto expected = full->find(featureId)->toJson();
+    CHECK(
+        expected["properties"]["layer"]["RoadCharacteristicsLayer"]["ROAD_LOCATION_ID"]
+                ["attributeValue"]["roadLocationId"]["locationId"]["value"]["hex"] ==
+        "012b20825d4a00d50000000000000000");
+    auto restricted = requestTile(true);
+    REQUIRE(restricted->size() == 1);
+    CHECK(restricted->at(0)->toJson() == expected);
+    CHECK(requestTile(false)->toJson() == full->toJson());
+    CHECK(dataSource->requestedTiles().size() == 1);
+}
+
+TEST_CASE(
     "Service evaluates ordered filter channels after source tiles load",
     "[feature-layer-filter][Service]")
 {
