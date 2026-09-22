@@ -534,6 +534,49 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     REQUIRE(schemaEmitterCalls == 1);
 }
 
+TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard path", "[DataSourceInfo]")
+{
+    using Kind = simfil::Schema::Kind;
+    auto schema = std::make_shared<LayerSchema>();
+    auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Link"), "Feature");
+    auto properties = schema->addSchema(Kind::Object, LayerSchema::featurePropertiesKey("Link"), "FeatureProperties");
+    auto layers = schema->addSchema(Kind::Object, LayerSchema::attributeLayerMapKey("Link"), "AttributeLayerMap");
+    auto guidance = schema->addSchema(Kind::Object, LayerSchema::attributeContainerKey("Link", "Guidance"), "AttributeContainer");
+    auto attribute = schema->addSchema(Kind::Object, LayerSchema::attributeKey("Link", "Guidance", "NUM_LANES"), "Attribute");
+    auto numLanes = schema->addSchema(Kind::Object, "NumLanes");
+    auto number = schema->addSchema(Kind::Value, "NormalLanes");
+    schema->addFieldSchema(feature, "properties", properties);
+    schema->addFieldSchema(properties, "layer", layers);
+    schema->addFieldSchema(layers, "Guidance", guidance);
+    schema->addFieldSchema(guidance, "NUM_LANES", attribute);
+    schema->addFieldSchema(attribute, "numLanes", numLanes);
+    schema->addFieldSchema(numLanes, "normalLanes", number);
+    schema->setAttributeMetadata(attribute,
+        LayerSchema::AttributePathOwner{"Link", "Guidance", "NUM_LANES", attribute}, "NumLanesAttribute");
+    schema->finalize();
+
+    auto normalized = schema->normalizeSearchQuery("**.numLanes.normalLanes", LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(normalized);
+    REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    REQUIRE(normalized->attributeScopes_.size() == 1);
+    REQUIRE(normalized->attributeScopes_.front().attributeName_ == "NUM_LANES");
+    REQUIRE(normalized->normalizedQuery_.find("numLanes.normalLanes") != std::string::npos);
+    REQUIRE(normalized->normalizedQuery_.find("Guidance") != std::string::npos);
+
+    // Explicit feature scope must not turn one feature result into several attributes.
+    auto featureScoped = schema->normalizeSearchQuery("**.numLanes.normalLanes", LayerSchema::SearchQueryRequestedScope::Feature);
+    REQUIRE(featureScoped);
+    REQUIRE(featureScoped->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Feature);
+    REQUIRE(featureScoped->normalizedQuery_ == "**.numLanes.normalLanes");
+
+    // The same path under a basic property makes Auto genuinely ambiguous.
+    schema->addFieldSchema(properties, "numLanes", numLanes);
+    schema->finalize();
+    auto mixed = schema->normalizeSearchQuery("**.numLanes.normalLanes", LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(mixed);
+    REQUIRE(mixed->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Feature);
+}
+
 TEST_CASE(
     "PartitionFeatureLayer completes schema fields and enum symbols without mutating datasource "
     "strings",
