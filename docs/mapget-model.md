@@ -4,65 +4,52 @@ Mapget represents map content as partitions of structured features: spatial tile
 
 ## Tile and object partitions
 
-`PartitionId` is a tagged identity: `PartitionId::tile(TileId)` or
-`PartitionId::object(uint64_t)`. The tag is never inferred from the value.
-Object zero and tile zero are different identities; tile zero retains its
-metadata/source-data sentinel meaning. `tileId()` and `objectId()` reject
-access through the wrong tag. Object IDs retain all 64 bits natively and in
-binary streams; JSON carries object IDs as unsigned decimal **strings**.
+A map layer can contain far more data than a viewer needs at once. Mapget
+divides it into **partitions**: units that can be loaded, cached, and searched
+independently. A layer uses one of two ways to divide its content:
 
-`MapPartitionKey` combines payload type, map, layer and partition identity.
-Tiles retain the existing four-component key. Object keys use `object/` in
-the final component, for example `Features:City:Road:object/18446744073709551615`.
-This prevents collisions even when a tile and object have the same numeric ID.
+| Partition kind | How content is organized | How the viewer finds it |
+| --- | --- | --- |
+| **Tile** | A tile contains the layer's data for a fixed geographic area at a particular tile level. | The viewer calculates which tiles cover the visible area. |
+| **Object** | A source-defined container holds a set of related data under an object ID. Its extent can cross tile boundaries. | The viewer asks the datasource which objects are associated with the visible area, then loads those objects by ID. |
 
-There is one implementation of each payload: `PartitionFeatureLayer`,
-`PartitionSubsetLayer` and `PartitionSourceDataLayer`, all based on
-`PartitionLayer`. The existing `Tile*Layer` names and `MapTileKey` are aliases;
-existing include paths and tile-taking constructors remain usable. Code that
-accessed the public key member `tileId_` must migrate to `partitionId_` and
-use its checked `tileId()` accessor for spatial operations. `id()` and
-`partitionKey()` both return the generic key.
+An object partition is a container, not necessarily one map feature. Both
+kinds of partition can contain multiple features, their attributes, relations,
+and geometry. The viewer presents this content through its normal styling,
+search, and inspection tools.
 
-Each `LayerInfo` declares `partitionKind` (`tile` by default, or `object`).
-Object layers additionally require `tileAssociationLevel` in 0..15. That level
-selects **discovery coverage**, not object resolution, geometry or identity.
-Tile layers must omit `tileAssociationLevel`.
-Objects discovered through several tiles are loaded and cached under one key.
+### Finding objects on the map
 
-Object geometry must not be anchored to a discovery tile. Call
-`setGeometryAnchor()` before adding geometry; feature/subset layers serialize
-that anchor explicitly. The initial object anchor is (0,0,0).
+Object layers still use a tile grid to look up nearby content. These
+**discovery tiles** contain associations to object IDs. If one object spans
+several discovery tiles, all of them can refer to the same object; the viewer
+loads it once. Panning across a discovery-tile boundary does not split the
+object or change its identity.
 
-Filtered subsets retain the source layer's legal notice alongside its timestamp,
-TTL and diagnostic information. The notice travels in the existing binary layer
-header so clients can show copyright and terms when rendering either tile or
-object partitions.
+The layer's `tileAssociationLevel` specifies the grid used for discovery. It
+does not control the detail of the object's geometry. Objects have their own
+geographic placement, independent of the tile through which they were found.
 
-`PartitionLayer::setLegalInfo()` accepts an optional string; pass `std::nullopt`
-to clear the notice. In Python, use `legal_info()` and `set_legal_info()`, with
-`None` to clear it. An empty string remains a present notice.
+### Identifying loaded content
 
-Feature IDs remain schema-defined. A container-scoped ID part may retain its
-existing name `tileId`, declared `U64` for object layers. Simfil stores integer
-values as signed int64; use `std::bit_cast<int64_t>(objectId)` to preserve all
-bits. Canonical feature-ID strings use the unsigned decimal value according
-to the ID composition. Numeric model fields retain the signed projection;
-this is not unsigned arithmetic in simfil.
+A partition is identified by its map, layer, kind, and ID. Tile IDs describe
+positions in a spatial grid. Object IDs are assigned by the datasource and
+treated as opaque identifiers rather than geographic positions. An object and
+a tile with the same numeric ID are different partitions. Feature IDs identify
+individual features within that content and follow the compositions advertised
+by the datasource.
 
-Protocol **5.0** writes a partition tag and a 32-bit tile or 64-bit object ID
-in each layer header. Feature GeoJSON includes `partition`; tile exports also
-retain `mapgetTileId`. Old binary readers must be rebuilt/upgraded; there is
-no old-binary object compatibility mode.
+Object IDs can be large, so JSON represents them as decimal strings to preserve
+their exact value. When copying an ID from inspection or an API response, keep
+the full string.
 
-Subset JSON uses `type: "PartitionSubsetLayer"` and tagged `partition` too.
-Its dependency field `sourceTileKey` retains its name but carries a generic
-`MapPartitionKey`. Source-data JSON remains an array of roots; source-data
-partition identity travels in the binary layer header, not in that JSON array.
+Source partitions and their filtered results carry timestamps, expiry
+information, diagnostics, and any source legal notice. Clients can therefore
+show the applicable copyright and terms for both tile and object content.
 
-See the [HTTP discovery contract](mapget-api.md#post-objectsdiscover) and
-[datasource integration guide](mapget-dev-guide.md#object-datasource-integration)
-for the discovery/load sequence and a runnable example.
+For request formats, see [object discovery in the HTTP API](mapget-api.md#post-objectsdiscover).
+Datasource authors can find the identity, geometry-anchor, and serialization
+details in the [object datasource integration guide](mapget-dev-guide.md#object-datasource-integration).
 
 ## Features and properties
 

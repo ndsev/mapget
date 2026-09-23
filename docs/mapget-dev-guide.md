@@ -54,6 +54,44 @@ a double; use the U64 ID-part declaration so canonical IDs format unsigned.
 Native locate implementations return generic partition keys. Optional layer
 and partition restrictions prevent guessing when several layers reuse IDs.
 
+### Partition identity and serialization
+
+`PartitionId::tile(TileId)` and `PartitionId::object(uint64_t)` explicitly
+distinguish spatial tiles from opaque objects. The tag is never inferred from
+the value; object zero and the tile-zero metadata sentinel are distinct.
+`tileId()` and `objectId()` reject access through the wrong tag.
+
+`MapPartitionKey` combines payload type, map, layer, and partition identity.
+Object keys use `object/` in the final component, for example
+`Features:City:Road:object/18446744073709551615`. `id()` and `partitionKey()`
+return this generic key. Code accessing the old public `tileId_` member must
+use `partitionId_` and its checked accessor. `MapTileKey` and the `Tile*Layer`
+names remain aliases of the partition types.
+
+`LayerInfo.partitionKind` defaults to `tile`. Object layers require a
+`tileAssociationLevel` in 0..15; tile layers omit it. Before adding object
+geometry, call `setGeometryAnchor()` with a real source position. The initial
+anchor is (0,0,0); a discovery tile must not supply that anchor.
+
+Object IDs retain all 64 bits in native code and binary streams; JSON encodes
+them as unsigned decimal strings. A container-scoped feature-ID part can still
+be named `tileId` when its declared type is `U64`. Preserve its bits with
+`std::bit_cast<int64_t>(objectId)` in the signed simfil model. Canonical feature
+IDs format that part as unsigned; ordinary numeric fields retain the signed
+projection and do not provide unsigned arithmetic.
+
+Protocol 5 layer headers carry a partition tag and a 32-bit tile or 64-bit
+object ID. Feature GeoJSON includes `partition`; tile exports also retain
+`mapgetTileId`. Subset JSON uses `type: "PartitionSubsetLayer"` and tagged
+`partition`. Its `sourceTileKey` field carries a generic `MapPartitionKey`.
+SourceData JSON remains an array of roots, with partition identity in the
+binary header. Readers predating protocol 5 must be upgraded.
+
+Filtered subsets preserve the source legal notice alongside timestamps, TTL,
+and diagnostics. `PartitionLayer::setLegalInfo()` takes an optional string;
+`std::nullopt` clears it. Python provides `legal_info()` and `set_legal_info()`,
+with `None` to clear it. An empty string is still a present notice.
+
 ### Discovery and payload lifetime
 
 There are two independent operations, not a new object-loading pipeline:
