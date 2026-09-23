@@ -1,7 +1,7 @@
 #pragma once
 
+#include "mapget/model/partitionid.h"
 #include "mapget/model/point.h"
-#include "mapget/model/tileid.h"
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -97,4 +97,79 @@ void bindTileId(py::module_& m)
     auto const packedTileIdClass = py::module_::import("ndslive.math").attr("PackedTileId");
     m.attr("TileId") = packedTileIdClass;
     m.attr("PackedTileId") = packedTileIdClass;
+}
+
+/** Convert the tile-compatible Python input without silently accepting untagged integers. */
+inline mapget::PartitionId partitionIdFromPython(py::handle value)
+{
+    if (py::isinstance<mapget::PartitionId>(value))
+        return value.cast<mapget::PartitionId>();
+    return mapget::PartitionId::tile(value.cast<mapget::TileId>());
+}
+
+/** Keep Python tile requests convenient while accepting explicit object partitions. */
+inline std::vector<mapget::PartitionId> partitionIdsFromPython(py::iterable const& values)
+{
+    std::vector<mapget::PartitionId> result;
+    for (auto value : values)
+        result.push_back(partitionIdFromPython(value));
+    return result;
+}
+
+/** Bind tagged identities separately from ndslive.math's spatial tile class. */
+inline void bindPartitionId(py::module_& m)
+{
+    using namespace mapget;
+    py::enum_<PartitionKind>(
+        m,
+        "PartitionKind",
+        "Addressing scheme independent of the layer payload type.")
+        .value("TILE", PartitionKind::Tile)
+        .value("OBJECT", PartitionKind::Object);
+    py::class_<PartitionId>(
+        m,
+        "PartitionId",
+        "Tagged tile or unsigned 64-bit object identity. Objects have no spatial tile operations.")
+        .def(py::init<TileId>(), py::arg("tile_id"), "Wrap a PackedTileId as a tile partition.")
+        .def_static("tile", &PartitionId::tile, py::arg("tile_id"), "Wrap a spatial tile ID.")
+        .def_static(
+            "object",
+            &PartitionId::object,
+            py::arg("object_id"),
+            "Create an object identity from an integer in 0..2**64-1.")
+        .def_property_readonly(
+            "kind",
+            &PartitionId::kind,
+            "Identity tag; never inferred from the numeric value.")
+        .def_property_readonly(
+            "tile_id",
+            &PartitionId::tileId,
+            "PackedTileId; raises for object identities.")
+        .def_property_readonly(
+            "object_id",
+            &PartitionId::objectId,
+            "Unsigned object ID; raises for tile identities.")
+        .def(
+            "to_json",
+            [](PartitionId const& id) { return id.toJson().dump(); },
+            "Serialize with decimal strings for lossless object IDs.")
+        .def_static(
+            "from_json",
+            [](std::string const& json)
+            { return PartitionId::fromJson(nlohmann::json::parse(json)); },
+            py::arg("json"),
+            "Parse tagged JSON, validating kind and range.")
+        .def(
+            "__str__",
+            &PartitionId::toString,
+            "Decimal identifier; use kind to distinguish tile and object.")
+        .def(
+            "__eq__",
+            [](PartitionId const& a, PartitionId const& b) { return a == b; },
+            py::is_operator(),
+            "Compare tag and value.")
+        .def(
+            "__hash__",
+            [](PartitionId const& id) { return std::hash<PartitionId>{}(id); },
+            "Hash tag and value.");
 }

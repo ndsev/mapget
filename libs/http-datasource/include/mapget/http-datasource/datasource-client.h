@@ -45,20 +45,22 @@ public:
 
     // DataSource method overrides
     DataSourceInfo info() override;
-    void fill(TileFeatureLayer::Ptr const& featureTile) override;
-    void fill(TileSourceDataLayer::Ptr const& blobTile) override;
-    TileLayer::Ptr get(
-        MapTileKey const& k,
+    void fill(PartitionFeatureLayer::Ptr const& featureTile) override;
+    void fill(PartitionSourceDataLayer::Ptr const& blobTile) override;
+    PartitionLayer::Ptr
+    get(MapPartitionKey const& k,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        TileLayer::LoadStateCallback loadStateCallback = {}) override;
+        PartitionLayer::LoadStateCallback loadStateCallback = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
+    /** Forward spatial discovery without fetching object payloads. */
+    ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request) override;
     std::optional<AttachmentResponse> attachment(
         AttachmentRequest const& request) override;
-    void onCacheExpired(
-        MapTileKey const& tileKey,
-        std::chrono::system_clock::time_point expiredAt) override;
+    void
+    onCacheExpired(MapPartitionKey const& tileKey, std::chrono::system_clock::time_point expiredAt)
+        override;
 
 private:
     // DataSourceInfo is fetched in the constructor
@@ -95,20 +97,22 @@ public:
 
     // DataSource method overrides
     DataSourceInfo info() override;
-    void fill(TileFeatureLayer::Ptr const& featureTile) override;
-    void fill(TileSourceDataLayer::Ptr const& sourceDataLayer) override;
-    TileLayer::Ptr get(
-        MapTileKey const& k,
+    void fill(PartitionFeatureLayer::Ptr const& featureTile) override;
+    void fill(PartitionSourceDataLayer::Ptr const& sourceDataLayer) override;
+    PartitionLayer::Ptr
+    get(MapPartitionKey const& k,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        TileLayer::LoadStateCallback loadStateCallback = {}) override;
+        PartitionLayer::LoadStateCallback loadStateCallback = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
+    /** Forward spatial discovery without fetching object payloads. */
+    ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request) override;
     std::optional<AttachmentResponse> attachment(
         AttachmentRequest const& request) override;
-    void onCacheExpired(
-        MapTileKey const& tileKey,
-        std::chrono::system_clock::time_point expiredAt) override;
+    void
+    onCacheExpired(MapPartitionKey const& tileKey, std::chrono::system_clock::time_point expiredAt)
+        override;
 
 private:
     std::unique_ptr<RemoteDataSource> remoteSource_;

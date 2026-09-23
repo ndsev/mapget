@@ -35,6 +35,13 @@ public:
     FeatureLayerFilterTilesRequest::Ptr filter(
         FeatureLayerFilterTilesRequest::Ptr const& request);
 
+    /**
+     * Discover associations through the public batch endpoint, without fetching payloads.
+     * Blocks until completion. Transport/protocol errors throw; backend failures and unavailable
+     * associations are returned as ObjectDiscoveryResult statuses and must be checked by callers.
+     */
+    ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request);
+
     /** Fetch one separately transferred named tile attachment. */
     std::optional<AttachmentResponse> attachment(
         AttachmentRequest const& request);

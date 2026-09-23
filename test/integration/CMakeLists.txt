@@ -34,6 +34,22 @@ add_wheel_test(test-python-bindings-smoke
     ${MAPGET_INSTALL_NDSMATH_PYTHON}
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-bindings-smoke.py")
 
+add_wheel_test(test-python-object-datasource-example
+  WORKING_DIRECTORY
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS
+    ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    -f "python ${CMAKE_CURRENT_LIST_DIR}/python-object-datasource-example.py $<TARGET_FILE:mapget>")
+set_tests_properties(test-python-object-datasource-example PROPERTIES TIMEOUT 120)
+
+add_wheel_test(test-python-http-stream-close
+  WORKING_DIRECTORY
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS
+    ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    -f "python ${CMAKE_CURRENT_LIST_DIR}/python-http-stream-close.py $<TARGET_FILE:mapget>")
+set_tests_properties(test-python-http-stream-close PROPERTIES TIMEOUT 180)
+
 if (TARGET mapget-location-database)
   add_wheel_test(test-python-location-database-smoke
     WORKING_DIRECTORY

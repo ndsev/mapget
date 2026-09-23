@@ -20,11 +20,14 @@ namespace mapget
 struct DataSourceServer::Impl
 {
     DataSourceInfo info_;
-    std::function<void(TileFeatureLayer::Ptr)> tileFeatureCallback_ = [](auto&&) {
-        throw std::runtime_error("TileFeatureLayer callback is unset!");
+    std::function<ObjectDiscoveryResult(ObjectDiscoveryRequest const&)> discoveryCallback_;
+    std::function<void(PartitionFeatureLayer::Ptr)> tileFeatureCallback_ = [](auto&&)
+    {
+        throw std::runtime_error("PartitionFeatureLayer callback is unset!");
     };
-    std::function<void(TileSourceDataLayer::Ptr)> tileSourceDataCallback_ = [](auto&&) {
-        throw std::runtime_error("TileSourceDataLayer callback is unset!");
+    std::function<void(PartitionSourceDataLayer::Ptr)> tileSourceDataCallback_ = [](auto&&)
+    {
+        throw std::runtime_error("PartitionSourceDataLayer callback is unset!");
     };
     std::function<
         std::vector<LocateCandidate>(
@@ -33,7 +36,8 @@ struct DataSourceServer::Impl
     std::function<std::optional<AttachmentResponse>(
         AttachmentRequest const&)>
         attachmentCallback_;
-    std::function<void(MapTileKey const&, std::chrono::system_clock::time_point)> cacheExpiredCallback_;
+    std::function<void(MapPartitionKey const&, std::chrono::system_clock::time_point)>
+        cacheExpiredCallback_;
     std::shared_ptr<StringPool> strings_;
 
     explicit Impl(DataSourceInfo info) : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.stringPoolId_))
@@ -46,15 +50,24 @@ DataSourceServer::DataSourceServer(DataSourceInfo const& info) : HttpServer(), i
     printPortToStdOut(true);
 }
 
+DataSourceServer& DataSourceServer::onObjectDiscoveryRequest(
+    std::function<ObjectDiscoveryResult(ObjectDiscoveryRequest const&)> const& callback)
+{
+    impl_->discoveryCallback_ = callback;
+    return *this;
+}
+
 DataSourceServer::~DataSourceServer() = default;
 
-DataSourceServer& DataSourceServer::onTileFeatureRequest(std::function<void(TileFeatureLayer::Ptr)> const& callback)
+DataSourceServer& DataSourceServer::onTileFeatureRequest(
+    std::function<void(PartitionFeatureLayer::Ptr)> const& callback)
 {
     impl_->tileFeatureCallback_ = callback;
     return *this;
 }
 
-DataSourceServer& DataSourceServer::onTileSourceDataRequest(std::function<void(TileSourceDataLayer::Ptr)> const& callback)
+DataSourceServer& DataSourceServer::onTileSourceDataRequest(
+    std::function<void(PartitionSourceDataLayer::Ptr)> const& callback)
 {
     impl_->tileSourceDataCallback_ = callback;
     return *this;
@@ -78,7 +91,8 @@ DataSourceServer& DataSourceServer::onAttachmentRequest(
 }
 
 DataSourceServer& DataSourceServer::onCacheExpired(
-    const std::function<void(MapTileKey const&, std::chrono::system_clock::time_point)>& callback)
+    const std::function<void(MapPartitionKey const&, std::chrono::system_clock::time_point)>&
+        callback)
 {
     impl_->cacheExpiredCallback_ = callback;
     return *this;
@@ -89,6 +103,40 @@ DataSourceInfo const& DataSourceServer::info() { return impl_->info_; }
 void DataSourceServer::setup(drogon::HttpAppFramework& app)
 {
     app.registerHandler(
+        "/objects/discover",
+        [this](
+            drogon::HttpRequestPtr const& req,
+            std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+        {
+            auto response = drogon::HttpResponse::newHttpResponse();
+            try {
+                auto json = nlohmann::json::parse(req->body());
+                ObjectDiscoveryRequest request{
+                    impl_->info_.mapId_,
+                    json.at("layerId").get<std::string>(),
+                    PartitionId::fromJson({{"kind", "tile"}, {"id", json.at("tileId")}}).tileId()};
+                auto layer = impl_->info_.getLayer(request.layerId_);
+                if (!layer || layer->partitionKind_ != PartitionKind::Object ||
+                    !layer->tileAssociationLevel_ || !request.tileId_.isValid() ||
+                    request.tileId_.level() != *layer->tileAssociationLevel_)
+                    throw std::invalid_argument("Unsupported object discovery layer or level.");
+                ObjectDiscoveryResult result;
+                if (impl_->discoveryCallback_)
+                    result = impl_->discoveryCallback_(request);
+                else
+                    result.status_ = ObjectDiscoveryResult::Status::Unavailable;
+                response->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                response->setBody(result.toJson().dump());
+            }
+            catch (std::exception const& error) {
+                response->setStatusCode(drogon::k400BadRequest);
+                response->setBody(error.what());
+            }
+            callback(response);
+        },
+        {drogon::Post});
+
+    app.registerHandler(
         "/tile",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         {
@@ -96,7 +144,8 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                 auto const& layerIdParam = req->getParameter("layer");
                 auto const& tileIdParam = req->getParameter("tileId");
 
-                if (layerIdParam.empty() || tileIdParam.empty()) {
+                if (layerIdParam.empty() ||
+                    (tileIdParam.empty() && req->getParameter("partition").empty())) {
                     auto resp = drogon::HttpResponse::newHttpResponse();
                     resp->setStatusCode(drogon::k400BadRequest);
                     resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
@@ -106,7 +155,9 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                 }
 
                 auto layer = impl_->info_.getLayer(layerIdParam);
-                auto tileId = TileId::fromValue(std::stoi(tileIdParam));
+                auto tileId = req->getParameter("partition").empty() ?
+                    PartitionId::fromValue(std::stoi(tileIdParam)) :
+                    PartitionId::fromJson(nlohmann::json::parse(req->getParameter("partition")));
 
                 auto stringPoolOffsetParam = (simfil::StringId)0;
                 auto const& stringPoolOffsetStr = req->getParameter("stringPoolOffset");
@@ -119,18 +170,26 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                 if (!responseTypeStr.empty())
                     responseType = responseTypeStr;
 
-                auto tileLayer = [&]() -> std::shared_ptr<TileLayer>
+                auto tileLayer = [&]() -> std::shared_ptr<PartitionLayer>
                 {
                     switch (layer->type_) {
                     case mapget::LayerType::Features: {
-                        auto tileFeatureLayer = std::make_shared<TileFeatureLayer>(
-                            tileId, impl_->info_.stringPoolId_, impl_->info_.mapId_, layer, impl_->strings_);
+                        auto tileFeatureLayer = std::make_shared<PartitionFeatureLayer>(
+                            tileId,
+                            impl_->info_.stringPoolId_,
+                            impl_->info_.mapId_,
+                            layer,
+                            impl_->strings_);
                         impl_->tileFeatureCallback_(tileFeatureLayer);
                         return tileFeatureLayer;
                     }
                     case mapget::LayerType::SourceData: {
-                        auto tileSourceLayer = std::make_shared<TileSourceDataLayer>(
-                            tileId, impl_->info_.stringPoolId_, impl_->info_.mapId_, layer, impl_->strings_);
+                        auto tileSourceLayer = std::make_shared<PartitionSourceDataLayer>(
+                            tileId,
+                            impl_->info_.stringPoolId_,
+                            impl_->info_.mapId_,
+                            layer,
+                            impl_->strings_);
                         impl_->tileSourceDataCallback_(tileSourceLayer);
                         return tileSourceLayer;
                     }
@@ -226,10 +285,8 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                     req->getParameter("tileId");
                 auto name =
                     req->getParameter("name");
-                if (layerId.empty() ||
-                    tileId.empty() ||
-                    name.empty())
-                {
+                if (layerId.empty() || (tileId.empty() && req->getParameter("partition").empty()) ||
+                    name.empty()) {
                     auto response =
                         drogon::HttpResponse::
                             newHttpResponse();
@@ -258,18 +315,17 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                     return;
                 }
 
-                auto request =
-                    AttachmentRequest{
-                        .tileKey_ = MapTileKey(
-                            LayerType::Features,
-                            impl_->info_.mapId_,
-                            std::move(layerId),
-                            TileId::fromValue(
-                                std::stoi(
-                                    tileId))),
-                        .name_ =
-                            std::move(name),
-                    };
+                auto request = AttachmentRequest{
+                    .tileKey_ = MapPartitionKey(
+                        LayerType::Features,
+                        impl_->info_.mapId_,
+                        std::move(layerId),
+                        req->getParameter("partition").empty() ?
+                            PartitionId::fromValue(std::stoi(tileId)) :
+                            PartitionId::fromJson(
+                                nlohmann::json::parse(req->getParameter("partition")))),
+                    .name_ = std::move(name),
+                };
                 auto attachment =
                     impl_->attachmentCallback_(
                         request);
@@ -346,7 +402,7 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
             try {
                 if (impl_->cacheExpiredCallback_) {
                     auto const body = nlohmann::json::parse(std::string(req->body()));
-                    auto const tileKey = MapTileKey(body.at("tileKey").get<std::string>());
+                    auto const tileKey = MapPartitionKey(body.at("tileKey").get<std::string>());
                     auto const expiredAtUs = body.at("expiredAt").get<int64_t>();
                     auto const expiredAt = std::chrono::system_clock::time_point{
                         std::chrono::microseconds{expiredAtUs}};

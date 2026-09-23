@@ -17,8 +17,7 @@ namespace mapget
 namespace
 {
 
-[[nodiscard]] int32_t parseTileId(
-    std::string_view text)
+[[nodiscard]] int32_t parsePartitionId(std::string_view text)
 {
     if (text.empty()) {
         throw std::runtime_error(
@@ -106,13 +105,13 @@ void HttpService::Impl::handleAttachmentRequest(
         }
 
         auto request = AttachmentRequest{
-            .tileKey_ = MapTileKey(
+            .tileKey_ = MapPartitionKey(
                 LayerType::Features,
                 std::move(mapId),
                 std::move(layerId),
-                TileId::fromValue(parseTileId(
-                    req->getParameter(
-                        "tileId")))),
+                req->getParameter("partition").empty() ?
+                    PartitionId::fromValue(parsePartitionId(req->getParameter("tileId"))) :
+                    PartitionId::fromJson(nlohmann::json::parse(req->getParameter("partition")))),
             .name_ = std::move(name),
         };
         if (auto sourceId =

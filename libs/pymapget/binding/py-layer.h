@@ -412,9 +412,8 @@ inline SourceDataAddress sourceDataAddressFromPython(py::handle value)
     return SourceDataAddress(value.cast<uint64_t>());
 }
 
-inline model_ptr<SourceDataReferenceCollection> makeSourceDataReferences(
-    TileFeatureLayer& self,
-    py::iterable const& entries)
+inline model_ptr<SourceDataReferenceCollection>
+makeSourceDataReferences(PartitionFeatureLayer& self, py::iterable const& entries)
 {
     std::vector<QualifiedSourceDataReference> refs;
     for (auto const& item : entries) {
@@ -467,28 +466,47 @@ void bindTileLayer(py::module_& m)
     using namespace mapget;
     using namespace simfil;
 
-    py::class_<TileLayer, TileLayer::Ptr>(m, "TileLayer", R"pbdoc(
+    py::class_<PartitionLayer, PartitionLayer::Ptr>(m, "PartitionLayer", R"pbdoc(
         Common base class for mapget tile payloads.
 
         Exposes tile identity, layer identity, error metadata, TTL metadata, and
         arbitrary scalar info fields shared by feature, source-data, and subset
         layers.
     )pbdoc")
-        .def("tile_id", &TileLayer::tileId, "Get the layer tile id.")
-        .def("map_id", &TileLayer::mapId, "Get the map id.")
-        .def("layer_id", [](TileLayer const& self) { return self.layerInfo()->layerId_; },
+        .def(
+            "tile_id",
+            &PartitionLayer::tileId,
+            "Get the spatial tile ID; raises for object-backed layers.")
+        .def("partition_id", &PartitionLayer::partitionId, "Get the tagged partition identity.")
+        .def(
+            "partition_key",
+            &PartitionLayer::partitionKey,
+            "Get the fully qualified partition key.")
+        .def("map_id", &PartitionLayer::mapId, "Get the map id.")
+        .def(
+            "layer_id",
+            [](PartitionLayer const& self) { return self.layerInfo()->layerId_; },
             "Get the layer id.")
-        .def("error", &TileLayer::error, "Get the tile error if one was set.")
-        .def("set_error", [](TileLayer& self, std::string const& e) { self.setError(e); },
+        .def("error", &PartitionLayer::error, "Get the tile error if one was set.")
+        .def(
+            "set_error",
+            [](PartitionLayer& self, std::string const& e) { self.setError(e); },
             py::arg("err"),
             "Set the tile error.")
-        .def("error_code", &TileLayer::errorCode, "Get the tile error code if one was set.")
-        .def("set_error_code", [](TileLayer& self, int code) { self.setErrorCode(code); },
+        .def("error_code", &PartitionLayer::errorCode, "Get the tile error code if one was set.")
+        .def(
+            "set_error_code",
+            [](PartitionLayer& self, int code) { self.setErrorCode(code); },
             py::arg("code"),
             "Set the tile error code.")
-        .def("ttl", [](TileLayer const& self) { return self.ttl() ? self.ttl()->count() : -1; },
+        .def(
+            "ttl",
+            [](PartitionLayer const& self) { return self.ttl() ? self.ttl()->count() : -1; },
             "Get the tile TTL in milliseconds, or -1 if unset.")
-        .def("set_ttl", [](TileLayer& self, int64_t ms) {
+        .def(
+            "set_ttl",
+            [](PartitionLayer& self, int64_t ms)
+            {
                 if (ms >= 0)
                     self.setTtl(std::chrono::milliseconds(ms));
                 else
@@ -496,7 +514,19 @@ void bindTileLayer(py::module_& m)
             },
             py::arg("time_to_live_in_ms"),
             "Set the tile TTL in milliseconds, or -1 to clear it.")
-        .def("set_info", [](TileLayer& self, std::string const& key, simfil::ScalarValueType const& value) {
+        .def(
+            "legal_info",
+            &PartitionLayer::legalInfo,
+            "Get the copyright information, or None if unset.")
+        .def(
+            "set_legal_info",
+            &PartitionLayer::setLegalInfo,
+            py::arg("legal_info"),
+            "Set the copyright information, or pass None to clear it.")
+        .def(
+            "set_info",
+            [](PartitionLayer& self, std::string const& key, simfil::ScalarValueType const& value)
+            {
                 std::visit(
                     [&](auto&& vv) {
                         using V = std::decay_t<decltype(vv)>;
@@ -514,9 +544,9 @@ void bindTileLayer(py::module_& m)
             py::arg("value"),
             "Set a JSON metadata field on this tile.");
 
-    py::class_<TileFeatureLayer, TileLayer, TileFeatureLayer::Ptr>(
+    py::class_<PartitionFeatureLayer, PartitionLayer, PartitionFeatureLayer::Ptr>(
         m,
-        "TileFeatureLayer",
+        "PartitionFeatureLayer",
         R"pbdoc(
         Feature tile payload.
 
@@ -525,47 +555,56 @@ void bindTileLayer(py::module_& m)
         source-data references.
     )pbdoc")
         .def(
+            "geometry_anchor",
+            &PartitionFeatureLayer::geometryAnchor,
+            "Get the origin used for compact coordinate storage.")
+        .def(
+            "set_geometry_anchor",
+            &PartitionFeatureLayer::setGeometryAnchor,
+            py::arg("anchor"),
+            "Set the coordinate origin before adding geometry, especially for object partitions.")
+        .def(
             "tile_id",
-            [](TileFeatureLayer const& self){return self.tileId();},
+            [](PartitionFeatureLayer const& self) { return self.tileId(); },
             R"pbdoc(
             Get the layer's tileId. This controls the rough geographic extent
             of the contained tile data.
             )pbdoc")
         .def(
             "map_id",
-            [](TileFeatureLayer const& self){return self.mapId();},
+            [](PartitionFeatureLayer const& self) { return self.mapId(); },
             R"pbdoc(
             Get the identifier of the map which this tile layer belongs to.
             )pbdoc")
         .def(
             "layer_id",
-            [](TileFeatureLayer const& self) { return self.layerInfo()->layerId_; },
+            [](PartitionFeatureLayer const& self) { return self.layerInfo()->layerId_; },
             R"pbdoc(
-            Get the layer name for this TileLayer.
+            Get the layer name for this PartitionLayer.
             )pbdoc")
         .def(
             "error",
-            [](TileFeatureLayer const& self) { return self.error(); },
+            [](PartitionFeatureLayer const& self) { return self.error(); },
             R"pbdoc(
             Get the error occurred while the tile was filled.
             )pbdoc")
         .def(
             "set_error",
-            [](TileFeatureLayer& self, std::string const& e) { self.setError(e); },
+            [](PartitionFeatureLayer& self, std::string const& e) { self.setError(e); },
             py::arg("err"),
             R"pbdoc(
             Set the error occurred while the tile was filled.
             )pbdoc")
         .def(
             "error_code",
-            [](TileFeatureLayer const& self) { return self.errorCode(); },
+            [](PartitionFeatureLayer const& self) { return self.errorCode(); },
             R"pbdoc(
             Get the error code (e.g., HTTP status code, SQLite error code)
             if an error occurred while the tile was filled.
             )pbdoc")
         .def(
             "set_error_code",
-            [](TileFeatureLayer& self, int code) { self.setErrorCode(code); },
+            [](PartitionFeatureLayer& self, int code) { self.setErrorCode(code); },
             py::arg("code"),
             R"pbdoc(
             Set the error code (e.g., HTTP status code, SQLite error code)
@@ -573,19 +612,20 @@ void bindTileLayer(py::module_& m)
             )pbdoc")
         .def(
             "timestamp",
-            [](TileFeatureLayer const& self) {return self.timestamp(); },
+            [](PartitionFeatureLayer const& self) { return self.timestamp(); },
             R"pbdoc(
             Get when this layer was created.
             )pbdoc")
         .def(
             "ttl",
-            [](TileFeatureLayer const& self) {return self.ttl() ? self.ttl()->count() : -1; },
+            [](PartitionFeatureLayer const& self) { return self.ttl() ? self.ttl()->count() : -1; },
             R"pbdoc(
             Get how long this layer should live, or -1 if unset.
             )pbdoc")
         .def(
             "set_ttl",
-            [](TileFeatureLayer& self, int64_t ms) {
+            [](PartitionFeatureLayer& self, int64_t ms)
+            {
                 if (ms >= 0)
                     self.setTtl(std::chrono::milliseconds(ms));
                 else
@@ -597,7 +637,8 @@ void bindTileLayer(py::module_& m)
             )pbdoc")
         .def(
             "set_info",
-            [](TileFeatureLayer& self, std::string const& k, simfil::ScalarValueType const& v) {
+            [](PartitionFeatureLayer& self, std::string const& k, simfil::ScalarValueType const& v)
+            {
                 std::visit(
                     [&](auto&& vv)
                     {
@@ -624,15 +665,15 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "set_prefix",
-            [](TileFeatureLayer& self, KeyValuePairVec const& v) {
-                self.setIdPrefix(castToKeyValueView(v)); },
+            [](PartitionFeatureLayer& self, KeyValuePairVec const& v)
+            { self.setIdPrefix(castToKeyValueView(v)); },
             py::arg("prefix"),
             R"pbdoc(
             Set common id prefix for all features in this layer.
         )pbdoc")
         .def(
             "new_value",
-            [](TileFeatureLayer& self, py::object const& pyValue) -> BoundModelNodeBase
+            [](PartitionFeatureLayer& self, py::object const& pyValue) -> BoundModelNodeBase
             {
                 auto cppValue = pyValueToModel(pyValue, self);
                 BoundModelNodeBase result;
@@ -659,7 +700,9 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_feature",
-            [](TileFeatureLayer& self, std::string const& typeId, KeyValuePairVec const& idParts)
+            [](PartitionFeatureLayer& self,
+               std::string const& typeId,
+               KeyValuePairVec const& idParts)
             { return BoundFeature(self.newFeature(typeId, castToKeyValueView(idParts))); },
             py::arg("type_id"),
             py::arg("feature_id_parts"),
@@ -667,10 +710,13 @@ void bindTileLayer(py::module_& m)
             Creates a new feature and insert it into this tile layer. The unique identifying
             information, prepended with the getIdPrefix, must conform to an existing
             UniqueIdComposition for the feature typeId within the associated layer.
+            Raises RuntimeError without changing storage if the same feature type and
+            required primary ID parts already exist. Optional ID parts do not distinguish
+            features. Use find() when an existing feature should be reused.
         )pbdoc")
         .def(
             "new_feature_id",
-            [](TileFeatureLayer& self,
+            [](PartitionFeatureLayer& self,
                std::string const& typeId,
                KeyValuePairVec const& idParts,
                std::optional<std::string> const& mapId)
@@ -695,7 +741,7 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_attribute",
-            [](TileFeatureLayer& self, std::string const& name)
+            [](PartitionFeatureLayer& self, std::string const& name)
             { return BoundAttribute(self.newAttribute(name)); },
             py::arg("name"),
             R"pbdoc(
@@ -703,35 +749,33 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_attribute_layer",
-            [](TileFeatureLayer& self)
+            [](PartitionFeatureLayer& self)
             { return BoundAttributeLayer(self.newAttributeLayer()); },
             R"pbdoc(
             Create a new attribute layer, which may be inserted into a feature.
         )pbdoc")
         .def(
             "new_object",
-            [](TileFeatureLayer& self)
-            { return BoundObject(self.newObject()); },
+            [](PartitionFeatureLayer& self) { return BoundObject(self.newObject()); },
             R"pbdoc(
             Adopt members from the given vector and obtain a new object model index which has these members.
         )pbdoc")
         .def(
             "new_array",
-            [](TileFeatureLayer& self)
-            { return BoundArray(self.newArray()); },
+            [](PartitionFeatureLayer& self) { return BoundArray(self.newArray()); },
             R"pbdoc(
             Adopt members from the given vector and obtain a new array model index which has these members.
         )pbdoc")
         .def(
             "new_geometry_collection",
-            [](TileFeatureLayer& self)
+            [](PartitionFeatureLayer& self)
             { return BoundGeometryCollection(self.newGeometryCollection()); },
             R"pbdoc(
             Create a new geometry collection.
         )pbdoc")
         .def(
             "new_geometry",
-            [](TileFeatureLayer& self, GeomType const& geomType)
+            [](PartitionFeatureLayer& self, GeomType const& geomType)
             { return BoundGeometry(self.newGeometry(geomType)); },
             py::arg("geom_type"),
             R"pbdoc(
@@ -739,7 +783,7 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_attr_point_sequence",
-            [](TileFeatureLayer& self,
+            [](PartitionFeatureLayer& self,
                BoundFeature const& feature,
                BoundGeometry const& geometry)
             {
@@ -752,18 +796,19 @@ void bindTileLayer(py::module_& m)
             "Create a shared interwoven sequence over one feature geometry.")
         .def(
             "num_attr_point_sequences",
-            [](TileFeatureLayer const& self)
-            { return self.numAttrPointSequences(); },
+            [](PartitionFeatureLayer const& self) { return self.numAttrPointSequences(); },
             "Return the number of shared AttrPointSequence definitions.")
         .def(
             "attr_point_sequence_at",
-            [](TileFeatureLayer const& self, uint32_t index)
+            [](PartitionFeatureLayer const& self, uint32_t index)
             { return BoundAttrPointSequence(self.attrPointSequenceAt(index)); },
             py::arg("index"),
             "Return one shared AttrPointSequence by tile-local index.")
         .def(
             "new_relation",
-            [](TileFeatureLayer& self, std::string_view const& name, BoundFeatureId const& target)
+            [](PartitionFeatureLayer& self,
+               std::string_view const& name,
+               BoundFeatureId const& target)
             { return BoundRelation(self.newRelation(name, target.modelNodePtr_)); },
             py::arg("name"),
             py::arg("target"),
@@ -773,7 +818,7 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_validity_collection",
-            [](TileFeatureLayer& self, size_t initialCapacity)
+            [](PartitionFeatureLayer& self, size_t initialCapacity)
             { return BoundMultiValidity(self.newValidityCollection(initialCapacity)); },
             py::arg("initial_capacity") = 2,
             R"pbdoc(
@@ -781,7 +826,7 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "new_source_data_references",
-            [](TileFeatureLayer& self, py::iterable const& entries)
+            [](PartitionFeatureLayer& self, py::iterable const& entries)
             { return BoundSourceDataReferenceCollection(makeSourceDataReferences(self, entries)); },
             py::arg("entries"),
             R"pbdoc(
@@ -790,35 +835,35 @@ void bindTileLayer(py::module_& m)
         )pbdoc")
         .def(
             "geojson",
-            [](TileFeatureLayer& self)
-            { return self.toJson().dump(); },
+            [](PartitionFeatureLayer& self) { return self.toJson().dump(); },
             R"pbdoc(
             Convert this tile to a GeoJSON feature collection.
         )pbdoc")
         .def_property(
             "glb_attachment_name",
-            [](TileFeatureLayer const& self) {
-                return self.glbAttachmentName();
-            },
-            [](TileFeatureLayer& self,
-               std::optional<std::string> name) {
-                self.setGlbAttachmentName(
-                    std::move(name));
-            },
+            [](PartitionFeatureLayer const& self) { return self.glbAttachmentName(); },
+            [](PartitionFeatureLayer& self, std::optional<std::string> name)
+            { self.setGlbAttachmentName(std::move(name)); },
             "Optional name of the separately transferred tile GLB.")
-        .def("__len__", [](TileFeatureLayer const& self) { return self.size(); })
-        .def("__getitem__", [](TileFeatureLayer const& self, int64_t i) {
-            auto sz = (int64_t)self.size();
-            if (i < 0) i += sz;
-            if (i < 0 || i >= sz) throw py::index_error();
-            return BoundFeature(self.at((size_t)i));
-        });
+        .def("__len__", [](PartitionFeatureLayer const& self) { return self.size(); })
+        .def(
+            "__getitem__",
+            [](PartitionFeatureLayer const& self, int64_t i)
+            {
+                auto sz = (int64_t)self.size();
+                if (i < 0)
+                    i += sz;
+                if (i < 0 || i >= sz)
+                    throw py::index_error();
+                return BoundFeature(self.at((size_t)i));
+            });
 
-    py::enum_<TileSourceDataLayer::SourceDataAddressFormat>(m, "SourceDataAddressFormat", R"pbdoc(
+    py::enum_<
+        PartitionSourceDataLayer::SourceDataAddressFormat>(m, "SourceDataAddressFormat", R"pbdoc(
         Addressing scheme used by source-data references in a source-data tile.
     )pbdoc")
-        .value("UNKNOWN", TileSourceDataLayer::SourceDataAddressFormat::Unknown)
-        .value("BIT_RANGE", TileSourceDataLayer::SourceDataAddressFormat::BitRange);
+        .value("UNKNOWN", PartitionSourceDataLayer::SourceDataAddressFormat::Unknown)
+        .value("BIT_RANGE", PartitionSourceDataLayer::SourceDataAddressFormat::BitRange);
 
     BoundSourceDataCompound::bind(m);
     bindSubsetNodes(m);
@@ -833,45 +878,57 @@ void bindTileLayer(py::module_& m)
         .value("FORWARD", RelationDirection::Forward)
         .value("REVERSE", RelationDirection::Reverse);
 
-    py::class_<TileSourceDataLayer, TileLayer, TileSourceDataLayer::Ptr>(
+    py::class_<PartitionSourceDataLayer, PartitionLayer, PartitionSourceDataLayer::Ptr>(
         m,
-        "TileSourceDataLayer",
+        "PartitionSourceDataLayer",
         R"pbdoc(
         Source-data tile payload.
 
         Source-data layers store root compound nodes that can be referenced by
         features, attributes, relations, or geometry in feature tiles.
     )pbdoc")
-        .def("new_compound", [](TileSourceDataLayer& self, size_t initialSize) {
-                return BoundSourceDataCompound(self.newCompound(initialSize));
-            },
+        .def(
+            "new_compound",
+            [](PartitionSourceDataLayer& self, size_t initialSize)
+            { return BoundSourceDataCompound(self.newCompound(initialSize)); },
             py::arg("initial_size") = 2,
             "Create a new source-data compound node.")
-        .def("add_root", [](TileSourceDataLayer& self, BoundSourceDataCompound const& node) {
-                self.addRoot(ModelNode::Ptr(node.ptr()));
-            },
+        .def(
+            "add_root",
+            [](PartitionSourceDataLayer& self, BoundSourceDataCompound const& node)
+            { self.addRoot(ModelNode::Ptr(node.ptr())); },
             py::arg("node"),
             "Add a source-data compound node as a root of this layer.")
-        .def("source_data_address_format", &TileSourceDataLayer::sourceDataAddressFormat,
+        .def(
+            "source_data_address_format",
+            &PartitionSourceDataLayer::sourceDataAddressFormat,
             "Get the source-data address format.")
-        .def("set_source_data_address_format", &TileSourceDataLayer::setSourceDataAddressFormat,
+        .def(
+            "set_source_data_address_format",
+            &PartitionSourceDataLayer::setSourceDataAddressFormat,
             py::arg("format"),
             "Set the source-data address format.")
-        .def("to_json", [](TileSourceDataLayer& self) { return self.toJson().dump(); },
+        .def(
+            "to_json",
+            [](PartitionSourceDataLayer& self) { return self.toJson().dump(); },
             "Convert this source-data layer to JSON.");
 
-    py::class_<TileSubsetLayer, TileLayer, TileSubsetLayer::Ptr>(
+    py::class_<PartitionSubsetLayer, PartitionLayer, PartitionSubsetLayer::Ptr>(
         m,
-        "TileSubsetLayer",
+        "PartitionSubsetLayer",
         R"pbdoc(
         Immutable multi-channel result returned by server-side `/filter`.
         )pbdoc")
-        .def("filter_id", &TileSubsetLayer::filterId)
-        .def("generation", &TileSubsetLayer::generation)
-        .def("diagnostics", [](TileSubsetLayer const& self) {
-                return diagnosticsToPython(self.diagnostics());
-            })
-        .def("dependencies", [](TileSubsetLayer const& self) {
+        .def("filter_id", &PartitionSubsetLayer::filterId)
+        .def("generation", &PartitionSubsetLayer::generation)
+        .def(
+            "diagnostics",
+            [](PartitionSubsetLayer const& self)
+            { return diagnosticsToPython(self.diagnostics()); })
+        .def(
+            "dependencies",
+            [](PartitionSubsetLayer const& self)
+            {
                 py::list result;
                 for (auto const& dependency : self.dependencies()) {
                     py::dict item;
@@ -883,7 +940,10 @@ void bindTileLayer(py::module_& m)
                 }
                 return result;
             })
-        .def("issues", [](TileSubsetLayer const& self) {
+        .def(
+            "issues",
+            [](PartitionSubsetLayer const& self)
+            {
                 py::list result;
                 for (auto const& issue : self.issues()) {
                     py::dict item;
@@ -897,12 +957,15 @@ void bindTileLayer(py::module_& m)
                 }
                 return result;
             })
-        .def("glb_attachment_name",
-            &TileSubsetLayer::glbAttachmentName)
-        .def("trace_count", &TileSubsetLayer::traceCount)
-        .def("trace_at", [](TileSubsetLayer const& self, int64_t i) {
+        .def("glb_attachment_name", &PartitionSubsetLayer::glbAttachmentName)
+        .def("trace_count", &PartitionSubsetLayer::traceCount)
+        .def(
+            "trace_at",
+            [](PartitionSubsetLayer const& self, int64_t i)
+            {
                 auto sz = static_cast<int64_t>(self.traceCount());
-                if (i < 0) i += sz;
+                if (i < 0)
+                    i += sz;
                 if (i < 0 || i >= sz) {
                     throw py::index_error();
                 }
@@ -910,25 +973,26 @@ void bindTileLayer(py::module_& m)
                     self.traceAt(static_cast<size_t>(i)));
             },
             py::arg("index"))
-        .def("traces", [](TileSubsetLayer const& self) {
+        .def(
+            "traces",
+            [](PartitionSubsetLayer const& self)
+            {
                 py::list result;
                 for (size_t i = 0; i < self.traceCount(); ++i) {
                     result.append(BoundFilterTrace(self.traceAt(i)));
                 }
                 return result;
             })
-        .def("to_dict", [](TileSubsetLayer& self) {
-                return layerJsonToPython(self.toJson());
-            })
-        .def("to_json", [](TileSubsetLayer& self) {
-                return self.toJson().dump();
-            })
-        .def("__len__", [](TileSubsetLayer const& self) {
-                return self.size();
-            })
-        .def("__getitem__", [](TileSubsetLayer const& self, int64_t i) {
+        .def("to_dict", [](PartitionSubsetLayer& self) { return layerJsonToPython(self.toJson()); })
+        .def("to_json", [](PartitionSubsetLayer& self) { return self.toJson().dump(); })
+        .def("__len__", [](PartitionSubsetLayer const& self) { return self.size(); })
+        .def(
+            "__getitem__",
+            [](PartitionSubsetLayer const& self, int64_t i)
+            {
                 auto sz = static_cast<int64_t>(self.size());
-                if (i < 0) i += sz;
+                if (i < 0)
+                    i += sz;
                 if (i < 0 || i >= sz) {
                     throw py::index_error();
                 }
@@ -936,7 +1000,10 @@ void bindTileLayer(py::module_& m)
                     self.at(static_cast<size_t>(i)));
             },
             py::arg("index"))
-        .def("__iter__", [](TileSubsetLayer const& self) {
+        .def(
+            "__iter__",
+            [](PartitionSubsetLayer const& self)
+            {
                 py::list result;
                 for (size_t i = 0; i < self.size(); ++i) {
                     result.append(BoundTileSubsetChannel(self.at(i)));

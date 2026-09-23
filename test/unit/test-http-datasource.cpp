@@ -67,12 +67,11 @@ class CountingRemoteDataSource final
 public:
     using RemoteDataSource::RemoteDataSource;
 
-    TileLayer::Ptr get(
-        MapTileKey const& key,
+    PartitionLayer::Ptr
+    get(MapPartitionKey const& key,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        TileLayer::LoadStateCallback callback = {})
-        override
+        PartitionLayer::LoadStateCallback callback = {}) override
     {
         {
             std::lock_guard lock(mutex_);
@@ -85,8 +84,7 @@ public:
             std::move(callback));
     }
 
-    [[nodiscard]] size_t getCalls(
-        MapTileKey const& key) const
+    [[nodiscard]] size_t getCalls(MapPartitionKey const& key) const
     {
         std::lock_guard lock(mutex_);
         auto found = getCalls_.find(key);
@@ -97,7 +95,7 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::map<MapTileKey, size_t> getCalls_;
+    std::map<MapPartitionKey, size_t> getCalls_;
 };
 
 /** Produces empty finite-lifetime tiles for interactive handoff tests. */
@@ -124,7 +122,7 @@ public:
     DataSourceInfo info() override { return info_; }
 
     /** Stamp one tile with a short positive semantic lifetime. */
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         ++fillCount_;
         tile->setTimestamp(std::chrono::system_clock::now());
@@ -132,7 +130,7 @@ public:
     }
 
     /** Reject unsupported source-data requests. */
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw std::runtime_error("ExpiringInteractiveDataSource has no source-data layer");
     }
@@ -170,7 +168,7 @@ public:
     DataSourceInfo info() override { return info_; }
 
     /** Hold one source call until the test releases all active fills. */
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         std::unique_lock lock(mutex_);
         ++fillCounts_[tile->tileId()];
@@ -180,15 +178,14 @@ public:
     }
 
     /** Reject unsupported source-data requests. */
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw std::runtime_error("BlockingInteractiveDataSource has no source-data layer");
     }
 
     /** Wait until every requested tile has entered its datasource call. */
-    [[nodiscard]] bool waitForStarted(
-        std::set<TileId> const& tileIds,
-        std::chrono::milliseconds timeout)
+    [[nodiscard]] bool
+    waitForStarted(std::set<PartitionId> const& tileIds, std::chrono::milliseconds timeout)
     {
         std::unique_lock lock(mutex_);
         return stateChanged_.wait_for(
@@ -198,7 +195,7 @@ public:
             {
                 return std::ranges::all_of(
                     tileIds,
-                    [&](TileId tileId) { return started_.contains(tileId); });
+                    [&](PartitionId tileId) { return started_.contains(tileId); });
             });
     }
 
@@ -224,8 +221,8 @@ private:
     DataSourceInfo info_;
     mutable std::mutex mutex_;
     std::condition_variable stateChanged_;
-    std::map<TileId, size_t> fillCounts_;
-    std::set<TileId> started_;
+    std::map<PartitionId, size_t> fillCounts_;
+    std::set<PartitionId> started_;
     bool released_ = false;
 };
 
@@ -886,7 +883,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
         REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
         REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
         REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
-        REQUIRE(responseParsed.tileKey_.tileId_.value() == kHttpTileIdValue);
+        REQUIRE(responseParsed.tileKey_.partitionId_.value() == kHttpTileIdValue);
         REQUIRE(
             responseParsed.selector_.canonicalFeatureId_ ==
             std::optional<std::string>{
@@ -951,16 +948,14 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 service.port(),
                 {},
                 false);
-            auto attachment =
-                mapgetClient.attachment({
-                    .tileKey_ = MapTileKey(
-                        LayerType::Features,
-                        "Tropico",
-                        "WayLayer",
-                        TileId::fromValue(
-                            kHttpTileIdValue)),
-                    .name_ = "ways.glb",
-                });
+            auto attachment = mapgetClient.attachment({
+                .tileKey_ = MapPartitionKey(
+                    LayerType::Features,
+                    "Tropico",
+                    "WayLayer",
+                    TileId::fromValue(kHttpTileIdValue)),
+                .name_ = "ways.glb",
+            });
             REQUIRE(attachment);
             REQUIRE(attachment->bytes_);
             REQUIRE(
@@ -1075,17 +1070,9 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 TileId::fromValue(
                     kRelationTargetTileIdValue);
             auto const sourceKey =
-                MapTileKey{
-                    LayerType::Features,
-                    "Tropico",
-                    "WayLayer",
-                    sourceTile};
+                MapPartitionKey{LayerType::Features, "Tropico", "WayLayer", sourceTile};
             auto const targetKey =
-                MapTileKey{
-                    LayerType::Features,
-                    "Tropico",
-                    "WayLayer",
-                    targetTile};
+                MapPartitionKey{LayerType::Features, "Tropico", "WayLayer", targetTile};
             auto const sourceCallsBefore =
                 remoteDataSource->getCalls(
                     sourceKey);
@@ -1093,49 +1080,33 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 remoteDataSource->getCalls(
                     targetKey);
 
-            auto request =
-                std::make_shared<
-                    FeatureLayerFilterTilesRequest>(
-                    "Tropico",
-                    "WayLayer",
-                    std::vector<TileId>{
-                        sourceTile},
-                    FeatureLayerFilterRequest{
-                        .filterId_ =
-                            "remote-relation",
-                        .generation_ = 1,
-                        .channels_ = {
+            auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+                "Tropico",
+                "WayLayer",
+                std::vector<PartitionId>{sourceTile},
+                FeatureLayerFilterRequest{
+                    .filterId_ = "remote-relation",
+                    .generation_ = 1,
+                    .channels_ =
+                        {
                             FeatureLayerFilterChannel{
-                                .channelId_ =
-                                    "connected",
-                                .featureFilter_ =
-                                    "typeId == 'Way'",
-                                .scope_ =
-                                    FeatureLayerFilterScope::
-                                        Relation,
-                                .featureTypes_ = {
-                                    "Way"},
-                                .geometryName_ =
-                                    "centerline",
+                                .channelId_ = "connected",
+                                .featureFilter_ = "typeId == 'Way'",
+                                .scope_ = FeatureLayerFilterScope::Relation,
+                                .featureTypes_ = {"Way"},
+                                .geometryName_ = "centerline",
                                 .relation_ =
                                     FeatureLayerStoredRelationOptions{
-                                        .relationNamePattern_ =
-                                            "connected",
-                                        .recursive_ =
-                                            true,
+                                        .relationNamePattern_ = "connected",
+                                        .recursive_ = true,
                                     },
                             },
                         },
-                    });
-
-            std::vector<
-                TileSubsetLayer::Ptr>
-                results;
-            request->onFilterResult(
-                [&](TileSubsetLayer::Ptr layer) {
-                    results.push_back(
-                        std::move(layer));
                 });
+
+            std::vector<PartitionSubsetLayer::Ptr> results;
+            request->onFilterResult(
+                [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
             REQUIRE(service.request(request));
             request->wait();
 
@@ -1176,7 +1147,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 client,
                 "Tropico",
                 "WayLayer",
-                std::vector<TileId>{TileId::fromValue(kHttpTileIdValue), TileId::fromValue(kSecondHttpTileIdValue), TileId::fromValue(kThirdHttpTileIdValue)});
+                std::vector<PartitionId>{
+                    TileId::fromValue(kHttpTileIdValue),
+                    TileId::fromValue(kSecondHttpTileIdValue),
+                    TileId::fromValue(kThirdHttpTileIdValue)});
 
             REQUIRE(receivedTileCount == 3);
             REQUIRE(request->getStatus() == RequestStatus::Success);
@@ -1219,7 +1193,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     continue;
                 }
                 auto parsed = nlohmann::json::parse(line);
-                if (parsed.value("type", "") != "TileSubsetLayer") {
+                if (parsed.value("type", "") != "PartitionSubsetLayer") {
                     continue;
                 }
                 sawResultLayer = true;
@@ -1262,20 +1236,19 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
                 "Tropico",
                 "WayLayer",
-                std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)},
+                std::vector<PartitionId>{TileId::fromValue(kHttpTileIdValue)},
                 std::move(filter));
             size_t resultCount = 0;
             size_t statusCount = 0;
-            request->onFilterResult([&](TileSubsetLayer::Ptr layer) {
-                REQUIRE(layer->size() == 1);
-                resultCount +=
-                    layer->at(0)->featureEntryCount();
-                REQUIRE(layer->filterId().empty());
-                REQUIRE(layer->generation() == 0);
-                REQUIRE(
-                    layer->at(0)->featureFields() ==
-                    std::vector<std::string>{"typeId"});
-            });
+            request->onFilterResult(
+                [&](PartitionSubsetLayer::Ptr layer)
+                {
+                    REQUIRE(layer->size() == 1);
+                    resultCount += layer->at(0)->featureEntryCount();
+                    REQUIRE(layer->filterId().empty());
+                    REQUIRE(layer->generation() == 0);
+                    REQUIRE(layer->at(0)->featureFields() == std::vector<std::string>{"typeId"});
+                });
             request->onStatus([&](nlohmann::json const&) {
                 ++statusCount;
             });
@@ -1317,15 +1290,21 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             HttpClient client("127.0.0.1", service.port());
 
             {
-                auto [request, receivedTileCount] =
-                    countReceivedTiles(client, "UnknownMap", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
+                auto [request, receivedTileCount] = countReceivedTiles(
+                    client,
+                    "UnknownMap",
+                    "WayLayer",
+                    std::vector<PartitionId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
 
             {
-                auto [request, receivedTileCount] =
-                    countReceivedTiles(client, "Tropico", "UnknownLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
+                auto [request, receivedTileCount] = countReceivedTiles(
+                    client,
+                    "Tropico",
+                    "UnknownLayer",
+                    std::vector<PartitionId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::NoDataSource);
                 REQUIRE(receivedTileCount == 0);
             }
@@ -1357,7 +1336,7 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(responseParsed.tileKey_.mapId_ == "Tropico");
             REQUIRE(responseParsed.tileKey_.layer_ == LayerType::Features);
             REQUIRE(responseParsed.tileKey_.layerId_ == "WayLayer");
-            REQUIRE(responseParsed.tileKey_.tileId_.value() == kHttpTileIdValue);
+            REQUIRE(responseParsed.tileKey_.partitionId_.value() == kHttpTileIdValue);
         }
 
         // Test auth header requirement
@@ -1371,15 +1350,21 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(goodClient.sources().size() == 1);
 
             {
-                auto [request, receivedTileCount] =
-                    countReceivedTiles(badClient, "Tropico", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
+                auto [request, receivedTileCount] = countReceivedTiles(
+                    badClient,
+                    "Tropico",
+                    "WayLayer",
+                    std::vector<PartitionId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::Unauthorized);
                 REQUIRE(receivedTileCount == 0);
             }
 
             {
-                auto [request, receivedTileCount] =
-                    countReceivedTiles(goodClient, "Tropico", "WayLayer", std::vector<TileId>{TileId::fromValue(kHttpTileIdValue)});
+                auto [request, receivedTileCount] = countReceivedTiles(
+                    goodClient,
+                    "Tropico",
+                    "WayLayer",
+                    std::vector<PartitionId>{TileId::fromValue(kHttpTileIdValue)});
                 REQUIRE(request->getStatus() == RequestStatus::Success);
                 REQUIRE(receivedTileCount == 1);
             }
@@ -1987,18 +1972,15 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     service.port());
                 auto const resetTile =
                     TileId::fromValue(131079);
-                auto const resetKey = MapTileKey(
-                    LayerType::Features,
-                    "Tropico",
-                    "WayLayer",
-                    resetTile);
-                auto loadResetTile = [&] {
-                    auto [request, receivedTileCount] =
-                        countReceivedTiles(
-                            goodClient,
-                            "Tropico",
-                            "WayLayer",
-                            std::vector<TileId>{resetTile});
+                auto const resetKey =
+                    MapPartitionKey(LayerType::Features, "Tropico", "WayLayer", resetTile);
+                auto loadResetTile = [&]
+                {
+                    auto [request, receivedTileCount] = countReceivedTiles(
+                        goodClient,
+                        "Tropico",
+                        "WayLayer",
+                        std::vector<PartitionId>{resetTile});
                     REQUIRE(
                         request->getStatus() ==
                         RequestStatus::Success);

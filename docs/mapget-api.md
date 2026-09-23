@@ -1,6 +1,6 @@
 # HTTP / WebSocket API Guide
 
-Mapget protocol 4 exposes complete source tiles to trusted clients and
+Mapget protocol 5 exposes complete source partitions to trusted clients and
 server-evaluated `TileSubsetLayer` values to interactive renderers. There is no
 staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
@@ -16,17 +16,148 @@ support:
 - a top-level `responseType` of `binary`, `jsonl`, or `json`; `json` is an
   alias for JSON Lines.
 
+`/filter` JSON Lines interleaves status records with payload records. Select
+payloads by `type: "PartitionSubsetLayer"`; do not assume the first line is a
+layer. Its `partition` is tagged for tiles and objects. Dependency field
+`sourceTileKey` retains its historical spelling but contains a generic
+`MapPartitionKey`, including `object/<id>` for object sources.
+
 `Accept-Encoding: gzip` enables response compression. Binary clients may send
 `stringPoolOffsets`, keyed by datasource `stringPoolId`, to suppress string
 pool entries they already possess.
 
-Protocol-3 `MapTileKey` values contain exactly four parts:
+Streaming responses require HTTP/1.1 and use chunked transfer encoding. Both
+keep-alive and `Connection: close` requests are supported: `close` closes the
+connection **after** the complete response, not before asynchronous results
+arrive. Clients must consume the terminating chunk (and gzip trailer when
+compressed); an early disconnect cancels the outstanding request.
+
+Tile `MapPartitionKey` values retain four parts:
 
 ```text
 <LayerType>:<percent-escaped mapId>:<percent-escaped layerId>:<signed tileId>
 ```
 
 The removed stage suffix is not accepted.
+
+## Object partitions
+
+All payload requests use the same `/tiles`, `/filter`, and `/interactive`
+paths. Tile-only callers may retain `tileIds` and `priorityTileIds`. Generic
+callers use `partitions` and `priorityPartitions` instead:
+
+```json
+{
+  "requests": [{
+    "mapId": "City",
+    "layerId": "Road",
+    "partitions": [{"kind": "object", "id": "18446744073709551615"}]
+  }],
+  "responseType": "binary"
+}
+```
+
+A tile partition is `{"kind":"tile","id":131073}`. Object IDs must be
+unsigned decimal strings, never JavaScript numbers. Do not supply both
+coverage forms. Priority partitions must belong to the requested set. The
+layer's advertised `partitionKind` must match every requested partition.
+C++/Python clients serialize the tagged form, including tile requests.
+Exact roots and feature-ID restrictions accept `partition` instead of
+`tileId`. `/locate` accepts optional `layerId` and `partition` restrictions;
+its candidates/results use `partitionKey`. Object keys have the form
+`Features:City:Road:object/18446744073709551615`.
+
+Attachments accept a URL-encoded tagged JSON `partition` query parameter in
+place of `tileId`. Binary feature, subset and source-data payloads carry the
+same identity; string pools remain datasource-owned, not object-owned.
+
+Object filtering is object-local: no tile halos, adjacent-object matching,
+or automatic cross-partition relation-target fetches. Intra-object relations
+and point groups are supported. External references remain in the source
+model, but unresolved relations are not synthesized into drawable outputs.
+Grouping never merges members from different objects, even if they share a
+spatial grid cell. Generic two-way relation ownership uses stable endpoint
+identity rather than the tile-only southwest rule.
+
+The [model guide](mapget-model.md#tile-and-object-partitions) defines the
+identity/metadata contract; the [developer guide](mapget-dev-guide.md#object-datasource-integration)
+explains discovery, scheduling, and a runnable datasource example. The tile
+examples below remain valid; use the tagged alternatives for object layers.
+
+### `POST /objects/discover`
+
+Discover associations without loading or converting object payloads:
+
+```json
+{
+  "requests": [{
+    "mapId": "City",
+    "layerId": "Road",
+    "tileIds": [536870912, 536870913]
+  }]
+}
+```
+
+Use valid packed tiles at the layer's `tileAssociationLevel`. An optional
+`sourceId` has the same routing/assertion meaning as on payload requests.
+Batches contain 1..256 discovery tiles; responses preserve their input order.
+The endpoint applies datasource authorization before scheduling discovery.
+
+```json
+{
+  "responses": [{
+    "mapId": "City",
+    "layerId": "Road",
+    "tileId": 536870912,
+    "status": "success",
+    "objects": [{"id": "18446744073709551615", "bounds": [11, 48, 12, 49]}],
+    "message": "",
+    "timestamp": 1789632000000,
+    "ttlMs": 5000
+  }]
+}
+```
+
+Each input tile gets one response. `bounds` is optional WGS84
+[west,south,east,north]; west > east denotes an antimeridian crossing.
+Bounds are informational; they neither clip the payload nor define its anchor.
+Duplicate object references within one association list are removed on the
+wire. `success` with an empty list means known empty coverage; `unavailable`
+means missing association data; `failed` reports a backend, authorization,
+metadata or admission error. Failed/unavailable results contain no objects.
+Malformed request syntax returns HTTP 400. Per-tile failures remain in the
+HTTP 200 batch so other discovery tiles can succeed.
+
+`timestamp` is Unix milliseconds; `ttlMs` describes association freshness,
+not object-payload freshness (zero means no expiry). Responses use
+`Cache-Control: no-store`; consumers explicitly retain associations according
+to this freshness. Mapget does not add a second unbounded association cache.
+Clients form the union of discovered IDs and request wanted objects through
+the ordinary payload/filter paths. A disappeared discovery tile does not
+remove an object still referenced by another visible tile.
+Do not reuse the feature GeoJSON timestamp unit here: feature-layer JSON
+timestamps are Unix microseconds, whereas discovery timestamps are milliseconds.
+
+Discovery uses the global worker cap and datasource concurrency permits.
+Pending discovery is bounded to 4096 jobs; overload/removal/shutdown produces
+failed results rather than retaining an unbounded callback queue. No second
+worker pool is created. Running datasource calls must finish before shutdown.
+The bound is service-wide, not per session, and counts pending queries, not
+the number of object references returned. Discovery requests are neither
+coalesced nor cached by mapget. Keep batches small when latency matters: this
+endpoint returns one ordinary JSON response after **all** its queries finish,
+not a stream of early results.
+
+Discovery is independent of `/interactive` sessions and their outbox gates.
+Closing the discovery HTTP connection does not cancel submitted queries.
+Invalidating/removing a map fails its queued discovery jobs; running calls
+can still complete with old associations. Clients must discard responses for
+superseded catalog/view state. Datasources must impose their own I/O timeouts.
+
+Remote datasource servers expose a different, single-query version of this
+endpoint: `{ "layerId": "Road", "tileId": 536870912 }` returns one discovery
+result directly, without `requests`/`responses` wrappers. This is the
+service-to-datasource protocol, not the client-facing API above.
 
 ## `GET /sources`
 
@@ -54,7 +185,7 @@ Responses carry `X-Mapget-Sources-Revision` and an `ETag` of
 
 ## `POST /tiles`
 
-`/tiles` streams complete feature/source-data tiles. Erdblick uses this path
+`/tiles` streams complete feature/source-data partitions. Erdblick uses this path
 only for explicit, short-lived inspection fetches; normal map rendering uses
 `/filter`.
 
@@ -75,11 +206,12 @@ only for explicit, short-lived inspection fetches; normal map rendering uses
 
 Each request has:
 
-- `mapId`, `layerId`, and an ordered `tileIds` array;
+- `mapId`, `layerId`, and an ordered `partitions` array (or tile-only `tileIds`);
 - optional `sourceId`;
-- optional `priorityTileIds`, which must be a subset of `tileIds` and affect
-  scheduling only;
-- optional `featureIds`: tile/id groups used by the inspection boundary.
+- optional `priorityPartitions` (or tile-only `priorityTileIds`), which must
+  reference requested partitions and affect scheduling only;
+- optional `featureIds`: partition/id groups used by the inspection boundary;
+  each group accepts tagged `partition` or legacy `tileId`, not both.
 
 The restricted form is:
 
@@ -227,16 +359,20 @@ The initial grouping operator is feature-only:
 }
 ```
 
-The service scans the ordered request plus its required contribution halo once
+For tile layers, the service scans the ordered request plus its required contribution halo once
 in source-major order. Each scanned tile submits point contributions to their
 canonical output cells. An output is emitted atomically after its own source
 and every required halo contribution are terminal.
+
+For object layers, contributions stay within each source object, without halo
+loads or merging across objects. The source object is the only dependency of
+its output. A grid cell shared by two objects therefore yields separate groups.
 
 The group context is rooted at the deterministic representative feature and
 adds `$features`, a direct array of participating feature model pointers.
 `GroupEntry` contains representative geometry, representative feature ID, all
 member IDs, the stable cell key, and projected values. Attribute grouping and
-multi-input grouping are not supported in protocol 3.1.
+multi-input grouping are not supported.
 
 ### Stored relations
 
@@ -259,7 +395,7 @@ A relation channel carries relation options:
 }
 ```
 
-`recursive: true` follows stored relations through local tiles and resolves at
+For tile layers, `recursive: true` follows stored relations through local tiles and resolves at
 most one hop across a tile border. Target tiles are fetched synchronously
 inside the sparse relation-resolution job; their features become endpoint
 entries in the origin output subset. They are not emitted as independent
@@ -267,7 +403,7 @@ output tiles unless requested.
 
 `mergeTwoway` pairs reverse descriptors. Exact-root/selection traversal is
 owned by the selected origin; if both endpoints are explicit roots, the first
-root in request order owns the pair. Generic display uses permanent
+root in request order owns the pair. Generic tile display uses permanent
 south-west endpoint ownership. If the permanent owner tile is outside the
 requested output set, the pair is omitted rather than temporarily reassigned,
 so panning cannot display the same relation under changing owners.
@@ -275,6 +411,11 @@ so panning cannot display the same relation under changing owners.
 Generic cross-layer or cross-level targets remain owned by the source output.
 Exactly-once ownership is per filter definition, not global across independent
 clients or presentations.
+
+Object layers traverse relations only inside the source object. Unresolved
+targets do not trigger locate or additional partition loads. Generic object
+display selects the owner by stable endpoint identity, not geographic position;
+exact-root ownership follows the same selected-origin rule as tiles.
 
 Relation contexts expose the stored relation as root and add `$source`,
 `$target`, `$twoway`, and `$relationIndex`. The index is the descriptor's
@@ -371,7 +512,7 @@ inherited by each request:
 ```
 
 Every completed envelope replaces the connection's complete **pending-output
-snapshot**. `tileIds` lists only outputs the client is still waiting to accept;
+snapshot**. `partitions` (or tile-only `tileIds`) lists only outputs the client is still waiting to accept;
 it is not the client's retained viewport inventory. Repeating a key is
 idempotent while backend work is active, its frame is queued, or an unexpired
 handoff record represents bytes already placed in a payload response.
@@ -382,7 +523,7 @@ after the final chunk. Omitting a handed-off key releases its bookkeeping; if
 the handed-off value's own timestamp plus positive TTL has expired, repeating
 the key follows the ordinary cache/refresh path without an omit/re-add cycle.
 Missing or zero TTL has no session-side expiry. The removed `renewals`,
-`deliveryEpoch`, and `deliveryEpochs` fields are rejected by protocol 4.
+`deliveryEpoch`, and `deliveryEpochs` fields remain rejected since protocol 4.
 
 Completed snapshots are consumed through a latest-wins mailbox outside the
 WebSocket I/O thread. If several complete snapshots arrive faster than mapget
@@ -398,6 +539,10 @@ Server control messages are binary VTLV frames:
 - `RequestContext`: JSON with `requestId`, `clientId`, and catalog revision;
 - `Status`: per-request state and final `allDone`;
 - `SourceCatalogChange`: catalog revision/progress notifications.
+
+Per-partition load-state records use tagged `partition` identity, for tiles
+as well as objects. Do not assume that a control record's identity is a numeric
+`tileId` just because the request used the legacy coverage spelling.
 
 `GET /tiles` remains a WebSocket alias for stale reverse-proxy deployments.
 It does not change `POST /tiles` semantics.
@@ -435,12 +580,30 @@ alias.
 }
 ```
 
-The response contains a parallel `responses` array. Each result includes the
-four-part `tileId` key and the resolved `canonicalFeatureId`. Canonical input
+Requests may also restrict lookup with `layerId` and a tagged `partition`.
+The response contains a parallel `responses` array. Each resolved result
+includes `partitionKey`, tagged `partition`, `layerId`, and
+`canonicalFeatureId`. Tile results additionally retain the legacy `tileId`
+field containing the four-part key string; object results do not.
+For example, an object result's identity fields are:
+
+```json
+{
+  "partitionKey": "Features:City:Road:object/18446744073709551615",
+  "partition": {"kind": "object", "id": "18446744073709551615"},
+  "layerId": "Road",
+  "canonicalFeatureId": "Road.18446744073709551615.1"
+}
+```
+
+Canonical input
 is resolved against the ID compositions
 advertised by the layer before datasource dispatch. Datasources only plan
-candidate tiles and portable selectors; mapget loads candidates through its
+candidate partitions and portable selectors; mapget loads candidates through its
 normal cache/coalescing path and returns concrete primary feature identities.
+Discovery is not a general feature-to-object index: object locate still needs
+datasource-provided candidates. The object-local filter does not automatically
+invoke locate to resolve references outside its source object.
 Portable selectors use exactly one of `canonicalFeatureId`, `typeId` plus
 `featureFilter`, or `typeId` plus `featureIdExpression`. The latter evaluates
 once per loaded candidate tile with `$features` and optional scalar `bindings`,

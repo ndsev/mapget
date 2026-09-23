@@ -19,7 +19,7 @@ public:
     TileLoadJob(
         ServiceScheduler& scheduler,
         std::shared_ptr<TileLoadState> state,
-        TileLayer::Ptr cachedLayer);
+        PartitionLayer::Ptr cachedLayer);
 
     /** Resolve the tile and process every coalesced consumer on this worker. */
     void run() noexcept;
@@ -28,7 +28,7 @@ private:
     ServiceScheduler& scheduler_;
     std::shared_ptr<SourceConcurrency> source_;
     std::shared_ptr<TileLoadState> state_;
-    TileLayer::Ptr cachedLayer_;
+    PartitionLayer::Ptr cachedLayer_;
 };
 
 /**
@@ -38,7 +38,7 @@ private:
  * independent datasource permits.
  */
 void loadAddOnTiles(
-    TileFeatureLayer::Ptr const& baseTile,
+    PartitionFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
     DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,

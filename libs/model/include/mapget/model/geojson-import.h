@@ -8,7 +8,7 @@
 namespace mapget
 {
 
-class TileFeatureLayer;
+class PartitionFeatureLayer;
 
 /**
  * Controls whether GeoJSON import behaves like a strict mapget roundtrip
@@ -31,14 +31,13 @@ struct GeoJsonImportOptions
 };
 
 /**
- * Import a FeatureCollection into an empty TileFeatureLayer.
+ * Import a FeatureCollection into an empty PartitionFeatureLayer.
  *
  * Depending on `options`, this either expects mapget's JSON profile or
  * performs best-effort adaptation from generic GeoJSON.
  */
 void importGeoJson(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     nlohmann::json const& geoJson,
     GeoJsonImportOptions const& options = {});
-
 }

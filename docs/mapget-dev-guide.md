@@ -1,15 +1,15 @@
 # Mapget Developer Guide
 
-This guide describes the protocol-3 implementation: complete source tiles,
+This guide describes the protocol-5 implementation: complete source partitions,
 server-evaluated subset layers, semantic geometry names, and lazy attachments.
 
 ## Components
 
-- `libs/model` owns `TileFeatureLayer`, `TileSubsetLayer`,
-  `TileSourceDataLayer`, feature-model nodes, SIMFIL integration, and the
+- `libs/model` owns `PartitionFeatureLayer`, `PartitionSubsetLayer`,
+  `PartitionSourceDataLayer`, feature-model nodes, SIMFIL integration, and the
   binary stream.
-- `libs/service` owns datasource registration, complete source-tile caching,
-  worker scheduling, filtering, cross-tile coordination, locate, and
+- `libs/service` owns datasource registration, complete source-partition caching,
+  worker scheduling, object discovery, filtering, cross-tile coordination, locate, and
   attachment routing.
 - `libs/http-service` exposes REST and interactive transports.
 - `libs/http-datasource` runs datasources in another process/host.
@@ -17,6 +17,181 @@ server-evaluated subset layers, semantic geometry names, and lazy attachments.
 - `libs/pymapget` exposes the same model/service contracts to Python.
 
 `apps/mapget` wires these libraries into the CLI.
+
+## Object datasource integration
+
+Existing tile datasources can keep `fill(TileFeatureLayer::Ptr const&)` and
+`fill(TileSourceDataLayer::Ptr const&)`: these are aliases of the generic
+partition models. Object-aware fills inspect `layer->partitionId()` and use
+`objectId()`; do not call `tileId()` for objects. Publish object addressing and
+`tileAssociationLevel` in each relevant `LayerInfo`, including source-data
+layers, and choose an explicit geometry anchor before inserting points.
+
+Override `DataSource::discoverObjects(ObjectDiscoveryRequest const&)` to
+return an `ObjectDiscoveryResult`. The default reports unavailable, not empty.
+It returns associations only; ordinary fills still load object payloads.
+Exceptions and invalid result bounds/TTL become failed discovery responses.
+The scheduler shares datasource permits and worker threads with tile/object
+loads, alternates discovery and payload selection, and cancels queued
+association work on invalidation/shutdown. `/status-data` includes
+`queued-discovery-jobs` and accounts queued request storage.
+
+Remote/process sources use the same discovery hook through
+`DataSourceServer::onObjectDiscoveryRequest`. Their `/objects/discover`
+request is a single `{layerId,tileId}` query because the remote endpoint owns
+one datasource; the public service endpoint supports map-scoped batches.
+Remote `/tile` and `/attachment` accept the URL-encoded tagged `partition`.
+Python exposes `PartitionId`, `PartitionKind`, `MapPartitionKey`,
+`ObjectDiscoveryRequest`, `ObjectReference`, `ObjectDiscoveryResult`,
+`ObjectDiscoveryStatus`, `Client.discover_objects`, and
+`DataSourceServer.on_object_discovery_request`. Legacy tile model names refer
+to the same Python classes; `Request`/`FilterRequest` accept PackedTileId or
+PartitionId values in their existing `tiles` argument.
+
+Feature-ID integer parts use signed int64 in the shared simfil model. For an
+object's full uint64 identity, project its bits rather than converting through
+a double; use the U64 ID-part declaration so canonical IDs format unsigned.
+Native locate implementations return generic partition keys. Optional layer
+and partition restrictions prevent guessing when several layers reuse IDs.
+
+### Discovery and payload lifetime
+
+There are two independent operations, not a new object-loading pipeline:
+
+1. The client queries spatial associations using valid packed tiles at
+   `tileAssociationLevel`. `Service::discoverObjects` validates routing,
+   authorization, layer kind and level, then queues one discovery job per tile.
+   The provider returns object IDs, optional bounds, and association freshness.
+2. The client unions those IDs across wanted discovery tiles and sends tagged
+   object partitions through `/tiles`, `/filter`, or `/interactive`. Ordinary
+   source jobs load/cache complete objects and evaluate any attached filters.
+
+An object has one `MapPartitionKey` per map/layer/payload type regardless of
+how many discovery tiles reference it. Discovery neither fills objects nor
+creates payload-cache entries. Object payloads use the existing cache and
+in-flight coalescing index; discovery queries use neither. String pools remain
+datasource-owned. A discovery tile never supplies an object's geometry anchor.
+
+Association `timestamp + ttlMs` and payload `timestamp + ttl` are independent.
+The former controls when a client refreshes its spatial associations; the
+latter controls cache expiry and payload renewal. Removing an association
+does not invalidate a cached object, and a client must retain an object while
+another wanted discovery tile still references it. Zero TTL means no expiry
+in either case. See the [cache guide](mapget-cache.md#object-partition-caching).
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant H as HTTP service
+  participant W as Shared workers
+  participant D as Datasource
+  participant K as Partition cache
+  C->>H: POST /objects/discover (association tiles)
+  H->>H: Validate and allocate ordered batch slots
+  H->>W: Enqueue discovery queries
+  W->>D: discoverObjects (datasource permit)
+  D-->>W: IDs, optional bounds, timestamp, TTL
+  W-->>H: Complete each batch slot
+  H-->>C: One JSON response after all queries finish
+  C->>C: Union object IDs across wanted discovery tiles
+  C->>H: POST /filter (tagged object partitions + channels)
+  H->>W: Submit ordinary coalesced source jobs
+  W->>K: Lookup MapPartitionKey
+  alt Fresh cached payload
+    K-->>W: Complete source object
+  else Miss or expired payload
+    K-->>W: No fresh payload
+    W->>D: fill (datasource permit)
+    D-->>W: Complete object with explicit geometry anchor
+    W->>K: Cache complete object within configured limits
+  end
+  Note over W,D: Backend permit is released before filter evaluation
+  W->>W: Evaluate channels and object-local groups/relations
+  W-->>H: Completed PartitionSubsetLayer
+  H-->>C: Stream string-pool delta and subset payload
+```
+
+The same payload jobs serve `/tiles` and interactive requests. The diagram
+shows `/filter`; discovery is a separate REST exchange in all cases.
+
+### Discovery execution and cancellation
+
+Discovery and payload jobs share the global worker cap and each primary
+datasource's concurrency limit. The scheduler alternates job kinds when both
+are runnable. There is a service-wide limit of 4096 **pending queries**, not a
+memory bound on returned association lists. Discovery has no interactive
+session gate, deduplication, or separate worker pool. The public HTTP endpoint
+aggregates at most 256 queries and responds only after all have completed.
+
+`Service::discoverObjects` has no completion-thread guarantee:
+
+- Validation/admission failures can call back before submission returns.
+- Accepted queries normally call back on the worker executing the provider.
+- Map invalidation/shutdown calls back for queued jobs on the thread performing
+  that operation; jobs whose source disappeared may also fail on a worker.
+
+Callbacks run outside the scheduler mutex. Capture owned state, synchronize
+shared state, and keep callbacks short and nonthrowing. In particular, a
+discovery worker retains its datasource permit until the callback returns;
+waiting there for another service job can exhaust permits/workers. Payload
+jobs, by contrast, release their backend permit before filter evaluation and
+consumer callbacks.
+
+There is no per-query cancellation handle, and disconnecting an HTTP client
+does not remove its discovery work. Map invalidation/shutdown fails queued
+queries but cannot interrupt a running provider call. Running discovery may
+still publish associations from the previous catalog state; clients must
+discard stale responses. Shutdown joins those calls, so providers need bounded
+I/O timeouts. Payload filters retain their existing cooperative cancellation
+and output-ownership checks; discovery does not replace that mechanism.
+
+### Runnable object datasource
+
+[`examples/python/object-datasource.py`](../examples/python/object-datasource.py)
+serves one synthetic road object near Munich, with a full-range uint64 ID,
+explicit anchor, and independent association/payload TTLs. It declares known
+empty discovery outside that object's association tiles. It requires only the
+mapget Python package and its ndslive-math dependency, not an NDS account.
+
+From a mapget checkout, start the datasource and public service in separate
+terminals:
+
+```bash
+python examples/python/object-datasource.py --port 9100
+```
+
+```bash
+mapget serve --host 127.0.0.1 -p 9101 -d 127.0.0.1:9100
+```
+
+The datasource prints the discovery tile IDs. To exercise discovery and load
+the union of returned objects through the public client:
+
+```python
+import mapget
+from ndslive.math import PackedTileId
+
+client = mapget.Client("127.0.0.1", 9101)
+tile = PackedTileId.from_wgs84(11.57, 48.14, 13)
+associations = client.discover_objects(
+    mapget.ObjectDiscoveryRequest("ObjectExample", "Road", tile))
+if associations.status != mapget.ObjectDiscoveryStatus.SUCCESS:
+    raise RuntimeError(associations.message)
+partitions = [mapget.PartitionId.object(ref.object_id) for ref in associations.objects]
+if partitions:
+    for layer in client.request(mapget.Request("ObjectExample", "Road", partitions)):
+        print(layer.partition_id().object_id, layer.geojson())
+```
+
+Do not feed an object ID to `PackedTileId`, even when it fits in 32 bits.
+Python keeps the object ID as an exact integer; JSON transport uses a decimal
+string. The example's U64 feature-ID part uses a signed bit projection only at
+`new_feature`, not for discovery or `PartitionId.object`.
+
+The executable example is covered by `test-python-object-datasource-example`
+(discovery, empty/error responses, JSON and binary object loading, filtering,
+and cache reuse). Run it with
+`ctest --test-dir build -R '^test-python-object-datasource-example$' --output-on-failure`.
 
 ## Development setup
 
@@ -37,26 +212,28 @@ A `DataSource`:
 - returns `DataSourceInfo` from `info()`;
 - fills one complete `TileFeatureLayer` or `TileSourceDataLayer`;
 - may implement cheap `locate()` planning for secondary IDs;
+- may implement `discoverObjects()` for spatial association lookup on object layers;
 - may implement `attachment()` for a named lazy payload.
 
-`DataSource::locate()` returns candidate `MapTileKey`s plus a portable in-tile
-selector. A selector is either an exact canonical feature ID, a typed and
+`DataSource::locate()` returns candidate `MapPartitionKey`s plus a portable
+in-partition selector. A selector is either an exact canonical feature ID, a typed and
 schema-compiled SIMFIL `featureFilter`, or a typed `featureIdExpression` with
 scalar bindings. `featureIdExpression` is evaluated once against the candidate
-tile's `$features` view; its returned canonical IDs use the tile's primary-ID
-index instead of evaluating a predicate against every feature. Planning must
-be side-effect free and must not fetch, fill, or convert a tile. The service
+partition's `$features` view; its returned canonical IDs use the partition's
+primary-ID index instead of evaluating a predicate against every feature. Planning must
+be side-effect free and must not fetch, fill, or convert a partition. The service
 loads every candidate through the ordinary cache/coalesced scheduler, applies
-the selector to the complete tile, and only then decides missing versus
+the selector to the complete partition, and only then decides missing versus
 ambiguous. The same contract is used by public `/locate`, stored-relation
-targets, add-on composition, and `RemoteDataSource`.
+targets in tile filters, add-on composition, and `RemoteDataSource`. Object
+filters deliberately do not expand their source-object boundary.
 
 `DataSourceInfo::stringPoolId_` names the serialized string namespace. The
 service catalog separately assigns `sourceId`. Only one primary datasource may
 advertise a map; add-ons compose behind it. This constraint keeps
-`MapTileKey` sufficient for cache and in-flight identity.
+`MapPartitionKey` sufficient for cache and in-flight identity.
 
-Protocol 3 has no stages and no backend feature LOD. Datasources give
+There are no stages and no backend feature LOD. Datasources give
 geometries stable semantic names. Validities which target a particular
 geometry use the same name. A layer-local table represents up to 255 names in
 one byte per geometry/reference.
@@ -77,11 +254,11 @@ See `examples/cpp/local-datasource` and `examples/python/datasource.py`.
 
 ## Model ownership
 
-`TileFeatureLayer` and `TileSubsetLayer` both derive from
-`TileFeatureModelLayerBase`. The base owns compact feature IDs, geometry
+`PartitionFeatureLayer` and `PartitionSubsetLayer` both derive from
+`PartitionFeatureModelLayerBase`. The base owns compact feature IDs, geometry
 columns, source references, and the semantic geometry-name table.
 
-`TileSubsetLayer` additionally owns:
+`PartitionSubsetLayer` additionally owns:
 
 - ordered `TileSubsetChannel` roots;
 - typed feature, attribute-validity, relation, and group entry columns;
@@ -103,24 +280,28 @@ The principal service requests are:
 - `LayerTilesRequest`;
 - `FeatureLayerFilterTilesRequest`;
 - `AttachmentRequest`;
-- `LocateRequest`.
+- `LocateRequest`;
+- `ObjectDiscoveryRequest` (association lookup only).
+
+The tile-named request classes also accept `PartitionId` values; their names
+do not select a separate tile-only execution path.
 
 `Service::Impl` composes a ready-source registry and one global
-`ServiceScheduler`. All workers are homogeneous: each owns one source tile
+`ServiceScheduler`. All workers are homogeneous: each owns one source partition
 through cache/backend loading and every attached direct or filter consumer. A
 source's `maxParallelJobs` is a permit limit for backend access rather than a
-number of dedicated threads. The tile job releases that permit before it runs
+number of dedicated threads. The payload job releases that permit before it runs
 SIMFIL evaluation and result callbacks, allowing another worker to enter the
 datasource without retaining the completed tile in a second queue. Add-ons
-remain nested in the matching primary tile job and share its concurrency. The
+remain nested in the matching primary partition job and share its concurrency. The
 service-wide worker cap is configurable with `--worker-count`; its default is
 `clamp(2 * hardware_concurrency, 16, 32)`.
 
 Complete source jobs are admitted in request order and sources are considered
-round-robin. A worker claims the next `MapTileKey`, coalesces through the
+round-robin. A worker claims the next `MapPartitionKey`, coalesces through the
 in-flight tile index, reads the cache or invokes the datasource, caches the
 complete result, and notifies every waiter.
-`priorityTileIds` promotes keys already in the request. It does not add
+`priorityPartitions` (or tile-only `priorityTileIds`) promotes requested keys. It does not add
 coverage or change data semantics.
 
 Requests may share an atomic work-admission gate which is fixed before
@@ -130,8 +311,8 @@ selected for another live consumer, and backpressure does not suppress work
 which has already started. Opening a gate calls `Service::notifyWorkAvailable()`
 so sleeping workers reconsider the queued keys.
 
-One coalesced source tile may serve ordinary tile consumers and several filter
-requests. Those filters run sequentially on the worker that completed the tile,
+One coalesced source partition may serve ordinary tile consumers and several filter
+requests. Those filters run sequentially on the worker that completed the partition,
 and each source-local evaluation scatters immutable contributions to every
 dependent output. Loaded source models therefore remain bounded by active
 workers rather than accumulating in an independent evaluation queue.
@@ -150,18 +331,19 @@ publication. The rest of the service implementation is split by ownership:
 - `service-scheduler.cpp`: global workers, datasource permits, coalescing, and invalidation;
 - `service-tiles.cpp`: ordinary tile request methods, tile jobs, add-on composition, and attachments;
 - `service-locate.cpp`: locate candidate planning and result assembly;
+- `service-discovery.cpp`: discovery routing/validation and submission to the shared scheduler;
 - `service-statistics.cpp`: service and memory-accountability snapshots;
 - `service.cpp`: the thin public `Service` facade.
 
 ```mermaid
 flowchart LR
   Definition["channels + bindings<br/>ordered output coverage"]
-  Union["source union<br/>outputs + halo/targets"]
+  Union["source union<br/>tiles: outputs + halo/targets<br/>objects: requested objects only"]
   Cache[(complete source cache)]
-  Scan["one scan per source tile<br/>all bundled channels"]
+  Scan["one scan per source partition<br/>all bundled channels"]
   Output["OutputTileState<br/>single-writer WIP subset"]
   Complete["group / relation completion"]
-  Result["immutable TileSubsetLayer"]
+  Result["immutable PartitionSubsetLayer"]
 
   Definition --> Union --> Cache --> Scan --> Output --> Complete --> Result
 ```
@@ -174,7 +356,10 @@ feature; `entryFields` run against the terminal context.
 All expressions are schema-compiled. `rewrite` controls only optional
 `LayerSchema::normalizeSearchQuery()` processing of `entryFilter`. Native
 SIMFIL truthiness is used. A candidate-local error becomes an aggregated
-`FilterIssue`; structural/compile failures abort the request.
+`FilterIssue`; structural/compile failures abort the request. Source tiles
+carrying an error also abort with a `Failed` status and the source error text;
+they must not be evaluated as successful empty tiles. An expired error tile can
+be loaded again after its datasource recovers.
 
 `FilterRequestExecution` owns one bounded `SimfilExpressionCache` for the
 request lifetime. Source scans, group/relation completion, and relation-target
@@ -192,7 +377,7 @@ later values are ignored.
 
 ### Point groups
 
-The initial group operator is feature-only point-grid grouping. The source
+The initial group operator is feature-only point-grid grouping. For tile layers, the source
 union contains requested output tiles plus the contribution halo. Each source
 tile is scanned once in source-major order and publishes immutable
 `FeatureLayerPointGroupMember` values to canonical cells.
@@ -203,10 +388,16 @@ members deterministically, exposes the representative feature as root plus
 `$features`, and emits representative geometry with all participating feature
 IDs. Attribute grouping and multi-input grouping are intentionally deferred.
 
+For object layers, the source union is exactly the requested object set:
+there is no spatial halo. Grid membership is still computed from positions,
+but each group remains owned by its source object. Members from two objects
+never merge merely because they occupy the same grid cell. The output keeps
+the source object's anchor and depends only on that object.
+
 ### Relations
 
 Stored relation traversal records descriptors while scanning source roots.
-Missing cross-tile targets are fetched synchronously in sparse one-hop
+For tile layers, missing cross-tile targets are fetched synchronously in sparse one-hop
 resolution jobs. A cross-tile endpoint is copied into the origin output as a
 supporting feature entry; the target source tile is not automatically another
 output.
@@ -221,7 +412,7 @@ The relation root is overlaid with `$source`, `$target`, `$twoway`, and
 `$relationIndex`. `$relationIndex` is the stable descriptor ordinal within the
 source feature.
 
-`mergeTwoway` pairs reverse descriptors:
+For tile layers, `mergeTwoway` pairs reverse descriptors:
 
 - exact-root traversal is owned by the selected origin; the first explicit
   root wins if both endpoints are roots;
@@ -230,8 +421,16 @@ source feature.
   rather than temporarily reassigned;
 - cross-layer/level targets normally leave ownership at the source output.
 
+Object layers resolve only intra-object targets. Missing targets do not invoke
+locate or schedule another object/tile load, even if another requested object
+might contain the feature. Source references remain intact in the complete
+model, but unresolved relations do not become drawable subset rows. Generic
+two-way ownership compares `(mapId, layerId, partitionId, featureId)` rather
+than geographic southwest coordinates; exact-root traversal still belongs to
+the selected root. This avoids inventing a spatial owner for opaque IDs.
+
 Request order controls processing. Output stream order may differ.
-`filterId + generation + output MapTileKey` identifies a semantic output
+`filterId + generation + output MapPartitionKey` identifies a semantic output
 slot. The generation changes with filter semantics, not viewport movement or
 TTL refresh. Interactive clients send complete pending-output snapshots;
 mapget preserves overlapping active work and rejects results whose request no
@@ -268,6 +467,8 @@ returns successfully.
   bookkeeping, string-pool offsets, control/status frames, and
   `/interactive/payload` draining.
 - `tiles-request-json.cpp`: canonical request parser shared by both paths.
+- `object-discovery-handler.cpp`: bounded, ordered discovery batches; only validation and
+  scheduling run on the I/O thread, not datasource discovery.
 - `attachment-handler.cpp`: attachment validation, routing, ETags, and
   conditional responses.
 
@@ -319,9 +520,11 @@ zero TTL relies on omission or connection teardown.
 - request context/status/catalog controls;
 - end of stream.
 
-Protocol 4 is a clean major break: it removes the serialized subset delivery
-epoch introduced during protocol 3 development. Older subset payloads cannot
-be partially interpreted.
+Protocol 5 encodes a partition-kind tag followed by a 32-bit tile ID or a
+64-bit object ID in the common layer header. This breaks binary compatibility
+for tile payloads too: aliases and legacy JSON request fields do not preserve
+the old binary layout. Readers/writers must use matching protocol versions.
+The subset prelude has no delivery epoch (removed in protocol 4).
 
 HTTP clients send the highest known string ID per `stringPoolId`. Writers emit
 only the missing suffix; readers merge it into `StringPoolCache`. Persistent

@@ -16,7 +16,7 @@ namespace mapget
 {
 
 class Feature;
-class TileFeatureLayer;
+class PartitionFeatureLayer;
 
 /**
  * One explicitly inserted point in an interwoven attribute-point sequence.
@@ -25,9 +25,9 @@ class TileFeatureLayer;
  * the points that the source model inserts between those shape points, plus
  * their logical sequence index and optional source-data provenance.
  */
-class AttrPoint final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class AttrPoint final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     /** Return this point's zero-based index in the complete interwoven sequence. */
@@ -43,7 +43,7 @@ public:
     [[nodiscard]] nlohmann::json toJson() const override;
 
     explicit AttrPoint(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
     {
     }
 
@@ -87,16 +87,16 @@ protected:
 /**
  * Zero-overhead array view over the inserted points owned by one sequence.
  */
-class AttrPointArray final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class AttrPointArray final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     /** Return the inserted point at the requested array position. */
     [[nodiscard]] model_ptr<AttrPoint> attrPointAt(uint32_t index) const;
 
     explicit AttrPointArray(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
     {
     }
 
@@ -128,9 +128,9 @@ protected:
  * are implicit; only inserted AttrPoints are stored. Logical indices therefore
  * retain source-model semantics without duplicating the render geometry.
  */
-class AttrPointSequence final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+class AttrPointSequence final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     /** Return the feature ID whose geometry defines this sequence. */
@@ -182,7 +182,7 @@ public:
     [[nodiscard]] nlohmann::json toJson() const override;
 
     explicit AttrPointSequence(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
     {
     }
 
@@ -229,9 +229,9 @@ protected:
  * Compact JSON/SIMFIL reference to a shared AttrPointSequence definition.
  */
 class AttrPointSequenceReference final
-    : public simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureLayer;
 
 public:
     /** Resolve the referenced canonical sequence. */
@@ -241,7 +241,7 @@ public:
     [[nodiscard]] nlohmann::json toJson() const override;
 
     explicit AttrPointSequenceReference(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
     {
     }
 

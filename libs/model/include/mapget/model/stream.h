@@ -12,7 +12,7 @@ namespace mapget
 {
 
 /**
- * Protocol for binary streaming of TileLayer and associated
+ * Protocol for binary streaming of PartitionLayer and associated
  * StringPool dictionary objects. The general stream encoding is a simple
  * Version-Type-Length-Value one:
  * - The version (6b) indicates the protocol version which was used to
@@ -28,8 +28,10 @@ public:
     enum class MessageType : uint8_t {
         None = 0,
         StringPool = 1,
-        TileFeatureLayer = 2,
-        TileSourceDataLayer = 3,
+        PartitionFeatureLayer = 2,
+        PartitionSourceDataLayer = 3,
+        TileFeatureLayer = PartitionFeatureLayer,
+        TileSourceDataLayer = PartitionSourceDataLayer,
         /**
          * JSON-encoded status updates, e.g. for WebSocket /tiles.
          *
@@ -48,8 +50,9 @@ public:
          * Payload: UTF-8 JSON bytes (not null-terminated).
          */
         RequestContext = 6,
-        /** Binary TileSubsetLayer payload for server-evaluated filter streams. */
-        TileSubsetLayer = 7,
+        /** Binary PartitionSubsetLayer payload for server-evaluated filter streams. */
+        PartitionSubsetLayer = 7,
+        TileSubsetLayer = PartitionSubsetLayer,
         /**
          * JSON-encoded datasource catalog invalidation for interactive streams.
          *
@@ -65,12 +68,12 @@ public:
      * Protocol Version which parsed blobs must be compatible with.
      * Version History:
      * - Version 1.0:
-     *   + Added TileFeatureLayer Message
+     *   + Added PartitionFeatureLayer Message
      *   + Added StringPool Message
-     *   + Added TileSourceDataLayer Message
+     *   + Added PartitionSourceDataLayer Message
      *   + Added EndOfStream Message
      * - Version 1.1:
-     *   + Added errorCode field to TileLayer
+     *   + Added errorCode field to PartitionLayer
      *   + Added Status Message
      *   + Added LoadStateChange Message
      * - Version 1.2:
@@ -79,7 +82,7 @@ public:
      *   + Feature geometry reference may point directly to a Geometry
      *     (single-geometry fast-path) or to a GeometryCollection.
      * - Version 1.3:
-     *   + Added tile-level binary attachments to TileFeatureLayer.
+     *   + Added tile-level binary attachments to PartitionFeatureLayer.
      * - Version 1.4:
      *   + Added AABB and GltfNodeIndex geometry kinds.
      *   + Added point-buffer-backed GLTF node-index geometry storage.
@@ -102,24 +105,28 @@ public:
      *   - Removed staged tile loading and feature LOD.
      *   - Replaced geometry stage bytes with layer-local semantic name indices.
      *   - Renamed datasource node identity to string-pool identity.
-     *   - Replaced TileSearchResultLayer with multi-channel TileSubsetLayer.
+     *   - Replaced TileSearchResultLayer with multi-channel PartitionSubsetLayer.
      * - Version 3.1:
-     *   + Added per-output delivery epochs to TileSubsetLayer.
+     *   + Added per-output delivery epochs to PartitionSubsetLayer.
      * - Version 3.2:
      *   + Added shared AttrPointSequence definitions and AttrPoint index/range
      *     validity descriptions.
      * - Version 3.3:
      *   + Added tile-scoped feature-ID expressions to portable locate selectors.
      * - Version 4.0:
-     *   - Removed delivery epochs from TileSubsetLayer. Interactive delivery
+     *   - Removed delivery epochs from PartitionSubsetLayer. Interactive delivery
      *     ownership is now represented by pending snapshots and handoff state.
+     * - Version 5.0:
+     *   + Tagged tile/object partition identities in layers and subset dependencies.
+     * - Version 5.1:
+     *   - Feature ID index entries no longer require sorted wire order.
      */
-    static constexpr Version CurrentProtocolVersion{4, 0, 0};
+    static constexpr Version CurrentProtocolVersion{5, 1, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
 
-    /** The Reader turns bytes into TileLayer objects. */
+    /** The Reader turns bytes into PartitionLayer objects. */
     struct Reader
     {
         /**
@@ -130,7 +137,7 @@ public:
          */
         Reader(
             LayerInfoResolveFun layerInfoProvider,
-            std::function<void(TileLayer::Ptr)> onParsedLayer,
+            std::function<void(PartitionLayer::Ptr)> onParsedLayer,
             std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr,
             std::function<void(MessageType, std::string_view)> onControlMessage = {});
 
@@ -174,12 +181,12 @@ public:
         size_t readOffset_ = 0;
         LayerInfoResolveFun layerInfoProvider_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
-        std::function<void(TileLayer::Ptr)> onParsedLayer_;
+        std::function<void(PartitionLayer::Ptr)> onParsedLayer_;
         std::function<void(MessageType, std::string_view)> onControlMessage_;
     };
 
     /**
-     * The Writer turns TileLayer objects and associated StringPools into bytes.
+     * The Writer turns PartitionLayer objects and associated StringPools into bytes.
      */
     struct Writer
     {
@@ -201,7 +208,7 @@ public:
             bool differentialStringUpdates = true);
 
         /** Serialize a tile layer and the required part of a StringPool. */
-        void write(TileLayer::Ptr const& tileLayer);
+        void write(PartitionLayer::Ptr const& tileLayer);
 
         /** Send a JSON status message through the binary stream. */
         void sendStatus(std::string statusJson);

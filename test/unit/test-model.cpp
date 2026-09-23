@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -65,7 +66,7 @@ TEST_CASE(
         "type": "SourceData"
     })"_json);
     auto strings = std::make_shared<StringPool>("SourceDataScopeNode");
-    auto tile = std::make_shared<TileSourceDataLayer>(
+    auto tile = std::make_shared<PartitionSourceDataLayer>(
         TileId{},
         "SourceDataScopeNode",
         "SourceDataScopeMap",
@@ -92,21 +93,20 @@ TEST_CASE(
         offsets);
     writer.write(tile);
 
-    TileSourceDataLayer::Ptr parsed;
+    PartitionSourceDataLayer::Ptr parsed;
     TileLayerStream::Reader reader(
-        [&](std::string_view const&, std::string_view const&) {
-            return layerInfo;
-        },
-        [&](TileLayer::Ptr parsedLayer) {
-            parsed = std::dynamic_pointer_cast<TileSourceDataLayer>(parsedLayer);
-        });
+        [&](std::string_view const&, std::string_view const&) { return layerInfo; },
+        [&](PartitionLayer::Ptr parsedLayer)
+        { parsed = std::dynamic_pointer_cast<PartitionSourceDataLayer>(parsedLayer); });
     reader.read(streamBytes);
 
     REQUIRE(parsed);
-    auto parsedStructural = parsed->resolve<SourceDataCompoundNode>(
-        simfil::ModelNodeAddress{TileSourceDataLayer::Compound, 0});
-    auto parsedPayload = parsed->resolve<SourceDataCompoundNode>(
-        simfil::ModelNodeAddress{TileSourceDataLayer::Compound, 1});
+    auto parsedStructural = parsed->resolve<SourceDataCompoundNode>(simfil::ModelNodeAddress{
+        PartitionSourceDataLayer::Compound,
+        0});
+    auto parsedPayload = parsed->resolve<SourceDataCompoundNode>(simfil::ModelNodeAddress{
+        PartitionSourceDataLayer::Compound,
+        1});
     REQUIRE_FALSE(parsedStructural->isSourceDataAddressScope());
     REQUIRE(parsedPayload->isSourceDataAddressScope());
     REQUIRE(parsedPayload->sourceDataAddress().u64() == SourceDataAddress{32, 64}.u64());
@@ -179,8 +179,8 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     // Create empty shared autofilled field-name dictionary
     auto strings = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
-    // Create a basic TileFeatureLayer
-    auto tile = std::make_shared<TileFeatureLayer>(
+    // Create a basic PartitionFeatureLayer
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "TastyTomatoSaladNode",
         "Tropico",
@@ -356,18 +356,19 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         auto serializedTile = tileBytes.str();
         std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
 
-        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+        auto deserializedTile = std::make_shared<PartitionFeatureLayer>(
             tileBuffer,
-            [&](auto&& mapName, auto&& layerName){
+            [&](auto&& mapName, auto&& layerName)
+            {
                 REQUIRE(mapName == "Tropico");
                 REQUIRE(layerName == "WayLayer");
                 return layerInfo;
             },
-            [&](auto&& stringPoolId){
+            [&](auto&& stringPoolId)
+            {
                 REQUIRE(stringPoolId == "TastyTomatoSaladNode");
                 return strings;
-            }
-        );
+            });
 
         REQUIRE(deserializedTile->tileId() == tile->tileId());
         REQUIRE(deserializedTile->stringPoolId() == tile->stringPoolId());
@@ -388,8 +389,9 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
             REQUIRE(feature->id()->toString().substr(0, 16) == "Way.TheBestArea.");
         }
 
-        auto deserializedFeatureId = deserializedTile->resolve<FeatureId>(
-            simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::ExternalFeatureIds, 0});
+        auto deserializedFeatureId = deserializedTile->resolve<FeatureId>(simfil::ModelNodeAddress{
+            PartitionFeatureLayer::ColumnId::ExternalFeatureIds,
+            0});
         REQUIRE(deserializedFeatureId);
         auto const deserializedKeyValuePairs = deserializedFeatureId->keyValuePairs();
         REQUIRE(deserializedKeyValuePairs.size() == 3);
@@ -401,7 +403,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(std::get<std::string_view>(deserializedKeyValuePairs[2].second) == "0123456789abcdef");
 
         auto deserializedExternalFeatureId = deserializedTile->resolve<FeatureId>(
-            simfil::ModelNodeAddress{TileFeatureLayer::ColumnId::ExternalFeatureIds, 2});
+            simfil::ModelNodeAddress{PartitionFeatureLayer::ColumnId::ExternalFeatureIds, 2});
         REQUIRE(deserializedExternalFeatureId);
         REQUIRE(deserializedExternalFeatureId->toString() == "Way.7.11.fedcba9876543210");
         REQUIRE(deserializedExternalFeatureId->mapId() == "ValidationMap");
@@ -442,11 +444,12 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         // always waits until the full message is received before trying
         // to parse an object.
 
-        std::vector<TileFeatureLayer::Ptr> readTiles;
+        std::vector<PartitionFeatureLayer::Ptr> readTiles;
         TileLayerStream::Reader reader{
             [&](auto&& mapId, auto&& layerId) { return layerInfo; },
-            [&](auto&& layerPtr) {
-                if (auto featureLayer = std::dynamic_pointer_cast<TileFeatureLayer>(layerPtr))
+            [&](auto&& layerPtr)
+            {
+                if (auto featureLayer = std::dynamic_pointer_cast<PartitionFeatureLayer>(layerPtr))
                     readTiles.push_back(featureLayer);
             },
         };
@@ -571,15 +574,10 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         auto serializedTile = tileBytes.str();
         std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
 
-        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+        auto deserializedTile = std::make_shared<PartitionFeatureLayer>(
             tileBuffer,
-            [&](auto&& mapName, auto&& layerName){
-                return layerInfo;
-            },
-            [&](auto&& stringPoolId){
-                return strings;
-            }
-        );
+            [&](auto&& mapName, auto&& layerName) { return layerInfo; },
+            [&](auto&& stringPoolId) { return strings; });
 
         REQUIRE(deserializedTile->error() == tile->error());
         REQUIRE(deserializedTile->error().value() == "Connection timeout");
@@ -612,7 +610,7 @@ TEST_CASE("AttributeLayer duplicate names retain instance identity in GeoJSON", 
         ]
     })"_json);
     auto strings = std::make_shared<StringPool>("test-node");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromValue(545555028),
         "test-node",
         "TestMap",
@@ -661,7 +659,7 @@ TEST_CASE("AttributeLayer duplicate names retain instance identity in GeoJSON", 
     auto collected = collectLayerAttributeValues(layers);
     REQUIRE(collected.size() == 4);
 
-    auto imported = std::make_shared<TileFeatureLayer>(
+    auto imported = std::make_shared<PartitionFeatureLayer>(
         TileId::fromValue(545555028),
         "test-node-import",
         "TestMap",
@@ -694,7 +692,7 @@ TEST_CASE("FeatureLayer stores geometry source-data refs compactly for singleton
     })"_json);
 
     auto strings = std::make_shared<StringPool>("SourceDataRefNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "SourceDataRefNode",
         "SourceDataRefMap",
@@ -753,14 +751,10 @@ TEST_CASE("FeatureLayer stores geometry source-data refs compactly for singleton
         auto serializedTile = tileBytes.str();
         std::vector<uint8_t> tileBuffer(serializedTile.begin(), serializedTile.end());
 
-        auto deserializedTile = std::make_shared<TileFeatureLayer>(
+        auto deserializedTile = std::make_shared<PartitionFeatureLayer>(
             tileBuffer,
-            [&](auto&&, auto&&) {
-                return layerInfo;
-            },
-            [&](auto&&) {
-                return strings;
-            });
+            [&](auto&&, auto&&) { return layerInfo; },
+            [&](auto&&) { return strings; });
 
         auto deserializedFeature = deserializedTile->at(0);
         REQUIRE(deserializedFeature);
@@ -811,7 +805,7 @@ TEST_CASE("FeatureLayer clone preserves source-data references",
         }]
     })"_json);
     auto sourceStrings = std::make_shared<StringPool>("CloneSourceNode");
-    auto source = std::make_shared<TileFeatureLayer>(
+    auto source = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "CloneSourceNode",
         "CloneMap",
@@ -852,13 +846,13 @@ TEST_CASE("FeatureLayer clone preserves source-data references",
 
     auto targetStrings = std::make_shared<StringPool>("CloneTargetNode");
     targetStrings->emplace("ForceDifferentStringIds").value();
-    auto target = std::make_shared<TileFeatureLayer>(
+    auto target = std::make_shared<PartitionFeatureLayer>(
         source->tileId(),
         "CloneTargetNode",
         "CloneMap",
         layerInfo,
         targetStrings);
-    TileFeatureLayer::CloneCache cache;
+    PartitionFeatureLayer::CloneCache cache;
     target->clone(
         cache,
         source,
@@ -909,6 +903,84 @@ TEST_CASE("FeatureLayer clone preserves source-data references",
         ["$mapgetAttrPointSequence"] == 2);
 }
 
+TEST_CASE("FeatureLayer clone owns its byte-array values", "[test.featurelayer][byte-array-clone]")
+{
+    auto const hex = GENERATE("", "012b20825d4a00d50000000000000000", "ff00807f01");
+    auto const seedDestination = GENERATE(false, true);
+    CAPTURE(hex, seedDestination);
+    auto const bytes = simfil::ByteArray::fromHex(hex).value();
+    auto layerInfo = LayerInfo::fromJson(R"({
+        "layerId": "WayLayer",
+        "type": "Features",
+        "featureTypes": [{
+            "name": "Way",
+            "uniqueIdCompositions": [[{"partId": "wayId", "datatype": "U32"}]]
+        }]
+    })"_json);
+    auto strings = std::make_shared<StringPool>("CloneTargetNode");
+    auto target = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromWgs84(42., 11., 13),
+        "CloneTargetNode",
+        "CloneMap",
+        layerInfo,
+        strings);
+    if (seedDestination) {
+        // Reusing the source's byte-array index must not alias an unrelated destination value.
+        target->newValue(simfil::ByteArray{"unrelated bytes"});
+    }
+
+    nlohmann::json expected;
+    {
+        auto source = std::make_shared<PartitionFeatureLayer>(
+            target->tileId(),
+            "CloneSourceNode",
+            "CloneMap",
+            layerInfo,
+            std::make_shared<StringPool>("CloneSourceNode"));
+        auto feature = source->newFeature("Way", {{"wayId", int64_t{42}}});
+        auto value = source->newValue(bytes);
+        feature->attributes()->addField("blob", value);
+        auto values = source->newArray(2, true);
+        values->append(value);
+        values->append(value);
+        feature->attributeLayers()
+            ->newLayer("Attributes")
+            ->newAttribute("Identifier")
+            ->addField("values", values);
+        expected = feature->toJson();
+
+        PartitionFeatureLayer::CloneCache cache;
+        target->clone(cache, source, *feature, "Way", {{"wayId", int64_t{42}}});
+    }
+
+    // All source views and their model are gone: the clone must own the scalar and nested bytes.
+    auto feature = target->at(0);
+    auto value = feature->attributesOrNull()->get("blob").value();
+    REQUIRE(value->type() == simfil::ValueType::Bytes);
+    CHECK(std::get<simfil::ByteArray>(value->value()) == bytes);
+    auto values =
+        feature->attributeLayersOrNull()
+            ->at(0)
+            ->get(strings->get("Identifier"))
+            ->get(strings->get("values"));
+    REQUIRE(values->size() == 2);
+    CHECK(values->at(0)->addr() == value->addr());
+    CHECK(values->at(1)->addr() == value->addr());
+    CHECK(feature->toJson() == expected);
+
+    std::stringstream stream;
+    REQUIRE(target->write(stream));
+    auto serialized = stream.str();
+    auto restored = std::make_shared<PartitionFeatureLayer>(
+        std::vector<uint8_t>(serialized.begin(), serialized.end()),
+        [&](auto const&, auto const&) { return layerInfo; },
+        [&](auto const&) { return strings; });
+    CHECK(restored->at(0)->toJson() == expected);
+    auto restoredValue = restored->at(0)->attributesOrNull()->get("blob").value();
+    REQUIRE(restoredValue->type() == simfil::ValueType::Bytes);
+    CHECK(std::get<simfil::ByteArray>(restoredValue->value()) == bytes);
+}
+
 TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test.feature.id.optionals]")
 {
     auto layerInfo = LayerInfo::fromJson(R"({
@@ -927,7 +999,7 @@ TEST_CASE("Feature IDs infill optional primary parts", "[test.featurelayer][test
     })"_json);
 
     auto strings = std::make_shared<StringPool>("FeatureOptionalIdNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "FeatureOptionalIdNode",
         "Tropico",
@@ -973,7 +1045,7 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
     })"_json);
 
     auto strings = std::make_shared<StringPool>("ValidityNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "ValidityNode",
         "Tropico",
@@ -1033,7 +1105,7 @@ TEST_CASE("Feature-id validities expose external map references", "[test.feature
     })"_json);
 
     auto strings = std::make_shared<StringPool>("FeatureRefValidityNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "FeatureRefValidityNode",
         "Tropico",
@@ -1075,7 +1147,7 @@ TEST_CASE("Simple validities upgrade only their owning collection slot", "[test.
     })"_json);
 
     auto strings = std::make_shared<StringPool>("SimpleValidityUpgradeIsolation");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "SimpleValidityUpgradeIsolation",
         "Tropico",
@@ -1128,7 +1200,7 @@ TEST_CASE("Semantic feature transition validities expose semantic nodes", "[test
     })"_json);
 
     auto strings = std::make_shared<StringPool>("TransitionValidityNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "TransitionValidityNode",
         "Tropico",
@@ -1196,7 +1268,7 @@ TEST_CASE("Semantic feature transitions preserve cross-tile endpoint IDs", "[tes
     })"_json);
 
     auto strings = std::make_shared<StringPool>("CrossTileTransitionNode");
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "CrossTileTransitionNode",
         "Tropico",
@@ -1252,7 +1324,7 @@ TEST_CASE("Validity GeoJSON exposes semantic geometry names", "[test.featurelaye
         ]
     })"_json);
 
-    auto tile = std::make_shared<TileFeatureLayer>(
+    auto tile = std::make_shared<PartitionFeatureLayer>(
         TileId::fromWgs84(42., 11., 13),
         "StageValidityNode",
         "Tropico",

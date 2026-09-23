@@ -74,9 +74,9 @@ auto makeLayer()
     // Create empty shared autofilled field-name dictionary
     auto strings = std::make_shared<StringPool>("TastyTomatoSaladNode");
 
-    // Create a basic TileFeatureLayer
-    auto tile = std::make_shared<TileFeatureLayer>(
-        TileId::fromWgs84(1, 2,3),
+    // Create a basic PartitionFeatureLayer
+    auto tile = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromWgs84(1, 2, 3),
         "TastyTomatoSaladNode",
         "Tropico",
         layerInfo,

@@ -27,6 +27,9 @@ using namespace mapget;
 
 struct TestDataSource : public DataSource
 {
+    /** Resource whose release makes polymorphic destruction observable. */
+    std::shared_ptr<int> retainedResource;
+
     DataSourceInfo info() override
     {
         return DataSourceInfo::fromJson(R"(
@@ -37,9 +40,21 @@ struct TestDataSource : public DataSource
         )"_json);
     };
 
-    void fill(TileFeatureLayer::Ptr const&) override {};
-    void fill(TileSourceDataLayer::Ptr const&) override {};
+    void fill(PartitionFeatureLayer::Ptr const&) override{};
+    void fill(PartitionSourceDataLayer::Ptr const&) override{};
 };
+
+TEST_CASE("DataSource destruction releases derived resources", "[DataSource]")
+{
+    auto resource = std::make_shared<int>(42);
+    std::weak_ptr<int> observer = resource;
+    auto derived = std::make_unique<TestDataSource>();
+    derived->retainedResource = std::move(resource);
+    std::unique_ptr<DataSource> source = std::move(derived);
+    REQUIRE_FALSE(observer.expired());
+    source.reset();
+    REQUIRE(observer.expired());
+}
 
 struct NamedTestDataSource : public DataSource
 {
@@ -53,8 +68,8 @@ struct NamedTestDataSource : public DataSource
         }));
     }
 
-    void fill(TileFeatureLayer::Ptr const&) override {};
-    void fill(TileSourceDataLayer::Ptr const&) override {};
+    void fill(PartitionFeatureLayer::Ptr const&) override{};
+    void fill(PartitionSourceDataLayer::Ptr const&) override{};
 
     std::string mapId_;
 };

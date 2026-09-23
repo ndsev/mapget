@@ -31,7 +31,7 @@ std::shared_ptr<LayerInfo> subsetLayerInfo()
 }
 
 model_ptr<GeometryCollection> pointGeometry(
-    TileSubsetLayer& layer,
+    PartitionSubsetLayer& layer,
     double x,
     std::optional<std::string_view> name = std::nullopt)
 {
@@ -43,7 +43,7 @@ model_ptr<GeometryCollection> pointGeometry(
     return collection;
 }
 
-model_ptr<GeometryCollection> transitionGeometry(TileSubsetLayer& layer)
+model_ptr<GeometryCollection> transitionGeometry(PartitionSubsetLayer& layer)
 {
     auto collection = layer.newGeometryCollection(1, true);
     auto geometry = layer.newGeometry(GeomType::Line, 5, true);
@@ -63,12 +63,12 @@ model_ptr<GeometryCollection> transitionGeometry(TileSubsetLayer& layer)
 } // namespace
 
 TEST_CASE(
-    "TileSubsetLayer shares immutable empty projected-value arrays",
+    "PartitionSubsetLayer shares immutable empty projected-value arrays",
     "[test.subsetlayer]")
 {
     auto info = subsetLayerInfo();
     auto strings = std::make_shared<StringPool>("EmptySubsetValues");
-    auto subset = std::make_shared<TileSubsetLayer>(
+    auto subset = std::make_shared<PartitionSubsetLayer>(
         TileId::fromWgs84(11.0, 42.0, 13),
         "EmptySubsetValues",
         "TestMap",
@@ -93,44 +93,33 @@ TEST_CASE(
     REQUIRE(second->values()->addr() == first->values()->addr());
 }
 
-TEST_CASE(
-    "TileSubsetLayer owns channel schemas and typed entries",
-    "[test.subsetlayer]")
+TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.subsetlayer]")
 {
     auto info = subsetLayerInfo();
     auto strings = std::make_shared<StringPool>("SubsetNode");
     auto tileId = TileId::fromWgs84(11.0, 42.0, 13);
 
-    auto source = std::make_shared<TileFeatureLayer>(
-        tileId,
-        "SubsetNode",
-        "TestMap",
-        info,
-        strings);
+    auto source =
+        std::make_shared<PartitionFeatureLayer>(tileId, "SubsetNode", "TestMap", info, strings);
     source->setInfo("Load/Backend#us", 42);
     source->setTimestamp(
         std::chrono::system_clock::time_point{1'725'000'000s});
     source->setTtl(4500ms);
+    source->setLegalInfo("Source copyright and terms: https://example.org/terms");
 
-    auto subset = std::make_shared<TileSubsetLayer>(
-        tileId,
-        "SubsetNode",
-        "TestMap",
-        info,
-        strings,
-        "styled-roads",
-        7);
+    auto subset = std::make_shared<
+        PartitionSubsetLayer>(tileId, "SubsetNode", "TestMap", info, strings, "styled-roads", 7);
     subset->adoptSourceInfo(*source);
     subset->setGlbAttachmentName("road-mesh");
 
     auto haloTile = tileId.neighbour(1, 0);
     subset->setDependencies({
         {
-            MapTileKey(LayerType::Features, "TestMap", "Road", haloTile),
+            MapPartitionKey(LayerType::Features, "TestMap", "Road", haloTile),
             3,
         },
         {
-            MapTileKey(LayerType::Features, "TestMap", "Road", tileId),
+            MapPartitionKey(LayerType::Features, "TestMap", "Road", tileId),
             11,
         },
     });
@@ -251,6 +240,7 @@ TEST_CASE(
     REQUIRE(subset->generation() == 7);
     REQUIRE(subset->timestamp() == source->timestamp());
     REQUIRE(subset->ttl() == source->ttl());
+    REQUIRE(subset->legalInfo() == source->legalInfo());
     REQUIRE(subset->size() == 4);
     REQUIRE(subset->info()["Load/Backend#us"] == 42);
     REQUIRE(subset->localSourceFeatureCount() == 11);
@@ -309,7 +299,7 @@ TEST_CASE(
     std::vector<uint8_t> bytes(bytesString.begin(), bytesString.end());
 
     size_t identityBytes = 0;
-    auto identity = TileSubsetLayer::readFilterIdentity(
+    auto identity = PartitionSubsetLayer::readFilterIdentity(
         bytes,
         [&](auto const&, auto const&) { return info; },
         &identityBytes);
@@ -319,7 +309,7 @@ TEST_CASE(
     REQUIRE(identityBytes < bytes.size());
 
     size_t metadataBytes = 0;
-    auto metadata = TileSubsetLayer::readMetadata(
+    auto metadata = PartitionSubsetLayer::readMetadata(
         bytes,
         [&](auto const&, auto const&) { return info; },
         &metadataBytes);
@@ -330,7 +320,7 @@ TEST_CASE(
     REQUIRE(metadataBytes > identityBytes);
     REQUIRE(metadataBytes < bytes.size());
 
-    auto parsed = std::make_shared<TileSubsetLayer>(
+    auto parsed = std::make_shared<PartitionSubsetLayer>(
         bytes,
         [&](auto const&, auto const&) { return info; },
         [&](auto const&) { return strings; });
@@ -338,6 +328,7 @@ TEST_CASE(
     REQUIRE(parsed->generation() == subset->generation());
     REQUIRE(parsed->timestamp() == source->timestamp());
     REQUIRE(parsed->ttl() == source->ttl());
+    REQUIRE(parsed->legalInfo() == source->legalInfo());
     REQUIRE(parsed->toJson() == subset->toJson());
     REQUIRE(parsed->at(2)->scope() == Scope::Relation);
     REQUIRE(parsed->at(2)->featureEntryCount() == 2);
@@ -352,28 +343,23 @@ TEST_CASE(
         offsets);
     writer.write(subset);
 
-    TileSubsetLayer::Ptr streamed;
+    PartitionSubsetLayer::Ptr streamed;
     TileLayerStream::Reader reader(
-        [&](auto const&, auto const&) {
-            return info;
-        },
-        [&](TileLayer::Ptr layer) {
-            streamed =
-                std::dynamic_pointer_cast<TileSubsetLayer>(
-                    std::move(layer));
-        });
+        [&](auto const&, auto const&) { return info; },
+        [&](PartitionLayer::Ptr layer)
+        { streamed = std::dynamic_pointer_cast<PartitionSubsetLayer>(std::move(layer)); });
     reader.read(framedBytes);
     REQUIRE(streamed);
     REQUIRE(streamed->toJson() == subset->toJson());
 }
 
 TEST_CASE(
-    "TileSubsetLayer round-trips semantic transition metadata",
+    "PartitionSubsetLayer round-trips semantic transition metadata",
     "[test.subsetlayer][transition]")
 {
     auto info = subsetLayerInfo();
     auto strings = std::make_shared<StringPool>("TransitionSubset");
-    auto subset = std::make_shared<TileSubsetLayer>(
+    auto subset = std::make_shared<PartitionSubsetLayer>(
         TileId::fromWgs84(11.0, 42.0, 13),
         "TransitionSubset",
         "TestMap",
@@ -414,7 +400,7 @@ TEST_CASE(
     std::stringstream output;
     REQUIRE(subset->write(output).has_value());
     auto const serialized = output.str();
-    auto parsed = std::make_shared<TileSubsetLayer>(
+    auto parsed = std::make_shared<PartitionSubsetLayer>(
         std::vector<uint8_t>(serialized.begin(), serialized.end()),
         [&](auto const&, auto const&) { return info; },
         [&](auto const&) { return strings; });

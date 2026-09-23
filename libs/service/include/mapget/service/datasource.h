@@ -2,6 +2,7 @@
 
 #include "cache.h"
 #include "locate.h"
+#include "object-discovery.h"
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatalayer.h"
@@ -40,7 +41,7 @@ bool addAuthHeaderRegexMatchOption(
  */
 struct AttachmentRequest
 {
-    MapTileKey tileKey_;
+    MapPartitionKey tileKey_;
     std::string name_;
     std::optional<std::string> sourceId_;
 };
@@ -64,6 +65,9 @@ class DataSource
 public:
     using Ptr = std::shared_ptr<DataSource>;
 
+    /** Release derived datasource resources when owned through the base interface. */
+    virtual ~DataSource() = default;
+
     /**
      * Method which is called by a service to determine which map layers
      * can be served by this DataSource, and how many concurrent jobs this
@@ -78,14 +82,14 @@ public:
      * parallel for a primary datasource by the service's homogeneous worker
      * pool. Add-on implementations must tolerate the matching primary source's
      * concurrency because their fills are composed inside those jobs.
-     * @param featureTile A TileFeatureLayer object which this data source
+     * @param featureTile A PartitionFeatureLayer object which this data source
      *  should fill according the available data. If any error occurs
-     *  while doing so, the data source may use TileLayer::setError.
+     *  while doing so, the data source may use PartitionLayer::setError.
      *  To store any extra information of interest such as timings or sizes,
-     *  TileLayer::setInfo() may be used.
+     *  PartitionLayer::setInfo() may be used.
      */
-    virtual void fill(TileFeatureLayer::Ptr const& featureTile) = 0;
-    virtual void fill(TileSourceDataLayer::Ptr const& sourceData) = 0;
+    virtual void fill(PartitionFeatureLayer::Ptr const& featureTile) = 0;
+    virtual void fill(PartitionSourceDataLayer::Ptr const& sourceData) = 0;
 
     /**
      * Plan where and how the requested identity can be resolved.
@@ -96,6 +100,16 @@ public:
      * ordinary cache/coalescing path and applies each portable selector.
      */
     virtual std::vector<LocateCandidate> locate(LocateRequest const& req);
+
+    /**
+     * Return object associations at the layer's tileAssociationLevel, without loading payloads.
+     * The default reports Unavailable, distinct from Success with an empty object list.
+     * Service calls run on shared workers under the same datasource permits as fill(), and may
+     * overlap other datasource calls up to maxParallelJobs. Keep shared state thread-safe and
+     * bound backend I/O: running discovery is not interruptible by the service.
+     * Exceptions and invalid results become Failed responses at the service boundary.
+     */
+    virtual ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request);
 
     /**
      * Produce or return one named tile attachment.
@@ -116,11 +130,11 @@ public:
     [[nodiscard]] virtual std::optional<uint64_t> estimatedRetainedMemoryBytes() const;
 
     /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
-    virtual TileLayer::Ptr
-    get(MapTileKey const& k,
+    virtual PartitionLayer::Ptr
+    get(MapPartitionKey const& k,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        TileLayer::LoadStateCallback loadStateCallback = {});
+        PartitionLayer::LoadStateCallback loadStateCallback = {});
 
     /** Add an authorization header-regex pair for this datasource. */
     void requireAuthHeaderRegexMatchOption(std::string header, std::regex re);
@@ -142,7 +156,7 @@ public:
 
     /** Called when a cached tile was present but expired. Default no-op. */
     virtual void onCacheExpired(
-        const MapTileKey& /*tileKey*/,
+        const MapPartitionKey& /*tileKey*/,
         std::chrono::system_clock::time_point /*expiredAt*/)
     {
         // Nothing to do.

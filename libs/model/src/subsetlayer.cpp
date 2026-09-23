@@ -59,7 +59,7 @@ struct IssueWire
 };
 
 simfil::ArrayIndex idPartValuesToArrayIndex(
-    TileSubsetLayer& layer,
+    PartitionSubsetLayer& layer,
     std::vector<IdPart> const& composition,
     KeyValueViewPairs const& idParts)
 {
@@ -186,7 +186,7 @@ void readWriteIssueWire(S& serializer, IssueWire& issue)
     serializer.value8b(issue.occurrenceCount_);
 }
 
-model_ptr<Array> arrayAt(TileSubsetLayer const& layer, simfil::ArrayIndex index)
+model_ptr<Array> arrayAt(PartitionSubsetLayer const& layer, simfil::ArrayIndex index)
 {
     if (index == simfil::InvalidArrayIndex) {
         return {};
@@ -235,10 +235,7 @@ FilterTrace::FilterTrace(
     simfil::ModelConstPtr pool,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<4, FilterTrace, TileSubsetLayer>(
-          std::move(pool),
-          address,
-          key),
+    : simfil::ProceduralObject<4, FilterTrace, PartitionSubsetLayer>(std::move(pool), address, key),
       data_(data)
 {
     fields_.emplace_back(StringPool::NameStr, [](FilterTrace const& self) {
@@ -291,10 +288,7 @@ FeatureEntry::FeatureEntry(
     simfil::ModelConstPtr pool,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(
-          std::move(pool),
-          address,
-          key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(std::move(pool), address, key),
       data_(data)
 {
 }
@@ -372,10 +366,7 @@ AttributeValidityEntry::AttributeValidityEntry(
     simfil::ModelConstPtr pool,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(
-          std::move(pool),
-          address,
-          key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(std::move(pool), address, key),
       data_(data)
 {
 }
@@ -598,10 +589,7 @@ RelationEntry::RelationEntry(
     simfil::ModelConstPtr pool,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(
-          std::move(pool),
-          address,
-          key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(std::move(pool), address, key),
       data_(data)
 {
 }
@@ -737,10 +725,7 @@ GroupEntry::GroupEntry(
     simfil::ModelConstPtr pool,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(
-          std::move(pool),
-          address,
-          key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(std::move(pool), address, key),
       data_(data)
 {
 }
@@ -835,10 +820,7 @@ TileSubsetChannel::TileSubsetChannel(
     simfil::ModelConstPtr pool,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(
-          std::move(pool),
-          address,
-          key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(std::move(pool), address, key),
       data_(data)
 {
 }
@@ -1226,35 +1208,41 @@ bool TileSubsetChannel::iterate(IterCallback const& callback) const
     return true;
 }
 
-TileSubsetLayer::TileSubsetLayer(
-    TileId tileId,
+PartitionSubsetLayer::PartitionSubsetLayer(
+    PartitionId tileId,
     std::string const& stringPoolId,
     std::string const& mapId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::shared_ptr<simfil::StringPool> const& strings,
     std::string filterId,
     uint64_t generation)
-    : TileFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
-      geometryAnchor_(tileId.centerWgs84()),
+    : PartitionFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
+      geometryAnchor_(
+          tileId.kind() == PartitionKind::Tile ?
+              tileId.tileId().centerWgs84() :
+              std::pair<double, double>{}),
       filterId_(std::move(filterId)),
       generation_(generation)
 {
 }
 
-TileSubsetLayer::TileSubsetLayer(
+PartitionSubsetLayer::PartitionSubsetLayer(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
     StringPoolResolveFun const& stringPoolGetter)
-    : TileFeatureModelLayerBase(
+    : PartitionFeatureModelLayerBase(
           input,
           layerInfoResolveFun,
           stringPoolGetter,
           &deserializationOffsetBytes_),
-      geometryAnchor_(tileId_.centerWgs84())
+      geometryAnchor_(
+          partitionId_.kind() == PartitionKind::Tile ?
+              partitionId_.tileId().centerWgs84() :
+              std::pair<double, double>{})
 {
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
-        raise("Failed to read TileSubsetLayer: invalid deserialization offset.");
+        raise("Failed to read PartitionSubsetLayer: invalid deserialization offset.");
     }
     bitsery::Deserializer<Adapter> serializer(Adapter(
         input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
@@ -1300,7 +1288,7 @@ TileSubsetLayer::TileSubsetLayer(
 
     if (serializer.adapter().error() != bitsery::ReaderError::NoError) {
         raiseFmt(
-            "Failed to read TileSubsetLayer: Error {}",
+            "Failed to read PartitionSubsetLayer: Error {}",
             static_cast<std::underlying_type_t<bitsery::ReaderError>>(
                 serializer.adapter().error()));
     }
@@ -1308,7 +1296,7 @@ TileSubsetLayer::TileSubsetLayer(
     dependencies_.reserve(dependencyWire.size());
     for (auto&& dependency : dependencyWire) {
         dependencies_.push_back({
-            MapTileKey(dependency.sourceTileKey_),
+            MapPartitionKey(dependency.sourceTileKey_),
             dependency.sourceFeatureCount_,
         });
     }
@@ -1331,18 +1319,18 @@ TileSubsetLayer::TileSubsetLayer(
     }
 }
 
-TileSubsetLayer::~TileSubsetLayer() = default;
+PartitionSubsetLayer::~PartitionSubsetLayer() = default;
 
-FilterIdentity TileSubsetLayer::readFilterIdentity(
+FilterIdentity PartitionSubsetLayer::readFilterIdentity(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
     size_t* bytesRead)
 {
     size_t offset = 0;
-    TileLayer base(input, layerInfoResolveFun, &offset);
+    PartitionLayer base(input, layerInfoResolveFun, &offset);
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (offset > input.size()) {
-        raise("Failed to read TileSubsetLayer identity: invalid base-layer offset.");
+        raise("Failed to read PartitionSubsetLayer identity: invalid base-layer offset.");
     }
     bitsery::Deserializer<Adapter> serializer(Adapter(
         input.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -1351,7 +1339,7 @@ FilterIdentity TileSubsetLayer::readFilterIdentity(
     serializer.text1b(result.filterId_, std::numeric_limits<uint32_t>::max());
     serializer.value8b(result.generation_);
     if (serializer.adapter().error() != bitsery::ReaderError::NoError) {
-        raise("Failed to read TileSubsetLayer identity.");
+        raise("Failed to read PartitionSubsetLayer identity.");
     }
     if (bytesRead) {
         *bytesRead = offset + serializer.adapter().currentReadPos();
@@ -1359,7 +1347,7 @@ FilterIdentity TileSubsetLayer::readFilterIdentity(
     return result;
 }
 
-TileSubsetLayerMetadata TileSubsetLayer::readMetadata(
+TileSubsetLayerMetadata PartitionSubsetLayer::readMetadata(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
     size_t* bytesRead)
@@ -1373,7 +1361,7 @@ TileSubsetLayerMetadata TileSubsetLayer::readMetadata(
 
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (offset > input.size()) {
-        raise("Failed to read TileSubsetLayer metadata: invalid prelude offset.");
+        raise("Failed to read PartitionSubsetLayer metadata: invalid prelude offset.");
     }
     bitsery::Deserializer<Adapter> serializer(Adapter(
         input.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -1409,13 +1397,13 @@ TileSubsetLayerMetadata TileSubsetLayer::readMetadata(
     }
 
     if (serializer.adapter().error() != bitsery::ReaderError::NoError) {
-        raise("Failed to read TileSubsetLayer metadata.");
+        raise("Failed to read PartitionSubsetLayer metadata.");
     }
 
     result.dependencies_.reserve(dependencyWire.size());
     for (auto&& dependency : dependencyWire) {
         result.dependencies_.push_back({
-            MapTileKey(dependency.sourceTileKey_),
+            MapPartitionKey(dependency.sourceTileKey_),
             dependency.sourceFeatureCount_,
         });
     }
@@ -1435,25 +1423,25 @@ TileSubsetLayerMetadata TileSubsetLayer::readMetadata(
     return result;
 }
 
-std::string const& TileSubsetLayer::filterId() const
+std::string const& PartitionSubsetLayer::filterId() const
 {
     return filterId_;
 }
 
-uint64_t TileSubsetLayer::generation() const
+uint64_t PartitionSubsetLayer::generation() const
 {
     return generation_;
 }
 
-void TileSubsetLayer::adoptSourceInfo(TileFeatureLayer const& source)
+void PartitionSubsetLayer::adoptSourceInfo(PartitionFeatureLayer const& source)
 {
     setTimestamp(source.timestamp());
     setTtl(source.ttl());
     setInfo(source.info());
+    setLegalInfo(source.legalInfo());
 }
 
-void TileSubsetLayer::setDependencies(
-    std::vector<TileSubsetDependency> dependencies)
+void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dependencies)
 {
     std::sort(
         dependencies.begin(),
@@ -1481,21 +1469,19 @@ void TileSubsetLayer::setDependencies(
     dependencies_ = std::move(normalized);
 }
 
-void TileSubsetLayer::addDependency(
-    MapTileKey sourceTileKey,
-    uint32_t sourceFeatureCount)
+void PartitionSubsetLayer::addDependency(MapPartitionKey sourceTileKey, uint32_t sourceFeatureCount)
 {
     auto dependencies = dependencies_;
     dependencies.push_back({std::move(sourceTileKey), sourceFeatureCount});
     setDependencies(std::move(dependencies));
 }
 
-std::vector<TileSubsetDependency> const& TileSubsetLayer::dependencies() const
+std::vector<TileSubsetDependency> const& PartitionSubsetLayer::dependencies() const
 {
     return dependencies_;
 }
 
-std::optional<uint32_t> TileSubsetLayer::localSourceFeatureCount() const
+std::optional<uint32_t> PartitionSubsetLayer::localSourceFeatureCount() const
 {
     auto const outputKey = id();
     auto found = std::find_if(
@@ -1510,17 +1496,17 @@ std::optional<uint32_t> TileSubsetLayer::localSourceFeatureCount() const
     return found->sourceFeatureCount_;
 }
 
-void TileSubsetLayer::addIssue(FilterIssue issue)
+void PartitionSubsetLayer::addIssue(FilterIssue issue)
 {
     issues_.push_back(std::move(issue));
 }
 
-std::vector<FilterIssue> const& TileSubsetLayer::issues() const
+std::vector<FilterIssue> const& PartitionSubsetLayer::issues() const
 {
     return issues_;
 }
 
-void TileSubsetLayer::setDiagnostics(simfil::Diagnostics const& diagnostics)
+void PartitionSubsetLayer::setDiagnostics(simfil::Diagnostics const& diagnostics)
 {
     diagnostics_.exprIndex_.clear();
     diagnostics_.fieldData_.clear();
@@ -1528,12 +1514,12 @@ void TileSubsetLayer::setDiagnostics(simfil::Diagnostics const& diagnostics)
     diagnostics_.append(diagnostics);
 }
 
-simfil::Diagnostics const& TileSubsetLayer::diagnostics() const
+simfil::Diagnostics const& PartitionSubsetLayer::diagnostics() const
 {
     return diagnostics_;
 }
 
-void TileSubsetLayer::setTraces(std::map<std::string, simfil::Trace> traces)
+void PartitionSubsetLayer::setTraces(std::map<std::string, simfil::Trace> traces)
 {
     traces_.clear();
     for (auto&& [name, trace] : traces) {
@@ -1551,12 +1537,12 @@ void TileSubsetLayer::setTraces(std::map<std::string, simfil::Trace> traces)
     }
 }
 
-size_t TileSubsetLayer::traceCount() const
+size_t PartitionSubsetLayer::traceCount() const
 {
     return traces_.size();
 }
 
-model_ptr<FilterTrace> TileSubsetLayer::traceAt(size_t index) const
+model_ptr<FilterTrace> PartitionSubsetLayer::traceAt(size_t index) const
 {
     if (index >= traces_.size()) {
         return {};
@@ -1567,7 +1553,7 @@ model_ptr<FilterTrace> TileSubsetLayer::traceAt(size_t index) const
     });
 }
 
-void TileSubsetLayer::setGlbAttachmentName(std::optional<std::string> name)
+void PartitionSubsetLayer::setGlbAttachmentName(std::optional<std::string> name)
 {
     if (name && name->empty()) {
         raise("A GLB attachment name must not be empty.");
@@ -1575,13 +1561,12 @@ void TileSubsetLayer::setGlbAttachmentName(std::optional<std::string> name)
     glbAttachmentName_ = std::move(name);
 }
 
-std::optional<std::string> const& TileSubsetLayer::glbAttachmentName() const
+std::optional<std::string> const& PartitionSubsetLayer::glbAttachmentName() const
 {
     return glbAttachmentName_;
 }
 
-simfil::ModelNode::Ptr TileSubsetLayer::materializeValue(
-    simfil::Value const& value)
+simfil::ModelNode::Ptr PartitionSubsetLayer::materializeValue(simfil::Value const& value)
 {
     switch (value.type) {
     case simfil::ValueType::Undef:
@@ -1602,17 +1587,16 @@ simfil::ModelNode::Ptr TileSubsetLayer::materializeValue(
     case simfil::ValueType::Object:
     case simfil::ValueType::Array:
         raiseFmt(
-            "TileSubsetLayer fields support only scalar values, not {}.",
+            "PartitionSubsetLayer fields support only scalar values, not {}.",
             value.toString());
     case simfil::ValueType::LAST_:
         break;
     }
-    raise("Unsupported SIMFIL value type for TileSubsetLayer.");
+    raise("Unsupported SIMFIL value type for PartitionSubsetLayer.");
     return {};
 }
 
-model_ptr<Array> TileSubsetLayer::newValueArray(
-    std::span<simfil::ModelNode::Ptr const> values)
+model_ptr<Array> PartitionSubsetLayer::newValueArray(std::span<simfil::ModelNode::Ptr const> values)
 {
     if (values.empty()) {
         return sharedEmptyArray();
@@ -1631,8 +1615,7 @@ model_ptr<Array> TileSubsetLayer::newValueArray(
     return array;
 }
 
-model_ptr<Array> TileSubsetLayer::newStringArray(
-    std::span<std::string const> values)
+model_ptr<Array> PartitionSubsetLayer::newStringArray(std::span<std::string const> values)
 {
     if (values.empty()) {
         return sharedEmptyArray();
@@ -1644,7 +1627,7 @@ model_ptr<Array> TileSubsetLayer::newStringArray(
     return array;
 }
 
-model_ptr<Array> TileSubsetLayer::sharedEmptyArray()
+model_ptr<Array> PartitionSubsetLayer::sharedEmptyArray()
 {
     if (!sharedEmptyArrayAddress_) {
         sharedEmptyArrayAddress_ = newArray(1, true)->addr();
@@ -1652,7 +1635,7 @@ model_ptr<Array> TileSubsetLayer::sharedEmptyArray()
     return resolve<Array>(sharedEmptyArrayAddress_);
 }
 
-model_ptr<TileSubsetChannel> TileSubsetLayer::newChannel(
+model_ptr<TileSubsetChannel> PartitionSubsetLayer::newChannel(
     std::string_view channelId,
     Scope scope,
     uint32_t geometryTypes,
@@ -1713,7 +1696,7 @@ model_ptr<TileSubsetChannel> TileSubsetLayer::newChannel(
     return channel;
 }
 
-model_ptr<FeatureEntry> TileSubsetLayer::newFeatureEntry(
+model_ptr<FeatureEntry> PartitionSubsetLayer::newFeatureEntry(
     model_ptr<FeatureId> const& featureId,
     model_ptr<GeometryCollection> const& geometry,
     std::span<simfil::ModelNode::Ptr const> values)
@@ -1734,7 +1717,7 @@ model_ptr<FeatureEntry> TileSubsetLayer::newFeatureEntry(
         mpKey_);
 }
 
-model_ptr<AttributeValidityEntry> TileSubsetLayer::newAttributeValidityEntry(
+model_ptr<AttributeValidityEntry> PartitionSubsetLayer::newAttributeValidityEntry(
     model_ptr<FeatureId> const& featureId,
     model_ptr<GeometryCollection> const& geometry,
     uint32_t attributeIndex,
@@ -1832,7 +1815,7 @@ model_ptr<AttributeValidityEntry> TileSubsetLayer::newAttributeValidityEntry(
         mpKey_);
 }
 
-model_ptr<RelationEntry> TileSubsetLayer::newRelationEntry(
+model_ptr<RelationEntry> PartitionSubsetLayer::newRelationEntry(
     std::string_view relationId,
     std::string_view name,
     std::string_view provenance,
@@ -1876,7 +1859,7 @@ model_ptr<RelationEntry> TileSubsetLayer::newRelationEntry(
         mpKey_);
 }
 
-model_ptr<GroupEntry> TileSubsetLayer::newGroupEntry(
+model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
     simfil::ModelNode::Ptr const& groupKey,
     model_ptr<FeatureId> const& representativeFeatureId,
     model_ptr<GeometryCollection> const& geometry,
@@ -1920,7 +1903,7 @@ model_ptr<GroupEntry> TileSubsetLayer::newGroupEntry(
         mpKey_);
 }
 
-model_ptr<FeatureId> TileSubsetLayer::newFeatureId(
+model_ptr<FeatureId> PartitionSubsetLayer::newFeatureId(
     std::string_view const& typeId,
     KeyValueViewPairs const& featureIdParts,
     std::optional<std::string_view> externalMapId)
@@ -1964,9 +1947,8 @@ model_ptr<FeatureId> TileSubsetLayer::newFeatureId(
         mpKey_);
 }
 
-model_ptr<GeometryCollection> TileSubsetLayer::newGeometryCollection(
-    size_t initialCapacity,
-    bool fixedSize)
+model_ptr<GeometryCollection>
+PartitionSubsetLayer::newGeometryCollection(size_t initialCapacity, bool fixedSize)
 {
     auto index = arrayMemberStorage().new_array(initialCapacity, fixedSize);
     return GeometryCollection(
@@ -1975,10 +1957,8 @@ model_ptr<GeometryCollection> TileSubsetLayer::newGeometryCollection(
         mpKey_);
 }
 
-model_ptr<Geometry> TileSubsetLayer::newGeometry(
-    GeomType geomType,
-    size_t initialCapacity,
-    bool fixedSize)
+model_ptr<Geometry>
+PartitionSubsetLayer::newGeometry(GeomType geomType, size_t initialCapacity, bool fixedSize)
 {
     initialCapacity = std::max<size_t>(1, initialCapacity);
     auto makeGeometry = [this](uint8_t column, simfil::ArrayIndex index) {
@@ -2017,7 +1997,7 @@ model_ptr<Geometry> TileSubsetLayer::newGeometry(
     return {};
 }
 
-model_ptr<Geometry> TileSubsetLayer::newGeometryView(
+model_ptr<Geometry> PartitionSubsetLayer::newGeometryView(
     GeomType geomType,
     uint32_t offset,
     uint32_t size,
@@ -2044,8 +2024,7 @@ model_ptr<Geometry> TileSubsetLayer::newGeometryView(
 }
 
 model_ptr<SourceDataReferenceCollection>
-TileSubsetLayer::newSourceDataReferenceCollection(
-    std::span<QualifiedSourceDataReference> list)
+PartitionSubsetLayer::newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list)
 {
     auto const index = static_cast<uint32_t>(sourceDataReferences_.size());
     auto const size = static_cast<uint32_t>(list.size());
@@ -2058,12 +2037,11 @@ TileSubsetLayer::newSourceDataReferenceCollection(
         mpKey_);
 }
 
-tl::expected<void, simfil::Error> TileSubsetLayer::write(
-    std::ostream& outputStream)
+tl::expected<void, simfil::Error> PartitionSubsetLayer::write(std::ostream& outputStream)
 {
     updateEntryStatistics();
     setInfo("Filter/Geometry/Vertices#count", numVertices());
-    if (auto result = TileLayer::write(outputStream); !result) {
+    if (auto result = PartitionLayer::write(outputStream); !result) {
         return result;
     }
     bitsery::Serializer<bitsery::OutputStreamAdapter> serializer(outputStream);
@@ -2122,25 +2100,28 @@ tl::expected<void, simfil::Error> TileSubsetLayer::write(
     return ModelPool::write(outputStream);
 }
 
-nlohmann::json TileSubsetLayer::toJson() const
+nlohmann::json PartitionSubsetLayer::toJson() const
 {
     auto result = nlohmann::json::object({
-        {"type", "TileSubsetLayer"},
-        {"mapgetTileId", tileId_.value()},
+        {"type", "PartitionSubsetLayer"},
+        {"partition", partitionId_.toJson()},
         {"mapId", mapId_},
         {"mapgetLayerId", layerInfo_->layerId_},
         {"filterId", filterId_},
         {"generation", generation_},
-        {"geometryAnchor", {
-            geometryAnchor_.x,
-            geometryAnchor_.y,
-            geometryAnchor_.z,
-        }},
+        {"geometryAnchor",
+         {
+             geometryAnchor_.x,
+             geometryAnchor_.y,
+             geometryAnchor_.z,
+         }},
         {"info", info_},
         {"dependencies", nlohmann::json::array()},
         {"issues", nlohmann::json::array()},
         {"channels", nlohmann::json::array()},
     });
+    if (partitionId_.kind() == PartitionKind::Tile)
+        result["mapgetTileId"] = partitionId_.value();
     if (glbAttachmentName_) {
         result["glbAttachmentName"] = *glbAttachmentName_;
     }
@@ -2176,13 +2157,15 @@ nlohmann::json TileSubsetLayer::toJson() const
     return result;
 }
 
-MemoryUsageBreakdown TileSubsetLayer::memoryUsage() const
+MemoryUsageBreakdown PartitionSubsetLayer::memoryUsage() const
 {
-    auto result = TileFeatureModelLayerBase::memoryUsage();
-    result.add("subset-layer-object", {
-        sizeof(TileSubsetLayer) - sizeof(TileFeatureModelLayerBase),
-        sizeof(TileSubsetLayer) - sizeof(TileFeatureModelLayerBase),
-    });
+    auto result = PartitionFeatureModelLayerBase::memoryUsage();
+    result.add(
+        "subset-layer-object",
+        {
+            sizeof(PartitionSubsetLayer) - sizeof(PartitionFeatureModelLayerBase),
+            sizeof(PartitionSubsetLayer) - sizeof(PartitionFeatureModelLayerBase),
+        });
     result.add("subset.filter-id", stringMemoryUsage(filterId_));
     result.add("subset.channels", channels_.memory_usage());
     result.add("subset.feature-entries", featureEntries_.memory_usage());
@@ -2208,12 +2191,12 @@ MemoryUsageBreakdown TileSubsetLayer::memoryUsage() const
     return result;
 }
 
-size_t TileSubsetLayer::size() const
+size_t PartitionSubsetLayer::size() const
 {
     return numRoots();
 }
 
-model_ptr<TileSubsetChannel> TileSubsetLayer::at(size_t index) const
+model_ptr<TileSubsetChannel> PartitionSubsetLayer::at(size_t index) const
 {
     auto rootAddress = root(index);
     if (!rootAddress || !*rootAddress) {
@@ -2222,7 +2205,7 @@ model_ptr<TileSubsetChannel> TileSubsetLayer::at(size_t index) const
     return resolve<TileSubsetChannel>(**rootAddress);
 }
 
-bool TileSubsetLayer::forEachChannel(
+bool PartitionSubsetLayer::forEachChannel(
     std::function<bool(model_ptr<TileSubsetChannel> const&)> const& callback) const
 {
     if (!callback) {
@@ -2237,40 +2220,40 @@ bool TileSubsetLayer::forEachChannel(
     return true;
 }
 
-uint64_t TileSubsetLayer::numVertices() const
+uint64_t PartitionSubsetLayer::numVertices() const
 {
     return geometryVertexCount();
 }
 
-Point TileSubsetLayer::geometryAnchor() const
+Point PartitionSubsetLayer::geometryAnchor() const
 {
     return geometryAnchor_;
 }
 
-void TileSubsetLayer::setGeometryAnchor(Point const& anchor)
+void PartitionSubsetLayer::setGeometryAnchor(Point const& anchor)
 {
     geometryAnchor_ = anchor;
 }
 
-std::string TileSubsetLayer::nodeString(simfil::ModelNode::Ptr const& node)
+std::string PartitionSubsetLayer::nodeString(simfil::ModelNode::Ptr const& node)
 {
     return nodeStringValue(node);
 }
 
-void TileSubsetLayer::validateOwnedNode(
+void PartitionSubsetLayer::validateOwnedNode(
     simfil::ModelNode::Ptr const& node,
     std::string_view role) const
 {
     if (!node) {
-        raiseFmt("TileSubsetLayer requires a non-null {}.", role);
+        raiseFmt("PartitionSubsetLayer requires a non-null {}.", role);
     }
     auto owner = node->owningModel();
     if (!owner || owner.get() != this) {
-        raiseFmt("TileSubsetLayer {} must belong to the same model.", role);
+        raiseFmt("PartitionSubsetLayer {} must belong to the same model.", role);
     }
 }
 
-void TileSubsetLayer::updateEntryStatistics()
+void PartitionSubsetLayer::updateEntryStatistics()
 {
     setInfo("Filter/Channels#count", channels_.size());
     size_t terminalEntries = 0;
@@ -2286,9 +2269,8 @@ void TileSubsetLayer::updateEntryStatistics()
     setInfo("Filter/Entries/Groups#count", groupEntries_.size());
 }
 
-tl::expected<void, simfil::Error> TileSubsetLayer::resolve(
-    simfil::ModelNode const& node,
-    ResolveFn const& callback) const
+tl::expected<void, simfil::Error>
+PartitionSubsetLayer::resolve(simfil::ModelNode const& node, ResolveFn const& callback) const
 {
     if (auto owner = node.owningModel(); owner && owner.get() != this) {
         return owner->resolve(node, callback);
@@ -2375,13 +2357,11 @@ tl::expected<void, simfil::Error> TileSubsetLayer::resolve(
 using simfil::ModelNode;
 using simfil::res::tag;
 
-template<>
-model_ptr<TileSubsetChannel> resolveInternal(
-    tag<TileSubsetChannel>,
-    TileSubsetLayer const& model,
-    ModelNode const& node)
+template <>
+model_ptr<TileSubsetChannel>
+resolveInternal(tag<TileSubsetChannel>, PartitionSubsetLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileSubsetLayer::ColumnId::SubsetChannels) {
+    if (node.addr().column() != PartitionSubsetLayer::ColumnId::SubsetChannels) {
         raise("Cannot cast this node to a TileSubsetChannel.");
     }
     return TileSubsetChannel(
@@ -2392,13 +2372,11 @@ model_ptr<TileSubsetChannel> resolveInternal(
         model.mpKey_);
 }
 
-template<>
-model_ptr<FeatureEntry> resolveInternal(
-    tag<FeatureEntry>,
-    TileSubsetLayer const& model,
-    ModelNode const& node)
+template <>
+model_ptr<FeatureEntry>
+resolveInternal(tag<FeatureEntry>, PartitionSubsetLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileSubsetLayer::ColumnId::FeatureEntries) {
+    if (node.addr().column() != PartitionSubsetLayer::ColumnId::FeatureEntries) {
         raise("Cannot cast this node to a FeatureEntry.");
     }
     return FeatureEntry(
@@ -2409,15 +2387,13 @@ model_ptr<FeatureEntry> resolveInternal(
         model.mpKey_);
 }
 
-template<>
+template <>
 model_ptr<AttributeValidityEntry> resolveInternal(
     tag<AttributeValidityEntry>,
-    TileSubsetLayer const& model,
+    PartitionSubsetLayer const& model,
     ModelNode const& node)
 {
-    if (node.addr().column() !=
-        TileSubsetLayer::ColumnId::AttributeValidityEntries)
-    {
+    if (node.addr().column() != PartitionSubsetLayer::ColumnId::AttributeValidityEntries) {
         raise("Cannot cast this node to an AttributeValidityEntry.");
     }
     return AttributeValidityEntry(
@@ -2428,13 +2404,11 @@ model_ptr<AttributeValidityEntry> resolveInternal(
         model.mpKey_);
 }
 
-template<>
-model_ptr<RelationEntry> resolveInternal(
-    tag<RelationEntry>,
-    TileSubsetLayer const& model,
-    ModelNode const& node)
+template <>
+model_ptr<RelationEntry>
+resolveInternal(tag<RelationEntry>, PartitionSubsetLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileSubsetLayer::ColumnId::RelationEntries) {
+    if (node.addr().column() != PartitionSubsetLayer::ColumnId::RelationEntries) {
         raise("Cannot cast this node to a RelationEntry.");
     }
     return RelationEntry(
@@ -2445,13 +2419,11 @@ model_ptr<RelationEntry> resolveInternal(
         model.mpKey_);
 }
 
-template<>
-model_ptr<GroupEntry> resolveInternal(
-    tag<GroupEntry>,
-    TileSubsetLayer const& model,
-    ModelNode const& node)
+template <>
+model_ptr<GroupEntry>
+resolveInternal(tag<GroupEntry>, PartitionSubsetLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileSubsetLayer::ColumnId::GroupEntries) {
+    if (node.addr().column() != PartitionSubsetLayer::ColumnId::GroupEntries) {
         raise("Cannot cast this node to a GroupEntry.");
     }
     return GroupEntry(
@@ -2462,13 +2434,11 @@ model_ptr<GroupEntry> resolveInternal(
         model.mpKey_);
 }
 
-template<>
-model_ptr<FilterTrace> resolveInternal(
-    tag<FilterTrace>,
-    TileSubsetLayer const& model,
-    ModelNode const& node)
+template <>
+model_ptr<FilterTrace>
+resolveInternal(tag<FilterTrace>, PartitionSubsetLayer const& model, ModelNode const& node)
 {
-    if (node.addr().column() != TileSubsetLayer::ColumnId::FilterTraces) {
+    if (node.addr().column() != PartitionSubsetLayer::ColumnId::FilterTraces) {
         raise("Cannot cast this node to a FilterTrace.");
     }
     return FilterTrace(

@@ -32,10 +32,10 @@ struct SourceConcurrency
 /** Shared state for one coalesced source-tile load. */
 struct TileLoadState
 {
-    MapTileKey tileKey;
+    MapPartitionKey tileKey;
     std::vector<LayerTilesRequest::Ptr> waitingRequests;
     std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
-    TileLayer::LoadState loadStatus = TileLayer::LoadState::LoadingQueued;
+    PartitionLayer::LoadState loadStatus = PartitionLayer::LoadState::LoadingQueued;
     uint64_t mapEpoch = 0;
 };
 
@@ -46,6 +46,7 @@ struct ServiceSchedulerStatistics
     size_t runningJobs = 0;
     size_t activeTileRequests = 0;
     size_t queuedTileWorkItems = 0;
+    size_t queuedDiscoveryJobs = 0;
     size_t inFlightTileJobs = 0;
 };
 
@@ -90,6 +91,12 @@ public:
     /** Enqueue a validated tile request. */
     void enqueueRequest(LayerTilesRequest::Ptr request);
 
+    /** Enqueue discovery using the same source permits and global worker budget as loads. */
+    void enqueueDiscovery(
+        RegisteredDataSource::Ptr source,
+        ObjectDiscoveryRequest request,
+        std::function<void(ObjectDiscoveryResult)> callback);
+
     /** Wake workers so externally gated requests are reconsidered. */
     void notifyWorkAvailable();
 
@@ -99,7 +106,7 @@ public:
     /** Detach removed outputs while preserving retained queued/in-flight work. */
     void retainRequestOutputs(
         LayerTilesRequest::Ptr const& request,
-        std::set<TileId> const& retainedTileIds);
+        std::set<PartitionId> const& retainedPartitionIds);
 
     /** Register an active request's cooperative memory tracker. */
     void addFilterMemoryTracker(std::shared_ptr<FilterMemoryTracker> const& tracker);
@@ -126,12 +133,24 @@ public:
     [[nodiscard]] Cache::Ptr cache() const { return cache_; }
 
 private:
+    /** One queued discovery callback, owned until completion or cancellation. */
+    struct DiscoveryJob
+    {
+        RegisteredDataSource::Ptr source;
+        ObjectDiscoveryRequest request;
+        std::function<void(ObjectDiscoveryResult)> callback;
+        /** Execute or report cancellation without letting consumer exceptions kill a worker. */
+        void run(bool cancelled = false) noexcept;
+    };
+    std::list<DiscoveryJob> discoveryJobs_;
+    bool preferDiscovery_ = true;
+
     /** One schedulable request/tile selection retained across inline handling. */
     struct Candidate
     {
         std::list<LayerTilesRequest::Ptr>::const_iterator requestIt;
         LayerTilesRequest::Ptr request;
-        MapTileKey tileKey;
+        MapPartitionKey tileKey;
         size_t nextTileIndex = 0;
     };
 
@@ -165,22 +184,20 @@ private:
     void attachMatchingRequestsLocked(
         LayerTilesRequest::Ptr const& selectedRequest,
         SourceConcurrency const& source,
-        MapTileKey const& tileKey,
+        MapPartitionKey const& tileKey,
         std::vector<LayerTilesRequest::Ptr>& waitingRequests) const;
     /** Remove terminal requests and requests with no unscheduled keys. */
     void removeCompletedRequestsLocked();
 
     /** Publish a successful tile only if its map epoch is still current. */
-    void completeTileJob(
-        TileLoadState const& job,
-        TileLayer::Ptr const& layer,
-        bool updateCache);
+    void
+    completeTileJob(TileLoadState const& job, PartitionLayer::Ptr const& layer, bool updateCache);
 
     /** Abort every request waiting on a failed tile load. */
     void failTileJob(TileLoadState const& job);
 
     /** Notify current waiters without invoking callbacks under the scheduler lock. */
-    void notifyTileLoadState(TileLoadState& job, TileLayer::LoadState state);
+    void notifyTileLoadState(TileLoadState& job, PartitionLayer::LoadState state);
 
     DataSourceRegistry& dataSources_;
     Cache::Ptr cache_;
@@ -189,7 +206,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable jobsAvailable_;
     std::list<LayerTilesRequest::Ptr> requests_;
-    std::map<MapTileKey, std::shared_ptr<TileLoadState>> inFlightTiles_;
+    std::map<MapPartitionKey, std::shared_ptr<TileLoadState>> inFlightTiles_;
     std::vector<std::shared_ptr<SourceConcurrency>> sources_;
     std::vector<std::weak_ptr<FilterMemoryTracker>> filterMemoryTrackers_;
     std::map<std::string, uint64_t> mapEpochs_;

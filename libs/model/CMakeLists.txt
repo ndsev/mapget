@@ -36,6 +36,7 @@ add_library(mapget-model STATIC
   include/mapget/model/hash.h
 
   src/stringpool.cpp
+  src/partitionid.cpp
   src/layer.cpp
   src/memory.cpp
   src/featuremodellayer.cpp

@@ -14,22 +14,22 @@ namespace mapget
 
 class SourceDataCompoundNode;
 
-class TileSourceDataLayer : public TileLayer, public simfil::ModelPool
+class PartitionSourceDataLayer : public PartitionLayer, public simfil::ModelPool
 {
 public:
     // Keep ModelPool::resolve<T> overloads visible alongside the override below.
     using ModelPool::resolve;
 
-    using Ptr = std::shared_ptr<TileSourceDataLayer>;
-    using ConstPtr = std::shared_ptr<const TileSourceDataLayer>;
+    using Ptr = std::shared_ptr<PartitionSourceDataLayer>;
+    using ConstPtr = std::shared_ptr<const PartitionSourceDataLayer>;
 
     template <class T>
     using model_ptr = simfil::model_ptr<T>;
 
-    template<typename Target>
+    template <typename Target>
     friend model_ptr<Target> resolveInternal(
         simfil::res::tag<Target>,
-        TileSourceDataLayer const&,
+        PartitionSourceDataLayer const&,
         simfil::ModelNode const&);
 
     /**
@@ -39,19 +39,19 @@ public:
         Compound = ModelPool::FirstCustomColumnId,
     };
 
-    TileSourceDataLayer(
-        TileId tileId,
+    PartitionSourceDataLayer(
+        PartitionId tileId,
         std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& stringPool);
 
-    TileSourceDataLayer(
+    PartitionSourceDataLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter);
 
-    ~TileSourceDataLayer() override;
+    ~PartitionSourceDataLayer() override;
 
     /**
      * Node factory interface
@@ -109,10 +109,9 @@ private:
 };
 
 // Primary template for ADL-based resolve hooks (specialized in sourcedatalayer.cpp).
-template<typename Target>
+template <typename Target>
 simfil::model_ptr<Target> resolveInternal(
     simfil::res::tag<Target>,
-    TileSourceDataLayer const& model,
+    PartitionSourceDataLayer const& model,
     simfil::ModelNode const& node);
-
 }

@@ -232,7 +232,7 @@ void SQLiteCache::prepareStatements()
     }
 }
 
-std::optional<std::string> SQLiteCache::getTileLayerBlob(MapTileKey const& k)
+std::optional<std::string> SQLiteCache::getTileLayerBlob(MapPartitionKey const& k)
 {
     std::lock_guard<std::mutex> lock(dbMutex_);
     
@@ -258,7 +258,7 @@ std::optional<std::string> SQLiteCache::getTileLayerBlob(MapTileKey const& k)
     }
 }
 
-void SQLiteCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
+void SQLiteCache::putTileLayerBlob(MapPartitionKey const& k, std::string const& v)
 {
     std::lock_guard<std::mutex> lock(dbMutex_);
     
@@ -288,7 +288,7 @@ void SQLiteCache::putTileLayerBlob(MapTileKey const& k, std::string const& v)
     }
 }
 
-void SQLiteCache::eraseTileLayerBlob(MapTileKey const& k)
+void SQLiteCache::eraseTileLayerBlob(MapPartitionKey const& k)
 {
     std::lock_guard<std::mutex> lock(dbMutex_);
     sqlite3_reset(stmts_.deleteTile);
@@ -323,7 +323,7 @@ void SQLiteCache::forEachTileLayerBlob(const TileBlobVisitor& cb) const
         const void* data = sqlite3_column_blob(stmt, 1);
         int size = sqlite3_column_bytes(stmt, 1);
         if (key && data && size >= 0) {
-            cb(MapTileKey(key), std::string(static_cast<const char*>(data), size));
+            cb(MapPartitionKey(key), std::string(static_cast<const char*>(data), size));
         }
     }
     if (rc != SQLITE_DONE) {

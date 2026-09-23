@@ -123,7 +123,8 @@ nlohmann::json Cache::getStatistics() const {
     };
 }
 
-Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInfo const& dataSource)
+Cache::LookupResult
+Cache::getTileLayer(const MapPartitionKey& tileKey, DataSourceInfo const& dataSource)
 {
     LookupResult result;
     auto tileBlob = getTileLayerBlob(tileKey);
@@ -131,14 +132,14 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
         cacheMisses_.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
-    TileLayer::Ptr tile;
+    PartitionLayer::Ptr tile;
     TileLayerStream::Reader tileReader(
         [&dataSource, &tileKey](auto&& mapId, auto&& layerId) {
             if (dataSource.mapId_ != mapId) {
                 raiseFmt(
-                    "Encountered unexpected map id '{}' in cache for tile {:0x}, expected '{}'",
+                    "Encountered unexpected map id '{}' in cache for partition {}, expected '{}'",
                     mapId,
-                    tileKey.tileId_.value(),
+                    tileKey.partitionId_.toString(),
                     dataSource.mapId_);
             }
             return dataSource.getLayer(std::string(layerId));
@@ -169,7 +170,7 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
             }
         }
         cacheHits_.fetch_add(1, std::memory_order_relaxed);
-        log().debug("Returned tile from cache: {}", tileKey.tileId_.value());
+        log().debug("Returned tile from cache: {}", tileKey.partitionId_.toString());
         result.tile = tile;
     }
     return result;
@@ -177,9 +178,10 @@ Cache::LookupResult Cache::getTileLayer(const MapTileKey& tileKey, DataSourceInf
 
 void Cache::invalidateMap(std::string_view mapId)
 {
-    std::vector<MapTileKey> keys;
+    std::vector<MapPartitionKey> keys;
     forEachTileLayerBlob(
-        [&](MapTileKey const& key, std::string const&) {
+        [&](MapPartitionKey const& key, std::string const&)
+        {
             if (key.mapId_ == mapId) {
                 keys.push_back(key);
             }
@@ -189,21 +191,21 @@ void Cache::invalidateMap(std::string_view mapId)
     }
 }
 
-void Cache::putTileLayer(TileLayer::Ptr const& l)
+void Cache::putTileLayer(PartitionLayer::Ptr const& l)
 {
     std::unique_lock stringPoolOffsetLock(stringPoolOffsetMutex_);
     TileLayerStream::Writer tileWriter(
         [&l, this](auto&& msg, auto&& msgType)
         {
-            if (msgType == TileLayerStream::MessageType::TileFeatureLayer ||
-                msgType == TileLayerStream::MessageType::TileSourceDataLayer)
-                putTileLayerBlob(MapTileKey(*l), msg);
+            if (msgType == TileLayerStream::MessageType::PartitionFeatureLayer ||
+                msgType == TileLayerStream::MessageType::PartitionSourceDataLayer)
+                putTileLayerBlob(MapPartitionKey(*l), msg);
             else if (msgType == TileLayerStream::MessageType::StringPool)
                 putStringPoolBlob(l->stringPoolId(), msg);
         },
         stringPoolOffsets_,
         /* differentialStringUpdates= */ false);
-    log().debug("Writing tile layer to cache: {}", MapTileKey(*l).toString());
+    log().debug("Writing tile layer to cache: {}", MapPartitionKey(*l).toString());
     tileWriter.write(l);
 }
 

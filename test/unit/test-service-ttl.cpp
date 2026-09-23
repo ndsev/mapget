@@ -72,7 +72,7 @@ class TestTtlDataSource : public DataSource
 public:
     DataSourceInfo info() override { return info_; }
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         ++fillCount_;
         if (tileTtlOverride_) {
@@ -82,7 +82,7 @@ public:
         tile->newFeature("Way", {{"wayId", 1}});
     }
 
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw UnsupportedSourceDataLayerError("SourceDataLayer not supported in TestTtlDataSource");
     }
@@ -139,12 +139,12 @@ public:
 
     DataSourceInfo info() override { return info_; }
 
-    void fill(TileFeatureLayer::Ptr const& tile) override
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
         tile->newFeature("Way", {{"wayId", int64_t(1)}});
     }
 
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw UnsupportedSourceDataLayerError(
             "SourceDataLayer not supported in MutableInfoDataSource");
@@ -239,10 +239,10 @@ public:
     DataSourceInfo info() override { return info_; }
 
     /** Block in the shared probe so tests can inspect scheduler concurrency. */
-    void fill(TileFeatureLayer::Ptr const&) override { probe_->enter(); }
+    void fill(PartitionFeatureLayer::Ptr const&) override { probe_->enter(); }
 
     /** Reject source-data requests because this fixture serves only features. */
-    void fill(TileSourceDataLayer::Ptr const&) override
+    void fill(PartitionSourceDataLayer::Ptr const&) override
     {
         throw UnsupportedSourceDataLayerError(
             "SourceDataLayer not supported in ConcurrencyTestDataSource");
@@ -260,7 +260,7 @@ TEST_CASE("Service uses one configurable worker cap across datasources", "[Servi
     service.add(std::make_shared<ConcurrencyTestDataSource>("MapA", "PoolA", probe));
     service.add(std::make_shared<ConcurrencyTestDataSource>("MapB", "PoolB", probe));
 
-    std::vector<TileId> tiles;
+    std::vector<PartitionId> tiles;
     for (int32_t x = 0; x < 4; ++x) {
         tiles.push_back(TileId::fromTileXY(x, 0, 3));
     }
@@ -293,7 +293,7 @@ TEST_CASE("Service preserves per-datasource permits below the global cap", "[Ser
     service.add(std::make_shared<ConcurrencyTestDataSource>("MapA", "PoolA", constrained, 1));
     service.add(std::make_shared<ConcurrencyTestDataSource>("MapB", "PoolB", unconstrained, 8));
 
-    std::vector<TileId> tiles;
+    std::vector<PartitionId> tiles;
     for (int32_t x = 0; x < 4; ++x) {
         tiles.push_back(TileId::fromTileXY(x, 0, 3));
     }
@@ -336,10 +336,12 @@ TEST_CASE("Service skips requests while their work admission is closed", "[Servi
     auto blocked = std::make_shared<LayerTilesRequest>(
         "BlockedMap",
         "Features",
-        std::vector<TileId>{TileId::fromTileXY(0, 0, 3)});
+        std::vector<PartitionId>{TileId::fromTileXY(0, 0, 3)});
     blocked->setWorkAdmissionGate(admissionOpen);
-    auto live = std::make_shared<
-        LayerTilesRequest>("LiveMap", "Features", std::vector<TileId>{TileId::fromTileXY(0, 0, 3)});
+    auto live = std::make_shared<LayerTilesRequest>(
+        "LiveMap",
+        "Features",
+        std::vector<PartitionId>{TileId::fromTileXY(0, 0, 3)});
 
     REQUIRE(service.request({blocked, live}));
     auto const liveStarted = liveProbe->waitForEntries(1, 2s);
@@ -368,13 +370,13 @@ TEST_CASE("Shared work still completes requests with closed admission", "[Servic
     auto const tileId = TileId::fromValue(kTtlTileIdValue);
 
     auto sharedResultCount = std::atomic_size_t{0};
-    auto blocked =
-        std::make_shared<LayerTilesRequest>("Tropico", "WayLayer", std::vector<TileId>{tileId});
+    auto blocked = std::make_shared<
+        LayerTilesRequest>("Tropico", "WayLayer", std::vector<PartitionId>{tileId});
     blocked->setWorkAdmissionGate(std::make_shared<std::atomic_bool>(false));
-    blocked->onFeatureLayer([&](TileFeatureLayer::Ptr) { ++sharedResultCount; });
-    auto live =
-        std::make_shared<LayerTilesRequest>("Tropico", "WayLayer", std::vector<TileId>{tileId});
-    live->onFeatureLayer([&](TileFeatureLayer::Ptr) { ++sharedResultCount; });
+    blocked->onFeatureLayer([&](PartitionFeatureLayer::Ptr) { ++sharedResultCount; });
+    auto live = std::make_shared<
+        LayerTilesRequest>("Tropico", "WayLayer", std::vector<PartitionId>{tileId});
+    live->onFeatureLayer([&](PartitionFeatureLayer::Ptr) { ++sharedResultCount; });
 
     REQUIRE(service.request({blocked, live}));
     blocked->wait();
@@ -400,7 +402,7 @@ TEST_CASE("Service shutdown contains request callback exceptions", "[Service][co
     auto request = std::make_shared<LayerTilesRequest>(
         "Map",
         "Features",
-        std::vector<TileId>{TileId::fromTileXY(0, 0, 3)});
+        std::vector<PartitionId>{TileId::fromTileXY(0, 0, 3)});
     std::promise<void> callbackEntered;
     auto callbackEnteredFuture = callbackEntered.get_future();
     request->onDone_ = [&callbackEntered](RequestStatus) {
@@ -437,10 +439,10 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request1 = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)});
 
-        TileFeatureLayer::Ptr tile1;
-        request1->onFeatureLayer([&](TileFeatureLayer::Ptr const& tile) { tile1 = tile; });
+        PartitionFeatureLayer::Ptr tile1;
+        request1->onFeatureLayer([&](PartitionFeatureLayer::Ptr const& tile) { tile1 = tile; });
 
         REQUIRE(service.request({request1}));
         request1->wait();
@@ -455,10 +457,10 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request2 = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)});
 
-        TileFeatureLayer::Ptr tile2;
-        request2->onFeatureLayer([&](TileFeatureLayer::Ptr const& tile) { tile2 = tile; });
+        PartitionFeatureLayer::Ptr tile2;
+        request2->onFeatureLayer([&](PartitionFeatureLayer::Ptr const& tile) { tile2 = tile; });
 
         REQUIRE(service.request({request2}));
         request2->wait();
@@ -472,10 +474,10 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request3 = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)});
 
-        TileFeatureLayer::Ptr tile3;
-        request3->onFeatureLayer([&](TileFeatureLayer::Ptr const& tile) { tile3 = tile; });
+        PartitionFeatureLayer::Ptr tile3;
+        request3->onFeatureLayer([&](PartitionFeatureLayer::Ptr const& tile) { tile3 = tile; });
 
         REQUIRE(service.request({request3}));
         request3->wait();
@@ -497,10 +499,10 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         auto request = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)});
 
-        TileFeatureLayer::Ptr tile;
-        request->onFeatureLayer([&](TileFeatureLayer::Ptr const& t) { tile = t; });
+        PartitionFeatureLayer::Ptr tile;
+        request->onFeatureLayer([&](PartitionFeatureLayer::Ptr const& t) { tile = t; });
 
         REQUIRE(service.request({request}));
         request->wait();
@@ -535,19 +537,20 @@ TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service]
 
 TEST_CASE("LayerTilesRequest preserves tile order and priority hints in JSON", "[Service][JSON]")
 {
-    SECTION("Requests serialize as tileIds")
+    SECTION("Requests serialize as tagged partitions")
     {
         auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)});
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)});
 
         REQUIRE(
             request->toJson() ==
             nlohmann::json{
                 {"mapId", "Tropico"},
                 {"layerId", "WayLayer"},
-                {"tileIds", nlohmann::json::array({kTtlTileIdValue})},
+                {"partitions",
+                 nlohmann::json::array({PartitionId::fromValue(kTtlTileIdValue).toJson()})},
             });
     }
 
@@ -556,18 +559,22 @@ TEST_CASE("LayerTilesRequest preserves tile order and priority hints in JSON", "
         auto request = std::make_shared<TestLayerTilesRequest>(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{
+            std::vector<PartitionId>{
                 TileId::fromValue(kTtlTileIdValue),
                 TileId::fromValue(kTtlPriorityTileIdValue)},
-            std::vector<TileId>{TileId::fromValue(kTtlPriorityTileIdValue)});
+            std::vector<PartitionId>{TileId::fromValue(kTtlPriorityTileIdValue)});
 
         REQUIRE(
             request->toJson() ==
             nlohmann::json{
                 {"mapId", "Tropico"},
                 {"layerId", "WayLayer"},
-                {"tileIds", nlohmann::json::array({kTtlTileIdValue, kTtlPriorityTileIdValue})},
-                {"priorityTileIds", nlohmann::json::array({kTtlPriorityTileIdValue})},
+                {"partitions",
+                 nlohmann::json::array(
+                     {PartitionId::fromValue(kTtlTileIdValue).toJson(),
+                      PartitionId::fromValue(kTtlPriorityTileIdValue).toJson()})},
+                {"priorityPartitions",
+                 nlohmann::json::array({PartitionId::fromValue(kTtlPriorityTileIdValue).toJson()})},
             });
     }
 
@@ -576,7 +583,7 @@ TEST_CASE("LayerTilesRequest preserves tile order and priority hints in JSON", "
         REQUIRE_THROWS(TestLayerTilesRequest(
             "Tropico",
             "WayLayer",
-            std::vector<TileId>{TileId::fromValue(kTtlTileIdValue)},
-            std::vector<TileId>{TileId::fromValue(kTtlPriorityTileIdValue)}));
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)},
+            std::vector<PartitionId>{TileId::fromValue(kTtlPriorityTileIdValue)}));
     }
 }

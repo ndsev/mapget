@@ -68,13 +68,13 @@ std::shared_ptr<LayerInfo> makeGenericLayerInfo()
     })json"_json);
 }
 
-TileFeatureLayer::Ptr makeTile(
+PartitionFeatureLayer::Ptr makeTile(
     int32_t tileId,
     std::shared_ptr<LayerInfo> const& layerInfo,
     std::string const& stringPoolId = "GeoJsonImportNode",
     std::string const& mapId = "GeoJsonImportMap")
 {
-    return std::make_shared<TileFeatureLayer>(
+    return std::make_shared<PartitionFeatureLayer>(
         TileId::fromValue(tileId),
         stringPoolId,
         mapId,
@@ -82,16 +82,15 @@ TileFeatureLayer::Ptr makeTile(
         std::make_shared<StringPool>(stringPoolId));
 }
 
-simfil::ModelNode::Ptr nullNode(TileFeatureLayer& tile)
+simfil::ModelNode::Ptr nullNode(PartitionFeatureLayer& tile)
 {
     return tile.resolve<simfil::ModelNode>(
         simfil::ModelNodeAddress{simfil::Model::Null, 1},
         simfil::ScalarValueType{});
 }
 
-model_ptr<SourceDataReferenceCollection> makeSourceDataRefs(
-    TileFeatureLayer& tile,
-    std::initializer_list<SourceRefSpec> refs)
+model_ptr<SourceDataReferenceCollection>
+makeSourceDataRefs(PartitionFeatureLayer& tile, std::initializer_list<SourceRefSpec> refs)
 {
     std::vector<QualifiedSourceDataReference> values;
     values.reserve(refs.size());
@@ -159,7 +158,7 @@ TEST_CASE("Feature ID strings roundtrip escaped string parts", "[FeatureId][GeoJ
     REQUIRE(tile->find("Road.77.DE%2EBY%25%3A%2F%2C%7E.7"));
 }
 
-TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[GeoJsonImport]")
+TEST_CASE("PartitionFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[GeoJsonImport]")
 {
     auto layerInfo = makeRoadLayerInfo();
     auto tile = makeTile(131073, layerInfo, "StrictImportNode", "StrictImportMap");
@@ -304,7 +303,9 @@ TEST_CASE("TileFeatureLayer strict GeoJSON import roundtrips mapget JSON", "[Geo
     REQUIRE(imported->find("Road.77.DE%2EBY%25.9"));
 }
 
-TEST_CASE("TileFeatureLayer best-effort GeoJSON import shares the same pipeline", "[GeoJsonImport]")
+TEST_CASE(
+    "PartitionFeatureLayer best-effort GeoJSON import shares the same pipeline",
+    "[GeoJsonImport]")
 {
     auto layerInfo = makeGenericLayerInfo();
     auto tile = makeTile(131073, layerInfo, "BestEffortNode");
@@ -356,7 +357,9 @@ TEST_CASE("TileFeatureLayer best-effort GeoJSON import shares the same pipeline"
         "POSITIVE");
 }
 
-TEST_CASE("TileFeatureLayer GeoJSON import accepts attributes as properties alias", "[GeoJsonImport]")
+TEST_CASE(
+    "PartitionFeatureLayer GeoJSON import accepts attributes as properties alias",
+    "[GeoJsonImport]")
 {
     auto layerInfo = makeGenericLayerInfo();
     auto tile = makeTile(131073, layerInfo, "AttributesAliasNode");
@@ -387,7 +390,9 @@ TEST_CASE("TileFeatureLayer GeoJSON import accepts attributes as properties alia
     REQUIRE(output["features"][0]["properties"]["name"] == "Alias Road");
 }
 
-TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonImport][Polygon]")
+TEST_CASE(
+    "PartitionFeatureLayer GeoJSON import preserves polygon holes",
+    "[GeoJsonImport][Polygon]")
 {
     auto layerInfo = makeGenericLayerInfo();
     auto tile = makeTile(131073, layerInfo, "PolygonHoleNode");
@@ -447,14 +452,16 @@ TEST_CASE("TileFeatureLayer GeoJSON import preserves polygon holes", "[GeoJsonIm
     std::stringstream tileBytes;
     tile->write(tileBytes);
     auto const serializedTile = tileBytes.str();
-    auto roundtrippedTile = std::make_shared<TileFeatureLayer>(
+    auto roundtrippedTile = std::make_shared<PartitionFeatureLayer>(
         std::vector<uint8_t>(serializedTile.begin(), serializedTile.end()),
-        [&](auto&& mapId, auto&& layerId) {
+        [&](auto&& mapId, auto&& layerId)
+        {
             REQUIRE(mapId == "GeoJsonImportMap");
             REQUIRE(layerId == "GeoJsonAny");
             return layerInfo;
         },
-        [&](auto&& stringPoolId) {
+        [&](auto&& stringPoolId)
+        {
             REQUIRE(stringPoolId == "PolygonHoleNode");
             return tile->strings();
         });

@@ -9,7 +9,7 @@ namespace mapget
 namespace
 {
 simfil::ModelNode::Ptr exposedValidityNode(
-    TileFeatureLayer const& model,
+    PartitionFeatureLayer const& model,
     simfil::ModelNodeAddress const& validityCollectionAddress)
 {
     auto validities = model.resolve<MultiValidity>(validityCollectionAddress);
@@ -22,11 +22,12 @@ simfil::ModelNode::Ptr exposedValidityNode(
 }
 }
 
-Relation::Relation(Relation::Data* data,
+Relation::Relation(
+    Relation::Data* data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<6, Relation, TileFeatureLayer>(std::move(l), a, key),
+    : simfil::ProceduralObject<6, Relation, PartitionFeatureLayer>(std::move(l), a, key),
       data_(data)
 {
     fields_.emplace_back(
@@ -150,14 +151,14 @@ RelationReference::RelationReference(
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<6, RelationReference, TileFeatureLayer>(std::move(l), a, key)
+    : simfil::ProceduralObject<6, RelationReference, PartitionFeatureLayer>(std::move(l), a, key)
 {
 }
 
 model_ptr<Relation> RelationReference::relation() const
 {
     return model().resolve<Relation>(ModelNodeAddress{
-        TileFeatureLayer::ColumnId::Relations,
+        PartitionFeatureLayer::ColumnId::Relations,
         addr().index()});
 }
 

@@ -73,6 +73,10 @@ void validateSelector(FeatureLayerSelector const& selector)
 
 LocateRequest::LocateRequest(const nlohmann::json& j)
 {
+    if (j.contains("layerId"))
+        layerId_ = j.at("layerId").get<std::string>();
+    if (j.contains("partition"))
+        partition_ = PartitionId::fromJson(j.at("partition"));
     if (j.contains("mapId"))
         mapId_ = j["mapId"].get<std::string>();
     if (j.contains("typeId"))
@@ -107,21 +111,24 @@ LocateRequest::LocateRequest(std::string mapId, std::string typeId, KeyValuePair
 nlohmann::json LocateRequest::serialize() const
 {
     if (canonicalFeatureId_) {
-        return nlohmann::json::object({
-            {"mapId", mapId_},
-            {"featureId", *canonicalFeatureId_},
-        });
+        auto result = nlohmann::json{{"mapId", mapId_}, {"featureId", *canonicalFeatureId_}};
+        if (layerId_)
+            result["layerId"] = *layerId_;
+        if (partition_)
+            result["partition"] = partition_->toJson();
+        return result;
     }
     nlohmann::json featureId = nlohmann::json::array();
     for (auto const& [k, v] : featureId_) {
         featureId.emplace_back(k);
         std::visit([&featureId](auto&& vv) { featureId.emplace_back(vv); }, v);
     }
-    return nlohmann::json::object({
-        {"mapId", mapId_},
-        {"typeId", typeId_},
-        {"featureId", featureId},
-    });
+    auto result = nlohmann::json{{"mapId", mapId_}, {"typeId", typeId_}, {"featureId", featureId}};
+    if (layerId_)
+        result["layerId"] = *layerId_;
+    if (partition_)
+        result["partition"] = partition_->toJson();
+    return result;
 }
 
 LocateResponse::LocateResponse(const LocateRequest& req) : LocateRequest(req)
@@ -132,9 +139,10 @@ LocateResponse::LocateResponse(const LocateRequest& req) : LocateRequest(req)
 
 LocateResponse::LocateResponse(const nlohmann::json& j) : LocateRequest(j)
 {
-    if (j.contains("tileId")) {
-        tileKey_ = MapTileKey(j["tileId"].get<std::string>());
-    }
+    if (j.contains("partitionKey"))
+        tileKey_ = MapPartitionKey(j.at("partitionKey").get<std::string>());
+    else if (j.contains("tileId"))
+        tileKey_ = MapPartitionKey(j.at("tileId").get<std::string>());
     if (j.contains("canonicalFeatureId")) {
         resolvedCanonicalFeatureId_ = j["canonicalFeatureId"].get<std::string>();
     }
@@ -143,7 +151,11 @@ LocateResponse::LocateResponse(const nlohmann::json& j) : LocateRequest(j)
 nlohmann::json LocateResponse::serialize() const
 {
     auto result = LocateRequest::serialize();
-    result["tileId"] = tileKey_.toString();
+    result["partitionKey"] = tileKey_.toString();
+    result["partition"] = tileKey_.partitionId_.toJson();
+    result["layerId"] = tileKey_.layerId_;
+    if (tileKey_.partitionId_.kind() == PartitionKind::Tile)
+        result["tileId"] = tileKey_.toString();
     if (resolvedCanonicalFeatureId_) {
         result["canonicalFeatureId"] = *resolvedCanonicalFeatureId_;
     }
@@ -193,12 +205,14 @@ void LocateRequest::setFeatureId(const KeyValueViewPairs& kvp)
 
 LocateCandidate::LocateCandidate(nlohmann::json const& j)
 {
-    if (!j.contains("tileId") || !j.at("tileId").is_string() || !j.contains("selector") ||
+    auto const key = j.contains("partitionKey") ? "partitionKey" : "tileId";
+    if (!j.contains(key) || !j.at(key).is_string() || !j.contains("selector") ||
         !j.at("selector").is_object())
     {
-        throw std::invalid_argument("LocateCandidate requires tileId and selector.");
+        throw std::invalid_argument(
+            "LocateCandidate requires partitionKey (or legacy tileId) and selector.");
     }
-    tileKey_ = MapTileKey(j.at("tileId").get<std::string>());
+    tileKey_ = MapPartitionKey(j.at(key).get<std::string>());
     auto const& selector = j.at("selector");
     if (auto exact = selector.find("canonicalFeatureId"); exact != selector.end()) {
         if (!exact->is_string()) {
@@ -235,13 +249,13 @@ LocateCandidate::LocateCandidate(nlohmann::json const& j)
     validateSelector(selector_);
 }
 
-LocateCandidate::LocateCandidate(MapTileKey tileKey, FeatureLayerSelector selector)
+LocateCandidate::LocateCandidate(MapPartitionKey tileKey, FeatureLayerSelector selector)
     : tileKey_(std::move(tileKey)), selector_(std::move(selector))
 {
     validateSelector(selector_);
 }
 
-LocateCandidate::LocateCandidate(MapTileKey tileKey, std::string canonicalFeatureId)
+LocateCandidate::LocateCandidate(MapPartitionKey tileKey, std::string canonicalFeatureId)
     : LocateCandidate(
           std::move(tileKey),
           FeatureLayerSelector{.canonicalFeatureId_ = std::move(canonicalFeatureId)})
@@ -249,7 +263,7 @@ LocateCandidate::LocateCandidate(MapTileKey tileKey, std::string canonicalFeatur
 }
 
 LocateCandidate::LocateCandidate(
-    MapTileKey tileKey,
+    MapPartitionKey tileKey,
     std::string typeId,
     std::string featureFilter,
     std::map<std::string, FeatureLayerFilterBinding> bindings)
@@ -263,7 +277,7 @@ LocateCandidate::LocateCandidate(
 }
 
 LocateCandidate LocateCandidate::fromFeatureIdExpression(
-    MapTileKey tileKey,
+    MapPartitionKey tileKey,
     std::string typeId,
     std::string featureIdExpression,
     std::map<std::string, FeatureLayerFilterBinding> bindings)
@@ -299,15 +313,14 @@ nlohmann::json LocateCandidate::serialize() const
         }
     }
     return nlohmann::json::object({
-        {"tileId", tileKey_.toString()},
+        {"partitionKey", tileKey_.toString()},
         {"selector", std::move(selector)},
     });
 }
 
-tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
-resolveLocateCandidate(
+tl::expected<std::vector<model_ptr<Feature>>, simfil::Error> resolveLocateCandidate(
     LocateCandidate const& candidate,
-    TileFeatureLayer const& tile,
+    PartitionFeatureLayer const& tile,
     FeatureLayerFilterCancellationCheck const& cancellationCheck)
 {
     if (candidate.tileKey_ != tile.id()) {

@@ -12,22 +12,21 @@ namespace mapget
 namespace
 {
 /** Return the full validity record backing an AttrPoint index view. */
-model_ptr<Validity> attrPointValidity(
-    TileFeatureLayer const& model,
-    simfil::ModelNodeAddress const& viewAddress)
+model_ptr<Validity>
+attrPointValidity(PartitionFeatureLayer const& model, simfil::ModelNodeAddress const& viewAddress)
 {
     return model.resolve<Validity>(simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::Validities,
+        PartitionFeatureLayer::ColumnId::Validities,
         viewAddress.index()});
 }
 
 /** Build the compact sequence-reference node shared by index and range views. */
 model_ptr<AttrPointSequenceReference> attrPointSequenceReference(
-    TileFeatureLayer const& model,
+    PartitionFeatureLayer const& model,
     simfil::ModelNodeAddress const& sequenceAddress)
 {
     return model.resolve<AttrPointSequenceReference>(simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::AttrPointSequenceReferences,
+        PartitionFeatureLayer::ColumnId::AttrPointSequenceReferences,
         sequenceAddress.index()});
 }
 
@@ -64,10 +63,7 @@ AttrPointIndex::AttrPointIndex(
     simfil::ModelConstPtr model,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
-          std::move(model),
-          address,
-          key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(model), address, key)
 {
 }
 
@@ -146,10 +142,7 @@ AttrPointIndexRange::AttrPointIndexRange(
     simfil::ModelConstPtr model,
     simfil::ModelNodeAddress address,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureLayer>(
-          std::move(model),
-          address,
-          key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(std::move(model), address, key)
 {
 }
 
@@ -480,7 +473,7 @@ void Validity::ensureMaterialized()
     }
 
     auto const simpleAddress = addr();
-    if (simpleAddress.column() != TileFeatureLayer::ColumnId::SimpleValidity) {
+    if (simpleAddress.column() != PartitionFeatureLayer::ColumnId::SimpleValidity) {
         raise("Cannot materialize validity from non-simple address.");
     }
 
@@ -536,7 +529,7 @@ Validity::Validity(
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<7, Validity, TileFeatureLayer>(std::move(layer), a, key),
+    : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(std::move(layer), a, key),
       simpleDirection_(direction)
 {
     if (direction != Empty) {
@@ -562,11 +555,12 @@ Validity::Validity(
     ModelNode::data_ = std::move(runtimeData);
 }
 
-Validity::Validity(Validity::Data* data,
+Validity::Validity(
+    Validity::Data* data,
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<7, Validity, TileFeatureLayer>(std::move(layer), a, key),
+    : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(std::move(layer), a, key),
       data_(data)
 {
     if (data_->direction_)
@@ -693,7 +687,7 @@ Validity::Validity(Validity::Data* data,
                 case GeoPosOffset:
                     return self.model().resolve(
                         ModelNodeAddress{
-                            TileFeatureLayer::ColumnId::ValidityPoints,
+                            PartitionFeatureLayer::ColumnId::ValidityPoints,
                             self.addr().index()},
                         pointIndex);
                 case BufferOffset:
@@ -827,7 +821,7 @@ void Validity::setAttrPointIndex(
 {
     ensureMaterialized();
     if (!sequence || sequence->owningModel().get() != &model()) {
-        raise("Validity AttrPointSequence must belong to the same TileFeatureLayer.");
+        raise("Validity AttrPointSequence must belong to the same PartitionFeatureLayer.");
     }
     if (index >= sequence->positionCount()) {
         raiseFmt(
@@ -851,7 +845,7 @@ model_ptr<AttrPointIndex> Validity::attrPointIndex() const
         return {};
     }
     return model().resolve<AttrPointIndex>(simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::AttrPointIndexView,
+        PartitionFeatureLayer::ColumnId::AttrPointIndexView,
         addr().index()});
 }
 
@@ -862,7 +856,7 @@ void Validity::setAttrPointIndexRange(
 {
     ensureMaterialized();
     if (!sequence || sequence->owningModel().get() != &model()) {
-        raise("Validity AttrPointSequence must belong to the same TileFeatureLayer.");
+        raise("Validity AttrPointSequence must belong to the same PartitionFeatureLayer.");
     }
     if (start >= sequence->positionCount() || end >= sequence->positionCount()) {
         raiseFmt(
@@ -894,7 +888,7 @@ model_ptr<AttrPointIndexRange> Validity::attrPointIndexRange() const
         return {};
     }
     return model().resolve<AttrPointIndexRange>(simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::AttrPointIndexRangeView,
+        PartitionFeatureLayer::ColumnId::AttrPointIndexRangeView,
         addr().index()});
 }
 
@@ -1276,9 +1270,9 @@ SelfContainedGeometry Validity::computeGeometry(
     return {};
 }
 
-TileFeatureLayer& MultiValidity::featureLayer()
+PartitionFeatureLayer& MultiValidity::featureLayer()
 {
-    return static_cast<TileFeatureLayer&>(model());
+    return static_cast<PartitionFeatureLayer&>(model());
 }
 
 model_ptr<Validity>
@@ -1466,7 +1460,7 @@ model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
 {
     auto const elementIndex = size();
     const auto simpleAddr = simfil::ModelNodeAddress{
-        TileFeatureLayer::ColumnId::SimpleValidity,
+        PartitionFeatureLayer::ColumnId::SimpleValidity,
         static_cast<uint32_t>(direction)};
     appendInternal(model_ptr<simfil::ModelNode>::make(model_, simpleAddr));
     return featureLayer().resolve<Validity>(
@@ -1486,7 +1480,7 @@ ModelNode::Ptr MultiValidity::at(int64_t i) const
     }
 
     auto const memberAddress = value->get();
-    if (memberAddress.column() != TileFeatureLayer::ColumnId::SimpleValidity) {
+    if (memberAddress.column() != PartitionFeatureLayer::ColumnId::SimpleValidity) {
         return ModelNode::Ptr::make(model_, memberAddress);
     }
 
@@ -1513,17 +1507,17 @@ bool MultiValidity::iterate(ModelNode::IterCallback const& cb) const
     return true;
 }
 
-template<>
+template <>
 model_ptr<MultiValidity> resolveInternal(
     simfil::res::tag<MultiValidity>,
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     ModelNode const& node)
 {
-    if (node.addr().column() != TileFeatureModelLayerBase::ColumnId::ValidityCollections) {
+    if (node.addr().column() != PartitionFeatureModelLayerBase::ColumnId::ValidityCollections) {
         raise("Cannot cast this node to a ValidityCollection.");
     }
-    if (dynamic_cast<TileFeatureLayer const*>(&model) == nullptr) {
-        raise("Validity collections are only supported by TileFeatureLayer.");
+    if (dynamic_cast<PartitionFeatureLayer const*>(&model) == nullptr) {
+        raise("Validity collections are only supported by PartitionFeatureLayer.");
     }
     return MultiValidity(
         model.shared_from_this(),

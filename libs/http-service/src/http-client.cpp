@@ -284,8 +284,9 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
 
     auto reader = std::make_unique<TileLayerStream::Reader>(
         [this](auto&& mapId, auto&& layerId) { return impl_->resolve(mapId, layerId); },
-        [request](auto&& result) {
-            auto subset = std::dynamic_pointer_cast<TileSubsetLayer>(result);
+        [request](auto&& result)
+        {
+            auto subset = std::dynamic_pointer_cast<PartitionSubsetLayer>(result);
             if (!subset) {
                 log().warn("HttpClient /filter ignored non-subset tile layer result");
                 return;
@@ -293,7 +294,8 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
             request->notifyResult(std::move(subset));
         },
         impl_->stringPoolProvider_,
-        [request](TileLayerStream::MessageType type, std::string_view payload) {
+        [request](TileLayerStream::MessageType type, std::string_view payload)
+        {
             if (type != TileLayerStream::MessageType::Status || payload.empty()) {
                 return;
             }
@@ -303,7 +305,8 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
                 const auto state = status.value("state", std::string{});
                 if (state == "Failed" || state == "Aborted") {
                     request->setStatus(RequestStatus::Aborted);
-                } else if (state == "Success") {
+                }
+                else if (state == "Success") {
                     request->setStatus(RequestStatus::Success);
                 }
             }
@@ -316,22 +319,22 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
 
     auto tileIds = json::array();
     for (auto const& tileId : request->tileIds_) {
-        tileIds.emplace_back(tileId.value());
+        tileIds.emplace_back(tileId.toJson());
     }
     auto requestJson = json::object({
         {"mapId", request->mapId_},
         {"layerId", request->layerId_},
-        {"tileIds", std::move(tileIds)},
+        {"partitions", std::move(tileIds)},
     });
     if (request->sourceId_) {
         requestJson["sourceId"] = *request->sourceId_;
     }
-    if (!request->priorityTileIds_.empty()) {
-        auto priorityTileIds = json::array();
-        for (auto const& tileId : request->priorityTileIds_) {
-            priorityTileIds.emplace_back(tileId.value());
+    if (!request->priorityPartitionIds_.empty()) {
+        auto priorityPartitionIds = json::array();
+        for (auto const& tileId : request->priorityPartitionIds_) {
+            priorityPartitionIds.emplace_back(tileId.toJson());
         }
-        requestJson["priorityTileIds"] = std::move(priorityTileIds);
+        requestJson["priorityPartitions"] = std::move(priorityPartitionIds);
     }
     if (!request->exactRoots_.empty()) {
         auto roots = json::array();
@@ -340,7 +343,7 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
         {
             if (!root.canonicalFeatureId_.empty()) {
                 roots.push_back({
-                    {"tileId", root.tileId_.value()},
+                    {"partition", root.partitionId_.toJson()},
                     {"featureId", root.canonicalFeatureId_},
                 });
                 continue;
@@ -357,7 +360,7 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
                     value);
             }
             roots.push_back({
-                {"tileId", root.tileId_.value()},
+                {"partition", root.partitionId_.toJson()},
                 {"typeId", root.typeId_},
                 {"featureId", std::move(featureId)},
             });
@@ -418,6 +421,29 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
     return request;
 }
 
+ObjectDiscoveryResult HttpClient::discoverObjects(ObjectDiscoveryRequest const& request)
+{
+    auto item = nlohmann::json{
+        {"mapId", request.mapId_},
+        {"layerId", request.layerId_},
+        {"tileIds", {request.tileId_.value()}}};
+    if (request.sourceId_)
+        item["sourceId"] = *request.sourceId_;
+    auto httpRequest = drogon::HttpRequest::newHttpRequest();
+    httpRequest->setMethod(drogon::Post);
+    httpRequest->setPath("/objects/discover");
+    httpRequest->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    httpRequest->setBody(nlohmann::json{{"requests", nlohmann::json::array({item})}}.dump());
+    applyHeaders(httpRequest, impl_->headers_);
+    auto [result, response] = impl_->client_->sendRequest(httpRequest);
+    if (result != drogon::ReqResult::Ok || !response || response->statusCode() != drogon::k200OK)
+        throw std::runtime_error("Object discovery HTTP request failed.");
+    auto body = decodeResponseBody(response);
+    if (!body)
+        throw std::runtime_error("Unable to decode object discovery response.");
+    return ObjectDiscoveryResult::fromJson(nlohmann::json::parse(*body).at("responses").at(0));
+}
+
 std::optional<AttachmentResponse>
 HttpClient::attachment(
     AttachmentRequest const& request)
@@ -425,23 +451,13 @@ HttpClient::attachment(
     auto httpRequest =
         drogon::HttpRequest::newHttpRequest();
     httpRequest->setMethod(drogon::Get);
-    auto path = fmt::format(
-        "/attachment?mapId={}&layerId={}"
-        "&tileId={}&name={}",
-        drogon::utils::urlEncodeComponent(
-            request.tileKey_.mapId_),
-        drogon::utils::urlEncodeComponent(
-            request.tileKey_.layerId_),
-        request.tileKey_.tileId_.value(),
-        drogon::utils::urlEncodeComponent(
-            request.name_));
-    if (request.sourceId_) {
-        path += fmt::format(
-            "&sourceId={}",
-            drogon::utils::urlEncodeComponent(
-                *request.sourceId_));
-    }
-    httpRequest->setPath(std::move(path));
+    httpRequest->setPath("/attachment");
+    httpRequest->setParameter("mapId", request.tileKey_.mapId_);
+    httpRequest->setParameter("layerId", request.tileKey_.layerId_);
+    httpRequest->setParameter("partition", request.tileKey_.partitionId_.toJson().dump());
+    httpRequest->setParameter("name", request.name_);
+    if (request.sourceId_)
+        httpRequest->setParameter("sourceId", *request.sourceId_);
     applyHeaders(
         httpRequest,
         impl_->headers_);

@@ -17,17 +17,18 @@ using simfil::ScalarValueType;
 namespace mapget
 {
 
-class TileFeatureLayer;
+class PartitionFeatureLayer;
 class SourceDataReferenceItem;
 
 /**
  * Proxy node that represents an array of Qualifier-String + SourceDataReference tuples.
  */
-class SourceDataReferenceCollection final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class SourceDataReferenceCollection final
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
 
     ValueType type() const override;
     uint32_t size() const override;
@@ -42,7 +43,9 @@ public:
 
 public:
     explicit SourceDataReferenceCollection(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
     SourceDataReferenceCollection(uint32_t offset,
                                   uint32_t size,
                                   ModelConstPtr pool,
@@ -58,12 +61,13 @@ private:
 /**
  * Object holding a tuple of a qualifier string + a source data address.
  */
-class SourceDataReferenceItem final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class SourceDataReferenceItem final
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
     friend class SourceDataReferenceCollection;
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
 
     ValueType type() const override;
     uint32_t size() const override;
@@ -81,7 +85,9 @@ public:
 
 public:
     explicit SourceDataReferenceItem(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
     SourceDataReferenceItem(const QualifiedSourceDataReference* data,
                             ModelConstPtr pool,
                             ModelNodeAddress a,

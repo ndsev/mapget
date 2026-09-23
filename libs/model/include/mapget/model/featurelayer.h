@@ -39,11 +39,11 @@ struct FeatureLayerSelector;
 class SimfilExpressionCache;
 
 /**
- * The TileFeatureLayer class represents a specific map layer
+ * The PartitionFeatureLayer class represents a specific map layer
  * within a map tile. It is a container for map features.
  * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
  */
-class TileFeatureLayer : public TileFeatureModelLayerBase
+class PartitionFeatureLayer : public PartitionFeatureModelLayerBase
 {
     template <class, class, class>
     friend class MergedArrayView;
@@ -59,19 +59,21 @@ class TileFeatureLayer : public TileFeatureModelLayerBase
     friend class AttributeLayerList;
     friend class Validity;
     template <typename Target>
-    friend model_ptr<Target>
-    resolveInternal(simfil::res::tag<Target>, TileFeatureLayer const&, simfil::ModelNode const&);
+    friend model_ptr<Target> resolveInternal(
+        simfil::res::tag<Target>,
+        PartitionFeatureLayer const&,
+        simfil::ModelNode const&);
 
 public:
     // Keep ModelPool::resolve<T> overloads visible alongside the override below.
-    using TileFeatureModelLayerBase::resolve;
-    using Ptr = std::shared_ptr<TileFeatureLayer>;
+    using PartitionFeatureModelLayerBase::resolve;
+    using Ptr = std::shared_ptr<PartitionFeatureLayer>;
     static constexpr std::string_view GLB_ATTACHMENT_MIME_TYPE = "model/gltf-binary";
 
     /** Identify one source node clone within an optional destination-feature scope. */
     struct CloneCacheKey
     {
-        TileFeatureLayer const* model_ = nullptr;
+        PartitionFeatureLayer const* model_ = nullptr;
         uint32_t address_ = 0;
         uint32_t targetFeatureAddress_ = 0;
 
@@ -83,7 +85,7 @@ public:
     {
         [[nodiscard]] size_t operator()(CloneCacheKey const& key) const noexcept
         {
-            auto const modelHash = std::hash<TileFeatureLayer const*>{}(key.model_);
+            auto const modelHash = std::hash<PartitionFeatureLayer const*>{}(key.model_);
             auto const addressHash = std::hash<uint32_t>{}(key.address_);
             auto const targetHash = std::hash<uint32_t>{}(key.targetFeatureAddress_);
             auto const sourceHash =
@@ -97,7 +99,7 @@ public:
     using CloneCache = std::unordered_map<CloneCacheKey, simfil::ModelNode::Ptr, CloneCacheKeyHash>;
 
     /**
-     * This constructor initializes a new TileFeatureLayer instance.
+     * This constructor initializes a new PartitionFeatureLayer instance.
      * Each instance is associated with a specific TileId, stringPoolId, and mapId.
      * @param tileId The tile id of the new feature layer. Features in this layer
      *  should be roughly within the area indicated by the tile.
@@ -109,24 +111,26 @@ public:
      *  to one of the allowed feature id compositions for the feature type.
      * @param strings Shared string dictionary, which allows compressed storage
      *  of object field name strings. It is auto-filled, and one instance may be used
-     *  by multiple TileFeatureLayer instances.
+     *  by multiple PartitionFeatureLayer instances.
      */
-    TileFeatureLayer(
-        TileId tileId,
+    PartitionFeatureLayer(
+        PartitionId tileId,
         std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& strings);
 
     /**
-     * Constructor which parses a TileFeatureLayer from a binary byte buffer.
+     * Constructor which parses a PartitionFeatureLayer from a binary byte buffer.
+     * Checks index structure; call validate() after shared construction to check
+     * feature-ID uniqueness and index consistency against stored ID values.
      * @param input The binary bytes to parse.
      * @param layerInfoResolveFun Function which will be called to retrieve
      *  a layerInfo object for the layer name stored for the tile.
      * @param stringPoolGetter Function which will be called to retrieve
      *  a string pool for the node name of the tile.
      */
-    TileFeatureLayer(
+    PartitionFeatureLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter);
@@ -139,14 +143,16 @@ public:
     model_ptr<Object> getIdPrefix();
     model_ptr<Object> getIdPrefix() const override;
 
-    /** Destructor for the TileFeatureLayer class. */
-    ~TileFeatureLayer() override;
+    /** Destructor for the PartitionFeatureLayer class. */
+    ~PartitionFeatureLayer() override;
 
     /**
      * Creates a new feature and insert it into this tile layer.
      * The featureIdParts (which do not include the getIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
      * within the associated layer, or a runtime error will be raised.
+     * An existing feature with the same type and required primary ID parts
+     * causes an error before storage is changed. Optional parts do not distinguish IDs.
      * @param typeId Specifies the type of the feature.
      * @param featureIdParts Uniquely identifying information for the feature,
      * according to the requirements of typeId. Do not include the tile feature
@@ -256,11 +262,11 @@ public:
 
     /**
      * Return type for begin() and end() methods to support range-based
-     * for-loops to iterate over all features in a TileFeatureLayer.
+     * for-loops to iterate over all features in a PartitionFeatureLayer.
      */
     struct Iterator
     {
-        Iterator(TileFeatureLayer const& layer, size_t i) : layer_(layer), i_(i) {}
+        Iterator(PartitionFeatureLayer const& layer, size_t i) : layer_(layer), i_(i) {}
         model_ptr<Feature> operator*() { return layer_.at(i_); }
         Iterator& operator++()
         {
@@ -279,13 +285,13 @@ public:
         using reference = value_type&;
 
     private:
-        TileFeatureLayer const& layer_;
+        PartitionFeatureLayer const& layer_;
         size_t i_ = 0;
     };
 
     /**
      * begin()/end() support range-based for-loops to iterate over all
-     * features in a TileFeatureLayer.
+     * features in a PartitionFeatureLayer.
      */
     Iterator begin() const;
     Iterator end() const;
@@ -299,6 +305,9 @@ public:
     /** Validate every emitted feature against the JSON Schema attached to this layer's LayerInfo.
      */
     void validateSchema() const;
+
+    /** Check model storage, feature-ID uniqueness, and index consistency after construction. */
+    [[nodiscard]] std::vector<std::string> checkForErrors() const override;
 
     /** Return the layer schema attached through this tile's LayerInfo, if available. */
     [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
@@ -387,13 +396,13 @@ public:
         // generated during query evaluation.
         simfil::Diagnostics diagnostics;
     };
-    tl::expected<TileFeatureLayer::QueryResult, simfil::Error> evaluate(
+    tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error> evaluate(
         std::string_view query,
         ModelNode const& node,
         bool anyMode = true,
         bool autoWildcard = true);
 
-    tl::expected<TileFeatureLayer::QueryResult, simfil::Error>
+    tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error>
     evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
 
     /**
@@ -430,7 +439,7 @@ public:
      */
     void clone(
         CloneCache& clonedModelNodes,
-        TileFeatureLayer::Ptr const& otherLayer,
+        PartitionFeatureLayer::Ptr const& otherLayer,
         Feature const& otherFeature,
         std::string_view const& type,
         KeyValueViewPairs idParts);
@@ -442,10 +451,10 @@ public:
      */
     simfil::ModelNode::Ptr clone(
         CloneCache& clonedModelNodes,
-        TileFeatureLayer::Ptr const& otherLayer,
+        PartitionFeatureLayer::Ptr const& otherLayer,
         simfil::ModelNode::Ptr const& otherNode);
 
-    using ColumnId = TileFeatureModelLayerBase::ColumnId;
+    using ColumnId = PartitionFeatureModelLayerBase::ColumnId;
 
 protected:
     /** Describe a feature clone whose local references must follow a remapped ID. */
@@ -459,7 +468,7 @@ protected:
     simfil::ModelNode::Ptr cloneNode(
         CloneContext const& context,
         CloneCache& clonedModelNodes,
-        TileFeatureLayer::Ptr const& otherLayer,
+        PartitionFeatureLayer::Ptr const& otherLayer,
         simfil::ModelNode::Ptr const& otherNode);
 
     /** Get the primary id composition for the given feature type. */
@@ -526,7 +535,7 @@ protected:
 template <typename Target>
 simfil::model_ptr<Target> resolveInternal(
     simfil::res::tag<Target>,
-    TileFeatureLayer const& model,
+    PartitionFeatureLayer const& model,
     simfil::ModelNode const& node);
 
 }  // namespace mapget

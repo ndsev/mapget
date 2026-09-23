@@ -17,6 +17,9 @@ public:
     LocateRequest(std::string mapId, std::string typeId, KeyValuePairs featureId);
     virtual ~LocateRequest() = default;
 
+    /** Optional owning-layer/partition context disambiguates tile and object feature IDs. */
+    std::optional<std::string> layerId_;
+    std::optional<PartitionId> partition_;
     std::string mapId_;
     std::string typeId_;
     KeyValuePairs featureId_;
@@ -43,19 +46,13 @@ class LocateCandidate
 {
 public:
     explicit LocateCandidate(nlohmann::json const& j);
+    LocateCandidate(MapPartitionKey tileKey, FeatureLayerSelector selector);
+    LocateCandidate(MapPartitionKey tileKey, std::string canonicalFeatureId);
     LocateCandidate(
-        MapTileKey tileKey,
-        FeatureLayerSelector selector);
-    LocateCandidate(
-        MapTileKey tileKey,
-        std::string canonicalFeatureId);
-    LocateCandidate(
-        MapTileKey tileKey,
+        MapPartitionKey tileKey,
         std::string typeId,
         std::string featureFilter,
-        std::map<
-            std::string,
-            FeatureLayerFilterBinding> bindings = {});
+        std::map<std::string, FeatureLayerFilterBinding> bindings = {});
 
     /**
      * Construct a selector which computes canonical IDs once per candidate tile.
@@ -64,12 +61,12 @@ public:
      * canonical feature-id strings or FeatureId nodes for `typeId`.
      */
     [[nodiscard]] static LocateCandidate fromFeatureIdExpression(
-        MapTileKey tileKey,
+        MapPartitionKey tileKey,
         std::string typeId,
         std::string featureIdExpression,
         std::map<std::string, FeatureLayerFilterBinding> bindings = {});
 
-    MapTileKey tileKey_;
+    MapPartitionKey tileKey_;
     FeatureLayerSelector selector_;
 
     [[nodiscard]] nlohmann::json serialize() const;
@@ -85,17 +82,15 @@ public:
     LocateResponse(LocateResponse const& resp) = default;
     explicit LocateResponse(LocateRequest const& req);
 
-    MapTileKey tileKey_;
+    MapPartitionKey tileKey_;
     std::optional<std::string> resolvedCanonicalFeatureId_;
 
     [[nodiscard]] nlohmann::json serialize() const override;
 };
 
 /** Apply a datasource candidate to an already loaded complete feature tile. */
-tl::expected<std::vector<model_ptr<Feature>>, simfil::Error>
-resolveLocateCandidate(
+tl::expected<std::vector<model_ptr<Feature>>, simfil::Error> resolveLocateCandidate(
     LocateCandidate const& candidate,
-    TileFeatureLayer const& tile,
+    PartitionFeatureLayer const& tile,
     FeatureLayerFilterCancellationCheck const& cancellationCheck = {});
-
 }

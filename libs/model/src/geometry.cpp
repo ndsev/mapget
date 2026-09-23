@@ -68,7 +68,7 @@ using namespace simfil;
 namespace
 {
 /** Resolve the feature root that owns a feature-scoped procedural view. */
-model_ptr<Feature> resolveFeatureByRootIndex(TileFeatureLayer const& model, uint32_t index)
+model_ptr<Feature> resolveFeatureByRootIndex(PartitionFeatureLayer const& model, uint32_t index)
 {
     auto rootResult = model.root(index);
     if (!rootResult || !*rootResult) {
@@ -80,7 +80,7 @@ model_ptr<Feature> resolveFeatureByRootIndex(TileFeatureLayer const& model, uint
 /** Check whether a model column stores an actual geometry payload. */
 bool isBaseGeometryColumn(uint8_t column)
 {
-    using Col = TileFeatureModelLayerBase::ColumnId;
+    using Col = PartitionFeatureModelLayerBase::ColumnId;
     return column == Col::PointGeometries ||
            column == Col::LineGeometries ||
            column == Col::PolygonGeometries ||
@@ -92,7 +92,7 @@ bool isBaseGeometryColumn(uint8_t column)
 /** Map storage columns back to their logical geometry type. */
 GeomType geometryTypeForColumn(uint8_t column)
 {
-    using Col = TileFeatureModelLayerBase::ColumnId;
+    using Col = PartitionFeatureModelLayerBase::ColumnId;
     switch (column) {
     case Col::PointGeometries:
         return GeomType::Points;
@@ -178,49 +178,49 @@ int64_t geometryPointHelperData(
 
 /** Create the object view that exposes origin/size for bounds geometries. */
 ModelNode::Ptr makeBoundsInfoView(
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     ModelNodeAddress baseGeometryAddress)
 {
     return model.resolve(
         geometryHelperAddress(
-            TileFeatureModelLayerBase::ColumnId::GeometryBoundsInfoView,
+            PartitionFeatureModelLayerBase::ColumnId::GeometryBoundsInfoView,
             baseGeometryAddress),
         geometryHelperData(baseGeometryAddress));
 }
 
 /** Create the polygon coordinate view used for AABB and GLTF-bounds export. */
 ModelNode::Ptr makeBoundsPolygonCoordinatesView(
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     ModelNodeAddress baseGeometryAddress)
 {
     return model.resolve(
         geometryHelperAddress(
-            TileFeatureModelLayerBase::ColumnId::GeometryBoundsPolygonCoordinatesView,
+            PartitionFeatureModelLayerBase::ColumnId::GeometryBoundsPolygonCoordinatesView,
             baseGeometryAddress),
         geometryHelperData(baseGeometryAddress));
 }
 
 /** Create the single ring used by the bounds polygon coordinate view. */
 ModelNode::Ptr makeBoundsRingView(
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     ModelNodeAddress baseGeometryAddress)
 {
     return model.resolve(
         geometryHelperAddress(
-            TileFeatureModelLayerBase::ColumnId::GeometryBoundsRingView,
+            PartitionFeatureModelLayerBase::ColumnId::GeometryBoundsRingView,
             baseGeometryAddress),
         geometryHelperData(baseGeometryAddress));
 }
 
 /** Create a procedural point view into either a bounds helper or point buffer. */
 ModelNode::Ptr makeGeometryPointView(
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     ModelNodeAddress baseGeometryAddress,
     GeometryPointViewKind pointKind)
 {
     return model.resolve(
         geometryHelperAddress(
-            TileFeatureModelLayerBase::ColumnId::GeometryPointView,
+            PartitionFeatureModelLayerBase::ColumnId::GeometryPointView,
             baseGeometryAddress),
         geometryPointHelperData(baseGeometryAddress, pointKind));
 }
@@ -256,8 +256,14 @@ void ensureGltfNodeStorageInitialized(StorageType& storage, simfil::ArrayIndex a
 
 /** Model node impls. for GeometryCollection */
 
-GeometryCollection::GeometryCollection(ModelConstPtr pool_, ModelNodeAddress a, simfil::detail::mp_key key)
-    : MergedArrayView<GeometryCollection, Geometry, TileFeatureModelLayerBase>(std::move(pool_), a, key)
+GeometryCollection::GeometryCollection(
+    ModelConstPtr pool_,
+    ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : MergedArrayView<GeometryCollection, Geometry, PartitionFeatureModelLayerBase>(
+          std::move(pool_),
+          a,
+          key)
 {}
 
 ValueType GeometryCollection::type() const {
@@ -299,7 +305,7 @@ model_ptr<Geometry> GeometryCollection::newGeometry(
     size_t initialCapacity,
     bool fixedSize)
 {
-    if (addr_.column() != TileFeatureModelLayerBase::ColumnId::GeometryCollections) {
+    if (addr_.column() != PartitionFeatureModelLayerBase::ColumnId::GeometryCollections) {
         raise("Cannot append to a single-geometry view.");
     }
     auto result = model().newGeometry(type, initialCapacity, fixedSize);
@@ -330,7 +336,8 @@ ModelNode::Ptr GeometryCollection::singleGeom() const
         return {};
     }
     if (isBaseGeometryColumn(localAddress.column()) ||
-        localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+        localAddress.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews)
+    {
         return model().resolve(localAddress);
     }
     if (model().arrayMemberStorage().size((ArrayIndex)localAddress.index()) == 1) {
@@ -342,12 +349,12 @@ ModelNode::Ptr GeometryCollection::singleGeom() const
 
 nlohmann::json GeometryCollection::toJson() const
 {
-    return simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>::toJson();
+    return simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>::toJson();
 }
 
 void GeometryCollection::addGeometry(const model_ptr<Geometry>& geom)
 {
-    if (addr_.column() != TileFeatureModelLayerBase::ColumnId::GeometryCollections) {
+    if (addr_.column() != PartitionFeatureModelLayerBase::ColumnId::GeometryCollections) {
         raise("Cannot append to a single-geometry view.");
     }
     auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
@@ -375,7 +382,8 @@ ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
         return {};
     }
     if (isBaseGeometryColumn(localAddress.column()) ||
-        localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+        localAddress.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews)
+    {
         if (i == 0) {
             return model().resolve(localAddress);
         }
@@ -393,18 +401,24 @@ model_ptr<GeometryArrayView> GeometryCollection::mergedGeometryArray() const
     if (isFeatureScopedView()) {
         return model_ptr<GeometryArrayView>::make(
             model_,
-            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView, addr_.index()});
+            ModelNodeAddress{
+                PartitionFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView,
+                addr_.index()});
     }
 
     auto result = (isBaseGeometryColumn(addr_.column()) ||
-        addr_.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews)
-        ? model_ptr<GeometryArrayView>::make(
+                   addr_.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews) ?
+        model_ptr<GeometryArrayView>::make(
             model_,
-            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::GeometryArrayView, addr_.index()},
-            addr_)
-        : model_ptr<GeometryArrayView>::make(
+            ModelNodeAddress{
+                PartitionFeatureModelLayerBase::ColumnId::GeometryArrayView,
+                addr_.index()},
+            addr_) :
+        model_ptr<GeometryArrayView>::make(
             model_,
-            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::GeometryArrayView, addr_.index()});
+            ModelNodeAddress{
+                PartitionFeatureModelLayerBase::ColumnId::GeometryArrayView,
+                addr_.index()});
     return result;
 }
 
@@ -417,7 +431,8 @@ uint32_t GeometryCollection::localMergedSize() const
         return 0;
     }
     if (isBaseGeometryColumn(localAddress.column()) ||
-        localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+        localAddress.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews)
+    {
         return 1;
     }
     return model().arrayMemberStorage().size(static_cast<ArrayIndex>(localAddress.index()));
@@ -448,7 +463,8 @@ GeometryCollection::ExtensionPtr GeometryCollection::mergedExtension() const
 
 bool GeometryCollection::isFeatureScopedView() const
 {
-    return addr_.column() == TileFeatureModelLayerBase::ColumnId::FeatureGeometryCollectionView;
+    return addr_.column() ==
+        PartitionFeatureModelLayerBase::ColumnId::FeatureGeometryCollectionView;
 }
 
 model_ptr<Feature> GeometryCollection::featureScopedFeature() const
@@ -456,7 +472,7 @@ model_ptr<Feature> GeometryCollection::featureScopedFeature() const
     if (!isFeatureScopedView()) {
         return {};
     }
-    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
+    auto const* featureLayer = dynamic_cast<PartitionFeatureLayer const*>(&model());
     if (!featureLayer) {
         return {};
     }
@@ -476,7 +492,7 @@ GeometryArrayView::ExtensionPtr GeometryArrayView::mergedExtension() const
 
 bool GeometryArrayView::isFeatureScopedView() const
 {
-    return addr_.column() == TileFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView;
+    return addr_.column() == PartitionFeatureModelLayerBase::ColumnId::FeatureGeometryArrayView;
 }
 
 model_ptr<Feature> GeometryArrayView::featureScopedFeature() const
@@ -484,7 +500,7 @@ model_ptr<Feature> GeometryArrayView::featureScopedFeature() const
     if (!isFeatureScopedView()) {
         return {};
     }
-    auto const* featureLayer = dynamic_cast<TileFeatureLayer const*>(&model());
+    auto const* featureLayer = dynamic_cast<PartitionFeatureLayer const*>(&model());
     if (!featureLayer) {
         return {};
     }
@@ -505,7 +521,8 @@ uint32_t GeometryArrayView::localMergedSize() const
             return 0;
         }
         if (isBaseGeometryColumn(localAddress.column()) ||
-            localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+            localAddress.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews)
+        {
             return 1;
         }
         return model().arrayMemberStorage().size(static_cast<ArrayIndex>(localAddress.index()));
@@ -513,7 +530,8 @@ uint32_t GeometryArrayView::localMergedSize() const
     if (singleGeometryAddress_) {
         return 1;
     }
-    return MergedArrayView<GeometryArrayView, Geometry, TileFeatureModelLayerBase>::Base::size();
+    return MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>::Base::
+        size();
 }
 
 ModelNode::Ptr GeometryArrayView::localMergedAt(int64_t i) const
@@ -527,7 +545,8 @@ ModelNode::Ptr GeometryArrayView::localMergedAt(int64_t i) const
             return {};
         }
         if (isBaseGeometryColumn(localAddress.column()) ||
-            localAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+            localAddress.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews)
+        {
             return i == 0 ? this->model().resolve(localAddress) : ModelNode::Ptr{};
         }
         auto array = this->model().resolve<simfil::Array>(
@@ -540,7 +559,8 @@ ModelNode::Ptr GeometryArrayView::localMergedAt(int64_t i) const
         }
         return {};
     }
-    return MergedArrayView<GeometryArrayView, Geometry, TileFeatureModelLayerBase>::Base::at(i);
+    return MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>::Base::at(
+        i);
 }
 
 bool GeometryArrayView::localMergedIterate(const IterCallback& cb) const
@@ -562,22 +582,26 @@ bool GeometryArrayView::localMergedIterate(const IterCallback& cb) const
         }
         return true;
     }
-    return MergedArrayView<GeometryArrayView, Geometry, TileFeatureModelLayerBase>::Base::iterate(cb);
+    return MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>::Base::
+        iterate(cb);
 }
 
 /** ModelNode impls. for Geometry */
 
-Geometry::Geometry(
-    ModelConstPtr pool_,
-    ModelNodeAddress a,
-    simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(std::move(pool_), a, key)
+Geometry::Geometry(ModelConstPtr pool_, ModelNodeAddress a, simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<
+          PartitionFeatureModelLayerBase>(std::move(pool_), a, key)
 {
     storage_ = &model().vertexBufferStorage();
 }
 
-Geometry::Geometry(ViewData* data, ModelConstPtr pool_, ModelNodeAddress a, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(std::move(pool_), a, key),
+Geometry::Geometry(
+    ViewData* data,
+    ModelConstPtr pool_,
+    ModelNodeAddress a,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<
+          PartitionFeatureModelLayerBase>(std::move(pool_), a, key),
       geomViewData_(data)
 {
     storage_ = &model().vertexBufferStorage();
@@ -641,7 +665,7 @@ SelfContainedGeometry Geometry::toSelfContained() const
 
 nlohmann::json Geometry::toJson() const
 {
-    return simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>::toJson();
+    return simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>::toJson();
 }
 
 ValueType Geometry::type() const {
@@ -739,15 +763,17 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
                 // back to the generic point-buffer view instead of polygon rings.
                 break;
             }
-            return model().resolve(
-                ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::Polygon, addr_.index()});
+            return model().resolve(ModelNodeAddress{
+                PartitionFeatureModelLayerBase::ColumnId::Polygon,
+                addr_.index()});
         case GeomType::Mesh:
             if (geomViewData_) {
                 // Same for mesh views: only base meshes can present triangle collections.
                 break;
             }
-            return model().resolve(
-                ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::Mesh, addr_.index()});
+            return model().resolve(ModelNodeAddress{
+                PartitionFeatureModelLayerBase::ColumnId::Mesh,
+                addr_.index()});
         default:
             return model_ptr<PointBufferNode>::make(model_, addr_);
         }
@@ -1217,7 +1243,7 @@ Point Geometry::percentagePositionFromGeometries(std::vector<model_ptr<Geometry>
 /** ModelNode impls. for bounds helper views */
 
 BoundsInfoNode::BoundsInfoNode(ModelNode const& baseNode, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(baseNode, key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key),
       baseGeometryAddress_(decodeGeometryHelperBaseAddress(addr_, std::get<int64_t>(data_)))
 {}
 
@@ -1272,7 +1298,7 @@ bool BoundsInfoNode::iterate(const IterCallback& cb) const
 BoundsPolygonCoordinatesNode::BoundsPolygonCoordinatesNode(
     ModelNode const& baseNode,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(baseNode, key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key),
       baseGeometryAddress_(decodeGeometryHelperBaseAddress(addr_, std::get<int64_t>(data_)))
 {}
 
@@ -1310,7 +1336,7 @@ bool BoundsPolygonCoordinatesNode::iterate(const IterCallback& cb) const
 }
 
 BoundsRingNode::BoundsRingNode(ModelNode const& baseNode, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(baseNode, key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key),
       baseGeometryAddress_(decodeGeometryHelperBaseAddress(addr_, std::get<int64_t>(data_)))
 {}
 
@@ -1365,7 +1391,7 @@ bool BoundsRingNode::iterate(const IterCallback& cb) const
 /** ModelNode impls. for PolygonNode */
 
 PolygonNode::PolygonNode(ModelConstPtr pool, ModelNodeAddress const& a, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(std::move(pool), a, key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(std::move(pool), a, key)
 {}
 
 ValueType PolygonNode::type() const
@@ -1378,7 +1404,7 @@ ModelNode::Ptr PolygonNode::at(int64_t index) const
     if (index >= 0 && index < size()) {
         // Ring 0 is the outer ring; following rings are holes.
         return model().resolve(
-            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::LinearRing, addr_.index()},
+            ModelNodeAddress{PartitionFeatureModelLayerBase::ColumnId::LinearRing, addr_.index()},
             index);
     }
 
@@ -1387,7 +1413,9 @@ ModelNode::Ptr PolygonNode::at(int64_t index) const
 
 uint32_t PolygonNode::size() const
 {
-    return model().polygonRingCount(ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::PolygonGeometries, addr_.index()});
+    return model().polygonRingCount(ModelNodeAddress{
+        PartitionFeatureModelLayerBase::ColumnId::PolygonGeometries,
+        addr_.index()});
 }
 
 ModelNode::Ptr PolygonNode::get(const StringId&) const
@@ -1412,14 +1440,12 @@ bool PolygonNode::iterate(IterCallback const& cb) const
 
 /** ModelNode impls. for MeshNode */
 
-MeshNode::MeshNode(ModelConstPtr pool,
-    ModelNodeAddress const& a,
-    simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(std::move(pool), a, key)
+MeshNode::MeshNode(ModelConstPtr pool, ModelNodeAddress const& a, simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(std::move(pool), a, key)
 {
     auto vertex_buffer = model_ptr<PointBufferNode>::make(
         model_,
-        ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::MeshGeometries, addr_.index()});
+        ModelNodeAddress{PartitionFeatureModelLayerBase::ColumnId::MeshGeometries, addr_.index()});
     assert(vertex_buffer->size() % 3 == 0);
     size_ = vertex_buffer->size() / 3;
 }
@@ -1433,7 +1459,9 @@ ModelNode::Ptr MeshNode::at(int64_t index) const
 {
     if (0 <= index && index < size_)
         return model().resolve(
-            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::MeshTriangleCollection, addr_.index()},
+            ModelNodeAddress{
+                PartitionFeatureModelLayerBase::ColumnId::MeshTriangleCollection,
+                addr_.index()},
             index);
 
     throw std::out_of_range("MeshNode: index out of bounds.");
@@ -1452,8 +1480,10 @@ bool MeshNode::iterate(IterCallback const& cb) const
     return true;
 }
 
-MeshTriangleCollectionNode::MeshTriangleCollectionNode(const ModelNode& base, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(base, key),
+MeshTriangleCollectionNode::MeshTriangleCollectionNode(
+    const ModelNode& base,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(base, key),
       index_(std::get<int64_t>(data_) * 3)
 {}
 
@@ -1466,7 +1496,9 @@ ModelNode::Ptr MeshTriangleCollectionNode::at(int64_t index) const
 {
     if (index == 0)
         return model().resolve(
-            ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::MeshTriangleLinearRing, addr_.index()},
+            ModelNodeAddress{
+                PartitionFeatureModelLayerBase::ColumnId::MeshTriangleLinearRing,
+                addr_.index()},
             index_);
 
     throw std::out_of_range("MeshTriangleCollectionNode: index out of bounds.");
@@ -1490,14 +1522,19 @@ LinearRingNode::LinearRingNode(const ModelNode& base, simfil::detail::mp_key key
     : LinearRingNode(base, std::optional<size_t>{}, key)
 {}
 
-LinearRingNode::LinearRingNode(const ModelNode& base, std::optional<size_t> length, simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(base, key)
+LinearRingNode::LinearRingNode(
+    const ModelNode& base,
+    std::optional<size_t> length,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(base, key)
 {
-    if (addr_.column() == TileFeatureModelLayerBase::ColumnId::LinearRing) {
+    if (addr_.column() == PartitionFeatureModelLayerBase::ColumnId::LinearRing) {
         if (std::get_if<int64_t>(&data_)) {
             ringIndex_ = static_cast<uint32_t>(std::get<int64_t>(data_));
         }
-        auto const polygonAddress = ModelNodeAddress{TileFeatureModelLayerBase::ColumnId::PolygonGeometries, addr_.index()};
+        auto const polygonAddress = ModelNodeAddress{
+            PartitionFeatureModelLayerBase::ColumnId::PolygonGeometries,
+            addr_.index()};
         offset_ = model().polygonRingStart(polygonAddress, ringIndex_);
         auto const end = model().polygonRingEnd(polygonAddress, ringIndex_);
         size_ = end - offset_;
@@ -1510,7 +1547,7 @@ LinearRingNode::LinearRingNode(const ModelNode& base, std::optional<size_t> leng
     }
 
     auto buffer = vertexBuffer();
-    if (addr_.column() != TileFeatureModelLayerBase::ColumnId::LinearRing) {
+    if (addr_.column() != PartitionFeatureModelLayerBase::ColumnId::LinearRing) {
         size_ = length.value_or(buffer->size() - offset_);
     }
 
@@ -1617,7 +1654,7 @@ uint32_t LinearRingNode::size() const
 
 model_ptr<PointBufferNode> LinearRingNode::vertexBuffer() const
 {
-    using Col = TileFeatureModelLayerBase::ColumnId;
+    using Col = PartitionFeatureModelLayerBase::ColumnId;
     switch (addr_.column()) {
     case Col::LinearRing:
         return model_ptr<PointBufferNode>::make(
@@ -1638,21 +1675,22 @@ PointBufferNode::PointBufferNode(
     ModelConstPtr pool_,
     ModelNodeAddress const& baseGeometryAddress,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(
-        std::move(pool_),
-        ModelNodeAddress{
-            baseGeometryAddress.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews ?
-                TileFeatureModelLayerBase::ColumnId::PointBuffersView :
-                TileFeatureModelLayerBase::ColumnId::PointBuffers,
-            baseGeometryAddress.index()},
-        key),
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(
+          std::move(pool_),
+          ModelNodeAddress{
+              baseGeometryAddress.column() ==
+                      PartitionFeatureModelLayerBase::ColumnId::GeometryViews ?
+                  PartitionFeatureModelLayerBase::ColumnId::PointBuffersView :
+                  PartitionFeatureModelLayerBase::ColumnId::PointBuffers,
+              baseGeometryAddress.index()},
+          key),
       baseGeomAddress_(baseGeometryAddress)
 {
     storage_ = &model().vertexBufferStorage();
 
     // Resolve geometry views to their base geometry while preserving the
     // selected point range.
-    if (baseGeomAddress_.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+    if (baseGeomAddress_.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews) {
         auto const* viewData = model().geometryViewData(baseGeomAddress_);
         if (!viewData) {
             throw std::runtime_error("Failed to resolve geometry view.");
@@ -1661,7 +1699,8 @@ PointBufferNode::PointBufferNode(
         size_ = viewData->size_;
         baseGeomAddress_ = viewData->baseGeometry_;
 
-        while (baseGeomAddress_.column() == TileFeatureModelLayerBase::ColumnId::GeometryViews) {
+        while (baseGeomAddress_.column() == PartitionFeatureModelLayerBase::ColumnId::GeometryViews)
+        {
             // Nested views accumulate offsets until a real base geometry buffer
             // is reached, so point access stays O(1) afterwards.
             viewData = model().geometryViewData(baseGeomAddress_);
@@ -1697,15 +1736,16 @@ ModelNode::Ptr PointBufferNode::at(int64_t i) const {
     if (i < 0 || i >= size())
         throw std::out_of_range("vertex-buffer: Out of range.");
     auto const absoluteIndex = i + offset_;
-    if (baseGeomAddress_.column() == TileFeatureModelLayerBase::ColumnId::AabbGeometries &&
-        absoluteIndex == 1) {
+    if (baseGeomAddress_.column() == PartitionFeatureModelLayerBase::ColumnId::AabbGeometries &&
+        absoluteIndex == 1)
+    {
         return makeGeometryPointView(
             model(),
             baseGeomAddress_,
             GeometryPointViewKind::RawSize);
     }
     auto const pointNodeAddress = ModelNodeAddress{
-        TileFeatureModelLayerBase::ColumnId::Points,
+        PartitionFeatureModelLayerBase::ColumnId::Points,
         baseGeomAddress_.index()};
     return model().resolve(pointNodeAddress, absoluteIndex);
 }
@@ -1743,8 +1783,9 @@ Point PointBufferNode::pointAt(int64_t index) const
     if (!vertexResult) {
         throw std::out_of_range("vertex-buffer: Out of range.");
     }
-    if (baseGeomAddress_.column() == TileFeatureModelLayerBase::ColumnId::AabbGeometries &&
-        index + static_cast<int64_t>(offset_) == 1) {
+    if (baseGeomAddress_.column() == PartitionFeatureModelLayerBase::ColumnId::AabbGeometries &&
+        index + static_cast<int64_t>(offset_) == 1)
+    {
         return Point{
             vertexResult->get().x,
             vertexResult->get().y,

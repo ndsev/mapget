@@ -2,6 +2,7 @@
 #include "stringpool.h"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <iterator>
 #include <string>
@@ -19,7 +20,7 @@ namespace
 {
 /** Resolve the concrete id composition used by a stored feature-id node. */
 std::vector<IdPart> const* resolveComposition(
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     simfil::StringId typeId,
     uint8_t idCompositionIndex)
 {
@@ -41,7 +42,7 @@ std::vector<IdPart> const* resolveComposition(
 
 /** Build the externally visible id-part layout after removing an optional tile prefix. */
 void resolveVisiblePartLayout(
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     FeatureId::Data const& data,
     model_ptr<Array> const& values,
     std::vector<simfil::StringId>& partNames,
@@ -127,10 +128,10 @@ void resolveVisiblePartLayout(
     }
 }
 
-template<typename Fn>
+template <typename Fn>
 /** Forward a typed id-part value while rejecting node types that cannot appear in ids. */
 void appendTypedKeyValue(
-    TileFeatureModelLayerBase const& model,
+    PartitionFeatureModelLayerBase const& model,
     simfil::StringId key,
     simfil::ModelNode::Ptr const& valueNode,
     Fn&& fn)
@@ -242,36 +243,6 @@ struct CompositionParseState
                error) || matched;
 }
 
-/** Append one node value to the canonical dot-separated feature-id string. */
-void appendNodeValueToString(std::string& out, simfil::ModelNode::Ptr const& node)
-{
-    if (!node) {
-        return;
-    }
-
-    std::visit(
-        [&out](auto&& v)
-        {
-            using T = std::decay_t<decltype(v)>;
-            if constexpr (std::is_same_v<T, simfil::ByteArray>) {
-                raiseFmt("FeatureId part value 'b\"{}\"' cannot be a ByteArray.", v.toHex());
-            }
-            else if constexpr (!std::is_same_v<T, std::monostate>) {
-                if constexpr (std::is_same_v<T, bool>) {
-                    fmt::format_to(std::back_inserter(out), FMT_STRING(".{:d}"), v);
-                }
-                else if constexpr (std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>) {
-                    // String-valued parts must escape canonical separators before joining.
-                    fmt::format_to(std::back_inserter(out), FMT_STRING(".{}"), escapeFeatureIdPart(v));
-                }
-                else {
-                    fmt::format_to(std::back_inserter(out), FMT_STRING(".{}"), v);
-                }
-            }
-        },
-        node->value());
-}
-
 /** Materialize one exported reference field for external-map feature ids. */
 [[nodiscard]] simfil::ModelNode::Ptr referenceFieldNode(
     FeatureId const& featureId,
@@ -290,12 +261,12 @@ void appendNodeValueToString(std::string& out, simfil::ModelNode::Ptr const& nod
 }
 }  // namespace
 
-FeatureId::FeatureId(FeatureId::Data& data,
+FeatureId::FeatureId(
+    FeatureId::Data& data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(l, a, key),
-      data_(data)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(l, a, key), data_(data)
 {
     if (data_.idPartValues_ != simfil::InvalidArrayIndex) {
         values_ = model().resolve<simfil::Array>(
@@ -305,12 +276,12 @@ FeatureId::FeatureId(FeatureId::Data& data,
     }
 }
 
-FeatureId::FeatureId(FeatureId::Data const& data,
+FeatureId::FeatureId(
+    FeatureId::Data const& data,
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(l, a, key),
-      data_(data)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(l, a, key), data_(data)
 {
     if (data_.idPartValues_ != simfil::InvalidArrayIndex) {
         values_ = model().resolve<simfil::Array>(
@@ -366,23 +337,10 @@ std::optional<std::string_view> FeatureId::externalMapId() const
 
 std::string FeatureId::toString() const
 {
-    std::string result(typeId());
-
-    if (data_.useCommonTilePrefix_) {
-        if (auto idPrefix = model().getIdPrefix()) {
-            for (auto const& [_, value] : idPrefix->fields()) {
-                appendNodeValueToString(result, value);
-            }
-        }
-    }
-
-    if (values_) {
-        for (uint32_t index = 0U; index < values_->size(); ++index) {
-            appendNodeValueToString(result, values_->at(index));
-        }
-    }
-
-    return result;
+    return formatFeatureIdString(
+        typeId(),
+        castToKeyValue(keyValuePairs()),
+        model().layerInfo().get());
 }
 
 simfil::ValueType FeatureId::type() const
@@ -578,12 +536,24 @@ bool parseFeatureIdString(
 
 std::string formatFeatureIdString(
     std::string_view typeId,
-    KeyValuePairs const& featureIdParts)
+    KeyValuePairs const& featureIdParts,
+    LayerInfo const* layerInfo)
 {
+    std::vector<IdPart> const* composition = nullptr;
+    if (layerInfo) {
+        auto index = layerInfo->matchingFeatureIdCompositionIndex(
+            typeId,
+            castToKeyValueView(featureIdParts),
+            false);
+        if (index)
+            composition = &layerInfo->getTypeInfo(typeId)->uniqueIdCompositions_[*index];
+    }
     std::string result(typeId);
-    for (auto const& [_, value] : featureIdParts) {
+    // Older AppleClang cannot capture structured bindings in the nested lambdas below.
+    for (auto const& idPart : featureIdParts) {
         std::visit(
-            [&](auto&& part) {
+            [&](auto&& part)
+            {
                 using T = std::decay_t<decltype(part)>;
                 if constexpr (std::is_same_v<T, std::string_view> ||
                               std::is_same_v<T, std::string>) {
@@ -593,13 +563,22 @@ std::string formatFeatureIdString(
                         escapeFeatureIdPart(part));
                 }
                 else {
-                    fmt::format_to(
-                        std::back_inserter(result),
-                        FMT_STRING(".{}"),
-                        part);
+                    bool unsignedPart = composition &&
+                        std::ranges::any_of(*composition,
+                                            [&](auto const& item) {
+                                                return item.idPartLabel_ == idPart.first &&
+                                                    item.datatype_ == IdPartDataType::U64;
+                                            });
+                    if (unsignedPart)
+                        fmt::format_to(
+                            std::back_inserter(result),
+                            ".{}",
+                            std::bit_cast<uint64_t>(part));
+                    else
+                        fmt::format_to(std::back_inserter(result), ".{}", part);
                 }
             },
-            value);
+            idPart.second);
     }
     return result;
 }

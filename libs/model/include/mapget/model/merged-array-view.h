@@ -5,8 +5,8 @@
 namespace mapget
 {
 
-class TileFeatureLayer;
-class TileFeatureModelLayerBase;
+class PartitionFeatureLayer;
+class PartitionFeatureModelLayerBase;
 
 /**
  * Generic array view with overridable local storage.
@@ -14,7 +14,7 @@ class TileFeatureModelLayerBase;
  * The local entries can be customized by derived classes via
  * localMerged* methods. By default this wraps the BaseArray storage.
  */
-template <class DerivedT, class ItemT, class ModelT = TileFeatureLayer>
+template <class DerivedT, class ItemT, class ModelT = PartitionFeatureLayer>
 class MergedArrayView : public simfil::BaseArray<ModelT, ItemT>
 {
 public:

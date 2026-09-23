@@ -11,12 +11,13 @@ namespace mapget
 {
 
 enum class GeomType : uint8_t {
-    Points,   // Point-cloud
-    Line,     // Line-string
-    Polygon,  // Auto-closed polygon
-    Mesh,     // Collection of triangles
-    AABB,     // Axis-aligned bounding box: [origin, size]
-    GltfNodeIndex // Index into TileFeatureLayer::glbAttachmentName() plus per-node AABB bounds
+    Points,        // Point-cloud
+    Line,          // Line-string
+    Polygon,       // Auto-closed polygon
+    Mesh,          // Collection of triangles
+    AABB,          // Axis-aligned bounding box: [origin, size]
+    GltfNodeIndex  // Index into PartitionFeatureLayer::glbAttachmentName() plus per-node AABB
+                   // bounds
 };
 
 enum class GeometryPointViewKind : uint8_t {

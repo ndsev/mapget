@@ -1,6 +1,68 @@
 # Layered Data Model
 
-Mapget represents all map content as tiles of structured features. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance. 
+Mapget represents map content as partitions of structured features: spatial tiles or opaque objects. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance.
+
+## Tile and object partitions
+
+`PartitionId` is a tagged identity: `PartitionId::tile(TileId)` or
+`PartitionId::object(uint64_t)`. The tag is never inferred from the value.
+Object zero and tile zero are different identities; tile zero retains its
+metadata/source-data sentinel meaning. `tileId()` and `objectId()` reject
+access through the wrong tag. Object IDs retain all 64 bits natively and in
+binary streams; JSON carries object IDs as unsigned decimal **strings**.
+
+`MapPartitionKey` combines payload type, map, layer and partition identity.
+Tiles retain the existing four-component key. Object keys use `object/` in
+the final component, for example `Features:City:Road:object/18446744073709551615`.
+This prevents collisions even when a tile and object have the same numeric ID.
+
+There is one implementation of each payload: `PartitionFeatureLayer`,
+`PartitionSubsetLayer` and `PartitionSourceDataLayer`, all based on
+`PartitionLayer`. The existing `Tile*Layer` names and `MapTileKey` are aliases;
+existing include paths and tile-taking constructors remain usable. Code that
+accessed the public key member `tileId_` must migrate to `partitionId_` and
+use its checked `tileId()` accessor for spatial operations. `id()` and
+`partitionKey()` both return the generic key.
+
+Each `LayerInfo` declares `partitionKind` (`tile` by default, or `object`).
+Object layers additionally require `tileAssociationLevel` in 0..15. That level
+selects **discovery coverage**, not object resolution, geometry or identity.
+Tile layers must omit `tileAssociationLevel`.
+Objects discovered through several tiles are loaded and cached under one key.
+
+Object geometry must not be anchored to a discovery tile. Call
+`setGeometryAnchor()` before adding geometry; feature/subset layers serialize
+that anchor explicitly. The initial object anchor is (0,0,0).
+
+Filtered subsets retain the source layer's legal notice alongside its timestamp,
+TTL and diagnostic information. The notice travels in the existing binary layer
+header so clients can show copyright and terms when rendering either tile or
+object partitions.
+
+`PartitionLayer::setLegalInfo()` accepts an optional string; pass `std::nullopt`
+to clear the notice. In Python, use `legal_info()` and `set_legal_info()`, with
+`None` to clear it. An empty string remains a present notice.
+
+Feature IDs remain schema-defined. A container-scoped ID part may retain its
+existing name `tileId`, declared `U64` for object layers. Simfil stores integer
+values as signed int64; use `std::bit_cast<int64_t>(objectId)` to preserve all
+bits. Canonical feature-ID strings use the unsigned decimal value according
+to the ID composition. Numeric model fields retain the signed projection;
+this is not unsigned arithmetic in simfil.
+
+Protocol **5.0** writes a partition tag and a 32-bit tile or 64-bit object ID
+in each layer header. Feature GeoJSON includes `partition`; tile exports also
+retain `mapgetTileId`. Old binary readers must be rebuilt/upgraded; there is
+no old-binary object compatibility mode.
+
+Subset JSON uses `type: "PartitionSubsetLayer"` and tagged `partition` too.
+Its dependency field `sourceTileKey` retains its name but carries a generic
+`MapPartitionKey`. Source-data JSON remains an array of roots; source-data
+partition identity travels in the binary layer header, not in that JSON array.
+
+See the [HTTP discovery contract](mapget-api.md#post-objectsdiscover) and
+[datasource integration guide](mapget-dev-guide.md#object-datasource-integration)
+for the discovery/load sequence and a runnable example.
 
 ## Features and properties
 
@@ -13,9 +75,32 @@ The `properties.layers` tree in a feature holds these layered attributes and the
 
 To make this as fast as possible, mapget uses the simfil binary format with a small VTLV (Version-Type-Length-Value) message wrapper. This is explained in the following section.
 
+### Feature identity and uniqueness
+
+`PartitionFeatureLayer::newFeature()` rejects an existing identity before changing
+model storage or the string pool. Identity consists of the feature type and the
+required primary ID components, including any shared ID prefix. Optional ID
+components do not distinguish features. The scope is one feature layer in one
+partition; different types or partitions may reuse the same component values.
+GeoJSON import uses the same check. Repeated detached feature references remain
+valid, and `clone()` intentionally merges into an existing feature.
+
+Insertion and `find()` share one hash multimap. Hash collisions are resolved by
+comparing the actual identities. Protocol **5.1** serializes eight-byte
+address/hash records without sorting; readers reserve and reconstruct the index.
+Older stream readers reject this protocol because they require sorted entries.
+The runtime index uses additional bucket/node memory compared with its wire form;
+memory accounting reports that separately from serialized payload size.
+
+Binary construction checks the index count and address bounds, but does not run
+full semantic validation. After constructing a shared layer, call `validate()`
+or `checkForErrors()` to detect duplicate IDs and inconsistent index entries in
+untrusted or externally produced layers. `validateSchema()` is a separate check
+against the optional feature-model JSON schema.
+
 ## Datasource metadata
 
-Tiles do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
+Partitions do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
 
 ```mermaid
 classDiagram
@@ -32,6 +117,8 @@ classDiagram
   class LayerInfo {
     +string layerId
     +LayerType type
+    +PartitionKind partitionKind
+    +optional~int~ tileAssociationLevel
     +vector<int> zoomLevels
     +vector<Coverage> coverage
     +bool canRead
@@ -67,14 +154,16 @@ classDiagram
 
 - **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
 - **`LayerInfo`** describes a single layer: type (`Features` or
-  `SourceData`), advertised zoom levels, coverage rectangles, read/write
-  flags, semantic version and optional `featureModelSchema`. The service uses
+  `SourceData`), partition kind, advertised zoom levels, coverage rectangles,
+  read/write flags, semantic version and optional `featureModelSchema`. Object
+  layers also declare `tileAssociationLevel`; their coverage describes discovery
+  tiles, not a spatial encoding of their opaque IDs. The service uses
   this to validate requests, and the reader/writer uses it when parsing tile
   streams.
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
 - **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
 
-When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` and uses it to validate feature IDs and field layouts. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
+When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` for interpreting feature IDs and field layouts. Full feature-ID validation is explicit, as described above. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
 
 ### Feature Model Schema
 
@@ -315,21 +404,40 @@ Features are stored in `TileFeatureLayer` objects, and optional raw data is stor
 
 ## Model structure and simfil integration
 
-Internally, mapget’s model is expressed as a tree of simfil model nodes that hang off a tile. The main entry points are `TileFeatureLayer` for feature tiles and `TileSourceDataLayer` for source data tiles. Both derive from `simfil::ModelPool`, which provides the storage for model nodes and ties them into the simfil query engine.
+Internally, mapget models features, subsets, and source data as trees of simfil
+model nodes owned by a partition. `PartitionFeatureLayer` and
+`PartitionSubsetLayer` share `PartitionFeatureModelLayerBase`, which owns common
+feature-ID and geometry storage and derives from both `PartitionLayer` and
+`simfil::ModelPool`. `PartitionSourceDataLayer` derives directly from those two
+bases. The familiar `Tile*Layer` names are aliases, not additional classes or
+separate object/tile implementations.
 
-The most important model classes and their relationships are summarised here:
+The most important model classes and their relationships are summarised here.
+The two `PartitionId` accessors are checked alternatives: calling `tileId()`
+on an object throws, and vice versa.
 
 ```mermaid
 classDiagram
-  class TileLayer {
-    +TileId tileId
+  class PartitionLayer {
+    +PartitionId partitionId()
+    +TileId tileId()
     +string stringPoolId
     +string mapId
     +LayerInfo~&~ layerInfo()
     +nlohmann::json toJson()
   }
 
-  class TileFeatureLayer {
+  class PartitionId {
+    +PartitionKind kind()
+    +TileId tileId()
+    +uint64_t objectId()
+  }
+
+  class PartitionFeatureModelLayerBase {
+    +Point geometryAnchor()
+  }
+
+  class PartitionFeatureLayer {
     +Feature::Ptr newFeature(typeId, idParts)
     +model_ptr~Feature~ at(index)
     +size_t size()
@@ -337,7 +445,7 @@ classDiagram
     +complete(query, point, opts)
   }
 
-  class TileSubsetLayer {
+  class PartitionSubsetLayer {
     +FilterIdentity filterIdentity()
     +vector~TileSubsetChannel~ channels
     +vector~TileSubsetDependency~ dependencies
@@ -356,7 +464,7 @@ classDiagram
     +forEachGroupEntry(cb)
   }
 
-  class TileSourceDataLayer {
+  class PartitionSourceDataLayer {
     +model_ptr~SourceDataCompoundNode~ newCompound(initialSize)
     +Environment& evaluationEnvironment()
   }
@@ -443,14 +551,15 @@ classDiagram
     <<simfil::ModelNode>>
   }
 
-  TileLayer <|-- TileFeatureLayer
-  TileLayer <|-- TileSubsetLayer
-  TileLayer <|-- TileSourceDataLayer
-  TileSourceDataLayer "1" *-- "many" SourceDataCompoundNode
+  PartitionLayer "1" *-- "1" PartitionId
+  PartitionLayer <|-- PartitionFeatureModelLayerBase
+  PartitionFeatureModelLayerBase <|-- PartitionFeatureLayer
+  PartitionFeatureModelLayerBase <|-- PartitionSubsetLayer
+  PartitionLayer <|-- PartitionSourceDataLayer
+  PartitionSourceDataLayer "1" *-- "many" SourceDataCompoundNode
 
-  simfil_ModelPool <|-- TileFeatureLayer
-  simfil_ModelPool <|-- TileSubsetLayer
-  simfil_ModelPool <|-- TileSourceDataLayer
+  simfil_ModelPool <|-- PartitionFeatureModelLayerBase
+  simfil_ModelPool <|-- PartitionSourceDataLayer
 
   simfil_ModelNode <|-- Feature
   simfil_ModelNode <|-- GeometryCollection
@@ -464,8 +573,8 @@ classDiagram
   simfil_ModelNode <|-- SourceDataReferenceCollection
   simfil_ModelNode <|-- SourceDataReferenceItem
 
-  TileFeatureLayer "1" *-- "many" Feature
-  TileSubsetLayer "1" *-- "many" TileSubsetChannel
+  PartitionFeatureLayer "1" *-- "many" Feature
+  PartitionSubsetLayer "1" *-- "many" TileSubsetChannel
   Feature "1" *-- "0..1" GeometryCollection
   GeometryCollection "1" *-- "many" Geometry
   Feature "1" *-- "0..1" AttributeLayerList

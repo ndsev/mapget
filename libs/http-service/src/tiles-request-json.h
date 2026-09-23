@@ -20,9 +20,9 @@ struct ParsedLayerTilesRequest
     std::string mapId;
     std::string layerId;
     std::optional<std::string> sourceId;
-    std::vector<TileId> tileIds;
-    std::vector<TileId> priorityTileIds;
-    std::map<TileId, std::vector<std::string>> featureIdsByTile;
+    std::vector<PartitionId> tileIds;
+    std::vector<PartitionId> priorityPartitionIds;
+    std::map<PartitionId, std::vector<std::string>> featureIdsByTile;
     std::vector<FeatureLayerFilterRoot> exactRoots;
     std::optional<FeatureLayerFilterRequest> filterRequest;
 };
@@ -53,13 +53,11 @@ TileLayerStream::StringPoolOffsetMap parseStringPoolOffsetsJson(
     nlohmann::json const& offsetsJson);
 
 /** Deduplicate filter tile IDs while preserving first-seen order. */
-std::vector<TileId> collectFilterTileIds(
-    ParsedLayerTilesRequest const& request);
+std::vector<PartitionId> collectFilterPartitionIds(ParsedLayerTilesRequest const& request);
 
 /** Expand a plain tile request into concrete scheduler keys. */
-std::vector<MapTileKey> expandLayerTilesRequestKeys(
-    ParsedLayerTilesRequest const& request,
-    LayerType layerType);
+std::vector<MapPartitionKey>
+expandLayerTilesRequestKeys(ParsedLayerTilesRequest const& request, LayerType layerType);
 
 /** Serialize one filter definition into the canonical public JSON shape. */
 nlohmann::json filterRequestToJson(

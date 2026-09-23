@@ -14,6 +14,7 @@
 #include "simfil/model/json.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <limits>
 #include <optional>
@@ -35,7 +36,7 @@ using AttrPointSequenceRegistry = std::vector<model_ptr<AttrPointSequence>>;
 /** Raise a consistently prefixed import error. */
 [[noreturn]] void raiseImport(std::string const& message)
 {
-    raiseFmt("TileFeatureLayer::fromJson: {}", message);
+    raiseFmt("PartitionFeatureLayer::fromJson: {}", message);
 }
 
 /** Parse mapget validity direction labels, including legacy aliases. */
@@ -148,15 +149,17 @@ using AttrPointSequenceRegistry = std::vector<model_ptr<AttrPointSequence>>;
     nlohmann::json const& json,
     IdPart const& idPart)
 {
-    if (json.is_number_integer()) {
-        return json.get<int64_t>();
-    }
     if (json.is_number_unsigned()) {
         auto const value = json.get<uint64_t>();
+        if (idPart.datatype_ == IdPartDataType::U64)
+            return std::bit_cast<int64_t>(value);
         if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
             raiseImport(fmt::format("Id part '{}' exceeds int64_t range.", idPart.idPartLabel_));
         }
         return static_cast<int64_t>(value);
+    }
+    if (json.is_number_integer()) {
+        return json.get<int64_t>();
     }
     if (json.is_string()) {
         return json.get<std::string>();
@@ -208,7 +211,7 @@ void validateIdPartValue(
 
 /** Delegate generic object/array/scalar import to simfil's shared JSON builder unless relation refs require feature context. */
 [[nodiscard]] simfil::ModelNode::Ptr importGenericNode(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     nlohmann::json const& json,
     model_ptr<Feature> const& feature = {})
 {
@@ -323,7 +326,7 @@ void validateIdPartValue(
  * the first remaining integer slot is filled with the feature's collection index.
  */
 [[nodiscard]] KeyValuePairs bestEffortFullFeatureIdParts(
-    TileFeatureLayer const& tile,
+    PartitionFeatureLayer const& tile,
     std::string_view typeId,
     uint32_t fallbackFeatureIndex)
 {
@@ -344,7 +347,11 @@ void validateIdPartValue(
             if (!isIntegerIdPart(idPart.datatype_)) {
                 raiseImport("Best-effort GeoJSON import requires an integer tileId id part.");
             }
-            parts.emplace_back(idPart.idPartLabel_, static_cast<int64_t>(tile.tileId().value()));
+            parts.emplace_back(
+                idPart.idPartLabel_,
+                tile.partitionId().kind() == PartitionKind::Object ?
+                    std::bit_cast<int64_t>(tile.partitionId().objectId()) :
+                    static_cast<int64_t>(tile.tileId().value()));
             continue;
         }
 
@@ -404,9 +411,8 @@ void validateIdPartValue(
 }
 
 /** Import source-data references from the JSON representation used by toJson(). */
-[[nodiscard]] std::optional<model_ptr<SourceDataReferenceCollection>> importSourceDataReferences(
-    TileFeatureLayer& tile,
-    nlohmann::json const& json)
+[[nodiscard]] std::optional<model_ptr<SourceDataReferenceCollection>>
+importSourceDataReferences(PartitionFeatureLayer& tile, nlohmann::json const& json)
 {
     if (json.is_null()) {
         return std::nullopt;
@@ -468,9 +474,8 @@ struct ParsedFeatureReferenceJson
 };
 
 /** Parse a local or external feature reference from JSON. */
-[[nodiscard]] ParsedFeatureReferenceJson parseFeatureReferenceJson(
-    TileFeatureLayer& tile,
-    nlohmann::json const& json)
+[[nodiscard]] ParsedFeatureReferenceJson
+parseFeatureReferenceJson(PartitionFeatureLayer& tile, nlohmann::json const& json)
 {
     std::string canonicalId;
     std::optional<std::string> externalMapId;
@@ -506,9 +511,8 @@ struct ParsedFeatureReferenceJson
 }
 
 /** Parse a canonical feature-id string into a detached FeatureId node. */
-[[nodiscard]] model_ptr<FeatureId> importFeatureReferenceId(
-    TileFeatureLayer& tile,
-    nlohmann::json const& json)
+[[nodiscard]] model_ptr<FeatureId>
+importFeatureReferenceId(PartitionFeatureLayer& tile, nlohmann::json const& json)
 {
     auto parsed = parseFeatureReferenceJson(tile, json);
     auto partsView = castToKeyValueView(parsed.featureId_.keyValuePairs_);
@@ -519,13 +523,13 @@ struct ParsedFeatureReferenceJson
 }
 
 [[nodiscard]] model_ptr<Geometry> importStandaloneGeometry(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     nlohmann::json const& geometryJson,
     GeoJsonImportOptions const& options);
 
 /** Apply metadata that is shared by all geometry encodings. */
 void applyGeometryDecorations(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     model_ptr<Geometry> geometry,
     nlohmann::json const& geometryJson,
     GeoJsonImportOptions const& options)
@@ -545,9 +549,8 @@ void applyGeometryDecorations(
 }
 
 /** Import a GeoJSON Polygon, preserving explicit hole-ring boundaries. */
-[[nodiscard]] model_ptr<Geometry> importPolygonGeometry(
-    TileFeatureLayer& tile,
-    nlohmann::json const& coords)
+[[nodiscard]] model_ptr<Geometry>
+importPolygonGeometry(PartitionFeatureLayer& tile, nlohmann::json const& coords)
 {
     if (!coords.is_array() || coords.empty()) {
         raiseImport("Polygon coordinates must contain at least one linear ring.");
@@ -581,7 +584,7 @@ void applyGeometryDecorations(
 
 /** Import one standalone geometry object outside of feature-collection splitting logic. */
 [[nodiscard]] model_ptr<Geometry> importStandaloneGeometry(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     nlohmann::json const& geometryJson,
     GeoJsonImportOptions const& options)
 {
@@ -685,7 +688,7 @@ void applyGeometryDecorations(
 
 /** Import feature geometry, expanding GeoJSON aggregate types into mapget's geometry list. */
 void importFeatureGeometry(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     model_ptr<Feature> feature,
     nlohmann::json const& geometryJson,
     GeoJsonImportOptions const& options)
@@ -760,7 +763,7 @@ void importFeatureGeometry(
 
 /** Import one validity or validity list into mapget's MultiValidity container. */
 void importValidityCollection(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     model_ptr<Feature> hostFeature,
     model_ptr<MultiValidity> collection,
     nlohmann::json const& json,
@@ -916,7 +919,7 @@ struct DeferredProperties
 
 /** Import one attribute payload object, excluding deferred validity handling. */
 void importAttributeObject(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     model_ptr<Feature> hostFeature,
     model_ptr<Attribute> attribute,
     nlohmann::json const& json,
@@ -950,7 +953,7 @@ void importAttributeObject(
 
 /** Import one attribute-layer object, preserving duplicate attribute names and optional instance id metadata. */
 void importAttributeLayerObject(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     model_ptr<Feature> feature,
     std::string const& layerName,
     nlohmann::json const& layerJson,
@@ -996,7 +999,7 @@ void importAttributeLayerObject(
 
 /** Import feature properties and map attribute-layer payloads into their model containers. */
 void importProperties(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     model_ptr<Feature> feature,
     nlohmann::json const& propertiesJson,
     GeoJsonImportOptions const& options,
@@ -1057,7 +1060,7 @@ void importProperties(
 
 /** Import one relation object after feature ids are already resolvable. */
 void importRelation(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     model_ptr<Feature> feature,
     nlohmann::json const& relationJson,
     GeoJsonImportOptions const& options,
@@ -1133,9 +1136,8 @@ void importRelation(
 }
 
 /** Import shared AttrPointSequence definitions after every host feature exists. */
-[[nodiscard]] AttrPointSequenceRegistry importAttrPointSequences(
-    TileFeatureLayer& tile,
-    nlohmann::json const& geoJson)
+[[nodiscard]] AttrPointSequenceRegistry
+importAttrPointSequences(PartitionFeatureLayer& tile, nlohmann::json const& geoJson)
 {
     AttrPointSequenceRegistry result;
     auto const definitions = geoJson.find("attrPointSequences");
@@ -1216,7 +1218,7 @@ void importRelation(
 
 /** Determine the target feature type for one imported feature. */
 [[nodiscard]] std::string determineFeatureType(
-    TileFeatureLayer const& tile,
+    PartitionFeatureLayer const& tile,
     nlohmann::json const& featureJson,
     GeoJsonImportOptions const& options)
 {
@@ -1235,18 +1237,18 @@ void importRelation(
 
 }
 
-/** Import a FeatureCollection into an empty TileFeatureLayer. */
+/** Import a FeatureCollection into an empty PartitionFeatureLayer. */
 void importGeoJson(
-    TileFeatureLayer& tile,
+    PartitionFeatureLayer& tile,
     nlohmann::json const& geoJson,
     GeoJsonImportOptions const& options)
 {
     if (tile.numRoots() != 0) {
-        raiseImport("Import requires an empty TileFeatureLayer instance.");
+        raiseImport("Import requires an empty PartitionFeatureLayer instance.");
     }
     if (tile.getIdPrefix()) {
         // GeoJSON import now treats full ids as the canonical representation.
-        raiseImport("Import requires a TileFeatureLayer without a preconfigured idPrefix.");
+        raiseImport("Import requires a PartitionFeatureLayer without a preconfigured idPrefix.");
     }
     if (!geoJson.is_object() || geoJson.value("type", "") != "FeatureCollection") {
         raiseImport("GeoJSON root must be a FeatureCollection.");
@@ -1262,6 +1264,9 @@ void importGeoJson(
                 "use glbAttachmentName and the attachment API.");
         }
         // Strict mode treats top-level metadata mismatches as caller/configuration errors.
+        if (geoJson.contains("partition") &&
+            PartitionId::fromJson(geoJson.at("partition")) != tile.partitionId())
+            raiseImport("partition does not match the target layer.");
         if (geoJson.contains("mapgetTileId") && geoJson.at("mapgetTileId").get<int32_t>() != tile.tileId().value()) {
             raiseImport("mapgetTileId does not match the target tile.");
         }
@@ -1415,7 +1420,9 @@ void importGeoJson(
     }
 }
 
-void TileFeatureLayer::fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options)
+void PartitionFeatureLayer::fromJson(
+    nlohmann::json const& json,
+    GeoJsonImportOptions const& options)
 {
     importGeoJson(*this, json, options);
 }

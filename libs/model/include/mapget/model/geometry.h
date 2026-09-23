@@ -25,8 +25,8 @@ using simfil::StringId;
 namespace mapget
 {
 
-class TileFeatureLayer;
-class TileFeatureModelLayerBase;
+class PartitionFeatureLayer;
+class PartitionFeatureModelLayerBase;
 class Feature;
 class GeometryArrayView;
 class BoundsInfoNode;
@@ -48,11 +48,11 @@ struct SelfContainedGeometry
  * Geometry object, which stores a point collection, a line-string,
  * or a triangle mesh.
  */
-class Geometry final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class Geometry final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class PointNode;
     friend class LinearRingNode;
     friend class PointBufferNode;
@@ -125,7 +125,7 @@ public:
      * @note The ModelType must also be templated here, because in this header
      *  the class only exists in a predeclared form.
      */
-    template <typename LambdaType, class ModelType = TileFeatureModelLayerBase>
+    template <typename LambdaType, class ModelType = PartitionFeatureModelLayerBase>
     bool forEachPoint(LambdaType const& callback) const;
 
     /**
@@ -181,14 +181,16 @@ public:
 
     using ViewData = GeometryViewData;
 
-    using Storage = TileFeatureModelLayerBase::GeometryStorage;
+    using Storage = PartitionFeatureModelLayerBase::GeometryStorage;
 
     ViewData* geomViewData_ = nullptr;
     Storage* storage_ = nullptr;
 
 public:
     explicit Geometry(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
     Geometry(ModelConstPtr pool,
              ModelNodeAddress a,
              simfil::detail::mp_key key);
@@ -201,11 +203,12 @@ public:
 
 /** GeometryCollection node has `type` and `geometries` fields. */
 
-class GeometryCollection : public MergedArrayView<GeometryCollection, Geometry, TileFeatureModelLayerBase>
+class GeometryCollection
+    : public MergedArrayView<GeometryCollection, Geometry, PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Feature;
 
     using Storage = simfil::Array::Storage;
@@ -236,8 +239,9 @@ public:
      * @note The ModelType must also be templated here, because in this header
      *  the class only exists in a predeclared form.
      */
-    template <typename LambdaType, class ModelType = TileFeatureModelLayerBase>
-    bool forEachGeometry(LambdaType const& callback) const {
+    template <typename LambdaType, class ModelType = PartitionFeatureModelLayerBase>
+    bool forEachGeometry(LambdaType const& callback) const
+    {
         const auto localCount = this->localMergedSize();
         for (uint32_t i = 0; i < localCount; ++i) {
             auto localGeom = localGeometryAt(i);
@@ -256,7 +260,9 @@ public:
 
 public:
     explicit GeometryCollection(simfil::detail::mp_key key)
-        : MergedArrayView<GeometryCollection, Geometry, TileFeatureModelLayerBase>(key) {}
+        : MergedArrayView<GeometryCollection, Geometry, PartitionFeatureModelLayerBase>(key)
+    {
+    }
     GeometryCollection(ModelConstPtr pool, ModelNodeAddress, simfil::detail::mp_key key);
     GeometryCollection() = delete;
 
@@ -280,19 +286,20 @@ private:
     ModelNode::Ptr singleGeom() const;
 };
 
-class GeometryArrayView : public MergedArrayView<GeometryArrayView, Geometry, TileFeatureModelLayerBase>
+class GeometryArrayView
+    : public MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>
 {
 public:
     explicit GeometryArrayView(simfil::detail::mp_key key)
-        : MergedArrayView<GeometryArrayView, Geometry, TileFeatureModelLayerBase>(key)
+        : MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>(key)
     {
     }
 
-    GeometryArrayView(
-        ModelConstPtr pool,
-        ModelNodeAddress address,
-        simfil::detail::mp_key key)
-        : MergedArrayView<GeometryArrayView, Geometry, TileFeatureModelLayerBase>(std::move(pool), address, key)
+    GeometryArrayView(ModelConstPtr pool, ModelNodeAddress address, simfil::detail::mp_key key)
+        : MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>(
+              std::move(pool),
+              address,
+              key)
     {
     }
 
@@ -301,7 +308,10 @@ public:
         ModelNodeAddress address,
         ModelNodeAddress singleGeometryAddress,
         simfil::detail::mp_key key)
-        : MergedArrayView<GeometryArrayView, Geometry, TileFeatureModelLayerBase>(std::move(pool), address, key),
+        : MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>(
+              std::move(pool),
+              address,
+              key),
           singleGeometryAddress_(singleGeometryAddress)
     {
     }
@@ -322,16 +332,19 @@ private:
 
 /** VertexBuffer Node */
 
-class PointBufferNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class PointBufferNode final
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Geometry;
     friend class MeshNode;
 
     explicit PointBufferNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -359,11 +372,14 @@ private:
     uint32_t size_ = 0;
 };
 
-class BoundsInfoNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class BoundsInfoNode final
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
     explicit BoundsInfoNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -380,11 +396,13 @@ private:
 };
 
 class BoundsPolygonCoordinatesNode final
-    : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
     explicit BoundsPolygonCoordinatesNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -400,11 +418,14 @@ private:
     ModelNodeAddress baseGeometryAddress_;
 };
 
-class BoundsRingNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class BoundsRingNode final
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
     explicit BoundsRingNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -422,15 +443,18 @@ private:
 
 /** Polygon Node */
 
-class PolygonNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class PolygonNode final
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Geometry;
 
     explicit PolygonNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -447,15 +471,17 @@ public:
 
 /** Mesh Node */
 
-class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Geometry;
 
     explicit MeshNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -475,15 +501,18 @@ private:
     uint32_t size_ = 0;
 };
 
-class MeshTriangleCollectionNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class MeshTriangleCollectionNode
+    : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Geometry;
 
     explicit MeshTriangleCollectionNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
@@ -504,15 +533,17 @@ private:
  *
  * A linear ring represents a simple polygon that is closed and in CCW order.
  */
-class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>
+class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
 public:
-    friend class TileFeatureModelLayerBase;
-    friend class TileFeatureLayer;
+    friend class PartitionFeatureModelLayerBase;
+    friend class PartitionFeatureLayer;
     friend class Geometry;
 
     explicit LinearRingNode(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileFeatureModelLayerBase>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
+    {
+    }
 
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;

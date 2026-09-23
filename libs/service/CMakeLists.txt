@@ -11,6 +11,8 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/config.h
   include/mapget/service/detail/allocator-memory.h
 
+  src/object-discovery.cpp
+  src/service-discovery.cpp
   src/service.cpp
   src/service-datasources.h
   src/service-datasources.cpp

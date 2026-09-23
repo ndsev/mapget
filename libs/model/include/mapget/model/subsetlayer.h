@@ -22,8 +22,8 @@
 namespace mapget
 {
 
-class TileFeatureLayer;
-class TileSubsetLayer;
+class PartitionFeatureLayer;
+class PartitionSubsetLayer;
 class TileSubsetChannel;
 class FeatureEntry;
 class AttributeValidityEntry;
@@ -63,7 +63,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
 /** One complete source tile consulted while producing an output subset. */
 struct TileSubsetDependency
 {
-    MapTileKey sourceTileKey_;
+    MapPartitionKey sourceTileKey_;
     uint32_t sourceFeatureCount_ = 0;
 
     bool operator==(TileSubsetDependency const&) const = default;
@@ -81,7 +81,7 @@ struct FilterIssue
     bool operator==(FilterIssue const&) const = default;
 };
 
-/** Transport identity readable immediately after the ordinary TileLayer bytes. */
+/** Transport identity readable immediately after the ordinary PartitionLayer bytes. */
 struct FilterIdentity
 {
     std::string filterId_;
@@ -93,7 +93,7 @@ struct FilterIdentity
 /**
  * Cheap subset prelude which can be read without deserializing model columns.
  *
- * The ordinary TileLayer metadata precedes this value on the wire. Keeping
+ * The ordinary PartitionLayer metadata precedes this value on the wire. Keeping
  * dependencies and issues in the prelude lets transport consumers route and
  * account for a subset without retaining a second complete ModelPool.
  */
@@ -108,10 +108,10 @@ struct TileSubsetLayerMetadata
 };
 
 /** Typed SIMFIL trace aggregate captured while producing a subset layer. */
-class FilterTrace : public simfil::ProceduralObject<4, FilterTrace, TileSubsetLayer>
+class FilterTrace : public simfil::ProceduralObject<4, FilterTrace, PartitionSubsetLayer>
 {
 public:
-    friend class TileSubsetLayer;
+    friend class PartitionSubsetLayer;
 
     struct Data
     {
@@ -130,7 +130,9 @@ public:
     [[nodiscard]] nlohmann::json toJson() const override;
 
     explicit FilterTrace(simfil::detail::mp_key key)
-        : simfil::ProceduralObject<4, FilterTrace, TileSubsetLayer>(key) {}
+        : simfil::ProceduralObject<4, FilterTrace, PartitionSubsetLayer>(key)
+    {
+    }
     FilterTrace(
         Data* data,
         simfil::ModelConstPtr pool,
@@ -143,10 +145,10 @@ private:
 };
 
 /** Compact feature row used as a terminal feature or a relation endpoint. */
-class FeatureEntry : public simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>
+class FeatureEntry : public simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>
 {
 public:
-    friend class TileSubsetLayer;
+    friend class PartitionSubsetLayer;
 
     struct Data
     {
@@ -172,7 +174,9 @@ protected:
 
 public:
     explicit FeatureEntry(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(key)
+    {
+    }
     FeatureEntry(
         Data* data,
         simfil::ModelConstPtr pool,
@@ -185,10 +189,10 @@ private:
 };
 
 /** One expanded attribute-validity candidate with host and entry projections. */
-class AttributeValidityEntry : public simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>
+class AttributeValidityEntry : public simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>
 {
 public:
-    friend class TileSubsetLayer;
+    friend class PartitionSubsetLayer;
 
     /** Sentinel used when an attribute candidate has no source-array index. */
     static constexpr uint32_t InvalidAttributeIndex = std::numeric_limits<uint32_t>::max();
@@ -256,7 +260,9 @@ protected:
 
 public:
     explicit AttributeValidityEntry(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(key)
+    {
+    }
     AttributeValidityEntry(
         Data* data,
         simfil::ModelConstPtr pool,
@@ -269,10 +275,10 @@ private:
 };
 
 /** One resolved relation row referencing supporting feature rows in its channel. */
-class RelationEntry : public simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>
+class RelationEntry : public simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>
 {
 public:
-    friend class TileSubsetLayer;
+    friend class PartitionSubsetLayer;
 
     struct Data
     {
@@ -312,7 +318,9 @@ protected:
 
 public:
     explicit RelationEntry(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(key)
+    {
+    }
     RelationEntry(
         Data* data,
         simfil::ModelConstPtr pool,
@@ -325,10 +333,10 @@ private:
 };
 
 /** One completed group with representative output and all member identities. */
-class GroupEntry : public simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>
+class GroupEntry : public simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>
 {
 public:
-    friend class TileSubsetLayer;
+    friend class PartitionSubsetLayer;
 
     struct Data
     {
@@ -358,7 +366,9 @@ protected:
 
 public:
     explicit GroupEntry(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(key)
+    {
+    }
     GroupEntry(
         Data* data,
         simfil::ModelConstPtr pool,
@@ -371,10 +381,10 @@ private:
 };
 
 /** One ordered result schema and its typed aggregate entry arrays. */
-class TileSubsetChannel : public simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>
+class TileSubsetChannel : public simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>
 {
 public:
-    friend class TileSubsetLayer;
+    friend class PartitionSubsetLayer;
 
     struct Data
     {
@@ -476,7 +486,9 @@ protected:
 
 public:
     explicit TileSubsetChannel(simfil::detail::mp_key key)
-        : simfil::MandatoryDerivedModelNodeBase<TileSubsetLayer>(key) {}
+        : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(key)
+    {
+    }
     TileSubsetChannel(
         Data* data,
         simfil::ModelConstPtr pool,
@@ -495,7 +507,7 @@ private:
  * roots are the only public root enumeration; all typed entries remain in
  * layer-owned columns and are reached through their channel aggregate arrays.
  */
-class TileSubsetLayer : public TileFeatureModelLayerBase
+class PartitionSubsetLayer : public PartitionFeatureModelLayerBase
 {
     friend class FilterTrace;
     friend class FeatureEntry;
@@ -503,19 +515,19 @@ class TileSubsetLayer : public TileFeatureModelLayerBase
     friend class RelationEntry;
     friend class GroupEntry;
     friend class TileSubsetChannel;
-    template<typename Target>
+    template <typename Target>
     friend model_ptr<Target> resolveInternal(
         simfil::res::tag<Target>,
-        TileSubsetLayer const&,
+        PartitionSubsetLayer const&,
         simfil::ModelNode const&);
 
 public:
-    using TileFeatureModelLayerBase::resolve;
-    using Ptr = std::shared_ptr<TileSubsetLayer>;
-    using ColumnId = TileFeatureModelLayerBase::ColumnId;
+    using PartitionFeatureModelLayerBase::resolve;
+    using Ptr = std::shared_ptr<PartitionSubsetLayer>;
+    using ColumnId = PartitionFeatureModelLayerBase::ColumnId;
 
-    TileSubsetLayer(
-        TileId tileId,
+    PartitionSubsetLayer(
+        PartitionId tileId,
         std::string const& stringPoolId,
         std::string const& mapId,
         std::shared_ptr<LayerInfo> const& layerInfo,
@@ -523,12 +535,12 @@ public:
         std::string filterId = {},
         uint64_t generation = 0);
 
-    TileSubsetLayer(
+    PartitionSubsetLayer(
         std::vector<uint8_t> const& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter);
 
-    ~TileSubsetLayer() override;
+    ~PartitionSubsetLayer() override;
 
     [[nodiscard]] static FilterIdentity readFilterIdentity(
         std::vector<uint8_t> const& input,
@@ -544,9 +556,9 @@ public:
     [[nodiscard]] std::string const& filterId() const;
     [[nodiscard]] uint64_t generation() const;
 
-    void adoptSourceInfo(TileFeatureLayer const& source);
+    void adoptSourceInfo(PartitionFeatureLayer const& source);
     void setDependencies(std::vector<TileSubsetDependency> dependencies);
-    void addDependency(MapTileKey sourceTileKey, uint32_t sourceFeatureCount);
+    void addDependency(MapPartitionKey sourceTileKey, uint32_t sourceFeatureCount);
     [[nodiscard]] std::vector<TileSubsetDependency> const& dependencies() const;
     [[nodiscard]] std::optional<uint32_t> localSourceFeatureCount() const;
 
@@ -707,10 +719,10 @@ private:
     simfil::ModelColumn<FilterTrace::Data, simfil::detail::ColumnPageSize / 2> traces_;
 };
 
-template<typename Target>
+template <typename Target>
 simfil::model_ptr<Target> resolveInternal(
     simfil::res::tag<Target>,
-    TileSubsetLayer const& model,
+    PartitionSubsetLayer const& model,
     simfil::ModelNode const& node);
 
 } // namespace mapget

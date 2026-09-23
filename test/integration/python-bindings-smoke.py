@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+import urllib.parse
 
 import mapget
 from ndslive.math import PackedTileId
@@ -36,15 +37,44 @@ def main() -> int:
     assert isinstance(parsed_key.tile_id, PackedTileId)
     assert parsed_key.tile_id.value == 65536
 
+    object_id = 2**64 - 1
+    partition = mapget.PartitionId.object(object_id)
+    assert partition.kind == mapget.PartitionKind.OBJECT
+    assert partition.object_id == object_id
+    assert mapget.PartitionId.from_json(partition.to_json()) == partition
+    assert json.loads(partition.to_json())["id"] == str(object_id)
+    assert mapget.PartitionFeatureLayer is mapget.TileFeatureLayer
+    object_key = mapget.MapPartitionKey(mapget.LayerType.FEATURES, "Map", "ObjectRoad", partition)
+    assert object_key.partition_id == partition
+    mapget.Request("Map", "ObjectRoad", [partition])
+
     point = mapget.Point
     cache_expired_calls: list[tuple[str, int]] = []
     requested_tiles: list[int] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
+        assert tile.legal_info() is None
+        tile.set_legal_info("Source copyright and terms")
+        assert tile.legal_info() == "Source copyright and terms"
+        tile.set_legal_info("")
+        assert tile.legal_info() == ""
+        tile.set_legal_info(None)
+        assert tile.legal_info() is None
+        if tile.partition_id().kind == mapget.PartitionKind.OBJECT:
+            assert tile.partition_id().object_id == object_id
+            tile.set_geometry_anchor(point(11, 48, 0))
+            tile.new_feature("Road", [("tileId", -1), ("localId", 1)]).add_point(point(11, 48, 0))
+            return
         assert isinstance(tile.tile_id(), PackedTileId)
         assert tile.tile_id().value == 65536
         requested_tiles.append(tile.tile_id().value)
         feature = tile.new_feature("Way", [("wayId", 1)])
+        try:
+            tile.new_feature("Way", [("wayId", 1)])
+        except RuntimeError as error:
+            assert "Duplicate feature ID" in str(error)
+        else:
+            raise AssertionError("new_feature accepted a duplicate ID")
 
         geometry = feature.geom().new_geometry(mapget.GeomType.LINE)
         geometry.append(point(1.0, 2.0))
@@ -168,11 +198,22 @@ def main() -> int:
                     ]
                 },
                 "RawLayer": {"type": "SourceData"},
+                "ObjectRoad": {"partitionKind": "object", "tileAssociationLevel": 13,
+                    "featureTypes": [{"name": "Road", "uniqueIdCompositions": [[
+                        {"partId": "tileId", "datatype": "U64"}, {"partId": "localId", "datatype": "U32"}]]}]},
             },
         }
     )
     datasource.on_tile_feature_request(fill_feature_tile)
     datasource.on_tile_sourcedata_request(fill_source_data_tile)
+    def discover(request):
+        assert request.layer_id == "ObjectRoad"
+        result = mapget.ObjectDiscoveryResult()
+        result.objects = [mapget.ObjectReference(object_id, [11, 48, 12, 49])]
+        result.ttl_ms = 5000
+        return result
+
+    datasource.on_object_discovery_request(discover)
     datasource.on_locate_request(locate)
     datasource.on_cache_expired(on_cache_expired)
 
@@ -205,6 +246,15 @@ def main() -> int:
         )
         assert feature["_sourceData"][0]["qualifier"] == "primary"
 
+        discovery = _post_json(f"{base_url}/objects/discover", {
+            "layerId": "ObjectRoad", "tileId": PackedTileId.from_tile_xy(0, 0, 13).value})
+        assert discovery["objects"][0]["id"] == str(object_id)
+        assert discovery["ttlMs"] == 5000
+        encoded_partition = urllib.parse.quote(partition.to_json())
+        object_tile = _get_json(f"{base_url}/tile?layer=ObjectRoad&partition={encoded_partition}&responseType=json")
+        assert object_tile["partition"] == {"kind": "object", "id": str(object_id)}
+        assert object_tile["features"][0]["id"] == f"Road.{object_id}.1"
+
         source_tile = _get_json(f"{base_url}/tile?layer=RawLayer&tileId=65536&responseType=json")
         assert source_tile == [{"answer": 42}]
 
@@ -212,7 +262,7 @@ def main() -> int:
             f"{base_url}/locate",
             {"mapId": "Map", "typeId": "Way", "featureId": ["wayId", 1]},
         )
-        assert locate_response[0]["tileId"] == "Features:Map:WayLayer:65536"
+        assert locate_response[0]["partitionKey"] == "Features:Map:WayLayer:65536"
         assert locate_response[0]["selector"] == {
             "typeId": "Way",
             "featureFilter": "wayId == locateWayId",

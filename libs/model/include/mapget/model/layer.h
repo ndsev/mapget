@@ -32,10 +32,10 @@ using StringPoolResolveFun = std::function<std::shared_ptr<simfil::StringPool>(s
  */
 using LayerInfoResolveFun = std::function<std::shared_ptr<LayerInfo>(std::string_view const&, std::string_view const&)>;
 
-class TileLayer;
+class PartitionLayer;
 
-/** Struct which represents the unique id of a tile layer.*/
-struct MapTileKey
+/** Fully qualified partition identity, including payload type, map and layer. */
+struct MapPartitionKey
 {
     // The tile's data type
     LayerType layer_ = LayerType::Features;
@@ -46,48 +46,51 @@ struct MapTileKey
     // The tile's associated map layer id
     std::string layerId_;
 
-    // The tile's associated map tile id
-    TileId tileId_;
+    // Tagged spatial tile or opaque object identity.
+    PartitionId partitionId_;
 
     /** Constructor to parse the key from a string, as returned by toString. */
-    explicit MapTileKey(std::string const& str);
+    explicit MapPartitionKey(std::string const& str);
 
-    /** Constructor to create the cache key for any TileLayer object. */
-    explicit MapTileKey(TileLayer const& data);
+    /** Constructor to create the cache key for any PartitionLayer object. */
+    explicit MapPartitionKey(PartitionLayer const& data);
 
     /** Constructor to create the cache key from raw components. */
-    explicit MapTileKey(LayerType layer, std::string mapId, std::string layerId, TileId tileId);
+    explicit MapPartitionKey(
+        LayerType layer,
+        std::string mapId,
+        std::string layerId,
+        PartitionId partitionId);
 
     /** Allow default ctor. */
-    MapTileKey() = default;
+    MapPartitionKey() = default;
 
     /** Convert the key to a string. The string will be in the form of
      *  "(0):(1):(2):(3)", with
      *   (0) being the layer type enum name,
      *   (1) being the percent-escaped map id,
      *   (2) being the percent-escaped layer id,
-     *   (3) being the decimal packed tile id.
+     *   (3) being the signed packed tile id, or object/<unsigned object id>.
      */
     [[nodiscard]] std::string toString() const;
 
     /** Operator <, allows this struct to be used as an std::map key. */
-    bool operator<(MapTileKey const& other) const;
+    bool operator<(MapPartitionKey const& other) const;
 
     /** Operator ==, compares all components. */
-    bool operator==(MapTileKey const& other) const;
+    bool operator==(MapPartitionKey const& other) const;
 
     /** Operator ==, compares all components. */
-    bool operator!=(MapTileKey const& other) const;
+    bool operator!=(MapPartitionKey const& other) const;
 };
 
 /**
- * Tile Layer base class. Used by TileFeatureLayer class and other
- * tile-specific data containers.
+ * Shared metadata and tagged identity for feature, subset and source-data payloads.
  */
-class TileLayer
+class PartitionLayer
 {
 public:
-    using Ptr = std::shared_ptr<TileLayer>;
+    using Ptr = std::shared_ptr<PartitionLayer>;
     enum class LoadState : uint8_t {
         LoadingQueued = 0,
         BackendFetching = 1,
@@ -96,29 +99,34 @@ public:
     using LoadStateCallback = std::function<void(LoadState)>;
 
     /**
-     * Constructor that takes tileId_, stringPoolId_, mapId_, layerInfo_,
+     * Constructor that takes partitionId_, stringPoolId_, mapId_, layerInfo_,
      * and sets the timestamp_ to the current system time.
      */
-    TileLayer(
-        const TileId& id,
+    PartitionLayer(
+        const PartitionId& id,
         std::string stringPoolId,
         std::string mapId,
         const std::shared_ptr<LayerInfo>& info);
 
     /**
      * Parse a tile layer from a binary byte buffer. Will throw if
-     * the resolved major-minor version of the TileLayer is not the same
+     * the resolved major-minor version of the PartitionLayer is not the same
      * as the one read from the input.
      */
-    TileLayer(
+    PartitionLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         size_t* bytesRead = nullptr);
 
-    virtual ~TileLayer() = default;
+    virtual ~PartitionLayer() = default;
 
     /** Get a global identifier for this tile layer. */
-    [[nodiscard]] MapTileKey id() const;
+    [[nodiscard]] MapPartitionKey id() const;
+
+    /** Generic identity for both tile and object payloads. */
+    [[nodiscard]] MapPartitionKey partitionKey() const { return MapPartitionKey(*this); }
+    /** The partition owning all nodes in this payload. */
+    [[nodiscard]] PartitionId const& partitionId() const { return partitionId_; }
 
     /**
      * Getter and setter for layer's tileId. This controls the rough
@@ -143,7 +151,7 @@ public:
 
     /**
      * Getter and setter for 'layerInfo_' member variable.
-     * It holds LayerInfo reference for this TileLayer.
+     * It holds LayerInfo reference for this PartitionLayer.
      */
     [[nodiscard]] std::shared_ptr<LayerInfo> layerInfo() const;
     void setLayerInfo(const std::shared_ptr<LayerInfo>& info);
@@ -195,9 +203,10 @@ public:
 
     /**
      * Getter and setter for this tile's copyright information.
+     * Set std::nullopt to clear the information.
      */
     [[nodiscard]] std::optional<std::string> legalInfo() const;
-    void setLegalInfo(const std::string& legalInfoString);
+    void setLegalInfo(std::optional<std::string> legalInfoString);
 
     /** Serialization */
     virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);
@@ -223,7 +232,7 @@ public:
 protected:
     size_t deserializationOffsetBytes_ = 0;
     Version mapVersion_{0, 0, 0};
-    TileId tileId_;
+    PartitionId partitionId_;
     std::string stringPoolId_; // Identifier of the string-pool/datasource instance
     std::string mapId_;
     std::shared_ptr<LayerInfo> layerInfo_;
