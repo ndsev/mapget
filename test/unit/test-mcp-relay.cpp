@@ -683,3 +683,32 @@ TEST_CASE(
         CHECK(result.get());
     }
 }
+
+TEST_CASE("MCP relay teardown contains clock failures and releases callbacks", "[mcp-actions]")
+{
+    bool failClock = false;
+    auto now = std::chrono::system_clock::now();
+    auto retained = std::make_shared<int>(42);
+    std::weak_ptr<int> observer = retained;
+    {
+        McpViewerRelay relay(
+            ViewerRelayTest::catalog(),
+            {},
+            [&]
+            {
+                if (failClock)
+                    throw std::runtime_error("Test clock failure during shutdown");
+                return now;
+            });
+        REQUIRE(relay.attach(
+            ViewerRelayTest::first,
+            {"https://issuer.example", "alice", now + std::chrono::minutes(5), true, true},
+            "https://viewer.example",
+            [retained](Json const&) { return *retained == 42; }));
+        retained.reset();
+        REQUIRE_FALSE(observer.expired());
+        failClock = true;
+        // The injected failure must not escape the destructor at scope exit.
+    }
+    CHECK(observer.expired());
+}

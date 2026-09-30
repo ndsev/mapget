@@ -62,7 +62,7 @@ public:
         std::function<std::chrono::steady_clock::time_point()> steadyNow =
             std::chrono::steady_clock::now);
 
-    /** Finish outstanding calls on shutdown without replaying uncertain browser effects. */
+    /** Best-effort shutdown without escaping exceptions or replaying uncertain browser effects. */
     ~McpViewerRelay();
 
     /** Attach a verified live connection; duplicate UUIDs never replace an existing owner. */

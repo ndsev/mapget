@@ -43,7 +43,13 @@ McpViewerRelay::McpViewerRelay(
 
 McpViewerRelay::~McpViewerRelay()
 {
-    shutdown();
+    try {
+        shutdown();
+    }
+    catch (...) {
+        // Teardown must release retained calls even if a clock or thread-affinity check fails.
+        log().error("MCP viewer relay cleanup failed.");
+    }
 }
 
 void McpViewerRelay::checkThread() const
