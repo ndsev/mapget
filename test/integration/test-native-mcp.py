@@ -102,21 +102,21 @@ class NativeMcpTest(unittest.TestCase):
         """Use explicit local opt-in; never touch a developer's live server or MCP configuration."""
         self.directory = tempfile.TemporaryDirectory(prefix="mapget-mcp-test-")
         self.addCleanup(self.directory.cleanup)
-        self.log = tempfile.TemporaryFile(mode="w+")
+        self.log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
         self.addCleanup(self.log.close)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             self.port = listener.getsockname()[1]
         catalog_path = Path(__file__).parent.parent / "unit/data/viewer-actions/viewer-actions.json"
-        self.catalog = json.loads(catalog_path.read_text())
-        self.fixtures = json.loads((catalog_path.parent / "fixtures.json").read_text())
+        self.catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        self.fixtures = json.loads((catalog_path.parent / "fixtures.json").read_text(encoding="utf-8"))
         config = Path(self.directory.name) / "mcp.json"
         config.write_text(json.dumps({
             "authentication": "local", "endpoint": f"http://127.0.0.1:{self.port}/mcp",
             "catalogPath": str(catalog_path.resolve()),
             "allowedHosts": [f"127.0.0.1:{self.port}"],
             "allowedOrigins": [f"http://127.0.0.1:{self.port}"],
-            "limits": {"timeoutMs": 2000}}))
+            "limits": {"timeoutMs": 2000}}), encoding="utf-8")
         self.process = subprocess.Popen([
             str(MAPGET_BINARY), "serve", "--host", "127.0.0.1", "-p", str(self.port),
             "--no-location", "--worker-count", "2", "--mcp-config", str(config)],
