@@ -114,6 +114,28 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Native schema transport preserves explicit alias ownership",
+    "[DataSourceInfo][schema-domain]")
+{
+    auto schema = std::make_shared<LayerSchema>();
+    auto root = schema->addSchema(Kind::Object);
+    auto first = schema->addSchema(Kind::Object, "shared-context-key");
+    auto second = schema->addSchema(Kind::Object, "shared-context-key");
+    schema->registerSchemaKey("second-context", second);
+    // Reference traversal reaches the second context first, unlike producer allocation.
+    schema->addFieldSchema(root, "a", second);
+    schema->addFieldSchema(root, "b", first);
+    schema->finalize();
+
+    auto const transport = schema->toJsonSchema();
+    auto restored = LayerSchema::fromJsonSchema(transport);
+    REQUIRE(restored->schemaId("shared-context-key") == schema->schemaId("shared-context-key"));
+    REQUIRE(restored->schemaId("second-context") == second);
+    restored->finalize();
+    REQUIRE(restored->toJsonSchema() == transport);
+}
+
+TEST_CASE(
     "Converter fragments share native domains but keep local references isolated",
     "[schema-domain]")
 {

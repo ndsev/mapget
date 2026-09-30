@@ -845,9 +845,10 @@ struct LayerSchema::Impl
         }
         schemas_[id] = std::move(schema);
         entriesById_[id] = std::move(entry);
-        registerKey(key, id);
         if (requested == simfil::NoSchemaId) {
-            // Canonical import restores producer aliases, not incidental transport paths.
+            // Canonical import restores exact aliases from metadata. A descriptive
+            // key can occur on several context-specific domains without owning its lookup.
+            registerKey(key, id);
             registerKey(pointer, id);
         }
         return id;
