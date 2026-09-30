@@ -28,6 +28,13 @@ Embedded applications can also register additional public top-level sections for
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
+Agent access is separately opt-in via `mapget serve --mcp-config mcp.json`.
+The [MCP guide](mapget-mcp.md) defines this restart-scoped trust file, including
+the trusted viewer catalog, loopback-only local mode, and provider-neutral
+OAuth/proxy rules. Do not place identity headers, signing keys, or permission
+rules in browser-writable configuration. Embedders use
+`HttpServiceConfig::mcpConfigPath`; omitting it disables agent access.
+
 ## The `sources` section
 
 The `sources` key must contain a YAML list. Each entry describes a datasource and must provide a `type` field. At runtime, mapget matches the type string to a registered constructor and passes the remaining fields in the entry as configuration.

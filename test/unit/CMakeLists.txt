@@ -4,6 +4,9 @@ add_executable(test.mapget
   test-main.cpp
   test-object-partitions.cpp
   test-model.cpp
+  test-mcp-actions.cpp
+  test-mcp-relay.cpp
+  test-mcp-auth.cpp
   test-feature-id-index.cpp
   test-model-geometry.cpp
   test-filter-service.cpp
@@ -33,6 +36,8 @@ add_executable(test.mapget.datasource-server
 add_dependencies(test.mapget test.mapget.datasource-server)
 
 target_link_libraries(test.mapget
+  PRIVATE
+    jwt-cpp::jwt-cpp
   PUBLIC
     mapget-log
     mapget-model

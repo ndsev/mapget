@@ -414,8 +414,8 @@ public:
                 break;
             }
 
-            const auto clientId = clientId_.load(std::memory_order_relaxed);
-            if (clientId > 0) {
+            const auto id = clientId();
+            if (!id.empty()) {
                 // The WS status can arrive before the long-poll payload has
                 // been drained. After allDone, wait for one empty payload poll
                 // so tile-count assertions do not race the binary stream.
@@ -424,7 +424,7 @@ public:
                 const auto [result, resp] = pullClient_.get(fmt::format(
                     "{}?clientId={}&waitMs={}&maxBytes={}",
                     pullPath_,
-                    clientId,
+                    id,
                     waitMs,
                     64 * 1024 * 1024));
 
@@ -469,10 +469,10 @@ public:
             cv_.wait_for(
                 lock,
                 std::chrono::milliseconds(std::min<int64_t>(remainingMs, 50)),
-                [this] {
-                    return !error_.empty()
-                        || clientId_.load(std::memory_order_relaxed) > 0
-                        || (lastStatus_.has_value() && lastStatus_->value("allDone", false));
+                [this]
+                {
+                    return !error_.empty() || !clientId_.empty() ||
+                        (lastStatus_.has_value() && lastStatus_->value("allDone", false));
                 });
         }
 
@@ -499,8 +499,8 @@ public:
             if (receivedTileCount() >= expected || !error().empty()) {
                 return receivedTileCount() >= expected;
             }
-            auto const clientId = clientId_.load(std::memory_order_relaxed);
-            if (clientId <= 0) {
+            auto const id = clientId();
+            if (id.empty()) {
                 std::unique_lock lock(mutex_);
                 cv_.wait_for(lock, std::chrono::milliseconds(20));
                 continue;
@@ -511,7 +511,7 @@ public:
             auto const [result, resp] = pullClient_.get(fmt::format(
                 "{}?clientId={}&waitMs={}&maxBytes={}",
                 pullPath_,
-                clientId,
+                id,
                 waitMs,
                 64 * 1024 * 1024));
             if (result != drogon::ReqResult::Ok || !resp) {
@@ -557,6 +557,20 @@ public:
     {
         std::lock_guard lock(mutex_);
         return error_;
+    }
+
+    /** Copy the opaque connection identifier without racing websocket callbacks. */
+    std::string clientId() const
+    {
+        std::lock_guard lock(mutex_);
+        return clientId_;
+    }
+
+    /** Wait for identity negotiation without issuing a tile request. */
+    bool waitForClientId(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        return cv_.wait_for(lock, timeout, [this] { return !clientId_.empty(); });
     }
 
     int receivedTileCount() const { return receivedTileCount_.load(std::memory_order_relaxed); }
@@ -605,9 +619,15 @@ private:
                 payloadSize};
             try {
                 auto parsed = nlohmann::json::parse(payload);
-                if (parsed.contains("clientId") && parsed["clientId"].is_number_integer()) {
-                    clientId_.store(parsed["clientId"].get<int64_t>(), std::memory_order_relaxed);
+                if (parsed.contains("clientId") && parsed["clientId"].is_string()) {
+                    {
+                        std::lock_guard lock(mutex_);
+                        clientId_ = parsed["clientId"].get<std::string>();
+                    }
                     cv_.notify_all();
+                }
+                else {
+                    setError("Request-context must carry a UUID string clientId");
                 }
             }
             catch (const std::exception& e) {
@@ -640,7 +660,7 @@ private:
     std::string error_;
     std::mutex readerMutex_;
     std::atomic_int receivedTileCount_{0};
-    std::atomic_int64_t clientId_{0};
+    std::string clientId_;
     std::unique_ptr<trantor::EventLoopThread> loopThread_;
     drogon::WebSocketClientPtr client_;
     SyncHttpClient pullClient_;
@@ -767,6 +787,89 @@ nlohmann::json testDataSourceInfoJson()
 }
 
 }  // namespace
+
+TEST_CASE(
+    "Interactive session IDs are opaque connection-scoped UUIDs",
+    "[HttpDataSource][interactive-session]")
+{
+    auto& service = mapget::test::httpService();
+    SyncHttpClient http("127.0.0.1", service.port());
+    std::regex const
+        uuidV4("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+
+    for (auto const& path : {"/interactive/payload", "/tiles/next"}) {
+        for (auto const& invalid :
+             {"",
+              "1",
+              "-1",
+              "1tail",
+              "00000000-0000-0000-0000-000000000000",
+              "00000000-0000-4000-7000-000000000000",
+              "A0000000-0000-4000-8000-000000000000"})
+        {
+            auto [result, response] =
+                http.get(fmt::format("{}?clientId={}&waitMs=0", path, invalid));
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(response != nullptr);
+            REQUIRE(response->statusCode() == drogon::k400BadRequest);
+            REQUIRE(response->getHeader("Cache-Control") == "no-store");
+        }
+        auto [result, response] = http.get(
+            fmt::format("{}?clientId=00000000-0000-4000-8000-000000000000&waitMs=0", path));
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(response != nullptr);
+        REQUIRE(response->statusCode() == drogon::k410Gone);
+        REQUIRE(response->getHeader("Cache-Control") == "no-store");
+    }
+
+    std::set<std::string> ids;
+    for (auto const& path : {"/interactive", "/tiles"}) {
+        WsTilesClient client(service.port(), nullptr);
+        REQUIRE(client.connect(false, path));
+        REQUIRE(client.waitForClientId(std::chrono::seconds(5)));
+        auto const id = client.clientId();
+        REQUIRE(std::regex_match(id, uuidV4));
+        REQUIRE(ids.insert(id).second);
+        client.send(R"({"requests":[]})");
+        REQUIRE(client.waitForDone(std::chrono::seconds(5)));
+        REQUIRE(client.error().empty());
+        REQUIRE(client.clientId() == id);
+
+        // Updates stay on one identity; a new connection must get a fresh one.
+        client.resetStatus();
+        client.send(R"({"requests":[]})");
+        REQUIRE(client.waitForDone(std::chrono::seconds(5)));
+        REQUIRE(client.clientId() == id);
+        for (auto const& pullPath : {"/interactive/payload", "/tiles/next"}) {
+            auto [result, response] =
+                http.get(fmt::format("{}?clientId={}&waitMs=0", pullPath, id));
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(response != nullptr);
+            REQUIRE(response->statusCode() == drogon::k204NoContent);
+            REQUIRE(response->getHeader("Cache-Control") == "no-store");
+        }
+        auto [result, status] = http.get("/status-data");
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(status != nullptr);
+        REQUIRE(status->body().find(id) == std::string_view::npos);
+        client.stop();
+
+        // Close is asynchronous: wait for registry removal, not an arbitrary sleep.
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        bool removed = false;
+        do {
+            auto [pullResult, response] =
+                http.get(fmt::format("/interactive/payload?clientId={}&waitMs=0", id));
+            REQUIRE(pullResult == drogon::ReqResult::Ok);
+            REQUIRE(response != nullptr);
+            removed = response->statusCode() == drogon::k410Gone;
+            if (!removed) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        } while (!removed && std::chrono::steady_clock::now() < deadline);
+        REQUIRE(removed);
+    }
+}
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
@@ -1210,9 +1313,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     parsed["channels"][0]["featureEntries"]
                         .size() == 1);
                 REQUIRE(
-                    parsed["channels"][0]["featureEntries"][0]
-                          ["values"] ==
-                    nlohmann::json::array({"Way"}));
+                    parsed["channels"][0]["featureEntries"][0]["values"] ==
+                    nlohmann::json::array({nlohmann::json::array({"Way"})}));
             }
             REQUIRE(sawResultLayer);
 

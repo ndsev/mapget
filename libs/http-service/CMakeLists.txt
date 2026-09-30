@@ -1,5 +1,8 @@
 project(mapget-http-service CXX)
 
+set_source_files_properties(src/mcp-server.cpp PROPERTIES COMPILE_DEFINITIONS
+  "MAPGET_MCP_VERSION=\"${MAPGET_VERSION}\"")
+
 add_library(mapget-http-service STATIC
   include/mapget/http-service/http-service.h
   include/mapget/http-service/http-client.h
@@ -13,6 +16,14 @@ add_library(mapget-http-service STATIC
   src/config-handler.cpp
   src/http-client.cpp
   src/location-handler.cpp
+  src/mcp-action-catalog.h
+  src/mcp-action-catalog.cpp
+  src/mcp-auth.h
+  src/mcp-auth.cpp
+  src/mcp-server.h
+  src/mcp-server.cpp
+  src/mcp-viewer-relay.h
+  src/mcp-viewer-relay.cpp
   src/locate-handler.cpp
   src/object-discovery-handler.cpp
   src/sources-handler.cpp
@@ -51,6 +62,7 @@ target_link_libraries(mapget-http-service
     gridsource
     geojsonsource
   PRIVATE
+    jwt-cpp::jwt-cpp
     picosha2
     zlibstatic)
 

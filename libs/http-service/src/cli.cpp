@@ -597,6 +597,7 @@ struct ServeCommand
         static_cast<uint64_t>(HttpServiceConfig{}.memoryTrimPeriod.count());
     bool noLocation_ = false;
     std::string locationDbPath_;
+    std::string mcpConfigPath_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
     ServeStartedCallback startedCallback_;
     CLI::App& app_;
@@ -718,6 +719,11 @@ struct ServeCommand
                 "Maximum accepted /location result limit. Default 50.")
             ->default_val(locationMaxLimit_);
         serveCmd->add_flag("--no-location", noLocation_, "Disable the /location endpoint.");
+        serveCmd->add_option(
+            "--mcp-config",
+            mcpConfigPath_,
+            "Explicit MCP trust/catalog JSON configuration. Disabled when omitted; local mode "
+            "requires --host 127.0.0.1.");
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -808,6 +814,9 @@ struct ServeCommand
         httpConfig.locationResultMaxLimit = static_cast<uint32_t>(locationMaxLimit_);
         if (!locationDbPath_.empty()) {
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
+        }
+        if (!mcpConfigPath_.empty()) {
+            httpConfig.mcpConfigPath = std::filesystem::path(mcpConfigPath_);
         }
 
         if (memoryTrimPeriodSeconds_ > 0) {
