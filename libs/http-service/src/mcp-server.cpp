@@ -76,23 +76,28 @@ void McpServer::stop()
 {
     if (stopped_.exchange(true))
         return;
-    std::promise<void> finished;
-    auto future = finished.get_future();
-    thread_.getLoop()->queueInLoop(
-        [this, &finished]
+    auto* loop = thread_.getLoop();
+    loop->queueInLoop(
+        [this, loop]
         {
-            thread_.getLoop()->invalidateTimer(timer_);
-            relay_->shutdown();
+            loop->invalidateTimer(timer_);
+            // Relay destruction contains cleanup failures and stays on its owning loop.
             relay_.reset();
             responses_.clear();
             auto waiting = std::move(waitingForKeys_);
-            for (auto& callback : waiting)
-                callback();
             keyClient_.reset();
-            finished.set_value();
+            for (auto& callback : waiting) {
+                try {
+                    callback();
+                }
+                catch (...) {
+                    // One failed HTTP reply must not strand the shutdown join.
+                    log().error("MCP shutdown response failed.");
+                }
+            }
+            loop->quit();
         });
-    future.wait();
-    thread_.getLoop()->quit();
+    // Joining is the completion barrier; no throwing future wait or borrowed promise is needed.
     thread_.wait();
 }
 
