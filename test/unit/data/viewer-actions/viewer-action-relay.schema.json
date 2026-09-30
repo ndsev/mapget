@@ -1,0 +1,479 @@
+{
+  "server": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.registered"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "clientId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "catalogId": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "clientId",
+          "catalogId"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.updated"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "clientId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "catalogId": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "clientId",
+          "catalogId"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.invoke"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "arguments": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "callId",
+          "action",
+          "arguments",
+          "timeoutMs"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.cancel"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "callId",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.error"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "register",
+              "update"
+            ]
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "invalid_arguments",
+                  "not_available",
+                  "unsupported_action",
+                  "busy",
+                  "cancelled",
+                  "timeout",
+                  "disconnected",
+                  "internal_error"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "not_applied",
+                  "applied",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "operation",
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "client": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.register"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "catalogId": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "actions": {
+            "maxItems": 64,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "uniqueItems": true
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "catalogId",
+          "actions",
+          "label"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.update"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "catalogId": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "actions": {
+            "maxItems": 64,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "uniqueItems": true
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "catalogId",
+          "actions",
+          "label"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.result"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "result": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "callId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "mapget.actions.result"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "invalid_arguments",
+                  "not_available",
+                  "unsupported_action",
+                  "busy",
+                  "cancelled",
+                  "timeout",
+                  "disconnected",
+                  "internal_error"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "not_applied",
+                  "applied",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "callId",
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "info": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": false
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": true
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "authentication": {
+            "type": "string",
+            "const": "local"
+          },
+          "scopes": {
+            "minItems": 0,
+            "maxItems": 0,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "catalogId": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "enabled",
+          "endpoint",
+          "authentication",
+          "scopes"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": true
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "authentication": {
+            "type": "string",
+            "const": "oauth"
+          },
+          "scopes": {
+            "maxItems": 64,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "oauthClientId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "catalogId": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "enabled",
+          "endpoint",
+          "authentication",
+          "scopes"
+        ],
+        "additionalProperties": false
+      }
+    ]
+  }
+}

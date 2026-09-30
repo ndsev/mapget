@@ -1,0 +1,1936 @@
+{
+  "formatVersion": 1,
+  "actions": [
+    {
+      "description": "Discover explicitly exposed application state channels, selectors, canonical value schemas and current view availability. Does not load map data.",
+      "permission": "viewer-read",
+      "mutation": false,
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "channels": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "app.views",
+                "view.camera",
+                "view.layers",
+                "app.selections",
+                "app.searches"
+              ]
+            }
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "observedAt": {
+            "type": "string"
+          },
+          "viewLayoutRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "channels": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "enum": [
+                    "app.views",
+                    "view.camera",
+                    "view.layers",
+                    "app.selections",
+                    "app.searches"
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "selectorSchema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "valueSchema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "readable": {
+                  "type": "boolean"
+                },
+                "writable": {
+                  "type": "boolean"
+                },
+                "persistence": {
+                  "type": "string",
+                  "enum": [
+                    "runtime-summary",
+                    "url-and-local-storage"
+                  ]
+                },
+                "synchronization": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "focus-target-and-follow-view-sync"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "selectorSchema",
+                "valueSchema",
+                "readable",
+                "writable",
+                "persistence",
+                "synchronization"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "views": {
+            "type": "object",
+            "properties": {
+              "focusedView": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "sync": {
+                "maxItems": 32,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 32
+                }
+              },
+              "views": {
+                "maxItems": 100,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "viewIndex": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "projection": {
+                      "type": "string",
+                      "enum": [
+                        "2d",
+                        "3d"
+                      ]
+                    },
+                    "navigationMode": {
+                      "type": "string",
+                      "enum": [
+                        "map",
+                        "first_person",
+                        "unavailable"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "viewIndex",
+                    "projection",
+                    "navigationMode"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "focusedView",
+              "sync",
+              "views"
+            ],
+            "additionalProperties": false
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "omissions": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "channel": {
+                          "type": "string",
+                          "const": "app.views"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "viewIndex": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "view.camera"
+                        }
+                      },
+                      "required": [
+                        "viewIndex",
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "viewIndex": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "mapId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "layerId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "view.layers"
+                        }
+                      },
+                      "required": [
+                        "viewIndex",
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "panelId": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "app.selections"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "searchId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "app.searches"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "item_limit",
+                    "byte_limit",
+                    "text_limit"
+                  ]
+                }
+              },
+              "required": [
+                "target",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "observedAt",
+          "viewLayoutRevision",
+          "channels",
+          "views",
+          "complete",
+          "omissions"
+        ],
+        "additionalProperties": false
+      },
+      "name": "viewer_describe_app_state"
+    },
+    {
+      "description": "Read selected state channels, or a bounded live overview when targets are omitted. Includes hidden/paused search definitions; excludes feature data and search results.",
+      "permission": "viewer-read",
+      "mutation": false,
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "targets": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "channel": {
+                      "type": "string",
+                      "const": "app.views"
+                    }
+                  },
+                  "required": [
+                    "channel"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "viewIndex": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "channel": {
+                      "type": "string",
+                      "const": "view.camera"
+                    }
+                  },
+                  "required": [
+                    "viewIndex",
+                    "channel"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "viewIndex": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "mapId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "layerId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "channel": {
+                      "type": "string",
+                      "const": "view.layers"
+                    }
+                  },
+                  "required": [
+                    "viewIndex",
+                    "channel"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "panelId": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "channel": {
+                      "type": "string",
+                      "const": "app.selections"
+                    }
+                  },
+                  "required": [
+                    "channel"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "searchId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "channel": {
+                      "type": "string",
+                      "const": "app.searches"
+                    }
+                  },
+                  "required": [
+                    "channel"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "observedAt": {
+            "type": "string"
+          },
+          "viewLayoutRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "values": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "channel": {
+                          "type": "string",
+                          "const": "app.views"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "value": {
+                      "type": "object",
+                      "properties": {
+                        "focusedView": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sync": {
+                          "maxItems": 32,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 32
+                          }
+                        },
+                        "views": {
+                          "maxItems": 100,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "viewIndex": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "projection": {
+                                "type": "string",
+                                "enum": [
+                                  "2d",
+                                  "3d"
+                                ]
+                              },
+                              "navigationMode": {
+                                "type": "string",
+                                "enum": [
+                                  "map",
+                                  "first_person",
+                                  "unavailable"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "viewIndex",
+                              "projection",
+                              "navigationMode"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "focusedView",
+                        "sync",
+                        "views"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "viewIndex": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "view.camera"
+                        }
+                      },
+                      "required": [
+                        "viewIndex",
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "value": {
+                      "type": "object",
+                      "properties": {
+                        "destination": {
+                          "type": "object",
+                          "properties": {
+                            "lon": {
+                              "type": "number",
+                              "minimum": -180,
+                              "maximum": 180,
+                              "description": "WGS84 longitude in degrees."
+                            },
+                            "lat": {
+                              "type": "number",
+                              "minimum": -85.05113,
+                              "maximum": 85.05113,
+                              "description": "Web Mercator latitude in degrees."
+                            },
+                            "alt": {
+                              "type": "number",
+                              "exclusiveMinimum": 0,
+                              "description": "Viewer scale-height in metres, not physical eye/terrain altitude."
+                            }
+                          },
+                          "required": [
+                            "lon",
+                            "lat",
+                            "alt"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "orientation": {
+                          "type": "object",
+                          "properties": {
+                            "heading": {
+                              "type": "number",
+                              "minimum": -6.283185307179586,
+                              "maximum": 6.283185307179586,
+                              "description": "Clockwise heading from north, in radians."
+                            },
+                            "pitch": {
+                              "type": "number",
+                              "minimum": -1.5707963267948966,
+                              "maximum": -0.08726646259971647,
+                              "description": "Pitch in radians; -pi/2 is top-down, -pi/36 is the maximum tilt."
+                            },
+                            "roll": {
+                              "type": "number",
+                              "const": 0,
+                              "description": "Roll is not implemented; only zero is supported."
+                            }
+                          },
+                          "required": [
+                            "heading",
+                            "pitch",
+                            "roll"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "position": {
+                          "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+                          "type": "array",
+                          "items": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "destination",
+                        "orientation"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "viewIndex": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "mapId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "layerId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "view.layers"
+                        }
+                      },
+                      "required": [
+                        "viewIndex",
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "value": {
+                      "maxItems": 100,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "mapId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "layerId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "visible": {
+                            "type": "boolean"
+                          },
+                          "level": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "autoLevel": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "mapId",
+                          "layerId",
+                          "visible",
+                          "level",
+                          "autoLevel"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "panelId": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "app.selections"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "value": {
+                      "maxItems": 100,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "panelId": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "locked": {
+                            "type": "boolean"
+                          },
+                          "undocked": {
+                            "type": "boolean"
+                          },
+                          "loading": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Feature resolution state; null when owned by a source-data panel."
+                          },
+                          "features": {
+                            "maxItems": 100,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "mapTileKey": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 4096
+                                },
+                                "featureId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 4096
+                                }
+                              },
+                              "required": [
+                                "mapTileKey",
+                                "featureId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "sourceData": {
+                            "type": "object",
+                            "properties": {
+                              "mapTileKey": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "address": {
+                                "description": "Unsigned 64-bit address as a lossless decimal string.",
+                                "type": "string",
+                                "maxLength": 20,
+                                "pattern": "^[0-9]+$"
+                              }
+                            },
+                            "required": [
+                              "mapTileKey"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "panelId",
+                          "locked",
+                          "undocked",
+                          "loading",
+                          "features"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "searchId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "app.searches"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "value": {
+                      "maxItems": 100,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "searchId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "query": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "paused": {
+                            "type": "boolean"
+                          },
+                          "autoUpdate": {
+                            "type": "boolean"
+                          },
+                          "showResultsOnMap": {
+                            "type": "boolean"
+                          },
+                          "runtime": {
+                            "type": "object",
+                            "properties": {
+                              "complete": {
+                                "type": "boolean"
+                              },
+                              "progressDone": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "progressTotal": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "resultCount": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "errorCount": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "complete",
+                              "progressDone",
+                              "progressTotal",
+                              "resultCount",
+                              "errorCount"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "searchId",
+                          "query",
+                          "enabled",
+                          "paused",
+                          "autoUpdate",
+                          "showResultsOnMap"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "channel": {
+                              "type": "string",
+                              "const": "app.views"
+                            }
+                          },
+                          "required": [
+                            "channel"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "viewIndex": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "channel": {
+                              "type": "string",
+                              "const": "view.camera"
+                            }
+                          },
+                          "required": [
+                            "viewIndex",
+                            "channel"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "viewIndex": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "mapId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "layerId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "channel": {
+                              "type": "string",
+                              "const": "view.layers"
+                            }
+                          },
+                          "required": [
+                            "viewIndex",
+                            "channel"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "panelId": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "channel": {
+                              "type": "string",
+                              "const": "app.selections"
+                            }
+                          },
+                          "required": [
+                            "channel"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "searchId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "channel": {
+                              "type": "string",
+                              "const": "app.searches"
+                            }
+                          },
+                          "required": [
+                            "channel"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "unavailable": {
+                      "type": "string",
+                      "enum": [
+                        "view_unavailable",
+                        "first_person",
+                        "target_unavailable",
+                        "value_out_of_contract"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "unavailable"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "omissions": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "channel": {
+                          "type": "string",
+                          "const": "app.views"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "viewIndex": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "view.camera"
+                        }
+                      },
+                      "required": [
+                        "viewIndex",
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "viewIndex": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "mapId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "layerId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "view.layers"
+                        }
+                      },
+                      "required": [
+                        "viewIndex",
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "panelId": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "app.selections"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "searchId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "channel": {
+                          "type": "string",
+                          "const": "app.searches"
+                        }
+                      },
+                      "required": [
+                        "channel"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "item_limit",
+                    "byte_limit",
+                    "text_limit"
+                  ]
+                }
+              },
+              "required": [
+                "target",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "observedAt",
+          "viewLayoutRevision",
+          "values",
+          "complete",
+          "omissions"
+        ],
+        "additionalProperties": false
+      },
+      "name": "viewer_get_app_state"
+    },
+    {
+      "description": "Assign one writable channel through its application owner. Camera assignment is immediate, focuses the target, honors view synchronization and requires the observed viewLayoutRevision. Applied does not mean tiles have loaded or rendered.",
+      "permission": "viewer-control",
+      "mutation": true,
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "viewIndex": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "channel": {
+                "type": "string",
+                "const": "view.camera"
+              }
+            },
+            "required": [
+              "viewIndex",
+              "channel"
+            ],
+            "additionalProperties": false
+          },
+          "value": {
+            "type": "object",
+            "properties": {
+              "destination": {
+                "type": "object",
+                "properties": {
+                  "lon": {
+                    "type": "number",
+                    "minimum": -180,
+                    "maximum": 180,
+                    "description": "WGS84 longitude in degrees."
+                  },
+                  "lat": {
+                    "type": "number",
+                    "minimum": -85.05113,
+                    "maximum": 85.05113,
+                    "description": "Web Mercator latitude in degrees."
+                  },
+                  "alt": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Viewer scale-height in metres, not physical eye/terrain altitude."
+                  }
+                },
+                "required": [
+                  "lon",
+                  "lat",
+                  "alt"
+                ],
+                "additionalProperties": false
+              },
+              "orientation": {
+                "type": "object",
+                "properties": {
+                  "heading": {
+                    "type": "number",
+                    "minimum": -6.283185307179586,
+                    "maximum": 6.283185307179586,
+                    "description": "Clockwise heading from north, in radians."
+                  },
+                  "pitch": {
+                    "type": "number",
+                    "minimum": -1.5707963267948966,
+                    "maximum": -0.08726646259971647,
+                    "description": "Pitch in radians; -pi/2 is top-down, -pi/36 is the maximum tilt."
+                  },
+                  "roll": {
+                    "type": "number",
+                    "const": 0,
+                    "description": "Roll is not implemented; only zero is supported."
+                  }
+                },
+                "required": [
+                  "heading",
+                  "pitch",
+                  "roll"
+                ],
+                "additionalProperties": false
+              },
+              "position": {
+                "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+                "type": "array",
+                "items": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "destination",
+              "orientation"
+            ],
+            "additionalProperties": false
+          },
+          "viewLayoutRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "target",
+          "value",
+          "viewLayoutRevision"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "applied"
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "viewIndex": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "channel": {
+                "type": "string",
+                "const": "view.camera"
+              }
+            },
+            "required": [
+              "viewIndex",
+              "channel"
+            ],
+            "additionalProperties": false
+          },
+          "value": {
+            "type": "object",
+            "properties": {
+              "destination": {
+                "type": "object",
+                "properties": {
+                  "lon": {
+                    "type": "number",
+                    "minimum": -180,
+                    "maximum": 180,
+                    "description": "WGS84 longitude in degrees."
+                  },
+                  "lat": {
+                    "type": "number",
+                    "minimum": -85.05113,
+                    "maximum": 85.05113,
+                    "description": "Web Mercator latitude in degrees."
+                  },
+                  "alt": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Viewer scale-height in metres, not physical eye/terrain altitude."
+                  }
+                },
+                "required": [
+                  "lon",
+                  "lat",
+                  "alt"
+                ],
+                "additionalProperties": false
+              },
+              "orientation": {
+                "type": "object",
+                "properties": {
+                  "heading": {
+                    "type": "number",
+                    "minimum": -6.283185307179586,
+                    "maximum": 6.283185307179586,
+                    "description": "Clockwise heading from north, in radians."
+                  },
+                  "pitch": {
+                    "type": "number",
+                    "minimum": -1.5707963267948966,
+                    "maximum": -0.08726646259971647,
+                    "description": "Pitch in radians; -pi/2 is top-down, -pi/36 is the maximum tilt."
+                  },
+                  "roll": {
+                    "type": "number",
+                    "const": 0,
+                    "description": "Roll is not implemented; only zero is supported."
+                  }
+                },
+                "required": [
+                  "heading",
+                  "pitch",
+                  "roll"
+                ],
+                "additionalProperties": false
+              },
+              "position": {
+                "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+                "type": "array",
+                "items": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "destination",
+              "orientation"
+            ],
+            "additionalProperties": false
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "focusedView": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "affectedViews": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "viewLayoutRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "readiness": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "loading",
+                  "error",
+                  "unknown"
+                ]
+              },
+              "pending": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "errors": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "status",
+          "target",
+          "value",
+          "changed",
+          "focusedView",
+          "affectedViews",
+          "viewLayoutRevision",
+          "readiness"
+        ],
+        "additionalProperties": false
+      },
+      "name": "viewer_set_app_state"
+    }
+  ],
+  "channels": [
+    {
+      "description": "Views, focus, synchronization, projection and live navigation availability.",
+      "selectorSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "valueSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "focusedView": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "sync": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          "views": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "viewIndex": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "projection": {
+                  "type": "string",
+                  "enum": [
+                    "2d",
+                    "3d"
+                  ]
+                },
+                "navigationMode": {
+                  "type": "string",
+                  "enum": [
+                    "map",
+                    "first_person",
+                    "unavailable"
+                  ]
+                }
+              },
+              "required": [
+                "viewIndex",
+                "projection",
+                "navigationMode"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "focusedView",
+          "sync",
+          "views"
+        ],
+        "additionalProperties": false
+      },
+      "readable": true,
+      "writable": false,
+      "persistence": "runtime-summary",
+      "synchronization": "none",
+      "name": "app.views"
+    },
+    {
+      "description": "Live map camera; assignment focuses the target and honors position/movement synchronization. Unavailable in first-person mode.",
+      "selectorSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "viewIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "viewIndex"
+        ],
+        "additionalProperties": false
+      },
+      "valueSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "object",
+            "properties": {
+              "lon": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180,
+                "description": "WGS84 longitude in degrees."
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -85.05113,
+                "maximum": 85.05113,
+                "description": "Web Mercator latitude in degrees."
+              },
+              "alt": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Viewer scale-height in metres, not physical eye/terrain altitude."
+              }
+            },
+            "required": [
+              "lon",
+              "lat",
+              "alt"
+            ],
+            "additionalProperties": false
+          },
+          "orientation": {
+            "type": "object",
+            "properties": {
+              "heading": {
+                "type": "number",
+                "minimum": -6.283185307179586,
+                "maximum": 6.283185307179586,
+                "description": "Clockwise heading from north, in radians."
+              },
+              "pitch": {
+                "type": "number",
+                "minimum": -1.5707963267948966,
+                "maximum": -0.08726646259971647,
+                "description": "Pitch in radians; -pi/2 is top-down, -pi/36 is the maximum tilt."
+              },
+              "roll": {
+                "type": "number",
+                "const": 0,
+                "description": "Roll is not implemented; only zero is supported."
+              }
+            },
+            "required": [
+              "heading",
+              "pitch",
+              "roll"
+            ],
+            "additionalProperties": false
+          },
+          "position": {
+            "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+            "type": "array",
+            "items": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        },
+        "required": [
+          "destination",
+          "orientation"
+        ],
+        "additionalProperties": false
+      },
+      "readable": true,
+      "writable": true,
+      "persistence": "url-and-local-storage",
+      "synchronization": "focus-target-and-follow-view-sync",
+      "name": "view.camera"
+    },
+    {
+      "description": "Visible layer settings; use mapId/layerId selectors to read a particular layer, including a hidden one.",
+      "selectorSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "viewIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "mapId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "viewIndex"
+        ],
+        "additionalProperties": false
+      },
+      "valueSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "maxItems": 100,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "mapId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "layerId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "level": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "autoLevel": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "mapId",
+            "layerId",
+            "visible",
+            "level",
+            "autoLevel"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "readable": true,
+      "writable": false,
+      "persistence": "runtime-summary",
+      "synchronization": "none",
+      "name": "view.layers"
+    },
+    {
+      "description": "Inspection identities and panel/loading state, including undocked panels; never inspection trees.",
+      "selectorSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "panelId": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "additionalProperties": false
+      },
+      "valueSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "maxItems": 100,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "panelId": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "locked": {
+              "type": "boolean"
+            },
+            "undocked": {
+              "type": "boolean"
+            },
+            "loading": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Feature resolution state; null when owned by a source-data panel."
+            },
+            "features": {
+              "maxItems": 100,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "mapTileKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "featureId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "mapTileKey",
+                  "featureId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "sourceData": {
+              "type": "object",
+              "properties": {
+                "mapTileKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "address": {
+                  "description": "Unsigned 64-bit address as a lossless decimal string.",
+                  "type": "string",
+                  "maxLength": 20,
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "required": [
+                "mapTileKey"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "panelId",
+            "locked",
+            "undocked",
+            "loading",
+            "features"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "readable": true,
+      "writable": false,
+      "persistence": "runtime-summary",
+      "synchronization": "none",
+      "name": "app.selections"
+    },
+    {
+      "description": "Persisted search definitions and live progress, including hidden and paused searches; never results or style rules.",
+      "selectorSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "searchId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "valueSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "maxItems": 100,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "searchId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "query": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "paused": {
+              "type": "boolean"
+            },
+            "autoUpdate": {
+              "type": "boolean"
+            },
+            "showResultsOnMap": {
+              "type": "boolean"
+            },
+            "runtime": {
+              "type": "object",
+              "properties": {
+                "complete": {
+                  "type": "boolean"
+                },
+                "progressDone": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "progressTotal": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "resultCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "errorCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "complete",
+                "progressDone",
+                "progressTotal",
+                "resultCount",
+                "errorCount"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "searchId",
+            "query",
+            "enabled",
+            "paused",
+            "autoUpdate",
+            "showResultsOnMap"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "readable": true,
+      "writable": false,
+      "persistence": "runtime-summary",
+      "synchronization": "none",
+      "name": "app.searches"
+    }
+  ],
+  "catalogId": "sha256:bae94ac327fc097ee2ec6c7a433fdbc62c719be857f20d0f146373315d597299"
+}

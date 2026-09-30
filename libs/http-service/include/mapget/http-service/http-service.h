@@ -45,6 +45,8 @@ struct HttpServiceConfig
     std::optional<std::filesystem::path> locationDatabasePath;
     /** Server-side cap for accepted /location limit values. */
     uint32_t locationResultMaxLimit = 50;
+    /** Explicit MCP deployment/trust configuration; absent leaves agent access disabled. */
+    std::optional<std::filesystem::path> mcpConfigPath;
 
     /**
      * Period between glibc allocator trims which return unused heap pages to the OS.
