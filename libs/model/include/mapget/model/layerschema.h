@@ -13,9 +13,10 @@
 #include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
+#include "mapget/model/memory.h"
+#include "mapget/model/stringpool.h"
 #include "simfil/error.h"
 #include "simfil/model/schema.h"
-#include "mapget/model/memory.h"
 
 namespace mapget
 {
@@ -32,6 +33,14 @@ namespace mapget
 class LayerSchema
 {
 public:
+    using Composition = simfil::Schema::Composition;
+    static constexpr auto FeatureKind = simfil::Schema::makeKind(
+        StringPool::SchemaFeatureStr,
+        simfil::valueTypeAffinity(simfil::ValueType::Object));
+    static constexpr auto AttributeKind = simfil::Schema::makeKind(
+        StringPool::SchemaAttributeStr,
+        simfil::valueTypeAffinity(simfil::ValueType::Object));
+
     /** Opaque storage for compiled schemas and lookup tables. */
     struct Impl;
 
@@ -152,6 +161,23 @@ public:
     /** Add several enum-like string symbols directly declared by a value node. */
     void addEnumSymbols(simfil::SchemaId schemaId, std::span<const std::string> symbolNames);
 
+    /** Attach an owning non-string enum literal; string symbols use addEnumSymbol. */
+    void addEnumValue(simfil::SchemaId schemaId, simfil::ScalarValueType value);
+
+    /** Retain an explicit logical operator instead of merging its alternatives. */
+    void setComposition(simfil::SchemaId schemaId, Composition composition);
+    /** Add one alternative at the same value position, not an array element. */
+    void addAlternative(simfil::SchemaId schemaId, simfil::SchemaId alternative);
+    /** Set a concrete producer type name independently of its structural kind. */
+    void setTypeName(simfil::SchemaId schemaId, std::string name);
+    /** Record undeclared object-member support; direct schemas default to closed. */
+    void setOpen(simfil::SchemaId schemaId, bool open);
+    /** Record nullability without conflating it with field presence. */
+    void setNullable(simfil::SchemaId schemaId, std::optional<bool> nullable);
+    /** Record required/optional presence on the parent-field edge. */
+    void
+    setFieldRequired(simfil::SchemaId schemaId, std::string field, std::optional<bool> required);
+
     /** Attach zserio type metadata used by completion/result-coloring consumers. */
     void setZserioType(simfil::SchemaId schemaId, std::string zserioType);
 
@@ -191,8 +217,27 @@ public:
     /** Resolve a schema key to the serialized SchemaId domain. */
     [[nodiscard]] simfil::SchemaId schemaId(std::string_view key) const;
 
-    /** Return the kind of a compiled schema, defaulting to Object for unknown ids. */
+    /** Return the packed domain kind, or Unknown when the identity is unavailable. */
     [[nodiscard]] simfil::Schema::Kind kind(simfil::SchemaId schemaId) const;
+
+    /** Return the concrete type name, or empty when producer metadata is absent. */
+    [[nodiscard]] std::string_view typeName(simfil::SchemaId schemaId) const;
+    /** Return the explicit combiner, independently of its coarse affinity mask. */
+    [[nodiscard]] Composition composition(simfil::SchemaId schemaId) const;
+    /** Return alternative domains at the same value position. */
+    [[nodiscard]] std::span<simfil::SchemaId const> alternatives(simfil::SchemaId schemaId) const;
+    /** Return non-string enum literals; strings retain their canonical symbol index. */
+    [[nodiscard]] std::span<simfil::ScalarValueType const>
+    enumValues(simfil::SchemaId schemaId) const;
+    /** Whether undeclared members are permitted; unknown domains remain conservative. */
+    [[nodiscard]] bool open(simfil::SchemaId schemaId) const;
+    /** Return known nullability, not field-presence information. */
+    [[nodiscard]] std::optional<bool> nullable(simfil::SchemaId schemaId) const;
+    /** Return known presence requirements for one direct field. */
+    [[nodiscard]] std::optional<bool>
+    fieldRequired(simfil::SchemaId schemaId, std::string_view field) const;
+    /** A finalized absence proof; incomplete/open graphs must not prune data. */
+    [[nodiscard]] bool reachabilityComplete(simfil::SchemaId schemaId) const;
 
     /** Return true if the schema can contain the field directly or through descendants. */
     [[nodiscard]] bool canHaveField(simfil::SchemaId schemaId, std::string_view fieldName) const;
@@ -232,6 +277,14 @@ public:
 
     /** Resolve the Feature object schema for a concrete mapget feature type. */
     [[nodiscard]] simfil::SchemaId featureSchema(std::string_view featureType) const;
+
+    /**
+     * Return the typed attribute-query root prepared by finalize(). It preserves
+     * payload/alias metadata and adds runtime overlay fields, including $feature.
+     * No model samples or mutations of a published graph are required.
+     */
+    [[nodiscard]] simfil::SchemaId
+    attributeQuerySchema(std::string_view featureType, simfil::SchemaId attributeSchema) const;
 
     /** Resolve the Feature.properties object schema for a concrete feature type. */
     [[nodiscard]] simfil::SchemaId featurePropertiesSchema(std::string_view featureType) const;

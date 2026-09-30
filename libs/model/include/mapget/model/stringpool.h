@@ -115,8 +115,19 @@ struct StringPool : public simfil::StringPool
         SequenceStr,
         IndexStr,
         GeometryIndexStr,
-        PositionCountStr
+        PositionCountStr,
+        SchemaFeatureStr,
+        SchemaAttributeStr,
+        ValueErrorsStr,
+        HostValueErrorsStr,
+        ExpressionIndexStr,
+        StageStr,
+        MessageStr
     };
+
+    static_assert(
+        int(MessageStr) < int(FirstDynamicId),
+        "Mapget static keys must not overlap dynamic strings.");
 
     explicit StringPool(const std::string_view& stringPoolId);
 

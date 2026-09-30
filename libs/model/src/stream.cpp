@@ -127,12 +127,13 @@ bool TileLayerStream::Reader::continueReading()
             raise(result.error().message);
         }
     }
-    else if (onControlMessage_
-             && (nextValueType_ == MessageType::Status
-                 || nextValueType_ == MessageType::LoadStateChange
-                 || nextValueType_ == MessageType::RequestContext
-                 || nextValueType_ == MessageType::SourceCatalogChange
-                 || nextValueType_ == MessageType::EndOfStream))
+    else if (
+        onControlMessage_ &&
+        (nextValueType_ == MessageType::Status || nextValueType_ == MessageType::LoadStateChange ||
+         nextValueType_ == MessageType::RequestContext ||
+         nextValueType_ == MessageType::SourceCatalogChange ||
+         nextValueType_ == MessageType::ActionControl ||
+         nextValueType_ == MessageType::EndOfStream))
     {
         onControlMessage_(
             nextValueType_,

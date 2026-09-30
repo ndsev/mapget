@@ -11,6 +11,7 @@ add_executable(test.mapget
   test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-layerschema-domains.cpp
   test-location.cpp
   test-http-datasource.cpp
   test-cache.cpp
@@ -27,6 +28,9 @@ add_executable(test.mapget.filelog
 
 add_executable(test.mapget.datasource-server
   test-datasource-server.cpp)
+
+# The HTTP tests launch this peer; rebuild both sides after protocol/static-ID changes.
+add_dependencies(test.mapget test.mapget.datasource-server)
 
 target_link_libraries(test.mapget
   PUBLIC

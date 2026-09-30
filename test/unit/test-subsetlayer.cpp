@@ -14,6 +14,14 @@ using namespace std::chrono_literals;
 
 namespace
 {
+template<typename T>
+simfil::ModelNode::Ptr projectedScalar(PartitionSubsetLayer& layer, T const& value)
+{
+    auto sequence = layer.newArray(1, true);
+    sequence->append(layer.newValue(value));
+    return sequence;
+}
+
 std::shared_ptr<LayerInfo> subsetLayerInfo()
 {
     return LayerInfo::fromJson(R"({
@@ -93,6 +101,62 @@ TEST_CASE(
     REQUIRE(second->values()->addr() == first->values()->addr());
 }
 
+TEST_CASE("All subset scopes preserve row-local projection errors on the wire", "[test.subsetlayer][projection]")
+{
+    auto info = subsetLayerInfo();
+    auto strings = std::make_shared<StringPool>("ProjectionErrors");
+    auto subset = std::make_shared<PartitionSubsetLayer>(
+        TileId::fromWgs84(11, 48, 13), "ProjectionErrors", "TestMap", info, strings);
+    auto id = subset->newFeatureId("Road", {{"roadId", int64_t{1}}});
+    // Bare test dictionaries have no datasource-populated ID labels yet.
+    (void)id->keyValuePairs();
+    auto geometry = pointGeometry(*subset, 1);
+    std::vector<std::string> fields{"broken"};
+    std::vector<simfil::ModelNode::Ptr> values{subset->newArray(1, true)};
+    std::vector<ProjectedValueError> errors{{0, "materialization", "Missing destination field"}};
+    auto feature = subset->newChannel("feature", Scope::Feature, 0, {}, fields);
+    CHECK(feature->newFeatureEntry(id, geometry, values, errors)->valueErrors() == errors);
+    auto attribute = subset->newChannel("attribute", Scope::Attribute, 0, {}, fields, fields);
+    auto attributeEntry = attribute->newAttributeValidityEntry(id, geometry, 0, false, 0, 1,
+        values, values, {}, {}, ValidityData::NoGeometry, {}, ValidityData::Start,
+        {}, ValidityData::Start, AttributeValidityEntry::InvalidTransitionPivotIndex, errors, errors);
+    CHECK(attributeEntry->hostValueErrors() == errors);
+    CHECK(attributeEntry->valueErrors() == errors);
+    auto relation = subset->newChannel("relation", Scope::Relation, 0, {}, {}, fields);
+    auto endpoint = relation->newFeatureEntry(id, geometry);
+    CHECK(relation->newRelationEntry("r", "r", "", RelationDirection::Forward, false,
+        endpoint, endpoint, geometry, geometry, values, errors)->valueErrors() == errors);
+    auto group = subset->newChannel("group", Scope::Group, 0, {}, {}, fields);
+    std::vector<model_ptr<FeatureId>> members{id};
+    CHECK(group->newGroupEntry(subset->newValue(int64_t{1}), id, geometry, values, members, errors)
+        ->valueErrors() == errors);
+
+    std::vector<simfil::ModelNode::Ptr> invalid{subset->newValue(int64_t{1})};
+    CHECK_THROWS(feature->newFeatureEntry(id, geometry, invalid));
+    const auto dictionarySize = strings->size();
+    std::stringstream stream;
+    REQUIRE(subset->write(stream));
+    auto encoded = stream.str();
+    auto decoded = std::make_shared<PartitionSubsetLayer>(
+        std::vector<uint8_t>(encoded.begin(), encoded.end()),
+        [&](auto const&, auto const&) { return info; }, [&](auto const&) { return strings; });
+    CHECK(decoded->toJson() == subset->toJson());
+    CHECK(strings->size() == dictionarySize);
+    decoded->at(1)->forEachAttributeValidityEntry([&](auto const& entry) {
+        CHECK(entry->hostValueErrors() == errors);
+        CHECK(entry->valueErrors() == errors);
+        return true;
+    });
+    decoded->at(2)->forEachRelationEntry([&](auto const& entry) {
+        CHECK(entry->valueErrors() == errors);
+        return true;
+    });
+    decoded->at(3)->forEachGroupEntry([&](auto const& entry) {
+        CHECK(entry->valueErrors() == errors);
+        return true;
+    });
+}
+
 TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.subsetlayer]")
 {
     auto info = subsetLayerInfo();
@@ -144,8 +208,8 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
         "display",
         featureFields);
     std::vector<simfil::ModelNode::Ptr> featureValues{
-        subset->newValue("#ff8800"),
-        subset->newValue(3.5),
+        projectedScalar(*subset, "#ff8800"),
+        projectedScalar(*subset, 3.5),
     };
     auto featureEntry = featureChannel->newFeatureEntry(
         road1,
@@ -162,10 +226,10 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
         hostFields,
         attributeFields);
     std::vector<simfil::ModelNode::Ptr> hostValues{
-        subset->newValue("primary"),
+        projectedScalar(*subset, "primary"),
     };
     std::vector<simfil::ModelNode::Ptr> attributeValues{
-        subset->newValue("#ffff00"),
+        projectedScalar(*subset, "#ffff00"),
     };
     auto attributeEntry = attributeChannel->newAttributeValidityEntry(
         road1,
@@ -189,10 +253,10 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
         endpointFields,
         relationFields);
     std::vector<simfil::ModelNode::Ptr> sourceValues{
-        subset->newValue("from"),
+        projectedScalar(*subset, "from"),
     };
     std::vector<simfil::ModelNode::Ptr> targetValues{
-        subset->newValue("to"),
+        projectedScalar(*subset, "to"),
     };
     auto sourceEntry = relationChannel->newFeatureEntry(
         road1,
@@ -203,7 +267,7 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
         road2Geometry,
         targetValues);
     std::vector<simfil::ModelNode::Ptr> relationValues{
-        subset->newValue("#00ffff"),
+        projectedScalar(*subset, "#00ffff"),
     };
     auto relationEntry = relationChannel->newRelationEntry(
         "Road.1/connectedTo/0",
@@ -226,7 +290,7 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
         {},
         groupFields);
     std::vector<simfil::ModelNode::Ptr> groupValues{
-        subset->newValue(int64_t{2}),
+        projectedScalar(*subset, int64_t{2}),
     };
     std::vector<model_ptr<FeatureId>> members{road2, road1};
     auto groupEntry = groupChannel->newGroupEntry(
