@@ -4,6 +4,7 @@
 #include "tiles-ws-session.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <future>
 
 namespace mapget::detail
@@ -91,8 +92,8 @@ void McpServer::stop()
                     callback();
                 }
                 catch (...) {
-                    // One failed HTTP reply must not strand the shutdown join.
-                    log().error("MCP shutdown response failed.");
+                    // Neither a failed reply nor logger initialization may strand the join.
+                    std::fputs("mapget: MCP shutdown response failed.\n", stderr);
                 }
             }
             loop->quit();

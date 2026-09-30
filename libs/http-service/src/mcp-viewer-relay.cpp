@@ -3,6 +3,7 @@
 #include "mapget/log.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -47,8 +48,8 @@ McpViewerRelay::~McpViewerRelay()
         shutdown();
     }
     catch (...) {
-        // Teardown must release retained calls even if a clock or thread-affinity check fails.
-        log().error("MCP viewer relay cleanup failed.");
+        // The configurable logger can itself throw; teardown diagnostics must not.
+        std::fputs("mapget: MCP viewer relay cleanup failed.\n", stderr);
     }
 }
 
