@@ -1338,7 +1338,7 @@ TEST_CASE(
     REQUIRE(group);
     REQUIRE(
         group->values()->toJson() ==
-        nlohmann::json::array({2}));
+        nlohmann::json::array({nlohmann::json::array({2})}));
     REQUIRE(
         group->memberFeatureIds()->size() == 2);
 }

@@ -11,6 +11,7 @@ add_executable(test.mapget
   test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-layerschema-domains.cpp
   test-location.cpp
   test-http-datasource.cpp
   test-cache.cpp
@@ -51,6 +52,9 @@ if(MAPGET_WITH_JEMALLOC)
     ENVIRONMENT "MALLOC_CONF=background_thread:true,dirty_decay_ms:100,muzzy_decay_ms:0"
     TIMEOUT 20)
 endif()
+
+# The HTTP tests launch this peer; rebuild both sides after protocol/static-ID changes.
+add_dependencies(test.mapget test.mapget.datasource-server)
 
 target_link_libraries(test.mapget
   PUBLIC

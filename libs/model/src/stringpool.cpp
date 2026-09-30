@@ -105,6 +105,13 @@ StringPool::StringPool(const std::string_view& stringPoolId) : stringPoolId_(str
     addStaticKey(IndexStr, "index");
     addStaticKey(GeometryIndexStr, "geometryIndex");
     addStaticKey(PositionCountStr, "positionCount");
+    addStaticKey(SchemaFeatureStr, "Feature");
+    addStaticKey(SchemaAttributeStr, "Attribute");
+    addStaticKey(ValueErrorsStr, "valueErrors");
+    addStaticKey(HostValueErrorsStr, "hostValueErrors");
+    addStaticKey(ExpressionIndexStr, "expressionIndex");
+    addStaticKey(StageStr, "stage");
+    addStaticKey(MessageStr, "message");
 }
 
 tl::expected<void, simfil::Error>
