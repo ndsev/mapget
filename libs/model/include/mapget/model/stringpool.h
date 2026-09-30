@@ -122,11 +122,12 @@ struct StringPool : public simfil::StringPool
         HostValueErrorsStr,
         ExpressionIndexStr,
         StageStr,
-        MessageStr
+        MessageStr,
+        SchemaBitmaskStr
     };
 
     static_assert(
-        int(MessageStr) < int(FirstDynamicId),
+        int(SchemaBitmaskStr) < int(FirstDynamicId),
         "Mapget static keys must not overlap dynamic strings.");
 
     explicit StringPool(const std::string_view& stringPoolId);

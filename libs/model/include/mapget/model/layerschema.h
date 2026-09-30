@@ -40,6 +40,10 @@ public:
     static constexpr auto AttributeKind = simfil::Schema::makeKind(
         StringPool::SchemaAttributeStr,
         simfil::valueTypeAffinity(simfil::ValueType::Object));
+    /** String-rendered flag combinations; symbols are flags, not an exhaustive value enum. */
+    static constexpr auto BitmaskKind = simfil::Schema::makeKind(
+        StringPool::SchemaBitmaskStr,
+        simfil::valueTypeAffinity(simfil::ValueType::String));
 
     /** Opaque storage for compiled schemas and lookup tables. */
     struct Impl;
@@ -86,8 +90,6 @@ public:
     };
 
     using NamedSchemaPath = std::vector<NamedPathSegment>;
-    using JsonSchemaEmitter = std::function<nlohmann::json()>;
-
     /** User-facing scope request before schema normalization chooses concrete execution. */
     enum class SearchQueryRequestedScope {
         Feature,
@@ -129,15 +131,10 @@ public:
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 
     /**
-     * Create a detached copy without carrying the lazy transport emitter.
-     *
-     * Service metadata snapshots use this to avoid retaining datasource-owned
-     * state after initialization/reload while preserving the compiled schema.
+     * Copy the schema graph for an independent service metadata snapshot.
+     * Existing transport JSON is preserved, but never materialized just for the copy.
      */
     [[nodiscard]] std::shared_ptr<LayerSchema const> detachedCopy() const;
-
-    /** Install a lazy JSON Schema transport emitter for serialization boundaries such as /sources. */
-    void setJsonSchemaEmitter(JsonSchemaEmitter emitter);
 
     /** Add one object/array/value schema node and return its stable SchemaId. */
     [[nodiscard]] simfil::SchemaId addSchema(
@@ -146,11 +143,27 @@ public:
         std::string metaType = {},
         std::string jsonPointer = {});
 
+    /** Import a declarative JSON Schema fragment into this graph, without finalizing it.
+     * Local references resolve within the fragment or to previously registered schema keys.
+     */
+    [[nodiscard]] simfil::SchemaId addJsonSchema(nlohmann::json const& schema);
+
+    /** Retain non-structural JSON Schema constraints and producer annotations on a domain.
+     * Structural fields and mapget's transport identities cannot be overridden here.
+     */
+    void setJsonSchemaAnnotations(simfil::SchemaId id, nlohmann::json annotations);
+
     /** Register an additional lookup key for an existing schema node. */
     void registerSchemaKey(std::string key, simfil::SchemaId id);
 
-    /** Add a direct field and optionally bind that field to a child schema node. */
-    void addFieldSchema(simfil::SchemaId parent, std::string fieldName, simfil::SchemaId child = simfil::NoSchemaId);
+    /** Add a direct field and optionally bind its domain. A multimap field projects repeated
+     * object entries to a JSON array, while retaining its native value domain.
+     */
+    void addFieldSchema(
+        simfil::SchemaId parent,
+        std::string fieldName,
+        simfil::SchemaId child = simfil::NoSchemaId,
+        bool multimap = false);
 
     /** Add one possible element schema to an array node. */
     void addElementSchema(simfil::SchemaId parent, simfil::SchemaId child);
@@ -334,7 +347,6 @@ private:
 
     mutable std::mutex transportJsonSchemaMutex_;
     mutable nlohmann::json transportJsonSchema_;
-    JsonSchemaEmitter transportJsonSchemaEmitter_;
     std::shared_ptr<Impl> impl_;
 };
 

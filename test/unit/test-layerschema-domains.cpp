@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json-schema.hpp>
 
 #include "mapget/model/layerschema.h"
 #include "mapget/model/simfilutil.h"
@@ -38,6 +39,127 @@ bool suggests(
 }
 
 }  // namespace
+
+TEST_CASE(
+    "Native schema transport preserves validation constraints and JSON projections",
+    "[DataSourceInfo][schema-domain]")
+{
+    auto schema = std::make_shared<LayerSchema>();
+    auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    auto count = schema->addSchema(Kind::Int);
+    auto label = schema->addSchema(Kind::String);
+    auto phase = schema->addSchema(Kind::String);
+    auto flags = schema->addSchema(LayerSchema::BitmaskKind);
+    auto bytes = schema->addSchema(Kind::Bytes);
+    auto attribute = schema->addSchema(Kind::Object);
+    auto children = schema->addSchema(Kind::Array);
+    schema->setJsonSchemaAnnotations(count, {{"minimum", 0}, {"maximum", 255}});
+    schema->setJsonSchemaAnnotations(
+        label,
+        {{"pattern", "^[a-z]+$"}, {"description", "Lower-case label"}});
+    schema->setJsonSchemaAnnotations(
+        root,
+        {{"title", "Carrier"}, {"x-mapget", {{"layerTarget", "example.Carrier"}}}});
+    schema->addEnumSymbols(flags, std::vector<std::string>{"LEFT", "RIGHT"});
+    schema->addEnumSymbols(phase, std::vector<std::string>{"WAITING", "ACTIVE", "DONE"});
+    schema->addFieldSchema(attribute, "label", label);
+    schema->setFieldRequired(attribute, "label", true);
+    schema->addFieldSchema(root, "id", count, true);
+    schema->addFieldSchema(root, "attribute", attribute, true);
+    schema->addFieldSchema(root, "variant", attribute, true);
+    schema->addFieldSchema(root, "variant", count, true);
+    schema->addFieldSchema(root, "groups", children, true);
+    schema->addFieldSchema(root, "flags", flags);
+    schema->addFieldSchema(root, "phase", phase);
+    schema->addFieldSchema(root, "bytes", bytes);
+    schema->addFieldSchema(root, "children", children);
+    schema->addElementSchema(children, root);
+    schema->setFieldRequired(root, "id", true);
+    schema->finalize();
+
+    auto exported = schema->toJsonSchema();
+    auto restored = LayerSchema::fromJsonSchema(exported);
+    // Discard the imported JSON cache: this must exercise export from the restored graph.
+    restored->finalize();
+    REQUIRE(restored->toJsonSchema() == exported);
+    REQUIRE(describe(restored, root) == describe(schema, root));
+    REQUIRE(restored->childSchema(root, "attribute") == attribute);
+    REQUIRE(restored->kind(flags) == LayerSchema::BitmaskKind);
+    REQUIRE(restored->kind(bytes) == Kind::Bytes);
+    REQUIRE(
+        std::ranges::find(restored->directFields(root), "_multimap") ==
+        restored->directFields(root).end());
+    REQUIRE(
+        exported["definitions"][std::to_string(flags)]["x-mapget"]["bitmaskValues"].size() == 2);
+    REQUIRE_FALSE(exported["definitions"][std::to_string(flags)].contains("enum"));
+
+    nlohmann::json_schema::json_validator validator;
+    REQUIRE_NOTHROW(validator.set_root_schema(exported));
+    REQUIRE_NOTHROW(validator.validate(R"({"id":2,"attribute":{"label":"road"},"flags":"LEFT|RIGHT",
+        "bytes":{"_bytes":true,"hex":"abcd","number":43981}})"_json));
+    REQUIRE_NOTHROW(validator.validate(
+        R"({"id":[2],"attribute":[{"label":"road"},{"label":"lane"}],"_multimap":true})"_json));
+    REQUIRE_NOTHROW(
+        validator.validate(R"({"id":1,"children":[{"id":2,"children":[{"id":3}]}]})"_json));
+    // Empty arrays match both JSON projections; they must not be rejected by oneOf.
+    REQUIRE_NOTHROW(validator.validate(R"({"id":1,"groups":[],"variant":2})"_json));
+    REQUIRE_NOTHROW(validator.validate(
+        R"({"id":1,"groups":[[{"id":2}],[]],"variant":[2,{"label":"road"}]})"_json));
+    REQUIRE_THROWS(validator.validate(R"({"id":1,"children":[{"id":256}]})"_json));
+    REQUIRE_THROWS(validator.validate(R"({"id":256})"_json));
+    REQUIRE_THROWS(validator.validate(R"({"id":2,"attribute":{"label":"UPPER"}})"_json));
+    REQUIRE_THROWS(validator.validate(R"({"id":2,"bytes":"abcd"})"_json));
+    REQUIRE_THROWS(schema->setJsonSchemaAnnotations(root, {{"type", "integer"}}));
+    REQUIRE_THROWS(schema->setJsonSchemaAnnotations(root, {{"x-mapget", {{"kind", "attribute"}}}}));
+}
+
+TEST_CASE(
+    "Converter fragments share native domains but keep local references isolated",
+    "[schema-domain]")
+{
+    auto schema = std::make_shared<LayerSchema>();
+    auto shared = schema->addSchema(Kind::String, "shared");
+    auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    auto fragment = R"({"type":"object","additionalProperties":false,"properties":{
+        "value":{"$ref":"#/$defs/Value"},"shared":{"$ref":"shared"}},
+        "$defs":{"Value":{"type":"integer","minimum":0,"maximum":7}}})"_json;
+    auto first = schema->addJsonSchema(fragment);
+    fragment["$defs"]["Value"] = {{"type", "string"}, {"enum", {"ON", "OFF"}}};
+    auto second = schema->addJsonSchema(fragment);
+    schema->addFieldSchema(root, "first", first);
+    schema->addFieldSchema(root, "second", second);
+    schema->finalize();
+    REQUIRE(schema->childSchema(first, "shared") == shared);
+    REQUIRE(schema->childSchema(second, "shared") == shared);
+    REQUIRE(schema->kind(schema->childSchema(first, "value")) == Kind::Int);
+    REQUIRE(schema->kind(schema->childSchema(second, "value")) == Kind::String);
+    auto exported = schema->toJsonSchema();
+    auto restored = LayerSchema::fromJsonSchema(exported);
+    restored->finalize();
+    REQUIRE(restored->toJsonSchema() == exported);
+    nlohmann::json_schema::json_validator validator;
+    REQUIRE_NOTHROW(validator.set_root_schema(exported));
+    REQUIRE_NOTHROW(validator.validate(R"({"first":{"value":3},"second":{"value":"ON"}})"_json));
+    REQUIRE_THROWS(validator.validate(R"({"first":{"value":8}})"_json));
+}
+
+TEST_CASE(
+    "Schema snapshots preserve imported validation and finalization refreshes native export",
+    "[schema-domain]")
+{
+    auto imported = LayerSchema::fromJsonSchema(R"({"type":"object","if":{"required":["mode"]},
+        "then":{"required":["value"]},"properties":{"mode":{"type":"string"}}})"_json);
+    REQUIRE(imported->detachedCopy()->toJsonSchema() == imported->toJsonSchema());
+    auto native = std::make_shared<LayerSchema>();
+    auto root = native->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    native->finalize();
+    auto snapshot = native->detachedCopy();
+    auto before = native->toJsonSchema();
+    native->addFieldSchema(root, "added", native->addSchema(Kind::Int));
+    native->finalize();
+    REQUIRE(native->toJsonSchema() != before);
+    REQUIRE(snapshot->toJsonSchema() == before);
+}
 
 TEST_CASE(
     "LayerSchema retains typed JSON domains rather than flattening combiners",
@@ -145,7 +267,7 @@ TEST_CASE(
     REQUIRE(roundtrip->toJsonSchema() == json);
 
     auto invalid = json;
-    invalid["$defs"]["bad"] = invalid["$defs"]["1"];
+    invalid["definitions"]["bad"] = invalid["definitions"]["1"];
     REQUIRE_THROWS(LayerSchema::fromJsonSchema(invalid));
 }
 
