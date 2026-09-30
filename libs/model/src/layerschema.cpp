@@ -162,28 +162,6 @@ bool isAttributeScalarShorthandMetadataField(std::string_view fieldName)
         fieldName == "properties" || fieldName == "references" || fieldName == "validity";
 }
 
-/** Collect string-valued const/enum entries from a JSON Schema branch. */
-std::vector<std::string> stringEnumSymbols(nlohmann::json const& schema)
-{
-    std::vector<std::string> symbols;
-    if (auto constIt = schema.find("const"); constIt != schema.end() && constIt->is_string()) {
-        symbols.push_back(constIt->get<std::string>());
-    }
-
-    if (auto enumIt = schema.find("enum"); enumIt != schema.end() && enumIt->is_array()) {
-        for (auto const& value : *enumIt) {
-            if (value.is_string()) {
-                symbols.push_back(value.get<std::string>());
-            }
-        }
-    }
-
-    std::ranges::sort(symbols);
-    auto duplicates = std::ranges::unique(symbols);
-    symbols.erase(duplicates.begin(), duplicates.end());
-    return symbols;
-}
-
 /** Stable suffix for memoizing the same JSON branch under different schema kinds. */
 std::string_view kindMemoSuffix(std::optional<Kind> kind)
 {
@@ -226,7 +204,7 @@ std::string contextMemoKey(
     return result;
 }
 
-/** Return whether a oneOf object/array wrapper represents a mapget multimap view. */
+/** Identify the JSON projection wrapper whose first branch is the native multimap value. */
 bool isMapgetMultimap(nlohmann::json const& schema)
 {
     auto it = schema.find("x-mapget-multimap");
@@ -748,6 +726,8 @@ struct LayerSchema::Impl
         Composition composition_ = Composition::None;
         std::vector<simfil::SchemaId> alternatives_;
         std::vector<simfil::ScalarValueType> enumValues_;
+        nlohmann::json annotations_;
+        std::set<std::string, std::less<>> multimapFields_;
         std::map<std::string, bool, std::less<>> required_;
         std::optional<bool> nullable_;
         bool open_ = false;
@@ -766,6 +746,52 @@ struct LayerSchema::Impl
     std::vector<Entry> entriesById_;
     std::map<std::string, simfil::SchemaId, std::less<>> idsByKey_;
     std::map<std::pair<simfil::SchemaId, simfil::SchemaId>, simfil::SchemaId> attributeQueryRoots_;
+
+    /** Keep validation-only constraints and descriptive metadata, never a second schema graph. */
+    static nlohmann::json annotations(nlohmann::json const& schema)
+    {
+        auto result = nlohmann::json::object();
+        for (auto key :
+             {"title",        "description",      "default",          "examples",
+              "deprecated",   "readOnly",         "writeOnly",        "minimum",
+              "maximum",      "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+              "minLength",    "maxLength",        "pattern",          "format",
+              "minItems",     "maxItems",         "uniqueItems",      "minProperties",
+              "maxProperties"})
+        {
+            if (auto it = schema.find(key); it != schema.end()) {
+                result[key] = *it;
+            }
+        }
+        if (auto metadata = mapgetMetadata(schema)) {
+            auto extra = *metadata;
+            for (auto key :
+                 {"schemaId",
+                  "kind",
+                  "schemaKey",
+                  "metaType",
+                  "typename",
+                  "zserioType",
+                  "attributeType",
+                  "attributeTypeCode",
+                  "requiredFields",
+                  "nullable",
+                  "keys",
+                  "attributeOwners",
+                  "enumBytes",
+                  "bitmaskValues",
+                  "domainDefinitions",
+                  "edgeAlternatives",
+                  "unknownEdge"})
+            {
+                extra.erase(key);
+            }
+            if (!extra.empty()) {
+                result["x-mapget"] = std::move(extra);
+            }
+        }
+        return result;
+    }
 
     [[nodiscard]] bool valid(simfil::SchemaId id) const
     {
@@ -820,7 +846,10 @@ struct LayerSchema::Impl
         schemas_[id] = std::move(schema);
         entriesById_[id] = std::move(entry);
         registerKey(key, id);
-        registerKey(pointer, id);
+        if (requested == simfil::NoSchemaId) {
+            // Canonical import restores producer aliases, not incidental transport paths.
+            registerKey(pointer, id);
+        }
         return id;
     }
 
@@ -864,6 +893,7 @@ struct LayerSchema::Impl
         }
 
         auto& domain = schemas_[id];
+        domain.annotations_ = annotations(schema);
         domain.typeName_ = metadataString(metadata, "typename");
         if (domain.typeName_.empty()) {
             domain.typeName_ = domain.zserioType_;
@@ -887,6 +917,9 @@ struct LayerSchema::Impl
                     throw std::invalid_argument("Invalid packed schema kind.");
                 }
                 domain.kind_ = Kind(packed);
+            }
+            if (auto it = metadata->find("bitmaskValues"); it != metadata->end()) {
+                addEnumSymbols(id, it->get<std::vector<std::string>>());
             }
         }
         if (hasAffinity(domain.kind_, simfil::ValueType::Object) &&
@@ -1087,16 +1120,17 @@ struct LayerSchema::Impl
     /** Encode directly built domains as JSON Schema definitions with stable model IDs. */
     nlohmann::json exportDomains() const
     {
+        // Use the dialect understood by our validator, including recursive definitions.
         auto result = nlohmann::json{
-            {"$schema", "https://json-schema.org/draft/2020-12/schema"},
-            {"$defs", nlohmann::json::object()}};
+            {"$schema", "http://json-schema.org/draft-07/schema#"},
+            {"definitions", nlohmann::json::object()}};
         std::map<simfil::SchemaId, std::vector<std::string_view>> aliases;
         for (auto const& [key, id] : idsByKey_) {
             aliases[id].push_back(key);
         }
         auto reference = [](simfil::SchemaId id)
         {
-            return nlohmann::json{{"$ref", "#/$defs/" + std::to_string(id)}};
+            return nlohmann::json{{"$ref", "#/definitions/" + std::to_string(id)}};
         };
         auto edges = [&](std::span<simfil::SchemaId const> ids)
         {
@@ -1118,21 +1152,24 @@ struct LayerSchema::Impl
             if (domain.id_ == simfil::NoSchemaId || domain.queryRoot_) {
                 continue;  // Completion overlays are derived, not binary model identities.
             }
-            auto& out = result["$defs"][std::to_string(domain.id_)];
-            out = nlohmann::json::object();
+            auto& out = result["definitions"][std::to_string(domain.id_)];
+            out = domain.annotations_.is_null() ? nlohmann::json::object() : domain.annotations_;
             auto& meta = out["x-mapget"];
-            meta = {
-                {"schemaId", domain.id_},
-                {"kind", uint32_t(domain.kind_)},
-                {"schemaKey", domain.entry_.key_},
-                {"metaType", domain.entry_.metaType_},
-                {"typename", domain.typeName_},
-                {"zserioType", domain.zserioType_},
-                {"attributeType", domain.attributeType_},
-                {"attributeTypeCode", domain.attributeTypeCode_},
-                {"requiredFields", domain.required_},
-                {"nullable",
-                 domain.nullable_ ? nlohmann::json(*domain.nullable_) : nlohmann::json(nullptr)}};
+            if (meta.is_null()) {
+                meta = nlohmann::json::object();
+            }
+            meta.update(
+                {{"schemaId", domain.id_},
+                 {"kind", uint32_t(domain.kind_)},
+                 {"schemaKey", domain.entry_.key_},
+                 {"metaType", domain.entry_.metaType_},
+                 {"typename", domain.typeName_},
+                 {"zserioType", domain.zserioType_},
+                 {"attributeType", domain.attributeType_},
+                 {"attributeTypeCode", domain.attributeTypeCode_},
+                 {"requiredFields", domain.required_},
+                 {"nullable",
+                  domain.nullable_ ? nlohmann::json(*domain.nullable_) : nlohmann::json(nullptr)}});
             for (auto key : aliases[domain.id_]) {
                 meta["keys"].push_back(key);
             }
@@ -1167,11 +1204,23 @@ struct LayerSchema::Impl
                     out["properties"][field] = children == domain.childSchemas_.end() ?
                         edges({}) :
                         edges(children->second);
+                    if (domain.multimapFields_.contains(field)) {
+                        // Duplicate-key model objects become arrays only in the JSON projection.
+                        auto value = std::move(out["properties"][field]);
+                        out["properties"][field] = {
+                            {"x-mapget-multimap", true},
+                            {"anyOf",
+                             nlohmann::json::array(
+                                 {value, {{"type", "array"}, {"items", value}}})}};
+                    }
                 }
                 for (auto const& [field, required] : domain.required_) {
                     if (required) {
                         out["required"].push_back(field);
                     }
+                }
+                if (!domain.multimapFields_.empty()) {
+                    out["properties"]["_multimap"] = {{"const", true}};
                 }
             }
             else if (hasAffinity(domain.kind_, simfil::ValueType::Array)) {
@@ -1198,12 +1247,30 @@ struct LayerSchema::Impl
                 if (name == simfil::Schema::kindNameId(Kind::Never)) {
                     out["not"] = nlohmann::json::object();
                 }
+                if (domain.kind_ == LayerSchema::BitmaskKind) {
+                    // Individual flags are not an exhaustive enum of rendered combinations.
+                    out["type"] = "string";
+                }
+                if (domain.kind_ == Kind::Bytes) {
+                    // The generic ModelNode JSON codec projects binary scalars to this object.
+                    out["type"] = "object";
+                    out["required"] = {"_bytes", "hex", "number"};
+                    out["properties"] = {
+                        {"_bytes", {{"const", true}}},
+                        {"hex", {{"type", "string"}}},
+                        {"number", {{"type", {"integer", "null"}}}}};
+                }
             }
             if (domain.nullable_.value_or(false) && out.contains("type") && out["type"] != "null") {
                 out["type"] = nlohmann::json::array({out["type"], "null"});
             }
             for (auto const& symbol : domain.directEnumSymbols_) {
-                out["enum"].push_back(symbol);
+                if (domain.kind_ == LayerSchema::BitmaskKind) {
+                    meta["bitmaskValues"].push_back(symbol);
+                }
+                else {
+                    out["enum"].push_back(symbol);
+                }
             }
             for (auto const& value : domain.enumValues_) {
                 std::visit(
@@ -1783,7 +1850,9 @@ public:
     {
         auto metadata = mapgetMetadata(root_);
         if (metadata && metadata->value("domainDefinitions", false)) {
-            auto const& definitions = root_.at("$defs");
+            auto const* keyword = root_.contains("definitions") ? "definitions" : "$defs";
+            auto const& definitions = root_.at(keyword);
+            auto prefix = "/" + std::string(keyword) + "/";
             size_t highest = 0;
             for (auto const& [name, definition] : definitions.items()) {
                 auto id = definition.at("x-mapget").at("schemaId").get<uint32_t>();
@@ -1791,18 +1860,25 @@ public:
                     throw std::invalid_argument("Invalid or duplicate transported schema ID.");
                 }
                 highest = std::max(highest, size_t(id));
-                transportedIds_["/$defs/" + pointerToken(name)] = static_cast<simfil::SchemaId>(id);
+                transportedIds_[prefix + pointerToken(name)] = static_cast<simfil::SchemaId>(id);
             }
             registry_.schemas_.resize(highest + 1);
             registry_.entriesById_.resize(highest + 1);
             for (auto const& [name, definition] : definitions.items()) {
-                build(definition, "/$defs/" + pointerToken(name), {}, std::nullopt);
+                build(definition, prefix + pointerToken(name), {}, std::nullopt);
             }
         }
         else {
             build(root_, "#", {}, std::nullopt);
         }
         registry_.finalizeAll();
+    }
+
+    /** Append an input fragment without confusing its local references with another fragment. */
+    simfil::SchemaId append()
+    {
+        pointerPrefix_ = "#/import/" + std::to_string(registry_.schemas_.size());
+        return build(root_, pointerPrefix_, {}, std::nullopt);
     }
 
 private:
@@ -1821,6 +1897,11 @@ private:
         std::string const& pointer,
         BuildContext const& context)
     {
+        if (isMapgetMultimap(schema)) {
+            // Unwrap before reading plural edges; the native value can itself be an array.
+            auto combiner = std::string(combinerKey(schema));
+            return buildEdges(schema.at(combiner).at(0), pointer + "/" + combiner + "/0", context);
+        }
         auto metadata = mapgetMetadata(schema);
         if (metadata && metadata->value("unknownEdge", false)) {
             return {};
@@ -1852,7 +1933,9 @@ private:
         if (auto feature = metadataString(metadata, "featureType"); !feature.empty()) {
             context.featureType_ = std::move(feature);
         }
-        auto key = annotatedKey(schema, pointer, context);
+        auto key = reservedIds_.empty() ?
+            annotatedKey(schema, pointer, context) :
+            metadataString(metadata, "schemaKey");
         auto memoKey = contextMemoKey(pointer, preferredKind, context);
         if (auto found = transportedIds_.find(pointer);
             found != transportedIds_.end() && registry_.valid(found->second))
@@ -1874,26 +1957,15 @@ private:
 
         // The duplicate-key JSON representation is not an array-valued runtime domain.
         if (isMapgetMultimap(schema)) {
-            auto combiner = combinerKey(schema);
-            if (!combiner.empty()) {
-                auto const& branches = schema.at(std::string(combiner));
-                for (size_t i = 0; i < branches.size(); ++i) {
-                    auto const* branch = &branches[i];
-                    if (auto ref = branch->find("$ref"); ref != branch->end() && ref->is_string()) {
-                        branch = &resolveLocalRef(root_, ref->get<std::string>());
-                    }
-                    if (isObjectSchema(*branch)) {
-                        auto id = build(
-                            branches[i],
-                            pointer + "/" + std::string(combiner) + "/" + std::to_string(i),
-                            context,
-                            Kind::Object);
-                        memo_[memoKey] = id;
-                        registry_.registerKey(key, id);
-                        return id;
-                    }
-                }
-            }
+            auto combiner = std::string(combinerKey(schema));
+            auto id = build(
+                schema.at(combiner).at(0),
+                pointer + "/" + combiner + "/0",
+                context,
+                std::nullopt);
+            memo_[memoKey] = id;
+            registry_.registerKey(key, id);
+            return id;
         }
 
         auto constraints = schema;
@@ -1912,14 +1984,24 @@ private:
         if (!terms.empty()) {
             if (terms.size() == 1 && !hasBase && terms.front().first == "$ref") {
                 auto ref = terms.front().second.get<std::string>();
+                if (!pointerPrefix_.empty()) {
+                    // Converter fragments may refer to shared domains already in this graph.
+                    if (auto found = registry_.idsByKey_.find(ref);
+                        found != registry_.idsByKey_.end()) {
+                        return found->second;
+                    }
+                }
                 // Pure reference cycles have no concrete domain to expand.
                 if (!activeRefs_.insert(memoKey).second) {
                     auto id = allocate(Kind::Unknown, key, pointer, metaType);
                     memo_[memoKey] = id;
                     return id;
                 }
-                auto id =
-                    build(resolveLocalRef(root_, ref), refToPointer(ref), context, preferredKind);
+                auto id = build(
+                    resolveLocalRef(root_, ref),
+                    pointerPrefix_ + refToPointer(ref),
+                    context,
+                    preferredKind);
                 activeRefs_.erase(memoKey);
                 memo_[memoKey] = id;
                 registry_.registerKey(key, id);
@@ -1988,6 +2070,17 @@ private:
             registry_.schemas_[id].nullable_ = hasType(schema, "null");
             return id;
         }
+        if (metadata && metadata->contains("kind") && metadata->at("kind") == uint32_t(Kind::Bytes))
+        {
+            // The JSON byte wrapper is not an object in the runtime domain graph.
+            return buildValue(
+                schema,
+                std::move(pointer),
+                std::move(context),
+                std::move(key),
+                std::move(metaType),
+                memoKey);
+        }
         if (isObjectSchema(schema)) {
             return buildObject(
                 schema,
@@ -2040,7 +2133,15 @@ private:
         }
 
         for (auto const& [fieldName, childSchemaJson] : propertiesIt->items()) {
+            if (!reservedIds_.empty() && fieldName == "_multimap" &&
+                childSchemaJson == nlohmann::json{{"const", true}})
+            {
+                continue;  // JSON-only projection marker, never a native field.
+            }
             registry_.addDirectField(id, fieldName);
+            if (isMapgetMultimap(childSchemaJson)) {
+                registry_.schemas_[id].multimapFields_.insert(fieldName);
+            }
 
             auto childContext = context;
             if (metaType == "AttributeLayerMap") {
@@ -2110,8 +2211,11 @@ private:
         }
         uint16_t literalTypes = 0;
         std::vector<simfil::ScalarValueType> values;
+        std::vector<std::string> symbols;
         for (auto const& value : literals) {
             if (value.is_string()) {
+                // Keep declaration order for stable native transport roundtrips.
+                symbols.push_back(value.get<std::string>());
                 literalTypes |= simfil::valueTypeAffinity(simfil::ValueType::String);
             }
             else if (value.is_boolean()) {
@@ -2161,7 +2265,6 @@ private:
         registry_.registerSchemaMetadata(id, schema, context, metaType);
         memo_[memoKey] = id;
 
-        auto symbols = stringEnumSymbols(schema);
         registry_.addEnumSymbols(id, symbols);
         return id;
     }
@@ -2172,6 +2275,7 @@ private:
     std::set<std::string> activeRefs_;
     std::set<simfil::SchemaId> reservedIds_;
     std::map<std::string, simfil::SchemaId> transportedIds_;
+    std::string pointerPrefix_;
 };
 
 /** SIMFIL schema adapter that resolves StringIds without inserting schema field names. */
@@ -2445,10 +2549,7 @@ nlohmann::json LayerSchema::toJsonSchema() const
 {
     std::lock_guard lock(transportJsonSchemaMutex_);
     if (transportJsonSchema_.is_null()) {
-        // Explicit producer emitters retain source constraints not modeled by this graph.
-        transportJsonSchema_ = transportJsonSchemaEmitter_ ?
-            transportJsonSchemaEmitter_() :
-            impl_->exportDomains();
+        transportJsonSchema_ = impl_->exportDomains();
     }
     return transportJsonSchema_;
 }
@@ -2468,6 +2569,14 @@ MemoryUsageBreakdown LayerSchema::memoryUsage() const
         result.add("logical-schema-strings", stringMemoryUsage(schema.typeName_));
         result.add("alternatives", vectorMemoryUsage(schema.alternatives_));
         result.add("enum-values", vectorMemoryUsage(schema.enumValues_));
+        result.add("schema-annotations", jsonMemoryUsage(schema.annotations_));
+        result.add(
+            "multimap-fields",
+            {schema.multimapFields_.size() * sizeof(std::string),
+             schema.multimapFields_.size() * (sizeof(std::string) + 3 * sizeof(void*))});
+        for (auto const& field : schema.multimapFields_) {
+            result.add("multimap-field-strings", stringMemoryUsage(field));
+        }
         for (auto const& value : schema.enumValues_) {
             if (auto bytes = std::get_if<simfil::ByteArray>(&value)) {
                 result.add("enum-value-bytes", stringMemoryUsage(bytes->bytes));
@@ -2528,8 +2637,7 @@ MemoryUsageBreakdown LayerSchema::memoryUsage() const
     }
     {
         std::lock_guard lock(transportJsonSchemaMutex_);
-        // Do not invoke the emitter here: diagnostics must never turn a cheap
-        // memory snapshot into schema generation or datasource-owned work.
+        // Diagnostics must not materialize the transport representation.
         if (!transportJsonSchema_.is_null()) {
             result.add("materialized-transport-json", jsonMemoryUsage(transportJsonSchema_));
         }
@@ -2540,16 +2648,12 @@ MemoryUsageBreakdown LayerSchema::memoryUsage() const
 std::shared_ptr<LayerSchema const> LayerSchema::detachedCopy() const
 {
     auto result = std::shared_ptr<LayerSchema>(new LayerSchema());
-    result->transportJsonSchema_ = toJsonSchema();
     result->impl_ = std::make_shared<Impl>(*impl_);
-    return result;
-}
-
-void LayerSchema::setJsonSchemaEmitter(JsonSchemaEmitter emitter)
-{
+    // Imported schemas may contain validation keywords outside the domain model.
+    // Preserve existing transport data without forcing a native producer to generate it.
     std::lock_guard lock(transportJsonSchemaMutex_);
-    transportJsonSchemaEmitter_ = std::move(emitter);
-    transportJsonSchema_ = nullptr;
+    result->transportJsonSchema_ = transportJsonSchema_;
+    return result;
 }
 
 simfil::SchemaId LayerSchema::addSchema(
@@ -2564,16 +2668,39 @@ simfil::SchemaId LayerSchema::addSchema(
     return impl_->allocate(kind, std::move(key), std::move(jsonPointer), std::move(metaType));
 }
 
+simfil::SchemaId LayerSchema::addJsonSchema(nlohmann::json const& schema)
+{
+    return LayerSchemaCompiler(*impl_, schema).append();
+}
+
+void LayerSchema::setJsonSchemaAnnotations(simfil::SchemaId id, nlohmann::json annotations)
+{
+    if (!annotations.is_object() || Impl::annotations(annotations) != annotations) {
+        throw std::invalid_argument(
+            "Schema annotations cannot override domain structure or transport identities.");
+    }
+    if (impl_->valid(id)) {
+        impl_->schemas_[id].annotations_ = std::move(annotations);
+    }
+}
+
 void LayerSchema::registerSchemaKey(std::string key, simfil::SchemaId id)
 {
     impl_->registerKey(key, id);
 }
 
-void LayerSchema::addFieldSchema(simfil::SchemaId parent, std::string fieldName, simfil::SchemaId child)
+void LayerSchema::addFieldSchema(
+    simfil::SchemaId parent,
+    std::string fieldName,
+    simfil::SchemaId child,
+    bool multimap)
 {
     impl_->addDirectField(parent, fieldName);
     if (child != simfil::NoSchemaId) {
         impl_->addChild(parent, fieldName, child);
+    }
+    if (multimap && impl_->valid(parent)) {
+        impl_->schemas_[parent].multimapFields_.insert(std::move(fieldName));
     }
 }
 
@@ -2699,6 +2826,8 @@ void LayerSchema::setAttributeMetadata(
 void LayerSchema::finalize()
 {
     impl_->finalizeAll();
+    std::lock_guard lock(transportJsonSchemaMutex_);
+    transportJsonSchema_ = nullptr;
 }
 
 std::string LayerSchema::featureKey(std::string_view featureType)

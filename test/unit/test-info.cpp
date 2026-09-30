@@ -502,13 +502,6 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     schema->addEnumSymbol(valueSchema, "FAST");
     schema->finalize();
 
-    auto schemaEmitterCalls = 0;
-    auto transportSchema = nlohmann::json{{"type", "object"}, {"x-test", "direct"}};
-    schema->setJsonSchemaEmitter([&] {
-        ++schemaEmitterCalls;
-        return transportSchema;
-    });
-
     REQUIRE(schema->featureTypes() == std::vector<std::string>{"Road"});
     REQUIRE(schema->canHaveField(featureSchema, "value.with.dot"));
     REQUIRE(schema->constantTypeNames(speedSchema, "speed.limit") ==
@@ -529,10 +522,11 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     REQUIRE(normalized->normalizedQuery_.find(R"(.["value.with.dot"])") == std::string::npos);
 
     auto detached = schema->detachedCopy();
-    REQUIRE(schemaEmitterCalls == 1);
     REQUIRE(detached->featureTypes() == std::vector<std::string>{"Road"});
-    REQUIRE(detached->toJsonSchema() == transportSchema);
-    REQUIRE(schemaEmitterCalls == 1);
+    REQUIRE(detached->toJsonSchema() == schema->toJsonSchema());
+    auto restored = LayerSchema::fromJsonSchema(detached->toJsonSchema());
+    REQUIRE(restored->featureSchema("Road") == featureSchema);
+    REQUIRE(restored->kind(speedSchema) == LayerSchema::AttributeKind);
 }
 
 TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard path", "[DataSourceInfo]")

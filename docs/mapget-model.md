@@ -220,21 +220,35 @@ queries, using that same owning callback and private pool. For example,
 `NoSchemaId`, so feature-field pruning cannot accidentally suppress metadata.
 Recursion and depth/work limits are explicit rather than silently empty domains.
 
-Directly constructed graphs without a custom emitter export canonical `$defs`
+Directly constructed graphs export canonical draft-07 `definitions`
 with `x-mapget` kind/ID/edge annotations. Reimport retains producer SchemaIds,
 plural edges, aliases and typed metadata. Completion overlay roots are derived
 again, not serialized as model identities. Imported ordinary JSON Schema is
 retained for transport, while its supported typed domains are compiled for
 queries. Boolean schemas, local references and combiners are distinct; multimap
-serialization wrappers still select their logical object view.
+serialization wrappers still select their logical value view, including scalar
+fields such as attribute-layer IDs.
+The export dialect matches the bundled JSON Schema validator, including recursive
+domains. Import also accepts ordinary schemas using `$defs` and local references.
 
-An explicitly installed `setJsonSchemaEmitter` remains authoritative for its
-transport document, including producer constraints not represented by the typed
-graph. Its producer must align identities and domains with direct construction;
-Mapget cannot guarantee that two independently built representations agree.
-In particular, LiveSource's independent legacy emitter/direct builder remains
-a producer-alignment follow-up. The domain graph is not a full JSON Schema
-validator and does not infer missing precision from type or field names.
+The graph is the only producer representation: there is no custom JSON emitter.
+`addJsonSchema` can import a converter's declarative field fragment into the graph;
+local fragment references remain isolated, while registered schema keys can refer
+to shared native domains. `setJsonSchemaAnnotations` retains validation constraints
+(such as numeric bounds and patterns) and descriptive metadata on a domain. It
+rejects structural keywords and mapget-owned identity/type annotations: fields,
+arrays, alternatives, kinds and enum literals must use the typed construction API.
+These annotations support JSON validation, not additional SIMFIL pruning proofs.
+
+`addFieldSchema(..., multimap=true)` describes duplicate-key JSON projection
+without changing the native value domain. Its first `anyOf` branch describes one
+native value, and the second describes an array of repeated values. These may
+overlap when the native value is itself an array. `BitmaskKind` carries individual flag symbols
+without restricting valid string combinations to a finite JSON enum. Binary
+scalar domains export the ordinary ModelNode `_bytes`/`hex`/`number` JSON wrapper
+and reimport as `Bytes`, not as objects. `finalize()` rebuilds derived indexes and
+invalidates any previously exported JSON after graph edits. Published schemas
+remain immutable; metadata snapshots copy their graph without forcing export.
 
 ### Add‑on datasources
 
