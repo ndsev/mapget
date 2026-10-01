@@ -1,4 +1,5 @@
 #include "http-service-impl.h"
+#include "mcp-server.h"
 
 #include "mapget/log.h"
 #include "mapget/service/detail/allocator-memory.h"
@@ -22,6 +23,11 @@ constexpr size_t INTERACTIVE_CONTROL_THREAD_COUNT = 2;
 
 HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config)
 {
+    // Fail invalid trust/catalog configuration before any of the service's maintenance threads
+    // start.
+    if (config_.mcp.mode != McpConfig::Mode::Off) {
+        mcp_ = std::make_shared<detail::McpServer>(config_.mcp);
+    }
     AuthHeaderRegexMap normalizedCacheResetAlternatives;
     for (auto const& [header, pattern] : config_.cacheResetAuthHeaderAlternatives) {
         if (!addAuthHeaderRegexMatchOption(normalizedCacheResetAlternatives, header, pattern)) {

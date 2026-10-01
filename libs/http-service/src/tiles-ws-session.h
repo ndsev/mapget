@@ -39,10 +39,10 @@ void tilesWsRegisterForMetrics(const std::shared_ptr<TilesWsSession>& session);
 void tilesWsRegisterSession(const std::shared_ptr<TilesWsSession>& session);
 
 /** Remove one session from `/interactive/payload?clientId=...` lookups. */
-void tilesWsUnregisterSession(int64_t clientId);
+void tilesWsUnregisterSession(std::string const& clientId);
 
-/** Return the numeric client id assigned to a session. */
-int64_t tilesWsSessionClientId(const std::shared_ptr<TilesWsSession>& session);
+/** Return the connection's opaque UUID, or an empty string for a missing session. */
+std::string tilesWsSessionClientId(const std::shared_ptr<TilesWsSession>& session);
 
 /** Apply client-reported string-pool offsets to one session writer. */
 bool tilesWsApplyStringPoolOffsetsPatch(

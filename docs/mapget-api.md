@@ -6,6 +6,12 @@ staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
 visualization all use `/filter`.
 
+The opt-in [MCP viewer-action API](mapget-mcp.md) exposes `POST /mcp`,
+`GET /mcp/info`, OAuth resource metadata, and authenticated action routing
+over the existing interactive WebSocket. It is separate from tile/filter
+requests and disabled unless `--mcp local` or `--mcp oauth` is supplied (or
+equivalent `mapget.serve.mcp` YAML / `HttpServiceConfig::mcp` settings).
+
 ## Base URL and stream formats
 
 JSON requests use `Content-Type: application/json`. `/tiles` and `/filter`
@@ -306,10 +312,26 @@ All filters and fields are schema-compiled in their actual context.
 Relation channels require `rewrite: false`.
 
 SIMFIL truthiness is used: zero results, `false`, `null`, and undefined are
-false; every other successfully evaluated value is true. A projection with no
-result becomes null. If an expression yields several values, the first is
-used. Candidate-local evaluation failures reject that candidate and are
-aggregated into structured channel issues instead of aborting the viewport.
+false; every other successfully evaluated value is true. Candidate-local
+filter failures reject that candidate and are aggregated into structured
+channel issues instead of aborting the viewport.
+
+Since binary protocol 5.3, `values` and `hostValues` contain **one array per
+requested expression**, preserving every result in evaluation order. Examples:
+`[]` is no result; `[null]` is one null; `[{"name":"Road"}]` is one object;
+`[[1,2]]` is one array-valued result; `[1,2]` is two scalar results. These are
+individual expression slots, so a complete two-expression `values` might be
+`[[42], [{"name":"Road"}]]`. Compound values are copied into the subset's
+model, not stringified or retained as pointers into a source tile. Native
+undefined is distinct from null; its JSON representation is `{"_undefined":true}`.
+
+A failed projection slot is empty and has a corresponding `valueErrors` or
+`hostValueErrors` record with `expressionIndex` (zero-based), `stage`
+(`compilation`, `evaluation`, or `materialization`) and `message`. Aggregate
+channel issues remain available. No partial sequence is published as success
+when a budget or materialization error occurs. Source-owned string pools are
+never extended by projection; an object field name absent from the destination
+dictionary is an explicit materialization failure.
 
 `bindings` accepts null, boolean, signed integer, finite floating-point, and
 string values. Bindings are available as SIMFIL constants and overlay fields.
@@ -536,9 +558,19 @@ update.
 
 Server control messages are binary VTLV frames:
 
-- `RequestContext`: JSON with `requestId`, `clientId`, and catalog revision;
+- `RequestContext`: JSON with `requestId`, opaque UUIDv4 `clientId`, and catalog revision;
 - `Status`: per-request state and final `allDone`;
-- `SourceCatalogChange`: catalog revision/progress notifications.
+- `SourceCatalogChange`: catalog revision/progress notifications;
+- `ActionControl` (type 9): UTF-8 JSON for the separately versioned browser-action
+  relay. This control type is not a tile request or a tile payload.
+
+Since protocol 5.2, `clientId` is a cryptographically random, canonical lowercase
+UUIDv4 string. It stays unchanged for the lifetime of its WebSocket connection;
+reconnect creates a new ID. The server announces it in an initial `RequestContext`
+with `requestId: 0`, without waiting for a tile request. Treat it as opaque
+everywhere, including diagnostics.
+Numeric IDs are no longer accepted. If handshake/session state is lost, the server
+closes the connection instead of reconstructing it with empty authentication headers.
 
 Per-partition load-state records use tagged `partition` identity, for tiles
 as well as objects. Do not assume that a control record's identity is a numeric
@@ -551,14 +583,21 @@ It does not change `POST /tiles` semantics.
 
 Query parameters:
 
-- `clientId`: required ID from `RequestContext`;
+- `clientId`: required UUID string from `RequestContext`;
 - `waitMs`: long-poll timeout, up to 30 seconds;
 - `maxBytes`: pre-compression batch budget, capped at 64 MiB;
 - `compress=1`: allow gzip when `Accept-Encoding` also permits it.
 
 Responses are `200 application/octet-stream`, `204` on timeout, or `410` when
-the session has gone away. `/tiles/next` remains a deployment-compatibility
-alias.
+the session has gone away. A missing or malformed UUID returns `400`.
+`/tiles/next` remains a deployment-compatibility alias with identical validation.
+All payload responses, including errors, use `Cache-Control: no-store`.
+
+Payload pulls do not yet check authenticated session ownership: knowing a live
+UUID permits draining its queued data. Random IDs prevent practical guessing, not
+leakage. Do not publish IDs in status pages or log them in proxy/access logs; use
+HTTPS remotely. Disconnect invalidates the ID. This accepted limitation does not
+replace the authenticated same-owner checks required for MCP actions.
 
 ## `POST /locate`
 

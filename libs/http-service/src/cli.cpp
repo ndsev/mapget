@@ -597,6 +597,7 @@ struct ServeCommand
         static_cast<uint64_t>(HttpServiceConfig{}.memoryTrimPeriod.count());
     bool noLocation_ = false;
     std::string locationDbPath_;
+    McpConfig mcp_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
     ServeStartedCallback startedCallback_;
     CLI::App& app_;
@@ -718,11 +719,38 @@ struct ServeCommand
                 "Maximum accepted /location result limit. Default 50.")
             ->default_val(locationMaxLimit_);
         serveCmd->add_flag("--no-location", noLocation_, "Disable the /location endpoint.");
+        mcp_.addOptions(*serveCmd);
         serveCmd->callback([this]() { serve(); });
     }
 
     void serve()
     {
+        auto config = app_.get_config_ptr();
+        if (mcp_.mode != McpConfig::Mode::Off) {
+            auto* serveCmd = app_.get_subcommand("serve");
+            auto const& commandLineOptions = serveCmd->parse_order();
+            for (auto const& [path, name] :
+                 {std::pair{&mcp_.catalogPath, "--mcp-catalog"},
+                  std::pair{&mcp_.jwksFile, "--mcp-jwks-file"}})
+            {
+                // CLI paths belong to the caller's cwd; YAML paths belong to that config file.
+                // CLI11's parse_order excludes options read from configuration.
+                if (!path->empty() && path->is_relative() && config && *config &&
+                    std::find(
+                        commandLineOptions.begin(),
+                        commandLineOptions.end(),
+                        serveCmd->get_option(name)) == commandLineOptions.end())
+                {
+                    *path = std::filesystem::absolute(config->as<std::string>()).parent_path() /
+                        *path;
+                }
+            }
+            auto const webRoot = webapp_.empty() ?
+                std::nullopt :
+                HttpServer::fileSystemMountRoot(webapp_);
+            mcp_.resolveDefaults(host_, port_, webRoot.value_or(std::filesystem::path{}));
+            mcp_.validate();
+        }
         if (host_.empty()) {
             raise("Host must not be empty.");
         }
@@ -792,8 +820,6 @@ struct ServeCommand
             raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
-        auto config = app_.get_config_ptr();
-
         // Build HttpServiceConfig
         HttpServiceConfig httpConfig;
         httpConfig.watchConfig = config && *config;
@@ -809,6 +835,7 @@ struct ServeCommand
         if (!locationDbPath_.empty()) {
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
         }
+        httpConfig.mcp = mcp_;
 
         if (memoryTrimPeriodSeconds_ > 0) {
 #if defined(__linux__) && defined(__GLIBC__)
@@ -976,6 +1003,9 @@ int runFromCommandLine(
     ServeStartedCallback serveStartedCallback)
 {
     CLI::App app{"A client/server application for map data retrieval."};
+    // YAML options need the same typo protection as CLI arguments, especially trust settings.
+    // ConfigYAML reads only the mapget section; datasource/frontend keys are unaffected.
+    app.allow_config_extras(CLI::config_extras_mode::error);
     std::string log_level_;
 
     app.add_option(
@@ -1014,7 +1044,9 @@ int runFromCommandLine(
     catch (const CLI::ParseError& e) {
         return app.exit(e);
     }
-    catch (std::runtime_error const& e) {
+    catch (std::exception const& e) {
+        // Invalid startup settings are CLI errors, not unhandled exceptions in native embedders.
+        log().error("{}", e.what());
         return 1;
     }
     return 0;

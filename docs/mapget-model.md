@@ -193,6 +193,63 @@ numeric ranges to initialize labels, categories and gradients. None of these
 consumers replace the emitted feature data; the schema only describes and
 constrains it.
 
+### Typed Schema Domains
+
+`LayerSchema` stores precise scalar affinities, named feature/attribute kinds,
+`typename`, nullable values, field-presence requirements, open objects, scalar
+enum literals, and explicit `anyOf`/`oneOf`/`allOf` edges. A packed kind contains
+a static name ID above `simfil::ValueType` affinity bits; generic traversal uses
+the affinities, not Mapget-specific names. Unknown metadata is not a scalar leaf
+or proof that a field is absent. Finalization builds reachability indexes once;
+open or incomplete subgraphs deliberately disable negative pruning.
+
+Metadata-only completion uses a private `StringPool` and environment prepared by
+`installCompletionLayerSchema`, then calls the SchemaId overload of
+`simfil::complete`. Feature roots come from `featureSchema(featureType)`.
+`attributeQuerySchema(featureType, attributeSchema)` returns a prepared root in
+the same graph with the payload, aliases and actual runtime overlays: `$name`,
+`$layer`, `$attributeIndex`, `$validityIndex`, `$validityCount`, `$hasValidity`,
+and `$feature`. It does not construct sample model nodes or another registry.
+The environment callback retains the registry and bindings. Return candidate
+strings across environments, never their pool-local IDs.
+
+`simfil::SchemaModel` supplies the separate lazy descriptor view for metadata
+queries, using that same owning callback and private pool. For example,
+`fields.items.elements[0].kind` queries schema metadata; completing
+`items[17].name` traverses the represented item domain. Descriptor objects have
+`NoSchemaId`, so feature-field pruning cannot accidentally suppress metadata.
+Recursion and depth/work limits are explicit rather than silently empty domains.
+
+Directly constructed graphs export canonical draft-07 `definitions`
+with `x-mapget` kind/ID/edge annotations. Reimport retains producer SchemaIds,
+plural edges, aliases and typed metadata. Completion overlay roots are derived
+again, not serialized as model identities. Imported ordinary JSON Schema is
+retained for transport, while its supported typed domains are compiled for
+queries. Boolean schemas, local references and combiners are distinct; multimap
+serialization wrappers still select their logical value view, including scalar
+fields such as attribute-layer IDs.
+The export dialect matches the bundled JSON Schema validator, including recursive
+domains. Import also accepts ordinary schemas using `$defs` and local references.
+
+The graph is the only producer representation: there is no custom JSON emitter.
+`addJsonSchema` can import a converter's declarative field fragment into the graph;
+local fragment references remain isolated, while registered schema keys can refer
+to shared native domains. `setJsonSchemaAnnotations` retains validation constraints
+(such as numeric bounds and patterns) and descriptive metadata on a domain. It
+rejects structural keywords and mapget-owned identity/type annotations: fields,
+arrays, alternatives, kinds and enum literals must use the typed construction API.
+These annotations support JSON validation, not additional SIMFIL pruning proofs.
+
+`addFieldSchema(..., multimap=true)` describes duplicate-key JSON projection
+without changing the native value domain. Its first `anyOf` branch describes one
+native value, and the second describes an array of repeated values. These may
+overlap when the native value is itself an array. `BitmaskKind` carries individual flag symbols
+without restricting valid string combinations to a finite JSON enum. Binary
+scalar domains export the ordinary ModelNode `_bytes`/`hex`/`number` JSON wrapper
+and reimport as `Bytes`, not as objects. `finalize()` rebuilds derived indexes and
+invalidates any previously exported JSON after graph edits. Published schemas
+remain immutable; metadata snapshots copy their graph without forcing export.
+
 ### Add‑on datasources
 
 Add‑on datasources are registered with `isAddOn` and must share the same `mapId` (and layer IDs) as the base datasource they extend. They have no independent scheduler permits; the worker serving a base feature tile evaluates matching add-ons inline:
@@ -616,6 +673,16 @@ aggregate arrays which reference typed column entries:
 A channel's `scope()` determines which typed aggregate is terminal.
 Relation-channel feature entries are supporting endpoints rather than
 additional terminal rows.
+
+Protocol 5.3 projections are result sequences: the outer `values`/`hostValues`
+array corresponds positionally to the requested expressions, and every element
+is another array containing that expression's zero, one, or many results.
+Compound results are owned by the subset's model pool, including nested arrays
+and objects; they are not JSON strings or source-model pointers. Indexed
+`valueErrors`/`hostValueErrors` distinguish a failed empty slot from a successful
+empty sequence. The [API guide](mapget-api.md#post-filter) describes the wire
+conventions. Copying field names only reuses existing destination dictionary
+IDs; missing foreign keys are reported, not inserted into the datasource pool.
 
 Each subset also carries:
 

@@ -372,8 +372,15 @@ shared across source tiles without crossing compile-time semantics.
 Attribute contexts add `$feature`, `$layer`, `$name`, `$attributeIndex`,
 `$hasValidity`, `$validityIndex`, and `$validityCount`.
 
-Projection is scalar: no result becomes null, the first result wins, and
-later values are ignored.
+Projection preserves one ordered result sequence per expression. Each slot is
+a subset-owned `simfil::Array`, including zero-result and singleton cases.
+`ExpressionEvaluator::Projection` retains evaluated values only until native
+`ModelPool::copySequence()` materializes them into the destination. Objects,
+arrays, scalar strings and undefined do not need a JSON roundtrip. Failed slots
+are empty, with indexed compilation/evaluation/materialization errors; the
+channel also retains aggregate issues. Dictionary mapping uses existing IDs
+only: no downstream string-pool insertion or per-subset replacement dictionary.
+Protocol 5.3 readers must consume this sequence shape, not the former scalar slots.
 
 ### Point groups
 
@@ -474,6 +481,80 @@ returns successfully.
 
 Small endpoints such as `/sources`, `/location`, `/locate`, `/status`,
 `/status-data`, and `/config` return ordinary responses.
+
+Interactive connection identity is a server-generated UUIDv4 string, announced
+immediately in a `RequestContext` frame with request ID zero. It is independent of
+the tile request sequence, survives viewport updates, and expires on disconnect.
+The same identity is reserved for browser-action targeting; do not allocate a
+second viewer session ID. Losing the handshake context closes the connection;
+it must never create a replacement with empty authentication headers. Payload
+pulls still treat the UUID as a bearer capability (owner checks are deferred), so
+their responses are not cacheable and status snapshots must not expose these IDs.
+
+The VTLV reader recognizes `ActionControl` (type 9) separately from tile data and
+status messages. Its application relay version is distinct from the tile stream's
+major/minor version. Action dispatch must not allocate tile request IDs or share
+tile outbox admission. The [MCP guide](mapget-mcp.md) documents enablement,
+authentication, transport revisions, limits and cancellation semantics.
+
+The internal MCP building blocks are deliberately separate from tile scheduling:
+
+- `mcp-action-catalog.*` owns one immutable, locally loaded browser-action catalog
+  and compiled argument/result validators. Tabs advertise names and the exact
+  catalog identity, never executable code, descriptions or permission rules.
+- `mcp-viewer-relay.*` owns verified connection identities, registrations, bounded
+  calls, cancellation and deadlines. Its mutable state is confined to one control
+  event-loop thread, checked at entry; callbacks do not block on datasource workers
+  or a request-wide mutex. Construct, use and destroy it on that same thread.
+- `mcp-auth.*` owns restart-scoped trust configuration and public signing-key
+  validation/cache. Its provider-neutral permission rules produce verified
+  relay principals; browser proxy claims and MCP bearer tokens are separate inputs.
+- `mcp-server.*` owns HTTP dispatch and the private control event loop. It
+  authenticates each call, installs the MCP/info/metadata routes, marshals
+  WebSocket lifecycle events, drives deadlines, and owns bounded asynchronous
+  POST streams. It does not own a second viewer-session identity or tile work queue.
+
+The resource boundary verifies credentials before creating a relay `Principal`.
+JWT verification runs on the control loop; key refresh uses asynchronous HTTPS,
+not a blocking request on Drogon's I/O threads or datasource workers. Shutdown
+ends relay calls before stopping HTTP and joins the private loop. Route handlers
+must own their callable closures: passing a stack-local lvalue lambda to Drogon's
+forwarding-reference binder can retain a dangling reference after setup returns.
+Deliver invoke/cancel frames in order on the connection, not through its tile outbox. Check
+all `mapget.actions.*` envelopes on that path, including invalid/unknown ones;
+never fall back to tile reconciliation because action validation failed. Check
+raw HTTP/WebSocket body limits and nesting before downstream parsing;
+the relay's checks on parsed values are not a replacement for transport limits.
+
+The catalog accepts bounded Draft-07 schemas, including nonrecursive local JSON
+Pointer references. Remote references, unimplemented keywords/dialects and
+`format` assertions are rejected rather than silently ignored; use explicit
+constraints such as `pattern`. Argument roots must be closed objects without
+root-wide constraints/combinators that would conflict with injecting `clientId`;
+nested unions and constraints are supported. Results are objects. Validation
+never applies defaults or coerces values. The native code treats the trusted
+build-exported `catalogId` as opaque instead of implementing a second JSON
+canonicalizer. Application schemas remain owned by the webapp build.
+
+Caller lifetime and browser execution lifetime differ. Timeout/cancellation ends
+the HTTP waiter and sends a best-effort cancel, but a dispatched mutation may
+still be executing. A 2025 MCP transport disconnect only drops the HTTP waiter,
+not the browser action; the MCP guide describes the revision-specific semantics.
+Keep that tab's single mutation slot until its matching
+terminal reply or connection close. Even an error with an unknown outcome is a
+terminal reply; uncertainty about effects is not uncertainty about termination.
+Late replies release that slot without reviving completed callbacks. Outstanding
+mutation slots also count toward per-principal/global admission limits. Reads
+remain possible within the remaining budget. Never replay an uncertain mutation.
+Malformed or over-budget replies do not prove termination; their mutation slot
+can remain busy until disconnect if the browser already finished and ignores a
+subsequent cancel. Keep browser/server result budgets aligned. Do not add an
+automatic reset/retry which can release a still-executing mutation.
+
+Standalone tests under `[mcp-actions]` exercise the native lifecycle and a pinned
+copy of the webapp's argument, result and relay fixtures. The snapshot provenance
+is in `test/unit/data/viewer-actions/README.md`; update it together with the
+webapp contract, not as an independent server schema fork.
 
 An interactive replacement is the complete set of outputs the client still
 needs, not its retained viewport coverage. Reconciliation preserves matching

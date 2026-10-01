@@ -86,7 +86,7 @@ else()
     CPMAddPackage(
         NAME simfil
         GITHUB_REPOSITORY Klebert-Engineering/simfil
-        GIT_TAG 75ea669404608194b7d2b33036515153db78493f
+        GIT_TAG 5370d34cc2092b5441f99e3b2899f6e92bb30700
         GIT_SHALLOW FALSE
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
@@ -119,6 +119,20 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 
     set (OPENSSL_VERSION openssl-3.5.2)
     CPMAddPackage("gh:klebert-engineering/openssl-cmake@1.0.0")
+    # Before OpenSSL's first build, FindOpenSSL cannot read its generated version header.
+    # jwt-cpp's minimum-version check needs a numeric version, not our Git tag selector.
+    set(_mapget_openssl_revision "${OPENSSL_VERSION}")
+    string(REGEX REPLACE "^openssl-" "" OPENSSL_VERSION "${OPENSSL_VERSION}")
+    CPMAddPackage(
+        NAME jwt-cpp
+        GITHUB_REPOSITORY Thalhammer/jwt-cpp
+        GIT_TAG v0.7.2
+        OPTIONS
+            "JWT_BUILD_EXAMPLES OFF"
+            "JWT_BUILD_TESTS OFF"
+            "JWT_DISABLE_PICOJSON ON")
+    set(OPENSSL_VERSION "${_mapget_openssl_revision}")
+    unset(_mapget_openssl_revision)
     CPMAddPackage(
         URI "gh:madler/zlib@1.3.1"
         OPTIONS

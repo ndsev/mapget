@@ -400,7 +400,8 @@ TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSource
 
     REQUIRE(registry->canHaveField(carrierSchema->id_, "properties"));
     REQUIRE(registry->canHaveField(carrierSchema->id_, "value"));
-    REQUIRE_FALSE(registry->canHaveField(carrierSchema->id_, "notDeclaredBySchema"));
+    // JSON Schema objects are open unless additionalProperties explicitly closes them.
+    REQUIRE(registry->canHaveField(carrierSchema->id_, "notDeclaredBySchema"));
 
     auto const typeIdId = registry->childSchema(
         carrierSchema->id_,
@@ -412,8 +413,8 @@ TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSource
         simfil::Schema::Kind::Value);
     REQUIRE(typeIdId != simfil::NoSchemaId);
     REQUIRE(unitId != simfil::NoSchemaId);
-    REQUIRE(registry->kind(typeIdId) == simfil::Schema::Kind::Value);
-    REQUIRE(registry->kind(unitId) == simfil::Schema::Kind::Value);
+    REQUIRE(registry->kind(typeIdId) == simfil::Schema::Kind::String);
+    REQUIRE(registry->kind(unitId) == simfil::Schema::Kind::String);
     REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "Carrier"));
     REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "km/h"));
     REQUIRE(registry->canHaveEnumSymbol(unitId, "mph"));
@@ -501,13 +502,6 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     schema->addEnumSymbol(valueSchema, "FAST");
     schema->finalize();
 
-    auto schemaEmitterCalls = 0;
-    auto transportSchema = nlohmann::json{{"type", "object"}, {"x-test", "direct"}};
-    schema->setJsonSchemaEmitter([&] {
-        ++schemaEmitterCalls;
-        return transportSchema;
-    });
-
     REQUIRE(schema->featureTypes() == std::vector<std::string>{"Road"});
     REQUIRE(schema->canHaveField(featureSchema, "value.with.dot"));
     REQUIRE(schema->constantTypeNames(speedSchema, "speed.limit") ==
@@ -528,10 +522,11 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     REQUIRE(normalized->normalizedQuery_.find(R"(.["value.with.dot"])") == std::string::npos);
 
     auto detached = schema->detachedCopy();
-    REQUIRE(schemaEmitterCalls == 1);
     REQUIRE(detached->featureTypes() == std::vector<std::string>{"Road"});
-    REQUIRE(detached->toJsonSchema() == transportSchema);
-    REQUIRE(schemaEmitterCalls == 1);
+    REQUIRE(detached->toJsonSchema() == schema->toJsonSchema());
+    auto restored = LayerSchema::fromJsonSchema(detached->toJsonSchema());
+    REQUIRE(restored->featureSchema("Road") == featureSchema);
+    REQUIRE(restored->kind(speedSchema) == LayerSchema::AttributeKind);
 }
 
 TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard path", "[DataSourceInfo]")
@@ -632,11 +627,14 @@ TEST_CASE("PartitionFeatureLayer schema rewrites use enum paths", "[DataSourceIn
     auto speed = layer->newAttribute("speed");
     REQUIRE(speed->addField("unit", "mph").has_value());
 
+    REQUIRE(strings->get("mph") == simfil::StringPool::Empty);
+
     auto matchingEnum = tile->evaluate("mph", *feature, false, true);
     REQUIRE(matchingEnum);
     REQUIRE(matchingEnum->values.size() == 1);
     REQUIRE(matchingEnum->values.front().isa(simfil::ValueType::Bool));
     REQUIRE(matchingEnum->values.front().as<simfil::ValueType::Bool>());
+    REQUIRE(strings->get("mph") == simfil::StringPool::Empty);
 
     auto unrelatedString = tile->evaluate(R"("km/h")", *feature, false, true);
     REQUIRE(unrelatedString);

@@ -81,6 +81,16 @@ struct FilterIssue
     bool operator==(FilterIssue const&) const = default;
 };
 
+/** Failure of one projected expression. Its result slot remains an empty sequence. */
+struct ProjectedValueError
+{
+    uint32_t expressionIndex_ = 0;
+    std::string stage_;
+    std::string message_;
+
+    bool operator==(ProjectedValueError const&) const = default;
+};
+
 /** Transport identity readable immediately after the ordinary PartitionLayer bytes. */
 struct FilterIdentity
 {
@@ -152,16 +162,18 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(12);
+        MODEL_COLUMN_TYPE(16);
 
         simfil::ModelNodeAddress featureId_{};
         simfil::ModelNodeAddress geometry_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress valueErrors_{};
     };
 
     [[nodiscard]] model_ptr<FeatureId> featureId() const;
     [[nodiscard]] model_ptr<GeometryCollection> geometry() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] nlohmann::json toJson() const override;
 
 protected:
@@ -205,12 +217,14 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(52);
+        MODEL_COLUMN_TYPE(60);
 
         simfil::ModelNodeAddress featureId_{};
         simfil::ModelNodeAddress geometry_{};
         simfil::ModelNodeAddress hostValues_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress hostValueErrors_{};
+        simfil::ModelNodeAddress valueErrors_{};
         simfil::ModelNodeAddress attributeLayer_{};
         simfil::ModelNodeAddress attributeName_{};
         simfil::ModelNodeAddress transitionFromFeatureId_{};
@@ -228,6 +242,8 @@ public:
     [[nodiscard]] model_ptr<GeometryCollection> geometry() const;
     [[nodiscard]] model_ptr<Array> hostValues() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> hostValueErrors() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] std::optional<std::string> attributeLayer() const;
     [[nodiscard]] std::optional<std::string> attributeName() const;
     [[nodiscard]] std::optional<uint32_t> attributeIndex() const;
@@ -282,7 +298,7 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(36);
+        MODEL_COLUMN_TYPE(40);
 
         simfil::ModelNodeAddress relationId_{};
         simfil::ModelNodeAddress name_{};
@@ -292,6 +308,7 @@ public:
         simfil::ModelNodeAddress sourceGeometry_{};
         simfil::ModelNodeAddress targetGeometry_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress valueErrors_{};
         RelationDirection direction_ = RelationDirection::Forward;
         bool twoway_ = false;
     };
@@ -306,6 +323,7 @@ public:
     [[nodiscard]] model_ptr<GeometryCollection> sourceGeometry() const;
     [[nodiscard]] model_ptr<GeometryCollection> targetGeometry() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] nlohmann::json toJson() const override;
 
 protected:
@@ -340,12 +358,13 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(20);
+        MODEL_COLUMN_TYPE(24);
 
         simfil::ModelNodeAddress groupKey_{};
         simfil::ModelNodeAddress representativeFeatureId_{};
         simfil::ModelNodeAddress geometry_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress valueErrors_{};
         simfil::ModelNodeAddress memberFeatureIds_{};
     };
 
@@ -353,6 +372,7 @@ public:
     [[nodiscard]] model_ptr<FeatureId> representativeFeatureId() const;
     [[nodiscard]] model_ptr<GeometryCollection> geometry() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] model_ptr<Array> memberFeatureIds() const;
     [[nodiscard]] nlohmann::json toJson() const override;
 
@@ -424,7 +444,8 @@ public:
     model_ptr<FeatureEntry> newFeatureEntry(
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     /** Add one attribute candidate, retaining semantic transition metadata when supplied. */
     model_ptr<AttributeValidityEntry> newAttributeValidityEntry(
         model_ptr<FeatureId> const& featureId,
@@ -446,7 +467,9 @@ public:
         AttributeValidityEntry::TransitionEnd transitionToConnectedEnd =
             ValidityData::Start,
         uint32_t transitionPivotIndex =
-            AttributeValidityEntry::InvalidTransitionPivotIndex);
+            AttributeValidityEntry::InvalidTransitionPivotIndex,
+        std::span<ProjectedValueError const> hostValueErrors = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<RelationEntry> newRelationEntry(
         std::string_view relationId,
         std::string_view name,
@@ -457,13 +480,15 @@ public:
         model_ptr<FeatureEntry> const& target,
         model_ptr<GeometryCollection> const& sourceGeometry,
         model_ptr<GeometryCollection> const& targetGeometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<GroupEntry> newGroupEntry(
         simfil::ModelNode::Ptr const& groupKey,
         model_ptr<FeatureId> const& representativeFeatureId,
         model_ptr<GeometryCollection> const& geometry,
         std::span<simfil::ModelNode::Ptr const> values,
-        std::span<model_ptr<FeatureId> const> memberFeatureIds);
+        std::span<model_ptr<FeatureId> const> memberFeatureIds,
+        std::span<ProjectedValueError const> valueErrors = {});
 
     bool forEachFeatureEntry(
         std::function<bool(model_ptr<FeatureEntry> const&)> const& callback) const;
@@ -586,7 +611,8 @@ public:
     model_ptr<FeatureEntry> newFeatureEntry(
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     /** Add one attribute candidate, retaining semantic transition metadata when supplied. */
     model_ptr<AttributeValidityEntry> newAttributeValidityEntry(
         model_ptr<FeatureId> const& featureId,
@@ -608,7 +634,9 @@ public:
         AttributeValidityEntry::TransitionEnd transitionToConnectedEnd =
             ValidityData::Start,
         uint32_t transitionPivotIndex =
-            AttributeValidityEntry::InvalidTransitionPivotIndex);
+            AttributeValidityEntry::InvalidTransitionPivotIndex,
+        std::span<ProjectedValueError const> hostValueErrors = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<RelationEntry> newRelationEntry(
         std::string_view relationId,
         std::string_view name,
@@ -619,13 +647,15 @@ public:
         model_ptr<FeatureEntry> const& target,
         model_ptr<GeometryCollection> const& sourceGeometry,
         model_ptr<GeometryCollection> const& targetGeometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<GroupEntry> newGroupEntry(
         simfil::ModelNode::Ptr const& groupKey,
         model_ptr<FeatureId> const& representativeFeatureId,
         model_ptr<GeometryCollection> const& geometry,
         std::span<simfil::ModelNode::Ptr const> values,
-        std::span<model_ptr<FeatureId> const> memberFeatureIds);
+        std::span<model_ptr<FeatureId> const> memberFeatureIds,
+        std::span<ProjectedValueError const> valueErrors = {});
 
     model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,
@@ -694,6 +724,10 @@ private:
 
     [[nodiscard]] model_ptr<Array> newValueArray(
         std::span<simfil::ModelNode::Ptr const> values);
+    [[nodiscard]] model_ptr<Array> newValueErrors(
+        std::span<ProjectedValueError const> errors, size_t expressionCount);
+    [[nodiscard]] std::vector<ProjectedValueError> readValueErrors(
+        simfil::ModelNodeAddress address) const;
     [[nodiscard]] model_ptr<Array> newStringArray(std::span<std::string const> values);
     /** Reuse one immutable empty array for every empty projected row and schema. */
     [[nodiscard]] model_ptr<Array> sharedEmptyArray();

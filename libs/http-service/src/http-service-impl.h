@@ -24,6 +24,8 @@ namespace mapget
 namespace detail
 {
 
+class McpServer;
+
 /** Snapshot REST stream pending-buffer ownership and high-water marks. */
 [[nodiscard]] nlohmann::json tilesHttpMetricsSnapshot();
 
@@ -42,6 +44,8 @@ struct HttpService::Impl
 {
     HttpService& self_;
     HttpServiceConfig config_;
+    /** Agent transport/authentication has its own bounded control loop, not service workers. */
+    std::shared_ptr<detail::McpServer> mcp_;
     /** Lookup backend used by GET /location when location search is enabled. */
     std::unique_ptr<SqliteLocationLookup> locationLookup_;
 
