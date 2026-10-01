@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mapget/http-service/mcp-config.h"
 #include "mcp-action-catalog.h"
 
 #include <chrono>
@@ -36,18 +37,6 @@ public:
         [[nodiscard]] bool sameUser(Principal const& other) const;
     };
 
-    /** Hard admission limits, not a second queue of pending browser mutations. */
-    struct Limits
-    {
-        std::chrono::milliseconds timeout{30000};  // Maximum elapsed time after admission.
-        size_t invocationBytes = 64 * 1024;        // Bounds the complete invoke envelope.
-        size_t resultBytes = 256 * 1024;           // Bounds the complete browser result envelope.
-        size_t callsPerSession = 4;     // Prevents one tab retaining all pending callbacks.
-        size_t callsPerPrincipal = 16;  // Bounds work across a user's tabs.
-        size_t pendingCalls = 128;      // Includes uncertain mutations, with no queue beyond it.
-        size_t sessions = 256;          // Bounds even connected but unregistered action peers.
-    };
-
     /** Sending means handing a control frame to the connection, never to the tile outbox. */
     using Send = std::function<bool(nlohmann::json const&)>;
     /** Completion contains exactly one result object or application error object. */
@@ -56,7 +45,7 @@ public:
     /** Bind one immutable catalog and clocks; injected clocks make expiry tests deterministic. */
     McpViewerRelay(
         std::shared_ptr<McpActionCatalog const> catalog,
-        Limits limits,
+        McpConfig::Limits limits,
         std::function<std::chrono::system_clock::time_point()> wallNow =
             std::chrono::system_clock::now,
         std::function<std::chrono::steady_clock::time_point()> steadyNow =
@@ -122,7 +111,7 @@ private:
     };
 
     std::shared_ptr<McpActionCatalog const> catalog_;
-    Limits limits_;
+    McpConfig::Limits limits_;
     std::function<std::chrono::system_clock::time_point()> wallNow_;
     std::function<std::chrono::steady_clock::time_point()> steadyNow_;
     std::thread::id const ownerThread_ = std::this_thread::get_id();

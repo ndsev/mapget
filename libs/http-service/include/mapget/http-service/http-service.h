@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/detail/http-server.h"
+#include "mapget/http-service/mcp-config.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/service.h"
@@ -40,8 +41,8 @@ struct HttpServiceConfig
     std::optional<std::filesystem::path> locationDatabasePath;
     /** Server-side cap for accepted /location limit values. */
     uint32_t locationResultMaxLimit = 50;
-    /** Explicit MCP deployment/trust configuration; absent leaves agent access disabled. */
-    std::optional<std::filesystem::path> mcpConfigPath;
+    /** Explicit, restart-scoped MCP opt-in and trust settings; disabled by default. */
+    McpConfig mcp;
 
     /**
      * Period between allocator trims which return unused heap pages to the OS.

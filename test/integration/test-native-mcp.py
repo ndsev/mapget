@@ -107,19 +107,13 @@ class NativeMcpTest(unittest.TestCase):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             self.port = listener.getsockname()[1]
-        catalog_path = Path(__file__).parent.parent / "unit/data/viewer-actions/viewer-actions.json"
+        catalog_path = Path(__file__).parent.parent / "unit/data/viewer-actions/web-mcp-actions.json"
         self.catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         self.fixtures = json.loads((catalog_path.parent / "fixtures.json").read_text(encoding="utf-8"))
-        config = Path(self.directory.name) / "mcp.json"
-        config.write_text(json.dumps({
-            "authentication": "local", "endpoint": f"http://127.0.0.1:{self.port}/mcp",
-            "catalogPath": str(catalog_path.resolve()),
-            "allowedHosts": [f"127.0.0.1:{self.port}"],
-            "allowedOrigins": [f"http://127.0.0.1:{self.port}"],
-            "limits": {"timeoutMs": 2000}}), encoding="utf-8")
         self.process = subprocess.Popen([
             str(MAPGET_BINARY), "serve", "--host", "127.0.0.1", "-p", str(self.port),
-            "--no-location", "--worker-count", "2", "--mcp-config", str(config)],
+            "--no-location", "--worker-count", "2", "--mcp", "local",
+            "--mcp-timeout-ms", "2000", "--webapp", str(catalog_path.parent.resolve())],
             stdout=self.log, stderr=subprocess.STDOUT)
         self.addCleanup(self.stop_service)
         deadline = time.monotonic() + 20
@@ -357,6 +351,164 @@ class NativeMcpTest(unittest.TestCase):
         blocked = self.call("viewer_set_app_state", args)
         self.assertEqual(blocked["structuredContent"]["error"]["code"], "busy")
         self.finish(viewer, invocation)
+
+
+class NativeMcpConfigTest(unittest.TestCase):
+    """Exercise the real CLI11/YAML path, including precedence and private startup settings."""
+
+    def setUp(self):
+        """Keep config-relative and command-line-relative artifacts in different directories."""
+        directory = tempfile.TemporaryDirectory(prefix="mapget-mcp-config-")
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.config_path = self.directory / "config" / "service.yaml"
+        self.config_path.parent.mkdir()
+        self.catalog = Path(__file__).resolve().parent.parent / "unit/data/viewer-actions/web-mcp-actions.json"
+        (self.config_path.parent / "catalog.json").write_bytes(self.catalog.read_bytes())
+        self.log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        self.addCleanup(self.log.close)
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.port = listener.getsockname()[1]
+        self.settings = {"host": "127.0.0.1", "port": self.port, "no-location": True,
+                         "worker-count": 2, "mcp": "local", "mcp-catalog": "catalog.json"}
+
+    def command(self, *overrides):
+        """Use actual YAML mappings with scalar and list option values, not a second config parser."""
+        self.config_path.write_text("sources: []\nmapget:\n  serve:\n" + "".join(
+            f"    {key}: {json.dumps(value)}\n" for key, value in self.settings.items()), encoding="utf-8")
+        return [str(MAPGET_BINARY), "--config", str(self.config_path), "serve", *overrides]
+
+    def start(self, *overrides):
+        """Start a bounded isolated process and wait for its ordinary health endpoint."""
+        process = subprocess.Popen(self.command(*overrides), cwd=self.directory,
+                                   stdout=self.log, stderr=subprocess.STDOUT)
+        self.addCleanup(self.stop, process)
+        deadline = time.monotonic() + 20
+        while process.poll() is None and time.monotonic() < deadline:
+            try:
+                if self.http("/status-data")[0] == 200:
+                    return
+            except OSError:
+                time.sleep(0.05)
+        self.log.seek(0)
+        self.fail("MCP config service did not start: " + self.log.read())
+
+    def stop(self, process):
+        """Do not leave a config-watching child alive after a failed assertion."""
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    def http(self, path, headers=None, method="GET", body=None):
+        """Return HTTP and parsed JSON where available; config writes return plain text."""
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6)
+        try:
+            connection.request(method, path, body, headers or {})
+            response = connection.getresponse()
+            data = response.read().decode()
+            return response.status, json.loads(data) if "json" in response.getheader("Content-Type", "") else data
+        finally:
+            connection.close()
+
+    def test_yaml_relative_catalog_and_private_config(self):
+        """Trust settings stay out of /config and survive datasource config writes unchanged."""
+        self.settings["allow-post-config"] = True
+        self.start()
+        status, info = self.http("/mcp/info")
+        self.assertEqual(status, 200)
+        self.assertEqual(info["endpoint"], f"http://127.0.0.1:{self.port}/mcp")
+        status, public = self.http("/config")
+        self.assertEqual(status, 200)
+        self.assertNotIn("mapget", public)
+        self.assertNotIn("mapget", public["model"])
+        model = {"sources": [{"type": "GridDataSource", "enabled": False}]}
+        status, body = self.http("/config", {"Content-Type": "application/json"}, "POST", json.dumps(model))
+        self.assertEqual(status, 200, body)
+        status, _ = self.http("/config", {"Content-Type": "application/json"}, "POST", json.dumps({
+            **model, "mapget": {"serve": {"mcp": "off"}}}))
+        # A private section is either rejected or ignored; it must never be changed by this API.
+        self.assertIn(status, (200, 400, 500))
+        self.assertEqual(self.http("/mcp/info")[1]["enabled"], True)
+        self.assertIn("mcp: local", self.config_path.read_text().replace('"local"', 'local'))
+        self.assertIn("mcp-catalog: catalog.json", self.config_path.read_text().replace('"catalog.json"', 'catalog.json'))
+
+    def test_cli_lists_replace_yaml_and_paths_use_cwd(self):
+        """Explicit CLI settings replace complete YAML values; no stale trust entries are merged."""
+        self.settings["mcp-endpoint"] = f"http://localhost:{self.port}/mcp"
+        self.settings["mcp-allowed-hosts"] = [f"localhost:{self.port}"]
+        self.settings["mcp-allowed-origins"] = [f"http://localhost:{self.port}"]
+        (self.directory / "override.json").write_bytes(self.catalog.read_bytes())
+        self.start("--mcp-catalog", "override.json", "--mcp-endpoint", f"http://127.0.0.1:{self.port}/mcp",
+                   "--mcp-allowed-hosts", f"127.0.0.1:{self.port}",
+                   "--mcp-allowed-origins", f"http://127.0.0.1:{self.port}")
+        self.assertEqual(self.http("/mcp/info")[0], 200)
+        self.assertEqual(self.http("/mcp/info", {"Host": f"localhost:{self.port}"})[0], 403)
+        self.assertEqual(self.http("/mcp/info", {"Origin": f"http://localhost:{self.port}"})[0], 403)
+
+    def test_default_catalog_follows_webapp_mount(self):
+        """The public manifest is found under the mounted directory, not the YAML or cwd."""
+        del self.settings["mcp-catalog"]
+        self.start("--webapp", "/viewer:" + str(self.catalog.parent))
+        self.assertEqual(self.http("/mcp/info")[0], 200)
+        self.assertEqual(self.http("/viewer/web-mcp-actions.json")[1]["catalogId"],
+                         self.http("/mcp/info")[1]["catalogId"])
+
+    def test_cli_off_ignores_retained_hosted_settings(self):
+        """An administrator can disable MCP without deleting its deployment configuration."""
+        self.settings.update({"mcp": "oauth", "mcp-issuer": "https://issuer.example", "mcp-catalog": "missing.json"})
+        self.start("--mcp", "off")
+        self.assertEqual(self.http("/mcp/info"), (200, {"enabled": False}))
+
+    def oauth_settings(self):
+        """Use a provider-neutral hosted resource, without making any network issuer requests."""
+        self.settings.update({
+            "mcp": "oauth", "mcp-endpoint": "https://viewer.example/mcp",
+            "mcp-allowed-hosts": [f"127.0.0.1:{self.port}"], "mcp-allowed-origins": ["https://viewer.example"],
+            "mcp-issuer": "https://issuer.example/realm", "mcp-jwks-url": "https://issuer.example/keys",
+            "mcp-required-scopes": ["viewer"], "mcp-read-claim": "/roles", "mcp-read-value": "read",
+            "mcp-trusted-proxy-addresses": ["127.0.0.1"], "mcp-browser-issuer-header": "test-issuer",
+            "mcp-browser-subject-header": "test-subject", "mcp-browser-expiry-header": "test-expiry",
+            "mcp-browser-permissions-header": "test-permissions"})
+
+    def test_oauth_resource_and_scope_override(self):
+        """CLI scopes replace YAML scopes in public resource discovery and bearer challenges."""
+        self.oauth_settings()
+        self.start("--mcp-required-scopes", "stage")
+        status, metadata = self.http("/.well-known/oauth-protected-resource/mcp")
+        self.assertEqual(status, 200)
+        self.assertEqual(metadata["resource"], "https://viewer.example/mcp")
+        self.assertEqual(metadata["scopes_supported"], ["stage"])
+        status, _ = self.http("/mcp", {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                              "POST", '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')
+        self.assertEqual(status, 401)
+
+    def test_invalid_startup_configuration_fails_closed(self):
+        """Misspellings, removed switches, public local listeners and invalid limits fail startup."""
+        for overrides in [("--mcp", "automatic"), ("--mcp-config", "old.json"), ("--host", "0.0.0.0"),
+                          ("--mcp-sessions", "0"), ("--mcp-timeout-ms", "-1"), ("--mcp-issuer", "https://issuer.example")]:
+            with self.subTest(overrides=overrides):
+                result = subprocess.run(self.command(*overrides), cwd=self.directory, capture_output=True, timeout=10)
+                self.assertGreater(result.returncode, 0, result.stdout + result.stderr)
+        self.settings["mcp-required-scopess"] = ["misspelled"]
+        result = subprocess.run(self.command(), cwd=self.directory, capture_output=True, timeout=10)
+        self.assertGreater(result.returncode, 0)
+
+    def test_jwks_relative_paths(self):
+        """Both artifact path options use identical YAML-vs-CLI precedence and base directories."""
+        self.oauth_settings()
+        del self.settings["mcp-jwks-url"]
+        self.settings["mcp-jwks-file"] = "keys.json"
+        # An empty key set distinguishes successful file loading from path-resolution failure.
+        (self.config_path.parent / "keys.json").write_text('{"keys":[]}')
+        (self.directory / "override-keys.json").write_text('{"keys":[]}')
+        for overrides in [(), ("--mcp-jwks-file", "override-keys.json")]:
+            result = subprocess.run(self.command(*overrides), cwd=self.directory, capture_output=True, timeout=10)
+            self.assertGreater(result.returncode, 0)
+            self.assertIn(b"MCP JWKS requires", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

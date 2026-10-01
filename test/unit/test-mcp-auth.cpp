@@ -1,18 +1,80 @@
 #include "../../libs/http-service/src/mcp-auth.h"
 #include "mcp-test-issuer.h"
 
+#include <CLI/CLI.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 using mapget::detail::McpAuthentication;
 using mapget::test::McpTestIssuer;
 using nlohmann::json;
 
+TEST_CASE("MCP local defaults use trusted startup inputs", "[mcp-auth][mcp-actions]")
+{
+    using mapget::McpConfig;
+    McpConfig disabled;
+    disabled.resolveDefaults("0.0.0.0", 0, {});
+    CHECK_NOTHROW(disabled.validate());
+    CHECK(disabled.endpoint.empty());
+
+    McpConfig local;
+    local.mode = McpConfig::Mode::Local;
+    CHECK_THROWS(local.resolveDefaults("0.0.0.0", 8099, "/viewer"));
+    CHECK_THROWS(local.resolveDefaults("127.0.0.1", 0, "/viewer"));
+    local.resolveDefaults("127.0.0.1", 8099, "/viewer");
+    CHECK_NOTHROW(local.validate());
+    CHECK(local.catalogPath == std::filesystem::path("/viewer/web-mcp-actions.json"));
+    CHECK(local.endpoint == "http://127.0.0.1:8099/mcp");
+    CHECK(
+        local.allowedHosts ==
+        std::vector<std::string>{"localhost:8099", "127.0.0.1:8099", "[::1]:8099"});
+    local.issuer = "https://issuer.example";
+    CHECK_THROWS(local.validate());
+
+    McpConfig ipv6;
+    ipv6.mode = McpConfig::Mode::Local;
+    ipv6.catalogPath = "custom.json";
+    ipv6.allowedHosts = {"[::1]"};
+    ipv6.allowedOrigins = {"http://[::1]"};
+    ipv6.resolveDefaults("::1", 80, "/viewer");
+    CHECK_NOTHROW(ipv6.validate());
+    CHECK(ipv6.catalogPath == "custom.json");
+    CHECK(ipv6.endpoint == "http://[::1]/mcp");
+    CHECK(ipv6.allowedHosts == std::vector<std::string>{"[::1]"});
+
+    auto hosted = mapget::test::McpTestIssuer::configuration();
+    hosted.catalogPath.clear();
+    hosted.resolveDefaults("0.0.0.0", 8089, "/viewer");
+    CHECK_NOTHROW(hosted.validate());
+    CHECK(hosted.endpoint == "https://viewer.example/mcp");
+    CHECK(hosted.allowedHosts == std::vector<std::string>{"viewer.example"});
+}
+
+TEST_CASE("MCP CLI settings are individual typed options", "[mcp-auth][mcp-actions]")
+{
+    mapget::McpConfig config;
+    CLI::App app;
+    config.addOptions(app);
+    app.parse(
+        "--mcp local --mcp-timeout-ms 42 --mcp-sessions 3 --mcp-catalog web-mcp-actions.json "
+        "--mcp-allowed-hosts localhost:8099 127.0.0.1:8099");
+    CHECK(config.mode == mapget::McpConfig::Mode::Local);
+    CHECK(config.limits.timeout == std::chrono::milliseconds(42));
+    CHECK(config.limits.sessions == 3);
+    CHECK(config.allowedHosts.size() == 2);
+    CHECK(config.catalogPath == "web-mcp-actions.json");
+    CHECK(app.get_option("--mcp")->results() == std::vector<std::string>{"local"});
+    CHECK_THROWS_AS(app.parse("--mcp automatic"), CLI::ParseError);
+    CHECK_THROWS_AS(app.parse("--mcp 1"), CLI::ParseError);
+    CHECK_THROWS_AS(app.parse("--mcp-config old.json"), CLI::ParseError);
+    CHECK_THROWS_AS(app.parse("--mcp-sessions not-an-integer"), CLI::ParseError);
+}
+
 TEST_CASE(
     "MCP HTTP authentication schemes are case insensitive, tokens are not",
     "[mcp-auth][mcp-actions]")
 {
     McpTestIssuer issuer;
-    McpAuthentication auth(McpTestIssuer::configuration(), ".");
+    McpAuthentication auth(McpTestIssuer::configuration());
     auth.installKeys(issuer.jwks);
     auto const token = issuer.token();
     for (auto scheme : {"Bearer ", "bearer ", "BEARER ", "bEaReR   "}) {
@@ -32,7 +94,7 @@ TEST_CASE(
     "[mcp-auth][mcp-actions]")
 {
     McpTestIssuer issuer;
-    McpAuthentication auth(McpTestIssuer::configuration(), ".");
+    McpAuthentication auth(McpTestIssuer::configuration());
     auth.installKeys(issuer.jwks);
     bool insufficient = false;
     auto valid = auth.bearer(issuer.token(), insufficient);
@@ -89,7 +151,7 @@ TEST_CASE(
 TEST_CASE("MCP scopes and JSON pointer roles never imply one another", "[mcp-auth][mcp-actions]")
 {
     McpTestIssuer issuer;
-    McpAuthentication auth(McpTestIssuer::configuration(), ".");
+    McpAuthentication auth(McpTestIssuer::configuration());
     auth.installKeys(issuer.jwks);
     bool insufficient = false;
     auto claims = McpTestIssuer::claims();
@@ -122,7 +184,7 @@ TEST_CASE(
     "[mcp-auth][mcp-actions]")
 {
     McpTestIssuer issuer;
-    McpAuthentication auth(McpTestIssuer::configuration(), ".");
+    McpAuthentication auth(McpTestIssuer::configuration());
     bool insufficient = false;
     CHECK(auth.needsKeys(issuer.token()));
     CHECK_FALSE(auth.needsKeys("garbage"));
@@ -155,53 +217,57 @@ TEST_CASE(
 TEST_CASE("MCP security configuration and public hints fail closed", "[mcp-auth][mcp-actions]")
 {
     auto config = McpTestIssuer::configuration();
-    McpAuthentication auth(config, ".");
+    McpAuthentication auth(config);
     auto info = auth.info("sha256:test");
     CHECK(info["authentication"] == "oauth");
     CHECK(info["scopes"] == json::array({"viewer"}));
     CHECK(info["oauthClientId"] == "public-client");
     CHECK_FALSE(info.contains("oauth"));
-    CHECK(auth.metadata()["resource"] == config["endpoint"]);
-    CHECK(auth.metadata()["authorization_servers"] == json::array({config["oauth"]["issuer"]}));
+    CHECK(auth.metadata()["resource"] == config.endpoint);
+    CHECK(auth.metadata()["authorization_servers"] == json::array({config.issuer}));
     CHECK(
         auth.challenge().find("https://viewer.example/.well-known/oauth-protected-resource/mcp") !=
         std::string::npos);
     CHECK(auth.challenge(true).find("insufficient_scope") != std::string::npos);
-    json const invalidSettings{
-        {"/authentication", "automatic"},
-        {"/allowedHosts", json::array()},
-        {"/allowedOrigins", {"*"}},
-        {"/endpoint", "http://viewer.example/mcp"},
-        {"/oauth/jwksUrl", "http://issuer.example/keys"},
-        {"/oauth/clockSkewSeconds", 3600},
-        {"/oauth/browser/trustedProxyAddresses", {"*"}},
-        {"/oauth/browser/expiryHeader", "test-subject"},
-        {"/oauth/browser/maxLifetimeSeconds", 0},
-        {"/oauth/requiredScopes", {"viewer\"bad"}},
-        {"/oauth/permissions/viewer-read/claim", "not-a-pointer"}};
-    for (auto const& [pointer, value] : invalidSettings.items()) {
-        INFO(pointer);
+    using mapget::McpConfig;
+    for (auto const& mutate :
+         std::vector<std::function<void(McpConfig&)>>{
+             [](auto& c) { c.mode = static_cast<McpConfig::Mode>(100); },
+             [](auto& c) { c.allowedHosts.clear(); },
+             [](auto& c) { c.allowedOrigins = {"*"}; },
+             [](auto& c) { c.endpoint = "http://viewer.example/mcp"; },
+             [](auto& c) { c.jwksUrl = "http://issuer.example/keys"; },
+             [](auto& c) { c.clockSkewSeconds = 3600; },
+             [](auto& c) { c.trustedProxyAddresses = {"*"}; },
+             [](auto& c) { c.expiryHeader = c.subjectHeader; },
+             [](auto& c) { c.maxBrowserLifetimeSeconds = 0; },
+             [](auto& c) { c.requiredScopes = {"viewer\"bad"}; },
+             [](auto& c) { c.readClaim = "not-a-pointer"; },
+             [](auto& c) { c.jwksFile = "keys.json"; },
+             [](auto& c) { c.readValue.clear(); },
+             [](auto& c)
+             {
+                 c.readClaim.clear();
+                 c.controlClaim.clear();
+             },
+             [](auto& c) { c.limits.callsPerSession = 0; },
+             [](auto& c)
+             {
+                 c.limits.timeout = std::chrono::milliseconds(-1);
+             }})
+    {
         auto invalid = config;
-        invalid[json::json_pointer(pointer)] = value;
-        CHECK_THROWS(McpAuthentication(invalid, "."));
+        mutate(invalid);
+        CHECK_THROWS(McpAuthentication(invalid));
     }
-    auto invalid = config;
-    invalid["trustedAll"] = true;
-    CHECK_THROWS(McpAuthentication(invalid, "."));
-    invalid = config;
-    invalid["oauth"]["jwksFile"] = "keys.json";
-    CHECK_THROWS(McpAuthentication(invalid, "."));
-    json local{
-        {"authentication", "local"},
-        {"endpoint", "http://127.0.0.1:8099/mcp"},
-        {"catalogPath", "viewer-actions.json"},
-        {"allowedHosts", {"127.0.0.1:8099"}},
-        {"allowedOrigins", {"http://127.0.0.1:8099"}}};
-    McpAuthentication localAuth(local, ".");
+    McpConfig local;
+    local.mode = McpConfig::Mode::Local;
+    local.resolveDefaults("127.0.0.1", 8099, "/viewer");
+    McpAuthentication localAuth(local);
     CHECK(localAuth.localPrincipal().valid(std::chrono::system_clock::now()));
     CHECK(localAuth.info("test")["scopes"].empty());
-    local["allowedHosts"].push_back("remote.example");
-    CHECK_THROWS(McpAuthentication(local, "."));
+    local.allowedHosts.push_back("remote.example");
+    CHECK_THROWS(McpAuthentication(local));
     CHECK_THROWS(McpAuthentication::parseJson(std::string(100, ' '), 10));
     CHECK_THROWS(McpAuthentication::parseJson("[[[[0]]]]", 100, 2));
 }

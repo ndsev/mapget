@@ -7,7 +7,6 @@
 #include <cctype>
 #include <charconv>
 #include <fstream>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
 
@@ -15,19 +14,6 @@ namespace mapget::detail
 {
 namespace
 {
-/** Require a closed configuration object so misspelled security settings cannot be ignored. */
-void fields(nlohmann::json const& object, std::initializer_list<std::string_view> allowed)
-{
-    if (!object.is_object()) {
-        throw std::invalid_argument("MCP configuration requires an object.");
-    }
-    for (auto const& [key, value] : object.items()) {
-        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
-            throw std::invalid_argument("Unknown MCP configuration field: " + key);
-        }
-    }
-}
-
 /** Match whitespace-delimited scope/permission names, not substrings or regular expressions. */
 bool containsWord(std::string const& list, std::string const& expected)
 {
@@ -121,219 +107,13 @@ nlohmann::json McpAuthentication::readJson(std::filesystem::path const& path, si
     return parseJson(bytes, maxBytes);
 }
 
-McpAuthentication::McpAuthentication(std::filesystem::path const& path)
-    : McpAuthentication(readJson(path, 64 * 1024), std::filesystem::absolute(path).parent_path())
+McpAuthentication::McpAuthentication(McpConfig config) : config_(std::move(config))
 {
-}
-
-McpAuthentication::McpAuthentication(nlohmann::json config, std::filesystem::path const& directory)
-    : config_(std::move(config))
-{
-    validate(directory);
-    if (config_.contains("oauth") && config_["oauth"].contains("jwksFile")) {
-        installKeys(readJson(config_["oauth"]["jwksFile"].get<std::string>(), 256 * 1024));
+    config_.validate();
+    if (!config_.jwksFile.empty()) {
+        installKeys(readJson(config_.jwksFile, 256 * 1024));
         // A local key artifact is administrator-managed, immutable until service restart.
         keysExpireAt_ = std::chrono::steady_clock::time_point::max();
-    }
-}
-
-void McpAuthentication::validate(std::filesystem::path const& directory)
-{
-    fields(
-        config_,
-        {"authentication",
-         "endpoint",
-         "catalogPath",
-         "allowedHosts",
-         "allowedOrigins",
-         "oauth",
-         "limits"});
-    auto const mode = config_.at("authentication").get<std::string>();
-    if (mode != "local" && mode != "oauth") {
-        throw std::invalid_argument("MCP authentication must be explicitly local or oauth.");
-    }
-    static std::regex const
-        originPattern(R"(^https?://(\[[a-fA-F0-9:]+\]|[a-zA-Z0-9.-]+)(:[0-9]{1,5})?$)");
-    auto const endpoint = config_.at("endpoint").get<std::string>();
-    if (!endpoint.ends_with("/mcp") ||
-        !std::regex_match(endpoint.substr(0, endpoint.size() - 4), originPattern))
-    {
-        throw std::invalid_argument(
-            "MCP endpoint must be a canonical HTTP(S) origin followed by /mcp.");
-    }
-    for (auto const* key : {"allowedHosts", "allowedOrigins"}) {
-        auto const& values = config_.at(key);
-        if (!values.is_array() || values.empty() || values.size() > 32) {
-            throw std::invalid_argument(
-                "MCP requires explicit bounded Host and Origin allowlists.");
-        }
-        for (auto const& value : values) {
-            auto const text = value.get<std::string>();
-            auto const origin = std::string(key) == "allowedHosts" ? "http://" + text : text;
-            if (text.size() > 2048 || !std::regex_match(origin, originPattern)) {
-                throw std::invalid_argument("Invalid MCP allowed Host/Origin.");
-            }
-        }
-    }
-    auto resolvePath = [&](nlohmann::json& value)
-    {
-        auto path = std::filesystem::path(value.get<std::string>());
-        if (path.empty()) {
-            throw std::invalid_argument("MCP artifact path must not be empty.");
-        }
-        value = (path.is_absolute() ? path : directory / path).lexically_normal().string();
-    };
-    resolvePath(config_.at("catalogPath"));
-    if (config_.contains("limits")) {
-        fields(
-            config_["limits"],
-            {"timeoutMs",
-             "invocationBytes",
-             "resultBytes",
-             "callsPerSession",
-             "callsPerPrincipal",
-             "pendingCalls",
-             "sessions"});
-        for (auto const& [key, value] : config_["limits"].items()) {
-            if (!value.is_number_integer() || value.get<int64_t>() <= 0 ||
-                value.get<uint64_t>() > 2147483647) {
-                throw std::invalid_argument("MCP limits must be positive bounded integers.");
-            }
-        }
-    }
-    if (mode == "local") {
-        if (config_.contains("oauth")) {
-            throw std::invalid_argument("Local MCP must not contain OAuth settings.");
-        }
-        // Local mode is a deliberate capability, not an authentication fallback behind a proxy.
-        for (auto const* key : {"allowedHosts", "allowedOrigins"}) {
-            for (auto const& value : config_[key]) {
-                auto text = value.get<std::string>();
-                if (std::string(key) == "allowedOrigins") {
-                    text = text.substr(text.find("://") + 3);
-                }
-                if (!(text == "localhost" || text.starts_with("localhost:") ||
-                      text == "127.0.0.1" || text.starts_with("127.0.0.1:") || text == "[::1]" ||
-                      text.starts_with("[::1]:")))
-                {
-                    throw std::invalid_argument(
-                        "Local MCP allowlists must contain loopback hosts only.");
-                }
-            }
-        }
-        if (std::find(
-                config_["allowedOrigins"].begin(),
-                config_["allowedOrigins"].end(),
-                endpoint.substr(0, endpoint.size() - 4)) == config_["allowedOrigins"].end())
-        {
-            throw std::invalid_argument("Local MCP endpoint origin must be allowed.");
-        }
-        return;
-    }
-    if (!endpoint.starts_with("https://")) {
-        throw std::invalid_argument("OAuth MCP requires an HTTPS public endpoint.");
-    }
-    auto& oauth = config_.at("oauth");
-    fields(
-        oauth,
-        {"issuer",
-         "audience",
-         "jwksUrl",
-         "jwksFile",
-         "requiredScopes",
-         "clientId",
-         "permissions",
-         "browser",
-         "clockSkewSeconds"});
-    auto issuer = oauth.at("issuer").get<std::string>();
-    static std::regex const httpsUrl(R"(^https://[a-zA-Z0-9.\[\]:-]+(/[^\s?#]*)?$)");
-    if (!std::regex_match(issuer, httpsUrl) || oauth.at("audience").get<std::string>() != endpoint)
-    {
-        throw std::invalid_argument(
-            "OAuth issuer must be HTTPS and audience must equal the MCP resource URL.");
-    }
-    if (oauth.contains("jwksUrl") == oauth.contains("jwksFile")) {
-        throw std::invalid_argument(
-            "Configure exactly one trusted JWKS URL or local key artifact.");
-    }
-    if (oauth.contains("jwksUrl") &&
-        !std::regex_match(oauth["jwksUrl"].get<std::string>(), httpsUrl)) {
-        throw std::invalid_argument(
-            "MCP JWKS URL must use HTTPS without credentials/query/fragment.");
-    }
-    if (oauth.contains("jwksFile")) {
-        resolvePath(oauth["jwksFile"]);
-    }
-    auto const& scopes = oauth.at("requiredScopes");
-    if (!scopes.is_array() || scopes.empty() || scopes.size() > 16) {
-        throw std::invalid_argument("OAuth MCP requires explicit scopes.");
-    }
-    static std::regex const scopePattern(R"(^[!#-\[\]-~]+$)");
-    for (auto const& scope : scopes) {
-        if (scope.get<std::string>().size() > 256 ||
-            !std::regex_match(scope.get<std::string>(), scopePattern))
-        {
-            throw std::invalid_argument("Invalid OAuth scope.");
-        }
-    }
-    auto const skew = oauth.value("clockSkewSeconds", 15);
-    if (skew < 0 || skew > 60) {
-        throw std::invalid_argument("OAuth clock skew must be between zero and 60 seconds.");
-    }
-    if (oauth.contains("clientId") &&
-        (oauth["clientId"].get<std::string>().empty() ||
-         oauth["clientId"].get<std::string>().size() > 256))
-    {
-        throw std::invalid_argument("Invalid public OAuth client ID.");
-    }
-    fields(oauth.at("permissions"), {"viewer-read", "viewer-control"});
-    if (oauth["permissions"].empty()) {
-        throw std::invalid_argument("OAuth MCP requires explicit permission rules.");
-    }
-    for (auto const& rule : oauth["permissions"]) {
-        fields(rule, {"claim", "value"});
-        auto const path = rule.at("claim").get<std::string>();
-        (void)nlohmann::json::json_pointer(path);
-        if (path.empty() || rule.at("value").get<std::string>().empty()) {
-            throw std::invalid_argument(
-                "OAuth permission rules require a claim pointer and string value.");
-        }
-    }
-    auto const& browser = oauth.at("browser");
-    fields(
-        browser,
-        {"trustedProxyAddresses",
-         "issuerHeader",
-         "subjectHeader",
-         "expiryHeader",
-         "permissionsHeader",
-         "maxLifetimeSeconds"});
-    auto const& proxies = browser.at("trustedProxyAddresses");
-    if (!proxies.is_array() || proxies.empty() || proxies.size() > 32) {
-        throw std::invalid_argument("Browser MCP requires explicitly trusted proxy addresses.");
-    }
-    for (auto const& proxy : proxies) {
-        // Exact peer IPs only; ranges and forwarded chains are intentionally unsupported.
-        auto text = proxy.get<std::string>();
-        if (text.empty() || text.find_first_not_of("0123456789abcdefABCDEF:.") != std::string::npos)
-        {
-            throw std::invalid_argument(
-                "Trusted MCP proxy addresses must be literal IP addresses.");
-        }
-    }
-    std::set<std::string> headers;
-    static std::regex const headerPattern("^[a-z][a-z0-9-]{0,99}$");
-    for (auto const* field : {"issuerHeader", "subjectHeader", "expiryHeader", "permissionsHeader"})
-    {
-        auto name = browser.at(field).get<std::string>();
-        if (!std::regex_match(name, headerPattern) || !headers.insert(name).second) {
-            throw std::invalid_argument(
-                "Browser identity header names must be distinct lowercase HTTP tokens.");
-        }
-    }
-    auto lifetime = browser.value("maxLifetimeSeconds", 3600);
-    if (lifetime < 1 || lifetime > 86400) {
-        throw std::invalid_argument("Browser MCP lifetime must be between one second and one day.");
     }
 }
 
@@ -341,14 +121,14 @@ nlohmann::json McpAuthentication::info(std::string const& catalogId) const
 {
     nlohmann::json result{
         {"enabled", true},
-        {"endpoint", config_["endpoint"]},
-        {"authentication", config_["authentication"]},
+        {"endpoint", config_.endpoint},
+        {"authentication", config_.mode == McpConfig::Mode::Local ? "local" : "oauth"},
         {"catalogId", catalogId},
         {"scopes", nlohmann::json::array()}};
-    if (config_.contains("oauth")) {
-        result["scopes"] = config_["oauth"]["requiredScopes"];
-        if (config_["oauth"].contains("clientId")) {
-            result["oauthClientId"] = config_["oauth"]["clientId"];
+    if (config_.mode == McpConfig::Mode::OAuth) {
+        result["scopes"] = config_.requiredScopes;
+        if (!config_.oauthClientId.empty()) {
+            result["oauthClientId"] = config_.oauthClientId;
         }
     }
     return result;
@@ -357,20 +137,20 @@ nlohmann::json McpAuthentication::info(std::string const& catalogId) const
 nlohmann::json McpAuthentication::metadata() const
 {
     return {
-        {"resource", config_["endpoint"]},
-        {"authorization_servers", {config_["oauth"]["issuer"]}},
-        {"scopes_supported", config_["oauth"]["requiredScopes"]},
+        {"resource", config_.endpoint},
+        {"authorization_servers", {config_.issuer}},
+        {"scopes_supported", config_.requiredScopes},
         {"bearer_methods_supported", {"header"}}};
 }
 
 std::string McpAuthentication::challenge(bool insufficient) const
 {
-    auto endpoint = config_["endpoint"].get<std::string>();
+    auto endpoint = config_.endpoint;
     std::string scopes;
-    for (auto const& scope : config_["oauth"]["requiredScopes"]) {
+    for (auto const& scope : config_.requiredScopes) {
         if (!scopes.empty())
             scopes += ' ';
-        scopes += scope.get<std::string>();
+        scopes += scope;
     }
     return "Bearer resource_metadata=\"" + endpoint.substr(0, endpoint.size() - 4) +
         "/.well-known/oauth-protected-resource/mcp\", scope=\"" + scopes + "\", error=\"" +
@@ -379,8 +159,8 @@ std::string McpAuthentication::challenge(bool insufficient) const
 
 bool McpAuthentication::acceptsRequest(drogon::HttpRequestPtr const& request, bool browser) const
 {
-    auto const& hosts = config_["allowedHosts"];
-    auto const& origins = config_["allowedOrigins"];
+    auto const& hosts = config_.allowedHosts;
+    auto const& origins = config_.allowedOrigins;
     auto const& origin = request->getHeader("origin");
     if (std::find(hosts.begin(), hosts.end(), request->getHeader("host")) == hosts.end() ||
         ((browser || !origin.empty()) &&
@@ -388,7 +168,7 @@ bool McpAuthentication::acceptsRequest(drogon::HttpRequestPtr const& request, bo
     {
         return false;
     }
-    if (config_["authentication"] == "local") {
+    if (config_.mode == McpConfig::Mode::Local) {
         if (!loopback(request->peerAddr().toIp()))
             return false;
         for (auto const& [name, value] : request->headers()) {
@@ -401,7 +181,7 @@ bool McpAuthentication::acceptsRequest(drogon::HttpRequestPtr const& request, bo
 
 McpViewerRelay::Principal McpAuthentication::localPrincipal() const
 {
-    if (config_["authentication"] != "local")
+    if (config_.mode != McpConfig::Mode::Local)
         return {};
     return {
         "urn:mapget:local",
@@ -434,20 +214,15 @@ McpViewerRelay::Principal McpAuthentication::browser(drogon::HttpRequestPtr cons
 {
     if (!acceptsRequest(request, true))
         return {};
-    if (config_["authentication"] == "local")
+    if (config_.mode == McpConfig::Mode::Local)
         return localPrincipal();
-    auto const& cfg = config_["oauth"]["browser"];
-    auto const& proxies = cfg["trustedProxyAddresses"];
+    auto const& proxies = config_.trustedProxyAddresses;
     if (std::find(proxies.begin(), proxies.end(), request->peerAddr().toIp()) == proxies.end())
         return {};
-    auto header = [&](char const* field) -> std::string const&
-    {
-        return request->getHeader(cfg[field].get<std::string>());
-    };
-    if (header("issuerHeader") != config_["oauth"]["issuer"].get<std::string>())
+    if (request->getHeader(config_.issuerHeader) != config_.issuer)
         return {};
-    auto const& subject = header("subjectHeader");
-    auto const& expires = header("expiryHeader");
+    auto const& subject = request->getHeader(config_.subjectHeader);
+    auto const& expires = request->getHeader(config_.expiryHeader);
     int64_t timestamp = 0;
     auto parsed = std::from_chars(expires.data(), expires.data() + expires.size(), timestamp);
     if (parsed.ec != std::errc() || parsed.ptr != expires.data() + expires.size() ||
@@ -455,29 +230,29 @@ McpViewerRelay::Principal McpAuthentication::browser(drogon::HttpRequestPtr cons
         return {};
     auto const expiry = std::min(
         std::chrono::system_clock::time_point(std::chrono::seconds(timestamp)),
-        std::chrono::system_clock::now() +
-            std::chrono::seconds(cfg.value("maxLifetimeSeconds", 3600)));
+        std::chrono::system_clock::now() + std::chrono::seconds(config_.maxBrowserLifetimeSeconds));
     return {
-        header("issuerHeader"),
+        request->getHeader(config_.issuerHeader),
         subject,
         expiry,
-        containsWord(header("permissionsHeader"), "viewer-read"),
-        containsWord(header("permissionsHeader"), "viewer-control")};
+        containsWord(request->getHeader(config_.permissionsHeader), "viewer-read"),
+        containsWord(request->getHeader(config_.permissionsHeader), "viewer-control")};
 }
 
-bool McpAuthentication::permission(nlohmann::json const& claims, std::string const& name) const
+bool McpAuthentication::permission(
+    nlohmann::json const& claims,
+    std::string const& claim,
+    std::string const& expected)
 {
-    auto const& rules = config_["oauth"]["permissions"];
-    if (!rules.contains(name))
+    if (claim.empty())
         return false;
-    auto const& rule = rules[name];
-    auto const pointer = nlohmann::json::json_pointer(rule["claim"].get<std::string>());
+    auto const pointer = nlohmann::json::json_pointer(claim);
     if (!claims.contains(pointer))
         return false;
     auto const& value = claims.at(pointer);
     return value.is_string() ?
-        value == rule["value"] :
-        value.is_array() && std::find(value.begin(), value.end(), rule["value"]) != value.end();
+        value == expected :
+        value.is_array() && std::find(value.begin(), value.end(), expected) != value.end();
 }
 
 McpViewerRelay::Principal McpAuthentication::principal(nlohmann::json const& claims) const
@@ -492,13 +267,13 @@ McpViewerRelay::Principal McpAuthentication::principal(nlohmann::json const& cla
         claims.at("sub"),
         std::chrono::system_clock::time_point(
             std::chrono::seconds(claims.at("exp").get<int64_t>())),
-        permission(claims, "viewer-read"),
-        permission(claims, "viewer-control")};
+        permission(claims, config_.readClaim, config_.readValue),
+        permission(claims, config_.controlClaim, config_.controlValue)};
 }
 
 bool McpAuthentication::needsKeys(std::string const& token) const
 {
-    if (!config_.contains("oauth") || !config_["oauth"].contains("jwksUrl") ||
+    if (config_.mode != McpConfig::Mode::OAuth || config_.jwksUrl.empty() ||
         token.size() > 16 * 1024)
         return false;
     try {
@@ -519,7 +294,7 @@ McpViewerRelay::Principal
 McpAuthentication::bearer(std::string const& token, bool& insufficient) const
 {
     insufficient = false;
-    if (!config_.contains("oauth") || token.size() > 16 * 1024 ||
+    if (config_.mode != McpConfig::Mode::OAuth || token.size() > 16 * 1024 ||
         keysExpireAt_ <= std::chrono::steady_clock::now())
         return {};
     try {
@@ -531,20 +306,19 @@ McpAuthentication::bearer(std::string const& token, bool& insufficient) const
         auto const key = keys_.find(header.at("kid").get<std::string>());
         if (key == keys_.end())
             return {};
-        auto const& oauth = config_["oauth"];
         jwt::verify<jwt::traits::nlohmann_json>()
             .allow_algorithm(jwt::algorithm::rs256(key->second))
-            .with_issuer(oauth["issuer"].get<std::string>())
-            .with_audience(oauth["audience"].get<std::string>())
-            .leeway(oauth.value("clockSkewSeconds", 15))
+            .with_issuer(config_.issuer)
+            .with_audience(config_.endpoint)
+            .leeway(config_.clockSkewSeconds)
             .verify(decoded);
         auto const claims = parseJson(decoded.get_payload(), 16 * 1024, 16);
         auto result = principal(claims);
         if (result.issuer.empty() || result.expiresAt <= std::chrono::system_clock::now())
             return {};
         auto scope = claims.value("scope", std::string{});
-        for (auto const& required : oauth["requiredScopes"]) {
-            if (!containsWord(scope, required.get<std::string>()))
+        for (auto const& required : config_.requiredScopes) {
+            if (!containsWord(scope, required))
                 insufficient = true;
         }
         insufficient |= !result.read && !result.control;

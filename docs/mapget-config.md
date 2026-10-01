@@ -28,12 +28,16 @@ Embedded applications can also register additional public top-level sections for
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
-Agent access is separately opt-in via `mapget serve --mcp-config mcp.json`.
-The [MCP guide](mapget-mcp.md) defines this restart-scoped trust file, including
-the trusted viewer catalog, loopback-only local mode, and provider-neutral
-OAuth/proxy rules. Do not place identity headers, signing keys, or permission
-rules in browser-writable configuration. Embedders use
-`HttpServiceConfig::mcpConfigPath`; omitting it disables agent access.
+Agent access is opt-in through `--mcp local` or `--mcp oauth`; the default is
+`off`. All MCP options share the normal CLI11/YAML pipeline under `mapget.serve`,
+with CLI values overriding YAML (including complete replacement of lists).
+The [MCP guide](mapget-mcp.md) covers local defaults, the generated
+`web-mcp-actions.json` catalog, provider-neutral OAuth/proxy settings, artifact
+path resolution, and the full option reference. These restart-scoped settings
+stay outside the browser-readable/writable `/config` model. Native embedders
+set the typed `HttpServiceConfig::mcp` directly. Unknown options in the `mapget`
+section now fail startup, just like unknown CLI options; unrelated top-level
+YAML sections are unaffected.
 
 ## The `sources` section
 

@@ -7,6 +7,7 @@ add_library(mapget-http-service STATIC
   include/mapget/http-service/http-service.h
   include/mapget/http-service/http-client.h
   include/mapget/http-service/cli.h
+  include/mapget/http-service/mcp-config.h
 
   src/http-service.cpp
   src/http-service-impl.h
@@ -20,6 +21,7 @@ add_library(mapget-http-service STATIC
   src/mcp-action-catalog.cpp
   src/mcp-auth.h
   src/mcp-auth.cpp
+  src/mcp-config.cpp
   src/mcp-server.h
   src/mcp-server.cpp
   src/mcp-viewer-relay.h

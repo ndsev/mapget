@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mapget/http-service/mcp-config.h"
+
 #include <jwt-cpp/traits/nlohmann-json/defaults.h>
 #include <openssl/core_names.h>
 #include <openssl/pem.h>
@@ -55,31 +57,28 @@ public:
 
     /** Return explicit provider-neutral settings with a network key URL replaced by tests when
      * needed. */
-    [[nodiscard]] static nlohmann::json configuration()
+    [[nodiscard]] static McpConfig configuration()
     {
-        return {
-            {"authentication", "oauth"},
-            {"endpoint", "https://viewer.example/mcp"},
-            {"catalogPath", "viewer-actions.json"},
-            {"allowedHosts", {"viewer.example"}},
-            {"allowedOrigins", {"https://viewer.example", "https://supplier.example"}},
-            {"oauth",
-             {{"issuer", "https://issuer.example/realm"},
-              {"audience", "https://viewer.example/mcp"},
-              {"jwksUrl", "https://issuer.example/keys"},
-              {"requiredScopes", {"viewer"}},
-              {"clientId", "public-client"},
-              {"clockSkewSeconds", 0},
-              {"permissions",
-               {{"viewer-read", {{"claim", "/access/roles"}, {"value", "read"}}},
-                {"viewer-control", {{"claim", "/access/roles"}, {"value", "control"}}}}},
-              {"browser",
-               {{"trustedProxyAddresses", {"127.0.0.1"}},
-                {"issuerHeader", "test-issuer"},
-                {"subjectHeader", "test-subject"},
-                {"expiryHeader", "test-expiry"},
-                {"permissionsHeader", "test-permissions"},
-                {"maxLifetimeSeconds", 3600}}}}}};
+        McpConfig config;
+        config.mode = McpConfig::Mode::OAuth;
+        config.endpoint = "https://viewer.example/mcp";
+        config.catalogPath = "web-mcp-actions.json";
+        config.allowedHosts = {"viewer.example"};
+        config.allowedOrigins = {"https://viewer.example", "https://supplier.example"};
+        config.issuer = "https://issuer.example/realm";
+        config.jwksUrl = "https://issuer.example/keys";
+        config.requiredScopes = {"viewer"};
+        config.oauthClientId = "public-client";
+        config.clockSkewSeconds = 0;
+        config.readClaim = config.controlClaim = "/access/roles";
+        config.readValue = "read";
+        config.controlValue = "control";
+        config.trustedProxyAddresses = {"127.0.0.1"};
+        config.issuerHeader = "test-issuer";
+        config.subjectHeader = "test-subject";
+        config.expiryHeader = "test-expiry";
+        config.permissionsHeader = "test-permissions";
+        return config;
     }
 
     /** Start with valid signed-user claims; callers change one condition per rejection test. */

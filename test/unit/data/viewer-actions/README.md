@@ -5,7 +5,7 @@ Snapshot of the coordinated, **uncommitted** erdblick working-tree contract on
 
 `sha256:bae94ac327fc097ee2ec6c7a433fdbc62c719be857f20d0f146373315d597299`
 
-- `viewer-actions.json`: erdblick `app/actions/generated/viewer-actions.json`.
+- `web-mcp-actions.json`: erdblick `app/actions/generated/web-mcp-actions.json`.
 - `viewer-action-relay.schema.json`: erdblick
   `app/actions/generated/viewer-action-relay.schema.json`.
 - `fixtures.json`: erdblick `test/viewer-actions/fixtures.json`.

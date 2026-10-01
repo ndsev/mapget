@@ -37,19 +37,12 @@ bool accepts(std::string const& header, std::string const& mime)
 }
 }  // namespace
 
-McpServer::McpServer(std::filesystem::path const& configPath)
-    : auth_(configPath),
-      catalog_(std::make_shared<McpActionCatalog>(
-          McpActionCatalog::load(auth_.settings().at("catalogPath").get<std::string>())))
+McpServer::McpServer(McpConfig const& config)
+    : auth_(config),
+      catalog_(
+          std::make_shared<McpActionCatalog>(McpActionCatalog::load(auth_.settings().catalogPath))),
+      limits_(auth_.settings().limits)
 {
-    auto const& limits = auth_.settings().value("limits", nlohmann::json::object());
-    limits_.timeout = std::chrono::milliseconds(limits.value("timeoutMs", 30000));
-    limits_.invocationBytes = limits.value("invocationBytes", limits_.invocationBytes);
-    limits_.resultBytes = limits.value("resultBytes", limits_.resultBytes);
-    limits_.callsPerSession = limits.value("callsPerSession", limits_.callsPerSession);
-    limits_.callsPerPrincipal = limits.value("callsPerPrincipal", limits_.callsPerPrincipal);
-    limits_.pendingCalls = limits.value("pendingCalls", limits_.pendingCalls);
-    limits_.sessions = limits.value("sessions", limits_.sessions);
     thread_.run();
     std::promise<void> ready;
     auto future = ready.get_future();
@@ -156,7 +149,7 @@ void McpServer::setup(drogon::HttpAppFramework& app)
         "/.well-known/oauth-protected-resource",
         decltype(handler){handler},
         {drogon::Get, drogon::Options});
-    if (auth_.settings()["authentication"] == "local") {
+    if (auth_.settings().mode == McpConfig::Mode::Local) {
         app.registerBeginningAdvice(
             [&app]
             {
@@ -221,7 +214,7 @@ void McpServer::handle(drogon::HttpRequestPtr request, Reply reply)
     }
     if (request->path().starts_with("/.well-known/oauth-protected-resource")) {
         respond(
-            auth_.settings()["authentication"] == "oauth" ?
+            auth_.settings().mode == McpConfig::Mode::OAuth ?
                 jsonResponse(auth_.metadata()) :
                 jsonResponse({{"error", "OAuth is not enabled."}}, drogon::k404NotFound));
         return;
@@ -289,7 +282,7 @@ void McpServer::fetchKeys()
 {
     fetchingKeys_ = true;
     lastKeyRefresh_ = std::chrono::steady_clock::now();
-    auto url = auth_.settings()["oauth"]["jwksUrl"].get<std::string>();
+    auto url = auth_.settings().jwksUrl;
     auto slash = url.find('/', 8);
     keyClient_ =
         drogon::HttpClient::newHttpClient(url.substr(0, slash), thread_.getLoop(), false, true);
@@ -331,7 +324,7 @@ void McpServer::authenticated(drogon::HttpRequestPtr const& request, Reply const
         return;
     }
     auto principal = auth_.localPrincipal();
-    if (auth_.settings()["authentication"] == "oauth") {
+    if (auth_.settings().mode == McpConfig::Mode::OAuth) {
         bool insufficient = false;
         principal = auth_.bearer(
             McpAuthentication::bearerToken(request->getHeader("authorization")),

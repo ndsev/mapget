@@ -24,7 +24,7 @@ bool McpViewerRelay::Principal::sameUser(Principal const& other) const
 
 McpViewerRelay::McpViewerRelay(
     std::shared_ptr<McpActionCatalog const> catalog,
-    Limits limits,
+    McpConfig::Limits limits,
     std::function<std::chrono::system_clock::time_point()> wallNow,
     std::function<std::chrono::steady_clock::time_point()> steadyNow)
     : catalog_(std::move(catalog)),

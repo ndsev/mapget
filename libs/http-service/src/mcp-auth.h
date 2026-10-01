@@ -16,14 +16,11 @@ namespace mapget::detail
 class McpAuthentication
 {
 public:
-    /** Load explicit, restart-scoped configuration; relative artifacts resolve beside this file. */
-    explicit McpAuthentication(std::filesystem::path const& configPath);
-
-    /** Construct from trusted configuration for embedding tests, applying the same validation. */
-    McpAuthentication(nlohmann::json config, std::filesystem::path const& directory);
+    /** Validate explicit, restart-scoped settings shared with the CLI and native embedders. */
+    explicit McpAuthentication(McpConfig config);
 
     /** Return validated deployment settings to the HTTP owner, not to an HTTP caller. */
-    [[nodiscard]] nlohmann::json const& settings() const { return config_; }
+    [[nodiscard]] McpConfig const& settings() const { return config_; }
 
     /** Return safe public connection hints; no identity, keys or authorization rules. */
     [[nodiscard]] nlohmann::json info(std::string const& catalogId) const;
@@ -61,20 +58,18 @@ public:
     [[nodiscard]] static nlohmann::json
     parseJson(std::string_view input, size_t maxBytes, size_t maxDepth = 64);
 
-    /** Load bounded configuration/key/catalog-adjacent files without accepting URLs. */
+    /** Load bounded key/catalog-adjacent files without accepting URLs. */
     [[nodiscard]] static nlohmann::json
     readJson(std::filesystem::path const& path, size_t maxBytes);
 
 private:
-    nlohmann::json config_;
+    McpConfig config_;
     std::map<std::string, std::string, std::less<>> keys_;
     std::chrono::steady_clock::time_point keysExpireAt_;
 
-    /** Validate all security inputs once, and reject unknown or ambiguous configuration. */
-    void validate(std::filesystem::path const& directory);
-
     /** Apply one JSON-pointer membership rule without coercion or expression evaluation. */
-    [[nodiscard]] bool permission(nlohmann::json const& claims, std::string const& name) const;
+    [[nodiscard]] static bool
+    permission(nlohmann::json const& claims, std::string const& claim, std::string const& expected);
 
     /** Extract a bounded subject/expiry and mapped permissions only after signature verification.
      */
