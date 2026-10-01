@@ -9,7 +9,8 @@ visualization all use `/filter`.
 The opt-in [MCP viewer-action API](mapget-mcp.md) exposes `POST /mcp`,
 `GET /mcp/info`, OAuth resource metadata, and authenticated action routing
 over the existing interactive WebSocket. It is separate from tile/filter
-requests and disabled unless `--mcp-config` is supplied.
+requests and disabled unless `--mcp local` or `--mcp oauth` is supplied (or
+equivalent `mapget.serve.mcp` YAML / `HttpServiceConfig::mcp` settings).
 
 ## Base URL and stream formats
 

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 // Forward declare Drogon app type to avoid including drogon headers in public headers.
@@ -72,6 +73,9 @@ public:
      * Returns true if successful, false otherwise.
      */
     bool mountFileSystem(std::string const& pathFromTo);
+
+    /** Resolve the directory of a valid `[url-prefix:]path` mount, using the mounting rules. */
+    static std::optional<std::filesystem::path> fileSystemMountRoot(std::string const& pathFromTo);
 
 protected:
     /**

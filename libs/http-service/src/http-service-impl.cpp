@@ -25,8 +25,8 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 {
     // Fail invalid trust/catalog configuration before any of the service's maintenance threads
     // start.
-    if (config_.mcpConfigPath) {
-        mcp_ = std::make_shared<detail::McpServer>(*config_.mcpConfigPath);
+    if (config_.mcp.mode != McpConfig::Mode::Off) {
+        mcp_ = std::make_shared<detail::McpServer>(config_.mcp);
     }
     AuthHeaderRegexMap normalizedCacheResetAlternatives;
     for (auto const& [header, pattern] : config_.cacheResetAuthHeaderAlternatives) {

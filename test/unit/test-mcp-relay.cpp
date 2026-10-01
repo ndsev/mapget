@@ -28,7 +28,7 @@ public:
     McpViewerRelay relay;
 
     /** Construct the relay after the state captured by its clock/transport callbacks. */
-    explicit ViewerRelayTest(McpViewerRelay::Limits limits = {})
+    explicit ViewerRelayTest(mapget::McpConfig::Limits limits = {})
         : relay(
               catalog(),
               limits,
@@ -47,7 +47,7 @@ public:
     /** Share an immutable compiled fixture just as connections share the deployed catalog. */
     static std::shared_ptr<McpActionCatalog const> catalog()
     {
-        static auto value = std::make_shared<McpActionCatalog>(fixture("viewer-actions.json"));
+        static auto value = std::make_shared<McpActionCatalog>(fixture("web-mcp-actions.json"));
         return value;
     }
 
@@ -251,7 +251,7 @@ TEST_CASE("MCP viewer calls are bound to their exact connection and action schem
 
 TEST_CASE("MCP relay limits reject new work instead of building another queue", "[mcp-actions]")
 {
-    McpViewerRelay::Limits limits;
+    mapget::McpConfig::Limits limits;
     std::string constrained;
     SECTION("Per-tab cap")
     {
@@ -345,7 +345,7 @@ TEST_CASE(
 
 TEST_CASE("MCP abandoned mutations still count toward cross-tab admission limits", "[mcp-actions]")
 {
-    McpViewerRelay::Limits limits;
+    mapget::McpConfig::Limits limits;
     SECTION("Principal limit")
     {
         limits.callsPerPrincipal = 1;
@@ -370,7 +370,7 @@ TEST_CASE(
     "MCP relay registration cannot reset a mutation or extend browser authority",
     "[mcp-actions]")
 {
-    McpViewerRelay::Limits limits;
+    mapget::McpConfig::Limits limits;
     limits.sessions = 1;
     ViewerRelayTest test(limits);
     auto identity = test.principal();
@@ -535,7 +535,7 @@ TEST_CASE(
     "MCP call deadlines are capped by caller authority and configured limits",
     "[mcp-actions]")
 {
-    McpViewerRelay::Limits limits;
+    mapget::McpConfig::Limits limits;
     limits.timeout = std::chrono::seconds(60);
     ViewerRelayTest test(limits);
     test.open(test.first);
@@ -560,7 +560,7 @@ TEST_CASE(
     "MCP invalid results cannot leak data or silently release uncertain mutations",
     "[mcp-actions]")
 {
-    McpViewerRelay::Limits limits;
+    mapget::McpConfig::Limits limits;
     limits.resultBytes = 1024;
     ViewerRelayTest test(limits);
     test.open(test.first);

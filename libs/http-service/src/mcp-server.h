@@ -17,7 +17,7 @@ class McpServer : public std::enable_shared_from_this<McpServer>
 {
 public:
     /** Load trust/catalog configuration before accepting any browser registrations. */
-    explicit McpServer(std::filesystem::path const& configPath);
+    explicit McpServer(McpConfig const& config);
 
     /** Drain callbacks and destroy thread-affine state before stopping the private control loop. */
     ~McpServer();
@@ -66,7 +66,7 @@ private:
     using Reply = std::function<void(drogon::HttpResponsePtr const&)>;
     McpAuthentication auth_;
     std::shared_ptr<McpActionCatalog const> catalog_;
-    McpViewerRelay::Limits limits_;
+    McpConfig::Limits limits_;
     trantor::EventLoopThread thread_{"mapget-mcp"};
     std::unique_ptr<McpViewerRelay> relay_;
     trantor::TimerId timer_;

@@ -23,7 +23,7 @@ Json fixture(std::string const& name)
 TEST_CASE("MCP catalog agrees with the shared browser action fixtures", "[mcp-actions]")
 {
     auto catalog = McpActionCatalog::load(
-        std::filesystem::path(MAPGET_TEST_DATA_DIR) / "viewer-actions/viewer-actions.json");
+        std::filesystem::path(MAPGET_TEST_DATA_DIR) / "viewer-actions/web-mcp-actions.json");
     auto cases = fixture("fixtures.json");
     for (auto const& entry : cases.at("actions")) {
         INFO(entry.at("name"));
@@ -62,7 +62,7 @@ TEST_CASE(
     "MCP tool schemas add routing without changing application argument validation",
     "[mcp-actions]")
 {
-    auto manifest = fixture("viewer-actions.json");
+    auto manifest = fixture("web-mcp-actions.json");
     McpActionCatalog catalog(manifest);
     CHECK(catalog.id() == manifest.at("catalogId").get<std::string>());
     CHECK(catalog.tools(false, false).empty());
@@ -99,7 +99,7 @@ TEST_CASE(
 
 TEST_CASE("MCP catalogs fail closed before publishing invalid metadata", "[mcp-actions]")
 {
-    auto manifest = fixture("viewer-actions.json");
+    auto manifest = fixture("web-mcp-actions.json");
     SECTION("Unknown manifest version")
     {
         manifest["formatVersion"] = 2;
@@ -190,7 +190,7 @@ TEST_CASE(
     "MCP schema validation supports local definitions without changing defaults",
     "[mcp-actions]")
 {
-    auto manifest = fixture("viewer-actions.json");
+    auto manifest = fixture("web-mcp-actions.json");
     manifest["actions"][0]["inputSchema"] = {
         {"type", "object"},
         {"additionalProperties", false},
