@@ -347,6 +347,108 @@ TEST_CASE(
     REQUIRE(describe(restored, restored->attributeQuerySchema("Carrier", attribute)) == json);
 }
 
+TEST_CASE("Schema summary reuse preserves cycles and refreshes after mutation", "[schema-domain]")
+{
+    auto schema = std::make_shared<LayerSchema>();
+    auto first = schema->addSchema(Kind::Object);
+    auto second = schema->addSchema(Kind::Object);
+    auto array = schema->addSchema(Kind::Array);
+    auto choice = schema->addSchema(Kind::Union);
+    auto value = schema->addSchema(Kind::String);
+    schema->addFieldSchema(first, "next", second);
+    schema->addFieldSchema(first, "alias", array);
+    schema->addFieldSchema(second, "items", array);
+    schema->addFieldSchema(second, "state", value);
+    schema->addElementSchema(array, choice);
+    schema->setComposition(choice, Composition::AnyOf);
+    schema->addAlternative(choice, first);
+    schema->addAlternative(choice, value);
+    schema->addEnumSymbols(value, std::vector<std::string>{"ON", "OFF"});
+    schema->finalize();
+
+    for (auto id : {first, second, array, choice}) {
+        CAPTURE(id);
+        REQUIRE(std::ranges::equal(
+            schema->nestedFields(id),
+            std::vector<std::string>{"alias", "items", "next", "state"}));
+        REQUIRE(std::ranges::equal(
+            schema->nestedEnumSymbols(id),
+            std::vector<std::string>{"OFF", "ON"}));
+        REQUIRE(schema->reachabilityComplete(id));
+        REQUIRE_FALSE(schema->canHaveField(id, "absent"));
+    }
+    REQUIRE(schema->nestedFields(value).empty());
+
+    // Neither a completed child cache nor an earlier completeness proof may survive edits.
+    schema->addFieldSchema(second, "late", value);
+    schema->addEnumSymbol(value, "LATE");
+    schema->setOpen(second, true);
+    schema->finalize();
+    for (auto id : {first, second, array, choice}) {
+        REQUIRE(std::ranges::equal(
+            schema->nestedFields(id),
+            std::vector<std::string>{"alias", "items", "late", "next", "state"}));
+        REQUIRE(std::ranges::equal(
+            schema->nestedEnumSymbols(id),
+            std::vector<std::string>{"LATE", "OFF", "ON"}));
+        REQUIRE_FALSE(schema->reachabilityComplete(id));
+        REQUIRE(schema->canHaveField(id, "absent"));
+    }
+    schema->setOpen(second, false);
+    schema->finalize();
+    REQUIRE(schema->reachabilityComplete(choice));
+    REQUIRE_FALSE(schema->canHaveField(choice, "absent"));
+}
+
+TEST_CASE("Many attribute query roots retain the shared feature schema", "[schema-domain]")
+{
+    auto schema = std::make_shared<LayerSchema>();
+    auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    auto shared = schema->addSchema(Kind::Object);
+    auto parent = shared;
+    for (size_t i = 0; i < 128; ++i) {
+        auto child = schema->addSchema(Kind::Object);
+        schema->addFieldSchema(parent, "left", child);
+        schema->addFieldSchema(parent, "right", child);
+        parent = child;
+    }
+    auto value = schema->addSchema(Kind::String);
+    schema->addEnumSymbol(value, "SHARED_VALUE");
+    schema->addFieldSchema(parent, "value", value);
+    std::vector<simfil::SchemaId> attributes;
+    for (size_t i = 0; i < 400; ++i) {
+        auto name = "attribute" + std::to_string(i);
+        auto attribute = schema->addSchema(Kind::Object, {}, "Attribute");
+        schema->addFieldSchema(attribute, "payload", shared);
+        schema->addFieldSchema(feature, name, attribute);
+        schema->setAttributeMetadata(
+            attribute,
+            {"Carrier", "rules", name, attribute},
+            "SharedAttribute");
+        attributes.push_back(attribute);
+    }
+    schema->finalize();
+    for (auto attribute : attributes) {
+        auto root = schema->attributeQuerySchema("Carrier", attribute);
+        REQUIRE(root != simfil::NoSchemaId);
+        REQUIRE(schema->childSchema(root, "$feature") == feature);
+        REQUIRE(schema->canHaveField(root, "attribute399"));
+        REQUIRE(schema->canHaveField(root, "value"));
+        REQUIRE(schema->canHaveEnumSymbol(root, "SHARED_VALUE"));
+        REQUIRE(schema->reachabilityComplete(root));
+        REQUIRE_FALSE(schema->canHaveField(root, "absent"));
+    }
+    REQUIRE_FALSE(schema->canHaveField(feature, "$feature"));
+
+    // Partial descendants must also propagate through a reused feature summary.
+    schema->addFieldSchema(parent, "unknown");
+    schema->finalize();
+    auto root = schema->attributeQuerySchema("Carrier", attributes.back());
+    REQUIRE_FALSE(schema->reachabilityComplete(root));
+    REQUIRE(schema->canHaveField(root, "absent"));
+    REQUIRE(schema->canHaveEnumSymbol(root, "SHARED_VALUE"));
+}
+
 TEST_CASE(
     "Recursive domains and multimap transport remain logical model views",
     "[DataSourceInfo][schema-domain]")

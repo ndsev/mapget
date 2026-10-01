@@ -1379,17 +1379,24 @@ struct LayerSchema::Impl
     [[nodiscard]] bool computeComplete(simfil::SchemaId root) const
     {
         std::vector<simfil::SchemaId> pending{root};
-        std::set<simfil::SchemaId> visited;
+        std::vector<bool> visited(schemas_.size());
         while (!pending.empty()) {
             auto id = pending.back();
             pending.pop_back();
             if (!valid(id)) {
                 return false;
             }
-            if (!visited.insert(id).second) {
+            if (visited[id]) {
                 continue;
             }
+            visited[id] = true;
             auto const& schema = schemas_[id];
+            if (schema.finalized_) {
+                if (!schema.complete_) {
+                    return false;
+                }
+                continue;
+            }
             if (schema.open_ ||
                 simfil::Schema::kindNameId(schema.kind_) ==
                     simfil::Schema::kindNameId(Kind::Unknown) ||
@@ -1445,6 +1452,7 @@ struct LayerSchema::Impl
         return bits;
     }
 
+    /** Index one root, reusing complete summaries from earlier roots in this finalization. */
     void finalize(simfil::SchemaId id)
     {
         if (!valid(id) || schemas_[id].finalized_) {
@@ -1452,16 +1460,14 @@ struct LayerSchema::Impl
         }
 
         std::vector<std::string> fields;
-        std::vector<simfil::SchemaId> visitedFields;
-        collectFields(id, visitedFields, fields);
+        std::vector<std::string> symbols;
+        std::vector<bool> visited(schemas_.size());
+        collectReachableMetadata(id, visited, fields, symbols);
         std::ranges::sort(fields);
         auto duplicates = std::ranges::unique(fields);
         fields.erase(duplicates.begin(), duplicates.end());
         schemas_[id].flatFields_ = std::move(fields);
 
-        std::vector<std::string> symbols;
-        std::vector<simfil::SchemaId> visitedEnumSymbols;
-        collectEnumSymbols(id, visitedEnumSymbols, symbols);
         std::ranges::sort(symbols);
         auto symbolDuplicates = std::ranges::unique(symbols);
         symbols.erase(symbolDuplicates.begin(), symbolDuplicates.end());
@@ -1475,53 +1481,42 @@ struct LayerSchema::Impl
         schemas_[id].finalized_ = true;
     }
 
-    void collectFields(
+    /** Collect both reachable name sets with constant-time cycle/shared-branch checks. */
+    void collectReachableMetadata(
         simfil::SchemaId id,
-        std::vector<simfil::SchemaId>& visited,
-        std::vector<std::string>& fields) const
-    {
-        if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
-            return;
-        }
-        visited.push_back(id);
-
-        auto const& schema = schemas_[id];
-        fields.insert(fields.end(), schema.directFields_.begin(), schema.directFields_.end());
-        for (auto const& [_, children] : schema.childSchemas_) {
-            for (auto child : children) {
-                collectFields(child, visited, fields);
-            }
-        }
-        for (auto child : schema.elementSchemas_) {
-            collectFields(child, visited, fields);
-        }
-        for (auto child : schema.alternatives_) {
-            collectFields(child, visited, fields);
-        }
-    }
-
-    void collectEnumSymbols(
-        simfil::SchemaId id,
-        std::vector<simfil::SchemaId>& visited,
+        std::vector<bool>& visited,
+        std::vector<std::string>& fields,
         std::vector<std::string>& symbols) const
     {
-        if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
+        if (!valid(id) || visited[id]) {
             return;
         }
-        visited.push_back(id);
+        visited[id] = true;
 
         auto const& schema = schemas_[id];
+        if (schema.finalized_) {
+            // In particular, every attribute query's $feature edge can reuse the
+            // feature index instead of walking the whole feature graph again.
+            // Only fully finalized roots are reusable: an in-progress cycle is not.
+            fields.insert(fields.end(), schema.flatFields_.begin(), schema.flatFields_.end());
+            symbols.insert(
+                symbols.end(),
+                schema.flatEnumSymbols_.begin(),
+                schema.flatEnumSymbols_.end());
+            return;
+        }
+        fields.insert(fields.end(), schema.directFields_.begin(), schema.directFields_.end());
         symbols.insert(symbols.end(), schema.directEnumSymbols_.begin(), schema.directEnumSymbols_.end());
         for (auto const& [_, children] : schema.childSchemas_) {
             for (auto child : children) {
-                collectEnumSymbols(child, visited, symbols);
+                collectReachableMetadata(child, visited, fields, symbols);
             }
         }
         for (auto child : schema.elementSchemas_) {
-            collectEnumSymbols(child, visited, symbols);
+            collectReachableMetadata(child, visited, fields, symbols);
         }
         for (auto child : schema.alternatives_) {
-            collectEnumSymbols(child, visited, symbols);
+            collectReachableMetadata(child, visited, fields, symbols);
         }
     }
 
