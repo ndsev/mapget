@@ -126,6 +126,16 @@ void waitForCondition(Predicate pred, std::chrono::milliseconds timeout = std::c
     }
 }
 
+TEST_CASE("Config JSON preserves empty container types in YAML", "[DataSourceConfig]")
+{
+    auto input = R"({"sources":[],"options":{},"nested":[{},[],null]})"_json;
+    auto yaml = jsonToYaml(input);
+    REQUIRE(yaml["sources"].IsSequence());
+    REQUIRE(yaml["options"].IsMap());
+    REQUIRE(yamlToJson(yaml, false) == input);
+    REQUIRE(yamlToJson(YAML::Load(YAML::Dump(yaml)), false) == input);
+}
+
 TEST_CASE("Mapget Config", "[MapgetConfig]")
 {
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_config");
