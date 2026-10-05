@@ -3,6 +3,7 @@
 #include "../../libs/http-service/src/mcp-action-catalog.h"
 #include "../../libs/http-service/src/mcp-viewer-relay.h"
 
+#include <algorithm>
 #include <fstream>
 
 using namespace mapget::detail;
@@ -66,8 +67,14 @@ TEST_CASE(
     McpActionCatalog catalog(manifest);
     CHECK(catalog.id() == manifest.at("catalogId").get<std::string>());
     CHECK(catalog.tools(false, false).empty());
-    CHECK(catalog.tools(true, false).size() == 2);
-    CHECK(catalog.tools(false, true).size() == 1);
+    for (bool control : {false, true}) {
+        auto expected = std::count_if(
+            manifest["actions"].begin(),
+            manifest["actions"].end(),
+            [control](auto const& action)
+            { return action["permission"] == (control ? "viewer-control" : "viewer-read"); });
+        CHECK(catalog.tools(!control, control).size() == expected);
+    }
     CHECK_FALSE(catalog.contains("viewer_list_sessions"));
     CHECK_FALSE(catalog.contains("mapget_list_sources"));
     CHECK_FALSE(catalog.acceptsArguments("unknown", Json::object()));
@@ -95,6 +102,44 @@ TEST_CASE(
             CHECK_THROWS(validator.validate(args));
         }
     }
+}
+
+TEST_CASE("MCP screenshot schemas describe metadata rather than image bytes", "[mcp-actions]")
+{
+    auto manifest = fixture("web-mcp-actions.json");
+    Json metadata{
+        {"type", "object"},
+        {"properties", {{"width", {{"type", "integer"}, {"minimum", 1}}}}},
+        {"required", {"width"}},
+        {"additionalProperties", false}};
+    manifest["actions"] = Json::array(
+        {{{"name", "viewer_screenshot"},
+          {"description", "Capture the visible application viewport."},
+          {"permission", "viewer-read"},
+          {"mutation", false},
+          {"inputSchema", {{"type", "object"}, {"additionalProperties", false}}},
+          {"outputSchema",
+           {{"type", "object"},
+            {"properties", {{"image", {{"type", "object"}}}, {"metadata", metadata}}},
+            {"required", {"image", "metadata"}},
+            {"additionalProperties", false}}}}});
+    McpActionCatalog catalog(manifest);
+    auto tools = catalog.tools(true, false);
+    REQUIRE(tools.size() == 1);
+    CHECK(tools[0]["outputSchema"] == metadata);
+    Json result{{"width", 640}};
+    nlohmann::json_schema::json_validator output(tools[0]["outputSchema"]);
+    CHECK_NOTHROW(output.validate(result));
+    CHECK_FALSE(catalog.acceptsResult("viewer_screenshot", result));
+    CHECK(catalog.acceptsResult(
+        "viewer_screenshot",
+        {{"image", Json::object()}, {"metadata", result}}));
+    // Browser validation stays strict even though its image is projected out of structuredContent.
+    CHECK_FALSE(catalog.acceptsResult(
+        "viewer_screenshot",
+        {{"image", Json::object()}, {"metadata", {{"width", "640"}}}}));
+    manifest["actions"][0]["outputSchema"]["properties"]["metadata"] = {{"type", "string"}};
+    CHECK_THROWS(McpActionCatalog(manifest));
 }
 
 TEST_CASE("MCP catalogs fail closed before publishing invalid metadata", "[mcp-actions]")
@@ -184,6 +229,43 @@ TEST_CASE("MCP catalogs fail closed before publishing invalid metadata", "[mcp-a
             {"$ref", "#/definitions/missing"}};
     }
     CHECK_THROWS(McpActionCatalog(std::move(manifest)));
+}
+
+TEST_CASE(
+    "MCP application conditionals preserve routing and cross-field validation",
+    "[mcp-actions]")
+{
+    auto manifest = fixture("web-mcp-actions.json");
+    auto name = manifest["actions"][0]["name"].get<std::string>();
+    auto& input = manifest["actions"][0]["inputSchema"];
+    input = Json::parse(R"({"type":"object","additionalProperties":false,
+      "required":["mode","value"],"properties":{"mode":{"enum":["count","text"]},"value":{}},
+      "allOf":[{"if":{"properties":{"mode":{"const":"count"}},"required":["mode"]},
+                "then":{"properties":{"value":{"type":"integer"}}},
+                "else":{"properties":{"value":{"type":"string"}}}}]})");
+    McpActionCatalog catalog(manifest);
+    auto tools = catalog.tools(true, true);
+    for (auto const& tool : tools) {
+        if (tool["name"] != name)
+            continue;
+        nlohmann::json_schema::json_validator validator(tool.at("inputSchema"));
+        for (auto value : {Json(7), Json("wrong")}) {
+            auto arguments = Json{{"mode", "count"}, {"value", value}};
+            CHECK(catalog.acceptsArguments(name, arguments) == value.is_number_integer());
+            arguments["clientId"] = "b3e68f32-3b51-472d-8cab-14b597f7de91";
+            nlohmann::json_schema::basic_error_handler errors;
+            validator.validate(arguments, errors);
+            CHECK(!errors == value.is_number_integer());
+        }
+    }
+    for (auto restriction :
+         {Json{{"additionalProperties", false}},
+          Json{{"maxProperties", 2}},
+          Json{{"properties", {{"clientId", {{"type", "integer"}}}}}}})
+    {
+        input["allOf"][0]["then"] = restriction;
+        CHECK_THROWS(McpActionCatalog(manifest));
+    }
 }
 
 TEST_CASE(

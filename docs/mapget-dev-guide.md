@@ -548,9 +548,11 @@ the relay's checks on parsed values are not a replacement for transport limits.
 The catalog accepts bounded Draft-07 schemas, including nonrecursive local JSON
 Pointer references. Remote references, unimplemented keywords/dialects and
 `format` assertions are rejected rather than silently ignored; use explicit
-constraints such as `pattern`. Argument roots must be closed objects without
-root-wide constraints/combinators that would conflict with injecting `clientId`;
-nested unions and constraints are supported. Results are objects. Validation
+constraints such as `pattern`. Argument roots must be closed objects. Root
+`allOf`/`if`/`then`/`else` branches may constrain declared application properties
+and their presence, but may not close/count the whole object, constrain `clientId`,
+or introduce root references. This keeps client-ID injection validation-invariant;
+nested property unions and constraints are supported. Results are objects. Validation
 never applies defaults or coerces values. The native code treats the trusted
 build-exported `catalogId` as opaque instead of implementing a second JSON
 canonicalizer. Application schemas remain owned by the webapp build.
