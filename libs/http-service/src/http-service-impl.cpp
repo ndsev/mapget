@@ -23,11 +23,6 @@ constexpr size_t INTERACTIVE_CONTROL_THREAD_COUNT = 2;
 
 HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config)
 {
-    // Fail invalid trust/catalog configuration before any of the service's maintenance threads
-    // start.
-    if (config_.mcp.mode != McpConfig::Mode::Off) {
-        mcp_ = std::make_shared<detail::McpServer>(config_.mcp);
-    }
     AuthHeaderRegexMap normalizedCacheResetAlternatives;
     for (auto const& [header, pattern] : config_.cacheResetAuthHeaderAlternatives) {
         if (!addAuthHeaderRegexMatchOption(normalizedCacheResetAlternatives, header, pattern)) {
@@ -50,6 +45,19 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
         }
     }
 
+    // Validate trust/catalog and establish borrowed collectors before maintenance threads start.
+    if (config_.mcp.mode != McpConfig::Mode::Off) {
+        auto native = std::make_shared<detail::McpNativeTools>(
+            self_,
+            config_.mcp,
+            [this] { return statusSnapshot(); },
+            locationLookup_ && locationLookup_->available() ? locationLookup_.get() : nullptr,
+            [this] { return datasourceConfiguration(); },
+            [this](auto const& model, auto const& revision)
+            { return updateDatasourceConfiguration(model, revision); });
+        mcp_ = std::make_shared<detail::McpServer>(config_.mcp, std::move(native));
+    }
+
 #if defined(__linux__) && defined(__GLIBC__)
     if (config_.memoryTrimPeriod > std::chrono::seconds::zero()) {
         memoryTrimThread_ = std::thread([this] { runMemoryTrimLoop(); });
@@ -64,6 +72,8 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 
 HttpService::Impl::~Impl()
 {
+    if (mcp_)
+        mcp_->stop();
     {
         std::lock_guard lock(interactiveControlMutex_);
         stopInteractiveControl_ = true;

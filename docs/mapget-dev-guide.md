@@ -508,7 +508,7 @@ major/minor version. Action dispatch must not allocate tile request IDs or share
 tile outbox admission. The [MCP guide](mapget-mcp.md) documents enablement,
 authentication, transport revisions, limits and cancellation semantics.
 
-The internal MCP building blocks are deliberately separate from tile scheduling:
+MCP transport/authorization is separate from tile scheduling; native execution reuses it:
 
 - `mcp-action-catalog.*` owns one immutable, locally loaded browser-action catalog
   and compiled argument/result validators. Tabs advertise names and the exact
@@ -524,11 +524,19 @@ The internal MCP building blocks are deliberately separate from tile scheduling:
   authenticates each call, installs the MCP/info/metadata routes, marshals
   WebSocket lifecycle events, drives deadlines, and owns bounded asynchronous
   POST streams. It does not own a second viewer-session identity or tile work queue.
+- `mcp-native-tools.*` owns native contracts, permission checks and bounded admission;
+  its private `Call` owns query state and a single outstanding partition request.
+  `mcp-native-catalog.cpp`, `mcp-native-query.cpp`, and `mcp-native-extract.cpp`
+  implement the catalog, shared bounded simfil/JSON evaluation, and partition traversal.
+  Metadata operations use `Service::scheduleTask` on homogeneous workers; callbacks
+  must never synchronously wait for another service job. Extraction evaluates the
+  delivering worker's model before advancing to the next partition. No second pool
+  or queue of materialized partitions is introduced.
 
 The resource boundary verifies credentials before creating a relay `Principal`.
 JWT verification runs on the control loop; key refresh uses asynchronous HTTPS,
 not a blocking request on Drogon's I/O threads or datasource workers. Shutdown
-ends relay calls before stopping HTTP and joins the private loop. Route handlers
+drains native calls and ends relay calls before stopping HTTP and joins the private loop. Route handlers
 must own their callable closures: passing a stack-local lvalue lambda to Drogon's
 forwarding-reference binder can retain a dangling reference after setup returns.
 Deliver invoke/cancel frames in order on the connection, not through its tile outbox. Check
@@ -566,6 +574,13 @@ Standalone tests under `[mcp-actions]` exercise the native lifecycle and a pinne
 copy of the webapp's argument, result and relay fixtures. The snapshot provenance
 is in `test/unit/data/viewer-actions/README.md`; update it together with the
 webapp contract, not as an independent server schema fork.
+
+Native cases under `[mcp-native]` cover all native actions, exact/compound results,
+source references, independent privileges and single-worker/cancellation behavior.
+`test-native-mcp` exercises actual HTTP results and headless startup. The
+[catalog validation worklist](mapget-mcp.md#catalog-validation-worklist) separately
+tracks upstream protocol schemas and real-client conformance; native unit tests
+alone do not prove that clients expose every tool to their models.
 
 An interactive replacement is the complete set of outputs the client still
 needs, not its retained viewport coverage. Reconciliation preserves matching

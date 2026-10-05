@@ -73,7 +73,7 @@ void McpConfig::addOptions(CLI::App& serve)
     option(
         "--mcp-read-claim",
         readClaim,
-        "JSON pointer to a string/array claim granting viewer-read.");
+        "JSON pointer to a string/array claim granting native-data and viewer reads.");
     option("--mcp-read-value", readValue, "Exact string value required by --mcp-read-claim.");
     option(
         "--mcp-control-claim",
@@ -87,6 +87,31 @@ void McpConfig::addOptions(CLI::App& serve)
         "--mcp-trusted-proxy-addresses",
         trustedProxyAddresses,
         "Exact socket-peer IPs permitted to supply browser identity headers.");
+    option("--mcp-config-read", configReadEnabled, "Enable privileged datasource config reads.");
+    option("--mcp-config-write", configWriteEnabled, "Enable privileged datasource config writes.");
+    option(
+        "--mcp-direct-config-persistence",
+        directConfigPersistence,
+        "Assert that the native config file is the durable source of truth (not a wrapper copy).");
+    option(
+        "--mcp-config-read-claim",
+        configReadClaim,
+        "Verified claim pointer granting config reads.");
+    option("--mcp-config-read-value", configReadValue, "Required config-read claim membership.");
+    option(
+        "--mcp-config-write-claim",
+        configWriteClaim,
+        "Verified claim pointer granting config writes.");
+    option("--mcp-config-write-value", configWriteValue, "Required config-write claim membership.");
+    option(
+        "--mcp-diagnostics-claim",
+        diagnosticsClaim,
+        "Verified claim pointer granting global diagnostics.");
+    option("--mcp-diagnostics-value", diagnosticsValue, "Required diagnostics claim membership.");
+    option(
+        "--mcp-datasource-header-claims",
+        datasourceHeaderClaims,
+        "Trusted lowercase header=/claim mappings for native datasource authorization.");
     option(
         "--mcp-browser-issuer-header",
         issuerHeader,
@@ -123,7 +148,7 @@ void McpConfig::addOptions(CLI::App& serve)
     option(
         "--mcp-result-bytes",
         limits.resultBytes,
-        "Maximum complete browser-result envelope size.")
+        "Maximum complete native or browser result envelope size.")
         ->default_val(limits.resultBytes);
     option(
         "--mcp-calls-per-session",
@@ -133,12 +158,12 @@ void McpConfig::addOptions(CLI::App& serve)
     option(
         "--mcp-calls-per-principal",
         limits.callsPerPrincipal,
-        "Maximum outstanding calls across a user's tabs.")
+        "Per-user limit, enforced separately for native and viewer calls.")
         ->default_val(limits.callsPerPrincipal);
     option(
         "--mcp-pending-calls",
         limits.pendingCalls,
-        "Global call limit, including uncertain mutations.")
+        "Pending HTTP response limit; also bounds retained native and viewer calls separately.")
         ->default_val(limits.pendingCalls);
     option(
         "--mcp-sessions",
@@ -197,8 +222,9 @@ void McpConfig::validate() const
                 throw std::invalid_argument("Invalid MCP allowed Host/Origin.");
         }
     }
-    if (catalogPath.empty())
-        throw std::invalid_argument("MCP requires --webapp or an explicit --mcp-catalog.");
+    // A browser catalog is optional: native data tools must also work in a headless service.
+    if (configWriteEnabled && !directConfigPersistence)
+        throw std::invalid_argument("MCP config writes require explicit direct-file persistence.");
     if (limits.timeout.count() <= 0 || limits.timeout.count() > 2147483647)
         throw std::invalid_argument("MCP timeout must be a positive bounded integer.");
     for (auto value :
@@ -216,8 +242,10 @@ void McpConfig::validate() const
         if (!issuer.empty() || !jwksUrl.empty() || !jwksFile.empty() || !requiredScopes.empty() ||
             !oauthClientId.empty() || !readClaim.empty() || !readValue.empty() ||
             !controlClaim.empty() || !controlValue.empty() || !trustedProxyAddresses.empty() ||
-            !issuerHeader.empty() || !subjectHeader.empty() || !expiryHeader.empty() ||
-            !permissionsHeader.empty())
+            !configReadClaim.empty() || !configReadValue.empty() || !configWriteClaim.empty() ||
+            !configWriteValue.empty() || !diagnosticsClaim.empty() || !diagnosticsValue.empty() ||
+            !datasourceHeaderClaims.empty() || !issuerHeader.empty() || !subjectHeader.empty() ||
+            !expiryHeader.empty() || !permissionsHeader.empty())
             throw std::invalid_argument("Local MCP must not contain OAuth settings.");
         // Local mode is not a fallback for failed OAuth or a reverse-proxy deployment.
         for (auto const* values : {&allowedHosts, &allowedOrigins}) {
@@ -261,10 +289,16 @@ void McpConfig::validate() const
         throw std::invalid_argument("OAuth clock skew must be between zero and 60 seconds.");
     if (oauthClientId.size() > 256)
         throw std::invalid_argument("Invalid public OAuth client ID.");
-    if (readClaim.empty() && controlClaim.empty())
+    // Administrative-only clients need not receive data access or browser control.
+    if (readClaim.empty() && controlClaim.empty() && configReadClaim.empty() &&
+        configWriteClaim.empty() && diagnosticsClaim.empty())
         throw std::invalid_argument("OAuth MCP requires explicit permission rules.");
     for (auto const& [claim, value] :
-         {std::pair{readClaim, readValue}, std::pair{controlClaim, controlValue}})
+         {std::pair{readClaim, readValue},
+          std::pair{controlClaim, controlValue},
+          std::pair{configReadClaim, configReadValue},
+          std::pair{configWriteClaim, configWriteValue},
+          std::pair{diagnosticsClaim, diagnosticsValue}})
     {
         if (claim.empty() != value.empty())
             throw std::invalid_argument(
@@ -282,6 +316,18 @@ void McpConfig::validate() const
     }
     std::set<std::string> headers;
     static std::regex const headerPattern("^[a-z][a-z0-9-]{0,99}$");
+    if (datasourceHeaderClaims.size() > 16)
+        throw std::invalid_argument("At most sixteen MCP datasource header mappings are allowed.");
+    for (auto const& mapping : datasourceHeaderClaims) {
+        auto separator = mapping.find('=');
+        auto name = mapping.substr(0, separator);
+        if (separator == std::string::npos || !std::regex_match(name, headerPattern) ||
+            !headers.insert(name).second || mapping.size() > 1024 ||
+            separator + 1 == mapping.size() || mapping[separator + 1] != '/')
+            throw std::invalid_argument("Expected unique lowercase header=/claim mappings.");
+        (void)nlohmann::json::json_pointer(mapping.substr(separator + 1));
+    }
+    headers.clear();
     for (auto const& name : {issuerHeader, subjectHeader, expiryHeader, permissionsHeader}) {
         if (!std::regex_match(name, headerPattern) || !headers.insert(name).second)
             throw std::invalid_argument(

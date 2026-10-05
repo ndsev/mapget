@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mcp-auth.h"
+#include "mcp-native-tools.h"
 
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpClient.h>
@@ -17,7 +18,7 @@ class McpServer : public std::enable_shared_from_this<McpServer>
 {
 public:
     /** Load trust/catalog configuration before accepting any browser registrations. */
-    explicit McpServer(McpConfig const& config);
+    McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native);
 
     /** Drain callbacks and destroy thread-affine state before stopping the private control loop. */
     ~McpServer();
@@ -61,11 +62,13 @@ private:
         std::string callId;
         std::shared_ptr<drogon::ResponseStream> stream;
         std::chrono::steady_clock::time_point expiresAt;
+        std::shared_ptr<std::atomic_bool> nativeCancellation;
     };
 
     using Reply = std::function<void(drogon::HttpResponsePtr const&)>;
     McpAuthentication auth_;
     std::shared_ptr<McpActionCatalog const> catalog_;
+    std::shared_ptr<McpNativeTools> native_;
     McpConfig::Limits limits_;
     trantor::EventLoopThread thread_{"mapget-mcp"};
     std::unique_ptr<McpViewerRelay> relay_;

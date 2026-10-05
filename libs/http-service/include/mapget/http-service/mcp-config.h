@@ -51,6 +51,20 @@ struct McpConfig
     std::string controlClaim;
     std::string controlValue;
 
+    // Native administrative capabilities never follow from ordinary viewer control.
+    std::string configReadClaim;
+    std::string configReadValue;
+    std::string configWriteClaim;
+    std::string configWriteValue;
+    std::string diagnosticsClaim;
+    std::string diagnosticsValue;
+    bool configReadEnabled = false;
+    bool configWriteEnabled = false;
+    /** Explicit operator assertion that this file, not a transformed container copy, is durable. */
+    bool directConfigPersistence = false;
+    /** Lowercase header=JSON-pointer mappings, evaluated only on verified JWT scalar claims. */
+    std::vector<std::string> datasourceHeaderClaims;
+
     // Browser authority comes only from these headers on a trusted socket peer.
     std::vector<std::string> trustedProxyAddresses;
     std::string issuerHeader;

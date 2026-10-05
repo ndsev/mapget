@@ -93,6 +93,11 @@ void HttpService::Impl::handleStatusDataRequest(
     const drogon::HttpRequestPtr& /*req*/,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
+    callback(jsonResponse(statusSnapshot().dump()));
+}
+
+nlohmann::json HttpService::Impl::statusSnapshot() const
+{
     auto serviceMemory = self_.getMemoryStatistics();
     auto cache = self_.cache()->getStatistics();
     auto websocket = detail::tilesWebSocketMetricsSnapshot();
@@ -159,7 +164,7 @@ void HttpService::Impl::handleStatusDataRequest(
     }
     serviceMemory["reconciliation"] = std::move(reconciliation);
 
-    const auto payload = nlohmann::json::object({
+    return nlohmann::json::object({
         {"timestampMs", timestampMs()},
         {"service", self_.getStatistics(false, false)},
         {"cache", std::move(cache)},
@@ -167,7 +172,6 @@ void HttpService::Impl::handleStatusDataRequest(
         {"tilesHttp", std::move(httpStreams)},
         {"memory", std::move(serviceMemory)},
     });
-    callback(jsonResponse(payload.dump()));
 }
 
 void HttpService::Impl::handleStatusCacheReportRequest(

@@ -119,6 +119,19 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    /** Collect lightweight metrics shared by HTTP and privileged MCP diagnostics, without cache
+     * scans. */
+    nlohmann::json statusSnapshot() const;
+
+    /** Read only the masked datasource model and its optimistic concurrency revision. */
+    nlohmann::json datasourceConfiguration() const;
+
+    /** Persist validated datasource changes, preserving secrets and unrelated host configuration.
+     */
+    nlohmann::json updateDatasourceConfiguration(
+        nlohmann::json const& model,
+        std::string const& expectedRevision = {}) const;
+
     /** Generate one detailed cache report outside Drogon's event loop. */
     void handleStatusCacheReportRequest(
         const drogon::HttpRequestPtr& req,
@@ -146,8 +159,6 @@ struct HttpService::Impl
     void handleLocationRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
-
-    static drogon::HttpResponsePtr openConfigFile(std::ifstream& configFile);
 
     void handleGetConfigRequest(
         const drogon::HttpRequestPtr& req,

@@ -44,6 +44,10 @@ public:
     /** Validate a browser result without applying defaults or exposing invalid payloads. */
     [[nodiscard]] bool acceptsResult(std::string_view action, nlohmann::json const& value) const;
 
+    /** Compile a portable bounded Draft-07 contract, shared by native and generated tools. */
+    static void
+    compileSchema(nlohmann::json_schema::json_validator& validator, nlohmann::json const& schema);
+
 private:
     /** One immutable action owns its metadata and validators; no per-tab schema copies. */
     struct Action
@@ -62,10 +66,6 @@ private:
         nlohmann::json const& root,
         size_t depth,
         size_t& remainingNodes);
-
-    /** Compile only a bounded, self-contained Draft-07 schema. */
-    static void
-    compileSchema(nlohmann::json_schema::json_validator& validator, nlohmann::json const& schema);
 };
 
 }  // namespace mapget::detail

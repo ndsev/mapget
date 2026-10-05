@@ -8,6 +8,62 @@ using mapget::detail::McpAuthentication;
 using mapget::test::McpTestIssuer;
 using nlohmann::json;
 
+TEST_CASE(
+    "MCP native privileges and datasource identity come only from configured verified claims",
+    "[mcp-auth][mcp-native]")
+{
+    McpTestIssuer issuer;
+    auto settings = McpTestIssuer::configuration();
+    settings.configReadClaim = settings.configWriteClaim = settings.diagnosticsClaim = "/admin";
+    settings.configReadValue = "config-read";
+    settings.configWriteValue = "config-write";
+    settings.diagnosticsValue = "diagnostics";
+    settings.datasourceHeaderClaims = {"x-user=/email"};
+    McpAuthentication auth(settings);
+    auth.installKeys(issuer.jwks);
+    bool insufficient = false;
+    auto claims = McpTestIssuer::claims();
+    claims["email"] = "member@example.test";
+    auto regular = auth.bearer(issuer.token(claims), insufficient);
+    REQUIRE(regular.valid(std::chrono::system_clock::now()));
+    CHECK_FALSE(regular.configRead);
+    CHECK_FALSE(regular.configWrite);
+    CHECK_FALSE(regular.diagnostics);
+    CHECK(regular.datasourceHeaders.at("x-user") == "member@example.test");
+    claims["admin"] = {"config-read", "diagnostics"};
+    auto admin = auth.bearer(issuer.token(claims), insufficient);
+    CHECK(admin.configRead);
+    CHECK(admin.diagnostics);
+    CHECK_FALSE(admin.configWrite);
+    claims["email"] = "spoof\r\nAuthorization: attacker";
+    CHECK_FALSE(
+        auth.bearer(issuer.token(claims), insufficient).valid(std::chrono::system_clock::now()));
+    settings.datasourceHeaderClaims = {"X-User=/email"};
+    CHECK_THROWS(settings.validate());
+    settings.datasourceHeaderClaims = {"x-user=/email", "x-user=/sub"};
+    CHECK_THROWS(settings.validate());
+    settings.datasourceHeaderClaims.clear();
+    settings.configWriteEnabled = true;
+    CHECK_THROWS(settings.validate());
+    settings.directConfigPersistence = true;
+    CHECK_NOTHROW(settings.validate());
+
+    // Config/diagnostics authority must work without implicitly granting data or viewer access.
+    settings.readClaim.clear();
+    settings.readValue.clear();
+    settings.controlClaim.clear();
+    settings.controlValue.clear();
+    McpAuthentication adminOnly(settings);
+    adminOnly.installKeys(issuer.jwks);
+    claims.erase("email");
+    auto restricted = adminOnly.bearer(issuer.token(claims), insufficient);
+    REQUIRE(restricted.valid(std::chrono::system_clock::now()));
+    CHECK(restricted.configRead);
+    CHECK(restricted.diagnostics);
+    CHECK_FALSE(restricted.read);
+    CHECK_FALSE(restricted.control);
+}
+
 TEST_CASE("MCP local defaults use trusted startup inputs", "[mcp-auth][mcp-actions]")
 {
     using mapget::McpConfig;

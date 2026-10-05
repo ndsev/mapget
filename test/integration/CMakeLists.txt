@@ -21,6 +21,11 @@ add_test(
     "$<TARGET_FILE:mapget>")
 set_tests_properties(test-native-mcp PROPERTIES LABELS integration TIMEOUT 120)
 
+add_test(
+  NAME test-location-wof
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test-location-wof.py" "$<TARGET_FILE:mapget>" "${plazs_SOURCE_DIR}/tests/data/places.sqlite")
+set_tests_properties(test-location-wof PROPERTIES LABELS integration TIMEOUT 120)
+
 if (EXISTS "${MAPGET_NDSMATH_PYTHON_DIR}/pyproject.toml")
   set(MAPGET_INSTALL_NDSMATH_PYTHON -f "python -m pip install ${MAPGET_NDSMATH_PYTHON_DIR}")
 else()

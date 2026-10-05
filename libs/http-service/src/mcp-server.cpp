@@ -37,10 +37,18 @@ bool accepts(std::string const& header, std::string const& mime)
 }
 }  // namespace
 
-McpServer::McpServer(McpConfig const& config)
+McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native)
     : auth_(config),
       catalog_(
-          std::make_shared<McpActionCatalog>(McpActionCatalog::load(auth_.settings().catalogPath))),
+          config.catalogPath.empty() ?
+              std::make_shared<McpActionCatalog>(nlohmann::json{
+                  {"formatVersion", 1},
+                  {"catalogId", "sha256:" + std::string(64, '0')},
+                  {"actions", nlohmann::json::array()},
+                  {"channels", nlohmann::json::array()}}) :
+              std::make_shared<McpActionCatalog>(
+                  McpActionCatalog::load(auth_.settings().catalogPath))),
+      native_(std::move(native)),
       limits_(auth_.settings().limits)
 {
     thread_.run();
@@ -70,6 +78,7 @@ void McpServer::stop()
 {
     if (stopped_.exchange(true))
         return;
+    native_->stop();
     auto* loop = thread_.getLoop();
     loop->queueInLoop(
         [this, loop]
@@ -515,6 +524,8 @@ void McpServer::dispatch(
                 return;
             }
             auto tools = catalog_->tools(principal.read, principal.control);
+            for (auto& tool : native_->tools(principal))
+                tools.push_back(std::move(tool));
             tools.push_back(
                 {{"name", "viewer_list_sessions"},
                  {"description",
@@ -559,25 +570,29 @@ void McpServer::dispatch(
             result(toolResult({{"result", {{"sessions", relay_->sessions(principal)}}}}));
             return;
         }
-        if (!catalog_->contains(action)) {
+        auto const native = native_->contains(action);
+        if (!native && !catalog_->contains(action)) {
             error(-32602, "Unknown tool.");
             return;
         }
         // Permissions are checked here and again by the relay, before schema validation/dispatch.
-        if ((catalog_->requiresControl(action) && !principal.control) ||
-            (!catalog_->requiresControl(action) && !principal.read))
+        if (!native &&
+            ((catalog_->requiresControl(action) && !principal.control) ||
+             (!catalog_->requiresControl(action) && !principal.read)))
         {
             result(toolResult(
                 {{"error", {{"code", "not_available"}, {"message", "Tool permission denied."}}}}));
             return;
         }
-        if (!arguments.contains("clientId") || !arguments["clientId"].is_string()) {
+        if (!native && (!arguments.contains("clientId") || !arguments["clientId"].is_string())) {
             error(-32602, "A clientId UUID is required.");
             return;
         }
         auto applicationArguments = arguments;
         applicationArguments.erase("clientId");
-        if (!catalog_->acceptsArguments(action, applicationArguments)) {
+        if (native ? !native_->acceptsArguments(action, arguments) :
+                     !catalog_->acceptsArguments(action, applicationArguments))
+        {
             error(-32602, "Tool arguments do not match the trusted schema.");
             return;
         }
@@ -633,6 +648,24 @@ void McpServer::attachResponse(uint64_t id, std::shared_ptr<drogon::ResponseStre
         return;
     }
     found->second.stream = std::move(stream);
+    if (native_->contains(found->second.action)) {
+        auto weak = weak_from_this();
+        auto token = native_->invoke(
+            found->second.principal,
+            found->second.action,
+            std::move(found->second.arguments),
+            [weak, id](auto reply)
+            {
+                if (auto self = weak.lock())
+                    (void)self->post(
+                        [self, id, reply = std::move(reply)]() mutable
+                        { self->completeResponse(id, std::move(reply)); },
+                        false);
+            });
+        if (auto pending = responses_.find(id); pending != responses_.end())
+            pending->second.nativeCancellation = std::move(token);
+        return;
+    }
     auto call = relay_->invoke(
         std::move(found->second.principal),
         std::move(found->second.action),
@@ -666,13 +699,28 @@ void McpServer::tick()
         return;
     relay_->expire();
     std::vector<uint64_t> closed;
+    std::vector<uint64_t> timedOut;
     for (auto const& [id, response] : responses_) {
+        if (response.nativeCancellation && response.expiresAt <= std::chrono::steady_clock::now()) {
+            native_->cancel(response.nativeCancellation);
+            timedOut.push_back(id);
+            continue;
+        }
         if ((!response.stream && response.expiresAt <= std::chrono::steady_clock::now()) ||
             (response.stream && !response.stream->send(": keep-alive\n\n")))
             closed.push_back(id);
     }
+    for (auto id : timedOut)
+        completeResponse(
+            id,
+            {{"error",
+              {{"code", "timeout"},
+               {"message",
+                "Native action deadline exceeded; a mutation may already have been applied."}}}});
     for (auto id : closed) {
         auto response = responses_.extract(id);
+        if (!response.empty() && response.mapped().modern && response.mapped().nativeCancellation)
+            native_->cancel(response.mapped().nativeCancellation);
         // 2025 disconnect is not cancellation: discard its HTTP waiter, but leave accepted
         // browser work bounded by its existing deadline. 2026 explicitly uses disconnect to cancel.
         if (!response.empty() && response.mapped().modern && !response.mapped().callId.empty())
