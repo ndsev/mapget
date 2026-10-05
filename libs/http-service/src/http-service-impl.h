@@ -47,7 +47,7 @@ struct HttpService::Impl
     /** Agent transport/authentication has its own bounded control loop, not service workers. */
     std::shared_ptr<detail::McpServer> mcp_;
     /** Lookup backend used by GET /location when location search is enabled. */
-    std::unique_ptr<SqliteLocationLookup> locationLookup_;
+    std::shared_ptr<SqliteLocationLookup> locationLookup_;
 
     /** Interruptible wait state for the allocator-maintenance worker. */
     std::mutex memoryTrimMutex_;

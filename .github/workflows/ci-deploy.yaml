@@ -85,7 +85,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Install libuuid
         run: |
-          yum -y install libuuid-devel
+          yum -y install libuuid-devel java-17-openjdk-headless
       - name: Configure
         run: |
           python3 -m venv venv && . ./venv/bin/activate
@@ -157,7 +157,7 @@ jobs:
             "$MANYLINUX_IMAGE" \
             bash -lc '
               set -euo pipefail
-              yum -y install libuuid-devel
+              yum -y install libuuid-devel java-17-openjdk-headless
               python3 -m venv venv && . ./venv/bin/activate
               pip install -U setuptools wheel pip
               rm -rf build
@@ -207,6 +207,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           architecture: x64
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - run: python -m pip install setuptools wheel ninja
       - name: Build (macOS)
         if: startsWith(matrix.os, 'macos')
