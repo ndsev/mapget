@@ -605,18 +605,12 @@
                         },
                         "position": {
                           "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+                          "minItems": 3,
+                          "maxItems": 3,
                           "type": "array",
-                          "items": [
-                            {
-                              "type": "number"
-                            },
-                            {
-                              "type": "number"
-                            },
-                            {
-                              "type": "number"
-                            }
-                          ]
+                          "items": {
+                            "type": "number"
+                          }
                         }
                       },
                       "required": [
@@ -1272,18 +1266,12 @@
               },
               "position": {
                 "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+                "minItems": 3,
+                "maxItems": 3,
                 "type": "array",
-                "items": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  }
-                ]
+                "items": {
+                  "type": "number"
+                }
               }
             },
             "required": [
@@ -1393,18 +1381,12 @@
               },
               "position": {
                 "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+                "minItems": 3,
+                "maxItems": 3,
                 "type": "array",
-                "items": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  }
-                ]
+                "items": {
+                  "type": "number"
+                }
               }
             },
             "required": [
@@ -1633,18 +1615,12 @@
           },
           "position": {
             "description": "Local map-centre offset in metres; omitted means [0,0,0].",
+            "minItems": 3,
+            "maxItems": 3,
             "type": "array",
-            "items": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "number"
-              }
-            ]
+            "items": {
+              "type": "number"
+            }
           }
         },
         "required": [
@@ -1932,5 +1908,5 @@
       "name": "app.searches"
     }
   ],
-  "catalogId": "sha256:bae94ac327fc097ee2ec6c7a433fdbc62c719be857f20d0f146373315d597299"
+  "catalogId": "sha256:d7fe97894636e8b976786a25f01629daaac74d6427aaf29b4d8fa0b2b3f0dbbf"
 }

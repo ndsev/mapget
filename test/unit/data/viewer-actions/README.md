@@ -1,9 +1,9 @@
 # Viewer Action Contract Fixtures
 
-Snapshot of the coordinated, **uncommitted** erdblick working-tree contract on
-2026-09-30, not a published erdblick release:
+Snapshot of the coordinated erdblick working-tree contract with homogeneous
+camera-vector schemas on 2026-10-05, not a published erdblick release:
 
-`sha256:bae94ac327fc097ee2ec6c7a433fdbc62c719be857f20d0f146373315d597299`
+`sha256:d7fe97894636e8b976786a25f01629daaac74d6427aaf29b4d8fa0b2b3f0dbbf`
 
 - `web-mcp-actions.json`: erdblick `app/actions/generated/web-mcp-actions.json`.
 - `viewer-action-relay.schema.json`: erdblick
@@ -22,7 +22,9 @@ metadata must come from the deployment's trusted artifact, never these fixtures
 or a browser-supplied catalog. The catalog ID is opaque to native code; erdblick
 owns canonicalization and hashing.
 
-The 51 validation cases include astral-Unicode string-length boundaries. Runtime
+The validation cases include astral-Unicode string-length boundaries. Runtime
 validation and truncation use Unicode code points, as Draft-07 `maxLength` does,
-not JavaScript UTF-16 code units. This runtime correction and fixture expansion did
-not change the catalog or relay/info schema bytes or their identity.
+not JavaScript UTF-16 code units. Camera offsets remain optional, but when present
+must contain exactly three numbers in both arguments and results. Their schema
+uses homogeneous `items` with `minItems` and `maxItems`, avoiding tuple-style
+schemas that some MCP clients discover but cannot expose as model-callable tools.
