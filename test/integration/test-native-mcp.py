@@ -262,6 +262,85 @@ class NativeMcpTest(unittest.TestCase):
             self.assertEqual(self.http("GET", "/mcp/info", headers=headers)[0], 403)
         self.assertEqual(self.http("GET", "/mcp")[0], 405)
 
+    def test_catalog_reload_without_restart(self):
+        """A rebuild changes discovery/registration on the same process and interactive socket."""
+        viewer = self.viewer()
+        old_catalog_id = self.catalog["catalogId"]
+        args = self.arguments(viewer, "viewer_get_app_state")
+        _, pending = self.begin_rpc("tools/call", {"name": "viewer_get_app_state", "arguments": args})
+        invocation = viewer.receive()
+        self.catalog["catalogId"] = "sha256:" + "b" * 64
+        self.catalog["actions"] = [action for action in self.catalog["actions"]
+                                   if action["name"] != "viewer_get_app_state"]
+        self.catalog_path.write_text(json.dumps(self.catalog), encoding="utf-8")
+        self.assertEqual(self.http("GET", "/mcp/info")[1]["catalogId"], self.catalog["catalogId"])
+        retired = viewer.receive()
+        self.assertEqual(retired["error"]["reason"], "catalog_changed")
+        self.assertEqual(self.call("viewer_list_sessions", {})["structuredContent"]["sessions"], [])
+        # Even an action removed from the replacement catalog can finish its accepted invocation.
+        self.finish(viewer, invocation)
+        self.assertFalse(self.rpc_result(pending)["result"]["isError"])
+        _, response = self.begin_rpc("tools/list")
+        names = {tool["name"] for tool in self.rpc_result(response)["result"]["tools"]}
+        self.assertNotIn("viewer_get_app_state", names)
+        self.assertIn("mapget_convert_tile_id", names)
+        registration = {"type": "mapget.actions.register", "version": 1,
+                        "catalogId": old_catalog_id, "label": "Old build", "actions": []}
+        viewer.send(registration)
+        self.assertEqual(viewer.receive()["type"], "mapget.actions.error")
+        registration.update(catalogId=self.catalog["catalogId"], label="Rebuilt viewer",
+                            actions=[action["name"] for action in self.catalog["actions"]])
+        viewer.send(registration)
+        self.assertEqual(viewer.receive()["type"], "mapget.actions.registered")
+        sessions = self.call("viewer_list_sessions", {})["structuredContent"]["sessions"]
+        self.assertEqual([session["clientId"] for session in sessions], [viewer.client_id])
+        # Fresh calls also succeed without a new HTTP service or WebSocket handshake.
+        _, response = self.begin_rpc("tools/call", {"name": "viewer_set_app_state",
+                                    "arguments": self.arguments(viewer, "viewer_set_app_state")})
+        self.finish(viewer, viewer.receive())
+        self.assertFalse(self.rpc_result(response)["result"]["isError"])
+        self.assertIsNone(self.process.poll())
+
+    def test_catalog_reload_keeps_last_good_and_recovers(self):
+        """Incomplete/invalid builds cannot invalidate working tabs; discovery retries changed files."""
+        viewer = self.viewer()
+        original = self.catalog_path.read_bytes()
+        invalid_schema = json.loads(original)
+        invalid_schema["catalogId"] = "sha256:" + "c" * 64
+        invalid_schema["actions"][0]["inputSchema"]["additionalProperties"] = True
+        for data in (None, b'{"formatVersion":', json.dumps(invalid_schema).encode()):
+            with self.subTest(data="missing" if data is None else "invalid"):
+                if data is None:
+                    self.catalog_path.unlink()
+                else:
+                    self.catalog_path.write_bytes(data)
+                for _ in range(2):
+                    self.assertEqual(self.http("GET", "/mcp/info")[1]["catalogId"], self.catalog["catalogId"])
+                    sessions = self.call("viewer_list_sessions", {})["structuredContent"]["sessions"]
+                    self.assertEqual([s["clientId"] for s in sessions], [viewer.client_id])
+        self.catalog_path.write_bytes(original)
+        self.assertEqual(self.http("GET", "/mcp/info")[1]["catalogId"], self.catalog["catalogId"])
+        # A byte-identical rebuild does not retire registration or enqueue any notification.
+        _, response = self.begin_rpc("tools/call", {"name": "viewer_get_app_state",
+                                    "arguments": self.arguments(viewer, "viewer_get_app_state")})
+        invocation = viewer.receive()
+        self.assertEqual(invocation["type"], "mapget.actions.invoke")
+        self.finish(viewer, invocation)
+        self.assertFalse(self.rpc_result(response)["result"]["isError"])
+        # Neither discovery nor registration depends on a preceding /mcp/info fetch.
+        self.catalog["catalogId"] = "sha256:" + "d" * 64
+        self.catalog["actions"][0]["description"] = "Reloaded browser action"
+        self.catalog_path.write_text(json.dumps(self.catalog), encoding="utf-8")
+        _, response = self.begin_rpc("tools/list")
+        tools = self.rpc_result(response)["result"]["tools"]
+        self.assertEqual(next(t for t in tools if t["name"] == self.catalog["actions"][0]["name"])["description"],
+                         "Reloaded browser action")
+        self.assertEqual(viewer.receive()["error"]["reason"], "catalog_changed")
+        self.catalog["catalogId"] = "sha256:" + "e" * 64
+        self.catalog_path.write_text(json.dumps(self.catalog), encoding="utf-8")
+        self.viewer()
+        self.assertEqual(self.http("GET", "/mcp/info")[1]["catalogId"], self.catalog["catalogId"])
+
     def test_native_tools_without_browser(self):
         """Exercise actual native SSE replies in every supported protocol revision."""
         for protocol in ("2025-06-18", "2025-11-25", "2026-07-28"):

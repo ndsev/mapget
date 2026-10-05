@@ -207,6 +207,116 @@ TEST_CASE("MCP viewer registration preserves verified connection ownership", "[m
     CHECK(test.replies.back().at("error").at("code") == "unsupported_action");
 }
 
+TEST_CASE("MCP catalog replacement preserves admitted calls and retires old tabs", "[mcp-actions]")
+{
+    ViewerRelayTest test;
+    test.open(test.first);
+    test.open(test.second, "bob");
+    auto read = test.invoke(test.first);
+    auto write = test.invoke(test.first, true);
+    REQUIRE_FALSE(read.empty());
+    REQUIRE_FALSE(write.empty());
+
+    auto before = test.messages;
+    test.relay.replaceCatalog(test.catalog());
+    CHECK(test.messages == before);
+    CHECK_THROWS(test.relay.replaceCatalog(nullptr));
+
+    auto manifest = test.fixture("web-mcp-actions.json");
+    manifest["catalogId"] = "sha256:" + std::string(64, 'b');
+    for (auto& action : manifest["actions"])
+        if (action["name"] == "viewer_get_app_state" || action["name"] == "viewer_set_app_state")
+            action["outputSchema"] = {
+                {"type", "object"},
+                {"required", {"newResult"}},
+                {"properties", {{"newResult", {{"type", "boolean"}}}}},
+                {"additionalProperties", false}};
+    auto next = std::make_shared<McpActionCatalog>(manifest);
+    test.relay.replaceCatalog(next);
+    for (auto const* client : {test.first, test.second}) {
+        CHECK(test.relay.attached(client));
+        CHECK(test.messages[client].back().at("error").at("reason") == "catalog_changed");
+    }
+    CHECK(test.relay.sessions(test.principal()).empty());
+    CHECK(test.relay.sessions(test.principal("bob")).empty());
+    CHECK(test.replies.empty());
+    CHECK(test.invoke(test.first).empty());
+    CHECK(test.replies.back().at("error").at("code") == "not_available");
+    CHECK_FALSE(test.relay.receive(test.first, test.registration()));
+
+    auto registration = test.registration();
+    registration["catalogId"] = next->id();
+    REQUIRE(test.relay.receive(test.first, registration));
+    CHECK(test.relay.sessions(test.principal()).at(0).at("mutationBusy") == true);
+    CHECK(test.invoke(test.first, true).empty());
+    CHECK(test.replies.back().at("error").at("code") == "busy");
+    // The replacement schema rejects these results, but accepted calls keep their old validators.
+    REQUIRE(test.reply(test.first, read));
+    REQUIRE(test.reply(test.first, write, true));
+    CHECK(test.replies.back().contains("result"));
+    CHECK(test.relay.sessions(test.principal()).at(0).at("mutationBusy") == false);
+    auto fresh = test.invoke(test.first);
+    REQUIRE_FALSE(fresh.empty());
+    CHECK_FALSE(test.reply(test.first, fresh));
+    CHECK(test.replies.back().at("error").at("code") == "internal_error");
+    fresh = test.invoke(test.first);
+    REQUIRE(test.relay.receive(
+        test.first,
+        {{"type", "mapget.actions.result"},
+         {"version", 1},
+         {"callId", fresh},
+         {"result", {{"newResult", true}}}}));
+}
+
+TEST_CASE("MCP catalog replacement cannot release an abandoned mutation", "[mcp-actions]")
+{
+    ViewerRelayTest test;
+    test.open(test.first);
+    auto write = test.invoke(test.first, true);
+    test.relay.cancel(write);
+    REQUIRE(test.replies.size() == 1);
+    auto manifest = test.fixture("web-mcp-actions.json");
+    manifest["catalogId"] = "sha256:" + std::string(64, 'b');
+    test.relay.replaceCatalog(std::make_shared<McpActionCatalog>(manifest));
+    auto registration = test.registration();
+    registration["catalogId"] = manifest["catalogId"];
+    REQUIRE(test.relay.receive(test.first, registration));
+    CHECK(test.invoke(test.first, true).empty());
+    CHECK(test.replies.back().at("error").at("code") == "busy");
+    CHECK_FALSE(test.reply(test.first, write, true));
+    CHECK_FALSE(test.invoke(test.first, true).empty());
+}
+
+TEST_CASE("MCP catalog retirement tolerates disconnects while notifying tabs", "[mcp-actions]")
+{
+    ViewerRelayTest test;
+    test.open(test.first);
+    test.open(test.second);
+    auto manifest = test.fixture("web-mcp-actions.json");
+    manifest["catalogId"] = "sha256:" + std::string(64, 'b');
+    SECTION("Disconnected transport retires its pending calls")
+    {
+        REQUIRE_FALSE(test.invoke(test.first, true).empty());
+        test.transportAvailable = false;
+        test.relay.replaceCatalog(std::make_shared<McpActionCatalog>(manifest));
+        CHECK_FALSE(test.relay.attached(test.first));
+        CHECK_FALSE(test.relay.attached(test.second));
+        REQUIRE(test.replies.size() == 1);
+        CHECK(test.replies.back().at("error").at("code") == "disconnected");
+    }
+    SECTION("Synchronous notification can disconnect another tab")
+    {
+        test.onSend = [&](Json const&)
+        {
+            test.relay.disconnect(test.second);
+        };
+        test.relay.replaceCatalog(std::make_shared<McpActionCatalog>(manifest));
+        CHECK(test.relay.attached(test.first));
+        CHECK_FALSE(test.relay.attached(test.second));
+        test.onSend = {};
+    }
+}
+
 TEST_CASE("MCP viewer calls are bound to their exact connection and action schema", "[mcp-actions]")
 {
     ViewerRelayTest test;

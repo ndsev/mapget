@@ -87,7 +87,23 @@ webRoot)` before constructing the service, or provide explicit settings.
 The service validates the same typed configuration; embedding-relative artifact
 paths use the process working directory.
 
-All MCP settings are **restart-scoped**. They live in the private `mapget`
+MCP configuration settings, including the trusted catalog **path**, are
+**restart-scoped**. The catalog file's **contents** can change without restarting:
+`GET /mcp/info`, MCP tool discovery/calls, and browser action registration check
+its modification time and size. A changed artifact is fully loaded and validated
+before replacing the active catalog. Missing, incomplete or invalid replacements
+leave the last valid catalog active and log a warning; a subsequent file change
+is retried. Publish completed artifacts atomically when possible.
+
+After rebuilding the frontend, reload the browser to load its matching bundle
+and register against the new catalog. Existing tabs using the previous catalog
+are notified to reload and excluded from session discovery, but their tile
+WebSockets stay open. Already admitted actions keep their original result
+validators and deadlines; catalog replacement does not release mutation slots
+or replay work. Identical catalog IDs do not disturb registrations. MCP clients
+which cache tools may also need to refresh tool discovery.
+
+The settings live in the private `mapget`
 section, not in browser-writable datasource or public frontend configuration.
 `GET /config` does not expose them; datasource `POST /config` preserves them,
 and no MCP trust-setting writer is registered for `PATCH /config`.

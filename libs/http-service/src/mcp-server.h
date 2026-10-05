@@ -46,9 +46,6 @@ public:
     /** Stop admission, cancel pending actions and join the independent event loop. */
     void stop();
 
-    /** Return public connection hints from the immutable deployment configuration. */
-    [[nodiscard]] nlohmann::json info() const;
-
 private:
     /** One POST response owns only its bounded call and stream, not an MCP protocol session. */
     struct Response
@@ -67,6 +64,9 @@ private:
 
     using Reply = std::function<void(drogon::HttpResponsePtr const&)>;
     McpAuthentication auth_;
+    std::filesystem::file_time_type catalogWriteTime_;
+    uintmax_t catalogSize_ = 0;
+    bool catalogReloadFailed_ = false;
     std::shared_ptr<McpActionCatalog const> catalog_;
     std::shared_ptr<McpNativeTools> native_;
     McpConfig::Limits limits_;
@@ -84,6 +84,9 @@ private:
 
     /** Marshal external input with a hard queue bound; accepted completions are never dropped. */
     bool post(std::function<void()> task, bool admission = true);
+
+    /** Reload a changed trusted artifact on the control loop, retaining the last valid catalog. */
+    void refreshCatalog();
 
     /** Enforce exposure/body limits before retaining a request on the control loop. */
     void handle(drogon::HttpRequestPtr request, Reply reply);

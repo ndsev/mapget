@@ -42,6 +42,14 @@ bool accepts(std::string const& header, std::string const& mime)
 
 McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native)
     : auth_(config),
+      catalogWriteTime_(
+          config.catalogPath.empty() ?
+              std::filesystem::file_time_type{} :
+              std::filesystem::last_write_time(auth_.settings().catalogPath)),
+      catalogSize_(
+          config.catalogPath.empty() ?
+              0 :
+              std::filesystem::file_size(auth_.settings().catalogPath)),
       catalog_(
           config.catalogPath.empty() ?
               std::make_shared<McpActionCatalog>(nlohmann::json{
@@ -131,9 +139,35 @@ bool McpServer::post(std::function<void()> task, bool admission)
     return true;
 }
 
-nlohmann::json McpServer::info() const
+void McpServer::refreshCatalog()
 {
-    return auth_.info(catalog_->id());
+    auto const& path = auth_.settings().catalogPath;
+    if (stopped_ || path.empty())
+        return;
+    std::shared_ptr<McpActionCatalog const> next;
+    try {
+        auto modified = std::filesystem::last_write_time(path);
+        auto size = std::filesystem::file_size(path);
+        if (modified == catalogWriteTime_ && size == catalogSize_)
+            return;
+        // Remember failed versions too: a partial build must not recompile on every request.
+        // Sample before reading so a concurrent rewrite is noticed on the next discovery.
+        catalogWriteTime_ = modified;
+        catalogSize_ = size;
+        next = std::make_shared<McpActionCatalog>(McpActionCatalog::load(path));
+    }
+    catch (...) {
+        if (!catalogReloadFailed_)
+            log().warn("MCP action catalog reload failed; keeping the last valid catalog.");
+        catalogReloadFailed_ = true;
+        return;
+    }
+    catalogReloadFailed_ = false;
+    if (next->id() != catalog_->id()) {
+        relay_->replaceCatalog(next);
+        catalog_ = std::move(next);
+        log().info("Reloaded the trusted MCP browser action catalog.");
+    }
 }
 
 void McpServer::setup(drogon::HttpAppFramework& app)
@@ -221,7 +255,14 @@ void McpServer::handle(drogon::HttpRequestPtr request, Reply reply)
         return;
     }
     if (request->path() == "/mcp/info") {
-        respond(jsonResponse(info()));
+        // Discovery shares the catalog's owner loop; no HTTP thread can observe a half-swap.
+        if (!post(
+                [this, respond]
+                {
+                    refreshCatalog();
+                    respond(jsonResponse(auth_.info(catalog_->id())));
+                }))
+            respond(jsonResponse({{"error", "MCP unavailable"}}, drogon::k503ServiceUnavailable));
         return;
     }
     if (request->path().starts_with("/.well-known/oauth-protected-resource")) {
@@ -546,6 +587,8 @@ void McpServer::dispatch(
                     {{"name", "mapget"}, {"version", MAPGET_MCP_VERSION}}}}}});
             return;
         }
+        if (method == "tools/list" || method == "tools/call")
+            refreshCatalog();
         if (method == "tools/list") {
             if (params.contains("cursor")) {
                 error(-32602, "MCP tool lists are not paginated.");
@@ -838,6 +881,8 @@ void McpServer::receive(
                         (void)send(weak.lock(), error);
                     return;
                 }
+                if (registration)
+                    refreshCatalog();
                 // The relay reports malformed registrations and fails affected calls itself.
                 (void)relay_->receive(clientId, message);
             }))
