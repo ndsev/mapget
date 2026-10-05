@@ -510,7 +510,7 @@ authentication, transport revisions, limits and cancellation semantics.
 
 MCP transport/authorization is separate from tile scheduling; native execution reuses it:
 
-- `mcp-action-catalog.*` owns one immutable, locally loaded browser-action catalog
+- `mcp-action-catalog.*` owns immutable, locally loaded browser-action catalogs
   and compiled argument/result validators. Tabs advertise names and the exact
   catalog identity, never executable code, descriptions or permission rules.
 - `mcp-viewer-relay.*` owns verified connection identities, registrations, bounded
@@ -556,6 +556,18 @@ nested property unions and constraints are supported. Results are objects. Valid
 never applies defaults or coerces values. The native code treats the trusted
 build-exported `catalogId` as opaque instead of implementing a second JSON
 canonicalizer. Application schemas remain owned by the webapp build.
+
+`McpServer::refreshCatalog` checks the configured artifact's modification time and
+size on info/tool discovery, tool calls, and browser registrations. All catalog
+access, including `/mcp/info`, runs on the control loop. A changed file is fully
+validated before publication; a missing or invalid replacement leaves the last
+good catalog active. Failed file versions are not recompiled on every request.
+There is no watcher, polling task, remote schema fetch, or browser-selected path.
+`McpViewerRelay::replaceCatalog` retires old registrations with the existing
+`mapget.actions.error` envelope (`reason: catalog_changed`), without closing
+ordinary tile sockets. Each admitted call retains its immutable catalog for
+result validation. Existing deadlines and uncertain mutation slots survive the
+swap; the browser retires new admission without cancelling accepted work.
 
 Caller lifetime and browser execution lifetime differ. Timeout/cancellation ends
 the HTTP waiter and sends a best-effort cancel, but a dispatched mutation may

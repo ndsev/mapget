@@ -61,6 +61,34 @@ void McpViewerRelay::checkThread() const
     }
 }
 
+void McpViewerRelay::replaceCatalog(std::shared_ptr<McpActionCatalog const> catalog)
+{
+    checkThread();
+    if (!catalog)
+        throw std::invalid_argument("MCP action catalog cannot be null.");
+    if (stopped_ || catalog_->id() == catalog->id())
+        return;
+    catalog_ = std::move(catalog);
+    std::vector<std::string> retired;
+    for (auto& [id, session] : sessions_) {
+        if (session.registered) {
+            session.registered = false;
+            retired.push_back(id);
+        }
+    }
+    auto reply = error("not_available", "Browser action catalog changed; reload the viewer.");
+    reply["error"]["reason"] = "catalog_changed";
+    reply.update({{"type", "mapget.actions.error"}, {"version", 1}, {"operation", "register"}});
+    // Retire all registrations before callbacks. Pending calls and uncertain mutation slots
+    // remain owned by their connections; replacing metadata is not proof of termination.
+    for (auto const& id : retired) {
+        auto session = sessions_.find(id);
+        if (session != sessions_.end() && !session->second.registered &&
+            !send(session->second.send, reply))
+            disconnect(id);
+    }
+}
+
 bool McpViewerRelay::attach(
     std::string clientId,
     Principal principal,
@@ -409,7 +437,8 @@ std::string McpViewerRelay::invoke(
             std::move(action),
             std::move(caller),
             steadyNow_() + budget,
-            std::move(callback)});
+            std::move(callback),
+            catalog_});
     if (!send(sender, message)) {
         disconnect(clientId);
     }
@@ -442,7 +471,8 @@ bool McpViewerRelay::acceptResult(std::string const& clientId, nlohmann::json co
         finish(id, error("timeout", "Viewer action deadline exceeded.", true));
         return false;
     }
-    if (message.contains("result") && !catalog_->acceptsResult(call.action, message.at("result"))) {
+    if (message.contains("result") &&
+        !call.catalog->acceptsResult(call.action, message.at("result"))) {
         finish(
             id,
             error("internal_error", "Viewer result does not match the action schema.", true));

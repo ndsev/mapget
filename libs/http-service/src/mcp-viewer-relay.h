@@ -48,7 +48,7 @@ public:
     /** Completion contains exactly one result object or application error object. */
     using Complete = std::function<void(nlohmann::json)>;
 
-    /** Bind one immutable catalog and clocks; injected clocks make expiry tests deterministic. */
+    /** Bind the initial immutable catalog and clocks; injected clocks make expiry deterministic. */
     McpViewerRelay(
         std::shared_ptr<McpActionCatalog const> catalog,
         McpConfig::Limits limits,
@@ -59,6 +59,9 @@ public:
 
     /** Best-effort shutdown without escaping exceptions or replaying uncertain browser effects. */
     ~McpViewerRelay();
+
+    /** Retire old registrations without closing sockets or changing admitted calls' validators. */
+    void replaceCatalog(std::shared_ptr<McpActionCatalog const> catalog);
 
     /** Attach a verified live connection; duplicate UUIDs never replace an existing owner. */
     [[nodiscard]] bool
@@ -114,6 +117,7 @@ private:
         Principal caller;
         std::chrono::steady_clock::time_point deadline;
         Complete complete;
+        std::shared_ptr<McpActionCatalog const> catalog;
     };
 
     std::shared_ptr<McpActionCatalog const> catalog_;
