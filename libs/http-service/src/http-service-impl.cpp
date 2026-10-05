@@ -44,7 +44,7 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 
     if (config_.locationLookupEnabled) {
         auto locationDbPath = config_.locationDatabasePath.value_or(defaultLocationDatabasePath());
-        locationLookup_ = std::make_unique<SqliteLocationLookup>(locationDbPath);
+        locationLookup_ = std::make_shared<SqliteLocationLookup>(locationDbPath);
         if (!locationLookup_->available()) {
             log().info("Location database unavailable at {}", locationDbPath.string());
         }

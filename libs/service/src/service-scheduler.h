@@ -47,6 +47,7 @@ struct ServiceSchedulerStatistics
     size_t activeTileRequests = 0;
     size_t queuedTileWorkItems = 0;
     size_t queuedDiscoveryJobs = 0;
+    size_t queuedTasks = 0;
     size_t inFlightTileJobs = 0;
 };
 
@@ -100,6 +101,9 @@ public:
     /** Wake workers so externally gated requests are reconsidered. */
     void notifyWorkAvailable();
 
+    /** Admit bounded non-tile work onto the same workers, without reserving a source permit. */
+    [[nodiscard]] bool enqueueTask(std::function<void(bool)> task);
+
     /** Abort and detach one tile request from queued and in-flight work. */
     void abortRequest(LayerTilesRequest::Ptr const& request);
 
@@ -144,6 +148,10 @@ private:
     };
     std::list<DiscoveryJob> discoveryJobs_;
     bool preferDiscovery_ = true;
+
+    /** Metadata preparation only; loaded tiles are always evaluated inline by their worker. */
+    std::list<std::function<void(bool)>> tasks_;
+    bool preferTask_ = true;
 
     /** One schedulable request/tile selection retained across inline handling. */
     struct Candidate

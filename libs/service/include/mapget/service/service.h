@@ -625,6 +625,13 @@ public:
     /** Wake workers after an external request-admission gate may have opened. */
     void notifyWorkAvailable();
 
+    /**
+     * Run bounded metadata/query preparation on the homogeneous worker pool.
+     * Tasks must not wait for other service work. False means admission failed;
+     * accepted tasks receive false on shutdown instead of being silently discarded.
+     */
+    [[nodiscard]] bool scheduleTask(std::function<void(bool)> task);
+
     /** DataSourceInfo for all data sources which have been added to this Service. */
     std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
 

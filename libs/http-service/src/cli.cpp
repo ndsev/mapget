@@ -710,7 +710,8 @@ struct ServeCommand
         serveCmd->add_option(
             "--location-db",
             locationDbPath_,
-            "Path to the SQLite location database. Defaults to the bundled database next to the "
+            "Path to a prepared WOF location database. Defaults to mapget-places.sqlite next to "
+            "the "
             "mapget binary module.");
         serveCmd
             ->add_option(

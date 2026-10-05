@@ -13,6 +13,7 @@ The guide is split into several focused documents:
 - [**HTTP / WebSocket API Guide**](mapget-api.md) describes the endpoints exposed by `mapget serve`, including `/sources`, `/filter`, `/tiles`, `/attachment`, `/interactive`, `/interactive/payload`, `/status`, `/status-data`, the explicit cache report, `/locate` and `/config`, along with their request and response formats and examples.
 - [**MCP Viewer Actions**](mapget-mcp.md) describes opt-in agent access, trusted action catalogs, explicit viewer targeting, local mode, hosted OAuth, and cancellation/timeout behavior.
 - [**Caching Guide**](mapget-cache.md) covers the available cache modes (`memory`, `persistent`, `none`), explains how to configure cache size and location, and shows how to inspect cache statistics via the status endpoint.
+- [**Offline Place Lookup**](mapget-location.md) covers preparing a global or selected Who's On First gazetteer with multilingual names, country/state extents, optional polygons, and source attribution.
 - [**Simfil Language Extensions**](mapget-simfil-extensions.md) introduces the feature model, tiling scheme, geometry and validity concepts, and the binary tile stream format. This chapter is especially relevant if you are writing datasources or low‑level clients.
 - [**Layered Data Model**](mapget-model.md) introduces the feature model, tiling scheme, geometry and validity concepts, and the binary tile stream format. This chapter is especially relevant if you are writing datasources or low‑level clients.
 

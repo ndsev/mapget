@@ -653,10 +653,44 @@ full-tile expression for every candidate feature.
 ## `GET /location`
 
 `/location?name=munich&limit=10` searches the configured place-name database.
-Results contain `name`, WGS84 `lonLat`, and an `aabb`. The endpoint returns
-`503` when no location database is available. Native deployments and the
-Python wheel bundle the default GeoNames database beside their mapget binary;
-`mapget serve --location-db` can select a different SQLite database.
+The response remains an array of matches with a stable provider-qualified `id`,
+display `name`, WGS84 `[longitude, latitude]` `lonLat`, `source`, `countryCode`,
+optional `population`, and `aabb: [[west, south], [longitudeExtent, latitudeExtent]]`.
+The limit defaults to 10 and is capped at 50 and `--location-max-limit`.
+Names shorter than two bytes return no matches; names over 200 bytes are rejected.
+This is place lookup, **not** `/locate` (map feature-reference resolution).
+
+Use `/location?id=wof:85633111` to resolve one exact place ID, including its
+boundary when available. The response is still an array, with zero or one result.
+`name` and `id` are mutually exclusive; there is no geometry toggle.
+Malformed/missing IDs return an empty array. Name search never reads boundary coordinates.
+
+| Field | Meaning |
+| --- | --- |
+| `placeType` | WOF category, e.g. `country`, `region` (state/province), `locality` |
+| `geometryAvailable` | Whether this prepared database retains an actual boundary |
+| `geometry` | Optional GeoJSON `Polygon`/`MultiPolygon`, including holes/islands; returned by ID only |
+| `attribution` | `name`, `url`, `licenseUrl`; display the credit and distribute the artifact's embedded notices |
+
+An extent is not a polygon. Point-only places never receive fabricated boundaries.
+A dateline-crossing extent has a positive eastward longitude span even when its
+east edge is west of its west edge. The representative `lonLat` need not be the
+bounding-box center. Geometry is quantized to NDS integer coordinates; ingestion
+repairs invalid areas and removes collapsed rings/components. Optional simplification
+preserves individual feature topology, not shared administrative edges. Preparation
+parameters, source notices and repair statistics live in dataset metadata, not per-place JSON.
+
+The endpoint returns `400` for contradictory/invalid options, `413` for a boundary
+over the packed-byte, decoder-allocation or vertex budget, and `503` when the
+database or worker capacity is unavailable. Lookup/decoding runs on service
+workers, not the HTTP event loop. Defaults are 16 MiB packed input, 32 MiB decoder
+allocations and one million decoded vertices; no partial polygon is returned.
+
+Configure a prepared plazs format-1 artifact with `mapget serve --location-db`, or
+bundle it as `mapget-places.sqlite` next to the binary/module. Raw WOF exports,
+GeoNames and the former JSON-boundary database are not accepted. See
+[offline gazetteer preparation](mapget-location.md). No runtime network geocoder,
+SpatiaLite extension, Python or GIS library is required.
 
 ## `GET /status`, `GET /status-data`, and `POST /status-data/cache-report`
 

@@ -56,6 +56,7 @@ target_link_libraries(test.mapget.datasource-server
 target_compile_definitions(test.mapget
   PRIVATE
     MAPGET_TEST_DATASOURCE_SERVER_EXE=\"$<TARGET_FILE:test.mapget.datasource-server>\"
+    MAPGET_TEST_LOCATION_DB=\"${plazs_SOURCE_DIR}/tests/data/places.sqlite\"
     MAPGET_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\")
 
 target_link_libraries(test.mapget.filelog

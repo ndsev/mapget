@@ -12,10 +12,9 @@ import mapget
 
 
 def main() -> int:
-    """Start the wheel's service and query the default GeoNames database."""
+    """Start the wheel's service and query the default WOF database."""
     package_dir = Path(mapget.__file__).resolve().parent
-    assert (package_dir / "geonames-cities5000.sqlite").is_file()
-    assert (package_dir / "geonames-readme.txt").is_file()
+    assert (package_dir / "mapget-places.sqlite").is_file()
 
     service = mapget.Service()
     service.go("127.0.0.1")
@@ -28,7 +27,7 @@ def main() -> int:
 
         assert matches
         assert matches[0]["name"] == "Munich, DE"
-        assert matches[0]["source"] == "geonames-cities5000"
+        assert matches[0]["source"] == "whosonfirst"
     finally:
         service.stop()
 

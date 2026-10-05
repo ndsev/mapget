@@ -482,6 +482,17 @@ returns successfully.
 Small endpoints such as `/sources`, `/location`, `/locate`, `/status`,
 `/status-data`, and `/config` return ordinary responses.
 
+Place lookup is owned by `libs/location`. `LocationLookup::search` returns compact
+matches; `find` resolves a stable provider ID including its available boundary.
+`SqliteLocationLookup` is a thin adapter over the independent `plazs::Gazetteer`.
+Plazs owns WOF ingestion, FTS search, quantized zserio boundary chunks, versioning
+and format validation. Mapget translates WOF IDs, labels and bounds to its public
+contract; it has no second importer or geometry codec.
+Decoder allocations and output vertices are bounded independently of encoded bytes. REST and native MCP share
+this owner and run lookup on service workers, keeping file I/O and polygon parsing
+off the HTTP event loop. Preparation is offline and independent of ordinary builds;
+see [gazetteer ingestion and provenance](mapget-location.md).
+
 Interactive connection identity is a server-generated UUIDv4 string, announced
 immediately in a `RequestContext` frame with request ID zero. It is independent of
 the tile request sequence, survives viewport updates, and expires on disconnect.
