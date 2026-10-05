@@ -153,6 +153,8 @@ def main() -> int:
         compound.set_source_data_address(mapget.SourceDataAddress(1, 8))
         compound.add_field("answer", 42)
         tile.add_root(compound)
+        assert len(tile.find_source_data(mapget.SourceDataAddress(1, 8))) == 1
+        assert tile.find_source_data(mapget.SourceDataAddress(2, 1)) == []
 
     def locate(request: mapget.LocateRequest) -> list[mapget.LocateCandidate]:
         tile_key = mapget.MapTileKey(

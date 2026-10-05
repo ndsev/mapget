@@ -550,22 +550,12 @@ public:
         uint32_t validityIndex,
         uint32_t validityCount) const
     {
-        auto result =
-            simfil::model_ptr<simfil::OverlayNode>::make(simfil::Value::field(*attribute));
-        result
-            ->set(StringPool::OverlayNameStr, simfil::Value::make(std::string(attribute->name())));
-        result->set(StringPool::OverlayFeatureStr, simfil::Value::field(*feature));
-        result->set(StringPool::OverlayLayerStr, simfil::Value::make(std::string(layerName)));
-        result->set(
-            StringPool::OverlayAttributeIndexStr,
-            simfil::Value::make(static_cast<int64_t>(attributeIndex)));
-        result->set(
-            StringPool::OverlayValidityIndexStr,
-            simfil::Value::make(static_cast<int64_t>(validityIndex)));
-        result->set(
-            StringPool::OverlayValidityCountStr,
-            simfil::Value::make(static_cast<int64_t>(validityCount)));
-        result->set(StringPool::OverlayHasValidityStr, simfil::Value::make(hasValidity));
+        auto result = attribute->queryContext(
+            feature,
+            layerName,
+            attributeIndex,
+            validityIndex,
+            hasValidity ? validityCount : 0);
         addBindings(result);
         return result;
     }

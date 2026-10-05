@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <memory>
+#include <set>
 
 #include "bitsery/bitsery.h"
 #include "bitsery/adapter/buffer.h"
@@ -89,6 +90,79 @@ PartitionSourceDataLayer::PartitionSourceDataLayer(
 }
 
 PartitionSourceDataLayer::~PartitionSourceDataLayer() = default;
+
+tl::expected<
+    std::vector<PartitionSourceDataLayer::model_ptr<SourceDataCompoundNode>>,
+    simfil::Error>
+PartitionSourceDataLayer::findSourceData(
+    SourceDataAddress address,
+    bool containing,
+    size_t maxNodes,
+    size_t maxMatches,
+    std::function<bool()> cancelled) const
+{
+    if (containing && sourceDataAddressFormat() != SourceDataAddressFormat::BitRange)
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "Opaque addresses require exact matching."});
+    std::vector<model_ptr<SourceDataCompoundNode>> matches;
+    std::set<uint32_t> visited;
+    uint64_t smallest = UINT64_MAX;
+    // Retain only the current ancestry, not every child of a potentially enormous array.
+    std::vector<std::pair<simfil::ModelNode::Ptr, uint32_t>> stack;
+    for (size_t rootIndex = 0; rootIndex < numRoots(); ++rootIndex) {
+        auto node = root(rootIndex);
+        if (!node)
+            return tl::unexpected(node.error());
+        stack.emplace_back(*node, 0);
+        while (!stack.empty()) {
+            if (cancelled && cancelled())
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::RuntimeError,
+                    "Source address resolution cancelled."});
+            auto& [current, next] = stack.back();
+            if (next == 0) {
+                if (maxNodes-- == 0)
+                    return tl::unexpected(simfil::Error{
+                        simfil::Error::RuntimeError,
+                        "Source address traversal limit reached."});
+                if (current->addr() && !visited.insert(current->addr().value_).second) {
+                    stack.pop_back();
+                    continue;
+                }
+                if (current->addr().column() == Compound) {
+                    auto compound = resolve<SourceDataCompoundNode>(*current);
+                    auto range = compound->sourceDataAddress();
+                    bool hit = range.u64() == address.u64();
+                    if (containing && !hit && range.bitSize() > 0) {
+                        auto end = uint64_t(range.bitOffset()) + range.bitSize();
+                        hit = range.bitOffset() <= address.bitOffset() &&
+                            uint64_t(address.bitOffset()) + address.bitSize() <= end &&
+                            (address.bitSize() != 0 || address.bitOffset() < end);
+                    }
+                    if (hit && (!containing || range.bitSize() <= smallest)) {
+                        if (containing && range.bitSize() < smallest)
+                            matches.clear();
+                        smallest = range.bitSize();
+                        if (matches.size() >= maxMatches)
+                            return tl::unexpected(simfil::Error{
+                                simfil::Error::RuntimeError,
+                                "Source address match limit reached."});
+                        matches.push_back(std::move(compound));
+                    }
+                }
+            }
+            if (next >= current->size()) {
+                stack.pop_back();
+                continue;
+            }
+            auto child = current->at(next++);
+            if (child)
+                stack.emplace_back(std::move(child), 0);
+        }
+    }
+    return matches;
+}
 
 simfil::Environment& PartitionSourceDataLayer::evaluationEnvironment()
 {

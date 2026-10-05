@@ -8,6 +8,7 @@
 #include "simfil/model/nodes.h"
 
 #include "layer.h"
+#include "sourceinfo.h"
 
 namespace mapget
 {
@@ -89,6 +90,19 @@ public:
      */
     void setSourceDataAddressFormat(SourceDataAddressFormat f);
     SourceDataAddressFormat sourceDataAddressFormat() const;
+
+    /**
+     * Resolve native absolute source addresses without presentation-relative offsets.
+     * Exact matching supports opaque addresses; containing selects all smallest enclosing
+     * bit ranges. Budget/cancellation errors discard potentially incomplete ambiguity results.
+     */
+    [[nodiscard]] tl::expected<std::vector<model_ptr<SourceDataCompoundNode>>, simfil::Error>
+    findSourceData(
+        SourceDataAddress address,
+        bool containing = false,
+        size_t maxNodes = 100000,
+        size_t maxMatches = 1000,
+        std::function<bool()> cancelled = {}) const;
 
 private:
     friend class SourceDataCompoundNode;

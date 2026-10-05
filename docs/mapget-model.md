@@ -445,6 +445,17 @@ Features can refer back to their original source material and to other features.
 
 These mechanisms make it possible to keep a clean separation between the processed map model and the original data sources while still preserving traceability.
 
+`PartitionSourceDataLayer::findSourceData(address, containing, maxNodes, maxMatches, cancelled)`
+resolves a native `SourceDataAddress` without changing the model or its string pool.
+Exact lookup supports both bit ranges and opaque addresses. Containment lookup requires
+bit ranges and returns all smallest enclosing matches, not an arbitrary first match.
+Presentation scopes never change these absolute lookup coordinates. A zero-length span
+is a point in a half-open range. Cycles, cancellation, and node/match budgets are checked;
+failure returns an error rather than an incomplete set of ambiguity candidates.
+Python exposes the same operation as `find_source_data`, with errors raised as `ValueError`.
+The [MCP extraction API](mapget-mcp.md#extraction-and-native-source-links) accepts this
+native address plus the owning map/partition, not frontend inspection URLs.
+
 ## Tiles, maps and layers
 
 For efficiency, mapget serves data in tiles. Each tile is identified by a zoom level `z` and grid coordinates `x` and `y` in a binary tiling scheme:
