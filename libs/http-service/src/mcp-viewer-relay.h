@@ -9,6 +9,7 @@
 #include <memory>
 #include <set>
 #include <thread>
+#include <unordered_map>
 
 namespace mapget::detail
 {
@@ -29,6 +30,11 @@ public:
         std::chrono::system_clock::time_point expiresAt;  // Caps long-lived browser/call authority.
         bool read = false;     // Viewer reads are independent from control/config/data permissions.
         bool control = false;  // Allows mutations but does not imply other privileges.
+        bool configRead = false;
+        bool configWrite = false;
+        bool diagnostics = false;
+        /** Explicit deployment mappings from verified claims, never forwarded caller headers. */
+        std::unordered_map<std::string, std::string> datasourceHeaders;
 
         /** Require a named, unexpired identity with an applicable permission. */
         [[nodiscard]] bool valid(std::chrono::system_clock::time_point now) const;

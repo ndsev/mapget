@@ -14,7 +14,8 @@ namespace mapget::detail
 
 bool McpViewerRelay::Principal::valid(std::chrono::system_clock::time_point now) const
 {
-    return !issuer.empty() && !subject.empty() && expiresAt > now && (read || control);
+    return !issuer.empty() && !subject.empty() && expiresAt > now &&
+        (read || control || configRead || configWrite || diagnostics);
 }
 
 bool McpViewerRelay::Principal::sameUser(Principal const& other) const

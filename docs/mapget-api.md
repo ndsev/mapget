@@ -6,10 +6,11 @@ staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
 visualization all use `/filter`.
 
-The opt-in [MCP viewer-action API](mapget-mcp.md) exposes `POST /mcp`,
-`GET /mcp/info`, OAuth resource metadata, and authenticated action routing
-over the existing interactive WebSocket. It is separate from tile/filter
-requests and disabled unless `--mcp local` or `--mcp oauth` is supplied (or
+The opt-in [MCP API](mapget-mcp.md) exposes `POST /mcp`, `GET /mcp/info`,
+OAuth resource metadata, native data/schema/query/diagnostics tools, and browser
+actions over the existing interactive WebSocket. Native tools work without an
+open browser; partition extraction reuses service scheduling and authorization.
+MCP is disabled unless `--mcp local` or `--mcp oauth` is supplied (or
 equivalent `mapget.serve.mcp` YAML / `HttpServiceConfig::mcp` settings).
 
 ## Base URL and stream formats

@@ -22,6 +22,12 @@ add_library(mapget-http-service STATIC
   src/mcp-auth.h
   src/mcp-auth.cpp
   src/mcp-config.cpp
+  src/mcp-native-tools.h
+  src/mcp-native-call.h
+  src/mcp-native-tools.cpp
+  src/mcp-native-catalog.cpp
+  src/mcp-native-query.cpp
+  src/mcp-native-extract.cpp
   src/mcp-server.h
   src/mcp-server.cpp
   src/mcp-viewer-relay.h

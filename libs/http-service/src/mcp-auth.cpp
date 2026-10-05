@@ -188,6 +188,9 @@ McpViewerRelay::Principal McpAuthentication::localPrincipal() const
         "local-user",
         std::chrono::system_clock::now() + std::chrono::hours(24),
         true,
+        true,
+        true,
+        true,
         true};
 }
 
@@ -262,13 +265,30 @@ McpViewerRelay::Principal McpAuthentication::principal(nlohmann::json const& cla
         claims.at("sub").get<std::string>().empty() ||
         claims.at("sub").get<std::string>().size() > 1024)
         return {};
-    return {
+    McpViewerRelay::Principal result{
         claims.at("iss"),
         claims.at("sub"),
         std::chrono::system_clock::time_point(
             std::chrono::seconds(claims.at("exp").get<int64_t>())),
         permission(claims, config_.readClaim, config_.readValue),
-        permission(claims, config_.controlClaim, config_.controlValue)};
+        permission(claims, config_.controlClaim, config_.controlValue),
+        permission(claims, config_.configReadClaim, config_.configReadValue),
+        permission(claims, config_.configWriteClaim, config_.configWriteValue),
+        permission(claims, config_.diagnosticsClaim, config_.diagnosticsValue)};
+    for (auto const& mapping : config_.datasourceHeaderClaims) {
+        auto separator = mapping.find('=');
+        auto pointer = nlohmann::json::json_pointer(mapping.substr(separator + 1));
+        if (!claims.contains(pointer))
+            continue;
+        auto const& claim = claims.at(pointer);
+        if (!claim.is_string())
+            continue;
+        auto value = claim.get<std::string>();
+        if (value.size() > 4096 || value.find_first_of("\r\n") != std::string::npos)
+            return {};
+        result.datasourceHeaders.emplace(mapping.substr(0, separator), std::move(value));
+    }
+    return result;
 }
 
 bool McpAuthentication::needsKeys(std::string const& token) const
@@ -321,7 +341,8 @@ McpAuthentication::bearer(std::string const& token, bool& insufficient) const
             if (!containsWord(scope, required))
                 insufficient = true;
         }
-        insufficient |= !result.read && !result.control;
+        insufficient |= !result.read && !result.control && !result.configRead &&
+            !result.configWrite && !result.diagnostics;
         return insufficient ? McpViewerRelay::Principal{} : result;
     }
     catch (...) {

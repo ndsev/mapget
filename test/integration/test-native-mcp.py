@@ -110,10 +110,31 @@ class NativeMcpTest(unittest.TestCase):
         catalog_path = Path(__file__).parent.parent / "unit/data/viewer-actions/web-mcp-actions.json"
         self.catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         self.fixtures = json.loads((catalog_path.parent / "fixtures.json").read_text(encoding="utf-8"))
+        self.catalog_path = Path(self.directory.name) / "web-mcp-actions.json"
+        self.catalog_path.write_bytes(catalog_path.read_bytes())
+        webapp_options = ["--webapp", self.directory.name]
+        if self._testMethodName == "test_headless_native_catalog":
+            webapp_options = []
+            self.catalog = {"catalogId": "sha256:" + "0" * 64, "actions": []}
+        self.config_path = Path(self.directory.name) / "service.yaml"
+        self.config_path.write_text('sources: []\nprivate-host-setting: preserve-me\n')
+        if self._testMethodName == "test_native_grid_extraction":
+            self.config_path.write_text(json.dumps({"sources": [{
+                "type": "GridDataSource", "mapId": "NativeGrid", "layers": [
+                    {"name": "Road", "featureType": "DevSrc-Road", "geometry": {"type": "line"}},
+                    {"name": "Intersections", "featureType": "DevSrc-Intersection",
+                     "geometry": {"type": "point"}}]}]}))
+        if self._testMethodName == "test_native_config_revision_and_persistence":
+            self.extra_options = ["--allow-post-config", "--mcp-config-read", "true",
+                                  "--mcp-config-write", "true", "--mcp-direct-config-persistence", "true"]
+            self.config_path.write_text(json.dumps({"sources": [{"type": "GridDataSource", "enabled": False,
+                                                               "password": "fake-regression-secret"}],
+                                                   "private-host-setting": "preserve-me"}))
         self.process = subprocess.Popen([
-            str(MAPGET_BINARY), "serve", "--host", "127.0.0.1", "-p", str(self.port),
+            str(MAPGET_BINARY), "--config", str(self.config_path), "serve", "--host", "127.0.0.1", "-p", str(self.port),
             "--no-location", "--worker-count", "2", "--mcp", "local",
-            "--mcp-timeout-ms", "2000", "--webapp", str(catalog_path.parent.resolve())],
+            "--mcp-timeout-ms", "2000", *webapp_options,
+            *getattr(self, "extra_options", [])],
             stdout=self.log, stderr=subprocess.STDOUT)
         self.addCleanup(self.stop_service)
         deadline = time.monotonic() + 20
@@ -207,24 +228,25 @@ class NativeMcpTest(unittest.TestCase):
                        if item["action"] == action and item["valid"])
         return dict(fixture["arguments"], clientId=viewer.client_id)
 
-    def finish(self, viewer, invocation):
-        """Return a valid application result for exactly the dispatched call identity."""
-        fixture = next(item for item in self.fixtures["results"]
-                       if item["action"] == invocation["action"] and item["valid"])
+    def finish(self, viewer, invocation, result=None):
+        """Send a fixture or explicit test result for exactly the dispatched call identity."""
+        if result is None:
+            result = next(item["value"] for item in self.fixtures["results"]
+                          if item["action"] == invocation["action"] and item["valid"])
         message = {"type": "mapget.actions.result", "version": 1,
-                   "callId": invocation["callId"], "result": fixture["value"]}
+                   "callId": invocation["callId"], "result": result}
         viewer.send(message)
         return message
 
     def test_protocol_and_exposure(self):
-        """Check discovery, all four tools, malformed metadata and local Host/Origin boundaries."""
+        """Check discovery, native and viewer tools, malformed metadata and local Host/Origin boundaries."""
         for method in ("server/discover", "tools/list"):
             _, response = self.begin_rpc(method)
             self.assertEqual(response.status, 200)
             result = self.rpc_result(response)["result"]
             self.assertEqual(result["resultType"], "complete")
             if method == "tools/list":
-                self.assertEqual(len(result["tools"]), 4)
+                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 11)
             else:
                 self.assertEqual(result["supportedVersions"], ["2026-07-28"])
         self.assertEqual(self.call("viewer_list_sessions", {})["structuredContent"], {"sessions": []})
@@ -237,6 +259,99 @@ class NativeMcpTest(unittest.TestCase):
                         {"X-Forwarded-For": "127.0.0.1"}):
             self.assertEqual(self.http("GET", "/mcp/info", headers=headers)[0], 403)
         self.assertEqual(self.http("GET", "/mcp")[0], 405)
+
+    def test_native_tools_without_browser(self):
+        """Exercise actual native SSE replies in every supported protocol revision."""
+        for protocol in ("2025-06-18", "2025-11-25", "2026-07-28"):
+            _, response = self.begin_rpc("tools/call", {
+                "name": "mapget_convert_tile_id", "arguments": {"tileId": 131073}}, protocol=protocol)
+            result = self.rpc_result(response)["result"]
+            self.assertFalse(result.get("isError", False))
+            self.assertEqual(result["structuredContent"]["items"][0]["tileId"], 131073)
+            self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+        self.assertTrue(self.call("mapget_lookup_place", {"name": "Munich"})["isError"])
+        self.assertTrue(self.call("mapget_get_config", {})["isError"])
+        self.assertEqual(self.call("mapget_list_sources", {})["structuredContent"]["items"], [])
+        diagnostics = self.call("mapget_get_diagnostics", {"sections": ["workers"]})["structuredContent"]
+        self.assertTrue(diagnostics["items"])
+
+    def test_headless_native_catalog(self):
+        """A native-only server needs neither a webapp nor a generated browser catalog."""
+        _, response = self.begin_rpc("tools/list")
+        names = {tool["name"] for tool in self.rpc_result(response)["result"]["tools"]}
+        self.assertEqual(len(names), 11)
+        self.assertIn("mapget_extract_source_data", names)
+        self.assertIn("viewer_list_sessions", names)
+        self.assertNotIn("viewer_set_app_state", names)
+        self.assertEqual(self.call("mapget_list_sources", {})["structuredContent"]["items"], [])
+
+    def test_native_grid_extraction(self):
+        """Load a real datasource through HTTP, then reuse its canonical feature ID for locate."""
+        selection = {"mapId": "NativeGrid", "layerId": "Road"}
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            sources = self.call("mapget_list_sources", selection)["structuredContent"]["items"]
+            if sources and sources[0]["status"] == "ready":
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("Native Grid datasource did not initialize")
+        validation = self.call("mapget_validate_expression", {
+            **selection, "expression": "typeId == 'DevSrc-Road'"})
+        self.assertFalse(validation.get("isError", False), validation)
+        self.assertTrue(validation["structuredContent"]["items"][0]["valid"], validation)
+        converted = self.call("mapget_convert_tile_id", {
+            "longitude": 11.5, "latitude": 48.1, "level": 13})
+        tile_id = converted["structuredContent"]["items"][0]["tileId"]
+        reply = self.call("mapget_extract_features", {
+            **selection, "partitions": [{"kind": "tile", "id": tile_id}],
+            "expressions": ["id", "_"], "limit": 2})
+        self.assertFalse(reply.get("isError", False), reply)
+        result = reply["structuredContent"]
+        self.assertEqual(len(result["items"]), 2, reply)
+        self.assertFalse(result["complete"])
+        first = result["items"][0]
+        self.assertEqual(first["values"][0], [first["featureId"]])
+        self.assertIsInstance(first["values"][1][0], dict)
+        located = self.call("mapget_extract_features", {
+            **selection, "featureIds": [first["featureId"]], "query": "id"})
+        self.assertFalse(located.get("isError", False), located)
+        self.assertTrue(located["structuredContent"]["complete"], located)
+        self.assertEqual(len(located["structuredContent"]["items"]), 1)
+        self.assertEqual(located["structuredContent"]["items"][0]["featureId"], first["featureId"])
+
+    def test_native_config_revision_and_persistence(self):
+        """Verify masked read, optimistic write, durable file and preserved unrelated settings."""
+        current = self.call("mapget_get_config", {})["structuredContent"]["items"][0]
+        self.assertNotIn("fake-regression-secret", json.dumps(current))
+        self.assertNotIn("private-host-setting", current["model"])
+        model = current["model"]
+        model["sources"][0]["ttl"] = 60
+        reply = self.call("mapget_set_config", {"model": model, "expectedRevision": current["revision"]})
+        self.assertFalse(reply.get("isError", False), reply)
+        self.assertTrue(reply["structuredContent"]["items"][0]["persisted"])
+        self.assertIn("fake-regression-secret", self.config_path.read_text())
+
+        self.assertIn("preserve-me", self.config_path.read_text())
+        conflict = self.call("mapget_set_config", {"model": model, "expectedRevision": current["revision"]})
+        self.assertEqual(conflict["structuredContent"]["error"]["code"], "conflict")
+        latest = self.call("mapget_get_config", {})["structuredContent"]["items"][0]
+        denied = self.call("mapget_set_config", {"model": {"mapget": {"serve": {"mcp": "off"}}},
+                                               "expectedRevision": latest["revision"]})
+        self.assertTrue(denied["isError"])
+        model["sources"][0]["password"] = "MASKED:unknown"
+        rejected = self.call("mapget_set_config", {"model": model, "expectedRevision": latest["revision"]})
+        self.assertTrue(rejected["isError"])
+        self.assertIn("fake-regression-secret", self.config_path.read_text())
+        cleared = self.call("mapget_set_config", {"model": {"sources": []}, "expectedRevision": latest["revision"]})
+        self.assertFalse(cleared.get("isError", False), cleared)
+        empty = self.call("mapget_get_config", {})["structuredContent"]["items"][0]
+        self.assertEqual(empty["model"]["sources"], [])
+
+    def test_native_rejects_browser_routing_and_identity_fields(self):
+        """Reject extra routing/identity inputs rather than treating them as browser actions."""
+        _, response = self.begin_rpc("tools/call", {"name": "mapget_list_sources", "arguments": {"clientId": str(uuid.uuid4())}})
+        self.assertEqual(self.rpc_result(response)["error"]["code"], -32602)
         self.assertEqual(self.http("GET", "/.well-known/oauth-protected-resource/mcp")[0], 404)
 
     def test_real_routing_duplicate_and_reconnect(self):
@@ -289,7 +404,7 @@ class NativeMcpTest(unittest.TestCase):
             _, response = self.begin_rpc("tools/list", protocol=protocol)
             tools = self.rpc_result(response)["result"]
             self.assertNotIn("resultType", tools)
-            self.assertEqual(len(tools["tools"]), 4)
+            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 11)
             _, response = self.begin_rpc("tools/call", {
                 "name": "viewer_set_app_state", "arguments": self.arguments(viewer, "viewer_set_app_state")},
                 protocol=protocol)

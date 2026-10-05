@@ -7,17 +7,17 @@
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpResponse.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <unordered_map>
-#include <mutex>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -194,38 +194,6 @@ constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configVal
 
 }  // namespace
 
-drogon::HttpResponsePtr HttpService::Impl::openConfigFile(std::ifstream& configFile)
-{
-    auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
-    if (!configFilePath.has_value()) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k404NotFound);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody("The config file path is not set. Check the server configuration.");
-        return resp;
-    }
-
-    std::filesystem::path path = *configFilePath;
-    if (!std::filesystem::exists(path)) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k404NotFound);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody("The server does not have a config file.");
-        return resp;
-    }
-
-    configFile.open(*configFilePath);
-    if (!configFile) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k500InternalServerError);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody("Failed to open config file.");
-        return resp;
-    }
-
-    return nullptr;
-}
-
 void HttpService::Impl::handleGetConfigRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
@@ -333,137 +301,124 @@ void HttpService::Impl::handlePostConfigRequest(
         return;
     }
 
-    auto mutationLock = DataSourceConfigService::get().lockConfigMutation();
-
-    struct ConfigUpdateState : std::enable_shared_from_this<ConfigUpdateState>
-    {
-        trantor::EventLoop* loop = nullptr;
-        std::atomic_bool done{false};
-        std::atomic_bool wroteConfig{false};
-        std::unique_ptr<DataSourceConfigService::Subscription> subscription;
-        std::function<void(const drogon::HttpResponsePtr&)> callback;
-    };
-
-    std::ifstream configFile;
-    if (auto errorResp = openConfigFile(configFile)) {
-        callback(errorResp);
-        return;
-    }
-
-    nlohmann::json jsonConfig;
+    auto response = drogon::HttpResponse::newHttpResponse();
+    response->setContentTypeCode(drogon::CT_TEXT_PLAIN);
     try {
-        jsonConfig = nlohmann::json::parse(std::string(req->body()));
-    }
-    catch (const nlohmann::json::parse_error& e) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k400BadRequest);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody(std::string("Invalid JSON format: ") + e.what());
-        callback(resp);
-        return;
-    }
-
-    try {
-        DataSourceConfigService::get().validateDataSourceConfig(jsonConfig);
-    }
-    catch (const std::exception& e) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k500InternalServerError);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody(std::string("Validation failed: ") + e.what());
-        callback(resp);
-        return;
-    }
-
-    auto yamlConfig = YAML::Load(configFile);
-    std::unordered_map<std::string, std::string> maskedSecrets;
-    yamlToJson(yamlConfig, true, &maskedSecrets);
-
-    for (auto const& key : DataSourceConfigService::get().topLevelDataSourceConfigKeys()) {
-        if (jsonConfig.contains(key))
-            yamlConfig[key] = jsonToYaml(jsonConfig[key], maskedSecrets);
-    }
-
-    auto state = std::make_shared<ConfigUpdateState>();
-    state->loop = drogon::app().getLoop();
-    state->callback = std::move(callback);
-
-    state->subscription = DataSourceConfigService::get().subscribe(
-        [state](std::vector<YAML::Node> const&) mutable {
-            if (!state->wroteConfig) {
-                return;
-            }
-            if (state->done.exchange(true))
-                return;
-            state->loop->queueInLoop([state]() mutable {
-                auto resp = drogon::HttpResponse::newHttpResponse();
-                resp->setStatusCode(drogon::k200OK);
-                resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-                resp->setBody("Configuration updated and applied successfully.");
-                state->callback(resp);
-                state->subscription.reset();
-            });
-        },
-        [state](std::string const& error) mutable {
-            if (!state->wroteConfig) {
-                return;
-            }
-            if (state->done.exchange(true))
-                return;
-            state->loop->queueInLoop([state, error]() mutable {
-                auto resp = drogon::HttpResponse::newHttpResponse();
-                resp->setStatusCode(drogon::k500InternalServerError);
-                resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-                resp->setBody(std::string("Error applying the configuration: ") + error);
-                state->callback(resp);
-                state->subscription.reset();
-            });
-        });
-
-    configFile.close();
-    log().trace("Writing new config.");
-    auto configFilePath = DataSourceConfigService::get().getConfigFilePath();
-    if (!configFilePath) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k500InternalServerError);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody("Error applying the configuration: config file path is no longer set.");
-        state->done = true;
-        state->callback(resp);
-        state->subscription.reset();
-        return;
-    }
-
-    if (auto writeError = replaceConfigFile(*configFilePath, yamlConfig)) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::k500InternalServerError);
-        resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-        resp->setBody(std::string("Error applying the configuration: ") + *writeError);
-        state->done = true;
-        state->callback(resp);
-        state->subscription.reset();
-        return;
-    }
-
-    // Ignore watcher callbacks until the rewritten file has been fully replaced.
-    state->wroteConfig = true;
-    DataSourceConfigService::get().loadConfig(*configFilePath, false);
-
-    std::thread([weak = state->weak_from_this()]() {
-        std::this_thread::sleep_for(std::chrono::seconds(60));
-        if (auto state = weak.lock()) {
-            if (state->done.exchange(true))
-                return;
-            state->loop->queueInLoop([state]() mutable {
-                auto resp = drogon::HttpResponse::newHttpResponse();
-                resp->setStatusCode(drogon::k500InternalServerError);
-                resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
-                resp->setBody("Timeout while waiting for config to update.");
-                state->callback(resp);
-                state->subscription.reset();
-            });
+        auto& service = DataSourceConfigService::get();
+        auto path = service.getConfigFilePath();
+        if (!path || !std::filesystem::exists(*path)) {
+            response->setStatusCode(drogon::k404NotFound);
+            response->setBody("The server does not have a config file.");
+            callback(response);
+            return;
         }
-    }).detach();
+        auto model = nlohmann::json::parse(req->body());
+        // REST POST keeps its complete-model contract; MCP supports explicit partial sections.
+        service.validateDataSourceConfig(model);
+        auto result = updateDatasourceConfiguration(model);
+        response->setStatusCode(
+            result.at("reloadAccepted").get<bool>() ?
+                drogon::k200OK :
+                drogon::k500InternalServerError);
+        response->setBody(
+            result.at("reloadAccepted").get<bool>() ?
+                "Configuration updated and applied successfully." :
+                "Configuration persisted, but reload failed. Consult protected server logs.");
+    }
+    catch (nlohmann::json::parse_error const&) {
+        response->setStatusCode(drogon::k400BadRequest);
+        response->setBody("Invalid JSON format.");
+    }
+    catch (std::invalid_argument const&) {
+        response->setStatusCode(drogon::k500InternalServerError);
+        response->setBody("Validation failed: invalid datasource configuration.");
+    }
+    catch (std::exception const&) {
+        response->setStatusCode(drogon::k500InternalServerError);
+        response->setBody("Configuration validation or persistence failed.");
+    }
+    callback(response);
+}
+
+nlohmann::json HttpService::Impl::datasourceConfiguration() const
+{
+    auto& service = DataSourceConfigService::get();
+    auto lock = service.lockConfigMutation();
+    auto path = service.getConfigFilePath();
+    if (!isGetConfigEndpointEnabled() || !path ||
+        std::filesystem::file_size(*path) > 8 * 1024 * 1024)
+        throw std::runtime_error("Datasource configuration unavailable");
+    auto yaml = YAML::LoadFile(*path);
+    auto model = nlohmann::json::object();
+    std::unordered_map<std::string, std::string> masked;
+    for (auto const& key : service.topLevelDataSourceConfigKeys())
+        if (yaml[key])
+            model[key] = yamlToJson(yaml[key], true, &masked);
+    return {
+        {"model", std::move(model)},
+        {"revision", service.getConfigFileRevision().value_or("")},
+        {"persistence", "server-config-file"}};
+}
+
+nlohmann::json HttpService::Impl::updateDatasourceConfiguration(
+    nlohmann::json const& model,
+    std::string const& expectedRevision) const
+{
+    if (!model.is_object())
+        throw std::invalid_argument("Expected datasource configuration object");
+    auto& service = DataSourceConfigService::get();
+    auto lock = service.lockConfigMutation();
+    auto path = service.getConfigFilePath();
+    if (!isPostConfigEndpointEnabled() || !path ||
+        std::filesystem::file_size(*path) > 8 * 1024 * 1024)
+        throw std::runtime_error("Datasource configuration unavailable");
+    auto revision = service.getConfigFileRevision();
+    if (!expectedRevision.empty() && revision != expectedRevision)
+        throw std::system_error(std::make_error_code(std::errc::state_not_recoverable));
+    auto yaml = YAML::LoadFile(*path);
+    std::unordered_map<std::string, std::string> masked;
+    auto const keys = service.topLevelDataSourceConfigKeys();
+    for (auto const& key : keys)
+        if (yaml[key])
+            (void)yamlToJson(yaml[key], true, &masked);
+    // A stale/forged mask must never silently replace a real credential with the mask text.
+    std::vector<nlohmann::json const*> pending{&model};
+    while (!pending.empty()) {
+        auto value = pending.back();
+        pending.pop_back();
+        if (value->is_string()) {
+            auto const& text = value->get_ref<std::string const&>();
+            if (text.starts_with("MASKED:") && !masked.contains(text))
+                throw std::invalid_argument("Unknown masked credential");
+        }
+        else if (value->is_structured()) {
+            for (auto const& child : *value)
+                pending.push_back(&child);
+        }
+    }
+    // Never let an MCP datasource edit alter OAuth, listener or host runtime configuration.
+    for (auto const& [key, value] : model.items()) {
+        if (std::find(keys.begin(), keys.end(), key) == keys.end())
+            throw std::invalid_argument("Unknown datasource configuration section");
+        yaml[key] = jsonToYaml(value, masked);
+    }
+    service.validateDataSourceConfig(yaml);
+    if (service.getConfigFileRevision() != revision)
+        throw std::system_error(std::make_error_code(std::errc::state_not_recoverable));
+    if (replaceConfigFile(*path, yaml))
+        throw std::runtime_error("Config persistence failed");
+
+    // loadConfig reports synchronously; datasource construction continues asynchronously.
+    bool reloadAccepted = true;
+    auto subscription =
+        service.subscribe([](auto const&) {}, [&](auto const&) { reloadAccepted = false; });
+    service.loadConfig(*path, false);
+    return {
+        {"persisted", true},
+        {"reloadAccepted", reloadAccepted},
+        {"initializationPending", reloadAccepted},
+        {"revision", service.getConfigFileRevision().value_or("")},
+        {"persistence", "server-config-file"}};
 }
 
 void HttpService::Impl::handlePatchConfigRequest(

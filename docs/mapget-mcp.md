@@ -1,22 +1,22 @@
-# MCP Viewer Actions
+# MCP Actions
 
-Mapget can expose a trusted browser-action catalog through `POST /mcp` and
-route calls to a user's connected viewer tabs. The feature is **disabled unless
+Mapget exposes native data/query tools and a trusted browser-action catalog through
+`POST /mcp`, routing viewer calls to a user's connected tabs. The feature is **disabled unless
 explicitly configured**. It does not create another datasource, tile worker
 pool, or browser session protocol.
 
-The initial tool set is deliberately small:
+The core browser tools are:
 
 | Tool | Purpose | Permission |
 | --- | --- | --- |
 | `viewer_list_sessions` | List the caller's connected, compatible tabs | `viewer-read` |
 | `viewer_describe_app_state` | Discover supported application-state channels | `viewer-read` |
 | `viewer_get_app_state` | Read bounded state summaries | `viewer-read` |
-| `viewer_set_app_state` | Assign supported application state; initially a camera | `viewer-control` |
+| `viewer_set_app_state` | Assign supported application-state channels | `viewer-control` |
 
-The three browser tools are described by the installed catalog, not by C++
-copies of frontend schemas. Datasource/configuration/schema/extraction tools
-are not part of this first implementation.
+Browser tools are described by the installed catalog, not by C++ copies of
+frontend schemas. Native `mapget_*` tools are independent of browser registration
+and do not require `clientId`; see [Native Tools](#native-tools).
 
 ## Local Setup
 
@@ -33,7 +33,9 @@ Local mode derives the endpoint and loopback Host/Origin allowlists from the
 configured listener and port, never from request headers. Use a fixed port;
 port zero cannot provide a predictable connection URL. The default catalog is
 `<webapp directory>/web-mcp-actions.json`, including when the mount uses
-`/viewer:/path/to/viewer` syntax. Without a webapp, pass `--mcp-catalog FILE`.
+`/viewer:/path/to/viewer` syntax. Without a webapp, omit the catalog for a headless native-tool server, or pass
+`--mcp-catalog FILE` to additionally expose viewer tools. A configured catalog
+that is missing or invalid still fails startup.
 
 Every `--mcp-*` CLI option is also a flat YAML key under `mapget.serve`:
 
@@ -187,8 +189,15 @@ occurrences; YAML lists use the usual sequence syntax.
 | `mcp-required-scopes` | None | Non-empty required OAuth scope list (at most 16) |
 | `mcp-oauth-client-id` | None | Optional public client ID in connection hints |
 | `mcp-clock-skew-seconds` | `15` | JWT clock tolerance, 0..60 seconds; expired authority is still rejected |
-| `mcp-read-claim`, `mcp-read-value` | None | JSON pointer and exact member granting viewer-read |
+| `mcp-read-claim`, `mcp-read-value` | None | JSON pointer and exact member granting native data reads and viewer-read |
 | `mcp-control-claim`, `mcp-control-value` | None | JSON pointer and exact member granting viewer-control; at least one complete rule is required |
+| `mcp-config-read` | `false` | Opt in to masked datasource-config reads; ordinary GET /config must also be enabled |
+| `mcp-config-write` | `false` | Opt in to datasource-config edits; requires `--allow-post-config` and direct persistence |
+| `mcp-direct-config-persistence` | `false` | Operator assertion that the server config file is the durable configuration, not a transformed wrapper copy |
+| `mcp-config-read-claim`, `mcp-config-read-value` | None | Independent verified permission for masked configuration reads |
+| `mcp-config-write-claim`, `mcp-config-write-value` | None | Independent verified permission for configuration writes |
+| `mcp-diagnostics-claim`, `mcp-diagnostics-value` | None | Independent verified permission for global server diagnostics |
+| `mcp-datasource-header-claims` | Empty | At most 16 `lowercase-header=/claim/pointer` mappings into datasource authorization, from verified scalar JWT claims only |
 | `mcp-trusted-proxy-addresses` | None | Exact socket-peer IPs permitted to supply browser identity |
 | `mcp-browser-issuer-header` | None | Lowercase header name carrying verified issuer |
 | `mcp-browser-subject-header` | None | Lowercase header name carrying verified subject |
@@ -197,10 +206,10 @@ occurrences; YAML lists use the usual sequence syntax.
 | `mcp-browser-max-lifetime-seconds` | `3600` | Cap on retained browser authority, 1..86400 seconds |
 | `mcp-timeout-ms` | `30000` | Call deadline, additionally capped by caller/browser authority |
 | `mcp-invocation-bytes` | `65536` | Complete invoke or registration envelope |
-| `mcp-result-bytes` | `262144` | Complete browser result envelope |
+| `mcp-result-bytes` | `262144` | Browser result envelope/native serialized tool-result budget |
 | `mcp-calls-per-session` | `4` | Outstanding calls per viewer tab |
-| `mcp-calls-per-principal` | `16` | Outstanding calls across one user's tabs |
-| `mcp-pending-calls` | `128` | Process-wide calls, including uncertain mutations |
+| `mcp-calls-per-principal` | `16` | Per-user limit, enforced separately for retained native and viewer calls |
+| `mcp-pending-calls` | `128` | Pending HTTP responses; also bounds retained native and viewer calls separately, including uncertain mutations |
 | `mcp-sessions` | `256` | Attached action peers, including unregistered tabs |
 
 Limits are positive integers at most 2147483647. Host/origin lists are bounded
@@ -305,3 +314,208 @@ ctest --test-dir build -R '^test-native-mcp$' --output-on-failure
 The transport test is not a real frontend, identity-provider login, or hosted
 deployment test. Consumer acceptance additionally requires the matching viewer
 catalog/build, real browser actions, and the deployment's OAuth client flow.
+
+## Native Tools
+
+All native input schemas have closed object roots. `tools/list` is the authoritative
+machine-readable catalog. Permission-filtered listing does not replace call-time checks.
+
+| Tool | Inputs beyond common budgets | Result |
+| --- | --- | --- |
+| `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId` | Ordered source IDs, lifecycle/progress, compact layer coverage, partition kind, feature types and ID compositions; no serialized feature-model schemas |
+| `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType`, `query`, `trace` | Feature-type roots and sequences of schema descriptors |
+| `mapget_validate_expression` | `mapId`, `layerId`, `expression`; optional `sourceId`, `featureType`, `attributeSchema`, `scope`, `rewrite`, `predicate` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
+| `mapget_extract_features` | `mapId`, `layerId`; `partitions` or canonical primary `featureIds`; optional `sourceId`, `featureTypes`, `scope`, `predicate`, `rewrite`, `query` or `expressions`, `geometry`, `trace` | Feature/attribute rows with provenance and one value sequence per expression |
+| `mapget_extract_source_data` | `mapId`, `layerId`, `partitions`, or `mapId`, `partition`, `reference`; optional `sourceId`, `match`, `query`, `trace` | Root/address-match rows, provenance and value sequences |
+| `mapget_convert_coordinates` | `from`: `wgs84` or `nds`, `x`, `y` | WGS84 degrees or signed NDS integer coordinates |
+| `mapget_convert_tile_id` | Exactly one of `tileId`, `legacyTileId`, `{x,y,level}`, `{longitude,latitude,level}` | Signed packed ID, grid coordinates, level, WGS84 bounds and center |
+| `mapget_lookup_place` | `name`, optional `limit` | Up to 50 compact WOF matches: IDs, countries/regions/localities, coordinates, extents and geometry availability; never polygons |
+| `mapget_get_place_geometry` | `id` | Exact-ID metadata plus an available complete GeoJSON boundary; response budgets never truncate rings |
+| `mapget_get_diagnostics` | Optional `sections`: `workers`, `memory`, `cache`, `transport`, `sources` | Timestamped lightweight status snapshots, not raw logs or expensive cache reports |
+| `mapget_get_config` | None | Masked datasource `model`, file `revision`, persistence mode |
+| `mapget_set_config` | `model`, `expectedRevision` | Persistence/reload acknowledgement and new revision; datasource initialization remains asynchronous |
+
+Native data tools require the configured read permission. Configuration read/write and
+global diagnostics use **separate** permissions: viewer control never grants them.
+Local mode grants these permissions to its shared loopback identity, but config access
+still requires the deployment opt-ins. OAuth defaults do not grant the new administrative
+permissions. Configure their claim/value pairs explicitly when desired.
+
+Datasource ACLs remain in effect. For example, `mcp-datasource-header-claims:
+["x-user=/email"]` supplies the verified JWT email to an existing `x-user` datasource
+ACL. Missing/non-string claims are omitted; oversized or newline-containing values reject
+authentication. The MCP caller cannot supply these headers as tool arguments, and incoming
+proxy/caller headers are not forwarded to datasource authorization. Layer/partition loading
+is authorized again after catalog selection. `sourceId` disambiguates authorized sources
+sharing a map/layer; it does not bypass ACLs. Source-reference targets are authorized
+independently. Never return the JWT itself to the datasource.
+
+### Results And Budgets
+
+Success is an object in `structuredContent`, with the same JSON in a text content block:
+
+```json
+{"items": [], "complete": true, "reason": null, "issues": [], "traces": {}}
+```
+
+Failures use `isError: true` and a structured error. A partial enumeration is a successful
+bounded response with `complete: false` and a reason such as `item_limit`,
+`expression_result_limit`, `work_limit`, `depth_limit`, `byte_limit`, `query_error`, or
+`load_failed_or_cancelled`. Narrow the request; there is no cursor, continuation state,
+or automatic pagination. No matches is a valid empty result, not an error.
+
+Common inputs are `limit` (default 100, maximum 1000), `maxWork` (100000, maximum 1000000),
+and `maxDepth` (16, maximum 64). `limit` caps rows **and** values per expression separately.
+Partition inputs are capped at 32, feature IDs at 100, expression lists at 16 and expression
+text at 4096 characters. The configured MCP deadline, per-principal/overall admission caps,
+and result-byte cap also apply. JSON conversion shares the work/depth/byte budget with
+simfil evaluation. Native result construction uses at most one third of the wire allowance
+(capped at 1 MiB), reserving space for text fallback escaping and envelope duplication;
+actual serialized size is checked before sending.
+
+These are cooperative guards, **not a hard sandbox**: datasource I/O, compilation, regex
+engines, custom functions and individual model accessors can contain non-preemptible work.
+A client timeout does not imply rollback of a config mutation. Do not retry uncertain writes
+without rereading the revision. No result pagination or response-task continuation is retained.
+
+JSON values preserve zero, one or many expression results as arrays. Actual arrays remain
+nested arrays; objects remain objects. Non-JSON/lossy scalars use explicit tags:
+
+```json
+[
+  {"$mapget":"undefined"},
+  {"$mapget":"int64","value":"9223372036854775807"},
+  {"$mapget":"uint64","value":"18446744073709551615"},
+  {"$mapget":"bytes","hex":"00ff"},
+  {"$mapget":"nonfinite","value":"Infinity"}
+]
+```
+
+A genuine object containing `$mapget` is escaped as `{"$mapget":"object","value":{...}}`.
+Integers within JavaScript's exact range remain JSON numbers. Null remains null;
+simfil's missing-field behavior is not rewritten (a missing field can yield null and a
+diagnostic). Repeated object fields retain mapget's array/`_multimap` projection.
+
+`trace: true` captures simfil `trace(...)` samples immediately into bounded JSON, rather
+than keeping source models alive. At most 16 names, 100 samples per name, and 512 characters
+per name are allowed. Calls, elapsed microseconds and sample truncation are reported.
+Without the flag, `trace` still forwards values but does not accumulate samples.
+
+### Schema And Expression Semantics
+
+`mapget_query_schema` uses simfil's lazy `SchemaModel` on the same `LayerSchema` graph used
+by completion. Descriptors contain `kind`, `fields`, `elements`, `alternatives`, enum values,
+open/nullable/required flags and terminal recursion/budget markers as appropriate.
+Array elements are possible domains, not fabricated sample records; union alternatives are
+distinct from arrays. Descriptor queries default to `_`; for example:
+
+```json
+{"mapId":"Example","layerId":"Road","featureType":"Road","query":"fields"}
+```
+
+Expression validation instead binds **data** schemas to the compiler. It never evaluates
+against fake features or fetches map data. `scope` is `feature`, `attribute`, or `auto`;
+`rewrite: true` requests the existing search normalization. Auto scope also uses normalization
+when metadata is available. An explicit `attributeSchema` must identify a real attribute context.
+Without it, available attribute contexts are compiled separately. `schemaCertain` reports
+statically resolved accesses against a closed root, not a guarantee that runtime data/functions
+will succeed. `runtimeValidated` is always false. Missing/open/dynamic metadata stays uncertain.
+
+### Extraction And Native Source Links
+
+Tile partitions are `{"kind":"tile","id":131073}`; object IDs are lossless decimal strings,
+for example `{"kind":"object","id":"18446744073709551615"}`. Feature IDs are canonical
+mapget strings. With only primary IDs, the datasource's cheap locate hook supplies candidate
+partitions, then ordinary service/cache loading and exact ID lookup resolve them. This does
+not perform secondary-ID mapping, object discovery, a coverage-wide scan, or direct datasource
+conversion. Supply explicit partitions when the datasource cannot cheaply locate a feature.
+Omitted/empty `featureTypes` searches all types; omitted `predicate` matches all candidates.
+
+```json
+{
+  "mapId":"Example", "layerId":"Road",
+  "partitions":[{"kind":"tile","id":131073}],
+  "predicate":"typeId == 'Road'",
+  "expressions":["id", "properties", "properties.layer.rules.speed.limit"],
+  "geometry":true
+}
+```
+
+Feature rows include source/map/layer/partition/feature ID provenance. Attribute scope iterates
+the same feature-local attribute and validity indices as `/filter`, with its `$feature`, `$name`,
+`$layer`, `$attributeIndex`, `$validityIndex`, `$validityCount`, and `$hasValidity` overlay.
+There is no new `match.` or `feature.` prefix. `geometry: true` computes the selected validity's
+actual geometry, not an unconditionally copied primary shape; failed computation is an issue
+and null geometry. Attribute geometry math is preflighted against a conservative tile vertex
+budget. Default `_` projections still expose the ordinary model, including its geometry/fields.
+
+Source reference projections preserve the native `{layerId,address,qualifier?}` contract,
+with `address` encoded as a decimal u64. Pass its owning map and partition explicitly:
+
+```json
+{
+  "mapId":"Example", "partition":{"kind":"tile","id":131073},
+  "reference":{"layerId":"Raw","address":"137438953536","qualifier":"origin"},
+  "match":"containing", "query":"_"
+}
+```
+
+Default `exact` works for opaque and bit-range addresses. `containing` only supports bit ranges
+and returns **all** minimally enclosing ties, with `matchCount` and `ambiguous` metadata.
+Ranges are absolute even beneath a presentation address scope. A zero-length requested span
+is a point in a half-open range. The qualifier is provenance, not an additional address key.
+Stale links yield an empty list and an issue; traversal/match-limit failure never pretends that
+an incomplete candidate set is unambiguous. No erdblick inspection link format is consumed.
+
+### Configuration Persistence
+
+Enable reads with `mcp-config-read: true`. Enable writes only with all of
+`mcp-config-write: true`, `mcp-direct-config-persistence: true`, and `--allow-post-config`.
+A direct-file deployment may do this; a Docker wrapper that transforms host YAML must **not**
+set direct persistence until it can propagate edits back to the authoritative host file.
+This remains an explicit deployment gate, not a claim that an in-container edit persists.
+
+Get-config excludes host/security settings and schemas. It uses the existing datasource-config
+secret masking rules (password/secret/API-key fields). Datasource authors must not hide secrets
+in arbitrary unmarked fields or URI strings; config-read is an administrative permission,
+not ordinary data read access. Set-config accepts only datasource-schema top-level sections,
+restores recognized masked placeholders, validates the merged document, checks the file revision,
+and atomically replaces the file while preserving mode and unrelated sections. Unknown/stale
+masked placeholders are rejected rather than replacing credentials. Reusing an old revision fails
+with `conflict`. Acknowledgement does not wait for datasource initialization to finish.
+
+### Execution Ownership
+
+`McpServer` owns transport and authenticated response routing. `McpNativeTools` owns immutable
+contracts, admission and one `Call` per native operation. Metadata/query preparation runs as
+bounded tasks on the existing homogeneous `ServiceScheduler` pool; it must never wait for
+another task on that pool. Extraction submits one partition request at a time, evaluates it
+on the delivering worker, then releases the model before loading the next partition. It does
+not accumulate a queue of loaded models or construct another tile cache/worker pool.
+
+The query environment and dictionary are invocation-private. Cached tile/source-data environments,
+metadata schemas and authoritative datasource pools are not mutated. `Attribute::queryContext`
+is shared with `/filter`; `PartitionSourceDataLayer::findSourceData` owns address traversal.
+HTTP and MCP diagnostics share the lightweight snapshot collector, and REST POST/config and
+MCP share the validation/persistence operation. Query errors are returned to that invocation;
+operational exceptions are sanitized rather than exposing arbitrary upstream URLs or secrets.
+
+## Catalog Validation Worklist
+
+Current tests validate native schemas at construction and success envelopes at runtime, exercise
+all native actions with positive/negative examples, and cover real HTTP tool calls in each
+implemented transport revision. Browser catalogs retain their schema-portability checks and
+cross-language fixtures. Native `items` payloads currently remain open in the common output
+schema. This is **not yet full MCP/client conformance**.
+
+- [ ] Pin official protocol schemas for each supported revision and validate every emitted tool/list, success and error envelope against them.
+- [x] Meta-validate native and installed viewer input/output schemas against the supported Draft-07 dialect at startup; reject unsupported keywords and references.
+- [ ] Define per-action output item schemas for stable metadata, conversion, config, diagnostics and extraction envelopes; retain open/tagged query values and test actual outputs against those definitions.
+- [ ] Expand dialect/portability fixtures across every emitted combinator, closed/conditional root, recursive definition and vector schema in the production frontend catalog.
+- [ ] Expand per-action fixtures to exhaustive valid/invalid/boundary inputs and validate actual implementation output, including compound, multiple, empty and limited results.
+- [ ] Run combined native/viewer namespace, routing and catalog-size tests against each regenerated frontend artifact, including headless native mode.
+- [ ] Pin real Codex and Claude client versions in compatibility CI and assert their model-visible inventory, not merely a successful tools/list response.
+- [ ] Validate multimodal image blocks and metadata-only output projections through those clients; codec/HTTP fixtures do not prove model-visible images.
+- [ ] Invoke every safe read and controlled mutation through each supported client/revision; assert cancellation, transport loss, byte limits, error shapes and no mutation replay.
+- [ ] Run the upstream MCP conformance suite and publish a supported-client/revision matrix with the exact tests and deliberate limitations.
+- [ ] Keep hosted PKCE, token refresh, role/audience isolation, JWKS rotation and cross-user session tests as a separate deployment security gate.
