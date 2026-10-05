@@ -124,6 +124,8 @@ class NativeMcpTest(unittest.TestCase):
                     {"name": "Road", "featureType": "DevSrc-Road", "geometry": {"type": "line"}},
                     {"name": "Intersections", "featureType": "DevSrc-Intersection",
                      "geometry": {"type": "point"}}]}]}))
+        if self._testMethodName == "test_screenshot_complete_output_budget":
+            self.extra_options = ["--mcp-result-bytes", "8192"]
         if self._testMethodName == "test_native_config_revision_and_persistence":
             self.extra_options = ["--allow-post-config", "--mcp-config-read", "true",
                                   "--mcp-config-write", "true", "--mcp-direct-config-persistence", "true"]
@@ -353,6 +355,71 @@ class NativeMcpTest(unittest.TestCase):
         _, response = self.begin_rpc("tools/call", {"name": "mapget_list_sources", "arguments": {"clientId": str(uuid.uuid4())}})
         self.assertEqual(self.rpc_result(response)["error"]["code"], -32602)
         self.assertEqual(self.http("GET", "/.well-known/oauth-protected-resource/mcp")[0], 404)
+
+    def test_screenshot_image_content(self):
+        """Image bytes occur once, outside metadata/text, in every supported MCP revision."""
+        viewer = self.viewer()
+        _, listed = self.begin_rpc("tools/list")
+        tool = next(t for t in self.rpc_result(listed)["result"]["tools"]
+                    if t["name"] == "viewer_screenshot")
+        definition = next(a for a in self.catalog["actions"] if a["name"] == tool["name"])
+        self.assertEqual(tool["outputSchema"], definition["outputSchema"]["properties"]["metadata"])
+        original = next(r["value"] for r in self.fixtures["results"]
+                        if r["action"] == "viewer_screenshot" and r["valid"])
+        for protocol in ("2025-06-18", "2025-11-25", "2026-07-28"):
+            _, response = self.begin_rpc("tools/call", {
+                "name": "viewer_screenshot", "arguments": self.arguments(viewer, "viewer_screenshot")},
+                protocol=protocol)
+            invocation = viewer.receive()
+            payload = json.loads(json.dumps(original))
+            if protocol == "2026-07-28":
+                # Exercise the maximum encoded payload without a recursive base64 regex.
+                payload["image"]["data"] = base64.b64encode(b"x" * 180000).decode()
+            self.finish(viewer, invocation, payload)
+            result = self.rpc_result(response)["result"]
+            self.assertFalse(result.get("isError", False), result.get("structuredContent"))
+            self.assertEqual(result["structuredContent"], payload["metadata"])
+            self.assertEqual(len(result["content"]), 2)
+            image = next(c for c in result["content"] if c["type"] == "image")
+            self.assertEqual(image, {"type": "image", **payload["image"]})
+            text = next(c["text"] for c in result["content"] if c["type"] == "text")
+            self.assertEqual(json.loads(text), payload["metadata"])
+            self.assertNotIn("image", result["structuredContent"])
+
+    def test_screenshot_rejects_noncanonical_encoding(self):
+        """Invalid padding/alphabet fails one call, without returning the supplied byte string."""
+        viewer = self.viewer()
+        original = next(r["value"] for r in self.fixtures["results"]
+                        if r["action"] == "viewer_screenshot" and r["valid"])
+        for invalid in ("AB==", "YQ===", "$not-base64$"):
+            _, response = self.begin_rpc("tools/call", {
+                "name": "viewer_screenshot", "arguments": self.arguments(viewer, "viewer_screenshot")})
+            invocation = viewer.receive()
+            payload = json.loads(json.dumps(original))
+            payload["image"]["data"] = invalid
+            self.finish(viewer, invocation, payload)
+            result = self.rpc_result(response)["result"]
+            self.assertTrue(result["isError"])
+            self.assertEqual(result["structuredContent"]["error"]["code"], "internal_error")
+            self.assertFalse(any(c["type"] == "image" for c in result["content"]))
+
+    def test_screenshot_complete_output_budget(self):
+        """Metadata duplication cannot bypass the outgoing budget when the input frame fits."""
+        viewer = self.viewer()
+        _, response = self.begin_rpc("tools/call", {
+            "name": "viewer_screenshot", "arguments": self.arguments(viewer, "viewer_screenshot")})
+        invocation = viewer.receive()
+        original = next(r["value"] for r in self.fixtures["results"]
+                        if r["action"] == "viewer_screenshot" and r["valid"])
+        payload = json.loads(json.dumps(original))
+        payload["image"]["data"] = base64.b64encode(b"x" * 2500).decode()
+        payload["metadata"]["warnings"] = ["w" * 3000]
+        message = self.finish(viewer, invocation, payload)
+        self.assertLess(len(json.dumps(message).encode()), 8192)
+        result = self.rpc_result(response)["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["error"]["code"], "result_too_large")
+        self.assertFalse(any(c["type"] == "image" for c in result["content"]))
 
     def test_real_routing_duplicate_and_reconnect(self):
         """A duplicate terminal reply cannot disable the tab or touch the tile-request protocol."""

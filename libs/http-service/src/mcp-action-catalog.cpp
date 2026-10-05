@@ -82,8 +82,8 @@ McpActionCatalog::McpActionCatalog(nlohmann::json manifest)
         }
         auto const& input = definition.at("inputSchema");
         auto const& output = definition.at("outputSchema");
-        // Routing is injected at the root; root combinators could accidentally reject
-        // clientId in the advertised schema even though native argument validation succeeds.
+        // Routing is injected at the root. Only conditionals which cannot observe clientId
+        // may constrain the same object as the application arguments.
         if (input.value("type", nlohmann::json{}) != "object" ||
             input.value("additionalProperties", nlohmann::json{}) != false ||
             output.value("type", nlohmann::json{}) != "object")
@@ -93,13 +93,9 @@ McpActionCatalog::McpActionCatalog(nlohmann::json manifest)
         }
         for (auto const* keyword :
              {"$ref",
-              "allOf",
               "anyOf",
               "oneOf",
               "not",
-              "if",
-              "then",
-              "else",
               "dependencies",
               "patternProperties",
               "propertyNames",
@@ -123,12 +119,31 @@ McpActionCatalog::McpActionCatalog(nlohmann::json manifest)
                     "Application schemas cannot require the routing clientId.");
             }
         }
+        for (auto const* keyword : {"allOf", "if", "then", "else"}) {
+            if (!input.contains(keyword))
+                continue;
+            if (std::string_view(keyword) == "allOf") {
+                for (auto const& branch : input.at(keyword))
+                    checkRoutingBranch(branch, input.at("properties"));
+            }
+            else
+                checkRoutingBranch(input.at(keyword), input.at("properties"));
+        }
         auto [entry, inserted] = actions_.try_emplace(name);
         if (!inserted) {
             throw std::invalid_argument("Duplicate MCP action name.");
         }
         compileSchema(entry->second.arguments, input);
         compileSchema(entry->second.result, output);
+        if (name == "viewer_screenshot") {
+            // The browser returns {image, metadata}; MCP publishes the image as ImageContent.
+            // Its structured output schema must describe metadata alone and be self-contained.
+            auto const& metadata = output.at("properties").at("metadata");
+            if (metadata.value("type", nlohmann::json{}) != "object")
+                throw std::invalid_argument("MCP screenshot metadata must have an object schema.");
+            nlohmann::json_schema::json_validator projected;
+            compileSchema(projected, metadata);
+        }
         entry->second.definition = std::move(definition);
     }
 
@@ -142,6 +157,49 @@ McpActionCatalog::McpActionCatalog(nlohmann::json manifest)
         for (auto const* field : {"selectorSchema", "valueSchema"}) {
             nlohmann::json_schema::json_validator validator;
             compileSchema(validator, channel.at(field));
+        }
+    }
+}
+
+void McpActionCatalog::checkRoutingBranch(
+    nlohmann::json const& branch,
+    nlohmann::json const& fields,
+    size_t depth)
+{
+    if (depth > 64)
+        throw std::invalid_argument("MCP routing conditionals exceed nesting limit.");
+    if (branch.is_boolean())
+        return;
+    if (!branch.is_object())
+        throw std::invalid_argument("Invalid MCP routing conditional.");
+    for (auto const& [keyword, value] : branch.items()) {
+        if (keyword == "properties") {
+            for (auto const& [field, _] : value.items())
+                if (field == "clientId" || !fields.contains(field))
+                    throw std::invalid_argument(
+                        "MCP conditionals may inspect only declared application fields.");
+        }
+        else if (keyword == "required") {
+            for (auto const& field : value)
+                if (!field.is_string() || field == "clientId" ||
+                    !fields.contains(field.get<std::string>()))
+                    throw std::invalid_argument(
+                        "MCP conditionals may require only declared application fields.");
+        }
+        else if (keyword == "allOf") {
+            for (auto const& child : value)
+                checkRoutingBranch(child, fields, depth + 1);
+        }
+        else if (keyword == "if" || keyword == "then" || keyword == "else") {
+            checkRoutingBranch(value, fields, depth + 1);
+        }
+        else if (
+            keyword != "type" && keyword != "description" && keyword != "title" &&
+            keyword != "$comment")
+        {
+            // A root closure, reference, field-count or object const can treat routing as data.
+            throw std::invalid_argument(
+                "MCP conditional is not invariant under UUID routing injection.");
         }
     }
 }
@@ -318,7 +376,10 @@ nlohmann::json McpActionCatalog::tools(bool allowRead, bool allowControl) const
             {{"name", name},
              {"description", action.definition.at("description")},
              {"inputSchema", std::move(input)},
-             {"outputSchema", action.definition.at("outputSchema")},
+             {"outputSchema",
+              name == "viewer_screenshot" ?
+                  action.definition.at("outputSchema").at("properties").at("metadata") :
+                  action.definition.at("outputSchema")},
              {"annotations", {{"readOnlyHint", !isMutation(name)}}}});
     }
     return result;

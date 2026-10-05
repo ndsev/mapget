@@ -3,9 +3,12 @@
 #include "mapget/log.h"
 #include "tiles-ws-session.h"
 
+#include <drogon/utils/Utilities.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <future>
+#include <stdexcept>
 
 namespace mapget::detail
 {
@@ -359,15 +362,40 @@ McpServer::rpcError(nlohmann::json id, int code, std::string message, nlohmann::
     return {{"jsonrpc", "2.0"}, {"id", std::move(id)}, {"error", std::move(error)}};
 }
 
-nlohmann::json McpServer::toolResult(nlohmann::json reply)
+nlohmann::json McpServer::toolResult(nlohmann::json reply, std::string_view action)
 {
     bool const failed = reply.contains("error");
     auto body = failed ? std::move(reply) : std::move(reply.at("result"));
+    auto content = nlohmann::json::array();
+    if (!failed && action == "viewer_screenshot") {
+        try {
+            auto image = std::move(body.at("image"));
+            auto metadata = std::move(body.at("metadata"));
+            auto const& data = image.at("data").get_ref<std::string const&>();
+            // Do not run a recursive regular expression over a large base64 string. A bounded
+            // codec roundtrip also rejects whitespace, URL-safe alphabets and noncanonical padding.
+            if (image.at("mimeType") != "image/jpeg" || data.empty() || data.size() > 240000 ||
+                drogon::utils::base64Encode(drogon::utils::base64Decode(data)) != data)
+                throw std::invalid_argument("Invalid screenshot image encoding");
+            content.push_back(
+                {{"type", "image"},
+                 {"mimeType", std::move(image.at("mimeType"))},
+                 {"data", std::move(image.at("data"))}});
+            body = std::move(metadata);
+        }
+        catch (...) {
+            return toolResult(
+                {{"error",
+                  {{"code", "internal_error"},
+                   {"message", "Viewer screenshot has invalid image content."}}}});
+        }
+    }
+    content.push_back({{"type", "text"}, {"text", body.dump()}});
     return {
         {"resultType", "complete"},
         {"isError", failed},
-        {"structuredContent", body},
-        {"content", {{{"type", "text"}, {"text", body.dump()}}}}};
+        {"structuredContent", std::move(body)},
+        {"content", std::move(content)}};
 }
 
 void McpServer::initialize(nlohmann::json const& message, Reply const& reply)
@@ -666,9 +694,10 @@ void McpServer::attachResponse(uint64_t id, std::shared_ptr<drogon::ResponseStre
             pending->second.nativeCancellation = std::move(token);
         return;
     }
+    // Retain the action name for result presentation, notably screenshot ImageContent.
     auto call = relay_->invoke(
         std::move(found->second.principal),
-        std::move(found->second.action),
+        found->second.action,
         std::move(found->second.arguments),
         [this, id](auto reply) { completeResponse(id, std::move(reply)); });
     // Invalid/admission-limited calls complete synchronously and may already have erased the
@@ -683,12 +712,25 @@ void McpServer::completeResponse(uint64_t id, nlohmann::json reply)
     if (response.empty() || !response.mapped().stream)
         return;
     auto& state = response.mapped();
-    auto result = toolResult(std::move(reply));
+    auto result = toolResult(std::move(reply), state.action);
     if (!state.modern)
         result.erase("resultType");
     auto body =
         nlohmann::json{{"jsonrpc", "2.0"}, {"id", state.rpcId}, {"result", std::move(result)}}
             .dump();
+    // Image data appears once, but metadata is present in both structured and text content.
+    // Enforce the complete outgoing envelope too, rather than only the incoming browser frame.
+    if (state.action == "viewer_screenshot" && body.size() + 24 > limits_.resultBytes) {
+        auto error = toolResult(
+            {{"error",
+              {{"code", "result_too_large"},
+               {"message",
+                "Screenshot exceeds the MCP result budget; request smaller dimensions."}}}});
+        if (!state.modern)
+            error.erase("resultType");
+        body = nlohmann::json{{"jsonrpc", "2.0"}, {"id", state.rpcId}, {"result", std::move(error)}}
+                   .dump();
+    }
     state.stream->send("event: message\ndata: " + body + "\n\n");
     state.stream->close();
 }

@@ -66,6 +66,12 @@ private:
         nlohmann::json const& root,
         size_t depth,
         size_t& remainingNodes);
+
+    /** Ensure root conditional branches cannot observe/reject an injected routing property. */
+    static void checkRoutingBranch(
+        nlohmann::json const& branch,
+        nlohmann::json const& fields,
+        size_t depth = 0);
 };
 
 }  // namespace mapget::detail

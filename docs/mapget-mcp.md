@@ -18,6 +18,25 @@ Browser tools are described by the installed catalog, not by C++ copies of
 frontend schemas. Native `mapget_*` tools are independent of browser registration
 and do not require `clientId`; see [Native Tools](#native-tools).
 
+### Viewer Image Results
+
+`viewer_screenshot` is a browser-owned read action. Its browser result contains
+`{image, metadata}`: a JPEG/base64 image plus capture dimensions, viewport/layout
+identity, time, readiness and fidelity warnings. The relay validates this complete
+result against the installed browser contract before projecting it for MCP.
+
+For MCP, `tools/list` advertises the self-contained **metadata** schema as
+`outputSchema`. `structuredContent` and the text block contain only that metadata;
+the bytes appear once in a standard `ImageContent` block. They are not returned as
+a large base64 text string, stored file, or externally fetched URL. This is one
+explicit presentation mapping, not a different browser action or capture implementation.
+
+Native framing requires canonical base64, JPEG MIME and at most 240000 encoded
+characters. It also checks the complete outgoing response against `mcp-result-bytes`
+(256 KiB by default), including duplicated metadata and protocol framing. Oversized
+captures fail with `result_too_large`; the browser owns scaling/compression. Readiness
+and fidelity are reported by the capture owner, not inferred from successful delivery.
+
 ## Local Setup
 
 The matching erdblick build generates `web-mcp-actions.json` beside `index.html`.

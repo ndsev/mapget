@@ -123,8 +123,9 @@ private:
     [[nodiscard]] static nlohmann::json
     rpcError(nlohmann::json id, int code, std::string message, nlohmann::json data = nullptr);
 
-    /** Apply MCP tool-result framing to either application success or typed application failure. */
-    [[nodiscard]] static nlohmann::json toolResult(nlohmann::json reply);
+    /** Frame application results; screenshots carry image bytes outside structured/text content. */
+    [[nodiscard]] static nlohmann::json
+    toolResult(nlohmann::json reply, std::string_view action = {});
 
     /** Send action controls directly over the socket, never through the tile payload outbox. */
     [[nodiscard]] static bool

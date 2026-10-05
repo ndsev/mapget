@@ -1,9 +1,9 @@
 # Viewer Action Contract Fixtures
 
-Snapshot of the coordinated erdblick working-tree contract with homogeneous
-camera-vector schemas on 2026-10-05, not a published erdblick release:
+Snapshot of the coordinated erdblick working-tree contract (26 actions and
+20 state channels) on 2026-10-05, not a published erdblick release:
 
-`sha256:d7fe97894636e8b976786a25f01629daaac74d6427aaf29b4d8fa0b2b3f0dbbf`
+`sha256:a6360a7d895663060c226d237145a04d955e829950df6a1a6b3bb6abe8f3afde`
 
 - `web-mcp-actions.json`: erdblick `app/actions/generated/web-mcp-actions.json`.
 - `viewer-action-relay.schema.json`: erdblick
@@ -12,6 +12,7 @@ camera-vector schemas on 2026-10-05, not a published erdblick release:
 
 Generate the two artifacts with erdblick's `npm run generate:viewer-actions`.
 The sources are `app/actions/viewer-action.contract.ts`,
+`app/actions/viewer-operation.contract.ts`, `app/actions/viewer-ui.contract.ts`,
 `app/actions/viewer-action-relay.contract.ts`, and
 `app/shared/app-state-channel.contract.ts`.
 
@@ -28,3 +29,16 @@ not JavaScript UTF-16 code units. Camera offsets remain optional, but when prese
 must contain exactly three numbers in both arguments and results. Their schema
 uses homogeneous `items` with `minItems` and `maxItems`, avoiding tuple-style
 schemas that some MCP clients discover but cannot expose as model-callable tools.
+
+Setter input/output fixtures include conditional channel/value matching. Source
+links retain native signed tile IDs and lossless decimal object/address IDs;
+view-dependent mutation fixtures require the current layout revision.
+
+Screenshot fixtures describe the browser `{image, metadata}` result. Native MCP
+publishes only the metadata schema/structured content, with JPEG bytes in an image
+content block. The small codec fixture is not a pixel-rendering acceptance image.
+
+UI fixtures cover bounded DOM reads, snapshot UID targets, pixel or homogeneous
+split-percentage resize inputs, and rejection of arbitrary HTML/script/CSS access.
+Layout ownership and live-element validation are browser-side behavior; native
+code validates the same generated contract and existing read/control permissions.
