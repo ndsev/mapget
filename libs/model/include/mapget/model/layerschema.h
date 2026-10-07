@@ -230,6 +230,9 @@ public:
     /** Resolve a schema key to the serialized SchemaId domain. */
     [[nodiscard]] simfil::SchemaId schemaId(std::string_view key) const;
 
+    /** Check a transported descriptor identity without materializing its JSON Schema. */
+    [[nodiscard]] bool hasSchema(simfil::SchemaId id) const;
+
     /** Return the packed domain kind, or Unknown when the identity is unavailable. */
     [[nodiscard]] simfil::Schema::Kind kind(simfil::SchemaId schemaId) const;
 
