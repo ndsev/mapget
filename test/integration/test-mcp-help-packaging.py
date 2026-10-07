@@ -27,7 +27,10 @@ add_mcp_doc_folder(COMPONENT test DIRECTORY "${{CMAKE_CURRENT_SOURCE_DIR}}/docs"
 ''')
         subprocess.run(["cmake", "-S", str(source), "-B", str(build)], check=True)
         registry = build / "bin/.mcp-help-sources.json"
-        assert json.loads(registry.read_text()) == {"test": docs.as_posix()}
+        registered = json.loads(registry.read_text())
+        assert set(registered) == {"test"}
+        # CMake may expand Windows 8.3 paths; compare the registered directory, not its spelling.
+        assert Path(registered["test"]).samefile(docs)
         subprocess.run(["cmake", "--build", str(build)], check=True)
         bundle = build / "bin/mcp-help/test"
         assert (bundle / "old.md").is_file()
