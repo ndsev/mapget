@@ -22,6 +22,8 @@ add_library(mapget-http-service STATIC
   src/mcp-auth.h
   src/mcp-auth.cpp
   src/mcp-config.cpp
+  src/mcp-help.h
+  src/mcp-help.cpp
   src/mcp-native-tools.h
   src/mcp-native-call.h
   src/mcp-native-tools.cpp
@@ -70,6 +72,8 @@ target_link_libraries(mapget-http-service
     gridsource
     geojsonsource
   PRIVATE
+    SQLite::SQLite3
+    ${CMAKE_DL_LIBS}
     jwt-cpp::jwt-cpp
     picosha2
     zlibstatic)

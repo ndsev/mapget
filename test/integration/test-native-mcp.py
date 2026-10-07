@@ -248,7 +248,7 @@ class NativeMcpTest(unittest.TestCase):
             result = self.rpc_result(response)["result"]
             self.assertEqual(result["resultType"], "complete")
             if method == "tools/list":
-                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 12)
+                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 13)
             else:
                 self.assertEqual(result["supportedVersions"], ["2026-07-28"])
         self.assertEqual(self.call("viewer_list_sessions", {})["structuredContent"], {"sessions": []})
@@ -356,11 +356,55 @@ class NativeMcpTest(unittest.TestCase):
         diagnostics = self.call("mapget_get_diagnostics", {"sections": ["workers"]})["structuredContent"]
         self.assertTrue(diagnostics["items"])
 
+    def test_documentation_hot_reload_and_protocols(self):
+        """Source edits are visible on the next call without CMake, reconnect or a browser."""
+        folder = Path(self.directory.name) / "mcp-help"
+        folder.mkdir()
+        guide = folder / "guide.md"
+        guide.write_text("<!-- mcp: -->\n# Quokkaroute\nFirst version.\n", encoding="utf-8")
+        for protocol in ("2025-06-18", "2025-11-25", "2026-07-28"):
+            _, response = self.begin_rpc("tools/call", {
+                "name": "mapget_docs", "arguments": {"query": "quokkaroute"}}, protocol=protocol)
+            result = self.rpc_result(response)["result"]
+            self.assertFalse(result.get("isError", False), result)
+            docs = result["structuredContent"]
+            self.assertTrue(docs["complete"], docs)
+            self.assertEqual(len(docs["items"]), 1)
+            self.assertIn("First version", docs["items"][0]["content"])
+            self.assertEqual(json.loads(result["content"][0]["text"]), docs)
+        title = docs["items"][0]["title"]
+        guide.write_text("<!-- mcp: -->\n# Quokkaroute\nLater version.\n", encoding="utf-8")
+        updated = self.call("mapget_docs", {"title": title})["structuredContent"]
+        self.assertNotEqual(updated["revision"], docs["revision"])
+        self.assertIn("Later version", updated["items"][0]["content"])
+        guide.write_text("<!-- mcp:\nbroken: annotation\n-->\n# Quokkaroute\n", encoding="utf-8")
+        failed = self.call("mapget_docs", {"title": title})["structuredContent"]
+        self.assertEqual(failed["revision"], updated["revision"])
+        self.assertEqual(failed["items"], updated["items"])
+        self.assertEqual(failed["reason"], "docs_reload_failed")
+        guide.unlink()
+        deleted = self.call("mapget_docs", {"title": title})["structuredContent"]
+        self.assertTrue(deleted["complete"])
+        self.assertEqual(deleted["items"], [])
+
+    def test_documentation_input_and_work_budgets(self):
+        """Help follows native read/schema/budget contracts rather than a separate protocol."""
+        _, response = self.begin_rpc("tools/call", {"name": "mapget_docs", "arguments": {
+            "query": "arrays", "title": "Arrays"}})
+        self.assertIn("error", self.rpc_result(response))
+        partial = self.call("mapget_docs", {"query": "arrays", "maxWork": 1})["structuredContent"]
+        self.assertFalse(partial["complete"])
+        self.assertEqual(partial["reason"], "work_limit")
+        complete = self.call("mapget_docs", {"query": "cardinality"})["structuredContent"]
+        self.assertTrue(complete["complete"], complete)
+        self.assertTrue(any(item.get("source", "").startswith("simfil/") for item in complete["items"]))
+
     def test_headless_native_catalog(self):
         """A native-only server needs neither a webapp nor a generated browser catalog."""
         _, response = self.begin_rpc("tools/list")
         names = {tool["name"] for tool in self.rpc_result(response)["result"]["tools"]}
-        self.assertEqual(len(names), 12)
+        self.assertEqual(len(names), 13)
+        self.assertIn("mapget_docs", names)
         self.assertIn("mapget_extract_source_data", names)
         self.assertIn("mapget_get_coverage", names)
         self.assertIn("viewer_list_sessions", names)
@@ -555,7 +599,7 @@ class NativeMcpTest(unittest.TestCase):
             _, response = self.begin_rpc("tools/list", protocol=protocol)
             tools = self.rpc_result(response)["result"]
             self.assertNotIn("resultType", tools)
-            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 12)
+            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 13)
             _, response = self.begin_rpc("tools/call", {
                 "name": "viewer_set_app_state", "arguments": self.arguments(viewer, "viewer_set_app_state")},
                 protocol=protocol)
@@ -714,6 +758,37 @@ class NativeMcpConfigTest(unittest.TestCase):
         self.assertEqual(self.http("/mcp/info")[0], 200)
         self.assertEqual(self.http("/mcp/info", {"Host": f"localhost:{self.port}"})[0], 403)
         self.assertEqual(self.http("/mcp/info", {"Origin": f"http://localhost:{self.port}"})[0], 403)
+
+    def help_query(self, query):
+        """Read an MCP result through a real initialized-era SSE response."""
+        status, payload = self.http("/mcp", {
+            "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-11-25"}, "POST", json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                    "name": "mapget_docs", "arguments": {"query": query}}}))
+        self.assertEqual(status, 200)
+        message = json.loads(next(line[6:] for line in payload.splitlines() if line.startswith("data: ")))
+        self.assertFalse(message["result"].get("isError", False), message)
+        return message["result"]["structuredContent"]
+
+    def test_help_yaml_paths_are_config_relative(self):
+        """No caller cwd assumption or explicit catalog option leaks into help folder resolution."""
+        self.settings["mcp-help-docs"] = ["help"]
+        folder = self.config_path.parent / "help"
+        folder.mkdir()
+        (folder / "guide.md").write_text("<!-- mcp: -->\n# Quokkayaml\nYAML help.\n")
+        self.start()
+        self.assertEqual(len(self.help_query("quokkayaml")["items"]), 1)
+
+    def test_help_cli_replaces_yaml_roots_and_is_cwd_relative(self):
+        """Development roots are additive to bundles, but CLI replaces the YAML extra list."""
+        self.settings["mcp-help-docs"] = ["help"]
+        for parent, title in ((self.config_path.parent, "Quokkayaml"), (self.directory, "Quokkacli")):
+            (parent / "help").mkdir()
+            (parent / "help" / "guide.md").write_text(f"<!-- mcp: -->\n# {title}\nHelp.\n")
+        self.start("--mcp-help-docs", "help")
+        self.assertEqual(self.help_query("quokkayaml")["items"], [])
+        self.assertEqual(len(self.help_query("quokkacli")["items"]), 1)
 
     def test_default_catalog_follows_webapp_mount(self):
         """The public manifest is found under the mounted directory, not the YAML or cwd."""

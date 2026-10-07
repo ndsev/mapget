@@ -478,6 +478,10 @@ returns successfully.
   scheduling run on the I/O thread, not datasource discovery.
 - `attachment-handler.cpp`: attachment validation, routing, ETags, and
   conditional responses.
+- `mcp-help.cpp`: source-backed, annotated Markdown sections in one mutex-protected
+  SQLite FTS5 index. Native help calls and coalesced periodic refreshes run on service
+  workers; rebuild failures roll back the index transaction. See
+  [documentation search and packaging](mapget-mcp.md#documentation-search).
 
 Small endpoints such as `/sources`, `/location`, `/locate`, `/status`,
 `/status-data`, and `/config` return ordinary responses.

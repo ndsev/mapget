@@ -72,6 +72,26 @@ void McpNativeTools::buildCatalog()
               {"openWorldHint", true}}}};
     };
 
+    add("mapget_docs",
+        "Search documentation and workflow examples by plain keywords, or read one exact returned "
+        "title. "
+        "Includes the full Markdown of the top three matches and up to five further titles; an "
+        "empty call lists sections. "
+        "Source edits reload before querying. revision identifies the corpus; no browser session "
+        "required.",
+        {{"query", string(4096)}, {"title", string(2048)}});
+    auto& docs = actions_["mapget_docs"].tool;
+    docs["inputSchema"]["not"] = {{"required", {"query", "title"}}};
+    docs["inputSchema"]["properties"]["limit"] = integer(1, 8);
+    docs["inputSchema"]["properties"]["limit"]["default"] = 8;
+    docs["outputSchema"]["properties"]["items"] = array(
+        object(
+            {{"title", string(2048)}, {"content", {{"type", "string"}}}, {"source", string(2048)}},
+            {"title"}),
+        8);
+    docs["outputSchema"]["properties"]["revision"] = {{"type", {"string", "null"}}};
+    docs["outputSchema"]["required"].push_back("revision");
+
     add("mapget_list_sources",
         "List authorized sources in configuration order, with lifecycle state and compact layer "
         "metadata including feature types and ordered ID compositions. Excludes feature-model "

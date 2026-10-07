@@ -782,6 +782,7 @@ void McpServer::tick()
 {
     if (stopped_)
         return;
+    native_->refreshHelp();
     relay_->expire();
     std::vector<uint64_t> closed;
     std::vector<uint64_t> timedOut;

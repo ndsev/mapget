@@ -730,6 +730,17 @@ struct ServeCommand
         if (mcp_.mode != McpConfig::Mode::Off) {
             auto* serveCmd = app_.get_subcommand("serve");
             auto const& commandLineOptions = serveCmd->parse_order();
+            if (config && *config &&
+                std::find(
+                    commandLineOptions.begin(),
+                    commandLineOptions.end(),
+                    serveCmd->get_option("--mcp-help-docs")) == commandLineOptions.end())
+            {
+                for (auto& path : mcp_.helpDocs)
+                    if (path.is_relative())
+                        path = std::filesystem::absolute(config->as<std::string>()).parent_path() /
+                            path;
+            }
             for (auto const& [path, name] :
                  {std::pair{&mcp_.catalogPath, "--mcp-catalog"},
                   std::pair{&mcp_.jwksFile, "--mcp-jwks-file"}})

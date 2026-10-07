@@ -8,6 +8,7 @@ add_executable(test.mapget
   test-mcp-relay.cpp
   test-mcp-auth.cpp
   test-mcp-native.cpp
+  test-mcp-help.cpp
   test-feature-id-index.cpp
   test-model-geometry.cpp
   test-filter-service.cpp

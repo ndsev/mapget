@@ -113,8 +113,12 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+  include(cmake/McpHelp.cmake)
+  add_mcp_doc_folder(COMPONENT mapget DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs")
+  add_mcp_doc_folder(COMPONENT simfil DIRECTORY "${simfil_SOURCE_DIR}/docs")
   add_subdirectory(libs/http-datasource)
   add_subdirectory(libs/http-service)
+  add_dependencies(mapget-http-service mapget-mcp-docs)
   add_subdirectory(apps/mapget)
 endif()
 

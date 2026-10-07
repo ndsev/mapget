@@ -112,12 +112,13 @@ TEST_CASE("MCP CLI settings are individual typed options", "[mcp-auth][mcp-actio
     config.addOptions(app);
     app.parse(
         "--mcp local --mcp-timeout-ms 42 --mcp-sessions 3 --mcp-catalog web-mcp-actions.json "
-        "--mcp-allowed-hosts localhost:8099 127.0.0.1:8099");
+        "--mcp-allowed-hosts localhost:8099 127.0.0.1:8099 --mcp-help-docs docs extra.md");
     CHECK(config.mode == mapget::McpConfig::Mode::Local);
     CHECK(config.limits.timeout == std::chrono::milliseconds(42));
     CHECK(config.limits.sessions == 3);
     CHECK(config.allowedHosts.size() == 2);
     CHECK(config.catalogPath == "web-mcp-actions.json");
+    CHECK(config.helpDocs == std::vector<std::filesystem::path>{"docs", "extra.md"});
     CHECK(app.get_option("--mcp")->results() == std::vector<std::string>{"local"});
     CHECK_THROWS_AS(app.parse("--mcp automatic"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp 1"), CLI::ParseError);

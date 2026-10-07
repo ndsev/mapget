@@ -37,6 +37,9 @@ characters. It also checks the complete outgoing response against `mcp-result-by
 captures fail with `result_too_large`; the browser owns scaling/compression. Readiness
 and fidelity are reported by the capture owner, not inferred from successful delivery.
 
+<!-- mcp:
+keywords: [MCP, local setup, connection, CLI, authentication]
+-->
 ## Local Setup
 
 The matching erdblick build generates `web-mcp-actions.json` beside `index.html`.
@@ -216,6 +219,7 @@ occurrences; YAML lists use the usual sequence syntax.
 | `mcp` | `off` | `off`, loopback-only `local`, or `oauth` |
 | `mcp-endpoint` | Local listener URL | Canonical public resource URL ending in `/mcp`; also the required audience |
 | `mcp-catalog` | `<webapp>/web-mcp-actions.json` | Trusted generated catalog |
+| `mcp-help-docs` | None | Additional trusted Markdown directories/files; supplements bundled docs and `<webapp>/mcp-help`; contents hot-reload |
 | `mcp-allowed-hosts` | Local loopback names and port | Exact HTTP Host allowlist; required for OAuth |
 | `mcp-allowed-origins` | Local loopback HTTP origins | Exact browser Origin allowlist; required for OAuth |
 | `mcp-issuer` | None | Trusted HTTPS issuer |
@@ -357,6 +361,7 @@ machine-readable catalog. Permission-filtered listing does not replace call-time
 
 | Tool | Inputs beyond common budgets | Result |
 | --- | --- | --- |
+| `mapget_docs` | Optional `query` or exact returned `title` | Up to three complete Markdown sections and five further titles, plus the content `revision`; no browser required |
 | `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId` | Ordered source IDs, lifecycle/progress, partition kind, levels, feature types and ordered ID compositions; coverage-range counts but no coverage records or serialized feature-model schemas |
 | `mapget_get_coverage` | `mapId`, `layerId`; optional `sourceId`, `level` | Advertised tile-grid rectangles and exact sparse occupancy masks; `coverageKnown` distinguishes unspecified coverage |
 | `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType` or `schemaId`, `query`, `trace` | Semantic feature/attribute overview by default; focused sequences of descriptor metadata with navigable `$ref` identities |
@@ -386,6 +391,9 @@ is authorized again after catalog selection. `sourceId` disambiguates authorized
 sharing a map/layer; it does not bypass ACLs. Source-reference targets are authorized
 independently. Never return the JWT itself to the datasource.
 
+<!-- mcp:
+keywords: [schema discovery, query, feature type, attributes, filtering, cardinality]
+-->
 ### Designing Search Filters
 
 Start with `viewer_get_app_state` and its active `view.layers` map/layer identities.
@@ -440,6 +448,9 @@ over the active map/layer. Unresolved metadata indicates uncertainty, not an
 invalid runtime field. For runtime sampling, `mapget_extract_features` requires
 explicit nonempty partitions or canonical primary feature IDs; it never scans a map.
 
+<!-- mcp:
+keywords: [partial results, limits, extraction, integer, bytes]
+-->
 ### Results And Budgets
 
 Success is an object in `structuredContent`, with the same JSON in a text content block:
@@ -494,6 +505,9 @@ than keeping source models alive. At most 16 names, 100 samples per name, and 51
 per name are allowed. Calls, elapsed microseconds and sample truncation are reported.
 Without the flag, `trace` still forwards values but does not accumulate samples.
 
+<!-- mcp:
+keywords: [schema, descriptor, validation, completion, simfil]
+-->
 ### Schema And Expression Semantics
 
 `mapget_query_schema` uses simfil's lazy `SchemaModel` on the same `LayerSchema` graph used
@@ -514,6 +528,9 @@ Without it, available attribute contexts are compiled separately. `schemaCertain
 statically resolved accesses against a closed root, not a guarantee that runtime data/functions
 will succeed. `runtimeValidated` is always false. Missing/open/dynamic metadata stays uncertain.
 
+<!-- mcp:
+keywords: [extract features, source data, provenance, native reference]
+-->
 ### Extraction And Native Source Links
 
 Tile partitions are `{"kind":"tile","id":131073}`; object IDs are lossless decimal strings,
@@ -560,6 +577,9 @@ is a point in a half-open range. The qualifier is provenance, not an additional 
 Stale links yield an empty list and an issue; traversal/match-limit failure never pretends that
 an incomplete candidate set is unambiguous. No erdblick inspection link format is consumed.
 
+<!-- mcp:
+keywords: [configuration, permissions, persistence, revision]
+-->
 ### Configuration Persistence
 
 Enable reads with `mcp-config-read: true`. Enable writes only with all of
@@ -592,6 +612,134 @@ is shared with `/filter`; `PartitionSourceDataLayer::findSourceData` owns addres
 HTTP and MCP diagnostics share the lightweight snapshot collector, and REST POST/config and
 MCP share the validation/persistence operation. Query errors are returned to that invocation;
 operational exceptions are sanitized rather than exposing arbitrary upstream URLs or secrets.
+
+<!-- mcp:
+keywords: [help, documentation, keywords, tool workflows, hot reload]
+-->
+## Documentation Search
+
+Call `mapget_docs` with plain keywords rather than FTS syntax:
+
+```json
+{"query":"array cardinality attribute search"}
+```
+
+The result uses the usual `items`, `complete`, `reason`, `issues`, and `traces`
+envelope, plus a SHA-256 `revision` of the documentation corpus. The first three
+matches contain `title`, `content` (the full Markdown section), and a portable
+`source` path. Up to five further matches contain just `title`. This deliberate
+selection is not reported as truncation. The normal byte/work/time budgets can
+still make a response incomplete. `limit` defaults to eight and can reduce that
+selection; there is no pagination.
+
+Pass one returned title verbatim to read that section, using the same response
+shape with one item. `query` and `title` are mutually exclusive. An empty call
+lists the first eight sections in title order. No match returns an empty list,
+not an invented explanation. Retrieval uses SQLite FTS5/BM25, weighting titles
+above annotation keywords above content; it is lexical, not semantic search.
+
+Each invocation checks current files before querying, including changes whose
+file size and modification time are unchanged. A background check also runs
+approximately every two seconds when service workers are available. New, renamed,
+and deleted Markdown files are recognized without a restart or CMake step.
+Changing configured root paths still requires restarting. Documentation changes
+do not change the tool schema, so clients need no catalog refresh or reconnect.
+Tool implementations and compiled descriptions retain their normal build lifecycle.
+
+Add deployment-specific documentation through the ordinary configuration pipeline:
+
+```yaml
+mapget:
+  serve:
+    mcp: local
+    host: 127.0.0.1
+    port: 8099
+    mcp-help-docs:
+      - customer-docs
+      - extra-examples.md
+```
+
+Relative YAML paths resolve beside the configuration file; relative CLI paths
+resolve against the working directory. A CLI list replaces the YAML extra list,
+not the bundled docs. `<resolved-webapp-root>/mcp-help` is included automatically,
+including when the webapp uses a mount prefix. Missing optional folders can appear
+later. Register only trusted content: these documents become agent-visible context.
+The tool accepts neither filesystem paths nor remote URLs from its caller.
+
+### Authoring Help Sections
+
+Folder registration includes `.md` files recursively, but only marked sections
+become searchable. Place a YAML annotation immediately before an ATX heading:
+
+````markdown
+<!-- mcp:
+keywords: [array length, cardinality, collection size]
+hint: Distinguish array length from the number of non-false expression results.
+-->
+### Array Cardinality
+
+Use `#items` to measure one array:
+
+```simfil
+#items > 3
+```
+````
+
+`<!-- mcp: -->` alone is sufficient. Supported metadata is `title` (optional
+override), `keywords` (a list of strings), and `hint` (optional prose appended
+as MCP guidance). No tool names or handwritten snippet IDs are required. Generic
+upstream docs should use domain vocabulary, not downstream action names.
+
+A section extends through its subsections until the next equal/higher heading.
+An independently marked subsection is also searchable; its content remains in
+the parent section. Fenced examples are preserved and not parsed as annotations.
+Ordinary HTML comments and portal `--8<--` directives are omitted, not expanded.
+Mark the actual source section rather than a wrapper that consists only of includes.
+
+Titles are automatically qualified by portable component/file and heading ancestry;
+an explicit title replaces the heading ancestry, not the file qualification.
+Duplicate qualified titles, malformed annotations, and unreadable files reject
+the refresh. Errors are logged with document/line context where available. Queries
+then return the last valid corpus with `complete: false`, `docs_reload_failed`,
+and its unchanged revision; a later successful refresh clears the error. Before
+the first successful load, the revision is `null`. Directory scans are limited
+to 100,000 entries, 4,096 Markdown files, 1 MiB per file, and 16 MiB total content;
+at most 4,096 sections can be indexed.
+Nested directory symlinks are not followed. Overlapping roots index each physical
+file once. Avoid copying the same document into multiple independent roots.
+
+### Source And Packaged Documentation
+
+Server builds include the folder helper from `cmake/McpHelp.cmake`:
+
+```cmake
+add_mcp_doc_folder(COMPONENT simfil DIRECTORY "${simfil_SOURCE_DIR}/docs")
+```
+
+Register each logical component once. Mapget registers its own and simfil's docs;
+the MapViewer build registers its product, frontend and enabled datasource docs.
+Upstream projects do not depend on mapget's CMake helper. Each registration records
+the source directory in the build-local `.mcp-help-sources.json` next to the binary
+module. Local servers scan those original directories directly; no intermediate
+copy/build/configure step is involved when editing or adding Markdown. Adding a
+new registration requires configuration once.
+
+The `mapget-mcp-docs` target stages fresh Markdown copies under `mcp-help/<component>`
+on each build, removing stale files. Installations, wheels and Docker packages
+include the copied tree but **not** the development registry. Bundle lookup is
+relative to the native module, including a Python extension, not the process cwd
+or Python interpreter. A registered source directory replaces its component's
+entire bundled directory; deleting a source snippet cannot resurrect an old copy.
+
+`McpNativeTools` owns one `McpHelp` SQLite index. A help-local mutex serializes reads
+and transactional reindexing; no alternate database, watcher thread or service-wide
+lock is needed. The MCP timer schedules at most one refresh on the existing service
+workers. Shutdown drains it with the other native operations. Help queries check
+cancellation/work/time budgets while scanning and parsing; failed rebuilds roll back.
+
+For agent-feedback experiments, edit the canonical annotated Markdown, invoke
+`mapget_docs` again, and record the response revision with the trial. The supervisor
+can change examples and guidance without restarting the tested agent or server.
 
 ## Catalog Validation Worklist
 
