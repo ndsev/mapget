@@ -1,4 +1,5 @@
 #include "mcp-native-tools.h"
+#include "simfil/model/schema.h"
 
 namespace mapget::detail
 {
@@ -36,10 +37,9 @@ void McpNativeTools::buildCatalog()
                   {{"kind", {{"const", "object"}}},
                    {"id", {{"type", "string"}, {"pattern", "^[0-9]{1,20}$"}}}},
                   {"kind", "id"})})}};
-    auto budgets = Json{
-        {"limit", integer(1, 1000)},
-        {"maxWork", integer(1, 1000000)},
-        {"maxDepth", integer(1, 64)}};
+    auto budgets = Json{{"limit", integer(1, 1000)}, {"maxWork", integer(1, 1000000)}};
+    budgets["limit"]["default"] = 100;
+    budgets["maxWork"]["default"] = 100000;
     auto selection = Json{{"mapId", string()}, {"layerId", string()}, {"sourceId", string()}};
     auto query = Json{{"query", string(4096)}, {"trace", {{"type", "boolean"}}}};
     auto output = object(
@@ -73,11 +73,22 @@ void McpNativeTools::buildCatalog()
     };
 
     add("mapget_list_sources",
-        "List authorized sources and compact layers in configuration order, without feature-model "
-        "schemas. "
-        "No browser required. Results are bounded; incomplete results require a narrower filter, "
-        "not a cursor.",
+        "List authorized sources in configuration order, with lifecycle state and compact layer "
+        "metadata including feature types and ordered ID compositions. Excludes feature-model "
+        "schemas and coverage records; performs no tile I/O.",
         selection);
+    auto coverage = selection;
+    coverage["level"] = integer(0, 15);
+    coverage["level"]["description"] = "Restrict advertised ranges to this NDS tile level.";
+    add("mapget_get_coverage",
+        "Read a layer's advertised NDS tile-grid coverage. min/max are packed grid-corner IDs, "
+        "not a numeric ID interval. Sparse filled masks use row-major order (x increasing, then "
+        "y increasing); empty masks mean full rectangles. "
+        "coverageKnown=false means unspecified coverage, not an empty map; no matching ranges "
+        "does not prove data absent. For object layers this describes discovery-tile coverage, "
+        "not object IDs. limit caps complete ranges; no tile I/O.",
+        coverage,
+        {"mapId", "layerId"});
     add("mapget_get_diagnostics",
         "Read a bounded timestamped operational snapshot. Requires separate global diagnostics "
         "permission; "
@@ -100,10 +111,18 @@ void McpNativeTools::buildCatalog()
     auto schema = selection;
     schema.update(query);
     schema["featureType"] = string();
+    schema["schemaId"] = integer(1, simfil::MaxSchemaId);
+    schema["schemaId"]["description"] =
+        "Open a descriptor's $ref within this layer; mutually exclusive with featureType.";
+    schema["query"]["description"] =
+        "Simfil over descriptor metadata, e.g. fields.properties.fields or **.typename; "
+        "evaluates the full lazy graph, not the default overview.";
     add("mapget_query_schema",
-        "Query lazy schema descriptors, not feature data. Optional featureType selects a root. "
-        "query defaults to _; fields/elements/alternatives describe object/array/union domains. "
-        "Each expression yields a sequence; recursive graphs and large results are bounded.",
+        "Inspect schema descriptors, not feature values. Without query, show feature fields and "
+        "attribute-layer/name inventories, referencing attribute internals and other compound "
+        "domains by $ref. schemaId opens one definition. fields/elements/alternatives distinguish "
+        "objects, arrays and logical combinations; explicit queries are not overview-limited. "
+        "No tile I/O.",
         schema,
         {"mapId", "layerId"});
     auto validation = selection;
@@ -116,14 +135,16 @@ void McpNativeTools::buildCatalog()
     add("mapget_validate_expression",
         "Compile simfil with mapget functions and the chosen layer schema, without tile I/O. "
         "Optional search normalization uses the same schema normalization as /filter. "
-        "Syntax validity is not proof of runtime success; unresolved/dynamic schema references "
-        "remain unknown.",
+        "Syntax validity is not proof of runtime success. Unresolved/dynamic access means "
+        "metadata cannot prove a path, not that the field or data is absent.",
         validation,
         {"mapId", "layerId", "expression"});
     auto features = selection;
     features.update(query);
     features["partitions"] = array(partition, 32);
+    features["partitions"]["minItems"] = 1;
     features["featureIds"] = array(string(2048), 100);
+    features["featureIds"]["minItems"] = 1;
     features["featureTypes"] = array(string(), 64);
     features["scope"] = {{"enum", {"feature", "attribute"}}};
     features["predicate"] = string(4096);
@@ -141,6 +162,8 @@ void McpNativeTools::buildCatalog()
         "Unsafe integers and bytes use explicit $mapget tags; no browser or pagination.",
         features,
         {"mapId", "layerId"});
+    actions_["mapget_extract_features"].tool["inputSchema"]["anyOf"] =
+        Json::array({{{"required", {"partitions"}}}, {{"required", {"featureIds"}}}});
     auto source = selection;
     source.update(query);
     source["partitions"] = array(partition, 32);
