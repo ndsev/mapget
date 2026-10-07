@@ -1525,20 +1525,16 @@ struct LayerSchema::Impl
         if (!valid(id)) {
             return true;
         }
-        if (fieldName == "attributes" &&
-            metaType(id) == "Feature" &&
-            schemas_[id].childSchemas_.contains(std::string(fieldName))) {
-            // `attributes` is a feature-root alias for `properties`, but it is
-            // intentionally kept out of direct/flat field caches so schema-
-            // generated paths remain canonical.
-            return true;
-        }
         finalize(id);
         if (!schemas_[id].complete_) {
             return true;
         }
         auto const& fields = schemas_[id].flatFields_;
-        return std::ranges::binary_search(fields, fieldName);
+        // The flat index intentionally contains only canonical fields. It cannot
+        // distinguish an ordinary properties field from a nested Feature's alias,
+        // so retain both possibilities rather than pruning a reachable attributes lookup.
+        return std::ranges::binary_search(fields, fieldName) ||
+            (fieldName == "attributes" && std::ranges::binary_search(fields, "properties"));
     }
 
     [[nodiscard]] bool canHaveEnumSymbol(simfil::SchemaId id, std::string_view symbolName)
@@ -2124,9 +2120,6 @@ private:
         auto const shouldAddFeatureAttributesAlias = reservedIds_.empty() &&
             metaType == "Feature" && propertiesIt->contains("properties") &&
             !propertiesIt->contains("attributes");
-        if (shouldAddFeatureAttributesAlias) {
-            registry_.addDirectField(id, "attributes");
-        }
 
         for (auto const& [fieldName, childSchemaJson] : propertiesIt->items()) {
             if (!reservedIds_.empty() && fieldName == "_multimap" &&
@@ -2322,8 +2315,23 @@ public:
     /** Resolve edge metadata through this binding's namespace. */
     auto fieldRequired(simfil::StringId field) const -> std::optional<bool> override
     {
-        auto name = strings_->resolve(field);
+        auto name = strings_->resolve(canonicalField(field));
         return name ? registry_->fieldRequired(id_, *name) : std::nullopt;
+    }
+
+    /** Match Feature::get's attributes alias while keeping field enumeration canonical. */
+    auto canonicalField(simfil::StringId field) const -> simfil::StringId override
+    {
+        if (field == StringPool::AttributesStr &&
+            simfil::Schema::kindNameId(kind()) ==
+                simfil::Schema::kindNameId(LayerSchema::FeatureKind))
+        {
+            auto fields = registry_->directFields(id_);
+            if (std::ranges::find(fields, "attributes") == fields.end() &&
+                std::ranges::find(fields, "properties") != fields.end())
+                return StringPool::PropertiesStr;
+        }
+        return field;
     }
 
     /** Resolve the field id through the datasource-owned pool and match by name. */
@@ -2874,6 +2882,11 @@ simfil::SchemaId LayerSchema::schemaId(std::string_view key) const
         return simfil::NoSchemaId;
     }
     return it->second;
+}
+
+bool LayerSchema::hasSchema(simfil::SchemaId id) const
+{
+    return impl_->valid(id);
 }
 
 simfil::Schema::Kind LayerSchema::kind(simfil::SchemaId schemaId) const

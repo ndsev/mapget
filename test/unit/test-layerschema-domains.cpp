@@ -41,6 +41,93 @@ bool suggests(
 }  // namespace
 
 TEST_CASE(
+    "Feature lookup aliases resolve canonical schema paths without duplicating enumeration",
+    "[schema-domain]")
+{
+    auto schema = std::make_shared<LayerSchema>();
+    auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Intersection"), "Feature");
+    auto properties = schema->addSchema(Kind::Object);
+    auto roads = schema->addSchema(Kind::Array);
+    auto road = schema->addSchema(Kind::Int);
+    auto wrapper = schema->addSchema(Kind::Object);
+    schema->addFieldSchema(root, "properties", properties);
+    schema->addFieldSchema(properties, "connectedRoads", roads);
+    schema->addElementSchema(roads, road);
+    schema->addFieldSchema(wrapper, "$feature", root);
+    schema->finalize();
+
+    for (bool imported : {false, true}) {
+        auto registry = imported ? LayerSchema::fromJsonSchema(schema->toJsonSchema()) : schema;
+        auto strings = std::make_shared<StringPool>("FeatureAliasTest");
+        auto env = makeEnvironment(strings);
+        installCompletionLayerSchema(*env, registry, strings);
+        for (auto query :
+             {"#attributes.connectedRoads > 3",
+              "attributes.connectedRoads == 'x'",
+              "**.attributes.connectedRoads",
+              "**.attributes.connectedRoads == 'x'",
+              "#properties.connectedRoads > 3"})
+        {
+            CAPTURE(imported, query);
+            auto ast = simfil::compile(*env, query, {.any = false});
+            REQUIRE(ast);
+            auto refs = simfil::referencedSchemaPaths(*env, **ast, root);
+            REQUIRE(refs);
+            REQUIRE_FALSE(refs->hasUnresolvedAccess);
+            REQUIRE(refs->paths.size() == 1);
+            CHECK(refs->paths[0].path[0].field == StringPool::PropertiesStr);
+        }
+        CHECK(suggests(*env, root, "attributes.connectedR", "connectedRoads"));
+        auto fields = simfil::Schema::fieldPaths(
+            root,
+            env->querySchemaCallback,
+            strings->get("connectedRoads"));
+        REQUIRE(fields.size() == 1);
+        CHECK(fields[0][0].field == StringPool::PropertiesStr);
+        auto ast = simfil::compile(*env, "#$feature.attributes.connectedRoads > 3", {.any = false});
+        REQUIRE(ast);
+        auto refs = simfil::referencedSchemaPaths(*env, **ast, wrapper);
+        REQUIRE(refs);
+        REQUIRE_FALSE(refs->hasUnresolvedAccess);
+        CHECK(refs->paths[0].path[1].field == StringPool::PropertiesStr);
+        CHECK(registry->canHaveField(wrapper, "attributes"));
+        auto recursive = simfil::compile(*env, "**.attributes.connectedRoads", {.any = false});
+        REQUIRE(recursive);
+        auto nestedRefs = simfil::referencedSchemaPaths(*env, **recursive, wrapper);
+        REQUIRE(nestedRefs);
+        REQUIRE_FALSE(nestedRefs->hasUnresolvedAccess);
+        REQUIRE(nestedRefs->paths.size() == 1);
+        CHECK(nestedRefs->paths[0].path[1].field == StringPool::PropertiesStr);
+        auto aliases =
+            simfil::Schema::fieldPaths(root, env->querySchemaCallback, StringPool::AttributesStr);
+        REQUIRE(aliases.size() == 1);
+        CHECK(aliases[0][0].field == StringPool::PropertiesStr);
+        CHECK(
+            std::ranges::find(registry->nestedFields(wrapper), "attributes") ==
+            registry->nestedFields(wrapper).end());
+    }
+
+    // Feature::get gives a real attributes member precedence over its properties alias.
+    auto real = schema->addSchema(Kind::Object);
+    schema->addFieldSchema(real, "actual", road);
+    schema->addFieldSchema(root, "attributes", real);
+    schema->finalize();
+    auto strings = std::make_shared<StringPool>("FeatureAliasShadowTest");
+    auto env = makeEnvironment(strings);
+    installCompletionLayerSchema(*env, schema, strings);
+    for (auto query : {"attributes.actual", "attributes.connectedRoads"}) {
+        auto ast = simfil::compile(*env, query, {.any = false});
+        REQUIRE(ast);
+        auto refs = simfil::referencedSchemaPaths(*env, **ast, root);
+        REQUIRE(refs);
+        CHECK(
+            refs->hasUnresolvedAccess == (std::string_view(query) == "attributes.connectedRoads"));
+        if (!refs->paths.empty())
+            CHECK(refs->paths[0].path[0].field == StringPool::AttributesStr);
+    }
+}
+
+TEST_CASE(
     "Native schema transport preserves validation constraints and JSON projections",
     "[DataSourceInfo][schema-domain]")
 {
