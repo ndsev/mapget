@@ -2,6 +2,9 @@
 
 Mapget represents map content as partitions of structured features: spatial tiles or opaque objects. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance.
 
+<!-- mcp:
+keywords: [partition, tile, object, identity]
+-->
 ## Tile and object partitions
 
 `PartitionId` is a tagged identity: `PartitionId::tile(TileId)` or
@@ -75,6 +78,9 @@ The `properties.layers` tree in a feature holds these layered attributes and the
 
 To make this as fast as possible, mapget uses the simfil binary format with a small VTLV (Version-Type-Length-Value) message wrapper. This is explained in the following section.
 
+<!-- mcp:
+keywords: [feature IDs, identity, unique composition]
+-->
 ### Feature identity and uniqueness
 
 `PartitionFeatureLayer::newFeature()` rejects an existing identity before changing
@@ -317,6 +323,9 @@ uniqueIdCompositions:
 
 A datasource writes features using the primary `Road.<tileId>.<roadIs>` IDs, while an external system could send a locate request for `Road.1234.5.2` (`tileId=1234`, `intersectionId=5`, `connectedRoadId=2`) and receive the primary ID needed to fetch the feature.
 
+<!-- mcp:
+keywords: [geometry, validity, attribute scope, offsets]
+-->
 ## Geometry and validity
 
 Mapget supports a range of geometry types, including:
@@ -435,6 +444,9 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
 
 Attributes and relations can attach their own validity lists, so a datasource can mix and match: an attribute may reference a geometric sub‑range via `OffsetRangeValidity`, while another attribute or relation may carry a semantic `FeatureTransition`.
 
+<!-- mcp:
+keywords: [provenance, source data, links, references, relations]
+-->
 ## Source data references and relations
 
 Features can refer back to their original source material and to other features.

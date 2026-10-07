@@ -45,6 +45,7 @@ private:
     nlohmann::json items_ = nlohmann::json::array();
     nlohmann::json issues_ = nlohmann::json::array();
     nlohmann::json traces_ = nlohmann::json::object();
+    nlohmann::json helpRevision_ = nullptr;
     std::shared_ptr<LayerInfo> layer_;
     DataSourceCatalogEntry source_;
     std::vector<PartitionId> partitions_;
@@ -93,6 +94,8 @@ private:
 
     /** Serialize compact authorized source metadata without invoking JSON Schema emission. */
     void listSources();
+    /** Search source-backed help with the same response, cancellation and allocation budgets. */
+    void documentation();
     /** Return advertised coverage separately from source discovery, retaining sparse occupancy. */
     void getCoverage();
     /** Query the lazy schema graph, not synthetic sample features. */

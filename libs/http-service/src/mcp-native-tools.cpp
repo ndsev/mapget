@@ -22,6 +22,15 @@ McpNativeTools::McpNativeTools(
     std::function<Json(Json const&, std::string const&)> writeConfig)
     : service_(service),
       config_(std::move(config)),
+      help_(
+          McpHelp::defaultDirectory(),
+          [this]
+          {
+              auto paths = config_.helpDocs;
+              if (!config_.webHelpDirectory.empty())
+                  paths.push_back(config_.webHelpDirectory);
+              return paths;
+          }()),
       diagnostics_(std::move(diagnostics)),
       location_(location),
       readConfig_(std::move(readConfig)),
@@ -161,7 +170,36 @@ void McpNativeTools::stop()
     for (auto const& call : calls)
         call->cancel();
     lock.lock();
-    idle_.wait(lock, [this] { return calls_.empty(); });
+    idle_.wait(lock, [this] { return calls_.empty() && !helpRefreshPending_; });
+}
+
+void McpNativeTools::refreshHelp()
+{
+    std::unique_lock lock(mutex_);
+    auto now = std::chrono::steady_clock::now();
+    if (stopped_ || helpRefreshPending_ || now < nextHelpRefresh_)
+        return;
+    nextHelpRefresh_ = now + std::chrono::seconds(2);
+    helpRefreshPending_ = true;
+    // stop() drains this owner before the borrowed service or index can disappear.
+    lock.unlock();
+    if (service_.scheduleTask(
+            [this](bool admitted)
+            {
+                try {
+                    if (admitted)
+                        help_.refresh();
+                }
+                catch (...) { /* Failed maintenance must still release the shutdown barrier. */
+                }
+                std::lock_guard done(mutex_);
+                helpRefreshPending_ = false;
+                idle_.notify_all();
+            }))
+        return;
+    lock.lock();
+    helpRefreshPending_ = false;
+    idle_.notify_all();
 }
 
 McpNativeTools::Call::
@@ -180,7 +218,7 @@ McpNativeTools::Call::
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 principal.expiresAt - std::chrono::system_clock::now()));
     remainingWork_ = arguments.value("maxWork", size_t{100000});
-    limit_ = arguments.value("limit", size_t{100});
+    limit_ = arguments.value("limit", name == "mapget_docs" ? size_t{8} : size_t{100});
 }
 
 void McpNativeTools::Call::cancel()
@@ -264,12 +302,32 @@ void McpNativeTools::Call::finish(Json result)
 
 void McpNativeTools::Call::finishItems()
 {
-    finish(
-        {{"items", std::move(items_)},
-         {"complete", incomplete_.empty()},
-         {"reason", incomplete_.empty() ? Json(nullptr) : Json(incomplete_)},
-         {"issues", std::move(issues_)},
-         {"traces", std::move(traces_)}});
+    Json result{
+        {"items", std::move(items_)},
+        {"complete", incomplete_.empty()},
+        {"reason", incomplete_.empty() ? Json(nullptr) : Json(incomplete_)},
+        {"issues", std::move(issues_)},
+        {"traces", std::move(traces_)}};
+    if (name == "mapget_docs")
+        result["revision"] = std::move(helpRevision_);
+    finish(std::move(result));
+}
+
+void McpNativeTools::Call::documentation()
+{
+    auto result = owner_.help_.query(
+        arguments.value("query", std::string{}),
+        arguments.value("title", std::string{}),
+        limit_,
+        [this] { return step(); });
+    helpRevision_ = std::move(result["revision"]);
+    issues_ = std::move(result["issues"]);
+    for (auto const& item : result["items"])
+        if (!append(boundedJson(item)))
+            break;
+    // A failed rebuild may still return useful, explicitly identified last-good sections.
+    if (!result["complete"].get<bool>())
+        truncate(result["reason"]);
 }
 
 bool McpNativeTools::Call::append(Json item)
@@ -303,7 +361,9 @@ void McpNativeTools::Call::run(bool admitted)
             finishItems();
             return;
         }
-        if (name == "mapget_list_sources")
+        if (name == "mapget_docs")
+            documentation();
+        else if (name == "mapget_list_sources")
             listSources();
         else if (name == "mapget_get_coverage")
             getCoverage();

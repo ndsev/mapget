@@ -233,7 +233,7 @@ TEST_CASE(
 {
     NativeFixture fixture;
     auto tools = fixture.tools->tools(fixture.principal);
-    CHECK(tools.size() == 10);
+    CHECK(tools.size() == 11);
     for (auto const& tool : tools) {
         INFO(tool["name"]);
         CHECK_FALSE(
@@ -267,7 +267,7 @@ TEST_CASE(
     setPostConfigEndpointEnabled(true);
     fixture.principal.configRead = fixture.principal.configWrite = fixture.principal.diagnostics =
         true;
-    CHECK(fixture.tools->tools(fixture.principal).size() == 13);
+    CHECK(fixture.tools->tools(fixture.principal).size() == 14);
     CHECK(fixture.call("mapget_get_config")["result"]["items"][0]["revision"] == "1");
     CHECK(
         fixture.call(
@@ -280,6 +280,33 @@ TEST_CASE(
             {{"sections", {"workers"}}})["result"]["items"][0]["value"]["workers"] == 1);
     setGetConfigEndpointEnabled(oldRead);
     setPostConfigEndpointEnabled(oldWrite);
+}
+
+TEST_CASE(
+    "Native MCP help uses ordinary read authority and drains coalesced refreshes",
+    "[mcp-native][mcp-help]")
+{
+    NativeFixture fixture;
+    auto result = fixture.call("mapget_docs", {{"query", "cardinality"}})["result"];
+    REQUIRE(result["complete"] == true);
+    REQUIRE_FALSE(result["items"].empty());
+    CHECK(result["revision"].is_string());
+    CHECK(result["items"][0].contains("content"));
+    CHECK(fixture.source->fills == 0);
+    CHECK(fixture.call("mapget_docs", {{"query", "array"}, {"title", "Array"}}).contains("error"));
+    fixture.principal.read = false;
+    CHECK(fixture.call("mapget_docs").contains("error"));
+    fixture.principal.read = true;
+    for (size_t i = 0; i < 20; ++i)
+        fixture.tools->refreshHelp();
+    fixture.resetTools();
+    auto config = McpConfig{};
+    config.limits.resultBytes = 2048;
+    fixture.resetTools(config);
+    auto bounded = fixture.call("mapget_docs", {{"query", "cardinality"}});
+    REQUIRE(bounded.contains("result"));
+    CHECK(bounded["result"]["complete"] == false);
+    CHECK(bounded["result"]["reason"] == "byte_limit");
 }
 
 TEST_CASE("Native metadata and conversions need neither browser nor tile loads", "[mcp-native]")

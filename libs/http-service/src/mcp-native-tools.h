@@ -3,6 +3,7 @@
 #include "mapget/location/location.h"
 #include "mapget/service/service.h"
 #include "mcp-auth.h"
+#include "mcp-help.h"
 
 #include <condition_variable>
 
@@ -41,6 +42,8 @@ public:
     invoke(Principal principal, std::string name, nlohmann::json arguments, Complete complete);
     /** Cancel by server-owned handle, never by a user-wide JSON-RPC request ID. */
     void cancel(std::shared_ptr<std::atomic_bool> const& token);
+    /** Schedule at most one periodic help refresh; never scan files on the control loop. */
+    void refreshHelp();
     /** Stop admission and drain callbacks before borrowed service state can be destroyed. */
     void stop();
 
@@ -55,6 +58,7 @@ private:
     };
     Service& service_;
     McpConfig config_;
+    McpHelp help_;
     std::function<nlohmann::json()> diagnostics_;
     LocationLookup const* location_;
     std::function<nlohmann::json()> readConfig_;
@@ -63,6 +67,8 @@ private:
     std::mutex mutex_;
     std::condition_variable idle_;
     bool stopped_ = false;
+    bool helpRefreshPending_ = false;
+    std::chrono::steady_clock::time_point nextHelpRefresh_{};
     std::vector<std::shared_ptr<Call>> calls_;
 
     /** Compile native schemas once at startup, without a generated frontend artifact. */

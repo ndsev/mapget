@@ -53,3 +53,13 @@ if (TARGET mapget-location-database)
   # resources into its staging directory.
   add_dependencies(pymapget-copy-files mapget-location-database)
 endif()
+
+if(TARGET mapget-mcp-docs)
+  get_target_property(help_directory mapget-mcp-docs MAPGET_MCP_HELP_DIRECTORY)
+  add_dependencies(pymapget-copy-files mapget-mcp-docs)
+  # Preserve the directory tree (DEPLOY_FILES only copies individual files).
+  add_custom_command(TARGET pymapget-copy-files POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${CMAKE_CURRENT_BINARY_DIR}/mapget.wheel/mapget/mcp-help"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${help_directory}"
+      "${CMAKE_CURRENT_BINARY_DIR}/mapget.wheel/mapget/mcp-help" VERBATIM)
+endif()

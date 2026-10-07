@@ -35,6 +35,9 @@ struct McpConfig
     Mode mode = Mode::Off;
     std::string endpoint;                   // Canonical resource URL and required audience.
     std::filesystem::path catalogPath;      // Trusted, generated web-mcp-actions.json artifact.
+    std::vector<std::filesystem::path>
+        helpDocs;                            // Additional operator-owned Markdown folders/files.
+    std::filesystem::path webHelpDirectory;  // Derived from the resolved webapp root, never a URL.
     std::vector<std::string> allowedHosts;  // Exact HTTP Host values, including non-default ports.
     std::vector<std::string> allowedOrigins;  // Exact origins; a browser must supply one.
     Limits limits;

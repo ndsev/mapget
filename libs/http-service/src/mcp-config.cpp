@@ -39,6 +39,11 @@ void McpConfig::addOptions(CLI::App& serve)
             "Action catalog; defaults to <webapp>/web-mcp-actions.json.")
         ->group("MCP");
     option(
+        "--mcp-help-docs",
+        helpDocs,
+        "Additional Markdown help folders/files, scanned recursively and hot-reloaded. Supplements "
+        "bundled and <webapp>/mcp-help docs.");
+    option(
         "--mcp-allowed-hosts",
         allowedHosts,
         "Allowed HTTP Host values; local mode defaults to loopback names at the listener port.");
@@ -181,6 +186,8 @@ void McpConfig::resolveDefaults(
         return;
     if (catalogPath.empty() && !webRoot.empty())
         catalogPath = webRoot / "web-mcp-actions.json";
+    if (!webRoot.empty())
+        webHelpDirectory = webRoot / "mcp-help";
     if (mode != Mode::Local)
         return;
 
@@ -223,6 +230,11 @@ void McpConfig::validate() const
         }
     }
     // A browser catalog is optional: native data tools must also work in a headless service.
+    if (helpDocs.size() > 32)
+        throw std::invalid_argument("At most 32 additional MCP help paths are allowed.");
+    for (auto const& path : helpDocs)
+        if (path.empty())
+            throw std::invalid_argument("MCP help paths must not be empty.");
     if (configWriteEnabled && !directConfigPersistence)
         throw std::invalid_argument("MCP config writes require explicit direct-file persistence.");
     if (limits.timeout.count() <= 0 || limits.timeout.count() > 2147483647)

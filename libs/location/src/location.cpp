@@ -1,53 +1,14 @@
 #include "mapget/location/location.h"
 #include <charconv>
+#include "../../detail/module-path.h"
 #include "mapget/log.h"
 #include "plazs/gazetteer.h"
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 namespace mapget
 {
 namespace
 {
 int kModuleAnchor = 0;
-/** Resolve the binary module containing this implementation. */
-std::filesystem::path moduleDirectory()
-{
-#ifdef _WIN32
-    HMODULE module = nullptr;
-    auto flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
-    if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(&kModuleAnchor), &module)) {
-        std::wstring buffer(256, L'\0');
-        while (buffer.size() <= 32768) {
-            auto size =
-                GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
-            if (size == 0) {
-                break;
-            }
-            // A full buffer means the path was truncated; retry for long
-            // virtual-environment and package installation paths.
-            if (size < buffer.size()) {
-                buffer.resize(size);
-                return std::filesystem::path(buffer).parent_path();
-            }
-            buffer.resize(buffer.size() * 2);
-        }
-    }
-#else
-    Dl_info info{};
-    if (dladdr(&kModuleAnchor, &info) != 0 && info.dli_fname && *info.dli_fname) {
-        return std::filesystem::path(info.dli_fname).parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
-}
 
 }  // namespace
 
@@ -158,7 +119,7 @@ std::optional<LocationMatch> SqliteLocationLookup::find(std::string_view id) con
 
 std::filesystem::path defaultLocationDatabasePath()
 {
-    return moduleDirectory() / "mapget-places.sqlite";
+    return detail::moduleDirectory(&kModuleAnchor) / "mapget-places.sqlite";
 }
 
 }  // namespace mapget
