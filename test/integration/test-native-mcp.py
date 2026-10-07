@@ -248,7 +248,7 @@ class NativeMcpTest(unittest.TestCase):
             result = self.rpc_result(response)["result"]
             self.assertEqual(result["resultType"], "complete")
             if method == "tools/list":
-                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 11)
+                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 12)
             else:
                 self.assertEqual(result["supportedVersions"], ["2026-07-28"])
         self.assertEqual(self.call("viewer_list_sessions", {})["structuredContent"], {"sessions": []})
@@ -360,8 +360,9 @@ class NativeMcpTest(unittest.TestCase):
         """A native-only server needs neither a webapp nor a generated browser catalog."""
         _, response = self.begin_rpc("tools/list")
         names = {tool["name"] for tool in self.rpc_result(response)["result"]["tools"]}
-        self.assertEqual(len(names), 11)
+        self.assertEqual(len(names), 12)
         self.assertIn("mapget_extract_source_data", names)
+        self.assertIn("mapget_get_coverage", names)
         self.assertIn("viewer_list_sessions", names)
         self.assertNotIn("viewer_set_app_state", names)
         self.assertEqual(self.call("mapget_list_sources", {})["structuredContent"]["items"], [])
@@ -377,6 +378,10 @@ class NativeMcpTest(unittest.TestCase):
             time.sleep(0.05)
         else:
             self.fail("Native Grid datasource did not initialize")
+        coverage = self.call("mapget_get_coverage", selection)
+        self.assertFalse(coverage.get("isError", False), coverage)
+        self.assertIn("coverageKnown", coverage["structuredContent"]["items"][0])
+        self.assertIn("uniqueIdCompositions", sources[0]["layers"][0]["featureTypes"][0])
         validation = self.call("mapget_validate_expression", {
             **selection, "expression": "typeId == 'DevSrc-Road'"})
         self.assertFalse(validation.get("isError", False), validation)
@@ -550,7 +555,7 @@ class NativeMcpTest(unittest.TestCase):
             _, response = self.begin_rpc("tools/list", protocol=protocol)
             tools = self.rpc_result(response)["result"]
             self.assertNotIn("resultType", tools)
-            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 11)
+            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 12)
             _, response = self.begin_rpc("tools/call", {
                 "name": "viewer_set_app_state", "arguments": self.arguments(viewer, "viewer_set_app_state")},
                 protocol=protocol)

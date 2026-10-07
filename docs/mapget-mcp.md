@@ -357,8 +357,9 @@ machine-readable catalog. Permission-filtered listing does not replace call-time
 
 | Tool | Inputs beyond common budgets | Result |
 | --- | --- | --- |
-| `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId` | Ordered source IDs, lifecycle/progress, compact layer coverage, partition kind, feature types and ID compositions; no serialized feature-model schemas |
-| `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType`, `query`, `trace` | Feature-type roots and sequences of schema descriptors |
+| `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId` | Ordered source IDs, lifecycle/progress, partition kind, levels, feature types and ordered ID compositions; coverage-range counts but no coverage records or serialized feature-model schemas |
+| `mapget_get_coverage` | `mapId`, `layerId`; optional `sourceId`, `level` | Advertised tile-grid rectangles and exact sparse occupancy masks; `coverageKnown` distinguishes unspecified coverage |
+| `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType` or `schemaId`, `query`, `trace` | Semantic feature/attribute overview by default; focused sequences of descriptor metadata with navigable `$ref` identities |
 | `mapget_validate_expression` | `mapId`, `layerId`, `expression`; optional `sourceId`, `featureType`, `attributeSchema`, `scope`, `rewrite`, `predicate` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
 | `mapget_extract_features` | `mapId`, `layerId`; `partitions` or canonical primary `featureIds`; optional `sourceId`, `featureTypes`, `scope`, `predicate`, `rewrite`, `query` or `expressions`, `geometry`, `trace` | Feature/attribute rows with provenance and one value sequence per expression |
 | `mapget_extract_source_data` | `mapId`, `layerId`, `partitions`, or `mapId`, `partition`, `reference`; optional `sourceId`, `match`, `query`, `trace` | Root/address-match rows, provenance and value sequences |
@@ -385,6 +386,60 @@ is authorized again after catalog selection. `sourceId` disambiguates authorized
 sharing a map/layer; it does not bypass ACLs. Source-reference targets are authorized
 independently. Never return the JWT itself to the datasource.
 
+### Designing Search Filters
+
+Start with `viewer_get_app_state` and its active `view.layers` map/layer identities.
+Layer names are not feature types: a `Road` layer can contain `Road`, `Intersection`,
+and indirect attribute features. Use `mapget_list_sources` filtered to that layer
+for compact type names and identity compositions. Compositions are always included:
+ordered primary/secondary ID alternatives and optional/synthetic parts cannot be
+recovered from the feature-field schema alone. Coverage is a separate request via
+`mapget_get_coverage`, optionally restricted to one NDS level. Its `min`/`max` are
+south-west/north-east **grid corners**, not a numeric interval of packed IDs.
+`filled` is a row-major boolean mask in NDS grid order (x increasing, then y increasing); an empty mask denotes a full
+rectangle. A nonempty all-false mask denotes an explicitly empty rectangle.
+`coverageKnown: false` means the datasource advertised no coverage, not that the
+map is empty. An empty level-filtered result only means no range was advertised
+for that level. For object partitions, coverage describes discovery tiles, not
+object IDs or exact object geometry. Grid corners bound each rectangle, not
+just its populated cells. Whole ranges are returned under the common budgets;
+a partial sparse mask is never returned as if it were complete.
+
+Call `mapget_query_schema` without a query to see every feature-type root, its
+immediate fields, and the native properties/layer containers down to attribute
+names. Individual attributes and other compound payloads retain `kind`, `typename`
+when supplied, and `$ref`, without expanding their internals. This is a semantic
+overview projection, not a depth-limited schema. Selecting `schemaId` opens that
+definition and its immediate fields. An implicit union's `$ref` lists its
+alternative IDs; follow each integer separately. For example:
+
+```json
+{"mapId":"Very-Large-Map","layerId":"Road","featureType":"Intersection",
+ "query":"fields.properties.fields.connectedRoads"}
+```
+
+Explicit queries always evaluate the full lazy descriptor graph, **not** the
+overview projection. Descriptor expressions address `fields`, `elements`, and
+`alternatives`, not feature data paths; `fields` is a member, not a function.
+`query: "typename"` lists concrete producer names where supplied, whereas the
+result's `featureType` identifies each root even without a typename. `query: "_"`
+returns recursive details within the ordinary work/byte/time limits. Cycles become
+`$ref` descriptors with `truncated: "cycle"`; shared acyclic branches remain
+queryable. An exhausted descriptor allocation budget makes the whole result
+`complete: false`, even when a scalar projection hides its `node-budget` marker.
+An intentionally unexpanded overview reference does not imply incompleteness or
+missing data.
+
+`connectedRoads` is an array, so its cardinality filter is
+`#properties.connectedRoads > 3`. At a feature root, `attributes` is a lookup alias
+for `properties`; `#attributes.connectedRoads > 3` is equivalent unless the model
+declares an actual `attributes` member. Static validation and completion use the
+same alias while returning canonical property paths. Validate with
+`mapget_validate_expression` and `scope: "auto"`, then run `viewer_start_search`
+over the active map/layer. Unresolved metadata indicates uncertainty, not an
+invalid runtime field. For runtime sampling, `mapget_extract_features` requires
+explicit nonempty partitions or canonical primary feature IDs; it never scans a map.
+
 ### Results And Budgets
 
 Success is an object in `structuredContent`, with the same JSON in a text content block:
@@ -395,15 +450,18 @@ Success is an object in `structuredContent`, with the same JSON in a text conten
 
 Failures use `isError: true` and a structured error. A partial enumeration is a successful
 bounded response with `complete: false` and a reason such as `item_limit`,
-`expression_result_limit`, `work_limit`, `depth_limit`, `byte_limit`, `query_error`, or
+`expression_result_limit`, `work_limit`, `schema_node_limit`, `byte_limit`, `query_error`, or
 `load_failed_or_cancelled`. Narrow the request; there is no cursor, continuation state,
 or automatic pagination. No matches is a valid empty result, not an error.
 
-Common inputs are `limit` (default 100, maximum 1000), `maxWork` (100000, maximum 1000000),
-and `maxDepth` (16, maximum 64). `limit` caps rows **and** values per expression separately.
+Common inputs are `limit` (default 100, maximum 1000) and `maxWork` (100000, maximum 1000000).
+`limit` caps rows **and** values per expression separately; coverage uses it for whole ranges.
+There is no public depth knob. A defensive serialization stack guard at 256 container
+levels reports `serialization_limit`, rather than returning a silently shortened value.
+Simfil's independent evaluator safety guard reports `evaluation_limit`.
 Partition inputs are capped at 32, feature IDs at 100, expression lists at 16 and expression
 text at 4096 characters. The configured MCP deadline, per-principal/overall admission caps,
-and result-byte cap also apply. JSON conversion shares the work/depth/byte budget with
+and result-byte cap also apply. JSON conversion shares the work/byte budget with
 simfil evaluation. Native result construction uses at most one third of the wire allowance
 (capped at 1 MiB), reserving space for text fallback escaping and envelope duplication;
 actual serialized size is checked before sending.

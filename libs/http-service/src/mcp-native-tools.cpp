@@ -97,6 +97,12 @@ McpNativeTools::invoke(Principal principal, std::string name, Json arguments, Co
         return reject(
             "not_available",
             "Native tool permission or deployment capability unavailable.");
+    if (name == "mapget_extract_features" && arguments.is_object() &&
+        !arguments.contains("partitions") && !arguments.contains("featureIds"))
+        return reject(
+            "invalid_arguments",
+            "Supply nonempty partitions or canonical primary featureIds. Extraction does not "
+            "scan a map; use viewer_start_search for a viewport search.");
     if (!acceptsArguments(name, arguments))
         return reject("invalid_arguments", "Arguments do not match the tool schema.");
     std::unique_lock lock(mutex_);
@@ -174,7 +180,6 @@ McpNativeTools::Call::
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 principal.expiresAt - std::chrono::system_clock::now()));
     remainingWork_ = arguments.value("maxWork", size_t{100000});
-    maxDepth_ = arguments.value("maxDepth", size_t{16});
     limit_ = arguments.value("limit", size_t{100});
 }
 
@@ -300,6 +305,8 @@ void McpNativeTools::Call::run(bool admitted)
         }
         if (name == "mapget_list_sources")
             listSources();
+        else if (name == "mapget_get_coverage")
+            getCoverage();
         else if (name == "mapget_query_schema")
             querySchema();
         else if (name == "mapget_validate_expression")
@@ -439,6 +446,11 @@ void McpNativeTools::Call::listSources()
             value["stringPoolId"] = source.info->stringPoolId_;
             value["maxParallelJobs"] = source.info->maxParallelJobs_;
             value["protocolVersion"] = source.info->protocolVersion_.toJson();
+        }
+        // Charge each piece once as it is attached, instead of first constructing an
+        // unbounded source tree or charging nested copies again at every ancestor.
+        value = boundedJson(value);
+        if (source.info) {
             std::map<std::string, std::shared_ptr<LayerInfo>>
                 layers(source.info->layers_.begin(), source.info->layers_.end());
             for (auto const& [id, layer] : layers) {
@@ -457,16 +469,19 @@ void McpNativeTools::Call::listSources()
                     {"version", layer->version_.toJson()},
                     {"hasFeatureModelSchema", bool(layer->featureModelSchema_)},
                     {"featureTypes", Json::array()},
-                    {"coverage", Json::array()}};
+                    {"coverageRangeCount", layer->coverage_.size()}};
                 if (layer->tileAssociationLevel_)
                     metadata["tileAssociationLevel"] = *layer->tileAssociationLevel_;
+                metadata = boundedJson(metadata);
                 for (auto const& type : layer->featureTypes_) {
                     if (!step())
                         break;
-                    Json info{{"name", type.name_}, {"uniqueIdCompositions", Json::array()}};
+                    auto info = boundedJson(
+                        {{"name", type.name_}, {"uniqueIdCompositions", Json::array()}});
                     for (auto const& composition : type.uniqueIdCompositions_) {
                         if (!step())
                             break;
+                        charge(24);
                         auto parts = Json::array();
                         for (auto const& part : composition) {
                             if (!step())
@@ -477,20 +492,53 @@ void McpNativeTools::Call::listSources()
                     }
                     metadata["featureTypes"].push_back(std::move(info));
                 }
-                for (auto const& coverage : layer->coverage_) {
-                    if (!step())
-                        break;
-                    metadata["coverage"].push_back(
-                        {{"min", coverage.min_.value()},
-                         {"max", coverage.max_.value()},
-                         {"sparse", !coverage.filled_.empty()}});
-                }
-                value["layers"].push_back(boundedJson(metadata));
+                value["layers"].push_back(std::move(metadata));
             }
         }
-        if (!append(boundedJson(value)))
+        if (!step(0) || !append(std::move(value)))
             break;
     }
+}
+
+void McpNativeTools::Call::getCoverage()
+{
+    selectLayer();
+    Json result{
+        {"sourceId", source_.descriptor.sourceId},
+        {"mapId", source_.info->mapId_},
+        {"layerId", layer_->layerId_},
+        {"partitionKind", layer_->partitionKind_ == PartitionKind::Tile ? "tile" : "object"},
+        {"coverageKnown", !layer_->coverage_.empty()},
+        {"ranges", Json::array()}};
+    if (layer_->tileAssociationLevel_)
+        result["tileAssociationLevel"] = *layer_->tileAssociationLevel_;
+    // Preserve completed ranges when a later bitmap exceeds the response budget.
+    result = boundedJson(result);
+    try {
+        for (auto const& coverage : layer_->coverage_) {
+            if (!step())
+                break;
+            if (arguments.contains("level") && arguments["level"] != coverage.min_.level())
+                continue;
+            if (result["ranges"].size() >= limit_) {
+                truncate("item_limit");
+                break;
+            }
+            auto range = boundedJson(
+                {{"min", coverage.min_.value()},
+                 {"max", coverage.max_.value()},
+                 {"level", coverage.min_.level()},
+                 {"filled", Json::array()}});
+            // Empty means a full grid rectangle; a nonempty mask must not be omitted or
+            // abbreviated, since that would turn sparse coverage into false availability.
+            for (bool filled : coverage.filled_)
+                range["filled"].push_back(boundedJson(filled));
+            result["ranges"].push_back(std::move(range));
+        }
+    }
+    catch (std::length_error const&) { /* Retain only fully serialized coverage records. */
+    }
+    append(std::move(result));
 }
 
 void McpNativeTools::Call::selectLayer()
@@ -560,8 +608,7 @@ Json McpNativeTools::Call::convertTile()
         if (!arguments.contains(field))
             throw std::invalid_argument("Incomplete tile representation");
     for (auto const& [field, _] : arguments.items())
-        if (!fields.contains(field) && field != "limit" && field != "maxWork" &&
-            field != "maxDepth")
+        if (!fields.contains(field) && field != "limit" && field != "maxWork")
             throw std::invalid_argument("Mixed tile representations");
     TileId tile;
     if (arguments.contains("tileId"))

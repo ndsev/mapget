@@ -5,6 +5,8 @@
 #include "simfil/function.h"
 #include "simfil/simfil.h"
 
+#include <set>
+
 namespace mapget::detail
 {
 
@@ -36,7 +38,8 @@ private:
     std::chrono::steady_clock::time_point deadline_;
     size_t remainingWork_ = 100000;
     size_t remainingBytes_ = 0;
-    size_t maxDepth_ = 16;
+    /** Last-resort stack guard; not a discovery setting or a schema expansion boundary. */
+    static constexpr size_t SerializationNestingLimit = 256;
     size_t limit_ = 100;
     std::string incomplete_;
     nlohmann::json items_ = nlohmann::json::array();
@@ -68,7 +71,7 @@ private:
     void finishItems();
     /** Append one bounded result, never a page/cursor or retained continuation. */
     bool append(nlohmann::json item);
-    /** Convert model values recursively with work/depth/byte limits and exact scalar tags. */
+    /** Convert values with resource bounds, a stack-safety guard and exact scalar tags. */
     nlohmann::json valueJson(simfil::Value const& value, size_t depth = 0);
     /** Walk existing JSON under the same limits without first dumping an arbitrarily large value.
      */
@@ -90,8 +93,15 @@ private:
 
     /** Serialize compact authorized source metadata without invoking JSON Schema emission. */
     void listSources();
+    /** Return advertised coverage separately from source discovery, retaining sparse occupancy. */
+    void getCoverage();
     /** Query the lazy schema graph, not synthetic sample features. */
     void querySchema();
+    /** Project a schema descriptor, expanding only the selected semantic containers. */
+    nlohmann::json schemaOverview(
+        simfil::ModelNode const& node,
+        std::set<simfil::SchemaId> const& expanded,
+        size_t depth = 0);
     /** Compile and inspect schema references without fetching any map payload. */
     void validateExpression();
     /** Prepare explicit partitions or cheap primary-ID locate candidates. */

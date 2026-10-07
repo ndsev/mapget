@@ -140,8 +140,8 @@ Json McpNativeTools::Call::boundedJson(Json const& value, size_t depth)
 {
     if (!step())
         throw std::length_error("work");
-    if (depth > maxDepth_) {
-        truncate("depth_limit");
+    if (depth > SerializationNestingLimit) {
+        truncate("serialization_limit");
         throw std::length_error("depth");
     }
     charge(24);
@@ -175,8 +175,8 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
 {
     if (!step())
         throw std::length_error("work");
-    if (depth > maxDepth_) {
-        truncate("depth_limit");
+    if (depth > SerializationNestingLimit) {
+        truncate("serialization_limit");
         throw std::length_error("depth");
     }
     charge(32);
@@ -364,7 +364,6 @@ Json McpNativeTools::Call::evaluate(
             }),
         {.maxResults = predicate ? size_t{2} : limit_ + 1,
          .maxWork = remainingWork_,
-         .maxDepth = maxDepth_,
          .deadline = deadline_,
          .cancel = cancelled.get()},
         &data);
@@ -391,28 +390,159 @@ Json McpNativeTools::Call::evaluate(
     return result;
 }
 
+Json McpNativeTools::Call::schemaOverview(
+    simfil::ModelNode const& node,
+    std::set<simfil::SchemaId> const& expanded,
+    size_t depth)
+{
+    if (!step())
+        throw std::length_error("work");
+    if (depth > SerializationNestingLimit) {
+        truncate("serialization_limit");
+        throw std::length_error("nesting");
+    }
+    charge(32);
+    auto result = Json::object();
+    auto reference = node.get(simfil::StringPool::SchemaRef);
+    bool expand = false;
+    if (reference) {
+        auto ids = valueJson(simfil::Value::field(reference));
+        if (ids.is_number_integer())
+            expand = expanded.contains(ids.get<simfil::SchemaId>());
+        else if (ids.is_array())
+            for (auto const& id : ids)
+                expand |= expanded.contains(id.get<simfil::SchemaId>());
+        result["$ref"] = std::move(ids);
+    }
+    for (uint32_t i = 0; i < node.size(); ++i) {
+        if (!step())
+            throw std::length_error("work");
+        auto key = node.keyAt(i);
+        if (key == simfil::StringPool::SchemaRef)
+            continue;
+        bool fields = key == simfil::StringPool::SchemaFields;
+        bool domains = key == simfil::StringPool::SchemaElements ||
+            key == simfil::StringPool::SchemaAlternatives;
+        // A semantic reference is intentional, not a truncated query. Scalars retain enums.
+        if ((fields || domains) && !expand)
+            continue;
+        auto name = node.owningModel()->lookupStringId(key).value();
+        charge(name.size() * 6);
+        auto child = node.at(i);
+        if (!fields && !domains) {
+            result[name] = valueJson(simfil::Value::field(child));
+            continue;
+        }
+        auto values = fields ? Json::object() : Json::array();
+        for (uint32_t j = 0; j < child->size(); ++j) {
+            auto value = schemaOverview(*child->at(j), expanded, depth + 1);
+            if (fields) {
+                auto field = child->owningModel()->lookupStringId(child->keyAt(j)).value();
+                charge(field.size() * 6);
+                values[field] = std::move(value);
+            }
+            else
+                values.push_back(std::move(value));
+        }
+        result[name] = std::move(values);
+    }
+    return result;
+}
+
 void McpNativeTools::Call::querySchema()
 {
     selectLayer();
-    if (!layer_->layerSchema()) {
+    auto schema = layer_->layerSchema();
+    if (!schema) {
         fail("unavailable", "Layer has no feature-model schema.");
         return;
     }
     environment();
-    auto schema = layer_->layerSchema();
-    auto model = std::make_shared<
-        simfil::SchemaModel>(env_->strings(), env_->querySchemaCallback, maxDepth_, remainingWork_);
+    auto model = std::make_shared<simfil::SchemaModel>(
+        env_->strings(),
+        env_->querySchemaCallback,
+        std::max(size_t{2}, remainingWork_));
     auto types = arguments.contains("featureType") ?
         std::vector<std::string>{arguments["featureType"]} :
         schema->featureTypes();
-    for (auto const& type : types) {
-        if (!step())
-            break;
-        auto id = schema->featureSchema(type);
-        if (id == simfil::NoSchemaId)
-            throw std::invalid_argument("Unknown feature type");
-        auto values = evaluate(arguments.value("query", "_"), *model->root(id), simfil::NoSchemaId);
-        if (!append({{"featureType", type}, {"schemaId", id}, {"values", std::move(values)}}))
+    std::vector<simfil::SchemaId> roots;
+    if (arguments.contains("schemaId")) {
+        if (arguments.contains("featureType"))
+            throw std::invalid_argument("Choose featureType or schemaId");
+        auto id = arguments["schemaId"].get<simfil::SchemaId>();
+        if (!schema->hasSchema(id))
+            throw std::invalid_argument("Unknown schema id");
+        roots.push_back(id);
+    }
+    else {
+        for (auto const& type : types) {
+            auto id = schema->featureSchema(type);
+            if (id == simfil::NoSchemaId)
+                throw std::invalid_argument("Unknown feature type");
+            roots.push_back(id);
+        }
+    }
+    for (size_t i = 0; i < roots.size() && step(); ++i) {
+        auto id = roots[i];
+        auto root = model->root(id);
+        Json values;
+        if (arguments.contains("query")) {
+            // Explicit queries see the whole lazy graph, never the overview's projection.
+            values = evaluate(arguments["query"], *root, simfil::NoSchemaId);
+        }
+        else {
+            std::set<simfil::SchemaId> expanded{id};
+            if (simfil::Schema::kindNameId(schema->kind(id)) ==
+                simfil::Schema::kindNameId(LayerSchema::FeatureKind))
+            {
+                // These are native Feature containers, not heuristics on producer payload names.
+                auto properties = simfil::Schema::fieldSchemas(
+                    id,
+                    env_->querySchemaCallback,
+                    StringPool::PropertiesStr);
+                std::vector<simfil::SchemaId> layerMaps;
+                for (auto property : properties) {
+                    expanded.insert(property);
+                    auto layers = simfil::Schema::fieldSchemas(
+                        property,
+                        env_->querySchemaCallback,
+                        StringPool::LayerStr);
+                    layerMaps.insert(layerMaps.end(), layers.begin(), layers.end());
+                }
+                std::set<simfil::SchemaId> visited;
+                while (!layerMaps.empty() && step()) {
+                    auto layers = layerMaps.back();
+                    layerMaps.pop_back();
+                    if (!visited.insert(layers).second)
+                        continue;
+                    expanded.insert(layers);
+                    schema->forEachDirectField(
+                        layers,
+                        [&](auto, auto children)
+                        { expanded.insert(children.begin(), children.end()); });
+                    auto alternatives = schema->alternatives(layers);
+                    layerMaps.insert(layerMaps.end(), alternatives.begin(), alternatives.end());
+                }
+            }
+            // Logical alternatives describe the same selected value position.
+            std::vector<simfil::SchemaId> pending(expanded.begin(), expanded.end());
+            while (!pending.empty() && step()) {
+                auto current = pending.back();
+                pending.pop_back();
+                for (auto alternative : schema->alternatives(current))
+                    if (expanded.insert(alternative).second)
+                        pending.push_back(alternative);
+            }
+            expanded.erase(simfil::NoSchemaId);
+            values = Json::array({schemaOverview(*root, expanded)});
+        }
+        // Projections such as **.typename may never emit a node-budget marker themselves.
+        if (model->exhausted())
+            truncate("schema_node_limit");
+        Json item{{"schemaId", id}, {"values", std::move(values)}};
+        if (!arguments.contains("schemaId"))
+            item["featureType"] = types[i];
+        if (!append(std::move(item)))
             break;
     }
 }
