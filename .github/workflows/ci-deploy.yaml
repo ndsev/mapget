@@ -83,9 +83,9 @@ jobs:
       - name: Run sccache-cache
         if: env.USE_SCCACHE == 'true'
         uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Install libuuid
+      - name: Install native build dependencies
         run: |
-          yum -y install libuuid-devel java-17-openjdk-headless
+          yum -y install libuuid-devel java-17-openjdk-headless git-lfs
       - name: Configure
         run: |
           python3 -m venv venv && . ./venv/bin/activate
@@ -157,7 +157,7 @@ jobs:
             "$MANYLINUX_IMAGE" \
             bash -lc '
               set -euo pipefail
-              yum -y install libuuid-devel java-17-openjdk-headless
+              yum -y install libuuid-devel java-17-openjdk-headless git-lfs
               python3 -m venv venv && . ./venv/bin/activate
               pip install -U setuptools wheel pip
               rm -rf build
