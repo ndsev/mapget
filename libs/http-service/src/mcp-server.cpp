@@ -190,6 +190,10 @@ void McpServer::setup(drogon::HttpAppFramework& app)
         "/mcp",
         decltype(handler){handler},
         {drogon::Post, drogon::Get, drogon::Delete, drogon::Options});
+    app.registerHandler(
+        "/mcp/browser",
+        decltype(handler){handler},
+        {drogon::Post, drogon::Options});
     // Drogon's forwarding-reference binder retains lvalues by reference. Every route must own
     // its closure after setup() returns, rather than referencing this stack-local handler.
     app.registerHandler("/mcp/info", decltype(handler){handler}, {drogon::Get, drogon::Options});
@@ -231,7 +235,7 @@ drogon::HttpResponsePtr McpServer::jsonResponse(nlohmann::json body, drogon::Htt
 
 void McpServer::handle(drogon::HttpRequestPtr request, Reply reply)
 {
-    if (!auth_.acceptsRequest(request, false)) {
+    if (!auth_.acceptsRequest(request, request->path() == "/mcp/browser")) {
         reply(jsonResponse(
             {{"error", "MCP Host/Origin or exposure policy rejected the request."}},
             drogon::k403Forbidden));
@@ -317,6 +321,18 @@ void McpServer::authenticate(drogon::HttpRequestPtr request, Reply reply)
 {
     if (stopped_) {
         reply(jsonResponse({{"error", "MCP unavailable"}}, drogon::k503ServiceUnavailable));
+        return;
+    }
+    if (request->path() == "/mcp/browser") {
+        // Browser authority comes from the same trusted proxy as the interactive socket.
+        // This endpoint never upgrades browser claims into bearer or cross-tab authority.
+        auto principal = auth_.browser(request);
+        if (!principal.valid(std::chrono::system_clock::now())) {
+            reply(
+                jsonResponse({{"error", "Browser MCP permission denied."}}, drogon::k403Forbidden));
+            return;
+        }
+        dispatch(request, reply, std::move(principal));
         return;
     }
     auto token = McpAuthentication::bearerToken(request->getHeader("authorization"));
@@ -480,6 +496,7 @@ void McpServer::dispatch(
 {
     auto const version = request->getHeader("mcp-protocol-version");
     bool const modern = version == protocol;
+    bool const browser = request->path() == "/mcp/browser";
     nlohmann::json message;
     nlohmann::json id = nullptr;
     try {
@@ -602,6 +619,10 @@ void McpServer::dispatch(
                 error(-32602, "MCP tool lists are not paginated.");
                 return;
             }
+            if (browser) {
+                result({{"resultType", "complete"}, {"tools", native_->tools(principal)}});
+                return;
+            }
             auto tools = catalog_->tools(principal.read, principal.control);
             for (auto& tool : native_->tools(principal))
                 tools.push_back(std::move(tool));
@@ -639,6 +660,13 @@ void McpServer::dispatch(
         auto arguments = params.value("arguments", nlohmann::json::object());
         if (!arguments.is_object()) {
             error(-32602, "Tool arguments must be an object.");
+            return;
+        }
+        if (browser && !native_->contains(action)) {
+            error(
+                -32602,
+                "Browser MCP exposes native mapget tools only; viewer actions run in the current "
+                "page.");
             return;
         }
         if (action == "viewer_list_sessions") {

@@ -197,7 +197,9 @@ an issuer response before buffering it.
 For viewer WebSockets, the reverse proxy must authenticate the browser, strip
 client-supplied identity headers, and set the four configured headers from
 verified claims. The permissions header contains the space-separated mapped
-names `viewer-read` and/or `viewer-control`; the expiry is Unix **seconds**.
+names `viewer-read`, `viewer-control`, `config-read`, `config-write`, and/or
+`diagnostics`; the expiry is Unix **seconds**. Configuration and diagnostic permissions
+are independent of viewer control. These verified headers also authorize `/mcp/browser`.
 Mapget trusts them only from an exact configured socket-peer IP and the
 configured issuer. Email is never an ownership key. Browser authority ends at
 the earlier of the verified expiry and `mcp-browser-max-lifetime-seconds` after connection.
@@ -1000,3 +1002,39 @@ schema. This is **not yet full MCP/client conformance**.
 - [ ] Invoke every safe read and controlled mutation through each supported client/revision; assert cancellation, transport loss, byte limits, error shapes and no mutation replay.
 - [ ] Run the upstream MCP conformance suite and publish a supported-client/revision matrix with the exact tests and deliberate limitations.
 - [ ] Keep hosted PKCE, token refresh, role/audience isolation, JWKS rotation and cross-user session tests as a separate deployment security gate.
+
+<!-- mcp:
+keywords: [WebMCP, browser, document, authentication, tools]
+-->
+## Browser-native WebMCP
+
+Erdblick exposes its current-tab tools through the browser's WebMCP API. To add
+native mapget tools to that document, `POST /mcp/browser` accepts the same bounded
+JSON-RPC tools/list and tools/call protocol as `/mcp`, including finite SSE results,
+with a different authentication boundary:
+
+- Every request requires an explicitly allowed `Origin` and `Host`.
+- Local mode requires a loopback peer and rejects forwarding headers as usual.
+- OAuth deployments use the trusted proxy's browser identity headers, exactly as
+  the interactive WebSocket does. The proxy must strip caller-supplied authority
+  headers and inject verified issuer, subject, expiry, and permissions for this
+  route too. A bearer token or browser-supplied JSON identity cannot substitute.
+- The configured browser permissions header can independently contain
+  `viewer-read`, `viewer-control`, `config-read`, `config-write`, and `diagnostics`.
+  Viewer control does not grant config/diagnostic authority. Existing server-side
+  configuration opt-ins and write gates still apply.
+- Browser authority does not synthesize bearer claim mappings for datasource
+  headers. Sources requiring those mappings remain inaccessible through this
+  endpoint unless a separate supported deployment authentication path grants access.
+
+Discovery includes only authorized native mapget tools. Calls cannot reach
+`viewer_list_sessions` or any relayed viewer action, even with an explicit
+`clientId`: erdblick executes its own tools inside the current document. `/mcp`
+continues to require its ordinary bearer authentication in OAuth mode; trusted
+browser headers do not authorize that endpoint.
+
+Serve erdblick and this route through the same origin and base path, with normal
+session authentication. No browser access token storage or CORS credential sharing
+is required. Exclude neither this route nor `/interactive` from trusted proxy
+identity injection when enabling WebMCP. Permission expiry is checked for each
+request and retained work keeps the same bounded lifetime as native MCP calls.
