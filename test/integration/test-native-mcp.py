@@ -341,6 +341,34 @@ class NativeMcpTest(unittest.TestCase):
         self.viewer()
         self.assertEqual(self.http("GET", "/mcp/info")[1]["catalogId"], self.catalog["catalogId"])
 
+    def test_webmcp_browser_endpoint(self):
+        """Origin-bound browser discovery/calls expose native tools and cannot target any viewer."""
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2025-11-25", "Origin": f"http://127.0.0.1:{self.port}"}
+        message = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        status, reply = self.http("POST", "/mcp/browser", json.dumps(message), headers)
+        self.assertEqual(status, 200)
+        names = [tool["name"] for tool in reply["result"]["tools"]]
+        self.assertIn("mapget_docs", names)
+        self.assertIn("mapget_list_sources", names)
+        self.assertTrue(all(name.startswith("mapget_") for name in names))
+        for action in ["viewer_list_sessions", "viewer_get_app_state"]:
+            message.update(method="tools/call", params={"name": action, "arguments": {}})
+            status, reply = self.http("POST", "/mcp/browser", json.dumps(message), headers)
+            self.assertEqual(status, 400)
+            self.assertEqual(reply["error"]["code"], -32602)
+        message.update(params={"name": "mapget_list_sources", "arguments": {}})
+        connection = self.connection()
+        connection.request("POST", "/mcp/browser", json.dumps(message), headers)
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertFalse(self.rpc_result(response)["result"]["isError"])
+        for origin in [None, "https://attacker.example", "null"]:
+            bad_headers = dict(headers)
+            if origin is None: del bad_headers["Origin"]
+            else: bad_headers["Origin"] = origin
+            self.assertEqual(self.http("POST", "/mcp/browser", json.dumps(message), bad_headers)[0], 403)
+
     def test_native_tools_without_browser(self):
         """Exercise actual native SSE replies in every supported protocol revision."""
         for protocol in ("2025-06-18", "2025-11-25", "2026-07-28"):
@@ -853,6 +881,34 @@ class NativeMcpConfigTest(unittest.TestCase):
             "mcp-trusted-proxy-addresses": ["127.0.0.1"], "mcp-browser-issuer-header": "test-issuer",
             "mcp-browser-subject-header": "test-subject", "mcp-browser-expiry-header": "test-expiry",
             "mcp-browser-permissions-header": "test-permissions"})
+
+    def test_webmcp_trusted_browser_authority(self):
+        """The browser endpoint rechecks trusted proxy identity, expiry and independent privileges."""
+        self.oauth_settings()
+        self.start()
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2025-11-25", "Origin": "https://viewer.example",
+                   "test-issuer": "https://issuer.example/realm", "test-subject": "browser-user",
+                   "test-expiry": str(int(time.time()) + 600), "test-permissions": "viewer-read"}
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        status, reply = self.http("/mcp/browser", headers, "POST", body)
+        self.assertEqual(status, 200)
+        names = {tool["name"] for tool in reply["result"]["tools"]}
+        self.assertIn("mapget_list_sources", names)
+        self.assertNotIn("mapget_get_diagnostics", names)
+        admin = dict(headers, **{"test-permissions": "diagnostics"})
+        status, reply = self.http("/mcp/browser", admin, "POST", body)
+        self.assertEqual(status, 200)
+        names = {tool["name"] for tool in reply["result"]["tools"]}
+        self.assertIn("mapget_get_diagnostics", names)
+        self.assertNotIn("mapget_list_sources", names)
+        for missing in ["Origin", "test-issuer", "test-subject", "test-expiry", "test-permissions"]:
+            denied = dict(headers)
+            del denied[missing]
+            self.assertEqual(self.http("/mcp/browser", denied, "POST", body)[0], 403)
+        self.assertEqual(self.http("/mcp/browser", dict(headers, **{"test-expiry": "1"}), "POST", body)[0], 403)
+        # Browser headers never authorize the bearer endpoint.
+        self.assertEqual(self.http("/mcp", headers, "POST", body)[0], 401)
 
     def test_oauth_resource_and_scope_override(self):
         """CLI scopes replace YAML scopes in public resource discovery and bearer challenges."""

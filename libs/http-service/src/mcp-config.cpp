@@ -132,7 +132,7 @@ void McpConfig::addOptions(CLI::App& serve)
     option(
         "--mcp-browser-permissions-header",
         permissionsHeader,
-        "Trusted proxy header carrying viewer-read/viewer-control words.");
+        "Trusted proxy header carrying viewer-read, viewer-control, config-read, config-write, or diagnostics words.");
     option(
         "--mcp-browser-max-lifetime-seconds",
         maxBrowserLifetimeSeconds,

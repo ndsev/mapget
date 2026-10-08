@@ -3,7 +3,7 @@
 Snapshot of the coordinated erdblick working-tree contract (27 actions and
 20 state channels) on 2026-10-08, not a published erdblick release:
 
-`sha256:035d0a4f3dca7a65863b82230c49e6a32c32964d8792728c8afd6ed5f2562981`
+`sha256:130434ea0efff9d05394cac2a25126e11bed16b8f9ffd299440a072679260d3e`
 
 - `web-mcp-actions.json`: erdblick `app/actions/generated/web-mcp-actions.json`.
 - `viewer-action-relay.schema.json`: erdblick

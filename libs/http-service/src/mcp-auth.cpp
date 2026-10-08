@@ -239,7 +239,10 @@ McpViewerRelay::Principal McpAuthentication::browser(drogon::HttpRequestPtr cons
         subject,
         expiry,
         containsWord(request->getHeader(config_.permissionsHeader), "viewer-read"),
-        containsWord(request->getHeader(config_.permissionsHeader), "viewer-control")};
+        containsWord(request->getHeader(config_.permissionsHeader), "viewer-control"),
+        containsWord(request->getHeader(config_.permissionsHeader), "config-read"),
+        containsWord(request->getHeader(config_.permissionsHeader), "config-write"),
+        containsWord(request->getHeader(config_.permissionsHeader), "diagnostics")};
 }
 
 bool McpAuthentication::permission(
