@@ -252,6 +252,33 @@ Built-in providers include:
 
 See `examples/cpp/local-datasource` and `examples/python/datasource.py`.
 
+### Shared payload cancellation
+
+Slow native datasources can override `fill(tile, TileCancellationCheck const&)`
+for feature and/or source-data partitions. Check the probe between expensive
+phases and within long loops; throw `TileLoadCancelled` to stop without creating
+a tile error. The old one-argument fills remain supported: default contextual
+fills check before and after calling them, but cannot interrupt their work.
+An override of `DataSource::get` must forward its trailing cancellation probe.
+
+The probe belongs to the shared source job, not its first requester. Aborting
+one request or removing one output must not interrupt another consumer of the
+same partition. New requests join existing jobs when enqueued, including when
+worker admission is blocked. When no consumers remain, or on map invalidation
+or shutdown, the probe becomes permanently true and the in-flight key is
+detached. A later request may start a replacement immediately. Cancellation,
+epoch, and job-identity guards keep a late result from caching or completing
+that replacement. The old job still holds its worker/source permit until it
+unwinds; cancellation does not create additional worker capacity.
+
+Datasource-internal single-flight caches need the same aggregation at their
+own sharing boundary. Do not cancel a shared SQL read or decoded blob solely
+because its initial tile job was cancelled while another job still needs it.
+Probes must be cheap, thread-safe, nonthrowing and nonblocking; do not re-enter
+the service or caches from a probe. Cancellation is cooperative: synchronous
+remote requests and legacy providers finish their current call before the
+post-call check, so I/O timeouts are still necessary.
+
 ## Model ownership
 
 `PartitionFeatureLayer` and `PartitionSubsetLayer` both derive from

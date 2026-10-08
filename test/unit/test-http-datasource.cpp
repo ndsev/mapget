@@ -71,7 +71,8 @@ public:
     get(MapPartitionKey const& key,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        PartitionLayer::LoadStateCallback callback = {}) override
+        PartitionLayer::LoadStateCallback callback = {},
+        TileCancellationCheck const& isCancelled = {}) override
     {
         {
             std::lock_guard lock(mutex_);
@@ -81,7 +82,7 @@ public:
             key,
             cache,
             info,
-            std::move(callback));
+            std::move(callback), isCancelled);
     }
 
     [[nodiscard]] size_t getCalls(MapPartitionKey const& key) const

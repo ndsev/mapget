@@ -19,6 +19,17 @@ namespace mapget
  */
 using AuthHeaders = std::unordered_map<std::string, std::string>;
 
+/** Cheap cooperative probe for a whole shared tile job, not an individual request. */
+using TileCancellationCheck = std::function<bool()>;
+
+/** Retryable abandonment: cancelled loads must never be published as error tiles. */
+class TileLoadCancelled : public std::exception
+{
+public:
+    /** Identify cancellation without allocating an error message. */
+    char const* what() const noexcept override { return "Tile load cancelled."; }
+};
+
 /** Header-name to full-match regular-expression alternatives used by auth gates. */
 using AuthHeaderRegexMap = std::unordered_map<std::string, std::regex>;
 
@@ -91,6 +102,14 @@ public:
     virtual void fill(PartitionFeatureLayer::Ptr const& featureTile) = 0;
     virtual void fill(PartitionSourceDataLayer::Ptr const& sourceData) = 0;
 
+    /** Cooperative fills; legacy datasources remain supported through the one-argument methods.
+     * The probe becomes true only after the last consumer leaves the shared job.
+     * Poll between expensive steps and throw TileLoadCancelled, not setError().
+     * The default checks before/after the legacy fill; it cannot interrupt its I/O.
+     */
+    virtual void fill(PartitionFeatureLayer::Ptr const& tile, TileCancellationCheck const& isCancelled);
+    virtual void fill(PartitionSourceDataLayer::Ptr const& tile, TileCancellationCheck const& isCancelled);
+
     /**
      * Plan where and how the requested identity can be resolved.
      *
@@ -134,7 +153,8 @@ public:
     get(MapPartitionKey const& k,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        PartitionLayer::LoadStateCallback loadStateCallback = {});
+        PartitionLayer::LoadStateCallback loadStateCallback = {},
+        TileCancellationCheck const& isCancelled = {});
 
     /** Add an authorization header-regex pair for this datasource. */
     void requireAuthHeaderRegexMatchOption(std::string header, std::regex re);
