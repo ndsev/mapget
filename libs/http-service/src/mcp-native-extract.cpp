@@ -415,9 +415,12 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
                                 if ((!arguments.contains("attributeIndex") ||
                                      arguments["attributeIndex"] == index) &&
                                     (!arguments.contains("attributeName") ||
-                                     arguments["attributeName"] == attribute->name()) &&
+                                     std::string_view(arguments["attributeName"]
+                                                          .get_ref<std::string const&>()) ==
+                                         attribute->name()) &&
                                     (!arguments.contains("attributeLayer") ||
-                                     arguments["attributeLayer"] == name))
+                                     std::string_view(arguments["attributeLayer"]
+                                                          .get_ref<std::string const&>()) == name))
                                 {
                                     auto validities = attribute->validityOrNull();
                                     auto validityCount = validities ? validities->size() : 0;
