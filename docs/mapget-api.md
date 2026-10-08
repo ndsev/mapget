@@ -659,9 +659,16 @@ explicitly owned mapget state as distinct measurement domains:
   estimate;
 - `cache` and `transport` account loaded string pools, serialized tile blobs,
   SQLite-owned state, and queued REST/interactive response buffers;
+- `allocator` identifies the active `backend` and provides `allocated-bytes`
+  for live heap allocations. With jemalloc, `active-bytes` covers pages backing
+  allocations, `resident-bytes` estimates allocator residency, and
+  `metadata-bytes` describes internal bookkeeping. `mapped-bytes` and
+  `retained-bytes` describe virtual address space, not physical RSS;
 - `allocator-trim` reports whether periodic glibc heap trimming is supported
   and enabled, its period, attempt/success counters, and the most recent
-  duration and free-arena samples;
+  duration and free-arena samples. It is disabled with jemalloc, whose
+  `allocator` object instead reports `background-thread-enabled`, worker
+  count/runs and configured dirty/muzzy page decay in milliseconds;
 - `reconciliation` contains diagnostic differences between allocator-live
   bytes, anonymous RSS, file/shared RSS, and known ownership estimates.
 
@@ -670,6 +677,13 @@ measurements. They must not be added directly to RSS rows. The reconciliation
 residuals can indicate allocator fragmentation, thread stacks, opaque mappings,
 or missing ownership instrumentation, but they do not identify leaks by
 themselves.
+
+Allocator statistics are sampled on demand. jemalloc's statistics epoch is
+refreshed, but sampling does not purge memory or flush worker thread caches.
+Its resident estimate is not measured process RSS; retained virtual address
+space is normally purged or decommitted. Allocator rows overlap and must not
+be added together. An unsupported allocator yields `allocator: null` and no
+allocator-based reconciliation, rather than counters from an inactive glibc heap.
 
 ## `/cache/reset`
 

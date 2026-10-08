@@ -205,6 +205,34 @@ Useful options include `MAPGET_WITH_WHEEL`, `MAPGET_WITH_SERVICE`,
 `MAPGET_WITH_HTTPLIB`, `MAPGET_ENABLE_TESTING`, and
 `MAPGET_BUILD_EXAMPLES`.
 
+### Native Linux allocator
+
+`MAPGET_WITH_JEMALLOC` defaults to `ON` for native Linux server builds. CPM
+downloads a checksum-pinned jemalloc 5.3.0 release archive, and its supplied
+configure/Make build produces `bin/libjemalloc.so.2` with statistics and
+background purging enabled. GNU Make is required even with a Ninja parent
+build; Autoconf is not required. Cross-compilation, Windows, macOS and
+model-only/WASM builds keep their platform allocator.
+
+`mapget_target_use_allocator(executable)` links an embedding executable such
+as MapViewer to the same allocator. Do not apply it to shared libraries or
+Python extensions: the process must choose its allocator at startup. Ship
+`libjemalloc.so.2` and `jemalloc-COPYING` beside the executable; the build
+provides an `$ORIGIN` runtime search path. MapViewer's Docker packaging includes
+both files. CMake installation places the library under the install libdir.
+
+Use `-DMAPGET_WITH_JEMALLOC=OFF` for system-allocator comparisons and sanitizer
+builds. `/status-data` detects which DSO actually supplies `malloc`, so loading
+an unrelated allocator library cannot switch reporting away from the real
+allocator. Python wheels do not link jemalloc or change interpreter allocation.
+
+Allocator regression tests cover the linked and system-allocator executables,
+`MALLOC_CONF` overrides, cross-thread C/C++ frees, and idle background purging:
+
+```bash
+ctest --test-dir build -R '^test.mapget.allocator' --output-on-failure
+```
+
 ## Datasource contract
 
 A `DataSource`:

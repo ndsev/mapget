@@ -91,6 +91,7 @@ if (NOT CPM_INITIALIZED)
   add_subdirectory(cmake/CPM.cmake)
 endif ()
 include(cmake/deps.cmake)
+include(cmake/allocator.cmake)
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
