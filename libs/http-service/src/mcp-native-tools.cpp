@@ -1,9 +1,11 @@
+#include "mcp-action-catalog.h"
 #include "mcp-native-call.h"
 
 #include "cli.h"
 #include "mapget/model/layerschema.h"
 #include "ndsmath/wgs84.h"
 
+#include <openssl/rand.h>
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -44,6 +46,59 @@ McpNativeTools::~McpNativeTools()
     stop();
 }
 
+std::string McpNativeTools::retain(std::shared_ptr<Continuation> checkpoint)
+{
+    // Count pinned tile/query storage conservatively for every checkpoint. Bounds apply to
+    // retained allocations, not total process RSS; active calls have separate admission limits.
+    constexpr size_t maxBytes = 64 * 1024 * 1024;
+    if (checkpoint->retainedBytes > maxBytes)
+        return {};
+    unsigned char random[24];
+    if (RAND_bytes(random, sizeof(random)) != 1)
+        return {};
+    std::string token;
+    for (auto byte : random) {
+        token += "0123456789abcdef"[byte >> 4];
+        token += "0123456789abcdef"[byte & 15];
+    }
+    auto revision = service_.sourceCatalogRevision();
+    std::vector<std::shared_ptr<Continuation>> retired;
+    std::lock_guard lock(mutex_);
+    if (stopped_)
+        return {};
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = continuations_.begin(); it != continuations_.end();) {
+        if (it->second->expires <= now || it->second->catalogRevision != revision) {
+            retired.push_back(std::move(it->second));
+            it = continuations_.erase(it);
+        }
+        else
+            ++it;
+    }
+    for (;;) {
+        size_t bytes = checkpoint->retainedBytes, owned = 0;
+        for (auto const& [_, entry] : continuations_) {
+            bytes += entry->retainedBytes;
+            owned += entry->principal.sameUser(checkpoint->principal);
+        }
+        if (bytes <= maxBytes && owned < 4 && continuations_.size() < 16)
+            break;
+        auto oldest = continuations_.end();
+        for (auto it = continuations_.begin(); it != continuations_.end(); ++it) {
+            if (owned >= 4 && !it->second->principal.sameUser(checkpoint->principal))
+                continue;
+            if (oldest == continuations_.end() || it->second->expires < oldest->second->expires)
+                oldest = it;
+        }
+        if (oldest == continuations_.end())
+            return {};
+        retired.push_back(std::move(oldest->second));
+        continuations_.erase(oldest);
+    }
+    continuations_.emplace(token, std::move(checkpoint));
+    return token;
+}
+
 bool McpNativeTools::permitted(std::string_view name, Principal const& principal) const
 {
     if (!principal.valid(std::chrono::system_clock::now()))
@@ -72,11 +127,15 @@ bool McpNativeTools::contains(std::string_view name) const
     return actions_.contains(name);
 }
 
-bool McpNativeTools::acceptsArguments(std::string_view name, Json const& value) const
+bool McpNativeTools::acceptsArguments(std::string_view name, Json const& value, Json* issues) const
 {
     try {
-        actions_.at(std::string(name)).input.validate(value);
-        return true;
+        auto const& action = actions_.at(std::string(name));
+        return McpActionCatalog::validateArguments(
+            action.input,
+            action.tool.at("inputSchema"),
+            value,
+            issues);
     }
     catch (...) {
         return false;
@@ -107,10 +166,12 @@ McpNativeTools::invoke(Principal principal, std::string name, Json arguments, Co
             "not_available",
             "Native tool permission or deployment capability unavailable.");
     if (name == "mapget_extract_features" && arguments.is_object() &&
+        !arguments.contains("cursor") && !arguments.contains("partition") &&
         !arguments.contains("partitions") && !arguments.contains("featureIds"))
         return reject(
             "invalid_arguments",
-            "Supply nonempty partitions or canonical primary featureIds. Extraction does not "
+            "Supply partition, nonempty partitions, or full primary/secondary featureIds. "
+            "Extraction does not "
             "scan a map; use viewer_start_search for a viewport search.");
     if (!acceptsArguments(name, arguments))
         return reject("invalid_arguments", "Arguments do not match the tool schema.");
@@ -165,8 +226,10 @@ void McpNativeTools::stop()
 {
     std::unique_lock lock(mutex_);
     stopped_ = true;
+    auto continuations = std::move(continuations_);
     auto calls = calls_;
     lock.unlock();
+    continuations.clear();
     for (auto const& call : calls)
         call->cancel();
     lock.lock();
@@ -187,8 +250,26 @@ void McpNativeTools::refreshHelp()
             [this](bool admitted)
             {
                 try {
-                    if (admitted)
+                    if (admitted) {
+                        // Tile destruction runs on a worker and outside the admission mutex.
+                        auto revision = service_.sourceCatalogRevision();
+                        std::vector<std::shared_ptr<Continuation>> retired;
+                        {
+                            std::lock_guard cleanup(mutex_);
+                            auto now = std::chrono::steady_clock::now();
+                            for (auto it = continuations_.begin(); it != continuations_.end();) {
+                                if (it->second->expires <= now ||
+                                    it->second->catalogRevision != revision) {
+                                    retired.push_back(std::move(it->second));
+                                    it = continuations_.erase(it);
+                                }
+                                else
+                                    ++it;
+                            }
+                        }
+                        retired.clear();
                         help_.refresh();
+                    }
                 }
                 catch (...) { /* Failed maintenance must still release the shutdown barrier. */
                 }
@@ -217,8 +298,14 @@ McpNativeTools::Call::
         std::chrono::steady_clock::now() +
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 principal.expiresAt - std::chrono::system_clock::now()));
-    remainingWork_ = arguments.value("maxWork", size_t{100000});
-    limit_ = arguments.value("limit", name == "mapget_docs" ? size_t{8} : size_t{100});
+    remainingWork_ = arguments.value(
+        "maxWork",
+        name == "mapget_extract_source_data" ? size_t{1000000} : size_t{100000});
+    limit_ = arguments.value(
+        "limit",
+        (name == "mapget_docs" || name == "mapget_query_schema") ? size_t{8} : size_t{100});
+    if (name == "mapget_query_schema" && !arguments.contains("query"))
+        limit_ = std::min<size_t>(limit_, 32);
 }
 
 void McpNativeTools::Call::cancel()
@@ -278,6 +365,14 @@ void McpNativeTools::Call::finish(Json result)
     // Text fallback duplicates structuredContent and escapes it once more. Validate the actual
     // serialized representation rather than relying solely on the model walk's allocation budget.
     auto serialized = result.dump();
+    if (result.contains("guidance") &&
+        serialized.size() + Json(serialized).dump().size() + 1024 >
+            owner_.config_.limits.resultBytes)
+    {
+        // Optional workflow advice must not crowd actual bounded results off the wire.
+        result.erase("guidance");
+        serialized = result.dump();
+    }
     if (serialized.size() + Json(serialized).dump().size() + 1024 >
         owner_.config_.limits.resultBytes) {
         fail(
@@ -302,12 +397,95 @@ void McpNativeTools::Call::finish(Json result)
 
 void McpNativeTools::Call::finishItems()
 {
+    // A fully evaluated lookup with no matching identity is distinct from an empty query result.
+    if (name == "mapget_extract_features" && incomplete_.empty()) {
+        for (auto const& id : scan_->featureIds) {
+            if (scan_->resolvedFeatureIds.contains(id))
+                continue;
+            if (issues_.size() >= 100) {
+                truncate("diagnostic_limit");
+                break;
+            }
+            try {
+                issues_.push_back(boundedJson(
+                    {{"phase", "locate"},
+                     {"featureId", id},
+                     {"message",
+                      "Requested identity did not resolve in the selected partitions. "
+                      "Verify the target's owning layer and partition; identifier metadata "
+                      "may include reference-only types."}}));
+            }
+            catch (std::length_error const&) {
+                break;
+            }
+        }
+    }
     Json result{
         {"items", std::move(items_)},
         {"complete", incomplete_.empty()},
         {"reason", incomplete_.empty() ? Json(nullptr) : Json(incomplete_)},
         {"issues", std::move(issues_)},
         {"traces", std::move(traces_)}};
+    if (name == "mapget_list_sources" && !incomplete_.empty() && result["issues"].size() < 100) {
+        result["issues"].push_back(
+            {{"phase", "budget"},
+             {"message",
+              "Partial source inventory. Follow nextOffset when present; otherwise narrow "
+              "the source/layer filters or use details:false."}});
+    }
+    if (name == "mapget_query_schema" && !arguments.contains("query") &&
+        !arguments.contains("find")) {
+        result["schemaView"] = "shallow_overview";
+        result["guidance"] =
+            "complete covers this overview only. Open childrenOmitted compounds through "
+            "$ref/schemaId, or use find to search descendant declarations.";
+    }
+    if (name == "mapget_query_schema" && arguments.contains("find") && result["items"].empty() &&
+        incomplete_.empty() && arguments.value("offset", 0) == 0)
+        result["guidance"] =
+            "No declared name matched. Try one shorter name fragment; this is not a fuzzy "
+            "concept search or evidence of absent map data.";
+    if (name == "mapget_query_schema" && incomplete_ == "work_limit" &&
+        result["issues"].size() < 100)
+        result["issues"].push_back(
+            {{"phase", "budget"},
+             {"message",
+              "Schema discovery exceeded maxWork. Restrict featureType/schemaId or increase "
+              "maxWork; an incomplete result cannot prove absence."}});
+    if (name == "mapget_extract_features" &&
+        (incomplete_ == "byte_limit" || incomplete_ == "work_limit") &&
+        result["issues"].size() < 100)
+    {
+        // Fixed repair guidance uses envelope headroom, never an already exhausted model budget.
+        result["issues"].push_back(
+            {{"phase", "budget"},
+             {"message",
+              "Retry fewer features/partitions or narrower query/expressions. Omit projections "
+              "in feature scope for summaries. limit bounds rows, not one row's size."}});
+        auto const wire = result.dump();
+        if (wire.size() + Json(wire).dump().size() + 1024 > owner_.config_.limits.resultBytes)
+            result["issues"].erase(result["issues"].end() - 1);
+    }
+    if (name == "mapget_list_sources" || name == "mapget_query_schema") {
+        auto const wire = result.dump();
+        if (wire.size() + Json(wire).dump().size() + 1024 > owner_.config_.limits.resultBytes &&
+            !result["issues"].empty() && result["issues"].back().value("phase", "") == "budget")
+            result["issues"].erase(result["issues"].end() - 1);
+    }
+    // Never advance past a partly projected row. With no complete row, the caller
+    // must narrow the projection or raise its work budget instead of looping a cursor.
+    if (name == "mapget_extract_features" && completeRows_ &&
+        (incomplete_ == "item_limit" || incomplete_ == "byte_limit" || incomplete_ == "work_limit"))
+        nextOffset_ = arguments.value("offset", size_t{0}) + completeRows_;
+    if (nextOffset_)
+        result["nextOffset"] = *nextOffset_;
+    if (name == "mapget_extract_features")
+        continueExtraction(result);
+    if (name == "mapget_query_schema" && arguments.contains("find")) {
+        result["schemaView"] = "matches";
+        result["discovery"] = std::move(discovery_);
+        result["narrowing"] = std::move(narrowing_);
+    }
     if (name == "mapget_docs")
         result["revision"] = std::move(helpRevision_);
     finish(std::move(result));
@@ -319,12 +497,39 @@ void McpNativeTools::Call::documentation()
         arguments.value("query", std::string{}),
         arguments.value("title", std::string{}),
         limit_,
-        [this] { return step(); });
+        [this] { return step(); },
+        arguments.value("component", std::string{}),
+        arguments.value("offset", size_t{0}));
     helpRevision_ = std::move(result["revision"]);
     issues_ = std::move(result["issues"]);
-    for (auto const& item : result["items"])
-        if (!append(boundedJson(item)))
+    for (auto const& item : result["items"]) {
+        if (!step())
             break;
+        // Help rows contain only trusted bounded Markdown/title/source strings. Charge their
+        // actual JSON size, avoiding per-node model-walk overhead for trusted documents.
+        charge(item.dump().size());
+        // Include framing and the escaped text fallback before accepting a row. In particular,
+        // small configured budgets must return a bounded result, not result_too_large.
+        auto candidateItems = items_;
+        candidateItems.push_back(item);
+        Json candidate{
+            {"items", std::move(candidateItems)},
+            {"complete", false},
+            {"reason", "byte_limit"},
+            {"issues", issues_},
+            {"traces", traces_},
+            {"revision", helpRevision_}};
+        auto serialized = candidate.dump();
+        if (serialized.size() + Json(serialized).dump().size() + 1024 >
+            owner_.config_.limits.resultBytes) {
+            truncate("byte_limit");
+            break;
+        }
+        if (!append(item))
+            break;
+    }
+    if (incomplete_.empty() && result.contains("nextOffset"))
+        nextOffset_ = result["nextOffset"].get<size_t>();
     // A failed rebuild may still return useful, explicitly identified last-good sections.
     if (!result["complete"].get<bool>())
         truncate(result["reason"]);
@@ -372,8 +577,17 @@ void McpNativeTools::Call::run(bool admitted)
         else if (name == "mapget_validate_expression")
             validateExpression();
         else if (name == "mapget_extract_features" || name == "mapget_extract_source_data") {
-            prepareExtraction();
-            loadNext();
+            if (arguments.contains("cursor")) {
+                if (!resumeExtraction())
+                    return;
+            }
+            else {
+                scan_->catalogRevision = owner_.service_.sourceCatalogRevision();
+                scan_->offsetRemaining = arguments.value("offset", size_t{0});
+                prepareExtraction();
+            }
+            if (!finished_)
+                loadNext();
             return;
         }
         else if (name == "mapget_convert_tile_id")
@@ -469,7 +683,9 @@ void McpNativeTools::Call::run(bool admitted)
     catch (std::invalid_argument const&) {
         fail(
             "invalid_arguments",
-            "Invalid arguments or unavailable/ambiguous authorized map layer.");
+            "Invalid arguments or unavailable/ambiguous authorized map layer. "
+            "Use exact mapId/layerId values from mapget_list_sources and sourceId to "
+            "disambiguate sources. A feature type is not a layer id.");
     }
     catch (...) {
         fail("execution_failed", "Native operation failed; consult protected server diagnostics.");
@@ -479,6 +695,12 @@ void McpNativeTools::Call::run(bool admitted)
 void McpNativeTools::Call::listSources()
 {
     auto snapshot = owner_.service_.sourceCatalog(principal.datasourceHeaders, false);
+    // Focused discovery includes ID compositions; an explicit compact request still wins.
+    auto const details =
+        arguments.value("details", arguments.contains("sourceId") || arguments.contains("mapId"));
+    auto const compactSourceData = !details && !arguments.contains("layerId");
+    auto const offset = arguments.value("offset", size_t{0});
+    size_t matched = 0;
     for (auto const& source : snapshot.sources) {
         if (!step())
             break;
@@ -487,6 +709,17 @@ void McpNativeTools::Call::listSources()
         if (arguments.contains("mapId") &&
             (!source.info || arguments["mapId"] != source.info->mapId_))
             continue;
+        if (matched++ < offset)
+            continue;
+        if (items_.size() >= limit_) {
+            nextOffset_ = matched - 1;
+            truncate("item_limit");
+            break;
+        }
+        // A later source may exceed the remaining byte budget. Resume it with a fresh page;
+        // do not advertise a non-progressing cursor when even the first source cannot fit.
+        if (!items_.empty())
+            nextOffset_ = matched - 1;
         Json value{
             {"sourceId", source.descriptor.sourceId},
             {"revision", std::to_string(snapshot.revision)},
@@ -498,14 +731,18 @@ void McpNativeTools::Call::listSources()
                  "initializing"},
             {"progress", source.progress ? Json(*source.progress) : Json(nullptr)},
             {"layers", Json::array()}};
+        if (compactSourceData)
+            value["sourceDataLayers"] = Json::array();
         // Constructor errors/messages can contain upstream URLs/secrets. Keep those in protected
         // logs.
         if (source.info) {
             value["mapId"] = source.info->mapId_;
             value["addOn"] = source.info->isAddOn_;
-            value["stringPoolId"] = source.info->stringPoolId_;
-            value["maxParallelJobs"] = source.info->maxParallelJobs_;
-            value["protocolVersion"] = source.info->protocolVersion_.toJson();
+            if (details) {
+                value["stringPoolId"] = source.info->stringPoolId_;
+                value["maxParallelJobs"] = source.info->maxParallelJobs_;
+                value["protocolVersion"] = source.info->protocolVersion_.toJson();
+            }
         }
         // Charge each piece once as it is attached, instead of first constructing an
         // unbounded source tree or charging nested copies again at every ancestor.
@@ -518,6 +755,12 @@ void McpNativeTools::Call::listSources()
                     break;
                 if (!layer || (arguments.contains("layerId") && arguments["layerId"] != id))
                     continue;
+                // Raw-layer metadata is repetitive and can bury the renderable layers in
+                // discovery. Retain every raw ID; a focused layerId call opens its metadata.
+                if (compactSourceData && layer->type_ == LayerType::SourceData) {
+                    value["sourceDataLayers"].push_back(boundedJson(id));
+                    continue;
+                }
                 Json metadata{
                     {"layerId", id},
                     {"type", layer->type_},
@@ -526,30 +769,35 @@ void McpNativeTools::Call::listSources()
                     {"zoomLevels", layer->zoomLevels_},
                     {"canRead", layer->canRead_},
                     {"canWrite", layer->canWrite_},
-                    {"version", layer->version_.toJson()},
                     {"hasFeatureModelSchema", bool(layer->featureModelSchema_)},
                     {"featureTypes", Json::array()},
                     {"coverageRangeCount", layer->coverage_.size()}};
+                if (layer->featureModelSchema_)
+                    metadata["schemaFeatureTypes"] = layer->featureModelSchema_->featureTypes();
+                if (details)
+                    metadata["version"] = layer->version_.toJson();
                 if (layer->tileAssociationLevel_)
                     metadata["tileAssociationLevel"] = *layer->tileAssociationLevel_;
                 metadata = boundedJson(metadata);
                 for (auto const& type : layer->featureTypes_) {
                     if (!step())
                         break;
-                    auto info = boundedJson(
-                        {{"name", type.name_}, {"uniqueIdCompositions", Json::array()}});
-                    for (auto const& composition : type.uniqueIdCompositions_) {
-                        if (!step())
-                            break;
-                        charge(24);
-                        auto parts = Json::array();
-                        for (auto const& part : composition) {
+                    auto info = boundedJson({{"name", type.name_}});
+                    if (details)
+                        info["uniqueIdCompositions"] = Json::array();
+                    if (details)
+                        for (auto const& composition : type.uniqueIdCompositions_) {
                             if (!step())
                                 break;
-                            parts.push_back(boundedJson(part.toJson()));
+                            charge(24);
+                            auto parts = Json::array();
+                            for (auto const& part : composition) {
+                                if (!step())
+                                    break;
+                                parts.push_back(boundedJson(part.toJson()));
+                            }
+                            info["uniqueIdCompositions"].push_back(std::move(parts));
                         }
-                        info["uniqueIdCompositions"].push_back(std::move(parts));
-                    }
                     metadata["featureTypes"].push_back(std::move(info));
                 }
                 value["layers"].push_back(std::move(metadata));
@@ -557,6 +805,7 @@ void McpNativeTools::Call::listSources()
         }
         if (!step(0) || !append(std::move(value)))
             break;
+        nextOffset_.reset();
     }
 }
 
@@ -584,15 +833,69 @@ void McpNativeTools::Call::getCoverage()
                 truncate("item_limit");
                 break;
             }
-            auto range = boundedJson(
-                {{"min", coverage.min_.value()},
-                 {"max", coverage.max_.value()},
-                 {"level", coverage.min_.level()},
-                 {"filled", Json::array()}});
-            // Empty means a full grid rectangle; a nonempty mask must not be omitted or
-            // abbreviated, since that would turn sparse coverage into false availability.
-            for (bool filled : coverage.filled_)
-                range["filled"].push_back(boundedJson(filled));
+            Json range{
+                {"min", coverage.min_.value()},
+                {"max", coverage.max_.value()},
+                {"level", coverage.min_.level()}};
+            if (arguments.value("format", std::string{"summary"}) == "raw") {
+                range["filled"] = Json::array();
+                range = boundedJson(range);
+                // A raw mask is all-or-nothing: omitting it would imply a full rectangle.
+                for (bool filled : coverage.filled_)
+                    range["filled"].push_back(boundedJson(filled));
+            }
+            else {
+                auto const width = uint64_t(coverage.max_.x()) - coverage.min_.x() + 1;
+                auto const height = uint64_t(coverage.max_.y()) - coverage.min_.y() + 1;
+                auto const sw = coverage.min_.southWestWgs84();
+                auto const ne = coverage.max_.northEastWgs84();
+                uint64_t count = coverage.filled_.empty() ? width * height : 0;
+                auto samples = Json::array();
+                auto sample = [&](uint64_t index)
+                {
+                    if (samples.size() < 8)
+                        samples.push_back(
+                            TileId::fromTileXY(
+                                coverage.min_.x() + index % width,
+                                coverage.min_.y() + index / width,
+                                coverage.min_.level())
+                                .value());
+                };
+                if (coverage.filled_.empty()) {
+                    for (uint64_t i = 0; i < std::min(uint64_t{8}, count); ++i)
+                        sample(i);
+                }
+                else {
+                    for (size_t i = 0; i < coverage.filled_.size(); ++i) {
+                        if (!step())
+                            throw std::length_error("work");
+                        if (coverage.filled_[i]) {
+                            ++count;
+                            sample(i);
+                        }
+                    }
+                }
+                range["coverageShape"] = coverage.filled_.empty() ? "rectangle" : "sparse";
+                auto west = sw.first, east = ne.first;
+                auto south = sw.second, north = ne.second;
+                auto const columns = uint64_t{1} << (coverage.min_.level() + 1);
+                auto const rows = uint64_t{1} << coverage.min_.level();
+                // Equal longitude endpoints otherwise disguise a whole-world range.
+                if (width == columns) {
+                    west = -180;
+                    east = 180;
+                }
+                // Unsigned NDS grid rows can cross the north/south pole discontinuity.
+                // Their enclosing WGS84 latitude interval then spans both hemispheres.
+                if (rows == 1 || (coverage.min_.y() < rows / 2 && coverage.max_.y() >= rows / 2)) {
+                    south = -90;
+                    north = 90;
+                }
+                range["bounds"] = {west, south, east, north};
+                range["coveredTileCount"] = count;
+                range["sampleTileIds"] = std::move(samples);
+                range = boundedJson(range);
+            }
             result["ranges"].push_back(std::move(range));
         }
     }
@@ -679,6 +982,13 @@ Json McpNativeTools::Call::convertTile()
         auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), id);
         if (error != std::errc{} || end != text.data() + text.size())
             throw std::invalid_argument("legacy ID");
+        if (!isLegacyTileId(id)) {
+            fail(
+                "invalid_arguments",
+                "legacyTileId is only for the removed mapget 0xXXXXYYYYZZZZ layout. For a signed "
+                "NDS packed ID use tileId as an integer, including Classic maps.");
+            return Json::object();
+        }
         tile = legacyTileIdToPacked(id);
     }
     else if (arguments.contains("x")) {

@@ -59,6 +59,120 @@ TEST_CASE("MCP catalog agrees with the shared browser action fixtures", "[mcp-ac
     }
 }
 
+TEST_CASE("MCP argument errors explain shape and bounds without echoing input", "[mcp-actions]")
+{
+    auto catalog = McpActionCatalog::load(
+        std::filesystem::path(MAPGET_TEST_DATA_DIR) / "viewer-actions/web-mcp-actions.json");
+    Json issues;
+    CHECK_FALSE(
+        catalog.acceptsArguments("viewer_set_app_state", {{"changes", Json::array()}}, &issues));
+    REQUIRE(issues.is_array());
+    CHECK(issues.dump().find("target") != std::string::npos);
+    CHECK(issues.dump().find("value") != std::string::npos);
+    CHECK_FALSE(catalog.acceptsArguments(
+        "viewer_get_catalog",
+        {{"kind", "layers"}, {"limit", 200}},
+        &issues));
+    CHECK(issues.dump().find("/limit") != std::string::npos);
+    CHECK(issues.dump().find("100") != std::string::npos);
+    CHECK_FALSE(catalog.acceptsArguments(
+        "viewer_get_catalog",
+        {{"kind", "secret-value"}, {"secret-field", "secret-value"}},
+        &issues));
+    CHECK(issues.dump().find("secret-value") == std::string::npos);
+    CHECK(issues.dump().find("secret-field") == std::string::npos);
+    CHECK(issues.size() <= 8);
+    auto const unknown = std::find_if(
+        issues.begin(),
+        issues.end(),
+        [](auto const& issue) { return issue.contains("allowedFields"); });
+    REQUIRE(unknown != issues.end());
+    CHECK(
+        std::find((*unknown)["allowedFields"].begin(), (*unknown)["allowedFields"].end(), "kind") !=
+        (*unknown)["allowedFields"].end());
+    CHECK_FALSE(
+        catalog.acceptsArguments("viewer_get_app_state", {{"target", Json::object()}}, &issues));
+    REQUIRE_FALSE(issues.empty());
+    CHECK(issues[0]["allowedFields"] == Json::array({"targets"}));
+    CHECK_FALSE(catalog.acceptsArguments("viewer_get_style", Json::object(), &issues));
+    REQUIRE_FALSE(issues.empty());
+    CHECK(issues[0]["missingField"] == "styleId");
+    CHECK(
+        issues[0]["expected"]["description"].get<std::string>().find("kind:styles") !=
+        std::string::npos);
+}
+
+TEST_CASE(
+    "MCP root constraint errors identify conflicting selectors and dependencies",
+    "[mcp-actions]")
+{
+    auto schema = Json::parse(R"json({
+      "type":"object", "additionalProperties":false,
+      "properties":{
+        "featureType":{"type":"string"}, "schemaId":{"type":"integer"},
+        "query":{"type":"string"}, "expressions":{"type":"array"},
+        "attributeName":{"type":"string"}, "scope":{"type":"string"},
+        "offset":{"type":"integer"}, "find":{"type":"string"}
+      },
+      "allOf":[
+        {"not":{"required":["featureType","schemaId"]}},
+        {"if":{"required":["offset"]},"then":{"required":["find"]}}
+      ],
+      "not":{"anyOf":[{"required":["query","expressions"]}]},
+      "if":{"anyOf":[{"required":["attributeName"]}]},
+      "then":{"required":["scope"],"properties":{"scope":{"const":"attribute"}}}
+    })json");
+    nlohmann::json_schema::json_validator validator(schema);
+    Json issues;
+    auto reject = [&](Json const& value)
+    {
+        CHECK_FALSE(McpActionCatalog::validateArguments(validator, schema, value, &issues));
+        CHECK(issues.size() <= 8);
+        for (auto const& issue : issues)
+            CHECK(issue.dump().size() <= 4096);
+        CHECK(issues.dump().find("private-value") == std::string::npos);
+        CHECK(issues.dump().find("private-key") == std::string::npos);
+    };
+    auto contains = [&](std::string const& key, Json const& value)
+    {
+        return std::any_of(
+            issues.begin(),
+            issues.end(),
+            [&](auto const& issue) { return issue.contains(key) && issue[key] == value; });
+    };
+    reject({{"featureType", "private-value"}, {"schemaId", 123}});
+    CHECK(contains("conflictingFields", Json::array({"featureType", "schemaId"})));
+    reject({{"query", "private-value"}, {"expressions", Json::array({"private-value"})}});
+    CHECK(contains("conflictingFields", Json::array({"query", "expressions"})));
+    reject({{"attributeName", "private-value"}, {"scope", "feature"}});
+    CHECK(contains("triggerFields", Json::array({"attributeName"})));
+    CHECK(contains("expected", Json{{"const", "attribute"}}));
+    reject({{"attributeName", "private-value"}});
+    CHECK(contains("missingField", "scope"));
+    CHECK(contains("expected", Json{{"const", "attribute"}}));
+    reject({{"offset", 1}});
+    CHECK(contains("missingField", "find"));
+    CHECK(contains("triggerFields", Json::array({"offset"})));
+    reject({{"featureType", "private-value"}, {"private-key", "private-value"}});
+    CHECK_FALSE(contains("conflictingFields", Json::array({"featureType", "schemaId"})));
+    CHECK(McpActionCatalog::validateArguments(
+        validator,
+        schema,
+        {{"attributeName", "private-value"}, {"scope", "attribute"}},
+        &issues));
+    CHECK(issues.empty());
+
+    // A required field plus a value condition is not a pure presence condition.
+    schema["allOf"][0]["not"]["properties"] = {{"schemaId", {{"const", 1}}}};
+    nlohmann::json_schema::json_validator conditional(schema);
+    CHECK_FALSE(McpActionCatalog::validateArguments(
+        conditional,
+        schema,
+        {{"featureType", "private-value"}, {"schemaId", 2}, {"private-key", 1}},
+        &issues));
+    CHECK_FALSE(contains("conflictingFields", Json::array({"featureType", "schemaId"})));
+}
+
 TEST_CASE(
     "MCP tool schemas add routing without changing application argument validation",
     "[mcp-actions]")
@@ -286,4 +400,28 @@ TEST_CASE(
     CHECK(catalog.acceptsArguments("viewer_describe_app_state", {{"limit", 5}}));
     CHECK_FALSE(catalog.acceptsArguments("viewer_describe_app_state", {{"limit", 11}}));
     CHECK_FALSE(catalog.acceptsArguments("viewer_describe_app_state", {{"limit", "5"}}));
+}
+
+TEST_CASE("MCP nested argument errors expose trusted array item expectations", "[mcp-actions]")
+{
+    auto const schema = Json::parse(R"json({
+        "type":"object", "properties":{
+            "featureIds":{"type":"array","items":{"type":"string","maxLength":2048,"description":"Use a full identifier string, not an identity object."}}
+        }
+    })json");
+    nlohmann::json_schema::json_validator validator(schema);
+    Json issues;
+    CHECK_FALSE(McpActionCatalog::validateArguments(
+        validator,
+        schema,
+        {{"featureIds", Json::array({{{"featureId", "private-input-value"}}})}},
+        &issues));
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0]["path"] == "/featureIds/0");
+    CHECK(issues[0]["expected"]["type"] == "string");
+    CHECK(issues[0]["expected"]["maxLength"] == 2048);
+    CHECK(
+        issues[0]["expected"]["description"] ==
+        "Use a full identifier string, not an identity object.");
+    CHECK(issues.dump().find("private-input-value") == std::string::npos);
 }

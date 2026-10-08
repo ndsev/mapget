@@ -73,6 +73,10 @@ This must not leak into the previous section.
     CHECK(content.find("missing-include") == std::string::npos);
     CHECK(content.find("must not leak") == std::string::npos);
     CHECK(item["source"] == "extra-1/guide.md");
+    auto guessed = f.help.query({}, "Arrays", 8);
+    CHECK(guessed["items"].empty());
+    REQUIRE(guessed["issues"].size() == 1);
+    CHECK(guessed["issues"][0]["message"].get<std::string>().find("query") != std::string::npos);
     auto exact = f.help.query({}, item["title"], 8);
     CHECK(exact == response);
 }
@@ -92,7 +96,12 @@ TEST_CASE(
             "<!-- mcp: -->\n# Topic\nUseful cardinality reference.\n");
     auto response = f.query("How do I use cardinality?");
     REQUIRE(response["items"].size() == 8);
-    CHECK(response["complete"] == true);
+    CHECK(response["complete"] == false);
+    CHECK(response["nextOffset"] == 8);
+    auto next = f.help.query("How do I use cardinality?", {}, 8, {}, "extra-1", 8);
+    CHECK(next["complete"] == true);
+    CHECK(next["items"].size() == 4);
+    CHECK(f.help.query("cardinality", {}, 8, {}, "missing-component")["items"].empty());
     CHECK(response["items"][0]["title"] == "extra-1/00.md / Cardinality");
     CHECK(response["items"][1]["title"] == "extra-1/01.md / Counting");
     for (size_t i = 0; i < 8; ++i) {
@@ -104,6 +113,36 @@ TEST_CASE(
     CHECK(f.query("\" * ^ :")["items"].empty());
     CHECK(f.help.query({}, "does not exist", 8)["items"].empty());
     CHECK_THROWS_AS(f.help.query("query", "title", 8), std::invalid_argument);
+}
+
+TEST_CASE("MCP help component filters separate similar domain terms", "[mcp-help]")
+{
+    HelpFixture f;
+    f.write(
+        "bundle/classicsource/guide.md",
+        "<!-- mcp: -->\n# Lane validity\nClassic range masks.\n");
+    f.write("bundle/livesource/guide.md", "<!-- mcp: -->\n# Lane validity\nLive lane ranges.\n");
+    auto classic = f.help.query("lane validity", {}, 8, {}, "classicsource");
+    REQUIRE(classic["complete"] == true);
+    REQUIRE(classic["items"].size() == 1);
+    CHECK(classic["items"][0]["source"] == "classicsource/guide.md");
+    auto title = classic["items"][0]["title"].get<std::string>();
+    CHECK(f.help.query({}, title, 8, {}, "classicsource")["items"].size() == 1);
+    CHECK(f.help.query({}, title, 8, {}, "livesource")["items"].empty());
+    CHECK(f.help.query({}, {}, 8, {}, "livesource")["items"][0]["source"] == "livesource/guide.md");
+}
+
+TEST_CASE(
+    "MCP help ignores conversational filler without discarding all-filler queries",
+    "[mcp-help]")
+{
+    HelpFixture f;
+    f.write("extra/labels.md", "<!-- mcp: -->\n# Labels\nFeature labels.\n");
+    f.write("extra/filler.md", "<!-- mcp: -->\n# Put on\nPut this on that.\n");
+    auto result = f.query("can you please put labels on these features for me");
+    REQUIRE(result["items"].size() == 1);
+    CHECK(result["items"][0]["source"] == "extra-1/labels.md");
+    CHECK_FALSE(f.query("put on")["items"].empty());
 }
 
 TEST_CASE(

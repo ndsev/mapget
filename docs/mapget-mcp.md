@@ -18,6 +18,11 @@ Browser tools are described by the installed catalog, not by C++ copies of
 frontend schemas. Native `mapget_*` tools are independent of browser registration
 and do not require `clientId`; see [Native Tools](#native-tools).
 
+<!-- mcp:
+title: "Viewer screenshot contract"
+keywords: ["screenshot", "image", "readiness", "rendering", "capture"]
+hint: "A delivered image is not proof of complete data or finished rendering; inspect its readiness metadata."
+-->
 ### Viewer Image Results
 
 `viewer_screenshot` is a browser-owned read action. Its browser result contains
@@ -124,6 +129,10 @@ connection must supply an allowed Origin; non-browser MCP callers may omit it.
 `oauthClientId`. It never returns keys, subjects, or permission rules. The
 endpoint URL comes from trusted configuration, not the caller's Host header.
 
+<!-- mcp:
+title: "Hosted MCP authentication"
+keywords: ["OAuth", "login", "authenticated session", "permissions", "JWT", "proxy"]
+-->
 ## Hosted Authentication
 
 Hosted deployments configure mapget as an OAuth **resource server**. Login,
@@ -255,6 +264,10 @@ Limits are positive integers at most 2147483647. Host/origin lists are bounded
 to 32 entries each. Identity header names must be distinct. These checks also
 apply to native embedders; CLI/YAML is not a separate authorization path.
 
+<!-- mcp:
+title: "Viewer routing and action lifetimes"
+keywords: ["clientId", "session", "tab", "deadline", "timeout", "cancellation", "mutation"]
+-->
 ## Tool Routing And Lifetimes
 
 Each `/interactive` WebSocket receives a cryptographically random UUIDv4
@@ -312,7 +325,10 @@ The endpoint supports these distinct wire contracts over the same POST URL:
 
 No revision creates an MCP protocol session or returns `MCP-Session-Id`.
 The viewer `clientId` must not be used as such a header. No GET event stream,
-replay, application pagination, prompts, or resources are advertised.
+replay streams, protocol tasks, prompts, or resources are advertised. Feature extraction
+supports bounded tool-level continuation cursors; this does not create an MCP protocol
+session. Sources, documentation and validation contexts also support stateless
+`offset`/`nextOffset` paging. Schema discovery uses compact navigation, without pagination.
 `GET /mcp` and `DELETE /mcp` return 405.
 
 Clients accept both JSON and SSE. Immediate results may use JSON; a browser
@@ -361,12 +377,12 @@ machine-readable catalog. Permission-filtered listing does not replace call-time
 
 | Tool | Inputs beyond common budgets | Result |
 | --- | --- | --- |
-| `mapget_docs` | Optional `query` or exact returned `title` | Up to three complete Markdown sections and five further titles, plus the content `revision`; no browser required |
-| `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId` | Ordered source IDs, lifecycle/progress, partition kind, levels, feature types and ordered ID compositions; coverage-range counts but no coverage records or serialized feature-model schemas |
-| `mapget_get_coverage` | `mapId`, `layerId`; optional `sourceId`, `level` | Advertised tile-grid rectangles and exact sparse occupancy masks; `coverageKnown` distinguishes unspecified coverage |
-| `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType` or `schemaId`, `query`, `trace` | Semantic feature/attribute overview by default; focused sequences of descriptor metadata with navigable `$ref` identities |
-| `mapget_validate_expression` | `mapId`, `layerId`, `expression`; optional `sourceId`, `featureType`, `attributeSchema`, `scope`, `rewrite`, `predicate` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
-| `mapget_extract_features` | `mapId`, `layerId`; `partitions` or canonical primary `featureIds`; optional `sourceId`, `featureTypes`, `scope`, `predicate`, `rewrite`, `query` or `expressions`, `geometry`, `trace` | Feature/attribute rows with provenance and one value sequence per expression |
+| `mapget_docs` | Optional `query` or exact returned `title`, `component`, `offset` | Up to three complete Markdown sections and five further titles per page, plus content `revision` and optional `nextOffset`; no browser required |
+| `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId`, `details`, `offset` | Ordered source/layer identities, lifecycle/progress, partition kind, levels, feature type names and coverage-range counts; selected `mapId`/`sourceId` defaults to details, including ordered ID compositions and protocol metadata |
+| `mapget_get_coverage` | `mapId`, `layerId`; optional `sourceId`, `level`, `format` | Coverage summaries with bounds, counts and sample tile IDs; `format: "raw"` returns exact sparse occupancy masks; `coverageKnown` distinguishes unspecified coverage |
+| `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType` or `schemaId`, `query` or `find`, `trace` | Compact grouped field/enum discovery or shallow feature/attribute overview by default; focused sequences of descriptor metadata with navigable `$ref` identities |
+| `mapget_validate_expression` | `mapId`, `layerId`, `expression`; optional `sourceId`, `featureType`, `attributeSchema`, `scope`, `rewrite`, `predicate`, `offset` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
+| `mapget_extract_features` | `mapId`, `layerId`; `partition`, `partitions` or canonical `featureIds`; optional `sourceId`, `featureType` or `featureTypes`, `scope`, `attributeIndex`, `attributeName`, `attributeLayer`, `predicate`, `rewrite`, `query` or `expressions`, `geometry`, `cursor`, legacy `offset`, `trace` | Compact actual feature summaries by default; explicit feature/attribute projections with provenance, row completeness and bounded scan continuations |
 | `mapget_extract_source_data` | `mapId`, `layerId`, `partitions`, or `mapId`, `partition`, `reference`; optional `sourceId`, `match`, `query`, `trace` | Root/address-match rows, provenance and value sequences |
 | `mapget_convert_coordinates` | `from`: `wgs84` or `nds`, `x`, `y` | WGS84 degrees or signed NDS integer coordinates |
 | `mapget_convert_tile_id` | Exactly one of `tileId`, `legacyTileId`, `{x,y,level}`, `{longitude,latitude,level}` | Signed packed ID, grid coordinates, level, WGS84 bounds and center |
@@ -392,6 +408,23 @@ sharing a map/layer; it does not bypass ACLs. Source-reference targets are autho
 independently. Never return the JWT itself to the datasource.
 
 <!-- mcp:
+title: "Native source and layer discovery"
+keywords: ["sourceDataLayers", "source discovery", "owning layer", "schemaFeatureTypes"]
+-->
+### Source And Layer Discovery
+
+Unfocused `mapget_list_sources` keeps renderable layer metadata in `layers` and lists raw
+SourceData IDs in `sourceDataLayers`. Selecting `mapId` or `sourceId` automatically includes
+ordered primary/secondary identifier compositions, protocol metadata and expanded raw layers.
+`details:false` explicitly requests the compact form, even with these selectors;
+`details:true` explicitly expands an unfocused inventory. A `layerId` filter alone opens
+that layer's metadata (including raw layers), but does not enable source details.
+Both forms omit the potentially large feature-model schema and coverage records.
+`schemaFeatureTypes` lists schema roots; `featureTypes` also contains identifier definitions
+for reference-only types. Neither schema declarations nor a documentation support table proves
+that a particular record exists in a loaded map.
+
+<!-- mcp:
 keywords: [schema discovery, query, feature type, attributes, filtering, cardinality]
 -->
 ### Designing Search Filters
@@ -399,27 +432,39 @@ keywords: [schema discovery, query, feature type, attributes, filtering, cardina
 Start with `viewer_get_app_state` and its active `view.layers` map/layer identities.
 Layer names are not feature types: a `Road` layer can contain `Road`, `Intersection`,
 and indirect attribute features. Use `mapget_list_sources` filtered to that layer
-for compact type names and identity compositions. Compositions are always included:
-ordered primary/secondary ID alternatives and optional/synthetic parts cannot be
-recovered from the feature-field schema alone. Coverage is a separate request via
-`mapget_get_coverage`, optionally restricted to one NDS level. Its `min`/`max` are
-south-west/north-east **grid corners**, not a numeric interval of packed IDs.
-`filled` is a row-major boolean mask in NDS grid order (x increasing, then y increasing); an empty mask denotes a full
-rectangle. A nonempty all-false mask denotes an explicitly empty rectangle.
-`coverageKnown: false` means the datasource advertised no coverage, not that the
-map is empty. An empty level-filtered result only means no range was advertised
-for that level. For object partitions, coverage describes discovery tiles, not
-object IDs or exact object geometry. Grid corners bound each rectangle, not
-just its populated cells. Whole ranges are returned under the common budgets;
-a partial sparse mask is never returned as if it were complete.
+for compact type names. `featureTypes` advertises identifier compositions, which
+can include types used only by references. `schemaFeatureTypes` lists the actual
+feature schema roots available for introspection in that layer. Neither list proves
+that a particular tile contains instances. If a type is absent from the current
+layer's roots, check other layers in the same map before concluding it is unavailable.
+Focused `mapId`/`sourceId` discovery includes ordered primary/secondary ID compositions
+and optional/synthetic parts by default; they cannot be recovered from the feature-field
+schema alone. Source pages use `offset`/`nextOffset` with
+unchanged filters. A source catalog may change between calls.
 
-Call `mapget_query_schema` without a query to see every feature-type root, its
-immediate fields, and the native properties/layer containers down to attribute
-names. Individual attributes and other compound payloads retain `kind`, `typename`
-when supplied, and `$ref`, without expanding their internals. This is a semantic
-overview projection, not a depth-limited schema. Selecting `schemaId` opens that
-definition and its immediate fields. An implicit union's `$ref` lists its
-alternative IDs; follow each integer separately. For example:
+Coverage is a separate request via `mapget_get_coverage`, optionally restricted
+to one NDS level. The default summary gives WGS84 bounds, an exact
+`coveredTileCount` and up to eight actually covered `sampleTileIds` per range.
+Advertised coverage does not guarantee a nonempty feature payload. Its `min`/`max`
+are south-west/north-east **grid corners**, not a numeric interval of packed IDs.
+Use `format: "raw"` for the full row-major boolean `filled` mask (x increasing,
+then y increasing); an empty mask denotes a full rectangle and an all-false
+nonempty mask denotes an empty rectangle. A partial sparse mask is never returned.
+`coverageKnown: false` means unspecified coverage, not an empty map. An empty
+level-filtered result means no range was advertised for that level. Object-layer
+coverage describes discovery tiles, not object IDs or exact object geometry.
+Summary `bounds` are `[west, south, east, north]`. Full longitude uses west/east
+`-180..180`; a range crossing the packed latitude grid's pole discontinuity uses
+the conservative south/north bounds `-90..90`.
+These geographic bounds summarize the grid range and do not replace its sparse mask.
+
+Call `mapget_query_schema` without a query or selector for a shallow list of
+feature types and schema IDs. Select `featureType` to open its fields and shallow
+properties. Follow a numeric `$ref` using `schemaId` in the same layer to open a
+compound definition and its immediate fields. An implicit union's `$ref` lists
+alternative IDs; follow each integer separately. Large enums use `enumCount` and
+`enumPreview`; an explicit query on that schema can retrieve the full domain.
+For example:
 
 ```json
 {"mapId":"Very-Large-Map","layerId":"Road","featureType":"Intersection",
@@ -435,8 +480,12 @@ returns recursive details within the ordinary work/byte/time limits. Cycles beco
 `$ref` descriptors with `truncated: "cycle"`; shared acyclic branches remain
 queryable. An exhausted descriptor allocation budget makes the whole result
 `complete: false`, even when a scalar projection hides its `node-budget` marker.
-An intentionally unexpanded overview reference does not imply incompleteness or
-missing data.
+Default descriptor responses identify `schemaView: "shallow_overview"`.
+`childrenOmitted: true` marks nonempty compound fields/elements/alternatives that
+were not expanded; open their `$ref` with `schemaId`, or use `find` to discover a
+field across the selected type/layer. `complete: true` means the overview response
+is complete, not that every descendant is displayed. An unexpanded reference does
+not imply missing data.
 
 `connectedRoads` is an array, so its cardinality filter is
 `#properties.connectedRoads > 3`. At a feature root, `attributes` is a lookup alias
@@ -446,12 +495,18 @@ same alias while returning canonical property paths. Validate with
 `mapget_validate_expression` and `scope: "auto"`, then run `viewer_start_search`
 over the active map/layer. Unresolved metadata indicates uncertainty, not an
 invalid runtime field. For runtime sampling, `mapget_extract_features` requires
-explicit nonempty partitions or canonical primary feature IDs; it never scans a map.
+explicit nonempty partitions or canonical feature IDs; it never scans a map.
 
 <!-- mcp:
 keywords: [partial results, limits, extraction, integer, bytes]
 -->
 ### Results And Budgets
+
+Input-schema rejections include bounded field-level issues. `conflictingFields` names a
+supplied combination prohibited by the input schema. Remove at least one of those fields.
+`triggerFields` explains a selector dependency: `missingField` names a required companion and
+`expected.const` supplies its required value. For example, `attributeName` requires
+`scope:attribute`; `featureType` and `schemaId` select alternative schema roots.
 
 Success is an object in `structuredContent`, with the same JSON in a text content block:
 
@@ -462,10 +517,21 @@ Success is an object in `structuredContent`, with the same JSON in a text conten
 Failures use `isError: true` and a structured error. A partial enumeration is a successful
 bounded response with `complete: false` and a reason such as `item_limit`,
 `expression_result_limit`, `work_limit`, `schema_node_limit`, `byte_limit`, `query_error`, or
-`load_failed_or_cancelled`. Narrow the request; there is no cursor, continuation state,
-or automatic pagination. No matches is a valid empty result, not an error.
+`load_failed_or_cancelled`. Follow `nextCursor` for feature extraction, or a returned
+`nextOffset` for tools supporting offset paging. Schema discovery offers `narrowing`
+and `expandArguments` instead. No tool promises a whole-source snapshot or automatic
+continuation. No matches is a valid empty result, but incomplete output cannot prove absence.
+Repeated evaluator warnings with the same expression, message and source span are
+aggregated into one issue with `expression` and `occurrences`. Counts refer to
+emitted diagnostics, not necessarily distinct features. Repeated instances occupy one slot in the shared 100-issue budget;
+optional fields missing on many records do not themselves
+stop an otherwise bounded scan. Predicate decisions consume evaluator work but
+are not charged as returned payload bytes.
 
-Common inputs are `limit` (default 100, maximum 1000) and `maxWork` (100000, maximum 1000000).
+Common inputs are `limit` (default 100, maximum 1000) and `maxWork` (default 100000,
+maximum 1000000). SourceData extraction defaults to 1000000 because resolving an
+address scans the owning compound records, which can exceed 100000 in a single tile.
+An explicit smaller budget is still honored.
 `limit` caps rows **and** values per expression separately; coverage uses it for whole ranges.
 There is no public depth knob. A defensive serialization stack guard at 256 container
 levels reports `serialization_limit`, rather than returning a silently shortened value.
@@ -480,7 +546,7 @@ actual serialized size is checked before sending.
 These are cooperative guards, **not a hard sandbox**: datasource I/O, compilation, regex
 engines, custom functions and individual model accessors can contain non-preemptible work.
 A client timeout does not imply rollback of a config mutation. Do not retry uncertain writes
-without rereading the revision. No result pagination or response-task continuation is retained.
+without rereading the revision. No response-task continuation or paging snapshot is retained.
 
 JSON values preserve zero, one or many expression results as arrays. Actual arrays remain
 nested arrays; objects remain objects. Non-JSON/lossy scalars use explicit tags:
@@ -514,17 +580,80 @@ keywords: [schema, descriptor, validation, completion, simfil]
 by completion. Descriptors contain `kind`, `fields`, `elements`, `alternatives`, enum values,
 open/nullable/required flags and terminal recursion/budget markers as appropriate.
 Array elements are possible domains, not fabricated sample records; union alternatives are
-distinct from arrays. Descriptor queries default to `_`; for example:
+distinct from arrays. Omitting `query` returns the shallow overview; explicit
+queries evaluate the full lazy graph. For example:
 
 ```json
 {"mapId":"Example","layerId":"Road","featureType":"Road","query":"fields"}
 ```
 
+Use `find` for direct field/symbol discovery before walking many references:
+
+```json
+{"mapId":"Example","layerId":"Road","find":"speed","limit":20}
+```
+
+`find` matches declared field names, producer type names and enum symbols,
+ignoring case, spaces, underscores and hyphens. For example, `speed limit` can
+match `SPEED_LIMIT` and `speedLimit`. Exact enum symbols rank first, followed by
+exact field/type names and substring matches. Within each class, shorter paths
+bring owning assignments ahead of deeply nested generic fields. This supports
+both finding the values of a known field and locating the field that accepts a known classification.
+
+Matches are grouped by `schemaId`, with up to two representative owning `contexts`.
+Each context has a `path` (`*` means an array element); feature-root searches also
+return `featureType`, a copyable `featureQuery`, and `attributeContext` when known.
+A search starting at `schemaId` returns paths relative to that definition rather
+than inventing a feature-root query. `contextsOmitted` identifies encountered contexts omitted from this preview;
+false does not establish that these are every possible owner.
+Shared definitions are traversed once per root, so these are representative paths,
+not an exhaustive inventory of every route through the graph.
+
+Enum groups include `matchingSymbols`, their count, and an eight-symbol `preview`.
+Exact symbols remain visible even when many substring matches are omitted.
+Symbols describe actual string literals; flag domains identify their symbols as
+flags, not an exhaustive list of flag combinations. Separate `literalPreview`
+values retain non-string enum literals, including lossless tags for unsafe integers.
+The schema does not infer a numeric source-format encoding for a string symbol.
+`valuesArguments` opens the full enum using a focused query, subject to the normal
+value/work/byte budgets. `expandArguments` opens the definition's shallow structure.
+
+Discovery defaults to eight groups and allows at most thirty-two. It has **no
+pagination**. `discovery.scanComplete` says whether the traversal finished;
+`matchedDomains` and `omittedDomains` are lower bounds when it did not. A completed
+scan with omitted groups returns `complete:false, reason:"matches_omitted"`.
+Use the returned `narrowing[].arguments` to focus on an observed feature type or
+assignment/domain, or use one group's `expandArguments`. A work-limited scan is
+explicitly incomplete even if it found no matches.
+
+Overviews show at most sixteen immediate children per container and eight enum
+values. `childrenOmitted`, `fieldCount`/`domainCount`, and `enumCount` identify larger
+domains. Follow `$ref`/`schemaId`, use `find` for an omitted named member or symbol,
+or request a focused descriptor `query`. Explicit queries can raise `limit` to
+1000 values; they remain bounded and do not paginate. `find` and `query` are
+exclusive. Schema declarations do not establish actual feature values; open or
+dynamic data can also contain undeclared fields.
+
+If the default overview returns `complete: false`, especially `reason: "byte_limit"`,
+its missing feature types or fields are **not** evidence of absent data. Even an
+empty `items` array can mean that the first descriptor exceeded the budget.
+Discover feature type names with `mapget_list_sources`, select one with
+`featureType`, and project a narrow descriptor path with `query`. For example,
+a Classic Routing layer with declared `Link.properties.travelDirection` can be
+inspected with `featureType: "Link"` and
+`query: "fields.properties.fields.travelDirection"`. Follow a returned `$ref`
+using `schemaId` in that same source/layer. Check completeness on each read.
+Schema descriptors establish types and possible domains; use bounded feature
+extraction to establish actual values and missing-value behavior.
+
 Expression validation instead binds **data** schemas to the compiler. It never evaluates
 against fake features or fetches map data. `scope` is `feature`, `attribute`, or `auto`;
 `rewrite: true` requests the existing search normalization. Auto scope also uses normalization
 when metadata is available. An explicit `attributeSchema` must identify a real attribute context.
-Without it, available attribute contexts are compiled separately. `schemaCertain` reports
+Without it, available attribute contexts are compiled separately. `limit` bounds
+contexts, `offset` selects the first, and `nextOffset` continues with the same
+expression and selectors. `contextCount` describes the available contexts;
+`valid` describes only those returned on this page. `schemaCertain` reports
 statically resolved accesses against a closed root, not a guarantee that runtime data/functions
 will succeed. `runtimeValidated` is always false. Missing/open/dynamic metadata stays uncertain.
 
@@ -535,11 +664,25 @@ keywords: [extract features, source data, provenance, native reference]
 
 Tile partitions are `{"kind":"tile","id":131073}`; object IDs are lossless decimal strings,
 for example `{"kind":"object","id":"18446744073709551615"}`. Feature IDs are canonical
-mapget strings. With only primary IDs, the datasource's cheap locate hook supplies candidate
-partitions, then ordinary service/cache loading and exact ID lookup resolve them. This does
-not perform secondary-ID mapping, object discovery, a coverage-wide scan, or direct datasource
-conversion. Supply explicit partitions when the datasource cannot cheaply locate a feature.
-Omitted/empty `featureTypes` searches all types; omitted `predicate` matches all candidates.
+mapget strings beginning with the exact feature type, with source-specific ID parts
+separated by dots. A numeric/local ID alone is incomplete.
+`mapget_list_sources` with the target `mapId`, `layerId` and `details:true` returns
+`featureTypes[].uniqueIdCompositions`. Malformed IDs return `invalid_feature_id`
+with identity-specific recovery guidance before any tile loading; this is distinct
+from a valid ID that cannot be located.
+The datasource's cheap locate hook supplies candidate partitions
+and optional secondary-ID selectors. Ordinary service/cache loading resolves
+primary IDs or applies those selectors to the loaded tile; returned rows retain
+canonical primary identities. Explicit partitions restrict candidate loading.
+Unresolved requested IDs are reported as locate issues, not silently treated as
+an empty successful lookup. There is no coverage-wide scan, object discovery or
+direct datasource conversion. Supply explicit partitions when cheap locate is
+unavailable.
+Use `partition` for one partition or `partitions` for several; these spellings are
+mutually exclusive. Likewise, `featureType` selects one type and `featureTypes`
+selects several. Omitted/empty `featureTypes` searches all types; an omitted
+`predicate` matches all candidates. Feature type names are not layer IDs: discover
+the owning layer before following a relation into another type.
 
 ```json
 {
@@ -551,13 +694,78 @@ Omitted/empty `featureTypes` searches all types; omitted `predicate` matches all
 }
 ```
 
-Feature rows include source/map/layer/partition/feature ID provenance. Attribute scope iterates
+Feature rows include source/map/layer/partition/feature ID provenance and
+`rowComplete`. In feature scope, omitting both `query` and `expressions` returns a
+compact `summary` of the actual feature:
+
+- `typeId` and named `idParts` identify the concrete record.
+- `properties` lists immediate fields, scalar values and compound child counts.
+- `attributeAssignments` preserves layer/name, global attribute index, optional
+  layer instance ID, validity count and immediate assignment fields.
+- `geometries` lists semantic names, types and point counts without coordinates.
+- `relationCount`, `relationNames` and `sourceDataReferences` guide focused follow-up.
+
+In the property and assignment inventories, long strings and byte buffers are represented by their sizes. This is an inventory
+of the returned feature, not proof that all features in a layer share those fields.
+Use a single string `query` for a focused projection, `expressions` for several,
+or explicit `query: "_"` to request the complete model. Feature scope starts at the
+feature: use `_.properties`, not `$feature.properties` or `$.properties`.
+
+A partial extraction can return `nextCursor`. Continue with the same tool and
+only the cursor, optionally changing `limit` or `maxWork`:
+
+```json
+{"cursor":"<nextCursor from the previous response>","limit":20}
+```
+
+The cursor retains the original selection, projections and actual scan position,
+including the feature, attribute assignment and validity within the active
+partition. Earlier partitions and predicates are not replayed. A work-limited page
+can contain no matches and still return an advancing cursor. A retry of a cursor
+starts from the same checkpoint; it does not consume or advance that cursor.
+
+A partially projected row has `rowComplete:false` and remains pending. If a fresh
+page cannot finish that row without advancing, no new cursor is returned: narrow
+the projection in a new request or increase `limit` for `expression_result_limit` / `maxWork` for a work limit. Cursor
+calls reject selection/projection changes rather than silently mixing queries.
+
+Cursors expire after two minutes (or earlier with their originating authority),
+are scoped to the caller and datasource authorization, and fail explicitly after
+catalog changes. Storage is bounded to four checkpoints per caller, sixteen
+process-wide, and 64 MiB of conservatively accounted tile/query storage; older
+checkpoints may be evicted sooner. Shared datasource schemas and dictionaries are
+service-owned and are not charged per checkpoint. Obsolete catalog generations
+are retired by worker maintenance. Oversized checkpoints are not retained.
+The active tile is retained; later partitions are loaded normally. This provides
+stable positions within that tile, **not a snapshot of the whole live source**.
+Restart the original extraction after `cursor_unavailable` or `cursor_stale`.
+
+Legacy `offset`/`nextOffset` remains available for matching-row random access, but
+repeats earlier scanning and predicates. It counts contexts after type/predicate
+filtering and advances only past complete rows. Retain filters and partition order;
+a changing source can change the sequence. Prefer cursors for sequential reads.
+
+With `scope: "attribute"`, use `attributeIndex` from the summary to inspect one
+assignment, or exact `attributeName` and `attributeLayer` to select assignments.
+These selectors combine with AND and require attribute scope. Indices are local
+to each feature; `attributeLayer` is the assignment layer, not the map `layerId`.
+They apply before the predicate and matching-row pagination. A focused `query`
+still helps when an assignment contains large nested payloads.
+
+Attribute scope iterates
 the same feature-local attribute and validity indices as `/filter`, with its `$feature`, `$name`,
 `$layer`, `$attributeIndex`, `$validityIndex`, `$validityCount`, and `$hasValidity` overlay.
 There is no new `match.` or `feature.` prefix. `geometry: true` computes the selected validity's
 actual geometry, not an unconditionally copied primary shape; failed computation is an issue
 and null geometry. Attribute geometry math is preflighted against a conservative tile vertex
-budget. Default `_` projections still expose the ordinary model, including its geometry/fields.
+budget. Attribute scope without a query still projects its complete assignment context.
+Explicit `query: "_"` exposes the ordinary model, including geometry and fields.
+`geometry: false` omits the extra computed geometry; it does not
+remove coordinates explicitly selected by `query: "_"`. Use focused expressions
+such as `["typeId", "_sourceData"]` for compact identity/provenance reads. JavaScript
+object literals are not Simfil projection syntax. Attribute scope is also useful
+for requiring a value and condition on the **same assignment**, rather than
+matching unrelated descendants of one feature.
 
 Source reference projections preserve the native `{layerId,address,qualifier?}` contract,
 with `address` encoded as a decimal u64. Pass its owning map and partition explicitly:
@@ -574,8 +782,19 @@ Default `exact` works for opaque and bit-range addresses. `containing` only supp
 and returns **all** minimally enclosing ties, with `matchCount` and `ambiguous` metadata.
 Ranges are absolute even beneath a presentation address scope. A zero-length requested span
 is a point in a half-open range. The qualifier is provenance, not an additional address key.
-Stale links yield an empty list and an issue; traversal/match-limit failure never pretends that
-an incomplete candidate set is unambiguous. No erdblick inspection link format is consumed.
+Stale links yield an empty list and an issue; lookup/match-limit failure never pretends
+that an incomplete candidate set is unambiguous. Lookup scans owned compound records
+once, including compounds not attached to a presentation root. Scalar arrays and
+shared presentation paths do not multiply this lookup work. No erdblick inspection
+link format is consumed.
+
+A SourceData address may identify a decoded subrecord rather than a database row.
+Its decimal value is not a SQL column or a query. Inspect the source layer's retained
+root metadata when you need the query or enclosing rows; see the datasource's own
+SourceData documentation for its root fields. Reference-match items include
+`rootReadArguments` retaining the same source/map/layer/partition and omitting the
+address selector. Pass them to `mapget_extract_source_data` with a focused query
+for those root fields; the decoded match alone does not establish SQL provenance.
 
 <!-- mcp:
 keywords: [configuration, permissions, persistence, revision]
@@ -628,15 +847,27 @@ The result uses the usual `items`, `complete`, `reason`, `issues`, and `traces`
 envelope, plus a SHA-256 `revision` of the documentation corpus. The first three
 matches contain `title`, `content` (the full Markdown section), and a portable
 `source` path. Up to five further matches contain just `title`. This deliberate
-selection is not reported as truncation. The normal byte/work/time budgets can
-still make a response incomplete. `limit` defaults to eight and can reduce that
-selection; there is no pagination.
+selection keeps each page bounded. `limit` defaults to eight; when additional
+matches exist, `complete: false`, `reason: "item_limit"` and `nextOffset` identify
+the next page. Repeat the same query and `component` filter with that offset.
+Check `revision` for corpus changes between calls. Byte/work/time budgets can
+also make a response incomplete.
 
 Pass one returned title verbatim to read that section, using the same response
 shape with one item. `query` and `title` are mutually exclusive. An empty call
-lists the first eight sections in title order. No match returns an empty list,
+lists the first eight sections in title order. Optional `component` restricts
+searches, exact titles and listings to the registered component (for example
+`livesource`, `classicsource`, `erdblick` or `mapget`). No match returns an empty list,
 not an invented explanation. Retrieval uses SQLite FTS5/BM25, weighting titles
 above annotation keywords above content; it is lexical, not semantic search.
+Common conversational filler (for example “please show me”) is ignored when
+substantive terms remain; an all-filler query retains its original terms. Prefer
+specific domain terms such as “Classic lane validity” or “style labels”.
+
+Help rows are charged by their serialized JSON size, with the complete envelope
+and escaped text fallback checked before each row is included. A section that
+cannot fit is omitted with `complete: false` and `reason: "byte_limit"`; reduce
+`limit` or request a returned title to isolate the needed section.
 
 Each invocation checks current files before querying, including changes whose
 file size and modification time are unchanged. A background check also runs
@@ -666,6 +897,11 @@ including when the webapp uses a mount prefix. Missing optional folders can appe
 later. Register only trusted content: these documents become agent-visible context.
 The tool accepts neither filesystem paths nor remote URLs from its caller.
 
+<!-- mcp:
+title: "Author MCP help snippets"
+keywords: ["MCP snippets", "documentation annotations", "keywords", "hint", "authoring"]
+hint: "Mark substantive canonical sections, not portal include wrappers. Keep each section independently useful and use domain vocabulary."
+-->
 ### Authoring Help Sections
 
 Folder registration includes `.md` files recursively, but only marked sections
@@ -708,6 +944,10 @@ at most 4,096 sections can be indexed.
 Nested directory symlinks are not followed. Overlapping roots index each physical
 file once. Avoid copying the same document into multiple independent roots.
 
+<!-- mcp:
+title: "Source and packaged MCP help"
+keywords: ["MCP help packaging", "docs hot reload", "source registry", "staging", "revision"]
+-->
 ### Source And Packaged Documentation
 
 Server builds include the folder helper from `cmake/McpHelp.cmake`:

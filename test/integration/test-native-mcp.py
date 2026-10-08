@@ -387,6 +387,27 @@ class NativeMcpTest(unittest.TestCase):
         self.assertTrue(deleted["complete"])
         self.assertEqual(deleted["items"], [])
 
+    def test_documentation_full_sections_fit_actual_wire_budget(self):
+        """Several useful Markdown sections must not pay generic scalar worst-case escaping six times."""
+        folder = Path(self.directory.name) / "mcp-help"
+        folder.mkdir()
+        for i in range(3):
+            (folder / f"large-{i}.md").write_text(
+                f"<!-- mcp: -->\n# Capybaraguide {i}\n" + ('Example "quoted" field.\n' * 400), encoding="utf-8")
+        result = self.call("mapget_docs", {"query": "capybaraguide"})
+        self.assertFalse(result.get("isError", False), result)
+        docs = result["structuredContent"]
+        self.assertTrue(docs["complete"], docs)
+        self.assertEqual(len(docs["items"]), 3)
+        self.assertTrue(all(len(item["content"]) > 8000 for item in docs["items"]))
+        self.assertEqual(json.loads(result["content"][0]["text"]), docs)
+        # Actual overflow still returns bounded partial evidence, never a false complete reply.
+        (folder / "large-0.md").write_text("<!-- mcp: -->\n# Capybaraguide huge\n" + 'x' * 100000)
+        huge = self.call("mapget_docs", {"query": "capybaraguide huge"})
+        self.assertFalse(huge.get("isError", False), huge)
+        self.assertFalse(huge["structuredContent"]["complete"])
+        self.assertEqual(huge["structuredContent"]["reason"], "byte_limit")
+
     def test_documentation_input_and_work_budgets(self):
         """Help follows native read/schema/budget contracts rather than a separate protocol."""
         _, response = self.begin_rpc("tools/call", {"name": "mapget_docs", "arguments": {
@@ -426,6 +447,10 @@ class NativeMcpTest(unittest.TestCase):
         self.assertFalse(coverage.get("isError", False), coverage)
         self.assertIn("coverageKnown", coverage["structuredContent"]["items"][0])
         self.assertIn("uniqueIdCompositions", sources[0]["layers"][0]["featureTypes"][0])
+        compact = self.call("mapget_list_sources", {**selection, "details": False})
+        self.assertNotIn("uniqueIdCompositions", compact["structuredContent"]["items"][0]["layers"][0]["featureTypes"][0])
+        detailed = self.call("mapget_list_sources", {**selection, "details": True})
+        self.assertIn("uniqueIdCompositions", detailed["structuredContent"]["items"][0]["layers"][0]["featureTypes"][0])
         validation = self.call("mapget_validate_expression", {
             **selection, "expression": "typeId == 'DevSrc-Road'"})
         self.assertFalse(validation.get("isError", False), validation)
@@ -443,6 +468,14 @@ class NativeMcpTest(unittest.TestCase):
         first = result["items"][0]
         self.assertEqual(first["values"][0], [first["featureId"]])
         self.assertIsInstance(first["values"][1][0], dict)
+        self.assertIn("nextCursor", result)
+        resumed = self.call("mapget_extract_features", {"cursor": result["nextCursor"]})
+        self.assertFalse(resumed.get("isError", False), resumed)
+        repeated = self.call("mapget_extract_features", {"cursor": result["nextCursor"]})
+        self.assertEqual(resumed["structuredContent"]["items"], repeated["structuredContent"]["items"])
+        first_ids = {row["featureId"] for row in result["items"] if row["rowComplete"]}
+        next_ids = {row["featureId"] for row in resumed["structuredContent"]["items"]}
+        self.assertTrue(first_ids.isdisjoint(next_ids))
         located = self.call("mapget_extract_features", {
             **selection, "featureIds": [first["featureId"]], "query": "id"})
         self.assertFalse(located.get("isError", False), located)
@@ -585,6 +618,10 @@ class NativeMcpTest(unittest.TestCase):
     def test_initialize_clients_are_stateless_and_cancellation_never_guesses_ownership(self):
         """2025 clients get their own wire shape, without inventing server-side protocol sessions."""
         viewer = self.viewer()
+        _, discovery = self.begin_rpc("server/discover")
+        instructions = self.rpc_result(discovery)["result"]["instructions"]
+        self.assertIsInstance(instructions, str)
+        self.assertTrue(instructions.strip())
         for protocol in ("2025-06-18", "2025-11-25"):
             _, response = self.begin_rpc("initialize", {
                 "protocolVersion": protocol, "capabilities": {},
@@ -592,7 +629,9 @@ class NativeMcpTest(unittest.TestCase):
                 headers={"MCP-Protocol-Version": ""}, protocol=protocol)
             self.assertEqual(response.status, 200)
             self.assertIsNone(response.getheader("MCP-Session-Id"))
-            self.assertEqual(self.rpc_result(response)["result"]["protocolVersion"], protocol)
+            initialized = self.rpc_result(response)["result"]
+            self.assertEqual(initialized["protocolVersion"], protocol)
+            self.assertEqual(initialized["instructions"], instructions)
             _, response = self.begin_rpc("notifications/initialized", protocol=protocol, request_id=None)
             self.assertEqual(response.status, 202)
             self.assertEqual(response.read(), b"")

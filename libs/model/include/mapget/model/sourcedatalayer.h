@@ -94,7 +94,9 @@ public:
     /**
      * Resolve native absolute source addresses without presentation-relative offsets.
      * Exact matching supports opaque addresses; containing selects all smallest enclosing
-     * bit ranges. Budget/cancellation errors discard potentially incomplete ambiguity results.
+     * bit ranges. Searches this layer's compound records, independent of presentation roots.
+     * maxNodes bounds addressable compounds, not their scalar children. Budget/cancellation
+     * errors discard potentially incomplete ambiguity results.
      */
     [[nodiscard]] tl::expected<std::vector<model_ptr<SourceDataCompoundNode>>, simfil::Error>
     findSourceData(

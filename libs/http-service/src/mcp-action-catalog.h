@@ -39,7 +39,10 @@ public:
     [[nodiscard]] nlohmann::json tools(bool allowRead, bool allowControl) const;
 
     /** Validate application arguments after removing the server-owned clientId. */
-    [[nodiscard]] bool acceptsArguments(std::string_view action, nlohmann::json const& value) const;
+    [[nodiscard]] bool acceptsArguments(
+        std::string_view action,
+        nlohmann::json const& value,
+        nlohmann::json* issues = nullptr) const;
 
     /** Validate a browser result without applying defaults or exposing invalid payloads. */
     [[nodiscard]] bool acceptsResult(std::string_view action, nlohmann::json const& value) const;
@@ -48,7 +51,15 @@ public:
     static void
     compileSchema(nlohmann::json_schema::json_validator& validator, nlohmann::json const& schema);
 
+    /** Validate with bounded field-level guidance; never echo caller values or unknown keys. */
+    static bool validateArguments(
+        nlohmann::json_schema::json_validator const& validator,
+        nlohmann::json const& schema,
+        nlohmann::json const& value,
+        nlohmann::json* issues);
+
 private:
+    class ArgumentErrors;
     /** One immutable action owns its metadata and validators; no per-tab schema copies. */
     struct Action
     {

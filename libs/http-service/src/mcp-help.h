@@ -36,7 +36,9 @@ public:
         std::string const& text,
         std::string const& title,
         size_t limit,
-        std::function<bool()> const& keepGoing = {});
+        std::function<bool()> const& keepGoing = {},
+        std::string const& component = {},
+        size_t offset = 0);
 
 private:
     using Statement = std::unique_ptr<sqlite3_stmt, int (*)(sqlite3_stmt*)>;

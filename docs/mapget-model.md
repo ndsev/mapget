@@ -67,6 +67,11 @@ See the [HTTP discovery contract](mapget-api.md#post-objectsdiscover) and
 [datasource integration guide](mapget-dev-guide.md#object-datasource-integration)
 for the discovery/load sequence and a runnable example.
 
+<!-- mcp:
+title: "Feature properties and attribute layers"
+keywords: ["feature model", "properties", "attributes", "attribute layers"]
+hint: "Feature values and schema descriptors are different objects. Inspect descriptor metadata first, then extract actual values."
+-->
 ## Features and properties
 
 The atomic unit of data in mapget is the feature. Conceptually, a feature is close to a GeoJSON feature: it has a unique identifier, one or more geometries and a flexible set of attributes. Mapget adds two ideas on top of plain GeoJSON:
@@ -74,7 +79,7 @@ The atomic unit of data in mapget is the feature. Conceptually, a feature is clo
 - layered attributes with their own validity information, and
 - explicit relations and source data references.
 
-The `properties.layers` tree in a feature holds these layered attributes and their validity entries, while top-level entries under `properties` are regular attributes without layering.
+The `properties.layer` tree in a feature holds these layered attributes and their validity entries, while top-level entries under `properties` are regular attributes without layering.
 
 To make this as fast as possible, mapget uses the simfil binary format with a small VTLV (Version-Type-Length-Value) message wrapper. This is explained in the following section.
 
@@ -171,6 +176,10 @@ classDiagram
 
 When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` for interpreting feature IDs and field layouts. Full feature-ID validation is explicit, as described above. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
 
+<!-- mcp:
+title: "Feature model schema contract"
+keywords: ["schema", "feature types", "fields", "completion", "attribute contexts"]
+-->
 ### Feature Model Schema
 
 Feature layers may attach `LayerInfo.featureModelSchema`, a typed `LayerSchema` that validates one emitted GeoJSON-style feature object from that layer.
@@ -199,6 +208,10 @@ numeric ranges to initialize labels, categories and gradients. None of these
 consumers replace the emitted feature data; the schema only describes and
 constrains it.
 
+<!-- mcp:
+title: "Typed schema domains"
+keywords: ["enum", "bitmask", "units", "numeric domain", "schema aliases", "constraints"]
+-->
 ### Typed Schema Domains
 
 `LayerSchema` stores precise scalar affinities, named feature/attribute kinds,
@@ -271,6 +284,10 @@ Add‑on datasources are registered with `isAddOn` and must share the same `mapI
 
 Clients see both base and add‑on entries in the `/sources` response (add‑ons are marked `isAddOn`), but the base datasource remains the entry point for tile requests. This mechanism is used by Python LiveSource overlays that attach Road and Lane attribute layers to an existing NDS.Live or NDS.Classic base map.
 
+<!-- mcp:
+title: "Semantic geometry names"
+keywords: ["centerline", "topology", "boundary", "ADAS", "geometry-name", "reference", "LOD"]
+-->
 ## Complete source tiles and semantic geometry
 
 Protocol 3 removed staged loading and backend feature LOD. A datasource request
@@ -295,6 +312,10 @@ Large GLBs are optional named attachments. A feature/subset layer carries the
 attachment name and lightweight geometry/AABB nodes; attachment bytes are
 produced and transferred separately on demand.
 
+<!-- mcp:
+title: "Canonical feature identifiers"
+keywords: ["feature ID", "link ID", "primary ID", "secondary ID", "identity", "locate"]
+-->
 ## Feature IDs
 
 Every feature in mapget is uniquely identified by a composite ID. Logically, it is made up of:
@@ -321,7 +342,7 @@ uniqueIdCompositions:
     - { partId: connectedRoadIndex, datatype: I64 }
 ```
 
-A datasource writes features using the primary `Road.<tileId>.<roadIs>` IDs, while an external system could send a locate request for `Road.1234.5.2` (`tileId=1234`, `intersectionId=5`, `connectedRoadId=2`) and receive the primary ID needed to fetch the feature.
+A datasource writes features using the primary `Road.<tileId>.<roadId>` IDs, while an external system could send a locate request for `Road.1234.5.2` (`tileId=1234`, `intersectionId=5`, `connectedRoadIndex=2`) and receive the primary ID needed to fetch the feature.
 
 <!-- mcp:
 keywords: [geometry, validity, attribute scope, offsets]
@@ -468,6 +489,10 @@ Python exposes the same operation as `find_source_data`, with errors raised as `
 The [MCP extraction API](mapget-mcp.md#extraction-and-native-source-links) accepts this
 native address plus the owning map/partition, not frontend inspection URLs.
 
+<!-- mcp:
+title: "Maps layers and tiles"
+keywords: ["mapId", "layerId", "tile", "map layer", "zoom level"]
+-->
 ## Tiles, maps and layers
 
 For efficiency, mapget serves data in tiles. Each tile is identified by a zoom level `z` and grid coordinates `x` and `y` in a binary tiling scheme:
@@ -673,6 +698,10 @@ classDiagram
 
 From a simfil perspective, each of the model classes shown above is either a direct `simfil::ModelNode` derivative or a thin wrapper built on simfil’s node types. `TileFeatureLayer` and `TileSourceDataLayer` act as model pools: they own the storage for all nodes in a tile and provide the environment required to evaluate simfil expressions directly against tile content.
 
+<!-- mcp:
+title: "Filtered subsets and provenance"
+keywords: ["subset", "filter results", "sourceTileKey", "partial data", "attribute validity"]
+-->
 ## Subset layers
 
 `TileSubsetLayer` is the immutable result of one `/filter` definition for one

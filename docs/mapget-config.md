@@ -81,6 +81,10 @@ sources:
 
 With this configuration the datasource is only visible to clients that send an `X-User-Role` header whose value matches the `privileged` pattern.
 
+<!-- mcp:
+title: "Mapget tile TTL"
+keywords: ["TTL", "tile expiry", "expiration", "refresh interval"]
+-->
 ### Tile TTL
 
 <!-- --8<-- [start:ttl] -->
@@ -432,6 +436,10 @@ The optional `http-settings` top‑level key is reserved for HTTP‑related conf
 
 Mapget itself treats this section as opaque data and does not interpret it when serving tiles. It is included in `/config.model` only when the active datasource schema contains an `http-settings` property, for example through a deployment-specific `--config-schema` patch. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
 
+<!-- mcp:
+title: "Configuration environment variables"
+keywords: ["environment", "env", "secret", "configuration interpolation"]
+-->
 ## Environment variables
 
 <!-- --8<-- [start:env] -->
