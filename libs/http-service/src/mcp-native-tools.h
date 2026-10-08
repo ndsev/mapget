@@ -33,8 +33,10 @@ public:
     /** Match a native name, including disabled tools so calls cannot fall through to a browser. */
     [[nodiscard]] bool contains(std::string_view name) const;
     /** Validate arguments against the same compiled schema advertised by tools/list. */
-    [[nodiscard]] bool
-    acceptsArguments(std::string_view name, nlohmann::json const& arguments) const;
+    [[nodiscard]] bool acceptsArguments(
+        std::string_view name,
+        nlohmann::json const& arguments,
+        nlohmann::json* issues = nullptr) const;
     /** Check every successful result before sending structuredContent. */
     [[nodiscard]] bool acceptsResult(std::string_view name, nlohmann::json const& result) const;
     /** Start one operation and return a cancellation token; completion may be synchronous. */
@@ -49,6 +51,7 @@ public:
 
 private:
     class Call;
+    struct Continuation;
     /** Schema validators and their public descriptions have one immutable owner. */
     struct Action
     {
@@ -70,6 +73,11 @@ private:
     bool helpRefreshPending_ = false;
     std::chrono::steady_clock::time_point nextHelpRefresh_{};
     std::vector<std::shared_ptr<Call>> calls_;
+    /** Immutable extraction checkpoints; no workers or HTTP requests survive between pages. */
+    std::map<std::string, std::shared_ptr<Continuation>, std::less<>> continuations_;
+
+    /** Drop expired checkpoints and admit one within per-user, global and memory bounds. */
+    std::string retain(std::shared_ptr<Continuation> checkpoint);
 
     /** Compile native schemas once at startup, without a generated frontend artifact. */
     void buildCatalog();

@@ -1,11 +1,249 @@
 #include "mcp-action-catalog.h"
 
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <stdexcept>
 
 namespace mapget::detail
 {
+
+/** Per-validation bounded diagnostics, derived only from trusted schema names and constraints. */
+class McpActionCatalog::ArgumentErrors final : public nlohmann::json_schema::error_handler
+{
+public:
+    /** Collect only trusted property names for redacting instance-derived JSON pointers. */
+    explicit ArgumentErrors(nlohmann::json const& schema) : schema_(schema)
+    {
+        std::vector<nlohmann::json const*> pending{&schema};
+        while (!pending.empty()) {
+            auto const* node = pending.back();
+            pending.pop_back();
+            if (node->is_object() && node->contains("properties"))
+                for (auto const& [key, _] : node->at("properties").items())
+                    names_.insert(key);
+            if (node->is_structured())
+                for (auto const& child : *node)
+                    if (child.is_structured())
+                        pending.push_back(&child);
+        }
+    }
+
+    /** Explain rejected root combinations using schema-owned names, never caller values. */
+    void explainConstraints(nlohmann::json const& instance)
+    {
+        if (!instance.is_object())
+            return;
+        std::vector<nlohmann::json const*> pending{&schema_};
+        while (!pending.empty() && issues.size() < 8) {
+            auto const& branch = *pending.back();
+            pending.pop_back();
+            if (branch.contains("allOf"))
+                for (auto const& child : branch["allOf"])
+                    pending.push_back(&child);
+            if (branch.contains("not")) {
+                auto fields = presentFields(branch["not"], instance);
+                if (!fields.empty())
+                    append(
+                        {{"path", ""},
+                         {"message",
+                          "These fields cannot be supplied together; remove at least one."},
+                         {"conflictingFields", fields}});
+            }
+            if (!branch.contains("if") || !branch.contains("then"))
+                continue;
+            auto fields = presentFields(branch["if"], instance);
+            if (fields.empty())
+                continue;
+            auto const& consequent = branch["then"];
+            if (consequent.contains("required")) {
+                for (auto const& field : consequent["required"]) {
+                    auto const name = field.get<std::string>();
+                    if (names_.contains(name) && !instance.contains(name))
+                        append(
+                            {{"path", ""},
+                             {"message", "The supplied selector requires this field."},
+                             {"triggerFields", fields},
+                             {"missingField", name}});
+                }
+            }
+            if (consequent.contains("properties")) {
+                for (auto const& [name, expected] : consequent["properties"].items()) {
+                    if (!names_.contains(name) || !expected.contains("const") ||
+                        expected["const"].dump().size() > 1024 ||
+                        (instance.contains(name) && instance[name] == expected["const"]))
+                        continue;
+                    // An optional absent property does not violate a properties-only constraint.
+                    auto const required = consequent.value("required", nlohmann::json::array());
+                    if (!instance.contains(name) &&
+                        std::find(required.begin(), required.end(), name) == required.end())
+                        continue;
+                    append(
+                        {{"path", "/" + name},
+                         {"message", "The supplied selector requires this value."},
+                         {"triggerFields", fields},
+                         {"expected", {{"const", expected["const"]}}}});
+                }
+            }
+        }
+    }
+
+    /** Retain bounded repair hints without copying caller values into diagnostics. */
+    void error(
+        nlohmann::json::json_pointer const& location,
+        nlohmann::json const&,
+        std::string const& message) override
+    {
+        invalid = true;
+        if (issues.size() >= 8)
+            return;
+        std::vector<std::string> parts;
+        for (auto cursor = location; !cursor.empty(); cursor.pop_back()) {
+            auto token = cursor.back();
+            auto index = !token.empty() && token.size() <= 10 &&
+                token.find_first_not_of("0123456789") == std::string::npos;
+            parts.push_back(names_.contains(token) || index ? token : "*");
+        }
+        nlohmann::json::json_pointer safe;
+        for (auto it = parts.rbegin(); it != parts.rend(); ++it)
+            safe /= *it;
+        auto text = message;
+        auto const prefix = std::string{
+            "at least one subschema has failed, but all of them are required to validate - "};
+        while (text.starts_with(prefix))
+            text.erase(0, prefix.size());
+        // Format/content checker exceptions and additional-property errors may contain input.
+        if (text.starts_with("validation failed for additional property"))
+            text = "Unknown argument field; use only fields in this tool's input schema.";
+        else if (!(text.starts_with("required property '") || text == "unexpected instance type" ||
+                   text.starts_with("instance exceeds") || text.starts_with("instance is below") ||
+                   text == "instance not found in required enum" || text == "instance not const" ||
+                   text == "array has too many items" || text == "array has too few items" ||
+                   text == "too many properties" || text == "too few properties"))
+            text = "Value does not match an allowed input schema branch or constraint.";
+        nlohmann::json issue{{"path", safe.to_string()}, {"message", text.substr(0, 512)}};
+        if (location.empty() && schema_.contains("required")) {
+            issue["required"] = schema_["required"];
+            for (auto const& field : schema_["required"]) {
+                auto const name = field.get<std::string>();
+                if (!text.starts_with("required property '" + name + "' ") ||
+                    !schema_.contains("properties") || !schema_["properties"].contains(name))
+                    continue;
+                issue["missingField"] = name;
+                auto const& expected = schema_["properties"][name];
+                for (auto key : {"type", "enum", "const", "description"})
+                    if (expected.contains(key) && expected[key].dump().size() <= 1024)
+                        issue["expected"][key] = expected[key];
+            }
+        }
+        if (location.empty()) {
+            if (text.starts_with("Unknown argument field") && schema_.contains("properties")) {
+                issue["allowedFields"] = nlohmann::json::array();
+                for (auto const& [name, _] : schema_["properties"].items()) {
+                    if (issue["allowedFields"].size() >= 32)
+                        break;
+                    issue["allowedFields"].push_back(name);
+                }
+            }
+            for (auto combination : {"anyOf", "oneOf"}) {
+                if (!schema_.contains(combination))
+                    continue;
+                for (auto const& branch : schema_[combination])
+                    if (branch.contains("required") && issue["acceptedShapes"].size() < 8)
+                        issue["acceptedShapes"].push_back({{"required", branch["required"]}});
+            }
+        }
+        // Follow only trusted, unambiguous schema properties/items. Nested errors
+        // such as featureIds[0] must explain the expected string, not merely its path.
+        auto const* expected = &schema_;
+        for (auto it = parts.rbegin(); it != parts.rend() && expected; ++it) {
+            if (expected->contains("properties") && expected->at("properties").contains(*it))
+                expected = &expected->at("properties").at(*it);
+            else if (
+                expected->contains("items") && expected->at("items").is_object() && !it->empty() &&
+                it->find_first_not_of("0123456789") == std::string::npos)
+                expected = &expected->at("items");
+            else
+                expected = nullptr;
+        }
+        if (!parts.empty() && expected) {
+            for (auto key :
+                 {"type",
+                  "enum",
+                  "const",
+                  "minimum",
+                  "maximum",
+                  "minItems",
+                  "maxItems",
+                  "minLength",
+                  "maxLength",
+                  "description"})
+                if (expected->contains(key) && expected->at(key).dump().size() <= 1024)
+                    issue["expected"][key] = expected->at(key);
+        }
+        append(std::move(issue));
+    }
+
+    bool invalid = false;
+    nlohmann::json issues = nlohmann::json::array();
+
+private:
+    /** Recognize only pure presence conditions; other schema logic keeps generic diagnostics. */
+    nlohmann::json
+    presentFields(nlohmann::json const& condition, nlohmann::json const& instance) const
+    {
+        auto fields = nlohmann::json::array();
+        if (!condition.is_object() || condition.size() != 1)
+            return fields;
+        if (condition.contains("anyOf")) {
+            for (auto const& branch : condition["anyOf"]) {
+                fields = presentFields(branch, instance);
+                if (!fields.empty())
+                    return fields;
+            }
+        }
+        else if (condition.contains("required")) {
+            for (auto const& field : condition["required"]) {
+                auto const name = field.get<std::string>();
+                if (!names_.contains(name) || !instance.contains(name))
+                    return nlohmann::json::array();
+                fields.push_back(name);
+            }
+        }
+        return fields;
+    }
+
+    /** Preserve the shared issue count, byte bound and deduplication policy. */
+    void append(nlohmann::json issue)
+    {
+        if (issues.size() < 8 && issue.dump().size() <= 4096 &&
+            std::find(issues.begin(), issues.end(), issue) == issues.end())
+            issues.push_back(std::move(issue));
+    }
+
+    nlohmann::json const& schema_;
+    std::set<std::string> names_;
+};
+
+bool McpActionCatalog::validateArguments(
+    nlohmann::json_schema::json_validator const& validator,
+    nlohmann::json const& schema,
+    nlohmann::json const& value,
+    nlohmann::json* issues)
+{
+    nlohmann::json_schema::basic_error_handler validation;
+    validator.validate(value, validation);
+    if (issues)
+        *issues = nlohmann::json::array();
+    if (!validation || !issues)
+        return !validation;
+    // Build human-readable guidance only for rejected calls, keeping the common path cheap.
+    ArgumentErrors errors(schema);
+    errors.explainConstraints(value);
+    validator.validate(value, errors);
+    *issues = std::move(errors.issues);
+    return !errors.invalid;
+}
 
 McpActionCatalog McpActionCatalog::load(std::filesystem::path const& path)
 {
@@ -385,15 +623,20 @@ nlohmann::json McpActionCatalog::tools(bool allowRead, bool allowControl) const
     return result;
 }
 
-bool McpActionCatalog::acceptsArguments(std::string_view action, nlohmann::json const& value) const
+bool McpActionCatalog::acceptsArguments(
+    std::string_view action,
+    nlohmann::json const& value,
+    nlohmann::json* issues) const
 {
     auto found = actions_.find(action);
     if (found == actions_.end()) {
         return false;
     }
-    nlohmann::json_schema::basic_error_handler errors;
-    found->second.arguments.validate(value, errors);
-    return !errors;
+    return validateArguments(
+        found->second.arguments,
+        found->second.definition.at("inputSchema"),
+        value,
+        issues);
 }
 
 bool McpActionCatalog::acceptsResult(std::string_view action, nlohmann::json const& value) const

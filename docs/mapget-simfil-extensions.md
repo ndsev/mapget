@@ -15,6 +15,10 @@ schema-compiles their feature filters, entry filters, and projected fields,
 evaluates all bundled channels during one source-tile scan, and returns values,
 traces, and aggregated issues in `TileSubsetLayer`.
 
+<!-- mcp:
+title: "Spatial query operators"
+keywords: ["within", "contains", "intersects", "bbox", "point", "geometry", "spatial query"]
+-->
 ## Geometry-aware operators
 
 <!-- --8<-- [start:geo-ops] -->

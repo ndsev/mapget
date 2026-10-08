@@ -19,6 +19,12 @@ constexpr auto initializeProtocol = "2025-11-25";
 constexpr auto previousInitializeProtocol = "2025-06-18";
 constexpr size_t maxQueuedInputs = 256;
 constexpr size_t maxRequestBytes = 64 * 1024;
+/** Describe tool ownership; workflows belong in the hot-reloadable help corpus. */
+constexpr auto serverInstructions =
+    "Mapget provides native map-data tools without requiring a browser. Viewer actions control "
+    "authenticated tabs selected through viewer_list_sessions. mapget_docs provides searchable "
+    "workflows, datasource semantics and examples. Tool schemas define each call's contract; "
+    "check complete, reason and issues before treating bounded results as exhaustive.";
 
 /** Recognize media types without treating a substring in an unrelated type as consent. */
 bool accepts(std::string const& header, std::string const& mime)
@@ -462,6 +468,7 @@ void McpServer::initialize(nlohmann::json const& message, Reply const& reply)
          {"id", message["id"]},
          {"result",
           {{"protocolVersion", selected},
+           {"instructions", serverInstructions},
            {"capabilities", {{"tools", nlohmann::json::object()}}},
            {"serverInfo", {{"name", "mapget"}, {"version", MAPGET_MCP_VERSION}}}}}}));
 }
@@ -580,6 +587,7 @@ void McpServer::dispatch(
         if (modern && method == "server/discover") {
             result(
                 {{"resultType", "complete"},
+                 {"instructions", serverInstructions},
                  {"supportedVersions", {protocol}},
                  {"capabilities", {{"tools", nlohmann::json::object()}}},
                  {"_meta",
@@ -661,10 +669,15 @@ void McpServer::dispatch(
         }
         auto applicationArguments = arguments;
         applicationArguments.erase("clientId");
-        if (native ? !native_->acceptsArguments(action, arguments) :
-                     !catalog_->acceptsArguments(action, applicationArguments))
+        auto issues = nlohmann::json::array();
+        if (native ? !native_->acceptsArguments(action, arguments, &issues) :
+                     !catalog_->acceptsArguments(action, applicationArguments, &issues))
         {
-            error(-32602, "Tool arguments do not match the trusted schema.");
+            error(
+                -32602,
+                "Invalid tool arguments; see field-level issues.",
+                drogon::k400BadRequest,
+                {{"issues", std::move(issues)}});
             return;
         }
         if (responses_.size() >= limits_.pendingCalls) {

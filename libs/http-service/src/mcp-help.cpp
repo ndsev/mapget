@@ -437,21 +437,9 @@ std::string McpHelp::matchExpression(std::string const& text)
     flush();
     auto useful = terms;
     for (auto stop :
-         {"a",
-          "an",
-          "and",
-          "are",
-          "for",
-          "how",
-          "i",
-          "in",
-          "is",
-          "of",
-          "or",
-          "the",
-          "to",
-          "what",
-          "with"})
+         {"a",    "an",  "and",   "are",  "can", "do",   "does", "for",    "how", "i",
+          "in",   "is",  "me",    "my",   "of",  "on",   "or",   "please", "put", "show",
+          "that", "the", "these", "this", "to",  "what", "with", "you"})
         useful.erase(stop);
     if (!useful.empty())
         terms = std::move(useful);
@@ -471,9 +459,12 @@ Json McpHelp::query(
     std::string const& text,
     std::string const& title,
     size_t limit,
-    std::function<bool()> const& keepGoing)
+    std::function<bool()> const& keepGoing,
+    std::string const& component,
+    size_t offset)
 {
-    if (text.size() > 4096 || title.size() > 2048 || (!text.empty() && !title.empty()))
+    if (component.size() > 128 || offset > INT32_MAX || text.size() > 4096 || title.size() > 2048 ||
+        (!text.empty() && !title.empty()))
         throw std::invalid_argument("Expected a help query or exact returned title");
     std::lock_guard lock(mutex_);
     refreshLocked(keepGoing);
@@ -494,11 +485,14 @@ Json McpHelp::query(
         return result;
     auto statement = prepare(
         !title.empty() ?
-            "SELECT title,content,source FROM help WHERE title = ?1 ORDER BY title LIMIT ?2" :
+            "SELECT title,content,source FROM help WHERE title = ?1 AND (?3 = '' OR "
+            "substr(source,1,instr(source,'/')-1) = ?3) ORDER BY title LIMIT ?2 OFFSET ?4" :
             !text.empty() ?
-            "SELECT title,content,source FROM help WHERE help MATCH ?1 ORDER BY "
-            "bm25(help,8.0,4.0,1.0),title LIMIT ?2" :
-            "SELECT title,content,source FROM help ORDER BY title LIMIT ?2");
+            "SELECT title,content,source FROM help WHERE help MATCH ?1 AND (?3 = '' OR "
+            "substr(source,1,instr(source,'/')-1) = ?3) ORDER BY "
+            "bm25(help,8.0,4.0,1.0),title LIMIT ?2 OFFSET ?4" :
+            "SELECT title,content,source FROM help WHERE (?3 = '' OR "
+            "substr(source,1,instr(source,'/')-1) = ?3) ORDER BY title LIMIT ?2 OFFSET ?4");
     auto const& parameter = title.empty() ? expression : title;
     sqlite3_bind_text(
         statement.get(),
@@ -506,10 +500,25 @@ Json McpHelp::query(
         parameter.c_str(),
         static_cast<int>(parameter.size()),
         SQLITE_TRANSIENT);
-    sqlite3_bind_int(statement.get(), 2, static_cast<int>(std::min<size_t>(limit, 8)));
+    auto const pageSize = std::clamp<size_t>(limit, 1, 8);
+    sqlite3_bind_int(statement.get(), 2, static_cast<int>(pageSize + 1));
+    sqlite3_bind_text(
+        statement.get(),
+        3,
+        component.c_str(),
+        static_cast<int>(component.size()),
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int(statement.get(), 4, static_cast<int>(offset));
     int code;
     while ((code = sqlite3_step(statement.get())) == SQLITE_ROW) {
         check(keepGoing);
+        if (result["items"].size() == pageSize) {
+            if (result["complete"].get<bool>())
+                result["reason"] = "item_limit";
+            result["complete"] = false;
+            result["nextOffset"] = offset + pageSize;
+            continue;
+        }
         Json item{
             {"title", reinterpret_cast<char const*>(sqlite3_column_text(statement.get(), 0))}};
         if (result["items"].size() < 3) {
@@ -521,6 +530,12 @@ Json McpHelp::query(
     }
     if (code != SQLITE_DONE)
         throw std::runtime_error(sqlite3_errmsg(database_));
+    if (!title.empty() && result["items"].empty() && offset == 0)
+        result["issues"].push_back(
+            {{"message",
+              "No exact help title matched within the requested component. Retry with query "
+              "containing topic keywords, then use an exact title returned by that search. A "
+              "missing title does not establish a missing capability."}});
     return result;
 }
 

@@ -37,6 +37,10 @@ the checked-out LFS artifact when present, or downloads the identical verified
 release asset if a source archive/skip-smudge checkout contains only a pointer.
 Model-only/WASM builds do not acquire plazs or its schema compiler.
 
+<!-- mcp:
+title: "Offline place lookup contract"
+keywords: ["place lookup", "town", "city", "country", "extent", "location", "geocoding"]
+-->
 ## Contract
 
 REST name search and MCP `mapget_lookup_place` return metadata without loading

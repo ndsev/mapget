@@ -166,6 +166,11 @@ endpoint: `{ "layerId": "Road", "tileId": 536870912 }` returns one discovery
 result directly, without `requests`/`responses` wrappers. This is the
 service-to-datasource protocol, not the client-facing API above.
 
+<!-- mcp:
+title: "Datasource discovery contract"
+keywords: ["sources", "initialization", "not ready", "failed source", "layer catalog"]
+hint: "This is the HTTP contract. Native MCP source discovery exposes a compact projection; query coverage and schema separately."
+-->
 ## `GET /sources`
 
 `/sources` returns the datasource catalog as a JSON array. Ready entries
@@ -337,6 +342,10 @@ dictionary is an explicit materialization failure.
 `bindings` accepts null, boolean, signed integer, finite floating-point, and
 string values. Bindings are available as SIMFIL constants and overlay fields.
 
+<!-- mcp:
+title: "Filter attribute contexts"
+keywords: ["attribute scope", "validity", "feature scope", "attributeIndex", "validityIndex"]
+-->
 ### Attribute contexts
 
 Attribute rows expose the attribute as their root and add:
@@ -351,6 +360,10 @@ The explicit validity bit distinguishes an attribute with no validity from the
 first validity of an attribute which has one. Effective validity geometry is
 copied into the returned `AttributeValidityEntry`.
 
+<!-- mcp:
+title: "Filter geometry selection"
+keywords: ["geometry selector", "semantic geometry", "boundary", "centerline", "validity geometry"]
+-->
 ### Geometry selectors
 
 `geometryName` is either a concrete semantic name such as `centerline`, or
@@ -600,6 +613,10 @@ leakage. Do not publish IDs in status pages or log them in proxy/access logs; us
 HTTPS remotely. Disconnect invalidates the ID. This accepted limitation does not
 replace the authenticated same-owner checks required for MCP actions.
 
+<!-- mcp:
+title: "Feature lookup and locate"
+keywords: ["locate", "feature ID", "secondary identity", "canonical ID", "feature reference"]
+-->
 ## `POST /locate`
 
 `/locate` resolves secondary or canonical IDs:

@@ -638,7 +638,7 @@
       "name": "viewer_describe_app_state"
     },
     {
-      "description": "Read selected state channels, or a bounded live overview when targets are omitted. Includes hidden/paused search definitions; excludes feature data and search results.",
+      "description": "Read current configured state, or a bounded live overview when targets are omitted. Includes hidden/paused searches; excludes feature data and search results. Current levels and visible layers are not capability metadata: use viewer_get_catalog kind=layers for available layers and supported zoomLevels, kind=options for style controls. Use viewer_describe_app_state for writable channels such as view.grid.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -1394,6 +1394,57 @@
                                   "type": "string",
                                   "minLength": 1,
                                   "maxLength": 4096
+                                },
+                                "mapId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 4096
+                                },
+                                "layerId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 4096
+                                },
+                                "partition": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "tile"
+                                        },
+                                        "id": {
+                                          "type": "integer",
+                                          "minimum": -2147483648,
+                                          "maximum": 2147483647
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "id"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "object"
+                                        },
+                                        "id": {
+                                          "type": "string",
+                                          "pattern": "^[0-9]{1,20}$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "id"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
                                 }
                               },
                               "required": [
@@ -1477,6 +1528,11 @@
                             "type": "string",
                             "maxLength": 4096
                           },
+                          "pinColor": {
+                            "type": "string",
+                            "pattern": "^#[0-9a-fA-F]{6}$",
+                            "description": "Search identity/pin color; individual geometry rules may override it."
+                          },
                           "enabled": {
                             "type": "boolean"
                           },
@@ -1529,6 +1585,7 @@
                         "required": [
                           "searchId",
                           "query",
+                          "pinColor",
                           "enabled",
                           "paused",
                           "autoUpdate",
@@ -3214,7 +3271,7 @@
       "name": "viewer_get_app_state"
     },
     {
-      "description": "Change settings directly: view.layer for layer visibility/level, view.styleOption for style options, view.layerPreset/view.mapPreset for presets, view.camera, view.background, and view.grid. Discover selectors/value schemas with viewer_describe_app_state. Assign one complete value through its application owner; view-scoped writes require the observed viewLayoutRevision and honor synchronization. Use runtime objects, not storage/URL encodings. Applied does not mean tiles have loaded or rendered.",
+      "description": "Write ONE setting with {target:{channel:\"view.projection\",viewIndex:0},value:\"2d\",viewLayoutRevision:0} plus clientId; use the observed revision. No changes/updates/assignments array. Other channels include view.layer (visibility/level), view.styleOption, view.layerPreset/view.mapPreset, view.camera, view.background and view.grid. Switch maps by enabling the requested feature layers and setting visible:false on the old map layers in that view. Read the value first and preserve unrelated fields; viewer_describe_app_state gives exact selectors/value schemas. Writes use normal owners and honor view synchronization. Applied does not mean tiles have loaded or rendered.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -3541,452 +3598,7 @@
               }
             ]
           },
-          "value": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "destination": {
-                    "type": "object",
-                    "properties": {
-                      "lon": {
-                        "type": "number",
-                        "minimum": -180,
-                        "maximum": 180,
-                        "description": "WGS84 longitude in degrees."
-                      },
-                      "lat": {
-                        "type": "number",
-                        "minimum": -85.05113,
-                        "maximum": 85.05113,
-                        "description": "Web Mercator latitude in degrees."
-                      },
-                      "alt": {
-                        "type": "number",
-                        "exclusiveMinimum": 0,
-                        "description": "Viewer scale-height in metres, not physical eye/terrain altitude."
-                      }
-                    },
-                    "required": [
-                      "lon",
-                      "lat",
-                      "alt"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "orientation": {
-                    "type": "object",
-                    "properties": {
-                      "heading": {
-                        "type": "number",
-                        "minimum": -6.283185307179586,
-                        "maximum": 6.283185307179586,
-                        "description": "Clockwise heading from north, in radians."
-                      },
-                      "pitch": {
-                        "type": "number",
-                        "minimum": -1.5707963267948966,
-                        "maximum": -0.08726646259971647,
-                        "description": "Pitch in radians; -pi/2 is top-down, -pi/36 is the maximum tilt."
-                      },
-                      "roll": {
-                        "type": "number",
-                        "const": 0,
-                        "description": "Roll is not implemented; only zero is supported."
-                      }
-                    },
-                    "required": [
-                      "heading",
-                      "pitch",
-                      "roll"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "position": {
-                    "description": "Local map-centre offset in metres; omitted means [0,0,0].",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "required": [
-                  "destination",
-                  "orientation"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "string",
-                "enum": [
-                  "2d",
-                  "3d"
-                ]
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "layerId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "maxLength": 4096
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "opacity": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 100
-                  }
-                },
-                "required": [
-                  "layerId",
-                  "opacity"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "visible": {
-                    "type": "boolean"
-                  },
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "nds",
-                      "xyz"
-                    ]
-                  },
-                  "level": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 30
-                  },
-                  "autoLevel": {
-                    "type": "boolean"
-                  },
-                  "color": {
-                    "type": "string",
-                    "pattern": "^[0-9a-fA-F]{6}$"
-                  },
-                  "opacity": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 100
-                  }
-                },
-                "required": [
-                  "visible",
-                  "mode",
-                  "level",
-                  "autoLevel",
-                  "color",
-                  "opacity"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "visible": {
-                    "type": "boolean"
-                  },
-                  "level": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 15
-                  },
-                  "autoLevel": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "visible",
-                  "level",
-                  "autoLevel"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "anyOf": [
-                  {
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "string",
-                    "maxLength": 4096
-                  }
-                ]
-              },
-              {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "styleId": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4096
-                      },
-                      "presetId": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4096
-                      }
-                    },
-                    "required": [
-                      "styleId",
-                      "presetId"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4096
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              {
-                "maxItems": 4,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "pos",
-                    "mov",
-                    "proj",
-                    "lay"
-                  ]
-                }
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  },
-                  "position": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "lon": {
-                            "type": "number",
-                            "minimum": -180,
-                            "maximum": 180
-                          },
-                          "lat": {
-                            "type": "number",
-                            "minimum": -90,
-                            "maximum": 90
-                          },
-                          "alt": {
-                            "type": "number"
-                          }
-                        },
-                        "required": [
-                          "lon",
-                          "lat",
-                          "alt"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "enabled",
-                  "position"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "antialiasing": {
-                    "type": "boolean"
-                  },
-                  "semanticCompositing": {
-                    "type": "boolean"
-                  },
-                  "contactShading": {
-                    "type": "boolean"
-                  },
-                  "tilePullCompression": {
-                    "type": "boolean"
-                  },
-                  "tileLimit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 1000000
-                  },
-                  "renderWorkers": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 32
-                  }
-                },
-                "required": [
-                  "antialiasing",
-                  "semanticCompositing",
-                  "contactShading",
-                  "tilePullCompression",
-                  "tileLimit",
-                  "renderWorkers"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "zoomStep": {
-                    "type": "number",
-                    "minimum": 0.001,
-                    "maximum": 1
-                  },
-                  "featureZoomClearance": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 100
-                  }
-                },
-                "required": [
-                  "zoomStep",
-                  "featureZoomClearance"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 50
-                  },
-                  "drillPickRadius": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10
-                  },
-                  "expandByDefault": {
-                    "type": "boolean"
-                  },
-                  "varyColors": {
-                    "type": "boolean"
-                  },
-                  "varyOutlines": {
-                    "type": "boolean"
-                  },
-                  "varyStriping": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "limit",
-                  "drillPickRadius",
-                  "expandByDefault",
-                  "varyColors",
-                  "varyOutlines",
-                  "varyStriping"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  },
-                  "fields": {
-                    "maxItems": 32,
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "expression": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 4096
-                        },
-                        "customExpression": {
-                          "type": "boolean"
-                        },
-                        "displayKey": {
-                          "type": "string",
-                          "maxLength": 128
-                        }
-                      },
-                      "required": [
-                        "expression",
-                        "customExpression"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
-                },
-                "required": [
-                  "enabled",
-                  "fields"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "locked": {
-                    "type": "boolean"
-                  },
-                  "undocked": {
-                    "type": "boolean"
-                  },
-                  "focused": {
-                    "type": "boolean"
-                  },
-                  "color": {
-                    "type": "string",
-                    "pattern": "^#[0-9a-fA-F]{6}$"
-                  }
-                },
-                "required": [
-                  "locked",
-                  "undocked",
-                  "focused",
-                  "color"
-                ],
-                "additionalProperties": false
-              }
-            ]
-          },
+          "value": {},
           "viewLayoutRevision": {
             "type": "integer",
             "minimum": 0,
@@ -5086,452 +4698,7 @@
               }
             ]
           },
-          "value": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "destination": {
-                    "type": "object",
-                    "properties": {
-                      "lon": {
-                        "type": "number",
-                        "minimum": -180,
-                        "maximum": 180,
-                        "description": "WGS84 longitude in degrees."
-                      },
-                      "lat": {
-                        "type": "number",
-                        "minimum": -85.05113,
-                        "maximum": 85.05113,
-                        "description": "Web Mercator latitude in degrees."
-                      },
-                      "alt": {
-                        "type": "number",
-                        "exclusiveMinimum": 0,
-                        "description": "Viewer scale-height in metres, not physical eye/terrain altitude."
-                      }
-                    },
-                    "required": [
-                      "lon",
-                      "lat",
-                      "alt"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "orientation": {
-                    "type": "object",
-                    "properties": {
-                      "heading": {
-                        "type": "number",
-                        "minimum": -6.283185307179586,
-                        "maximum": 6.283185307179586,
-                        "description": "Clockwise heading from north, in radians."
-                      },
-                      "pitch": {
-                        "type": "number",
-                        "minimum": -1.5707963267948966,
-                        "maximum": -0.08726646259971647,
-                        "description": "Pitch in radians; -pi/2 is top-down, -pi/36 is the maximum tilt."
-                      },
-                      "roll": {
-                        "type": "number",
-                        "const": 0,
-                        "description": "Roll is not implemented; only zero is supported."
-                      }
-                    },
-                    "required": [
-                      "heading",
-                      "pitch",
-                      "roll"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "position": {
-                    "description": "Local map-centre offset in metres; omitted means [0,0,0].",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "required": [
-                  "destination",
-                  "orientation"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "string",
-                "enum": [
-                  "2d",
-                  "3d"
-                ]
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "layerId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "maxLength": 4096
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "opacity": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 100
-                  }
-                },
-                "required": [
-                  "layerId",
-                  "opacity"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "visible": {
-                    "type": "boolean"
-                  },
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "nds",
-                      "xyz"
-                    ]
-                  },
-                  "level": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 30
-                  },
-                  "autoLevel": {
-                    "type": "boolean"
-                  },
-                  "color": {
-                    "type": "string",
-                    "pattern": "^[0-9a-fA-F]{6}$"
-                  },
-                  "opacity": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 100
-                  }
-                },
-                "required": [
-                  "visible",
-                  "mode",
-                  "level",
-                  "autoLevel",
-                  "color",
-                  "opacity"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "visible": {
-                    "type": "boolean"
-                  },
-                  "level": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 15
-                  },
-                  "autoLevel": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "visible",
-                  "level",
-                  "autoLevel"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "anyOf": [
-                  {
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "string",
-                    "maxLength": 4096
-                  }
-                ]
-              },
-              {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "styleId": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4096
-                      },
-                      "presetId": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4096
-                      }
-                    },
-                    "required": [
-                      "styleId",
-                      "presetId"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4096
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              {
-                "maxItems": 4,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "pos",
-                    "mov",
-                    "proj",
-                    "lay"
-                  ]
-                }
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  },
-                  "position": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "lon": {
-                            "type": "number",
-                            "minimum": -180,
-                            "maximum": 180
-                          },
-                          "lat": {
-                            "type": "number",
-                            "minimum": -90,
-                            "maximum": 90
-                          },
-                          "alt": {
-                            "type": "number"
-                          }
-                        },
-                        "required": [
-                          "lon",
-                          "lat",
-                          "alt"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "enabled",
-                  "position"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "antialiasing": {
-                    "type": "boolean"
-                  },
-                  "semanticCompositing": {
-                    "type": "boolean"
-                  },
-                  "contactShading": {
-                    "type": "boolean"
-                  },
-                  "tilePullCompression": {
-                    "type": "boolean"
-                  },
-                  "tileLimit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 1000000
-                  },
-                  "renderWorkers": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 32
-                  }
-                },
-                "required": [
-                  "antialiasing",
-                  "semanticCompositing",
-                  "contactShading",
-                  "tilePullCompression",
-                  "tileLimit",
-                  "renderWorkers"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "zoomStep": {
-                    "type": "number",
-                    "minimum": 0.001,
-                    "maximum": 1
-                  },
-                  "featureZoomClearance": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 100
-                  }
-                },
-                "required": [
-                  "zoomStep",
-                  "featureZoomClearance"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 50
-                  },
-                  "drillPickRadius": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10
-                  },
-                  "expandByDefault": {
-                    "type": "boolean"
-                  },
-                  "varyColors": {
-                    "type": "boolean"
-                  },
-                  "varyOutlines": {
-                    "type": "boolean"
-                  },
-                  "varyStriping": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "limit",
-                  "drillPickRadius",
-                  "expandByDefault",
-                  "varyColors",
-                  "varyOutlines",
-                  "varyStriping"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  },
-                  "fields": {
-                    "maxItems": 32,
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "expression": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 4096
-                        },
-                        "customExpression": {
-                          "type": "boolean"
-                        },
-                        "displayKey": {
-                          "type": "string",
-                          "maxLength": 128
-                        }
-                      },
-                      "required": [
-                        "expression",
-                        "customExpression"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
-                },
-                "required": [
-                  "enabled",
-                  "fields"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "locked": {
-                    "type": "boolean"
-                  },
-                  "undocked": {
-                    "type": "boolean"
-                  },
-                  "focused": {
-                    "type": "boolean"
-                  },
-                  "color": {
-                    "type": "string",
-                    "pattern": "^#[0-9a-fA-F]{6}$"
-                  }
-                },
-                "required": [
-                  "locked",
-                  "undocked",
-                  "focused",
-                  "color"
-                ],
-                "additionalProperties": false
-              }
-            ]
-          },
+          "value": {},
           "changed": {
             "type": "boolean"
           },
@@ -6357,7 +5524,7 @@
       "name": "viewer_set_app_state"
     },
     {
-      "description": "Discover browser-available layers, backgrounds, styles, options and presets. No feature/schema loading; omits URLs and credentials. Narrow by map/layer/style IDs when incomplete.",
+      "description": "List one catalog: kind=styles finds editable stylesheet IDs; kind=options finds a layer’s style toggles; kind=layers finds renderable map layers; kind=maps, backgrounds or presets finds those resources. Choose kind explicitly; a layer list is not a list of styles or capabilities. layerType=SourceData or all explicitly includes raw tables. Use mapId to focus on the current map. Layer items include tile levels and schemaFeatureTypes (types with schemas in this layer); featureTypes may additionally contain reference-only identifiers and does not prove feature presence. Options include writeTarget: pass it as target with value and this response’s viewLayoutRevision to viewer_set_app_state. Follow nextOffset with the same filters for another page. No feature/schema loading; omits URLs and credentials.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -6367,12 +5534,14 @@
           "kind": {
             "type": "string",
             "enum": [
+              "maps",
               "layers",
               "backgrounds",
               "styles",
               "options",
               "presets"
-            ]
+            ],
+            "description": "Required catalog selector. Use styles to find a stylesheet, options for styling controls (requires mapId and layerId), layers for data layers."
           },
           "viewIndex": {
             "type": "integer",
@@ -6393,6 +5562,20 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096
+          },
+          "layerType": {
+            "default": "Features",
+            "type": "string",
+            "enum": [
+              "Features",
+              "SourceData",
+              "all"
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
           },
           "limit": {
             "type": "integer",
@@ -6423,6 +5606,81 @@
               "text_limit",
               "loading"
             ]
+          },
+          "viewLayoutRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "maps",
+              "layers",
+              "backgrounds",
+              "styles",
+              "options",
+              "presets"
+            ]
+          },
+          "relatedCatalogs": {
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "purpose": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "arguments": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "layers",
+                        "styles",
+                        "options",
+                        "presets"
+                      ]
+                    },
+                    "mapId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "layerId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "layerType": {
+                      "type": "string",
+                      "enum": [
+                        "Features",
+                        "SourceData",
+                        "all"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "purpose",
+                "arguments"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "nextOffset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
           },
           "items": {
             "maxItems": 100,
@@ -6501,6 +5759,83 @@
                 },
                 "modified": {
                   "type": "boolean"
+                },
+                "zoomLevels": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 15
+                  }
+                },
+                "featureTypes": {
+                  "maxItems": 1000,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "schemaFeatureTypes": {
+                  "maxItems": 1000,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "partitionKind": {
+                  "type": "string",
+                  "enum": [
+                    "tile",
+                    "object"
+                  ]
+                },
+                "writeTarget": {
+                  "type": "object",
+                  "properties": {
+                    "viewIndex": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "mapId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "layerId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "styleId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "optionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "channel": {
+                      "type": "string",
+                      "const": "view.styleOption"
+                    }
+                  },
+                  "required": [
+                    "viewIndex",
+                    "mapId",
+                    "layerId",
+                    "styleId",
+                    "optionId",
+                    "channel"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -6515,6 +5850,9 @@
         "required": [
           "observedAt",
           "complete",
+          "viewLayoutRevision",
+          "kind",
+          "relatedCatalogs",
           "items"
         ],
         "additionalProperties": false
@@ -6522,7 +5860,7 @@
       "name": "viewer_get_catalog"
     },
     {
-      "description": "Create a comparison view or remove an explicit view through normal layout ownership. Cannot remove the last view.",
+      "description": "Create a second comparison view or remove an existing view. For create, viewIndex identifies the EXISTING source view (normally 0), not the new view; at most two views are supported. Read app.views afterward for indices and the new viewLayoutRevision. For remove, viewIndex identifies the view to remove. Cannot remove the last view.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -6581,7 +5919,7 @@
       "name": "viewer_manage_view"
     },
     {
-      "description": "Locate and fit feature(s), a tile, or WGS84 bounds in an explicit view. Honors synchronization; human movement during loading cancels the later camera commit. Applied is not render completion.",
+      "description": "Locate and fit feature(s), a tile, or WGS84 bounds in an explicit view. Set the intended projection and panel layout first; refit after changing them. Honors synchronization; human movement during loading cancels the later camera commit. Applied is not render completion.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -6612,6 +5950,24 @@
                         {
                           "type": "object",
                           "properties": {
+                            "attributeIndex": {
+                              "description": "Observed attribute index on the base feature; mutually exclusive with relationIndex and an ID suffix.",
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "relationIndex": {
+                              "description": "Observed relation index on the base feature; mutually exclusive with attributeIndex and an ID suffix.",
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "validityIndex": {
+                              "description": "Observed validity index; requires attributeIndex or relationIndex. For a relation, addresses targetValidity, not sourceValidity. Omit to select the whole attribute/relation.",
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "mapTileKey": {
                               "type": "string",
                               "minLength": 1,
@@ -6620,7 +5976,8 @@
                             "featureId": {
                               "type": "string",
                               "minLength": 1,
-                              "maxLength": 4096
+                              "maxLength": 4096,
+                              "description": "Full feature ID, including its feature-type prefix; copy an observed ID, not only its numeric parts."
                             }
                           },
                           "required": [
@@ -6632,6 +5989,24 @@
                         {
                           "type": "object",
                           "properties": {
+                            "attributeIndex": {
+                              "description": "Observed attribute index on the base feature; mutually exclusive with relationIndex and an ID suffix.",
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "relationIndex": {
+                              "description": "Observed relation index on the base feature; mutually exclusive with attributeIndex and an ID suffix.",
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "validityIndex": {
+                              "description": "Observed validity index; requires attributeIndex or relationIndex. For a relation, addresses targetValidity, not sourceValidity. Omit to select the whole attribute/relation.",
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "mapId": {
                               "type": "string",
                               "minLength": 1,
@@ -6645,7 +6020,8 @@
                             "featureId": {
                               "type": "string",
                               "minLength": 1,
-                              "maxLength": 4096
+                              "maxLength": 4096,
+                              "description": "Full feature ID beginning with its exact feature type, with source-specific ID parts separated by dots."
                             }
                           },
                           "required": [
@@ -6755,7 +6131,7 @@
       "name": "viewer_navigate"
     },
     {
-      "description": "Open feature/entity inspections in the ordinary UI. Feature IDs may include attribute/relation/validity suffixes. Returns panel IDs immediately; loading remains observable via app.selections. panelId must address an unlocked feature panel; newPanel opens a grouped panel. lock=true pins the resulting panels. Use mapget extraction for model content.",
+      "description": "Open feature/entity inspections in the ordinary UI. For an attribute validity, copy the base featureId plus attributeIndex and validityIndex from native extraction or search results. relationIndex similarly addresses a relation. Existing suffixed IDs remain supported; do not combine a suffix with numeric selectors. Returns panel IDs immediately; loading remains observable via app.selections. panelId must address an unlocked feature panel; newPanel opens one grouped panel. To distinguish groups (e.g. predecessors versus successors), call separately with newPanel:true and different color values. color requires newPanel:true and colors only that new panel. lock=true pins the resulting panels. Use mapget extraction for model content.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -6771,6 +6147,24 @@
                 {
                   "type": "object",
                   "properties": {
+                    "attributeIndex": {
+                      "description": "Observed attribute index on the base feature; mutually exclusive with relationIndex and an ID suffix.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "relationIndex": {
+                      "description": "Observed relation index on the base feature; mutually exclusive with attributeIndex and an ID suffix.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "validityIndex": {
+                      "description": "Observed validity index; requires attributeIndex or relationIndex. For a relation, addresses targetValidity, not sourceValidity. Omit to select the whole attribute/relation.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "mapTileKey": {
                       "type": "string",
                       "minLength": 1,
@@ -6779,7 +6173,8 @@
                     "featureId": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 4096
+                      "maxLength": 4096,
+                      "description": "Full feature ID, including its feature-type prefix; copy an observed ID, not only its numeric parts."
                     }
                   },
                   "required": [
@@ -6791,6 +6186,24 @@
                 {
                   "type": "object",
                   "properties": {
+                    "attributeIndex": {
+                      "description": "Observed attribute index on the base feature; mutually exclusive with relationIndex and an ID suffix.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "relationIndex": {
+                      "description": "Observed relation index on the base feature; mutually exclusive with attributeIndex and an ID suffix.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "validityIndex": {
+                      "description": "Observed validity index; requires attributeIndex or relationIndex. For a relation, addresses targetValidity, not sourceValidity. Omit to select the whole attribute/relation.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "mapId": {
                       "type": "string",
                       "minLength": 1,
@@ -6804,7 +6217,8 @@
                     "featureId": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 4096
+                      "maxLength": 4096,
+                      "description": "Full feature ID beginning with its exact feature type, with source-specific ID parts separated by dots."
                     }
                   },
                   "required": [
@@ -6826,6 +6240,10 @@
           },
           "newPanel": {
             "type": "boolean"
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$"
           }
         },
         "required": [
@@ -6898,7 +6316,7 @@
       "name": "viewer_inspect"
     },
     {
-      "description": "Close one explicit inspection, including locked panels. Does not close other inspections.",
+      "description": "Remove one inspection, including locked panels. This also removes its feature selection, highlight and displayed ID. It is not a way to hide settings dialogs. For a screenshot requiring the selected feature or its ID, retain that inspection and close only the obstructing settings UI. Other inspections are preserved.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -7093,7 +6511,7 @@
       "name": "viewer_open_source_data"
     },
     {
-      "description": "Start an ordinary visible search with explicit layers/views and bounded viewport coverage. Auto-update defaults to false. Returns searchId; cancelling this completed call does not stop the search. Use viewer_control_search for lifecycle control.",
+      "description": "Start an ordinary visible simfil search with explicit layers/views and bounded viewport coverage. Auto-update defaults to false. Returns searchId. For ad-hoc labels, highlighting or colors from actual data fields, configure searchStyleRules with viewer_set_search; stock style toggles are not required. Cancelling this completed call does not stop the search. Use viewer_control_search for lifecycle control.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -7259,7 +6677,7 @@
       "name": "viewer_control_search"
     },
     {
-      "description": "Read one search's full settings and bounded current status/errors without starting schema analysis or reading results.",
+      "description": "Read one search's settings, progress and schemaAnalysis (resolved scope, normalized query and rewrite diagnostics). resultCount counts matching contexts: features in feature scope, attribute/validity contexts in attribute scope. One assignment may have several matching validities. While schemaAnalysis.status=pending, no final result count is available. searchComplete=false means resultCount is provisional, even if responseComplete=true. Starting an asynchronous search is enough for an honestly reported applied visualization; claim final counts or no matches only when searchComplete=true and status.errors is empty.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -7284,7 +6702,10 @@
           "observedAt": {
             "type": "string"
           },
-          "complete": {
+          "responseComplete": {
+            "type": "boolean"
+          },
+          "searchComplete": {
             "type": "boolean"
           },
           "reason": {
@@ -7417,7 +6838,16 @@
                           },
                           "op": {
                             "type": "string",
-                            "maxLength": 4096
+                            "enum": [
+                              "=",
+                              "==",
+                              "!=",
+                              "<",
+                              "<=",
+                              ">",
+                              ">=",
+                              "contains"
+                            ]
                           },
                           "value": {
                             "anyOf": [
@@ -7688,20 +7118,65 @@
               "errors"
             ],
             "additionalProperties": false
+          },
+          "schemaAnalysis": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "ready",
+                  "error"
+                ]
+              },
+              "concreteScope": {
+                "type": "string",
+                "enum": [
+                  "feature",
+                  "attribute"
+                ]
+              },
+              "normalizedQuery": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "rewriteSuppressed": {
+                "type": "boolean"
+              },
+              "rewriteSuppressionReason": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "error": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "status",
+              "concreteScope",
+              "normalizedQuery",
+              "rewriteSuppressed",
+              "rewriteSuppressionReason"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
           "observedAt",
-          "complete",
+          "responseComplete",
+          "searchComplete",
           "settings",
-          "status"
+          "status",
+          "schemaAnalysis"
         ],
         "additionalProperties": false
       },
       "name": "viewer_get_search"
     },
     {
-      "description": "Replace one search's typed scope/presentation settings through its ordinary owner. May rerun its query. Reads and writes retain the same searchId; no whole search-collection replacement.",
+      "description": "Patch one search's settings: provide only changed fields; omitted fields stay unchanged. renderStrategy also merges by field; arrays such as searchStyleRules replace the whole array. To draw matching geometry instead of bubbles: keep showResultsOnMap=true, set renderStrategy.showHighFiGeometry=true, disable unwanted showHighFiResultDots/showLowFiDots/showBucketLabels, and choose a highFidelityMaxVisibleTiles threshold appropriate to the view. Hiding results does not draw matching geometry. autoUpdate=false freezes existing results. May rerun the query; retains searchId.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -7834,7 +7309,16 @@
                           },
                           "op": {
                             "type": "string",
-                            "maxLength": 4096
+                            "enum": [
+                              "=",
+                              "==",
+                              "!=",
+                              "<",
+                              "<=",
+                              ">",
+                              ">=",
+                              "contains"
+                            ]
                           },
                           "value": {
                             "anyOf": [
@@ -8014,32 +7498,9 @@
                     "maximum": 3
                   }
                 },
-                "required": [
-                  "showLowFiDots",
-                  "showBucketLabels",
-                  "showHighFiGeometry",
-                  "showHighFiResultDots",
-                  "highFidelityMaxVisibleTiles",
-                  "densityHeatGradient",
-                  "densitySizeMultiplier"
-                ],
                 "additionalProperties": false
               }
             },
-            "required": [
-              "scope",
-              "autoUpdate",
-              "bookmarked",
-              "enabled",
-              "showResultsOnMap",
-              "pinColor",
-              "selectedMapLayers",
-              "selectedFeatureTypes",
-              "selectedTileLevels",
-              "selectedViewIndices",
-              "searchStyleRules",
-              "renderStrategy"
-            ],
             "additionalProperties": false
           },
           "viewLayoutRevision": {
@@ -8082,7 +7543,7 @@
       "name": "viewer_set_search"
     },
     {
-      "description": "Read a bounded slice of an existing search's result identities. Optional runId/refresh guards reject stale slices. No new query or full-feature traversal.",
+      "description": "Read a bounded slice of an existing search's result identities. Attribute results include attributeIndex and validityIndex; multiple rows can belong to one assignment or feature. Optional runId/refresh guards reject stale slices. No new query or full-feature traversal.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -8366,7 +7827,75 @@
       "name": "viewer_export_search"
     },
     {
-      "description": "Read one style's YAML and browser-local lifecycle flags. Never returns credentials or source filesystem paths.",
+      "description": "Return a link for the current URL-backed cameras, layers, style options and selections using the viewer's normal URL codec. Does not copy unknown/authentication URL parameters, modify the tab, publish anything or contact another person. Browser-local search overlays and YAML styles are not embedded; localSearchIds and localStyleIds identify dependencies the recipient would also need. Export searches separately with viewer_export_search and styles with viewer_get_style. localOnly means the hostname is loopback: recipients need an accessible address for the same configured viewer.",
+      "permission": "viewer-read",
+      "mutation": false,
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "observedAt": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "item_limit",
+              "byte_limit",
+              "text_limit",
+              "loading"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 48000
+          },
+          "localOnly": {
+            "type": "boolean"
+          },
+          "localStyleIds": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "localSearchIds": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          }
+        },
+        "required": [
+          "observedAt",
+          "complete",
+          "url",
+          "localOnly",
+          "localStyleIds",
+          "localSearchIds"
+        ],
+        "additionalProperties": false
+      },
+      "name": "viewer_get_share_link"
+    },
+    {
+      "description": "Read one style's YAML and browser-local lifecycle flags. A style shows how some fields are drawn; it is not a data inventory. Discover available attributes with mapget_query_schema and actual values with mapget_extract_features. Search-overlay colors, categories and labels belong to viewer_get_search/viewer_set_search, not this base stylesheet. Never returns credentials or source filesystem paths.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -8376,7 +7905,8 @@
           "styleId": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 4096
+            "maxLength": 4096,
+            "description": "Copy the exact id from viewer_get_catalog kind:styles; do not use the layer ID or display name."
           }
         },
         "required": [
@@ -8419,7 +7949,7 @@
       "name": "viewer_get_style"
     },
     {
-      "description": "Validate bounded style YAML using the native style parser; return structured issues without installing the style.",
+      "description": "Validate bounded style YAML structure using the native parser without installing it. valid/loadable do not prove fields, geometry or rendered output exist in a dataset. After applying, use viewer_get_diagnostics sections=[errors] for runtime expression failures. Options are local to each stylesheet: copied option filters require matching options declarations in that stylesheet.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -8446,6 +7976,14 @@
           },
           "loadable": {
             "type": "boolean"
+          },
+          "runtimeVerified": {
+            "type": "boolean",
+            "const": false
+          },
+          "guidance": {
+            "type": "string",
+            "maxLength": 4096
           },
           "issues": {
             "maxItems": 100,
@@ -8512,6 +8050,8 @@
         "required": [
           "valid",
           "loadable",
+          "runtimeVerified",
+          "guidance",
           "issues",
           "complete"
         ],
@@ -8520,7 +8060,7 @@
       "name": "viewer_validate_style"
     },
     {
-      "description": "Create/update/reset a browser-local style, delete an imported style, or change visibility. Never writes server files. Update/reset/delete address an exact styleId; create/update require source.",
+      "description": "Create/update/patch/reset a browser-local YAML style, delete an imported style, or change visibility. Prefer patch for focused changes after viewer_get_style: edits are sequential exact find/replace pairs, each find must occur exactly once in the current source. All edits and final YAML validation succeed before any change is installed. Preserve unrelated rules/options. Missing stock options do not prevent custom rules. Options belong to each stylesheet; declare copied option filters locally. Never writes server files. Create/update require source; patch requires styleId and edits. Reset restores builtin YAML, not visibility or option values.",
       "permission": "viewer-control",
       "mutation": true,
       "inputSchema": {
@@ -8532,6 +8072,7 @@
             "enum": [
               "create",
               "update",
+              "patch",
               "reset",
               "delete",
               "visibility"
@@ -8549,6 +8090,30 @@
           },
           "visible": {
             "type": "boolean"
+          },
+          "edits": {
+            "minItems": 1,
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "replace": {
+                  "type": "string",
+                  "maxLength": 32000
+                }
+              },
+              "required": [
+                "find",
+                "replace"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -8568,6 +8133,14 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "editCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
           }
         },
         "required": [
@@ -8579,7 +8152,7 @@
       "name": "viewer_edit_style"
     },
     {
-      "description": "Capture the visible application viewport, including all maps, labels, highlights, inspection panels and overlays, but not browser chrome. Returns a bounded JPEG image and metadata. DOM-based capture is approximate, not a pixel-exact browser screenshot or a render-ready fence. No clipboard, file download or screen-sharing permission. maxWidth/maxHeight bound the whole image without cropping; defaults 1280x960. Requires viewer-read and an explicit tab.",
+      "description": "Capture the visible application viewport, including maps, labels, highlights, panels and overlays, but not browser chrome. The JPEG is already attached as image content in this tool result; refer to the captured image in prose and continue the requested report. Never transcribe image bytes, emit a base64/data URI, or invent a download/attachment URL. DOM-based capture is approximate and is not a render-ready fence. No clipboard or file download. maxWidth/maxHeight bound the whole image without cropping; defaults 1280x960. Requires viewer-read and an explicit tab.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -8707,7 +8280,7 @@
       "name": "viewer_screenshot"
     },
     {
-      "description": "Read bounded browser transport, render-worker, cached loading, GPU allocation and style/search error diagnostics. No scene/tile scan, GPU readback, full export or backend request. Cached and unavailable metrics are explicit.",
+      "description": "Read BROWSER transport, render-worker queues, frame-time metrics, cached loading, GPU allocation and style/search errors without resetting the view. Native BACKEND workers/cache/memory require the separately privileged mapget_get_diagnostics tool. Call it only when it appears in your tool catalog; otherwise explain the permission limit. Browser workers and observed transport latency are not backend queue statistics. No scene/tile scan or GPU readback. Cached and unavailable metrics are explicit.",
       "permission": "viewer-read",
       "mutation": false,
       "inputSchema": {
@@ -8769,6 +8342,14 @@
               "text_limit",
               "loading"
             ]
+          },
+          "executionContext": {
+            "type": "string",
+            "const": "browser"
+          },
+          "interpretation": {
+            "type": "string",
+            "maxLength": 4096
           },
           "metrics": {
             "maxItems": 100,
@@ -8835,6 +8416,44 @@
                 "message": {
                   "type": "string",
                   "maxLength": 4096
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "warning",
+                    "error"
+                  ]
+                },
+                "phase": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "property": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "expression": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "rulePath": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "mapId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "layerId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "featureId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
                 }
               },
               "required": [
@@ -8856,6 +8475,8 @@
         "required": [
           "observedAt",
           "complete",
+          "executionContext",
+          "interpretation",
           "metrics",
           "errors",
           "unavailable"
@@ -10027,6 +9648,57 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "mapId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "layerId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "partition": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "tile"
+                          },
+                          "id": {
+                            "type": "integer",
+                            "minimum": -2147483648,
+                            "maximum": 2147483647
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "object"
+                          },
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[0-9]{1,20}$"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -10074,7 +9746,7 @@
       "name": "app.selections"
     },
     {
-      "description": "Persisted search definitions and live progress, including hidden and paused searches; never results or style rules.",
+      "description": "Persisted search definitions, identity colors and live progress, including hidden and paused searches. Use pinColor to identify requests such as the blue search; individual geometry rules can use different colors. Never results or style rules.",
       "selectorSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -10102,6 +9774,11 @@
             "query": {
               "type": "string",
               "maxLength": 4096
+            },
+            "pinColor": {
+              "type": "string",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "description": "Search identity/pin color; individual geometry rules may override it."
             },
             "enabled": {
               "type": "boolean"
@@ -10155,6 +9832,7 @@
           "required": [
             "searchId",
             "query",
+            "pinColor",
             "enabled",
             "paused",
             "autoUpdate",
@@ -10374,7 +10052,7 @@
       "name": "view.layer"
     },
     {
-      "description": "One applicable style option, validated against its declared type.",
+      "description": "One applicable style option, validated against its declared type. For a named look such as Cinematic or Lane Topology, discover kind:presets and use view.layerPreset to apply all supporting options together; a same-named boolean alone may not enable the needed geometry.",
       "selectorSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -10436,7 +10114,7 @@
       "name": "view.styleOption"
     },
     {
-      "description": "Apply a qualified layer preset; null clears its association without resetting options.",
+      "description": "Apply all options of a qualified layer preset. Discover viewer_get_catalog kind:presets with mapId/layerId, then assign {styleId,presetId}; null clears its association without resetting options.",
       "selectorSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -10561,7 +10239,7 @@
       "name": "app.focusedView"
     },
     {
-      "description": "Cross-view position, movement, projection and layer synchronization.",
+      "description": "Cross-view synchronization: pos keeps camera positions equal; mov synchronizes relative camera movement; choose at most one of pos and mov. proj synchronizes projection; lay synchronizes layers. Omit lay to keep different map layers in each view.",
       "selectorSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -10888,5 +10566,5 @@
       "name": "inspection.panel"
     }
   ],
-  "catalogId": "sha256:a6360a7d895663060c226d237145a04d955e829950df6a1a6b3bb6abe8f3afde"
+  "catalogId": "sha256:035d0a4f3dca7a65863b82230c49e6a32c32964d8792728c8afd6ed5f2562981"
 }

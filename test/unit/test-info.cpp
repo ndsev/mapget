@@ -141,6 +141,27 @@ std::string namedSchemaPathString(LayerSchema::NamedSchemaPath const& path)
 
 } // namespace
 
+TEST_CASE(
+    "Layer metadata separates schema roots from referenced identifier types",
+    "[DataSourceInfo]")
+{
+    auto metadata = schemaAnnotatedLayerInfoJson();
+    auto reference = metadata["featureTypes"][0];
+    reference["name"] = "ReferenceOnly";
+    metadata["featureTypes"].push_back(reference);
+    // This is a derived projection, never an alternative source of schema truth.
+    metadata["schemaFeatureTypes"] = {"ForgedType"};
+    auto layer = LayerInfo::fromJson(metadata);
+    auto published = layer->toJson();
+    CHECK(published["featureTypes"].size() == 2);
+    CHECK(published["schemaFeatureTypes"] == nlohmann::json::array({"Carrier"}));
+    CHECK(
+        LayerInfo::fromJson(published)->toJson()["schemaFeatureTypes"] ==
+        published["schemaFeatureTypes"]);
+    metadata.erase("featureModelSchema");
+    CHECK_FALSE(LayerInfo::fromJson(metadata)->toJson().contains("schemaFeatureTypes"));
+}
+
 TEST_CASE("InfoToJson", "[DataSourceInfo]")
 {
     mapget::setLogLevel("trace", log());

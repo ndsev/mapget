@@ -10,6 +10,7 @@
 #include "simfil/model/schema-model.h"
 #include "simfil/result.h"
 
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <set>
@@ -91,7 +92,8 @@ public:
             return simfil::Stop;
         }
         if (capture && !call_.traces_.contains(name)) {
-            call_.charge(6 * name.size() + 128);
+            call_.chargeString(name);
+            call_.charge(128);
             call_.traces_[name] = {
                 {"calls", 0},
                 {"totalUs", 0},
@@ -136,6 +138,18 @@ private:
     Call& call_;
 };
 
+void McpNativeTools::Call::chargeString(std::string_view text)
+{
+    // Reject oversized input before walking it. UTF-8 bytes are preserved by JSON dumping.
+    charge(text.size() + 2);
+    for (unsigned char c : text) {
+        if (c == '"' || c == '\\' || c == '\b' || c == '\f' || c == '\n' || c == '\r' || c == '\t')
+            charge(1);
+        else if (c < 0x20)
+            charge(5);
+    }
+}
+
 Json McpNativeTools::Call::boundedJson(Json const& value, size_t depth)
 {
     if (!step())
@@ -146,7 +160,7 @@ Json McpNativeTools::Call::boundedJson(Json const& value, size_t depth)
     }
     charge(24);
     if (value.is_string()) {
-        charge(value.get_ref<std::string const&>().size() * 6);
+        chargeString(value.get_ref<std::string const&>());
         return value;
     }
     if (value.is_number_unsigned() && value.get<uint64_t>() > 9007199254740991ULL)
@@ -161,7 +175,7 @@ Json McpNativeTools::Call::boundedJson(Json const& value, size_t depth)
         if (value.is_array())
             result.push_back(boundedJson(*it, depth + 1));
         else {
-            charge(it.key().size() * 6);
+            chargeString(it.key());
             result[it.key()] = boundedJson(*it, depth + 1);
         }
     }
@@ -204,7 +218,7 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
     case ValueType::String: {
         auto view = std::get_if<std::string_view>(&value.value);
         std::string_view text = view ? *view : std::string_view(std::get<std::string>(value.value));
-        charge(text.size() * 6);
+        chargeString(text);
         return text;
     }
     case ValueType::Bytes: {
@@ -251,7 +265,7 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
                 env_->strings()->resolve(id);
             if (!key)
                 throw std::runtime_error("unresolved model field");
-            charge(key->size() * 6);
+            chargeString(*key);
             auto text = std::string(*key);
             if (result.contains(text)) {
                 if (repeated.insert(text).second)
@@ -292,18 +306,48 @@ void McpNativeTools::Call::environment(std::shared_ptr<simfil::StringPool> strin
     env_->functions["trace"] = traceFunction_.get();
 }
 
-void McpNativeTools::Call::diagnostics(simfil::Diagnostics const& data)
+void McpNativeTools::Call::diagnostics(
+    simfil::Diagnostics const& data,
+    std::string const& expression)
 {
     auto messages = simfil::diagnostics(data);
     if (!messages)
         return;
     for (auto const& message : *messages) {
+        auto text = message.message;
+        if (name == "mapget_extract_features" && arguments.value("scope", "feature") == "feature" &&
+            (text == "No matches for field '$feature'" || text == "No matches for field '$'"))
+            text +=
+                ". Feature scope starts at the feature: use _.properties or properties. "
+                "$feature is available in scope:attribute only; $ is not the root alias. "
+                "This diagnostic does not establish that the requested property is absent.";
+        // Sparse optional fields commonly emit the same warning for hundreds of records.
+        // Keep its frequency and expression without stopping before a later matching record.
+        auto existing = std::find_if(
+            issues_.begin(),
+            issues_.end(),
+            [&](Json const& issue)
+            {
+                return issue.value("expression", "") == expression &&
+                    issue.value("message", "") == text && issue.contains("offset") &&
+                    issue["offset"] == message.location.offset &&
+                    issue["size"] == message.location.size;
+            });
+        if (existing != issues_.end()) {
+            auto previous = (*existing)["occurrences"].get<size_t>();
+            if (std::to_string(previous).size() < std::to_string(previous + 1).size())
+                charge(1);
+            (*existing)["occurrences"] = previous + 1;
+            continue;
+        }
         if (issues_.size() >= 100) {
             truncate("diagnostic_limit");
             break;
         }
         issues_.push_back(boundedJson(
-            {{"message", message.message},
+            {{"message", text},
+             {"expression", expression},
+             {"occurrences", 1},
              {"offset", message.location.offset},
              {"size", message.location.size}}));
     }
@@ -353,7 +397,12 @@ Json McpNativeTools::Call::evaluate(
                         truncate("expression_result_limit");
                         return simfil::Stop;
                     }
-                    result.push_back(valueJson(value));
+                    // Predicate results are internal decisions, not response payload.
+                    // They consume evaluator work but must not exhaust output bytes.
+                    result.push_back(
+                        predicate ?
+                            Json(value.type == ValueType::Bool && value.as<ValueType::Bool>()) :
+                            valueJson(value));
                     return simfil::Continue;
                 }
                 catch (...) {
@@ -386,7 +435,7 @@ Json McpNativeTools::Call::evaluate(
         truncate("query_error");
     }
     if (incomplete_.empty())
-        diagnostics(data);
+        diagnostics(data, query);
     return result;
 }
 
@@ -423,22 +472,43 @@ Json McpNativeTools::Call::schemaOverview(
         bool fields = key == simfil::StringPool::SchemaFields;
         bool domains = key == simfil::StringPool::SchemaElements ||
             key == simfil::StringPool::SchemaAlternatives;
-        // A semantic reference is intentional, not a truncated query. Scalars retain enums.
-        if ((fields || domains) && !expand)
+        // A semantic reference is intentional, not a truncated query. Enum previews are bounded.
+        if ((fields || domains) && (!expand || depth >= 2)) {
+            if (node.at(i)->size())
+                result["childrenOmitted"] = true;
             continue;
+        }
         auto name = node.owningModel()->lookupStringId(key).value();
-        charge(name.size() * 6);
+        chargeString(name);
         auto child = node.at(i);
+        if (key == simfil::StringPool::SchemaEnum && child->size() > 8) {
+            result["enumCount"] = child->size();
+            result["enumPreview"] = Json::array();
+            for (uint32_t j = 0; j < 8; ++j)
+                result["enumPreview"].push_back(valueJson(simfil::Value::field(child->at(j))));
+            continue;
+        }
         if (!fields && !domains) {
             result[name] = valueJson(simfil::Value::field(child));
             continue;
         }
         auto values = fields ? Json::object() : Json::array();
-        for (uint32_t j = 0; j < child->size(); ++j) {
-            auto value = schemaOverview(*child->at(j), expanded, depth + 1);
+        if (child->size() > 16) {
+            result[fields ? "fieldCount" : "domainCount"] = child->size();
+            result["childrenOmitted"] = true;
+        }
+        for (uint32_t j = 0; j < std::min<uint32_t>(child->size(), 16); ++j) {
+            // Feature.attributes aliases Feature.properties. Preserve its reference without
+            // expanding the same large attribute inventory twice.
+            auto const alias = fields && depth == 0 &&
+                child->owningModel()->lookupStringId(child->keyAt(j)).value() == "attributes";
+            auto value = schemaOverview(
+                *child->at(j),
+                alias ? std::set<simfil::SchemaId>{} : expanded,
+                depth + 1);
             if (fields) {
                 auto field = child->owningModel()->lookupStringId(child->keyAt(j)).value();
-                charge(field.size() * 6);
+                chargeString(field);
                 values[field] = std::move(value);
             }
             else
@@ -470,17 +540,32 @@ void McpNativeTools::Call::querySchema()
         if (arguments.contains("featureType"))
             throw std::invalid_argument("Choose featureType or schemaId");
         auto id = arguments["schemaId"].get<simfil::SchemaId>();
-        if (!schema->hasSchema(id))
-            throw std::invalid_argument("Unknown schema id");
+        if (!schema->hasSchema(id)) {
+            fail(
+                "unknown_schema",
+                "The selected layer has no such schemaId. Read mapget_query_schema "
+                "with the same mapId/layerId and no schemaId to discover its current roots.");
+            return;
+        }
         roots.push_back(id);
     }
     else {
         for (auto const& type : types) {
             auto id = schema->featureSchema(type);
-            if (id == simfil::NoSchemaId)
-                throw std::invalid_argument("Unknown feature type");
+            if (id == simfil::NoSchemaId) {
+                fail(
+                    "unknown_feature_type",
+                    "The selected layer has no schema root for this featureType. "
+                    "Omit featureType to list its roots. Some reference-only identifier types "
+                    "may belong to another layer.");
+                return;
+            }
             roots.push_back(id);
         }
+    }
+    if (arguments.contains("find")) {
+        findSchema(roots, types);
+        return;
     }
     for (size_t i = 0; i < roots.size() && step(); ++i) {
         auto id = roots[i];
@@ -491,38 +576,17 @@ void McpNativeTools::Call::querySchema()
             values = evaluate(arguments["query"], *root, simfil::NoSchemaId);
         }
         else {
-            std::set<simfil::SchemaId> expanded{id};
-            if (simfil::Schema::kindNameId(schema->kind(id)) ==
-                simfil::Schema::kindNameId(LayerSchema::FeatureKind))
-            {
-                // These are native Feature containers, not heuristics on producer payload names.
+            // Unfocused discovery is a type inventory. Opening a type/definition is shallow:
+            // compound domains remain directly followable $refs instead of exhausting a page.
+            std::set<simfil::SchemaId> expanded;
+            if (arguments.contains("featureType") || arguments.contains("schemaId"))
+                expanded.insert(id);
+            if (arguments.contains("featureType")) {
                 auto properties = simfil::Schema::fieldSchemas(
                     id,
                     env_->querySchemaCallback,
                     StringPool::PropertiesStr);
-                std::vector<simfil::SchemaId> layerMaps;
-                for (auto property : properties) {
-                    expanded.insert(property);
-                    auto layers = simfil::Schema::fieldSchemas(
-                        property,
-                        env_->querySchemaCallback,
-                        StringPool::LayerStr);
-                    layerMaps.insert(layerMaps.end(), layers.begin(), layers.end());
-                }
-                std::set<simfil::SchemaId> visited;
-                while (!layerMaps.empty() && step()) {
-                    auto layers = layerMaps.back();
-                    layerMaps.pop_back();
-                    if (!visited.insert(layers).second)
-                        continue;
-                    expanded.insert(layers);
-                    schema->forEachDirectField(
-                        layers,
-                        [&](auto, auto children)
-                        { expanded.insert(children.begin(), children.end()); });
-                    auto alternatives = schema->alternatives(layers);
-                    layerMaps.insert(layerMaps.end(), alternatives.begin(), alternatives.end());
-                }
+                expanded.insert(properties.begin(), properties.end());
             }
             // Logical alternatives describe the same selected value position.
             std::vector<simfil::SchemaId> pending(expanded.begin(), expanded.end());
@@ -545,6 +609,280 @@ void McpNativeTools::Call::querySchema()
         if (!append(std::move(item)))
             break;
     }
+}
+
+void McpNativeTools::Call::findSchema(
+    std::vector<simfil::SchemaId> const& roots,
+    std::vector<std::string> const& types)
+{
+    auto const schema = layer_->layerSchema();
+    auto normalize = [](std::string_view value)
+    {
+        std::string result;
+        for (unsigned char c : value)
+            if (!std::isspace(c) && c != '_' && c != '-')
+                result.push_back(static_cast<char>(std::tolower(c)));
+        return result;
+    };
+    auto needle = normalize(arguments.at("find").get<std::string>());
+    if (needle.empty()) {
+        fail("invalid_arguments", "find requires a declared field, type or enum symbol name.");
+        return;
+    }
+    auto match = [&](std::string_view name)
+    {
+        auto text = normalize(name);
+        return text == needle ? 2 : text.find(needle) != std::string::npos ? 1 : 0;
+    };
+    auto selection = Json{{"mapId", arguments.at("mapId")}, {"layerId", arguments.at("layerId")}};
+    if (arguments.contains("sourceId"))
+        selection["sourceId"] = arguments["sourceId"];
+    // Retain only the best bounded set, while counting distinct matching definitions and
+    // preserving representative owners. An exact enum symbol outranks incidental field text.
+    std::map<simfil::SchemaId, std::pair<int, Json>> best;
+    std::set<simfil::SchemaId> matchedDomains;
+    size_t reserve = std::min<size_t>(remainingWork_ / 4, 8000);
+    remainingWork_ -= reserve;
+    for (size_t i = 0; i < roots.size() && step(); ++i) {
+        std::set<simfil::SchemaId> visited, rootMatches;
+        std::vector<std::string> path;
+        std::vector<bool> elementSteps;
+        std::function<void(simfil::SchemaId, std::string_view)> walk;
+        walk = [&](simfil::SchemaId id, std::string_view field)
+        {
+            if (!step() || id == simfil::NoSchemaId)
+                return;
+            if (path.size() > SerializationNestingLimit) {
+                truncate("serialization_limit");
+                return;
+            }
+            auto fieldMatch = match(field), typeMatch = match(schema->typeName(id));
+            int rank = fieldMatch == 2 ? 1 :
+                typeMatch == 2         ? 2 :
+                fieldMatch             ? 3 :
+                typeMatch              ? 5 :
+                                         6;
+            auto symbols = schema->directEnumSymbols(id);
+            Json matched = Json::array();
+            size_t symbolMatches = 0;
+            for (auto const& symbol : symbols) {
+                if (!step())
+                    return;
+                auto score = match(symbol);
+                if (!score)
+                    continue;
+                rank = std::min(rank, score == 2 ? 0 : 4);
+                ++symbolMatches;
+                // Exact matches stay visible even after a full substring preview.
+                if (score == 2) {
+                    matched.insert(matched.begin(), symbol);
+                    if (matched.size() > 8)
+                        matched.erase(matched.end() - 1);
+                }
+                else if (matched.size() < 8)
+                    matched.push_back(symbol);
+            }
+            // Prefer the nearby owning field/assignment within each relevance class.
+            // Numeric SchemaId order is not a useful ranking for broad concepts.
+            rank = rank * 512 + static_cast<int>(path.size());
+            if (rank < 6 * 512) {
+                matchedDomains.insert(id);
+                rootMatches.insert(id);
+                auto found = best.find(id);
+                if (found == best.end() && best.size() >= limit_) {
+                    auto worst = std::max_element(
+                        best.begin(),
+                        best.end(),
+                        [](auto const& a, auto const& b) {
+                            return std::pair(a.second.first, a.first) <
+                                std::pair(b.second.first, b.first);
+                        });
+                    if (std::pair(rank, id) < std::pair(worst->second.first, worst->first))
+                        best.erase(worst);
+                }
+                if (found != best.end() || best.size() < limit_) {
+                    auto& entry = best[id];
+                    if (entry.second.is_null()) {
+                        entry.first = rank;
+                        auto expand = selection;
+                        expand["schemaId"] = id;
+                        entry.second = {
+                            {"schemaId", id},
+                            {"kind",
+                             env_->strings()
+                                 ->resolve(simfil::Schema::kindNameId(schema->kind(id)))
+                                 .value_or("unknown")},
+                            {"contexts", Json::array()},
+                            {"contextsOmitted", false},
+                            {"expandArguments", expand}};
+                        if (!schema->typeName(id).empty())
+                            entry.second["typename"] = schema->typeName(id);
+                        if (!symbols.empty() || !schema->enumValues(id).empty()) {
+                            auto& domain = entry.second["enum"];
+                            domain = {
+                                {"symbolCount", symbols.size()},
+                                {"matchingSymbolCount", symbolMatches},
+                                {"matchingSymbols", matched},
+                                {"symbolsOmitted", symbols.size() > 8},
+                                {"preview", Json::array()}};
+                            for (size_t n = 0; n < std::min<size_t>(symbols.size(), 8); ++n)
+                                domain["preview"].push_back(symbols[n]);
+                            domain["literalCount"] = schema->enumValues(id).size();
+                            domain["valuesArguments"] = expand;
+                            domain["valuesArguments"]["query"] = "enum.*";
+                            domain["valuesArguments"]["limit"] = std::min<size_t>(
+                                1000,
+                                symbols.size() + schema->enumValues(id).size());
+                            domain["symbolSemantics"] = schema->kind(id) ==
+                                    LayerSchema::BitmaskKind ?
+                                "flags" :
+                                "string_literals";
+                        }
+                    }
+                    auto preferContext = rank < entry.first;
+                    entry.first = std::min(entry.first, rank);
+                    Json context{{"path", path}};
+                    if (!field.empty())
+                        context["fieldName"] = field;
+                    if (!arguments.contains("schemaId")) {
+                        context["featureType"] = types[i];
+                        auto owner = schema->ownerForPath(types[i], roots[i], path);
+                        // ownerForPath accepts named fields, not array wildcards. Keep the
+                        // enclosing assignment owner when the discovered value is inside an array.
+                        for (size_t end = path.size();
+                             owner.kind_ == LayerSchema::PathOwnerKind::Unknown && end;
+                             --end)
+                            owner = schema->ownerForPath(
+                                types[i],
+                                roots[i],
+                                std::span(path.data(), end - 1));
+                        if (owner.kind_ == LayerSchema::PathOwnerKind::Attribute)
+                            context["attributeContext"] = {
+                                {"featureType", owner.attribute_.featureType_},
+                                {"layer", owner.attribute_.attributeLayerName_},
+                                {"name", owner.attribute_.attributeName_},
+                                {"schemaId", owner.attribute_.attributeSchema_}};
+                        // String subscripts preserve field names; dot-string syntax is a literal.
+                        std::string query = "_";
+                        for (size_t segment = 0; segment < path.size(); ++segment)
+                            query += elementSteps[segment] ?
+                                ".*" :
+                                "[" + Json(path[segment]).dump() + "]";
+                        context["featureQuery"] = query;
+                    }
+                    else
+                        context["relativeToSchemaId"] = roots[i];
+                    auto& contexts = entry.second["contexts"];
+                    if (std::find(contexts.begin(), contexts.end(), context) == contexts.end()) {
+                        if (preferContext) {
+                            contexts.insert(contexts.begin(), context);
+                            if (contexts.size() > 2) {
+                                contexts.erase(contexts.end() - 1);
+                                entry.second["contextsOmitted"] = true;
+                            }
+                        }
+                        else if (contexts.size() < 2)
+                            contexts.push_back(context);
+                        else
+                            entry.second["contextsOmitted"] = true;
+                    }
+                }
+            }
+            if (!visited.insert(id).second)
+                return;
+            schema->forEachDirectField(
+                id,
+                [&](std::string_view name, auto children)
+                {
+                    if (!step())
+                        return;
+                    path.emplace_back(name);
+                    elementSteps.push_back(false);
+                    for (auto child : children)
+                        walk(child, name);
+                    path.pop_back();
+                    elementSteps.pop_back();
+                });
+            schema->forEachElementSchema(
+                id,
+                [&](simfil::SchemaId child)
+                {
+                    path.emplace_back("*");
+                    elementSteps.push_back(true);
+                    walk(child, {});
+                    path.pop_back();
+                    elementSteps.pop_back();
+                });
+            for (auto alternative : schema->alternatives(id))
+                walk(alternative, field);
+        };
+        walk(roots[i], {});
+        if (!rootMatches.empty() && narrowing_.size() < 8 && roots.size() > 1) {
+            auto next = selection;
+            next["find"] = arguments["find"];
+            if (arguments.contains("schemaId"))
+                next["schemaId"] = roots[i];
+            else
+                next["featureType"] = types[i];
+            narrowing_.push_back({{"arguments", next}, {"matchedDomains", rootMatches.size()}});
+        }
+    }
+    auto scanReason = std::exchange(incomplete_, {});
+    remainingWork_ += reserve;
+    std::vector<std::pair<int, Json>> ordered;
+    for (auto& [_, entry] : best)
+        ordered.push_back(std::move(entry));
+    std::stable_sort(
+        ordered.begin(),
+        ordered.end(),
+        [](auto const& a, auto const& b) { return a.first < b.first; });
+    for (auto& [_, item] : ordered) {
+        try {
+            if (item.contains("enum") && item["enum"]["literalCount"] != 0) {
+                auto model = std::make_shared<
+                    simfil::SchemaModel>(env_->strings(), env_->querySchemaCallback, 64);
+                auto values = model->root(item["schemaId"].get<simfil::SchemaId>())
+                                  ->get(simfil::StringPool::SchemaEnum);
+                auto start = item["enum"]["symbolCount"].get<size_t>();
+                item["enum"]["literalPreview"] = Json::array();
+                for (size_t n = start; values && n < std::min<size_t>(values->size(), start + 8);
+                     ++n)
+                    item["enum"]["literalPreview"]
+                        .push_back(valueJson(simfil::Value::field(values->at(n))));
+                item["enum"]["literalsOmitted"] = item["enum"]["literalCount"].get<size_t>() > 8;
+            }
+            if (roots.size() == 1 && narrowing_.size() < 8) {
+                auto next = item["expandArguments"];
+                for (auto const& context : item["contexts"])
+                    if (context.contains("attributeContext")) {
+                        next["schemaId"] = context["attributeContext"]["schemaId"];
+                        break;
+                    }
+                next["find"] = arguments["find"];
+                auto same = std::any_of(
+                    narrowing_.begin(),
+                    narrowing_.end(),
+                    [&](auto const& choice) { return choice["arguments"] == next; });
+                if (!same && next["schemaId"] != roots.front())
+                    narrowing_.push_back({{"arguments", next}});
+            }
+            if (!append(boundedJson(item)))
+                break;
+        }
+        catch (std::length_error const&) {
+            break;
+        }
+    }
+    discovery_ = {
+        {"scanComplete", scanReason.empty()},
+        {"matchedDomains", matchedDomains.size()},
+        {"returnedDomains", items_.size()},
+        {"omittedDomains", matchedDomains.size() - items_.size()},
+        {"paths", "representative"}};
+    if (!scanReason.empty())
+        truncate(scanReason);
+    else if (matchedDomains.size() > items_.size())
+        truncate("matches_omitted");
 }
 
 void McpNativeTools::Call::validateExpression()
@@ -590,8 +928,14 @@ void McpNativeTools::Call::validateExpression()
         if (!step())
             break;
         auto id = schema ? schema->featureSchema(type) : simfil::NoSchemaId;
-        if (arguments.contains("featureType") && schema && id == simfil::NoSchemaId)
-            throw std::invalid_argument("type");
+        if (arguments.contains("featureType") && schema && id == simfil::NoSchemaId) {
+            fail(
+                "unknown_feature_type",
+                "The selected layer has no schema root for this featureType. "
+                "Use mapget_query_schema without featureType to list its roots. "
+                "Some reference-only identifier types may belong to another layer.");
+            return;
+        }
         if (scope == "attribute" && schema) {
             bool found = false;
             for (auto const& attribute : schema->attributeScopes()) {
@@ -613,7 +957,20 @@ void McpNativeTools::Call::validateExpression()
         else
             contexts.emplace(type, id);
     }
+    auto const offset = arguments.value("offset", size_t{0});
+    item["contextCount"] = contexts.size();
+    item["contextOffset"] = offset;
+    item["scope"] = scope;
+    item = boundedJson(item);
+    size_t position = 0;
     for (auto const& [type, id] : contexts) {
+        if (position++ < offset)
+            continue;
+        if (item["contexts"].size() >= limit_) {
+            nextOffset_ = position - 1;
+            truncate("item_limit");
+            break;
+        }
         if (!step())
             break;
         auto ast = simfil::compile(
@@ -640,9 +997,14 @@ void McpNativeTools::Call::validateExpression()
                     !paths->hasDynamicAccess && !paths->hasBroadWildcardAccess && !schema->open(id);
             }
         }
-        item["contexts"].push_back(boundedJson(context));
+        try {
+            item["contexts"].push_back(boundedJson(context));
+        }
+        catch (std::length_error const&) {
+            break;  // Keep successful context diagnostics when a later one exceeds the budget.
+        }
     }
-    append(boundedJson(item));
+    append(std::move(item));
 }
 
 }  // namespace mapget::detail
