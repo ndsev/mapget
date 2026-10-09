@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <exception>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -131,28 +132,25 @@ void HttpService::Impl::handleStatusDataRequest(
         {"measurement", "diagnostic-residuals"},
         {"known-ownership-bytes", knownBytes},
     };
-    uint64_t allocatorLiveBytes = 0;
+    std::optional<uint64_t> allocatorLiveBytes;
     if (auto allocator = serviceMemory.find("allocator");
-        allocator != serviceMemory.end() && allocator->is_object())
+        allocator != serviceMemory.end() && allocator->contains("allocated-bytes"))
     {
-        allocatorLiveBytes =
-            allocator->value("in-use-arena-bytes", uint64_t{0}) +
-            allocator->value("mmap-bytes", uint64_t{0});
-        reconciliation["allocator-live-bytes"] = allocatorLiveBytes;
+        allocatorLiveBytes = allocator->at("allocated-bytes").get<uint64_t>();
+        reconciliation["allocator-live-bytes"] = *allocatorLiveBytes;
         reconciliation["allocator-live-outside-known-ownership-bytes"] =
-            allocatorLiveBytes > knownBytes
-                ? allocatorLiveBytes - knownBytes
-                : uint64_t{0};
+            *allocatorLiveBytes > knownBytes ? *allocatorLiveBytes - knownBytes : uint64_t{0};
     }
     if (auto process = serviceMemory.find("process");
         process != serviceMemory.end() && process->is_object())
     {
         auto const anonymous =
             process->value("resident-anonymous-bytes", uint64_t{0});
-        reconciliation["anonymous-resident-outside-allocator-live-bytes"] =
-            anonymous > allocatorLiveBytes
-                ? anonymous - allocatorLiveBytes
-                : uint64_t{0};
+        // Unsupported allocators must not make all anonymous RSS look like slack.
+        if (allocatorLiveBytes) {
+            reconciliation["anonymous-resident-outside-allocator-live-bytes"] =
+                anonymous > *allocatorLiveBytes ? anonymous - *allocatorLiveBytes : uint64_t{0};
+        }
         reconciliation["file-and-shared-resident-bytes"] =
             process->value("resident-file-bytes", uint64_t{0}) +
             process->value("resident-shared-bytes", uint64_t{0});

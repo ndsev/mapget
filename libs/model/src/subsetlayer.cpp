@@ -1439,6 +1439,7 @@ void PartitionSubsetLayer::adoptSourceInfo(PartitionFeatureLayer const& source)
     setTtl(source.ttl());
     setInfo(source.info());
     setLegalInfo(source.legalInfo());
+    setWarnings(source.warnings());
 }
 
 void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dependencies)
@@ -2120,6 +2121,7 @@ nlohmann::json PartitionSubsetLayer::toJson() const
         {"issues", nlohmann::json::array()},
         {"channels", nlohmann::json::array()},
     });
+    addDiagnosticsToJson(result);
     if (partitionId_.kind() == PartitionKind::Tile)
         result["mapgetTileId"] = partitionId_.value();
     if (glbAttachmentName_) {

@@ -71,7 +71,8 @@ public:
     get(MapPartitionKey const& key,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        PartitionLayer::LoadStateCallback callback = {}) override
+        PartitionLayer::LoadStateCallback callback = {},
+        TileCancellationCheck const& isCancelled = {}) override
     {
         {
             std::lock_guard lock(mutex_);
@@ -81,7 +82,7 @@ public:
             key,
             cache,
             info,
-            std::move(callback));
+            std::move(callback), isCancelled);
     }
 
     [[nodiscard]] size_t getCalls(MapPartitionKey const& key) const
@@ -1017,9 +1018,23 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             REQUIRE(trim.contains("last-free-arena-before-bytes"));
             REQUIRE(trim.contains("last-free-arena-after-bytes"));
 #if defined(__linux__) && defined(__GLIBC__)
-            REQUIRE(trim["supported"] == true);
-            REQUIRE(trim["enabled"] == true);
+            auto const& allocator = status["memory"]["allocator"];
+            bool const usesGlibc = allocator.is_object() &&
+                allocator.value("backend", "") == "glibc";
+            REQUIRE(trim["supported"] == usesGlibc);
+            REQUIRE(trim["enabled"] == usesGlibc);
             REQUIRE(trim["period-seconds"] == 10);
+            if (allocator.contains("allocated-bytes")) {
+                REQUIRE(reconciliation["allocator-live-bytes"] == allocator["allocated-bytes"]);
+            }
+            else {
+                REQUIRE_FALSE(reconciliation.contains("allocator-live-bytes"));
+            }
+            if (allocator.is_object() && allocator.value("backend", "") == "jemalloc") {
+                REQUIRE(trim["attempts"] == 0);
+                REQUIRE_FALSE(allocator.contains("in-use-arena-bytes"));
+                REQUIRE(allocator.contains("background-thread-enabled"));
+            }
 #else
             REQUIRE(trim["supported"] == false);
             REQUIRE(trim["enabled"] == false);

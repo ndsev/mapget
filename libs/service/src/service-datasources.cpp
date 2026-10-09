@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <regex>
 
 namespace mapget
@@ -56,6 +57,7 @@ DataSourceCatalogSourceUpdate makeSourceCatalogSourceUpdate(DataSourceCatalogEnt
         .status = entry.status,
         .statusMessage = entry.statusMessage,
         .progress = entry.progress,
+        .retrying = entry.retrying,
         .dataSource = entry.dataSource,
     };
 }
@@ -459,7 +461,8 @@ void Service::Impl::updateCatalogProgress(
 void Service::Impl::markCatalogConstructionFailed(
     uint64_t generation,
     uint32_t configIndex,
-    std::string message)
+    std::string message,
+    bool retrying)
 {
     std::optional<DataSourceCatalogChange> change;
     {
@@ -473,10 +476,12 @@ void Service::Impl::markCatalogConstructionFailed(
         if (entry == sourceCatalog_.end()) {
             return;
         }
+        if (entry->status != DataSourceCatalogStatus::Failed)
+            ++dataSourceConstructionFailed_;
         entry->status = DataSourceCatalogStatus::Failed;
+        entry->retrying = retrying;
         entry->statusMessage = std::move(message);
         entry->progress.reset();
-        ++dataSourceConstructionFailed_;
         change = markSourceCatalogChangedLocked("status", &*entry);
     }
     notifySourceCatalogChanged(*change);
@@ -505,7 +510,10 @@ bool Service::Impl::markCatalogConstructionReady(
         // in the ready registry without a matching current-generation row.
         auto source = dataSources_.add(dataSource, std::move(sourceId));
         scheduler_.registerDataSource(source);
+        if (entry->status == DataSourceCatalogStatus::Failed)
+            --dataSourceConstructionFailed_;
         entry->status = DataSourceCatalogStatus::Ready;
+        entry->retrying = false;
         entry->statusMessage.clear();
         entry->progress.reset();
         entry->dataSource = source->dataSource;
@@ -545,57 +553,74 @@ void Service::Impl::launchDataSourceConstruction(
                     done->store(true, std::memory_order_release);
                 };
                 try {
-                    slotAcquired = acquireConstructionSlot(stopRequested);
-                    if (!slotAcquired || !isCurrentCatalogGeneration(generation)) {
-                        finish();
-                        return;
-                    }
-
-                    std::string lastStatusMessage;
-                    DataSourceInitContext context{
-                        .setStatusMessage =
-                            [this, generation, configIndex, &lastStatusMessage](std::string message)
-                        {
-                            lastStatusMessage = message;
-                            updateCatalogStatusMessage(generation, configIndex, std::move(message));
-                        },
-                        .setProgress =
-                            [this, generation, configIndex](std::optional<float> progress)
-                        { updateCatalogProgress(generation, configIndex, progress); },
-                        .isCancelled =
-                            [this, generation, stopRequested]
-                        {
-                            return stopRequested->load(std::memory_order_acquire) ||
-                                !isCurrentCatalogGeneration(generation);
-                        },
-                    };
-                    auto dataSource =
-                        DataSourceConfigService::get().makeDataSource(configNode, context);
-                    if (!dataSource) {
-                        if (isCurrentCatalogGeneration(generation)) {
-                            if (lastStatusMessage.empty()) {
-                                lastStatusMessage = fmt::format(
-                                    "Failed to make datasource at index {}.",
-                                    configIndex);
-                            }
-                            markCatalogConstructionFailed(
-                                generation,
-                                configIndex,
-                                std::move(lastStatusMessage));
+                    size_t retryAttempt = 0;
+                    while (!stopRequested->load(std::memory_order_acquire)) {
+                        slotAcquired = acquireConstructionSlot(stopRequested);
+                        if (!slotAcquired || !isCurrentCatalogGeneration(generation)) {
+                            finish();
+                            return;
                         }
-                        finish();
-                        return;
-                    }
-                    if (!isCurrentCatalogGeneration(generation)) {
-                        finish();
-                        return;
-                    }
 
-                    markCatalogConstructionReady(
-                        generation,
-                        configIndex,
-                        dataSource,
-                        std::move(sourceId));
+                        std::string lastStatusMessage;
+                        DataSourceInitContext context{
+                            .setStatusMessage =
+                                [this, generation, configIndex, &lastStatusMessage](std::string message)
+                            {
+                                lastStatusMessage = message;
+                                updateCatalogStatusMessage(generation, configIndex, std::move(message));
+                            },
+                            .setProgress =
+                                [this, generation, configIndex](std::optional<float> progress)
+                            { updateCatalogProgress(generation, configIndex, progress); },
+                            .isCancelled =
+                                [this, generation, stopRequested]
+                            {
+                                return stopRequested->load(std::memory_order_acquire) ||
+                                    !isCurrentCatalogGeneration(generation);
+                            },
+                        };
+                        context.retryAttempt = retryAttempt;
+                        auto dataSource =
+                            DataSourceConfigService::get().makeDataSource(configNode, context);
+                        if (!dataSource) {
+                            if (isCurrentCatalogGeneration(generation)) {
+                                if (lastStatusMessage.empty()) {
+                                    lastStatusMessage = fmt::format(
+                                        "Failed to make datasource at index {}.",
+                                        configIndex);
+                                }
+                                markCatalogConstructionFailed(
+                                    generation,
+                                    configIndex,
+                                    context.retryAfter && context.retryAfter->count() > 0 ?
+                                    fmt::format("{} Retrying in {} ms.", lastStatusMessage, context.retryAfter->count()) :
+                                    lastStatusMessage,
+                                    context.retryAfter && context.retryAfter->count() > 0 && !context.isCancelled());
+                            }
+                            if (!context.retryAfter || context.retryAfter->count() <= 0 || context.isCancelled())
+                                break;
+                            // Waiting sources must not occupy a construction permit.
+                            releaseConstructionSlot();
+                            slotAcquired = false;
+                            std::unique_lock retryLock(constructionSlotMutex_);
+                            constructionSlotCv_.wait_for(retryLock, *context.retryAfter, [&] {
+                                return stopRequested->load(std::memory_order_acquire) || shuttingDown_;
+                            });
+                            if (retryAttempt != std::numeric_limits<size_t>::max()) ++retryAttempt;
+                            continue;
+                        }
+                        if (!isCurrentCatalogGeneration(generation)) {
+                            finish();
+                            return;
+                        }
+
+                        markCatalogConstructionReady(
+                            generation,
+                            configIndex,
+                            dataSource,
+                            std::move(sourceId));
+                        break;
+                    }
                 }
                 catch (std::exception const& error) {
                     if (isCurrentCatalogGeneration(generation)) {

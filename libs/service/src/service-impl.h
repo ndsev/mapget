@@ -149,7 +149,7 @@ struct Service::Impl
     updateCatalogProgress(uint64_t generation, uint32_t configIndex, std::optional<float> progress);
     /** Mark one current-generation catalog row failed and preserve diagnostics. */
     void
-    markCatalogConstructionFailed(uint64_t generation, uint32_t configIndex, std::string message);
+    markCatalogConstructionFailed(uint64_t generation, uint32_t configIndex, std::string message, bool retrying = false);
     /** Atomically register a constructed source and attach it to its current catalog row. */
     bool markCatalogConstructionReady(
         uint64_t generation,

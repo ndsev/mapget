@@ -191,13 +191,13 @@ public:
     /** Report a source error in the tile payload, as remote datasources do. */
     void fill(TileFeatureLayer::Ptr const& tile) override
     {
-        tile->setTimestamp(std::chrono::system_clock::now() - std::chrono::seconds(1));
-        tile->setTtl(std::chrono::milliseconds(1));
+        tile->setTtl(std::chrono::milliseconds(0));
         if (recovered_) {
             FilterDataSource::fill(tile);
         }
         else {
             tile->setError("synthetic recoverable tile error");
+            tile->setErrorRetryAfter(std::chrono::milliseconds(5000));
         }
     }
 
@@ -1903,7 +1903,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Reported source tile errors fail filters and allow recovery after expiry",
+    "Reported source tile errors remain uncached and carry retry hints",
     "[feature-layer-filter][Service][failure]")
 {
     Service service(std::make_shared<MemCache>(32), false);
@@ -1936,6 +1936,7 @@ TEST_CASE(
         else {
             REQUIRE(request->getStatus() == RequestStatus::Aborted);
             REQUIRE(statuses.back()["state"] == "Failed");
+            REQUIRE(statuses.back()["retryAfterMs"] == 5000);
             REQUIRE(
                 statuses.back()["error"].get<std::string>().find(
                     "synthetic recoverable tile error") != std::string::npos);
@@ -2277,4 +2278,31 @@ TEST_CASE(
     REQUIRE(result.status_ == RequestStatus::Success);
     REQUIRE_FALSE(result.response_);
     REQUIRE(source->attachmentCalls() == 1);
+}
+
+TEST_CASE("Filter outputs preserve warnings even when no features match", "[feature-layer-filter][warnings]")
+{
+    class WarnedSource : public FilterDataSource {
+        void fill(TileFeatureLayer::Ptr const& tile) override {
+            FilterDataSource::fill(tile);
+            tile->addWarning("duplicate Road.42");
+        }
+    };
+    Service service(std::make_shared<MemCache>(32), false);
+    service.add(std::make_shared<WarnedSource>());
+    auto filter = filterDefinition();
+    for (auto& channel : filter.channels_) channel.featureFilter_ = "false";
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>("FilterMap", "Road",
+        std::vector<TileId>{firstTile()}, filter);
+    TileSubsetLayer::Ptr output;
+    request->onFilterResult([&](auto layer) { output = std::move(layer); });
+    REQUIRE(service.request(request));
+    request->wait();
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(output);
+    REQUIRE_FALSE(output->error());
+    for (size_t i = 0; i < output->size(); ++i)
+        REQUIRE(output->at(i)->entryCount() == 0);
+    REQUIRE(output->warnings() == std::vector<std::string>{"duplicate Road.42"});
+    REQUIRE(output->toJson()["warnings"] == output->warnings());
 }

@@ -42,10 +42,11 @@ struct HttpServiceConfig
     uint32_t locationResultMaxLimit = 50;
 
     /**
-     * Period between allocator trims which return unused heap pages to the OS.
+     * Period between glibc allocator trims which return unused heap pages to the OS.
      *
      * A periodic worker covers datasource initialization and interactive traffic,
      * neither of which necessarily completes a REST response. Zero disables it.
+     * Ignored when jemalloc is active: its own background workers handle purging.
      */
 #if defined(__linux__) && defined(__GLIBC__)
     std::chrono::seconds memoryTrimPeriod{10};

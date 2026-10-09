@@ -205,6 +205,34 @@ Useful options include `MAPGET_WITH_WHEEL`, `MAPGET_WITH_SERVICE`,
 `MAPGET_WITH_HTTPLIB`, `MAPGET_ENABLE_TESTING`, and
 `MAPGET_BUILD_EXAMPLES`.
 
+### Native Linux allocator
+
+`MAPGET_WITH_JEMALLOC` defaults to `ON` for native Linux server builds. CPM
+downloads a checksum-pinned jemalloc 5.3.0 release archive, and its supplied
+configure/Make build produces `bin/libjemalloc.so.2` with statistics and
+background purging enabled. GNU Make is required even with a Ninja parent
+build; Autoconf is not required. Cross-compilation, Windows, macOS and
+model-only/WASM builds keep their platform allocator.
+
+`mapget_target_use_allocator(executable)` links an embedding executable such
+as MapViewer to the same allocator. Do not apply it to shared libraries or
+Python extensions: the process must choose its allocator at startup. Ship
+`libjemalloc.so.2` and `jemalloc-COPYING` beside the executable; the build
+provides an `$ORIGIN` runtime search path. MapViewer's Docker packaging includes
+both files. CMake installation places the library under the install libdir.
+
+Use `-DMAPGET_WITH_JEMALLOC=OFF` for system-allocator comparisons and sanitizer
+builds. `/status-data` detects which DSO actually supplies `malloc`, so loading
+an unrelated allocator library cannot switch reporting away from the real
+allocator. Python wheels do not link jemalloc or change interpreter allocation.
+
+Allocator regression tests cover the linked and system-allocator executables,
+`MALLOC_CONF` overrides, cross-thread C/C++ frees, and idle background purging:
+
+```bash
+ctest --test-dir build -R '^test.mapget.allocator' --output-on-failure
+```
+
 ## Datasource contract
 
 A `DataSource`:
@@ -251,6 +279,33 @@ Built-in providers include:
 - `GeoJsonSource`.
 
 See `examples/cpp/local-datasource` and `examples/python/datasource.py`.
+
+### Shared payload cancellation
+
+Slow native datasources can override `fill(tile, TileCancellationCheck const&)`
+for feature and/or source-data partitions. Check the probe between expensive
+phases and within long loops; throw `TileLoadCancelled` to stop without creating
+a tile error. The old one-argument fills remain supported: default contextual
+fills check before and after calling them, but cannot interrupt their work.
+An override of `DataSource::get` must forward its trailing cancellation probe.
+
+The probe belongs to the shared source job, not its first requester. Aborting
+one request or removing one output must not interrupt another consumer of the
+same partition. New requests join existing jobs when enqueued, including when
+worker admission is blocked. When no consumers remain, or on map invalidation
+or shutdown, the probe becomes permanently true and the in-flight key is
+detached. A later request may start a replacement immediately. Cancellation,
+epoch, and job-identity guards keep a late result from caching or completing
+that replacement. The old job still holds its worker/source permit until it
+unwinds; cancellation does not create additional worker capacity.
+
+Datasource-internal single-flight caches need the same aggregation at their
+own sharing boundary. Do not cancel a shared SQL read or decoded blob solely
+because its initial tile job was cancelled while another job still needs it.
+Probes must be cheap, thread-safe, nonthrowing and nonblocking; do not re-enter
+the service or caches from a probe. Cancellation is cooperative: synchronous
+remote requests and legacy providers finish their current call before the
+post-call check, so I/O timeouts are still necessary.
 
 ## Model ownership
 
@@ -561,3 +616,9 @@ creates `vX.Y.Z`, and dispatches the wheel matrix. `setuptools_scm` supplies
 tagged and development versions. Release PRs publish unique development
 previews such as `2026.3.5.dev31001`; ordinary `main` pushes build but do not
 upload another snapshot.
+
+## Datasource initialization recovery
+
+Config-created datasource constructors can set `DataSourceInitContext::retryAfter` to positive milliseconds before returning null or throwing. The catalog worker releases its construction permit, waits interruptibly, then creates a fresh context for the next attempt. Without a positive hint, construction failure is terminal. A failed row retains its source identity and remains `failed` during retries, so blocking `/sources` calls finish after the first failed attempt. Recovery publishes the ordinary `ready` transition. Config replacement and shutdown cancel pending waits and reject obsolete construction results. Failed-source statistics count current rows, not attempts.
+
+The fresh context includes a saturating `retryAttempt` index (zero for the first attempt), allowing producers to calculate backoff without a second retry loop. Catalog snapshots and interactive deltas publish `retrying` throughout eligible waits and attempts, clearing it on readiness or terminal failure. Runtime filter failures forward the producer delay and originating `errorSourceMapId`; explicit `info.serviceError` metadata becomes `serviceError` in filter status for connection diagnostics. Query/conversion errors must not be inferred to be service failures from their text or numeric code.

@@ -490,9 +490,20 @@ void bindTileLayer(py::module_& m)
         .def("error", &PartitionLayer::error, "Get the tile error if one was set.")
         .def(
             "set_error",
-            [](PartitionLayer& self, std::string const& e) { self.setError(e); },
+            [](PartitionLayer& self, std::optional<std::string> const& e) { self.setError(e); },
             py::arg("err"),
-            "Set the tile error.")
+            "Set the tile error, or pass None to clear it.")
+        .def("warnings", &PartitionLayer::warnings)
+        .def("add_warning", &PartitionLayer::addWarning)
+        .def("set_warnings", &PartitionLayer::setWarnings)
+        .def("error_retry_after_ms", [](PartitionLayer const& self) -> std::optional<int64_t> {
+            if (auto delay = self.errorRetryAfter()) return delay->count();
+            return std::nullopt;
+        })
+        .def("set_error_retry_after_ms", [](PartitionLayer& self, std::optional<int64_t> ms) {
+            self.setErrorRetryAfter(ms ? std::make_optional(std::chrono::milliseconds(*ms)) : std::nullopt);
+        })
+        .def("to_service_json", [](PartitionLayer const& self) { return self.toServiceJson().dump(); })
         .def("error_code", &PartitionLayer::errorCode, "Get the tile error code if one was set.")
         .def(
             "set_error_code",
@@ -581,34 +592,6 @@ void bindTileLayer(py::module_& m)
             [](PartitionFeatureLayer const& self) { return self.layerInfo()->layerId_; },
             R"pbdoc(
             Get the layer name for this PartitionLayer.
-            )pbdoc")
-        .def(
-            "error",
-            [](PartitionFeatureLayer const& self) { return self.error(); },
-            R"pbdoc(
-            Get the error occurred while the tile was filled.
-            )pbdoc")
-        .def(
-            "set_error",
-            [](PartitionFeatureLayer& self, std::string const& e) { self.setError(e); },
-            py::arg("err"),
-            R"pbdoc(
-            Set the error occurred while the tile was filled.
-            )pbdoc")
-        .def(
-            "error_code",
-            [](PartitionFeatureLayer const& self) { return self.errorCode(); },
-            R"pbdoc(
-            Get the error code (e.g., HTTP status code, SQLite error code)
-            if an error occurred while the tile was filled.
-            )pbdoc")
-        .def(
-            "set_error_code",
-            [](PartitionFeatureLayer& self, int code) { self.setErrorCode(code); },
-            py::arg("code"),
-            R"pbdoc(
-            Set the error code (e.g., HTTP status code, SQLite error code)
-            for an error that occurred while the tile was filled.
             )pbdoc")
         .def(
             "timestamp",

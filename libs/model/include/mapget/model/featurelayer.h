@@ -4,6 +4,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,6 +35,13 @@
 
 namespace mapget
 {
+
+/** Strict creation rejected a duplicate; producers may recover at a record boundary. */
+class DuplicateFeatureIdError : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
 
 struct FeatureLayerSelector;
 class SimfilExpressionCache;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -37,6 +38,12 @@ struct DataSourceInitContext {
 
     /** Allow long-running constructors to stop work after config reloads or service shutdown. */
     std::function<bool()> isCancelled;
+
+    /** Failed constructors may request another attempt after a positive delay. */
+    std::optional<std::chrono::milliseconds> retryAfter;
+
+    /** Consecutive retry index, supplied by the service; zero for the first attempt. */
+    size_t retryAttempt = 0;
 };
 
 /** Cheap, config-derived datasource facts available before construction starts. */

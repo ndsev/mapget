@@ -11,8 +11,11 @@ from ndslive.math import PackedTileId
 
 
 def _get_json(url: str):
-    with urllib.request.urlopen(url, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise AssertionError(error.read().decode("utf-8")) from error
 
 
 def _post_json(url: str, body: dict):
@@ -53,6 +56,22 @@ def main() -> int:
     requested_tiles: list[int] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
+        assert tile.warnings() == []
+        tile.add_warning("nonfatal duplicate fixture")
+        tile.add_warning("nonfatal duplicate fixture")
+        assert tile.warnings() == ["nonfatal duplicate fixture"]
+        assert json.loads(tile.to_service_json())["warnings"] == tile.warnings()
+        tile.set_warnings([])
+        assert tile.warnings() == []
+        tile.add_warning("nonfatal duplicate fixture")
+        assert tile.error_retry_after_ms() is None
+        tile.set_error("temporary outage")
+        tile.set_error_retry_after_ms(5000)
+        assert tile.error_retry_after_ms() == 5000
+        # Replacing an error must clear its former retry policy.
+        tile.set_error("permanent conversion error")
+        assert tile.error_retry_after_ms() is None
+        tile.set_error(None)
         assert tile.legal_info() is None
         tile.set_legal_info("Source copyright and terms")
         assert tile.legal_info() == "Source copyright and terms"
@@ -148,6 +167,7 @@ def main() -> int:
         feature.set_source_data_references(source_refs)
 
     def fill_source_data_tile(tile: mapget.TileSourceDataLayer) -> None:
+        tile.add_warning("partial source diagnostics")
         compound = tile.new_compound(2)
         compound.set_schema_name("example.Type")
         compound.set_source_data_address(mapget.SourceDataAddress(1, 8))
@@ -222,6 +242,8 @@ def main() -> int:
         base_url = f"http://127.0.0.1:{datasource.port()}"
 
         feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=65536&responseType=json")
+        assert feature_tile["warnings"] == ["nonfatal duplicate fixture"]
+        assert "error" not in feature_tile
         assert requested_tiles == [65536]
         feature = feature_tile["features"][0]
         assert feature["geometry"]["geometryName"] == "centerline"
@@ -256,7 +278,11 @@ def main() -> int:
         assert object_tile["features"][0]["id"] == f"Road.{object_id}.1"
 
         source_tile = _get_json(f"{base_url}/tile?layer=RawLayer&tileId=65536&responseType=json")
-        assert source_tile == [{"answer": 42}]
+        assert source_tile == {
+            "type": "SourceData", "mapId": "Map", "mapgetLayerId": "RawLayer",
+            "partition": {"kind": "tile", "id": 65536},
+            "data": [{"answer": 42}], "warnings": ["partial source diagnostics"],
+        }
 
         locate_response = _post_json(
             f"{base_url}/locate",

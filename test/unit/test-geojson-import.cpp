@@ -513,3 +513,27 @@ TEST_CASE("Large sanitized GeoJSON fixture roundtrips", "[GeoJsonImport][Fixture
     REQUIRE(tile->find("Entry.131073.group%2E00%25.0"));
     REQUIRE(tile->find("Entry.131073.group%2E00%25.71"));
 }
+
+TEST_CASE("Strict feature JSON preserves and validates diagnostics", "[GeoJsonImport][warnings]")
+{
+    auto info = makeRoadLayerInfo();
+    auto original = makeTile(131073, info);
+    original->addWarning("duplicate Road.7");
+    original->setError("temporary outage");
+    original->setErrorRetryAfter(5000ms);
+    auto json = original->toJson();
+    auto imported = makeTile(131073, info);
+    imported->fromJson(json);
+    REQUIRE(imported->warnings() == original->warnings());
+    REQUIRE(imported->errorRetryAfter() == 5000ms);
+    for (auto invalid : {nlohmann::json("bad"), nlohmann::json::array({1})}) {
+        auto broken = json;
+        broken["warnings"] = invalid;
+        REQUIRE_THROWS(makeTile(131073, info)->fromJson(broken));
+    }
+    for (auto invalid : {nlohmann::json(0), nlohmann::json(-1), nlohmann::json(1.5), nlohmann::json("5")}) {
+        auto broken = json;
+        broken["error"]["retryAfterMs"] = invalid;
+        REQUIRE_THROWS(makeTile(131073, info)->fromJson(broken));
+    }
+}
