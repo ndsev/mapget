@@ -1,100 +1,55 @@
 project(mapget-location CXX)
 
-option(MAPGET_BUNDLE_GEONAMES_LOCATION_DB "Generate bundled GeoNames cities5000 SQLite location database." ON)
-
-add_library(mapget-location STATIC
-  include/mapget/location/location.h
-
-  src/location.cpp)
-
-target_include_directories(mapget-location
-  PUBLIC
-    include
-  PRIVATE
-    include/mapget/location)
-
-target_link_libraries(mapget-location
-  PUBLIC
-    mapget-log
-    nlohmann_json::nlohmann_json
-    SQLite::SQLite3
-  PRIVATE
-    ${CMAKE_DL_LIBS})
-
-if (MSVC)
-  target_compile_definitions(mapget-location
-    PRIVATE
-      _CRT_SECURE_NO_WARNINGS)
-
-  set_target_properties(mapget-location PROPERTIES
-    WINDOWS_EXPORT_ALL_SYMBOLS ON)
+# Server-only dependency: model/WASM builds do not acquire a gazetteer or schema compiler.
+set(MAPGET_PLAZS_SOURCE_DIR "" CACHE PATH "Local plazs checkout instead of the pinned dependency")
+if(MAPGET_PLAZS_SOURCE_DIR)
+  CPMAddPackage(NAME plazs SOURCE_DIR "${MAPGET_PLAZS_SOURCE_DIR}"
+    OPTIONS "PLAZS_BUILD_TESTS OFF" "PLAZS_BUILD_TOOLS OFF")
+else()
+  CPMAddPackage(NAME plazs GITHUB_REPOSITORY Klebert-Engineering/plazs
+    GIT_TAG 0707714a9dbc6d5a9caf2485d312add182cb0d58
+    GIT_CONFIG "filter.lfs.required=true"
+      "filter.lfs.smudge=git-lfs smudge -- %f" "filter.lfs.process=git-lfs filter-process"
+    OPTIONS "PLAZS_BUILD_TESTS OFF" "PLAZS_BUILD_TOOLS OFF")
 endif()
 
+add_library(mapget-location STATIC include/mapget/location/location.h src/location.cpp)
+target_include_directories(mapget-location PUBLIC include PRIVATE include/mapget/location)
+target_link_libraries(mapget-location
+  PUBLIC mapget-log nlohmann_json::nlohmann_json
+  PRIVATE plazs::plazs ${CMAKE_DL_LIBS})
+
+if (MSVC)
+  target_compile_definitions(mapget-location PRIVATE _CRT_SECURE_NO_WARNINGS)
+  set_target_properties(mapget-location PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 if (WITH_COVERAGE)
   append_coverage_compiler_flags_to_target(mapget-location)
 endif()
 
 install(TARGETS mapget-location)
-install(DIRECTORY include/mapget/location
-  DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/mapget/location DESTINATION ${MAPGET_INSTALL_INCLUDEDIR})
 
-if (MAPGET_BUNDLE_GEONAMES_LOCATION_DB)
-  find_package(Python3 COMPONENTS Interpreter REQUIRED)
-
-  if (TARGET sqlite3)
-    get_target_property(MAPGET_SQLITE3_SOURCE_DIR sqlite3 SOURCE_DIR)
-    if (EXISTS "${MAPGET_SQLITE3_SOURCE_DIR}/shell.c")
-      add_executable(mapget-sqlite-shell EXCLUDE_FROM_ALL
-        "${MAPGET_SQLITE3_SOURCE_DIR}/shell.c")
-      target_link_libraries(mapget-sqlite-shell
-        PRIVATE
-          SQLite::SQLite3)
-    endif()
-  endif()
-
-  set(MAPGET_GEONAMES_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../data/geonames")
-  set(MAPGET_GEONAMES_CITIES_TXT "${MAPGET_GEONAMES_DATA_DIR}/cities5000.txt")
-  set(MAPGET_GEONAMES_README_TXT "${MAPGET_GEONAMES_DATA_DIR}/geonames-readme.txt")
-  set(MAPGET_GEONAMES_IMPORT_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/scripts/import_geonames.py")
-  set(MAPGET_LOCATION_DB "${MAPGET_DEPLOY_DIR}/geonames-cities5000.sqlite")
-  set(MAPGET_LOCATION_README "${MAPGET_DEPLOY_DIR}/geonames-readme.txt")
-
-  if (EXISTS "${MAPGET_GEONAMES_CITIES_TXT}" AND EXISTS "${MAPGET_GEONAMES_README_TXT}")
-    set(MAPGET_GEONAMES_IMPORT_COMMAND
-      "${Python3_EXECUTABLE}" "${MAPGET_GEONAMES_IMPORT_SCRIPT}" "${MAPGET_GEONAMES_CITIES_TXT}" "${MAPGET_LOCATION_DB}")
-    set(MAPGET_GEONAMES_IMPORT_DEPENDS
-      "${MAPGET_GEONAMES_IMPORT_SCRIPT}"
-      "${MAPGET_GEONAMES_CITIES_TXT}")
-    if (TARGET mapget-sqlite-shell)
-      list(APPEND MAPGET_GEONAMES_IMPORT_COMMAND "$<TARGET_FILE:mapget-sqlite-shell>")
-      list(APPEND MAPGET_GEONAMES_IMPORT_DEPENDS mapget-sqlite-shell)
-    endif()
-
-    add_custom_command(
-      OUTPUT "${MAPGET_LOCATION_DB}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${MAPGET_DEPLOY_DIR}"
-      COMMAND ${MAPGET_GEONAMES_IMPORT_COMMAND}
-      DEPENDS ${MAPGET_GEONAMES_IMPORT_DEPENDS}
-      VERBATIM)
-
-    add_custom_command(
-      OUTPUT "${MAPGET_LOCATION_README}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${MAPGET_DEPLOY_DIR}"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MAPGET_GEONAMES_README_TXT}" "${MAPGET_LOCATION_README}"
-      DEPENDS "${MAPGET_GEONAMES_README_TXT}"
-      VERBATIM)
-
-    add_custom_target(mapget-location-database ALL
-      DEPENDS
-        "${MAPGET_LOCATION_DB}"
-        "${MAPGET_LOCATION_README}")
-
-    # Consumers such as the Python wheel can bundle the generated files without
-    # duplicating knowledge of their deployment paths.
-    set_property(TARGET mapget-location-database PROPERTY
-      MAPGET_LOCATION_DEPLOY_FILES
-      "${MAPGET_LOCATION_DB};${MAPGET_LOCATION_README}")
+# Bundle a pinned prepared artifact by default. Importing WOF's raw multi-GB
+# inventory remains an explicit offline plazs task, never part of this build.
+option(MAPGET_BUNDLE_LOCATION_DB "Bundle the prepared offline place gazetteer" ON)
+set(MAPGET_LOCATION_DATABASE_FILE "" CACHE FILEPATH "Prepared WOF location database to bundle with mapget")
+if (MAPGET_BUNDLE_LOCATION_DB)
+  if (MAPGET_LOCATION_DATABASE_FILE)
+    set(_location_database "${MAPGET_LOCATION_DATABASE_FILE}")
   else()
-    message(WARNING "GeoNames cities5000 data not found; bundled location database target was not created.")
+    include("${plazs_SOURCE_DIR}/cmake/dataset.cmake")
+    plazs_fetch_dataset(_location_database)
   endif()
+  if (NOT EXISTS "${_location_database}")
+    message(FATAL_ERROR "Prepared location database does not exist: ${_location_database}")
+  endif()
+  set(MAPGET_LOCATION_DB "${MAPGET_DEPLOY_DIR}/mapget-places.sqlite")
+  add_custom_command(OUTPUT "${MAPGET_LOCATION_DB}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${MAPGET_DEPLOY_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_location_database}" "${MAPGET_LOCATION_DB}"
+    DEPENDS "${_location_database}" VERBATIM)
+  add_custom_target(mapget-location-database ALL DEPENDS "${MAPGET_LOCATION_DB}")
+  set_property(TARGET mapget-location-database PROPERTY MAPGET_LOCATION_DEPLOY_FILES "${MAPGET_LOCATION_DB}")
+  install(FILES "${_location_database}" DESTINATION ${CMAKE_INSTALL_BINDIR} RENAME mapget-places.sqlite)
 endif()

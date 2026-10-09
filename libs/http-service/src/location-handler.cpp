@@ -57,13 +57,52 @@ void HttpService::Impl::handleLocationRequest(
 
     auto const maxLimit = std::max<uint32_t>(1, config_.locationResultMaxLimit);
     auto const limit = parseLimit(req->getParameter("limit"), 10, maxLimit);
-    auto const matches = locationLookup_->search(req->getParameter("name"), limit);
-
-    auto response = nlohmann::json::array();
-    for (auto const& match : matches) {
-        response.emplace_back(match.serialize());
+    auto const name = req->getParameter("name");
+    auto const id = req->getParameter("id");
+    if (name.size() > 200 || id.size() > 64 || (!name.empty() && !id.empty()) ||
+        req->parameters().contains("geometry"))
+    {
+        callback(jsonResponse(
+            {{"error", "Use name (max 200 bytes) or id; id lookup includes the boundary"}},
+            drogon::k400BadRequest));
+        return;
     }
-    callback(jsonResponse(response, drogon::k200OK));
+    // File I/O and polygon decoding must not stall Drogon's event loop. The shared handle
+    // outlives the HTTP owner if a queued task is drained during service shutdown.
+    auto work = [lookup = locationLookup_, name, id, limit, callback](bool admitted)
+    {
+        if (!admitted) {
+            callback(jsonResponse(
+                {{"error", "Location workers unavailable"}},
+                drogon::k503ServiceUnavailable));
+            return;
+        }
+        try {
+            auto response = nlohmann::json::array();
+            if (!id.empty()) {
+                if (auto match = lookup->find(id))
+                    response.emplace_back(match->serialize());
+            }
+            else {
+                for (auto const& match : lookup->search(name, limit))
+                    response.emplace_back(match.serialize());
+            }
+            callback(jsonResponse(response, drogon::k200OK));
+        }
+        catch (std::length_error const&) {
+            callback(jsonResponse(
+                {{"error", "Boundary exceeds decoding limits; prepare a simplified gazetteer"}},
+                drogon::k413RequestEntityTooLarge));
+        }
+        catch (std::exception const&) {
+            callback(jsonResponse(
+                {{"error", "Location lookup failed"}},
+                drogon::k500InternalServerError));
+        }
+    };
+    if (!self_.scheduleTask(std::move(work)))
+        callback(
+            jsonResponse({{"error", "Location workers busy"}}, drogon::k503ServiceUnavailable));
 }
 
 }  // namespace mapget

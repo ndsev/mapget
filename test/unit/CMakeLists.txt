@@ -4,6 +4,11 @@ add_executable(test.mapget
   test-main.cpp
   test-object-partitions.cpp
   test-model.cpp
+  test-mcp-actions.cpp
+  test-mcp-relay.cpp
+  test-mcp-auth.cpp
+  test-mcp-native.cpp
+  test-mcp-help.cpp
   test-feature-id-index.cpp
   test-model-geometry.cpp
   test-filter-service.cpp
@@ -11,6 +16,7 @@ add_executable(test.mapget
   test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-layerschema-domains.cpp
   test-location.cpp
   test-http-datasource.cpp
   test-cache.cpp
@@ -28,7 +34,36 @@ add_executable(test.mapget.filelog
 add_executable(test.mapget.datasource-server
   test-datasource-server.cpp)
 
+# The HTTP tests launch this peer; rebuild both sides after protocol/static-ID changes.
+add_dependencies(test.mapget test.mapget.datasource-server)
+
+mapget_target_use_allocator(test.mapget)
+
+# Exercise both executable interposition and the non-invasive library/Python path.
+add_executable(test.mapget.allocator test-allocator-memory.cpp)
+target_link_libraries(test.mapget.allocator PRIVATE mapget-service Catch2::Catch2WithMain)
+target_compile_definitions(test.mapget.allocator PRIVATE MAPGET_TEST_JEMALLOC=$<BOOL:${MAPGET_WITH_JEMALLOC}>)
+mapget_target_use_allocator(test.mapget.allocator)
+add_test(NAME test.mapget.allocator
+  COMMAND "${CMAKE_COMMAND}" -E env --unset=MALLOC_CONF "$<TARGET_FILE:test.mapget.allocator>" "[allocator]")
+
+if(MAPGET_WITH_JEMALLOC)
+  add_executable(test.mapget.allocator-system test-allocator-memory.cpp)
+  target_link_libraries(test.mapget.allocator-system PRIVATE mapget-service Catch2::Catch2WithMain)
+  target_compile_definitions(test.mapget.allocator-system PRIVATE MAPGET_TEST_JEMALLOC=0)
+  add_test(NAME test.mapget.allocator-system COMMAND test.mapget.allocator-system "[allocator]")
+  add_test(NAME test.mapget.allocator-no-background COMMAND test.mapget.allocator "[allocator]")
+  set_tests_properties(test.mapget.allocator-no-background PROPERTIES
+    ENVIRONMENT "MALLOC_CONF=background_thread:false;MAPGET_TEST_BACKGROUND_THREADS=0")
+  add_test(NAME test.mapget.allocator-purge COMMAND test.mapget.allocator "[allocator-purge]")
+  set_tests_properties(test.mapget.allocator-purge PROPERTIES
+    ENVIRONMENT "MALLOC_CONF=background_thread:true,dirty_decay_ms:100,muzzy_decay_ms:0"
+    TIMEOUT 20)
+endif()
+
 target_link_libraries(test.mapget
+  PRIVATE
+    jwt-cpp::jwt-cpp
   PUBLIC
     mapget-log
     mapget-model
@@ -47,6 +82,7 @@ target_link_libraries(test.mapget.datasource-server
 target_compile_definitions(test.mapget
   PRIVATE
     MAPGET_TEST_DATASOURCE_SERVER_EXE=\"$<TARGET_FILE:test.mapget.datasource-server>\"
+    MAPGET_TEST_LOCATION_DB=\"${plazs_SOURCE_DIR}/tests/data/places.sqlite\"
     MAPGET_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\")
 
 target_link_libraries(test.mapget.filelog

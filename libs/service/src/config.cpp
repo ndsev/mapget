@@ -546,6 +546,7 @@ YAML::Node jsonToYaml(
 {
     YAML::Node node;
     if (json.is_object()) {
+        node = YAML::Node(YAML::NodeType::Map);
         for (auto it = json.begin(); it != json.end(); ++it) {
             if (isSecretConfigKey(it.key()) && it.value().is_string())
             {
@@ -560,6 +561,8 @@ YAML::Node jsonToYaml(
         }
     }
     else if (json.is_array()) {
+        // Empty containers must remain containers (not YAML null), e.g. sources: [].
+        node = YAML::Node(YAML::NodeType::Sequence);
         for (const auto& item : json) {
             node.push_back(jsonToYaml(item, maskedSecretMap));
         }

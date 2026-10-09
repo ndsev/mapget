@@ -89,8 +89,11 @@ PartitionLayer::Ptr RemoteDataSource::get(
     const MapPartitionKey& k,
     Cache::Ptr& cache,
     const DataSourceInfo& info,
-    PartitionLayer::LoadStateCallback loadStateCallback)
+    PartitionLayer::LoadStateCallback loadStateCallback,
+    TileCancellationCheck const& isCancelled)
 {
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
     // Round-robin usage of http clients to facilitate parallel requests.
     auto& client = httpClients_[(nextClient_++) % httpClients_.size()];
 
@@ -105,6 +108,10 @@ PartitionLayer::Ptr RemoteDataSource::get(
         "stringPoolOffset",
         std::to_string(cachedStringPoolOffset(info.stringPoolId_, cache)));
     auto [resultCode, tileResponse] = client->sendRequest(tileReq);
+    // Synchronous remote I/O cannot be interrupted here, but an abandoned
+    // response must not spend CPU parsing or become a cached error tile.
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
 
     // Check that the response is OK.
     if (resultCode != drogon::ReqResult::Ok || !tileResponse || (int)tileResponse->statusCode() >= 300) {
@@ -122,7 +129,7 @@ PartitionLayer::Ptr RemoteDataSource::get(
 
         // Use tile instantiation logic of the base class,
         // the error is then set in fill().
-        return DataSource::get(k, cache, info, std::move(loadStateCallback));
+        return DataSource::get(k, cache, info, std::move(loadStateCallback), isCancelled);
     }
 
     // Check the response body for expected content.
@@ -364,11 +371,12 @@ PartitionLayer::Ptr RemoteDataSourceProcess::get(
     MapPartitionKey const& k,
     Cache::Ptr& cache,
     DataSourceInfo const& info,
-    PartitionLayer::LoadStateCallback loadStateCallback)
+    PartitionLayer::LoadStateCallback loadStateCallback,
+    TileCancellationCheck const& isCancelled)
 {
     if (!remoteSource_)
         raise("Remote data source is not initialized.");
-    return remoteSource_->get(k, cache, info, std::move(loadStateCallback));
+    return remoteSource_->get(k, cache, info, std::move(loadStateCallback), isCancelled);
 }
 
 std::vector<LocateCandidate>

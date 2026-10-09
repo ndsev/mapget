@@ -2,6 +2,9 @@
 
 Mapget represents map content as partitions of structured features: spatial tiles or opaque objects. This document gives a conceptual overview of that model so that you can interpret API responses, design datasources and reason about performance.
 
+<!-- mcp:
+keywords: [partition, tile, object, identity]
+-->
 ## Tile and object partitions
 
 `PartitionId` is a tagged identity: `PartitionId::tile(TileId)` or
@@ -64,6 +67,11 @@ See the [HTTP discovery contract](mapget-api.md#post-objectsdiscover) and
 [datasource integration guide](mapget-dev-guide.md#object-datasource-integration)
 for the discovery/load sequence and a runnable example.
 
+<!-- mcp:
+title: "Feature properties and attribute layers"
+keywords: ["feature model", "properties", "attributes", "attribute layers"]
+hint: "Feature values and schema descriptors are different objects. Inspect descriptor metadata first, then extract actual values."
+-->
 ## Features and properties
 
 The atomic unit of data in mapget is the feature. Conceptually, a feature is close to a GeoJSON feature: it has a unique identifier, one or more geometries and a flexible set of attributes. Mapget adds two ideas on top of plain GeoJSON:
@@ -71,10 +79,13 @@ The atomic unit of data in mapget is the feature. Conceptually, a feature is clo
 - layered attributes with their own validity information, and
 - explicit relations and source data references.
 
-The `properties.layers` tree in a feature holds these layered attributes and their validity entries, while top-level entries under `properties` are regular attributes without layering.
+The `properties.layer` tree in a feature holds these layered attributes and their validity entries, while top-level entries under `properties` are regular attributes without layering.
 
 To make this as fast as possible, mapget uses the simfil binary format with a small VTLV (Version-Type-Length-Value) message wrapper. This is explained in the following section.
 
+<!-- mcp:
+keywords: [feature IDs, identity, unique composition]
+-->
 ### Feature identity and uniqueness
 
 `PartitionFeatureLayer::newFeature()` rejects an existing identity before changing
@@ -165,6 +176,10 @@ classDiagram
 
 When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` for interpreting feature IDs and field layouts. Full feature-ID validation is explicit, as described above. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
 
+<!-- mcp:
+title: "Feature model schema contract"
+keywords: ["schema", "feature types", "fields", "completion", "attribute contexts"]
+-->
 ### Feature Model Schema
 
 Feature layers may attach `LayerInfo.featureModelSchema`, a typed `LayerSchema` that validates one emitted GeoJSON-style feature object from that layer.
@@ -193,6 +208,67 @@ numeric ranges to initialize labels, categories and gradients. None of these
 consumers replace the emitted feature data; the schema only describes and
 constrains it.
 
+<!-- mcp:
+title: "Typed schema domains"
+keywords: ["enum", "bitmask", "units", "numeric domain", "schema aliases", "constraints"]
+-->
+### Typed Schema Domains
+
+`LayerSchema` stores precise scalar affinities, named feature/attribute kinds,
+`typename`, nullable values, field-presence requirements, open objects, scalar
+enum literals, and explicit `anyOf`/`oneOf`/`allOf` edges. A packed kind contains
+a static name ID above `simfil::ValueType` affinity bits; generic traversal uses
+the affinities, not Mapget-specific names. Unknown metadata is not a scalar leaf
+or proof that a field is absent. Finalization builds reachability indexes once;
+open or incomplete subgraphs deliberately disable negative pruning.
+
+Metadata-only completion uses a private `StringPool` and environment prepared by
+`installCompletionLayerSchema`, then calls the SchemaId overload of
+`simfil::complete`. Feature roots come from `featureSchema(featureType)`.
+`attributeQuerySchema(featureType, attributeSchema)` returns a prepared root in
+the same graph with the payload, aliases and actual runtime overlays: `$name`,
+`$layer`, `$attributeIndex`, `$validityIndex`, `$validityCount`, `$hasValidity`,
+and `$feature`. It does not construct sample model nodes or another registry.
+The environment callback retains the registry and bindings. Return candidate
+strings across environments, never their pool-local IDs.
+
+`simfil::SchemaModel` supplies the separate lazy descriptor view for metadata
+queries, using that same owning callback and private pool. For example,
+`fields.items.elements[0].kind` queries schema metadata; completing
+`items[17].name` traverses the represented item domain. Descriptor objects have
+`NoSchemaId`, so feature-field pruning cannot accidentally suppress metadata.
+Recursion and depth/work limits are explicit rather than silently empty domains.
+
+Directly constructed graphs export canonical draft-07 `definitions`
+with `x-mapget` kind/ID/edge annotations. Reimport retains producer SchemaIds,
+plural edges, aliases and typed metadata. Completion overlay roots are derived
+again, not serialized as model identities. Imported ordinary JSON Schema is
+retained for transport, while its supported typed domains are compiled for
+queries. Boolean schemas, local references and combiners are distinct; multimap
+serialization wrappers still select their logical value view, including scalar
+fields such as attribute-layer IDs.
+The export dialect matches the bundled JSON Schema validator, including recursive
+domains. Import also accepts ordinary schemas using `$defs` and local references.
+
+The graph is the only producer representation: there is no custom JSON emitter.
+`addJsonSchema` can import a converter's declarative field fragment into the graph;
+local fragment references remain isolated, while registered schema keys can refer
+to shared native domains. `setJsonSchemaAnnotations` retains validation constraints
+(such as numeric bounds and patterns) and descriptive metadata on a domain. It
+rejects structural keywords and mapget-owned identity/type annotations: fields,
+arrays, alternatives, kinds and enum literals must use the typed construction API.
+These annotations support JSON validation, not additional SIMFIL pruning proofs.
+
+`addFieldSchema(..., multimap=true)` describes duplicate-key JSON projection
+without changing the native value domain. Its first `anyOf` branch describes one
+native value, and the second describes an array of repeated values. These may
+overlap when the native value is itself an array. `BitmaskKind` carries individual flag symbols
+without restricting valid string combinations to a finite JSON enum. Binary
+scalar domains export the ordinary ModelNode `_bytes`/`hex`/`number` JSON wrapper
+and reimport as `Bytes`, not as objects. `finalize()` rebuilds derived indexes and
+invalidates any previously exported JSON after graph edits. Published schemas
+remain immutable; metadata snapshots copy their graph without forcing export.
+
 ### Add‑on datasources
 
 Add‑on datasources are registered with `isAddOn` and must share the same `mapId` (and layer IDs) as the base datasource they extend. They have no independent scheduler permits; the worker serving a base feature tile evaluates matching add-ons inline:
@@ -208,6 +284,10 @@ Add‑on datasources are registered with `isAddOn` and must share the same `mapI
 
 Clients see both base and add‑on entries in the `/sources` response (add‑ons are marked `isAddOn`), but the base datasource remains the entry point for tile requests. This mechanism is used by Python LiveSource overlays that attach Road and Lane attribute layers to an existing NDS.Live or NDS.Classic base map.
 
+<!-- mcp:
+title: "Semantic geometry names"
+keywords: ["centerline", "topology", "boundary", "ADAS", "geometry-name", "reference", "LOD"]
+-->
 ## Complete source tiles and semantic geometry
 
 Protocol 3 removed staged loading and backend feature LOD. A datasource request
@@ -232,6 +312,10 @@ Large GLBs are optional named attachments. A feature/subset layer carries the
 attachment name and lightweight geometry/AABB nodes; attachment bytes are
 produced and transferred separately on demand.
 
+<!-- mcp:
+title: "Canonical feature identifiers"
+keywords: ["feature ID", "link ID", "primary ID", "secondary ID", "identity", "locate"]
+-->
 ## Feature IDs
 
 Every feature in mapget is uniquely identified by a composite ID. Logically, it is made up of:
@@ -258,8 +342,11 @@ uniqueIdCompositions:
     - { partId: connectedRoadIndex, datatype: I64 }
 ```
 
-A datasource writes features using the primary `Road.<tileId>.<roadIs>` IDs, while an external system could send a locate request for `Road.1234.5.2` (`tileId=1234`, `intersectionId=5`, `connectedRoadId=2`) and receive the primary ID needed to fetch the feature.
+A datasource writes features using the primary `Road.<tileId>.<roadId>` IDs, while an external system could send a locate request for `Road.1234.5.2` (`tileId=1234`, `intersectionId=5`, `connectedRoadIndex=2`) and receive the primary ID needed to fetch the feature.
 
+<!-- mcp:
+keywords: [geometry, validity, attribute scope, offsets]
+-->
 ## Geometry and validity
 
 Mapget supports a range of geometry types, including:
@@ -378,6 +465,9 @@ The validity objects exposed in JSON map directly to the `Validity` C++ class:
 
 Attributes and relations can attach their own validity lists, so a datasource can mix and match: an attribute may reference a geometric sub‑range via `OffsetRangeValidity`, while another attribute or relation may carry a semantic `FeatureTransition`.
 
+<!-- mcp:
+keywords: [provenance, source data, links, references, relations]
+-->
 ## Source data references and relations
 
 Features can refer back to their original source material and to other features.
@@ -388,6 +478,21 @@ Features can refer back to their original source material and to other features.
 
 These mechanisms make it possible to keep a clean separation between the processed map model and the original data sources while still preserving traceability.
 
+`PartitionSourceDataLayer::findSourceData(address, containing, maxNodes, maxMatches, cancelled)`
+resolves a native `SourceDataAddress` without changing the model or its string pool.
+Exact lookup supports both bit ranges and opaque addresses. Containment lookup requires
+bit ranges and returns all smallest enclosing matches, not an arbitrary first match.
+Presentation scopes never change these absolute lookup coordinates. A zero-length span
+is a point in a half-open range. Cycles, cancellation, and node/match budgets are checked;
+failure returns an error rather than an incomplete set of ambiguity candidates.
+Python exposes the same operation as `find_source_data`, with errors raised as `ValueError`.
+The [MCP extraction API](mapget-mcp.md#extraction-and-native-source-links) accepts this
+native address plus the owning map/partition, not frontend inspection URLs.
+
+<!-- mcp:
+title: "Maps layers and tiles"
+keywords: ["mapId", "layerId", "tile", "map layer", "zoom level"]
+-->
 ## Tiles, maps and layers
 
 For efficiency, mapget serves data in tiles. Each tile is identified by a zoom level `z` and grid coordinates `x` and `y` in a binary tiling scheme:
@@ -593,6 +698,10 @@ classDiagram
 
 From a simfil perspective, each of the model classes shown above is either a direct `simfil::ModelNode` derivative or a thin wrapper built on simfil’s node types. `TileFeatureLayer` and `TileSourceDataLayer` act as model pools: they own the storage for all nodes in a tile and provide the environment required to evaluate simfil expressions directly against tile content.
 
+<!-- mcp:
+title: "Filtered subsets and provenance"
+keywords: ["subset", "filter results", "sourceTileKey", "partial data", "attribute validity"]
+-->
 ## Subset layers
 
 `TileSubsetLayer` is the immutable result of one `/filter` definition for one
@@ -616,6 +725,16 @@ aggregate arrays which reference typed column entries:
 A channel's `scope()` determines which typed aggregate is terminal.
 Relation-channel feature entries are supporting endpoints rather than
 additional terminal rows.
+
+Protocol 5.3 projections are result sequences: the outer `values`/`hostValues`
+array corresponds positionally to the requested expressions, and every element
+is another array containing that expression's zero, one, or many results.
+Compound results are owned by the subset's model pool, including nested arrays
+and objects; they are not JSON strings or source-model pointers. Indexed
+`valueErrors`/`hostValueErrors` distinguish a failed empty slot from a successful
+empty sequence. The [API guide](mapget-api.md#post-filter) describes the wire
+conventions. Copying field names only reuses existing destination dictionary
+IDs; missing foreign keys are reported, not inserted into the datasource pool.
 
 Each subset also carries:
 

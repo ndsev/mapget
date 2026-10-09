@@ -6,6 +6,13 @@ staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
 visualization all use `/filter`.
 
+The opt-in [MCP API](mapget-mcp.md) exposes `POST /mcp`, `GET /mcp/info`,
+OAuth resource metadata, native data/schema/query/diagnostics tools, and browser
+actions over the existing interactive WebSocket. Native tools work without an
+open browser; partition extraction reuses service scheduling and authorization.
+MCP is disabled unless `--mcp local` or `--mcp oauth` is supplied (or
+equivalent `mapget.serve.mcp` YAML / `HttpServiceConfig::mcp` settings).
+
 ## Base URL and stream formats
 
 JSON requests use `Content-Type: application/json`. `/tiles` and `/filter`
@@ -159,6 +166,11 @@ endpoint: `{ "layerId": "Road", "tileId": 536870912 }` returns one discovery
 result directly, without `requests`/`responses` wrappers. This is the
 service-to-datasource protocol, not the client-facing API above.
 
+<!-- mcp:
+title: "Datasource discovery contract"
+keywords: ["sources", "initialization", "not ready", "failed source", "layer catalog"]
+hint: "This is the HTTP contract. Native MCP source discovery exposes a compact projection; query coverage and schema separately."
+-->
 ## `GET /sources`
 
 `/sources` returns the datasource catalog as a JSON array. Ready entries
@@ -306,14 +318,34 @@ All filters and fields are schema-compiled in their actual context.
 Relation channels require `rewrite: false`.
 
 SIMFIL truthiness is used: zero results, `false`, `null`, and undefined are
-false; every other successfully evaluated value is true. A projection with no
-result becomes null. If an expression yields several values, the first is
-used. Candidate-local evaluation failures reject that candidate and are
-aggregated into structured channel issues instead of aborting the viewport.
+false; every other successfully evaluated value is true. Candidate-local
+filter failures reject that candidate and are aggregated into structured
+channel issues instead of aborting the viewport.
+
+Since binary protocol 5.3, `values` and `hostValues` contain **one array per
+requested expression**, preserving every result in evaluation order. Examples:
+`[]` is no result; `[null]` is one null; `[{"name":"Road"}]` is one object;
+`[[1,2]]` is one array-valued result; `[1,2]` is two scalar results. These are
+individual expression slots, so a complete two-expression `values` might be
+`[[42], [{"name":"Road"}]]`. Compound values are copied into the subset's
+model, not stringified or retained as pointers into a source tile. Native
+undefined is distinct from null; its JSON representation is `{"_undefined":true}`.
+
+A failed projection slot is empty and has a corresponding `valueErrors` or
+`hostValueErrors` record with `expressionIndex` (zero-based), `stage`
+(`compilation`, `evaluation`, or `materialization`) and `message`. Aggregate
+channel issues remain available. No partial sequence is published as success
+when a budget or materialization error occurs. Source-owned string pools are
+never extended by projection; an object field name absent from the destination
+dictionary is an explicit materialization failure.
 
 `bindings` accepts null, boolean, signed integer, finite floating-point, and
 string values. Bindings are available as SIMFIL constants and overlay fields.
 
+<!-- mcp:
+title: "Filter attribute contexts"
+keywords: ["attribute scope", "validity", "feature scope", "attributeIndex", "validityIndex"]
+-->
 ### Attribute contexts
 
 Attribute rows expose the attribute as their root and add:
@@ -328,6 +360,10 @@ The explicit validity bit distinguishes an attribute with no validity from the
 first validity of an attribute which has one. Effective validity geometry is
 copied into the returned `AttributeValidityEntry`.
 
+<!-- mcp:
+title: "Filter geometry selection"
+keywords: ["geometry selector", "semantic geometry", "boundary", "centerline", "validity geometry"]
+-->
 ### Geometry selectors
 
 `geometryName` is either a concrete semantic name such as `centerline`, or
@@ -536,9 +572,19 @@ update.
 
 Server control messages are binary VTLV frames:
 
-- `RequestContext`: JSON with `requestId`, `clientId`, and catalog revision;
+- `RequestContext`: JSON with `requestId`, opaque UUIDv4 `clientId`, and catalog revision;
 - `Status`: per-request state and final `allDone`;
-- `SourceCatalogChange`: catalog revision/progress notifications.
+- `SourceCatalogChange`: catalog revision/progress notifications;
+- `ActionControl` (type 9): UTF-8 JSON for the separately versioned browser-action
+  relay. This control type is not a tile request or a tile payload.
+
+Since protocol 5.2, `clientId` is a cryptographically random, canonical lowercase
+UUIDv4 string. It stays unchanged for the lifetime of its WebSocket connection;
+reconnect creates a new ID. The server announces it in an initial `RequestContext`
+with `requestId: 0`, without waiting for a tile request. Treat it as opaque
+everywhere, including diagnostics.
+Numeric IDs are no longer accepted. If handshake/session state is lost, the server
+closes the connection instead of reconstructing it with empty authentication headers.
 
 Per-partition load-state records use tagged `partition` identity, for tiles
 as well as objects. Do not assume that a control record's identity is a numeric
@@ -551,15 +597,26 @@ It does not change `POST /tiles` semantics.
 
 Query parameters:
 
-- `clientId`: required ID from `RequestContext`;
+- `clientId`: required UUID string from `RequestContext`;
 - `waitMs`: long-poll timeout, up to 30 seconds;
 - `maxBytes`: pre-compression batch budget, capped at 64 MiB;
 - `compress=1`: allow gzip when `Accept-Encoding` also permits it.
 
 Responses are `200 application/octet-stream`, `204` on timeout, or `410` when
-the session has gone away. `/tiles/next` remains a deployment-compatibility
-alias.
+the session has gone away. A missing or malformed UUID returns `400`.
+`/tiles/next` remains a deployment-compatibility alias with identical validation.
+All payload responses, including errors, use `Cache-Control: no-store`.
 
+Payload pulls do not yet check authenticated session ownership: knowing a live
+UUID permits draining its queued data. Random IDs prevent practical guessing, not
+leakage. Do not publish IDs in status pages or log them in proxy/access logs; use
+HTTPS remotely. Disconnect invalidates the ID. This accepted limitation does not
+replace the authenticated same-owner checks required for MCP actions.
+
+<!-- mcp:
+title: "Feature lookup and locate"
+keywords: ["locate", "feature ID", "secondary identity", "canonical ID", "feature reference"]
+-->
 ## `POST /locate`
 
 `/locate` resolves secondary or canonical IDs:
@@ -614,10 +671,44 @@ full-tile expression for every candidate feature.
 ## `GET /location`
 
 `/location?name=munich&limit=10` searches the configured place-name database.
-Results contain `name`, WGS84 `lonLat`, and an `aabb`. The endpoint returns
-`503` when no location database is available. Native deployments and the
-Python wheel bundle the default GeoNames database beside their mapget binary;
-`mapget serve --location-db` can select a different SQLite database.
+The response remains an array of matches with a stable provider-qualified `id`,
+display `name`, WGS84 `[longitude, latitude]` `lonLat`, `source`, `countryCode`,
+optional `population`, and `aabb: [[west, south], [longitudeExtent, latitudeExtent]]`.
+The limit defaults to 10 and is capped at 50 and `--location-max-limit`.
+Names shorter than two bytes return no matches; names over 200 bytes are rejected.
+This is place lookup, **not** `/locate` (map feature-reference resolution).
+
+Use `/location?id=wof:85633111` to resolve one exact place ID, including its
+boundary when available. The response is still an array, with zero or one result.
+`name` and `id` are mutually exclusive; there is no geometry toggle.
+Malformed/missing IDs return an empty array. Name search never reads boundary coordinates.
+
+| Field | Meaning |
+| --- | --- |
+| `placeType` | WOF category, e.g. `country`, `region` (state/province), `locality` |
+| `geometryAvailable` | Whether this prepared database retains an actual boundary |
+| `geometry` | Optional GeoJSON `Polygon`/`MultiPolygon`, including holes/islands; returned by ID only |
+| `attribution` | `name`, `url`, `licenseUrl`; display the credit and distribute the artifact's embedded notices |
+
+An extent is not a polygon. Point-only places never receive fabricated boundaries.
+A dateline-crossing extent has a positive eastward longitude span even when its
+east edge is west of its west edge. The representative `lonLat` need not be the
+bounding-box center. Geometry is quantized to NDS integer coordinates; ingestion
+repairs invalid areas and removes collapsed rings/components. Optional simplification
+preserves individual feature topology, not shared administrative edges. Preparation
+parameters, source notices and repair statistics live in dataset metadata, not per-place JSON.
+
+The endpoint returns `400` for contradictory/invalid options, `413` for a boundary
+over the packed-byte, decoder-allocation or vertex budget, and `503` when the
+database or worker capacity is unavailable. Lookup/decoding runs on service
+workers, not the HTTP event loop. Defaults are 16 MiB packed input, 32 MiB decoder
+allocations and one million decoded vertices; no partial polygon is returned.
+
+Configure a prepared plazs format-1 artifact with `mapget serve --location-db`, or
+bundle it as `mapget-places.sqlite` next to the binary/module. Raw WOF exports,
+GeoNames and the former JSON-boundary database are not accepted. See
+[offline gazetteer preparation](mapget-location.md). No runtime network geocoder,
+SpatiaLite extension, Python or GIS library is required.
 
 ## `GET /status`, `GET /status-data`, and `POST /status-data/cache-report`
 
@@ -659,9 +750,16 @@ explicitly owned mapget state as distinct measurement domains:
   estimate;
 - `cache` and `transport` account loaded string pools, serialized tile blobs,
   SQLite-owned state, and queued REST/interactive response buffers;
+- `allocator` identifies the active `backend` and provides `allocated-bytes`
+  for live heap allocations. With jemalloc, `active-bytes` covers pages backing
+  allocations, `resident-bytes` estimates allocator residency, and
+  `metadata-bytes` describes internal bookkeeping. `mapped-bytes` and
+  `retained-bytes` describe virtual address space, not physical RSS;
 - `allocator-trim` reports whether periodic glibc heap trimming is supported
   and enabled, its period, attempt/success counters, and the most recent
-  duration and free-arena samples;
+  duration and free-arena samples. It is disabled with jemalloc, whose
+  `allocator` object instead reports `background-thread-enabled`, worker
+  count/runs and configured dirty/muzzy page decay in milliseconds;
 - `reconciliation` contains diagnostic differences between allocator-live
   bytes, anonymous RSS, file/shared RSS, and known ownership estimates.
 
@@ -670,6 +768,13 @@ measurements. They must not be added directly to RSS rows. The reconciliation
 residuals can indicate allocator fragmentation, thread stacks, opaque mappings,
 or missing ownership instrumentation, but they do not identify leaks by
 themselves.
+
+Allocator statistics are sampled on demand. jemalloc's statistics epoch is
+refreshed, but sampling does not purge memory or flush worker thread caches.
+Its resident estimate is not measured process RSS; retained virtual address
+space is normally purged or decommitted. Allocator rows overlap and must not
+be added together. An unsupported allocator yields `allocator: null` and no
+allocator-based reconciliation, rather than counters from an inactive glibc heap.
 
 ## `/cache/reset`
 

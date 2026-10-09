@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/detail/http-server.h"
+#include "mapget/http-service/mcp-config.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/service.h"
@@ -40,12 +41,15 @@ struct HttpServiceConfig
     std::optional<std::filesystem::path> locationDatabasePath;
     /** Server-side cap for accepted /location limit values. */
     uint32_t locationResultMaxLimit = 50;
+    /** Explicit, restart-scoped MCP opt-in and trust settings; disabled by default. */
+    McpConfig mcp;
 
     /**
-     * Period between allocator trims which return unused heap pages to the OS.
+     * Period between glibc allocator trims which return unused heap pages to the OS.
      *
      * A periodic worker covers datasource initialization and interactive traffic,
      * neither of which necessarily completes a REST response. Zero disables it.
+     * Ignored when jemalloc is active: its own background workers handle purging.
      */
 #if defined(__linux__) && defined(__GLIBC__)
     std::chrono::seconds memoryTrimPeriod{10};

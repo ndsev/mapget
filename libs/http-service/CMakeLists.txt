@@ -1,9 +1,13 @@
 project(mapget-http-service CXX)
 
+set_source_files_properties(src/mcp-server.cpp PROPERTIES COMPILE_DEFINITIONS
+  "MAPGET_MCP_VERSION=\"${MAPGET_VERSION}\"")
+
 add_library(mapget-http-service STATIC
   include/mapget/http-service/http-service.h
   include/mapget/http-service/http-client.h
   include/mapget/http-service/cli.h
+  include/mapget/http-service/mcp-config.h
 
   src/http-service.cpp
   src/http-service-impl.h
@@ -13,6 +17,23 @@ add_library(mapget-http-service STATIC
   src/config-handler.cpp
   src/http-client.cpp
   src/location-handler.cpp
+  src/mcp-action-catalog.h
+  src/mcp-action-catalog.cpp
+  src/mcp-auth.h
+  src/mcp-auth.cpp
+  src/mcp-config.cpp
+  src/mcp-help.h
+  src/mcp-help.cpp
+  src/mcp-native-tools.h
+  src/mcp-native-call.h
+  src/mcp-native-tools.cpp
+  src/mcp-native-catalog.cpp
+  src/mcp-native-query.cpp
+  src/mcp-native-extract.cpp
+  src/mcp-server.h
+  src/mcp-server.cpp
+  src/mcp-viewer-relay.h
+  src/mcp-viewer-relay.cpp
   src/locate-handler.cpp
   src/object-discovery-handler.cpp
   src/sources-handler.cpp
@@ -51,6 +72,9 @@ target_link_libraries(mapget-http-service
     gridsource
     geojsonsource
   PRIVATE
+    SQLite::SQLite3
+    ${CMAKE_DL_LIBS}
+    jwt-cpp::jwt-cpp
     picosha2
     zlibstatic)
 

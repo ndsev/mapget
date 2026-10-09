@@ -24,6 +24,8 @@ namespace mapget
 namespace detail
 {
 
+class McpServer;
+
 /** Snapshot REST stream pending-buffer ownership and high-water marks. */
 [[nodiscard]] nlohmann::json tilesHttpMetricsSnapshot();
 
@@ -42,8 +44,10 @@ struct HttpService::Impl
 {
     HttpService& self_;
     HttpServiceConfig config_;
+    /** Agent transport/authentication has its own bounded control loop, not service workers. */
+    std::shared_ptr<detail::McpServer> mcp_;
     /** Lookup backend used by GET /location when location search is enabled. */
-    std::unique_ptr<SqliteLocationLookup> locationLookup_;
+    std::shared_ptr<SqliteLocationLookup> locationLookup_;
 
     /** Interruptible wait state for the allocator-maintenance worker. */
     std::mutex memoryTrimMutex_;
@@ -115,6 +119,19 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    /** Collect lightweight metrics shared by HTTP and privileged MCP diagnostics, without cache
+     * scans. */
+    nlohmann::json statusSnapshot() const;
+
+    /** Read only the masked datasource model and its optimistic concurrency revision. */
+    nlohmann::json datasourceConfiguration() const;
+
+    /** Persist validated datasource changes, preserving secrets and unrelated host configuration.
+     */
+    nlohmann::json updateDatasourceConfiguration(
+        nlohmann::json const& model,
+        std::string const& expectedRevision = {}) const;
+
     /** Generate one detailed cache report outside Drogon's event loop. */
     void handleStatusCacheReportRequest(
         const drogon::HttpRequestPtr& req,
@@ -142,8 +159,6 @@ struct HttpService::Impl
     void handleLocationRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
-
-    static drogon::HttpResponsePtr openConfigFile(std::ifstream& configFile);
 
     void handleGetConfigRequest(
         const drogon::HttpRequestPtr& req,

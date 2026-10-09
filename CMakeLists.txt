@@ -7,7 +7,7 @@ project(mapget LANGUAGES CXX C)
 # Allow version to be set from command line for CI/CD
 # For local development, use the default version
 if(NOT DEFINED MAPGET_VERSION)
-  set(MAPGET_VERSION 2026.4.2)
+  set(MAPGET_VERSION 2026.5.0)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -91,6 +91,7 @@ if (NOT CPM_INITIALIZED)
   add_subdirectory(cmake/CPM.cmake)
 endif ()
 include(cmake/deps.cmake)
+include(cmake/allocator.cmake)
 
 if (MAPGET_WITH_WHEEL)
   if (NOT TARGET wheel)
@@ -113,8 +114,12 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+  include(cmake/McpHelp.cmake)
+  add_mcp_doc_folder(COMPONENT mapget DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs")
+  add_mcp_doc_folder(COMPONENT simfil DIRECTORY "${simfil_SOURCE_DIR}/docs")
   add_subdirectory(libs/http-datasource)
   add_subdirectory(libs/http-service)
+  add_dependencies(mapget-http-service mapget-mcp-docs)
   add_subdirectory(apps/mapget)
 endif()
 

@@ -205,6 +205,34 @@ Useful options include `MAPGET_WITH_WHEEL`, `MAPGET_WITH_SERVICE`,
 `MAPGET_WITH_HTTPLIB`, `MAPGET_ENABLE_TESTING`, and
 `MAPGET_BUILD_EXAMPLES`.
 
+### Native Linux allocator
+
+`MAPGET_WITH_JEMALLOC` defaults to `ON` for native Linux server builds. CPM
+downloads a checksum-pinned jemalloc 5.3.0 release archive, and its supplied
+configure/Make build produces `bin/libjemalloc.so.2` with statistics and
+background purging enabled. GNU Make is required even with a Ninja parent
+build; Autoconf is not required. Cross-compilation, Windows, macOS and
+model-only/WASM builds keep their platform allocator.
+
+`mapget_target_use_allocator(executable)` links an embedding executable such
+as MapViewer to the same allocator. Do not apply it to shared libraries or
+Python extensions: the process must choose its allocator at startup. Ship
+`libjemalloc.so.2` and `jemalloc-COPYING` beside the executable; the build
+provides an `$ORIGIN` runtime search path. MapViewer's Docker packaging includes
+both files. CMake installation places the library under the install libdir.
+
+Use `-DMAPGET_WITH_JEMALLOC=OFF` for system-allocator comparisons and sanitizer
+builds. `/status-data` detects which DSO actually supplies `malloc`, so loading
+an unrelated allocator library cannot switch reporting away from the real
+allocator. Python wheels do not link jemalloc or change interpreter allocation.
+
+Allocator regression tests cover the linked and system-allocator executables,
+`MALLOC_CONF` overrides, cross-thread C/C++ frees, and idle background purging:
+
+```bash
+ctest --test-dir build -R '^test.mapget.allocator' --output-on-failure
+```
+
 ## Datasource contract
 
 A `DataSource`:
@@ -251,6 +279,33 @@ Built-in providers include:
 - `GeoJsonSource`.
 
 See `examples/cpp/local-datasource` and `examples/python/datasource.py`.
+
+### Shared payload cancellation
+
+Slow native datasources can override `fill(tile, TileCancellationCheck const&)`
+for feature and/or source-data partitions. Check the probe between expensive
+phases and within long loops; throw `TileLoadCancelled` to stop without creating
+a tile error. The old one-argument fills remain supported: default contextual
+fills check before and after calling them, but cannot interrupt their work.
+An override of `DataSource::get` must forward its trailing cancellation probe.
+
+The probe belongs to the shared source job, not its first requester. Aborting
+one request or removing one output must not interrupt another consumer of the
+same partition. New requests join existing jobs when enqueued, including when
+worker admission is blocked. When no consumers remain, or on map invalidation
+or shutdown, the probe becomes permanently true and the in-flight key is
+detached. A later request may start a replacement immediately. Cancellation,
+epoch, and job-identity guards keep a late result from caching or completing
+that replacement. The old job still holds its worker/source permit until it
+unwinds; cancellation does not create additional worker capacity.
+
+Datasource-internal single-flight caches need the same aggregation at their
+own sharing boundary. Do not cancel a shared SQL read or decoded blob solely
+because its initial tile job was cancelled while another job still needs it.
+Probes must be cheap, thread-safe, nonthrowing and nonblocking; do not re-enter
+the service or caches from a probe. Cancellation is cooperative: synchronous
+remote requests and legacy providers finish their current call before the
+post-call check, so I/O timeouts are still necessary.
 
 ## Model ownership
 
@@ -372,8 +427,15 @@ shared across source tiles without crossing compile-time semantics.
 Attribute contexts add `$feature`, `$layer`, `$name`, `$attributeIndex`,
 `$hasValidity`, `$validityIndex`, and `$validityCount`.
 
-Projection is scalar: no result becomes null, the first result wins, and
-later values are ignored.
+Projection preserves one ordered result sequence per expression. Each slot is
+a subset-owned `simfil::Array`, including zero-result and singleton cases.
+`ExpressionEvaluator::Projection` retains evaluated values only until native
+`ModelPool::copySequence()` materializes them into the destination. Objects,
+arrays, scalar strings and undefined do not need a JSON roundtrip. Failed slots
+are empty, with indexed compilation/evaluation/materialization errors; the
+channel also retains aggregate issues. Dictionary mapping uses existing IDs
+only: no downstream string-pool insertion or per-subset replacement dictionary.
+Protocol 5.3 readers must consume this sequence shape, not the former scalar slots.
 
 ### Point groups
 
@@ -471,9 +533,127 @@ returns successfully.
   scheduling run on the I/O thread, not datasource discovery.
 - `attachment-handler.cpp`: attachment validation, routing, ETags, and
   conditional responses.
+- `mcp-help.cpp`: source-backed, annotated Markdown sections in one mutex-protected
+  SQLite FTS5 index. Native help calls and coalesced periodic refreshes run on service
+  workers; rebuild failures roll back the index transaction. See
+  [documentation search and packaging](mapget-mcp.md#documentation-search).
 
 Small endpoints such as `/sources`, `/location`, `/locate`, `/status`,
 `/status-data`, and `/config` return ordinary responses.
+
+Place lookup is owned by `libs/location`. `LocationLookup::search` returns compact
+matches; `find` resolves a stable provider ID including its available boundary.
+`SqliteLocationLookup` is a thin adapter over the independent `plazs::Gazetteer`.
+Plazs owns WOF ingestion, FTS search, quantized zserio boundary chunks, versioning
+and format validation. Mapget translates WOF IDs, labels and bounds to its public
+contract; it has no second importer or geometry codec.
+Decoder allocations and output vertices are bounded independently of encoded bytes. REST and native MCP share
+this owner and run lookup on service workers, keeping file I/O and polygon parsing
+off the HTTP event loop. Preparation is offline and independent of ordinary builds;
+see [gazetteer ingestion and provenance](mapget-location.md).
+
+Interactive connection identity is a server-generated UUIDv4 string, announced
+immediately in a `RequestContext` frame with request ID zero. It is independent of
+the tile request sequence, survives viewport updates, and expires on disconnect.
+The same identity is reserved for browser-action targeting; do not allocate a
+second viewer session ID. Losing the handshake context closes the connection;
+it must never create a replacement with empty authentication headers. Payload
+pulls still treat the UUID as a bearer capability (owner checks are deferred), so
+their responses are not cacheable and status snapshots must not expose these IDs.
+
+The VTLV reader recognizes `ActionControl` (type 9) separately from tile data and
+status messages. Its application relay version is distinct from the tile stream's
+major/minor version. Action dispatch must not allocate tile request IDs or share
+tile outbox admission. The [MCP guide](mapget-mcp.md) documents enablement,
+authentication, transport revisions, limits and cancellation semantics.
+
+MCP transport/authorization is separate from tile scheduling; native execution reuses it:
+
+- `mcp-action-catalog.*` owns immutable, locally loaded browser-action catalogs
+  and compiled argument/result validators. Tabs advertise names and the exact
+  catalog identity, never executable code, descriptions or permission rules.
+- `mcp-viewer-relay.*` owns verified connection identities, registrations, bounded
+  calls, cancellation and deadlines. Its mutable state is confined to one control
+  event-loop thread, checked at entry; callbacks do not block on datasource workers
+  or a request-wide mutex. Construct, use and destroy it on that same thread.
+- `mcp-auth.*` owns restart-scoped trust configuration and public signing-key
+  validation/cache. Its provider-neutral permission rules produce verified
+  relay principals; browser proxy claims and MCP bearer tokens are separate inputs.
+- `mcp-server.*` owns HTTP dispatch and the private control event loop. It
+  authenticates each call, installs the MCP/info/metadata routes, marshals
+  WebSocket lifecycle events, drives deadlines, and owns bounded asynchronous
+  POST streams. It does not own a second viewer-session identity or tile work queue.
+- `mcp-native-tools.*` owns native contracts, permission checks and bounded admission;
+  its private `Call` owns query state and a single outstanding partition request.
+  `mcp-native-catalog.cpp`, `mcp-native-query.cpp`, and `mcp-native-extract.cpp`
+  implement the catalog, shared bounded simfil/JSON evaluation, and partition traversal.
+  Metadata operations use `Service::scheduleTask` on homogeneous workers; callbacks
+  must never synchronously wait for another service job. Extraction evaluates the
+  delivering worker's model before advancing to the next partition. No second pool
+  or queue of materialized partitions is introduced.
+
+The resource boundary verifies credentials before creating a relay `Principal`.
+JWT verification runs on the control loop; key refresh uses asynchronous HTTPS,
+not a blocking request on Drogon's I/O threads or datasource workers. Shutdown
+drains native calls and ends relay calls before stopping HTTP and joins the private loop. Route handlers
+must own their callable closures: passing a stack-local lvalue lambda to Drogon's
+forwarding-reference binder can retain a dangling reference after setup returns.
+Deliver invoke/cancel frames in order on the connection, not through its tile outbox. Check
+all `mapget.actions.*` envelopes on that path, including invalid/unknown ones;
+never fall back to tile reconciliation because action validation failed. Check
+raw HTTP/WebSocket body limits and nesting before downstream parsing;
+the relay's checks on parsed values are not a replacement for transport limits.
+
+The catalog accepts bounded Draft-07 schemas, including nonrecursive local JSON
+Pointer references. Remote references, unimplemented keywords/dialects and
+`format` assertions are rejected rather than silently ignored; use explicit
+constraints such as `pattern`. Argument roots must be closed objects. Root
+`allOf`/`if`/`then`/`else` branches may constrain declared application properties
+and their presence, but may not close/count the whole object, constrain `clientId`,
+or introduce root references. This keeps client-ID injection validation-invariant;
+nested property unions and constraints are supported. Results are objects. Validation
+never applies defaults or coerces values. The native code treats the trusted
+build-exported `catalogId` as opaque instead of implementing a second JSON
+canonicalizer. Application schemas remain owned by the webapp build.
+
+`McpServer::refreshCatalog` checks the configured artifact's modification time and
+size on info/tool discovery, tool calls, and browser registrations. All catalog
+access, including `/mcp/info`, runs on the control loop. A changed file is fully
+validated before publication; a missing or invalid replacement leaves the last
+good catalog active. Failed file versions are not recompiled on every request.
+There is no watcher, polling task, remote schema fetch, or browser-selected path.
+`McpViewerRelay::replaceCatalog` retires old registrations with the existing
+`mapget.actions.error` envelope (`reason: catalog_changed`), without closing
+ordinary tile sockets. Each admitted call retains its immutable catalog for
+result validation. Existing deadlines and uncertain mutation slots survive the
+swap; the browser retires new admission without cancelling accepted work.
+
+Caller lifetime and browser execution lifetime differ. Timeout/cancellation ends
+the HTTP waiter and sends a best-effort cancel, but a dispatched mutation may
+still be executing. A 2025 MCP transport disconnect only drops the HTTP waiter,
+not the browser action; the MCP guide describes the revision-specific semantics.
+Keep that tab's single mutation slot until its matching
+terminal reply or connection close. Even an error with an unknown outcome is a
+terminal reply; uncertainty about effects is not uncertainty about termination.
+Late replies release that slot without reviving completed callbacks. Outstanding
+mutation slots also count toward per-principal/global admission limits. Reads
+remain possible within the remaining budget. Never replay an uncertain mutation.
+Malformed or over-budget replies do not prove termination; their mutation slot
+can remain busy until disconnect if the browser already finished and ignores a
+subsequent cancel. Keep browser/server result budgets aligned. Do not add an
+automatic reset/retry which can release a still-executing mutation.
+
+Standalone tests under `[mcp-actions]` exercise the native lifecycle and a pinned
+copy of the webapp's argument, result and relay fixtures. The snapshot provenance
+is in `test/unit/data/viewer-actions/README.md`; update it together with the
+webapp contract, not as an independent server schema fork.
+
+Native cases under `[mcp-native]` cover all native actions, exact/compound results,
+source references, independent privileges and single-worker/cancellation behavior.
+`test-native-mcp` exercises actual HTTP results and headless startup. The
+[catalog validation worklist](mapget-mcp.md#catalog-validation-worklist) separately
+tracks upstream protocol schemas and real-client conformance; native unit tests
+alone do not prove that clients expose every tool to their models.
 
 An interactive replacement is the complete set of outputs the client still
 needs, not its retained viewport coverage. Reconciliation preserves matching

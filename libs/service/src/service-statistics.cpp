@@ -1,4 +1,5 @@
 #include "mapget/model/stream.h"
+#include "mapget/service/detail/allocator-memory.h"
 #include "service-impl.h"
 #include "service-memory.h"
 
@@ -125,6 +126,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
              {"running", schedulerStats.runningJobs}}},
         {"queued-tile-work-items", schedulerStats.queuedTileWorkItems},
         {"queued-discovery-jobs", schedulerStats.queuedDiscoveryJobs},
+        {"queued-service-tasks", schedulerStats.queuedTasks},
         {"in-flight-tile-jobs", schedulerStats.inFlightTileJobs},
         {"datasource-config",
          nlohmann::json{

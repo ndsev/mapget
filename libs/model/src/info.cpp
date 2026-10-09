@@ -597,6 +597,9 @@ nlohmann::json LayerInfo::toJson() const
         result["tileAssociationLevel"] = *tileAssociationLevel_;
     if (featureModelSchema_) {
         result["featureModelSchema"] = featureModelSchema_->toJsonSchema();
+        // Identifier metadata also includes cross-layer reference targets. Expose
+        // actual schema roots separately so discovery need not decode the schema.
+        result["schemaFeatureTypes"] = featureModelSchema_->featureTypes();
     }
 
     return result;
