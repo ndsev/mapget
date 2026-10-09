@@ -213,7 +213,7 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                     resp->setBody(std::move(content));
                 } else {
                     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-                    resp->setBody(tileLayer->toJson().dump());
+                    resp->setBody(tileLayer->toServiceJson().dump());
                 }
 
                 callback(resp);

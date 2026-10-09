@@ -927,3 +927,46 @@ TEST_CASE(
     reopened.reset();
     std::filesystem::remove(cachePath);
 }
+
+TEST_CASE("Fatal tiles are uncached while warning diagnostics survive cache and service JSON", "[Cache][warnings]")
+{
+    auto path = createTempCachePath("diagnostics-cache-");
+    std::shared_ptr<Cache> cache;
+    SECTION("Memory cache") { cache = std::make_shared<MemCache>(); }
+    SECTION("Persistent cache") { cache = std::make_shared<SQLiteCache>(8, path.string(), true); }
+    auto info = createTestLayerInfo();
+    auto strings = std::make_shared<StringPool>("diagnostics");
+    auto tile = std::make_shared<PartitionFeatureLayer>(TileId::fromTileXY(0, 0, 1), "diagnostics", "Map", info, strings);
+    auto source = createTestDataSourceInfo("diagnostics", "Map", info);
+    tile->setError("503");
+    cache->putTileLayer(tile);
+    REQUIRE_FALSE(cache->getTileLayer(tile->id(), source).tile);
+    tile->setTtl(std::chrono::milliseconds(0));
+    cache->putTileLayer(tile);
+    REQUIRE_FALSE(cache->getTileLayer(tile->id(), source).tile);
+    tile->setError(std::nullopt);
+    tile->addWarning("duplicate feature id");
+    cache->putTileLayer(tile);
+    auto restored = cache->getTileLayer(tile->id(), source).tile;
+    REQUIRE(restored);
+    REQUIRE(restored->warnings() == tile->warnings());
+    REQUIRE_FALSE(restored->error());
+    // A fatal blob already in storage must also be evicted instead of reused.
+    tile->setError("previously cached outage");
+    TileLayerStream::StringPoolOffsetMap offsets;
+    TileLayerStream::Writer writer([&](std::string frame, auto type) {
+        if (type == TileLayerStream::MessageType::PartitionFeatureLayer)
+            cache->putTileLayerBlob(tile->id(), frame);
+    }, offsets);
+    writer.write(tile);
+    REQUIRE_FALSE(cache->getTileLayer(tile->id(), source).tile);
+    REQUIRE_FALSE(cache->getTileLayerBlob(tile->id()));
+    auto metadataInfo = createMetadataSourceDataLayerInfo();
+    PartitionSourceDataLayer metadata(TileId{}, "diagnostics", "Map", metadataInfo, strings);
+    metadata.addWarning("partial metadata");
+    REQUIRE(metadata.toJson().is_array());
+    REQUIRE(metadata.toServiceJson()["data"] == metadata.toJson());
+    REQUIRE(metadata.toServiceJson()["warnings"] == metadata.warnings());
+    cache.reset();
+    std::filesystem::remove(path);
+}

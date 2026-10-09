@@ -743,3 +743,15 @@ Simfil objects (including `AttributeLayerList`, which inherits from `simfil::Obj
   "_multimap": true
 }
 ```
+
+## Tile diagnostics (protocol 5.4)
+
+Every `PartitionLayer` carries ordered, deduplicated string warnings through `warnings()`, `addWarning()` and `setWarnings()`. They are nonfatal, may coexist with a fatal error, and survive binary serialization for feature, subset and source-data layers. Warned tiles remain cacheable. Fatal error tiles are delivered to the caller but are never retained as reusable cache entries.
+
+`setErrorRetryAfter(std::chrono::milliseconds)` records a positive retry delay for a fatal error. No hint means no automatic retry. Setting or clearing the error clears its previous retry hint. A numeric error code alone does not imply HTTP or retry eligibility.
+
+Feature and subset JSON include `warnings` when nonempty and `error.retryAfterMs` when set. Strict feature JSON import validates these fields. `PartitionSourceDataLayer::toJson()` remains the raw root array; `toServiceJson()` wraps it in `{type: "SourceData", partition, mapId, mapgetLayerId, data, warnings?, error?}`. Python exposes `warnings`, `add_warning`, `set_warnings`, `error_retry_after_ms`, `set_error_retry_after_ms`, and `to_service_json`.
+
+`PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
+
+Binary readers and writers must both use protocol 5.4. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.

@@ -603,13 +603,11 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
             idPartsToString(fullFeatureIdParts)));
     }
     // Reject duplicates before allocating values, interning strings, or appending a root.
-    if (find(typeId, fullFeatureIdParts)) {
-        raiseFmt(
-            "Duplicate feature ID of type '{}' with parts {} in map '{}' layer '{}'.",
-            typeId,
-            idPartsToString(fullFeatureIdParts),
-            mapId_,
-            layerInfo_->layerId_);
+    if (auto existing = find(typeId, fullFeatureIdParts)) {
+        throw DuplicateFeatureIdError(fmt::format(
+            "Duplicate feature ID '{}' of type '{}' with rejected parts {} in partition '{}'.",
+            existing->id()->toString(), typeId, idPartsToString(fullFeatureIdParts),
+            partitionKey().toString()));
     }
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
     // Stored feature ids omit the common tile prefix to save space, so we first
@@ -1662,15 +1660,7 @@ nlohmann::json PartitionFeatureLayer::toJson() const
     if (ttl_)
         result["ttl"] = ttl_->count();
 
-    // Add error information if present
-    if (error_ || errorCode_) {
-        auto errorObj = nlohmann::json::object();
-        if (errorCode_)
-            errorObj["code"] = *errorCode_;
-        if (error_)
-            errorObj["message"] = *error_;
-        result["error"] = errorObj;
-    }
+    addDiagnosticsToJson(result);
 
     // Add features
     auto features = nlohmann::json::array();

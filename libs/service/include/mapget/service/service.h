@@ -75,6 +75,9 @@ struct DataSourceCatalogEntry
     /** Optional constructor progress percentage in the inclusive range 0..100. */
     std::optional<float> progress;
 
+    /** Recovery remains active through both the delay and the next construction attempt. */
+    bool retrying = false;
+
     /** Ready datasource instance; needed for worker registration and config reload/removal. */
     DataSource::Ptr dataSource;
 
@@ -96,6 +99,9 @@ struct DataSourceCatalogSourceUpdate
 
     /** Current optional progress percentage; null clears the previous UI progress value. */
     std::optional<float> progress;
+
+    /** Explicit recovery state, independent of the construction lifecycle status. */
+    bool retrying = false;
 
     /** Ready datasource instance used only for auth filtering; it is never serialized. */
     DataSource::Ptr dataSource;

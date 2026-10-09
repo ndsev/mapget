@@ -112,6 +112,7 @@ bool FilterRequestExecution::SourceTileContribution::Lifetime::expiresBefore(Lif
 void FilterRequestExecution::SourceTileContribution::addMemoryUsage(MemoryUsageBreakdown& usage)
     const
 {
+    usage.add("warnings", stringVectorMemoryUsage(warnings_));
     usage.add("point-group-members", vectorMemoryUsage(pointGroupMembers_));
     for (auto const& member : pointGroupMembers_) {
         if (member.geometryName_) {
@@ -828,7 +829,9 @@ void FilterRequestExecution::finishIfComplete()
     request->setStatus(finalStatus);
 }
 
-void FilterRequestExecution::fail(simfil::Error const& error)
+void FilterRequestExecution::fail(simfil::Error const& error,
+                                  std::optional<std::chrono::milliseconds> retryAfter,
+                                  PartitionLayer const* failedLayer)
 {
     if (request->isCancelled()) {
         return;
@@ -849,6 +852,12 @@ void FilterRequestExecution::fail(simfil::Error const& error)
         error.message);
     auto status = makeFilterStatusJson(*request, "Failed");
     status["error"] = error.message;
+    if (retryAfter) status["retryAfterMs"] = retryAfter->count();
+    if (failedLayer) {
+        status["errorSourceMapId"] = failedLayer->id().mapId_;
+        auto const& info = failedLayer->info();
+        status["serviceError"] = info.is_object() && info.contains("serviceError") && info["serviceError"] == true;
+    }
     request->notifyProgress(status);
     abortChildRequests();
     request->setStatus(RequestStatus::Aborted);
@@ -902,7 +911,7 @@ void FilterRequestExecution::collect(PartitionFeatureLayer::Ptr layer)
         fail(simfil::Error{
             simfil::Error::RuntimeError,
             fmt::format("Filter source tile {} failed: {}", layer->id().toString(), *error),
-        });
+        }, layer->errorRetryAfter(), layer.get());
         return;
     }
 
@@ -1185,6 +1194,7 @@ FilterRequestExecution::commitSource(
                             *source.ttl(),
                         }} :
                     std::nullopt,
+                source.warnings(),
             });
             --output.missingContributions_;
             if (output.missingContributions_ == 0) {
@@ -1255,6 +1265,7 @@ tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContr
                 *targetLayer.ttl(),
             }} :
             std::nullopt,
+        targetLayer.warnings(),
     };
 
     output.dynamicContributions_.erase(targetKey);
@@ -1770,6 +1781,17 @@ void FilterRequestExecution::collectRelationTarget(
         return;
     }
 
+    if (layer->error()) {
+        {
+            std::lock_guard lock(mutex);
+            auto found = relationTargetTiles.find(targetKey);
+            if (terminal || found == relationTargetTiles.end() || found->second.terminal_) return;
+        }
+        fail(simfil::Error{simfil::Error::RuntimeError,
+             fmt::format("Relation target {} failed: {}", targetKey.toString(), *layer->error())},
+             layer->errorRetryAfter(), layer.get());
+        return;
+    }
     std::vector<RelationReadyOutput> relationReady;
     std::optional<simfil::Error> error;
     {
@@ -1985,7 +2007,16 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
     std::vector<FeatureLayerRelationDescriptor> relationDescriptors;
     simfil::Diagnostics diagnostics;
 
+    auto appendWarnings = [&](SourceTileContribution const& contribution) {
+        auto const& key = contribution.dependency_.sourceTileKey_;
+        bool const local = key.mapId_ == ready.layer_->mapId() &&
+            key.layerId_ == ready.layer_->layerInfo()->layerId_ &&
+            key.partitionId_ == ready.layer_->partitionId();
+        for (auto const& warning : contribution.warnings_)
+            ready.layer_->addWarning(local ? warning : fmt::format("{}: {}", key.toString(), warning));
+    };
     for (auto& contribution : ready.contributions_) {
+        appendWarnings(contribution);
         ready.considerLifetime(contribution.lifetime_);
         dependencies.push_back(std::move(contribution.dependency_));
         members.insert(
@@ -2006,6 +2037,7 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
         }
     }
     for (auto& [_, contribution] : ready.dynamicContributions_) {
+        appendWarnings(contribution);
         ready.considerLifetime(contribution.lifetime_);
         dependencies.push_back(std::move(contribution.dependency_));
         ready.addIssues(std::move(contribution.issues_));

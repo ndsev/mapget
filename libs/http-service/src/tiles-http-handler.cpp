@@ -375,7 +375,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             if (responseType_ == binaryMimeType) {
                 writer_->write(result);
             } else {
-                auto dumped = result->toJson().dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore);
+                auto dumped = result->toServiceJson().dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore);
                 appendOutgoingUnlocked(dumped);
                 appendOutgoingUnlocked("\n");
             }

@@ -616,3 +616,9 @@ creates `vX.Y.Z`, and dispatches the wheel matrix. `setuptools_scm` supplies
 tagged and development versions. Release PRs publish unique development
 previews such as `2026.3.5.dev31001`; ordinary `main` pushes build but do not
 upload another snapshot.
+
+## Datasource initialization recovery
+
+Config-created datasource constructors can set `DataSourceInitContext::retryAfter` to positive milliseconds before returning null or throwing. The catalog worker releases its construction permit, waits interruptibly, then creates a fresh context for the next attempt. Without a positive hint, construction failure is terminal. A failed row retains its source identity and remains `failed` during retries, so blocking `/sources` calls finish after the first failed attempt. Recovery publishes the ordinary `ready` transition. Config replacement and shutdown cancel pending waits and reject obsolete construction results. Failed-source statistics count current rows, not attempts.
+
+The fresh context includes a saturating `retryAttempt` index (zero for the first attempt), allowing producers to calculate backoff without a second retry loop. Catalog snapshots and interactive deltas publish `retrying` throughout eligible waits and attempts, clearing it on readiness or terminal failure. Runtime filter failures forward the producer delay and originating `errorSourceMapId`; explicit `info.serviceError` metadata becomes `serviceError` in filter status for connection diagnostics. Query/conversion errors must not be inferred to be service failures from their text or numeric code.

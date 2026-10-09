@@ -77,6 +77,7 @@ private:
         std::map<std::string, simfil::Trace> traces_;
         simfil::Diagnostics diagnostics_;
         std::optional<Lifetime> lifetime_;
+        std::vector<std::string> warnings_;
 
         /** Add request-orchestration allocations owned by this contribution. */
         void addMemoryUsage(MemoryUsageBreakdown& usage) const;
@@ -279,7 +280,9 @@ private:
     void finishIfComplete();
 
     /** Abort the coordinated request and publish a structured failure status. */
-    void fail(simfil::Error const& error);
+    void fail(simfil::Error const& error,
+              std::optional<std::chrono::milliseconds> retryAfter = std::nullopt,
+              PartitionLayer const* failedLayer = nullptr);
 
     /** Evaluate one source tile on the worker that delivered it. */
     void collect(PartitionFeatureLayer::Ptr layer);

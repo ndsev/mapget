@@ -749,3 +749,11 @@ Because capabilities can vary with request headers, `GET /config` responses
 include `Cache-Control: private, no-store`.
 
 <!-- --8<-- [end:config-endpoints] -->
+
+## Nonfatal tile warnings and retry hints
+
+Binary tile headers and JSONL responses preserve nonfatal `warnings: string[]` independently of `error`. A tile with warnings and no error is usable. Feature-restricted responses, addon enrichment and filtered outputs preserve relevant warnings, including warnings from dependencies that yielded no matching entries. Nonlocal filter warnings identify their source partition. Source-data service JSON uses a `SourceData` envelope with the raw roots under `data`; the in-process source-data `toJson()` API remains an array.
+
+Transient fatal errors can carry a positive `error.retryAfterMs` in tile JSON. Filter failure statuses expose the equivalent top-level `retryAfterMs`. Retry only still-demanded, unfinished outputs after that delay; retained successful outputs need not be refreshed. Stateless requests terminate with their diagnostics. The server does not keep them open through an outage.
+
+Catalog snapshots and source-change deltas expose a `retrying` boolean. It stays true while a failed constructor is waiting or attempting recovery, then clears on success or terminal failure. The lifecycle status remains `failed` until ready. Older producers may omit this field. A producer may explicitly classify a service failure with `info.serviceError`; filter failures propagate this as `serviceError` and identify the originating `errorSourceMapId`, including dependency failures. Consumers must not infer service failure or retry eligibility from numeric error codes or message text.

@@ -158,6 +158,11 @@ Cache::getTileLayer(const MapPartitionKey& tileKey, DataSourceInfo const& dataSo
         cacheMisses_.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
+    if (tile && tile->error()) {
+        eraseTileLayerBlob(tileKey);
+        cacheMisses_.fetch_add(1, std::memory_order_relaxed);
+        return result;
+    }
     if (tile) {
         auto ttl = tile->ttl();
         if (ttl && ttl->count() > 0) {
@@ -193,6 +198,7 @@ void Cache::invalidateMap(std::string_view mapId)
 
 void Cache::putTileLayer(PartitionLayer::Ptr const& l)
 {
+    if (l->error()) return;
     std::unique_lock stringPoolOffsetLock(stringPoolOffsetMutex_);
     TileLayerStream::Writer tileWriter(
         [&l, this](auto&& msg, auto&& msgType)

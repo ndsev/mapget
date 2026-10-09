@@ -1303,6 +1303,14 @@ void importGeoJson(
     if (geoJson.contains("ttl")) {
         tile.setTtl(std::chrono::milliseconds(geoJson.at("ttl").get<int64_t>()));
     }
+    if (geoJson.contains("warnings")) {
+        auto const& warnings = geoJson.at("warnings");
+        if (!warnings.is_array()) raiseImport("warnings must be an array of strings.");
+        for (auto const& warning : warnings) {
+            if (!warning.is_string()) raiseImport("warnings must be an array of strings.");
+        }
+        tile.setWarnings(warnings.get<std::vector<std::string>>());
+    }
     if (geoJson.contains("error")) {
         auto const& errorJson = geoJson.at("error");
         if (!errorJson.is_object()) {
@@ -1313,6 +1321,12 @@ void importGeoJson(
         }
         if (errorJson.contains("code")) {
             tile.setErrorCode(errorJson.at("code").get<int>());
+        }
+        if (errorJson.contains("retryAfterMs")) {
+            auto const& delay = errorJson.at("retryAfterMs");
+            if (!delay.is_number_integer() || delay.get<int64_t>() <= 0 || !tile.error())
+                raiseImport("retryAfterMs requires an error message and positive integer milliseconds.");
+            tile.setErrorRetryAfter(std::chrono::milliseconds(delay.get<int64_t>()));
         }
     }
 

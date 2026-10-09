@@ -509,3 +509,54 @@ sources:
     fs::remove_all(tempDir);
     DataSourceConfigService::get().end();
 }
+
+TEST_CASE("Transient datasource construction retries preserve catalog identity and cancel on reload", "[DataSourceConfig][retry]")
+{
+    auto tempDir = fs::current_path() / test::generateTimestampedDirectoryName("mapget_retry");
+    fs::create_directory(tempDir);
+    auto config = tempDir / "config.yaml";
+    auto& configs = DataSourceConfigService::get();
+    configs.reset();
+    std::atomic_int attempts{0};
+    std::atomic_bool available{false};
+    std::atomic_size_t retryIndex{0};
+    configs.registerDataSourceType("RetrySource", [&](YAML::Node const&, DataSourceInitContext& context) -> DataSource::Ptr {
+        retryIndex = context.retryAttempt;
+        ++attempts;
+        if (available) return std::make_shared<NamedTestDataSource>("RecoveredMap");
+        context.retryAfter = std::chrono::milliseconds(50);
+        context.setStatusMessage("temporary outage");
+        return nullptr;
+    });
+    {
+        Service service(std::make_shared<MemCache>(), true);
+        { std::ofstream out(config); out << "sources:\n  - type: RetrySource\n    mapId: RetryMap\n"; }
+        configs.loadConfig(config.string());
+        waitForCondition([&] { return attempts >= 2; });
+        auto failed = service.sourceCatalog({}, true);
+        REQUIRE(failed.sources.size() == 1);
+        REQUIRE(failed.sources[0].status == DataSourceCatalogStatus::Failed);
+        REQUIRE(failed.sources[0].retrying);
+        REQUIRE(retryIndex >= 1);
+        REQUIRE(service.getStatistics()["datasource-config"]["construction-failed"] == 1);
+        auto id = failed.sources[0].descriptor.sourceId;
+        available = true;
+        waitForCondition([&] { return service.sourceCatalog().sources[0].status == DataSourceCatalogStatus::Ready; });
+        REQUIRE(service.sourceCatalog().sources[0].descriptor.sourceId == id);
+        REQUIRE_FALSE(service.sourceCatalog().sources[0].retrying);
+        REQUIRE(service.info().size() == 1);
+        REQUIRE(service.getStatistics()["datasource-config"]["construction-failed"] == 0);
+        // A new outage's wait must be cancelled by config removal.
+        available = false;
+        configs.loadConfig(config.string());
+        waitForCondition([&] { return service.sourceCatalog().sources[0].status == DataSourceCatalogStatus::Failed; });
+        { std::ofstream out(config); out << "sources: []\n"; }
+        configs.loadConfig(config.string());
+        int stopped = attempts;
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        REQUIRE(attempts == stopped);
+        REQUIRE(service.sourceCatalog().sources.empty());
+    }
+    configs.end();
+    fs::remove_all(tempDir);
+}

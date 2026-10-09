@@ -192,6 +192,9 @@ void loadAddOnTiles(
         applyTtlFallback(*addOnTile, *addOn->dataSource, defaultTtl);
         includeLifetime(*baseTile, *addOnTile);
 
+        for (auto const& warning : addOnTile->warnings())
+            baseTile->addWarning(fmt::format("{}: {}", addOnTile->id().toString(), warning));
+
         // Add-on strings must be cloned into a writable namespace shared by
         // both models; datasource-owned pools remain authoritative and frozen.
         auto combinedPoolId = baseTile->stringPoolId() + "|" + addOnTile->stringPoolId();
@@ -330,6 +333,12 @@ PartitionFeatureLayer::Ptr restrictFeatureLayerForResponse(
         source->layerInfo(),
         source->strings());
     result->setInfo(source->info());
+    result->setTimestamp(source->timestamp());
+    result->setTtl(source->ttl());
+    result->setWarnings(source->warnings());
+    result->setError(source->error());
+    result->setErrorCode(source->errorCode());
+    result->setErrorRetryAfter(source->errorRetryAfter());
     result->setGeometryAnchor(source->geometryAnchor());
     if (auto legalInfo = source->legalInfo()) {
         result->setLegalInfo(*legalInfo);

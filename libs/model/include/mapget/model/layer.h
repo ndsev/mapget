@@ -171,6 +171,15 @@ public:
     [[nodiscard]] std::optional<int> errorCode() const;
     void setErrorCode(const std::optional<int>& code);
 
+    /** Non-fatal diagnostics. A warned layer remains usable and cacheable. */
+    [[nodiscard]] std::vector<std::string> const& warnings() const { return warnings_; }
+    void addWarning(std::string warning);
+    void setWarnings(std::vector<std::string> warnings);
+
+    /** Positive retry delay for a transient fatal error; absent for permanent errors. */
+    [[nodiscard]] std::optional<std::chrono::milliseconds> errorRetryAfter() const { return errorRetryAfter_; }
+    void setErrorRetryAfter(std::optional<std::chrono::milliseconds> delay);
+
     /**
      * Getter and setter for 'timestamp' member variable.
      * It represents when this layer was created.
@@ -211,6 +220,10 @@ public:
     /** Serialization */
     virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);
     virtual nlohmann::json toJson() const;
+    /** Service projection, including an envelope for raw SourceData roots. */
+    nlohmann::json toServiceJson() const;
+    /** Append the common warning and error contract to a JSON object. */
+    void addDiagnosticsToJson(nlohmann::json& result) const;
 
     /**
      * Report live payload and retained capacity owned by this layer.
@@ -238,6 +251,8 @@ protected:
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;
     std::optional<int> errorCode_;
+    std::vector<std::string> warnings_;
+    std::optional<std::chrono::milliseconds> errorRetryAfter_;
     std::chrono::time_point<std::chrono::system_clock> timestamp_;
     std::optional<std::chrono::milliseconds> ttl_;
     nlohmann::json info_;

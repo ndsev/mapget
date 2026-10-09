@@ -940,7 +940,7 @@ struct FetchCommand
         auto fn = [this](auto const& tile)
         {
             if (!mute_)
-                std::cout << tile->toJson().dump() << std::endl;
+                std::cout << tile->toServiceJson().dump() << std::endl;
             if (tile->error())
                 raise(fmt::format("Tile {}: {}", tile->id().toString(), *tile->error()));
         };
