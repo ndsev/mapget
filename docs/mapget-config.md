@@ -481,7 +481,7 @@ mapget:
     webapp: /srv/my-ui          # --webapp, one application document root
     static-mount:               # --static-mount, additional static aliases
       - /assets:/srv/assets
-    memory-trim-period-seconds: 10    # --memory-trim-period-seconds (0 disables)
+    memory-trim-period-seconds: 10    # glibc fallback only; ignored with jemalloc
 
 http-settings: ...
 sources: ...
@@ -501,11 +501,27 @@ as `cache-max-tiles * 512 KiB`. The default `1024` tile limit therefore retains
 at most `512 MiB` of serialized tile payloads. Index and allocator overhead are
 reported separately and are not part of that payload budget.
 
-On Linux with glibc, mapget trims unused allocator pages from a dedicated
-maintenance thread every 10 seconds by default. Set
-`memory-trim-period-seconds` to `0` to disable it. Other platforms do not
-currently use an allocator-maintenance implementation in mapget, so the
-default there is disabled.
+Native Linux server executables use jemalloc by default, including MapViewer.
+Its background workers purge unused pages even when traffic has stopped. The
+bundled allocator enables `background_thread:true` with a default dirty-page
+decay setting of 10 seconds. This is gradual reclamation, not a deadline or a hard RSS limit:
+live allocations, partially occupied pages and thread caches can still hold
+memory. It does not change datasource cache budgets.
+
+Set jemalloc options through `MALLOC_CONF` **before starting the process**,
+for example `MALLOC_CONF=dirty_decay_ms:5000,muzzy_decay_ms:0 mapget serve`.
+`background_thread:false` disables its background workers. These options are
+allocator startup settings, not hot-reloaded YAML/CLI settings. See the
+[jemalloc manual](https://jemalloc.net/jemalloc.3.html) for their tradeoffs.
+`/status-data` identifies the active allocator and reports background-worker
+state. `memory-trim-period-seconds` has no effect on jemalloc.
+
+Python imports do not replace the interpreter's allocator. Without jemalloc
+(including builds with `MAPGET_WITH_JEMALLOC=OFF`), Linux/glibc servers retain
+the dedicated `malloc_trim` maintenance worker, every 10 seconds by default.
+`memory-trim-period-seconds: 0` disables that fallback. Other allocators and
+platforms do not run the glibc trim worker. A process that deliberately preloads
+jemalloc before startup is detected and reported as jemalloc, not glibc.
 
 Cache reset is disabled by default. Enabling it without at least one valid
 `cache-reset-auth-header` entry fails startup. Each entry is split at the first

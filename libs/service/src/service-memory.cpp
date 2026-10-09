@@ -23,7 +23,6 @@
 #include "mapget/model/info.h"
 #include "mapget/model/memory.h"
 #include "mapget/service/config.h"
-#include "mapget/service/detail/allocator-memory.h"
 
 namespace mapget::detail
 {
@@ -267,21 +266,6 @@ nlohmann::json processMemoryStatistics()
     result["measurement"] = "unavailable";
 #endif
     return result;
-}
-
-nlohmann::json allocatorMemoryStatistics()
-{
-    if (auto const allocator = allocatorMemorySnapshot()) {
-        return {
-            {"arena-bytes", allocator->arenaBytes},
-            {"free-arena-bytes", allocator->freeArenaBytes},
-            {"in-use-arena-bytes", allocator->inUseArenaBytes},
-            {"mmap-bytes", allocator->mmapBytes},
-            {"releasable-top-bytes", allocator->releasableTopBytes},
-            {"measurement", allocator->measurement},
-        };
-    }
-    return nullptr;
 }
 
 simfil::MemoryUsage dataSourceDescriptorMemoryUsage(DataSourceDescriptor const& descriptor)

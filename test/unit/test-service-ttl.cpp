@@ -393,6 +393,94 @@ TEST_CASE("Service rejects an empty homogeneous worker pool", "[Service][concurr
     REQUIRE_THROWS_AS(Service(std::make_shared<MemCache>(1), false, 0ms, 0), std::runtime_error);
 }
 
+/** Deterministic cancellation probe: keep the first fill alive while replacements run. */
+class CancellableTestDataSource : public TestTtlDataSource
+{
+public:
+    /** Allow two jobs so a replacement can finish before an abandoned job unwinds. */
+    DataSourceInfo info() override
+    {
+        auto result = TestTtlDataSource::info();
+        result.maxParallelJobs_ = 2;
+        return result;
+    }
+    /** Observe cancellation, but deliberately postpone unwinding to exercise late completion. */
+    void fill(PartitionFeatureLayer::Ptr const& tile, TileCancellationCheck const& cancelled) override
+    {
+        if (++started_ == 1) {
+            entered_.set_value();
+            while (!release_) {
+                if (cancelled())
+                    observedCancellation_ = true;
+                std::this_thread::sleep_for(1ms);
+            }
+            if (cancelled()) {
+                observedCancellation_ = true;
+                exited_.set_value();
+                throw TileLoadCancelled();
+            }
+        }
+        TestTtlDataSource::fill(tile);
+    }
+    std::promise<void> entered_;
+    std::promise<void> exited_;
+    std::atomic_bool release_{false};
+    std::atomic_bool observedCancellation_{false};
+    std::atomic_size_t started_{0};
+};
+
+TEST_CASE("Shared tile cancellation follows all consumers and does not poison replacements", "[Service][cancellation]")
+{
+    auto cache = std::make_shared<MemCache>(32);
+    auto source = std::make_shared<CancellableTestDataSource>();
+    Service service(cache, false, 0ms, 2);
+    service.add(source);
+    auto makeRequest = [] {
+        return std::make_shared<LayerTilesRequest>("Tropico", "WayLayer",
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)});
+    };
+    auto first = makeRequest();
+    REQUIRE(service.request({first}));
+    auto started = source->entered_.get_future().wait_for(2s) == std::future_status::ready;
+
+    SECTION("One abort does not cancel a coalesced consumer, even with closed admission") {
+        auto second = makeRequest();
+        second->setWorkAdmissionGate(std::make_shared<std::atomic_bool>(false));
+        auto accepted = service.request({second});
+        service.abort(first);
+        source->release_ = true;
+        second->wait();
+        REQUIRE(started);
+        REQUIRE(accepted);
+        REQUIRE_FALSE(source->observedCancellation_);
+        REQUIRE(second->getStatus() == RequestStatus::Success);
+        REQUIRE(source->started_ == 1);
+    }
+    SECTION("Last-consumer abort and retainOutputs both detach abandoned jobs") {
+        bool retain = false;
+        SECTION("abort") { service.abort(first); }
+        SECTION("retain nothing") { retain = true; service.retainOutputs(first, {}); }
+        auto replacement = makeRequest();
+        auto accepted = service.request({replacement});
+        replacement->wait();
+        source->release_ = true;
+        auto exited = source->exited_.get_future().wait_for(2s) == std::future_status::ready;
+        // The late old failure must neither remove the new tile nor cache a cancellation error.
+        auto cached = makeRequest();
+        auto cachedAccepted = service.request({cached});
+        cached->wait();
+        INFO(retain);
+        REQUIRE(started);
+        REQUIRE(accepted);
+        REQUIRE(exited);
+        REQUIRE(source->observedCancellation_);
+        REQUIRE(cachedAccepted);
+        REQUIRE(replacement->getStatus() == RequestStatus::Success);
+        REQUIRE(cached->getStatus() == RequestStatus::Success);
+        REQUIRE(source->started_ == 2);
+    }
+}
+
 TEST_CASE("Service shutdown contains request callback exceptions", "[Service][concurrency]")
 {
     auto probe = std::make_shared<GlobalConcurrencyProbe>();

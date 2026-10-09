@@ -705,7 +705,8 @@ struct ServeCommand
                 "--memory-trim-period-seconds",
                 memoryTrimPeriodSeconds_,
                 "Seconds between periodic allocator trims which return unused heap pages to the OS "
-                "(0=disabled). Only effective with glibc on Linux.")
+                "(0=disabled). Only effective with glibc on Linux; jemalloc uses background "
+                "purging.")
             ->default_val(memoryTrimPeriodSeconds_);
         serveCmd->add_option(
             "--location-db",
@@ -848,20 +849,6 @@ struct ServeCommand
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
         }
         httpConfig.mcp = mcp_;
-
-        if (memoryTrimPeriodSeconds_ > 0) {
-#if defined(__linux__) && defined(__GLIBC__)
-            log().info("Periodic allocator trim: every {} seconds", memoryTrimPeriodSeconds_);
-#else
-            log().warn(
-                "Periodic allocator trim set to {} seconds, but trimming is only supported with "
-                "glibc on Linux. Setting will be ignored.",
-                memoryTrimPeriodSeconds_);
-#endif
-        }
-        else {
-            log().info("Periodic allocator trimming disabled");
-        }
 
         // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, httpConfig);

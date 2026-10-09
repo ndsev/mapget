@@ -87,13 +87,24 @@ void ServiceScheduler::enqueueRequest(LayerTilesRequest::Ptr request)
     }
 
     auto reject = false;
+    std::vector<std::pair<MapPartitionKey, PartitionLayer::LoadState>> joined;
     {
         std::lock_guard lock(mutex_);
         if (stopping_) {
             reject = true;
         }
         else {
-            requests_.push_back(request);
+            // Join now, even when every worker/permit is busy. Otherwise a live
+            // queued consumer could be invisible when the previous one aborts.
+            for (auto const& key : request->resolvedTileKeys_) {
+                auto job = inFlightTiles_.find(key);
+                if (job != inFlightTiles_.end() && request->tileKeysNotStarted_.erase(key)) {
+                    job->second->waitingRequests.push_back(request);
+                    joined.emplace_back(key, job->second->loadStatus);
+                }
+            }
+            if (!request->tileKeysNotStarted_.empty())
+                requests_.push_back(request);
         }
     }
     // Completion callbacks are external and may re-enter the service, so they
@@ -102,6 +113,8 @@ void ServiceScheduler::enqueueRequest(LayerTilesRequest::Ptr request)
         request->setStatus(RequestStatus::Aborted);
         return;
     }
+    for (auto const& [key, state] : joined)
+        request->notifyLoadState(key, state);
     jobsAvailable_.notify_all();
 }
 
@@ -126,6 +139,7 @@ void ServiceScheduler::abortRequest(LayerTilesRequest::Ptr const& request)
         for (auto& [_, job] : inFlightTiles_) {
             std::erase(job->waitingRequests, request);
         }
+        cancelUnusedTileJobsLocked();
     }
     jobsAvailable_.notify_all();
 }
@@ -165,6 +179,7 @@ void ServiceScheduler::retainRequestOutputs(
         if (!hasLiveOutputs || request->tileKeysNotStarted_.empty()) {
             requests_.remove_if([&](auto const& queued) { return queued == request; });
         }
+        cancelUnusedTileJobsLocked();
     }
 
     // Completion callbacks can re-enter the service and therefore must stay
@@ -223,6 +238,7 @@ void ServiceScheduler::invalidateMap(std::string const& mapId)
                 job->second->waitingRequests.begin(),
                 job->second->waitingRequests.end());
             job->second->waitingRequests.clear();
+            job->second->cancelled = true;
             job = inFlightTiles_.erase(job);
         }
         // A running tile publishes under this mutex and checks the same epoch,
@@ -264,6 +280,7 @@ void ServiceScheduler::stop() noexcept
                 job->waitingRequests.begin(),
                 job->waitingRequests.end());
             job->waitingRequests.clear();
+            job->cancelled = true;
         }
     }
 
@@ -636,6 +653,20 @@ void ServiceScheduler::removeCompletedRequestsLocked()
         { return !request || request->isDone() || request->tileKeysNotStarted_.empty(); });
 }
 
+void ServiceScheduler::cancelUnusedTileJobsLocked()
+{
+    std::erase_if(inFlightTiles_, [](auto const& entry) {
+        auto& job = *entry.second;
+        std::erase_if(job.waitingRequests, [](auto const& request) { return request->isDone(); });
+        if (!job.waitingRequests.empty())
+            return false;
+        job.cancelled = true;
+        // A late completion may still run, but identity + cancellation guards
+        // prevent it from erasing or caching over a replacement job.
+        return true;
+    });
+}
+
 void ServiceScheduler::completeTileJob(
     TileLoadState const& job,
     PartitionLayer::Ptr const& layer,
@@ -644,7 +675,7 @@ void ServiceScheduler::completeTileJob(
     std::vector<LayerTilesRequest::Ptr> notifyRequests;
     {
         std::lock_guard lock(mutex_);
-        if (job.mapEpoch == mapEpochs_[job.tileKey.mapId_]) {
+        if (!job.cancelled && job.mapEpoch == mapEpochs_[job.tileKey.mapId_]) {
             if (updateCache) {
                 cache_->putTileLayer(layer);
             }
@@ -684,6 +715,7 @@ void ServiceScheduler::failTileJob(TileLoadState const& job)
                 [&](auto const& request)
                 { return std::ranges::find(failedRequests, request) != failedRequests.end(); });
         }
+        cancelUnusedTileJobsLocked();
     }
     for (auto const& request : failedRequests) {
         if (request && !request->isDone()) {

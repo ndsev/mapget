@@ -37,6 +37,8 @@ struct TileLoadState
     std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
     PartitionLayer::LoadState loadStatus = PartitionLayer::LoadState::LoadingQueued;
     uint64_t mapEpoch = 0;
+    /** Monotonic abandonment, latched only under the scheduler mutex. */
+    std::atomic_bool cancelled{false};
 };
 
 /** Snapshot of global pool and queue pressure. */
@@ -196,6 +198,9 @@ private:
         std::vector<LayerTilesRequest::Ptr>& waitingRequests) const;
     /** Remove terminal requests and requests with no unscheduled keys. */
     void removeCompletedRequestsLocked();
+
+    /** Cancel/detach jobs with no live consumers; new requests start fresh jobs. */
+    void cancelUnusedTileJobsLocked();
 
     /** Publish a successful tile only if its map epoch is still current. */
     void
