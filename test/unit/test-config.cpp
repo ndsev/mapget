@@ -14,13 +14,14 @@
 #include <fcntl.h>
 #endif
 
-#include "utility.h"
 #include "mapget/http-service/cli.h"
 #include "mapget/log.h"
+#include "mapget/model/featurelayer.h"
 #include "mapget/service/config.h"
 #include "mapget/service/datasource.h"
 #include "mapget/service/memcache.h"
 #include "mapget/service/service.h"
+#include "utility.h"
 
 namespace fs = std::filesystem;
 using namespace mapget;
@@ -124,6 +125,481 @@ void waitForCondition(Predicate pred, std::chrono::milliseconds timeout = std::c
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+}
+
+/** Stable per-instance metadata and cooperative fills for reload/cache regressions. */
+class ReloadTestDataSource : public DataSource
+{
+public:
+    /** Give every constructed instance its own authoritative dictionary namespace. */
+    ReloadTestDataSource(std::string mapId, size_t instance, bool addOn = false)
+        : info_(DataSourceInfo::fromJson(R"({
+            "mapId": "Reload",
+            "layers": {
+                "Features": {
+                    "featureTypes": [{
+                        "name": "Point",
+                        "uniqueIdCompositions": [[{"partId": "id", "datatype": "U32"}]]
+                    }]
+                }
+            }
+        })"_json))
+    {
+        info_.mapId_ = std::move(mapId);
+        info_.stringPoolId_ = "ReloadPool-" + std::to_string(instance);
+        info_.isAddOn_ = addOn;
+    }
+
+    /** Return the same metadata for this instance throughout its lifetime. */
+    DataSourceInfo info() override { return info_; }
+
+    /** Populate a minimal cacheable feature tile. */
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
+    {
+        tile->newFeature("Point", {{"id", int64_t{1}}});
+    }
+
+    /** Keep a fill in flight until released, while remaining safe on test failure/shutdown. */
+    void
+    fill(PartitionFeatureLayer::Ptr const& tile, TileCancellationCheck const& cancelled) override
+    {
+        ++fills;
+        while (pauseFills) {
+            if (cancelled()) {
+                observedCancellation = true;
+                throw TileLoadCancelled();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        fill(tile);
+    }
+
+    /** Source-data payloads are unused by these tests. */
+    void fill(PartitionSourceDataLayer::Ptr const&) override {}
+
+    std::atomic_size_t fills{0};
+    std::atomic_bool pauseFills{false};
+    std::atomic_bool observedCancellation{false};
+
+private:
+    DataSourceInfo info_;
+};
+
+/** Own an isolated config, constructor registration and service for reload tests. */
+class ConfigReloadTest
+{
+public:
+    /** Use synchronous file notifications and two workers; no watcher timing is involved. */
+    ConfigReloadTest()
+        : directory_(
+              fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_reload"))
+    {
+        fs::create_directories(directory_);
+        auto& config = DataSourceConfigService::get();
+        config.reset();
+        config.registerDataSourceType(
+            "Reload",
+            [this](YAML::Node const& node) -> DataSource::Ptr
+            {
+                return std::make_shared<ReloadTestDataSource>(
+                    node["mapId"].as<std::string>(),
+                    ++constructions,
+                    node["addOn"].as<bool>(false));
+            });
+        service = std::make_unique<
+            Service>(std::make_shared<MemCache>(16), true, std::chrono::milliseconds{0}, 2);
+    }
+
+    /** Join all callbacks before destroying their captured state or temporary inputs. */
+    ~ConfigReloadTest()
+    {
+        service.reset();
+        DataSourceConfigService::get().reset();
+        std::error_code ignored;
+        fs::remove_all(directory_, ignored);
+    }
+
+    /** Publish exactly these bytes, optionally changing the config file path. */
+    void load(std::string_view yaml, std::string const& filename = "config.yaml")
+    {
+        auto path = directory_ / filename;
+        {
+            std::ofstream file(path);
+            file << yaml;
+        }
+        DataSourceConfigService::get().loadConfig(path.string(), false);
+    }
+
+    /** Wait with a bounded test timeout for ready or failed rows. */
+    DataSourceCatalogSnapshot settled() const
+    {
+        waitForCondition(
+            [this]
+            {
+                auto snapshot = service->sourceCatalog();
+                return std::ranges::none_of(
+                    snapshot.sources,
+                    [](auto const& entry)
+                    { return entry.status == DataSourceCatalogStatus::Initializing; });
+            });
+        return service->sourceCatalog({}, true);
+    }
+
+    /** Schedule a synthetic tile without waiting, so a reload can happen during its fill. */
+    LayerTilesRequest::Ptr request(std::string const& mapId, uint16_t x = 0)
+    {
+        auto result = std::make_shared<LayerTilesRequest>(
+            mapId,
+            "Features",
+            std::vector<PartitionId>{TileId::fromTileXY(x, 0, 3)});
+        if (!service->request({result})) {
+            throw std::runtime_error("Reload test tile was not admitted.");
+        }
+        return result;
+    }
+
+    /** Fail promptly if a supposedly retained request is aborted or stops completing. */
+    void requireSuccess(LayerTilesRequest::Ptr const& request) const
+    {
+        waitForCondition([&] { return request->isDone(); });
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+    }
+
+    std::atomic_size_t constructions{0};
+    std::unique_ptr<Service> service;
+
+private:
+    fs::path directory_;
+};
+
+TEST_CASE(
+    "Datasource reuse fingerprints preserve YAML structure",
+    "[DataSourceConfig][config-reload]")
+{
+    auto& config = DataSourceConfigService::get();
+    auto fingerprint = [&](std::string const& yaml)
+    {
+        return config.dataSourceConfigFingerprint(YAML::Load(yaml));
+    };
+    REQUIRE(
+        fingerprint("{type: Reload, nested: {x: 1, y: [a, b]}}") ==
+        fingerprint("nested:\n  y: ['a', b]\n  x: 1\ntype: Reload\n# comment\n"));
+    REQUIRE(fingerprint("{value: '001'}") != fingerprint("{value: '1'}"));
+    REQUIRE(fingerprint("{value: 'true'}") != fingerprint("{value: 'yes'}"));
+    REQUIRE(fingerprint("{value: !!str 1}") != fingerprint("{value: !!int 1}"));
+    REQUIRE(fingerprint("{value: [a, b]}") != fingerprint("{value: [b, a]}"));
+    REQUIRE(fingerprint("{value: []}") != fingerprint("{value: {}}"));
+    REQUIRE(fingerprint("{value: null}") != fingerprint("{value: 'null'}"));
+    REQUIRE(fingerprint("{value: one, value: two}") != fingerprint("{value: two, value: one}"));
+}
+
+TEST_CASE(
+    "Toggling one datasource preserves unrelated pools, cache and in-flight work",
+    "[DataSourceConfig][config-reload]")
+{
+    ConfigReloadTest test;
+    std::string const enabled = R"(
+sources:
+  - type: Reload
+    mapId: Toggled
+  - type: Reload
+    mapId: Unchanged
+)";
+    test.load(enabled);
+    auto before = test.settled();
+    REQUIRE(before.sources.size() == 2);
+    auto const& unchanged = before.sources[1];
+    auto source = std::dynamic_pointer_cast<ReloadTestDataSource>(unchanged.dataSource);
+    REQUIRE(source);
+    test.requireSuccess(test.request("Unchanged"));
+    REQUIRE(source->fills == 1);
+
+    source->pauseFills = true;
+    auto inFlight = test.request("Unchanged", 1);
+    waitForCondition([&] { return source->fills == 2; });
+    // Saving through /config may reorder keys and change quoting for every
+    // descriptor, even when only one enabled flag was actually edited.
+    test.load(R"(
+sources:
+  - enabled: false
+    mapId: Toggled
+    type: Reload
+  - mapId: 'Unchanged'
+    type: Reload
+)");
+    auto disabled = test.settled();
+    REQUIRE(disabled.revision > before.revision);
+    REQUIRE(disabled.sources.size() == 1);
+    REQUIRE(disabled.sources[0].descriptor.configIndex == 1);
+    REQUIRE(disabled.sources[0].descriptor.sourceId == unchanged.descriptor.sourceId);
+    REQUIRE(disabled.sources[0].dataSource == source);
+    REQUIRE(disabled.sources[0].info == unchanged.info);
+    REQUIRE(disabled.sources[0].info->stringPoolId_ == unchanged.info->stringPoolId_);
+    REQUIRE_FALSE(inFlight->isDone());
+    REQUIRE_FALSE(source->observedCancellation);
+    source->pauseFills = false;
+    test.requireSuccess(inFlight);
+    test.requireSuccess(test.request("Unchanged"));
+    REQUIRE(source->fills == 2);
+    REQUIRE(test.constructions == 2);
+
+    test.load(enabled);
+    auto restored = test.settled();
+    REQUIRE(restored.sources.size() == 2);
+    REQUIRE(restored.sources[0].dataSource != before.sources[0].dataSource);
+    REQUIRE(restored.sources[1].dataSource == source);
+    REQUIRE(restored.sources[1].info == unchanged.info);
+    REQUIRE(test.constructions == 3);
+    test.requireSuccess(test.request("Unchanged"));
+    REQUIRE(source->fills == 2);
+}
+
+TEST_CASE(
+    "Changed datasource options replace only that ready instance",
+    "[DataSourceConfig][config-reload]")
+{
+    ConfigReloadTest test;
+    test.load(R"(
+sources:
+  - {type: Reload, mapId: Other}
+  - type: Reload
+    mapId: Changed
+    ttl: 60
+    auth-header: {x-role: '^old$'}
+)");
+    auto before = test.settled();
+    REQUIRE(before.sources.size() == 2);
+    test.requireSuccess(test.request("Changed"));
+    test.load(R"(
+sources:
+  - {type: Reload, mapId: Other}
+  - type: Reload
+    mapId: Changed
+    ttl: 120
+    auth-header: {x-role: '^new$'}
+)");
+    auto after = test.settled();
+    REQUIRE(after.sources.size() == 2);
+    REQUIRE(after.sources[0].dataSource == before.sources[0].dataSource);
+    REQUIRE(after.sources[1].dataSource != before.sources[1].dataSource);
+    REQUIRE(after.sources[1].info->stringPoolId_ != before.sources[1].info->stringPoolId_);
+    REQUIRE(after.sources[1].dataSource->ttl() == std::chrono::minutes(2));
+    REQUIRE(after.sources[1].dataSource->isDataSourceAuthorized({{"x-role", "new"}}));
+    REQUIRE_FALSE(after.sources[1].dataSource->isDataSourceAuthorized({{"x-role", "old"}}));
+    test.requireSuccess(test.request("Changed"));
+    auto replacement = std::dynamic_pointer_cast<ReloadTestDataSource>(after.sources[1].dataSource);
+    REQUIRE(replacement->fills == 1);
+    REQUIRE(test.constructions == 3);
+}
+
+TEST_CASE(
+    "Reloading add-ons invalidates only their composed map",
+    "[DataSourceConfig][config-reload][add-on]")
+{
+    std::atomic_bool addOnReady{false};
+    std::atomic_bool invalidatedBeforeReady{false};
+    ConfigReloadTest test;
+    std::string const disabled = R"(sources:
+  - {type: Reload, mapId: Base}
+  - {type: Reload, mapId: Other}
+  - {type: Reload, mapId: Base, addOn: true, enabled: false}
+)";
+    test.load(disabled);
+    auto before = test.settled();
+    REQUIRE(before.sources.size() == 2);
+    auto base = std::dynamic_pointer_cast<ReloadTestDataSource>(before.sources[0].dataSource);
+    auto other = std::dynamic_pointer_cast<ReloadTestDataSource>(before.sources[1].dataSource);
+    test.requireSuccess(test.request("Base"));
+    test.requireSuccess(test.request("Other"));
+
+    base->pauseFills = true;
+    auto inFlight = std::make_shared<LayerTilesRequest>(
+        "Base",
+        "Features",
+        std::vector<PartitionId>{TileId::fromTileXY(1, 0, 3)});
+    inFlight->onDone_ =
+        [&invalidatedBeforeReady, service = test.service.get()](RequestStatus status)
+    {
+        // Invalidation invokes external completion callbacks. Re-entering the
+        // catalog must work, and the new composition must not be Ready yet.
+        auto catalog = service->sourceCatalog();
+        invalidatedBeforeReady = status == RequestStatus::Aborted &&
+            std::ranges::any_of(catalog.sources,
+                                [](auto const& entry) {
+                                    return entry.descriptor.addOn &&
+                                        entry.status == DataSourceCatalogStatus::Initializing;
+                                });
+    };
+    REQUIRE(test.service->request({inFlight}));
+    waitForCondition([&] { return base->fills == 2; });
+
+    // Enabling an add-on changes the cached composition without replacing the
+    // primary. Wait for its Ready notification, after cache invalidation finishes.
+    auto subscription = test.service->subscribeToSourceCatalogChanges(
+        [&addOnReady, service = test.service.get()](DataSourceCatalogChange const& change)
+        {
+            if (change.sourceUpdate && change.sourceUpdate->descriptor.addOn &&
+                change.sourceUpdate->status == DataSourceCatalogStatus::Ready)
+            {
+                // Observers can re-enter the catalog; publication must not hold its lock.
+                addOnReady = service->sourceCatalogRevision() >= change.revision;
+            }
+        });
+    test.load(R"(sources:
+  - {type: Reload, mapId: Base}
+  - {type: Reload, mapId: Other}
+  - {type: Reload, mapId: Base, addOn: true}
+)");
+    auto enabled = test.settled();
+    waitForCondition([&] { return addOnReady.load(); });
+    REQUIRE(invalidatedBeforeReady);
+    REQUIRE(inFlight->getStatus() == RequestStatus::Aborted);
+    base->pauseFills = false;
+    REQUIRE(enabled.sources.size() == 3);
+    REQUIRE(enabled.sources[0].dataSource == base);
+    REQUIRE(enabled.sources[1].dataSource == other);
+    auto addOn = std::dynamic_pointer_cast<ReloadTestDataSource>(enabled.sources[2].dataSource);
+    test.requireSuccess(test.request("Base"));
+    test.requireSuccess(test.request("Other"));
+    REQUIRE(base->fills == 3);
+    REQUIRE(addOn->fills == 1);
+    REQUIRE(other->fills == 1);
+
+    test.load(disabled);
+    auto removed = test.settled();
+    REQUIRE(removed.sources.size() == 2);
+    REQUIRE(removed.sources[0].dataSource == base);
+    test.requireSuccess(test.request("Base"));
+    test.requireSuccess(test.request("Other"));
+    REQUIRE(base->fills == 4);
+    REQUIRE(addOn->fills == 1);
+    REQUIRE(other->fills == 1);
+    REQUIRE(test.constructions == 3);
+}
+
+TEST_CASE(
+    "Shared settings and config path changes prevent datasource reuse",
+    "[DataSourceConfig][config-reload]")
+{
+    ConfigReloadTest test;
+    std::string const original = "shared: {url: first}\nsources: [{type: Reload, mapId: Map}]\n";
+    test.load(original);
+    auto before = test.settled();
+    REQUIRE(before.sources.size() == 1);
+
+    test.load("sources: [{mapId: Map, type: Reload}]\nshared:\n  url: first\n");
+    auto same = test.settled();
+    REQUIRE(same.sources[0].dataSource == before.sources[0].dataSource);
+
+    std::string const changed = "shared: {url: second}\nsources: [{type: Reload, mapId: Map}]\n";
+    test.load(changed);
+    auto sharedChanged = test.settled();
+    REQUIRE(sharedChanged.sources[0].dataSource != before.sources[0].dataSource);
+
+    test.load(changed, "moved.yaml");
+    auto moved = test.settled();
+    REQUIRE(moved.sources[0].dataSource != sharedChanged.sources[0].dataSource);
+    REQUIRE(test.constructions == 3);
+}
+
+TEST_CASE(
+    "Explicit source IDs preserve instances across catalog reordering",
+    "[DataSourceConfig][config-reload]")
+{
+    ConfigReloadTest test;
+    test.load(R"(sources:
+  - {type: Reload, sourceId: first, mapId: First}
+  - {type: Reload, sourceId: second, mapId: Second}
+)");
+    auto before = test.settled();
+    REQUIRE(before.sources.size() == 2);
+    test.load(R"(sources:
+  - {type: Reload, sourceId: second, mapId: Second}
+  - {type: Reload, sourceId: first, mapId: First}
+)");
+    auto after = test.settled();
+    REQUIRE(after.sources.size() == 2);
+    REQUIRE(after.sources[0].descriptor.sourceId == "second");
+    REQUIRE(after.sources[0].descriptor.configIndex == 0);
+    REQUIRE(after.sources[0].dataSource == before.sources[1].dataSource);
+    REQUIRE(after.sources[1].descriptor.sourceId == "first");
+    REQUIRE(after.sources[1].descriptor.configIndex == 1);
+    REQUIRE(after.sources[1].dataSource == before.sources[0].dataSource);
+    REQUIRE(test.constructions == 2);
+}
+
+TEST_CASE(
+    "Reload retains ready sources but rejects superseded constructor callbacks",
+    "[DataSourceConfig][config-reload]")
+{
+    std::atomic_bool started{false};
+    std::atomic_bool finished{false};
+    ConfigReloadTest test;
+    DataSourceConfigService::get().registerDataSourceType(
+        "SlowReload",
+        [&](YAML::Node const&, DataSourceInitContext& context) -> DataSource::Ptr
+        {
+            started = true;
+            while (!context.isCancelled()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            context.setStatusMessage("Late status must not overwrite retained rows.");
+            context.setProgress(99.0f);
+            finished = true;
+            return std::make_shared<NamedTestDataSource>("Obsolete");
+        });
+    test.load("sources: [{type: Reload, mapId: Ready}, {type: SlowReload}]\n");
+    waitForCondition(
+        [&]
+        {
+            auto catalog = test.service->sourceCatalog();
+            return started && catalog.sources.size() == 2 &&
+                catalog.sources[0].status == DataSourceCatalogStatus::Ready;
+        });
+    auto ready = test.service->sourceCatalog().sources[0];
+    test.load("sources: [{type: Reload, mapId: Ready}, {type: SlowReload, enabled: false}]\n");
+    auto after = test.settled();
+    waitForCondition([&] { return finished.load(); });
+    REQUIRE(after.sources.size() == 1);
+    REQUIRE(after.sources[0].dataSource == ready.dataSource);
+    REQUIRE(after.sources[0].info == ready.info);
+    REQUIRE(after.sources[0].statusMessage.empty());
+    REQUIRE_FALSE(after.sources[0].progress);
+    REQUIRE(test.service->info().size() == 1);
+    REQUIRE(test.constructions == 1);
+}
+
+TEST_CASE(
+    "Reload retries failed constructors while retaining ready sources",
+    "[DataSourceConfig][config-reload]")
+{
+    std::atomic_bool recover{false};
+    std::atomic_size_t attempts{0};
+    ConfigReloadTest test;
+    DataSourceConfigService::get().registerDataSourceType(
+        "RetryReload",
+        [&](YAML::Node const&) -> DataSource::Ptr
+        {
+            ++attempts;
+            if (!recover) {
+                return {};
+            }
+            return std::make_shared<NamedTestDataSource>("Recovered");
+        });
+    std::string const config = "sources: [{type: Reload, mapId: Ready}, {type: RetryReload}]\n";
+    test.load(config);
+    auto before = test.settled();
+    REQUIRE(before.sources.size() == 2);
+    REQUIRE(before.sources[1].status == DataSourceCatalogStatus::Failed);
+    recover = true;
+    test.load(config);
+    auto after = test.settled();
+    REQUIRE(after.sources.size() == 2);
+    REQUIRE(after.sources[0].dataSource == before.sources[0].dataSource);
+    REQUIRE(after.sources[1].status == DataSourceCatalogStatus::Ready);
+    REQUIRE(attempts == 2);
+    REQUIRE(test.constructions == 1);
 }
 
 TEST_CASE("Config JSON preserves empty container types in YAML", "[DataSourceConfig]")

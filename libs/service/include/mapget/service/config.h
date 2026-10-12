@@ -164,6 +164,14 @@ public:
     [[nodiscard]] DataSourceDescriptor describeDataSource(YAML::Node const& descriptor, uint32_t configIndex) const;
 
     /**
+     * Identify constructor inputs for ready-instance reuse, including the config
+     * path and all shared settings outside `sources`. Ignores YAML map order and
+     * presentation, but preserves scalar spelling, sequence order and explicit tags.
+     * The opaque hash must not be used as a public datasource or string-pool ID.
+     */
+    [[nodiscard]] std::string dataSourceConfigFingerprint(YAML::Node const& descriptor) const;
+
+    /**
      * Registers a constructor for a given data source type.
      * @param typeName The name of the data source type.
      * @param constructor The constructor function to call for this data source type.
@@ -272,6 +280,9 @@ private:
 
     // Last config loaded.
     std::string lastConfigSHA256_;
+
+    /** Hash of the last accepted config path and non-source settings. */
+    std::string dataSourceContextFingerprint_;
 
     // Map of subscription IDs to their respective callback functions.
     // Note: This MUST be an ORDERED map, because the subscription call order is important.

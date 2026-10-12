@@ -28,6 +28,26 @@ Embedded applications can also register additional public top-level sections for
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
+Reloading reconciles individual datasource rows. An already-ready datasource
+keeps its instance, string pool, cached tiles and in-flight requests when its
+effective `sourceId` and complete constructor configuration are unchanged.
+For example, disabling one source does not reconnect the other ready sources.
+YAML key order, quoting and comments do not force reconstruction; scalar
+spelling, explicit type tags and sequence order remain significant.
+
+New or changed sources initialize asynchronously. Removed or disabled sources
+are withdrawn, and their maps are invalidated. Failed sources are retried on a
+reload; unfinished constructors are cancelled and restarted with the new
+generation. Changing shared settings outside `sources`, or the config file
+path, conservatively reconstructs all configured sources. To deliberately
+reconnect an otherwise unchanged source, disable it, apply, then re-enable it.
+Adding or removing an add-on invalidates its composed map's tiles even when
+the primary datasource itself is retained.
+
+The default source identity is `datasource-<configIndex>`. Moving a row changes
+that default identity; an explicit unchanged `sourceId` permits instance reuse
+across reordering while `configIndex` continues to reflect current YAML order.
+
 Agent access is opt-in through `--mcp local` or `--mcp oauth`; the default is
 `off`. All MCP options share the normal CLI11/YAML pipeline under `mapget.serve`,
 with CLI values overriding YAML (including complete replacement of lists).

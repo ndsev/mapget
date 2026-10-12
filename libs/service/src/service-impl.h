@@ -22,6 +22,8 @@ struct Service::Impl
     mutable std::shared_mutex catalogMutex_;
     std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
     std::vector<DataSource::Ptr> dataSourcesFromConfig_;
+    /** Constructor-input hashes indexed by YAML row, including disabled rows. */
+    std::vector<std::string> dataSourceConfigFingerprints_;
     size_t dataSourceConstructionFailed_ = 0;
     std::vector<DataSourceCatalogEntry> sourceCatalog_;
     uint64_t sourceCatalogGeneration_ = 0;
@@ -161,7 +163,7 @@ struct Service::Impl
         uint64_t generation,
         YAML::Node configNode,
         DataSourceDescriptor descriptor);
-    /** Replace config-backed sources and launch constructors in YAML order. */
+    /** Retain unchanged ready sources and replace other config-backed rows in YAML order. */
     void applyDataSourceConfig(std::vector<YAML::Node> const& dataSourceConfigNodes);
 
     /** Return detached authorized metadata for the legacy Service::info API. */

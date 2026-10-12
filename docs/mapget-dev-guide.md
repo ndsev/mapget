@@ -261,6 +261,22 @@ service catalog separately assigns `sourceId`. Only one primary datasource may
 advertise a map; add-ons compose behind it. This constraint keeps
 `MapPartitionKey` sufficient for cache and in-flight identity.
 
+Config reloads reconcile ready registrations instead of tearing down the whole
+catalog. `DataSourceConfigService` fingerprints parsed YAML structure, including
+the complete descriptor, config path and shared non-source settings.
+`Service::Impl::applyDataSourceConfig` reuses a ready row only when both its
+effective `sourceId` and fingerprint match. The existing datasource, detached
+metadata and scheduler registration remain intact; no dictionary ID is copied
+onto a newly constructed instance. Withdrawn registrations invalidate their
+maps. Newly ready add-ons also invalidate their composed primary map even if
+its primary instance is retained; unrelated maps keep their cached tiles.
+
+The catalog remains in current YAML order and publishes a new revision.
+Unfinished constructors retain the existing generation-based cancellation and
+late-publication guards; they are not migrated between generations. Failed
+rows are eligible for construction again. Fingerprints stay private and must
+not become public datasource identities or string-pool namespaces.
+
 There are no stages and no backend feature LOD. Datasources give
 geometries stable semantic names. Validities which target a particular
 geometry use the same name. A layer-local table represents up to 255 names in
