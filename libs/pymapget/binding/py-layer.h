@@ -496,14 +496,9 @@ void bindTileLayer(py::module_& m)
         .def("warnings", &PartitionLayer::warnings)
         .def("add_warning", &PartitionLayer::addWarning)
         .def("set_warnings", &PartitionLayer::setWarnings)
-        .def("error_retry_after_ms", [](PartitionLayer const& self) -> std::optional<int64_t> {
-            if (auto delay = self.errorRetryAfter()) return delay->count();
-            return std::nullopt;
-        })
-        .def("set_error_retry_after_ms", [](PartitionLayer& self, std::optional<int64_t> ms) {
-            self.setErrorRetryAfter(ms ? std::make_optional(std::chrono::milliseconds(*ms)) : std::nullopt);
-        })
-        .def("to_service_json", [](PartitionLayer const& self) { return self.toServiceJson().dump(); })
+        .def(
+            "to_service_json",
+            [](PartitionLayer const& self) { return self.toServiceJson().dump(); })
         .def("error_code", &PartitionLayer::errorCode, "Get the tile error code if one was set.")
         .def(
             "set_error_code",

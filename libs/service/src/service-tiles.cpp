@@ -11,6 +11,7 @@ namespace mapget::detail
 namespace
 {
 
+/** Apply normal TTL precedence to successful tiles. */
 void applyTtlFallback(
     PartitionLayer& tile,
     DataSource& dataSource,
@@ -124,7 +125,16 @@ void TileLoadJob::run() noexcept
             raise("DataSource::get() returned null.");
         }
 
-        applyTtlFallback(*layer, *source_->source->dataSource, scheduler_.defaultTtl_);
+        if (layer->error()) {
+            // Failures expire independently of the successful-tile policy, which
+            // may be infinite. Preserve a shorter positive producer lifetime.
+            if (!layer->ttl() || layer->ttl()->count() <= 0 ||
+                *layer->ttl() > scheduler_.errorTileTtl_)
+                layer->setTtl(scheduler_.errorTileTtl_);
+        }
+        else {
+            applyTtlFallback(*layer, *source_->source->dataSource, scheduler_.defaultTtl_);
+        }
 
         if (layer->layerInfo()->type_ == LayerType::Features) {
             loadAddOnTiles(
@@ -338,7 +348,6 @@ PartitionFeatureLayer::Ptr restrictFeatureLayerForResponse(
     result->setWarnings(source->warnings());
     result->setError(source->error());
     result->setErrorCode(source->errorCode());
-    result->setErrorRetryAfter(source->errorRetryAfter());
     result->setGeometryAnchor(source->geometryAnchor());
     if (auto legalInfo = source->legalInfo()) {
         result->setLegalInfo(*legalInfo);

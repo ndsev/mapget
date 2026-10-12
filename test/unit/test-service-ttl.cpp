@@ -520,7 +520,8 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
     SECTION("Global TTL default applied when datasource TTL is not set")
     {
         const auto globalTtl = 10ms;
-        Service service(cache, false, globalTtl);
+        // A separate error cap must not change the successful-tile fallback.
+        Service service(cache, false, globalTtl, 1, 7s);
         auto ds = std::make_shared<TestTtlDataSource>();
         service.add(ds);
 

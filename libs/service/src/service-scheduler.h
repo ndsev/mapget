@@ -77,7 +77,8 @@ public:
         DataSourceRegistry& dataSources,
         Cache::Ptr cache,
         std::optional<std::chrono::milliseconds> defaultTtl,
-        size_t workerCount);
+        size_t workerCount,
+        std::chrono::milliseconds errorTileTtl);
     /** Stop and join workers before releasing scheduler-owned state. */
     ~ServiceScheduler() noexcept;
 
@@ -207,6 +208,7 @@ private:
     DataSourceRegistry& dataSources_;
     Cache::Ptr cache_;
     std::optional<std::chrono::milliseconds> defaultTtl_;
+    const std::chrono::milliseconds errorTileTtl_;
 
     mutable std::mutex mutex_;
     std::condition_variable jobsAvailable_;

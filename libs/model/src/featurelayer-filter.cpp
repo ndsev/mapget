@@ -1621,6 +1621,28 @@ FeatureLayerFilterRequest::SourceEvaluation::run(
         });
     }
 
+    // Errors are tile values with a finite lifetime, not failed filter requests.
+    // Do not evaluate a partially converted model; retain its diagnostic instead.
+    if (sourceLayer.error()) {
+        FeatureLayerFilterSourceResult result;
+        result.sourceFeatureCount_ = static_cast<uint32_t>(sourceLayer.size());
+        if (materializeOutput) {
+            result.layer_ = std::make_shared<PartitionSubsetLayer>(
+                sourceLayer.partitionId(),
+                sourceLayer.stringPoolId(),
+                sourceLayer.mapId(),
+                sourceLayer.layerInfo(),
+                sourceLayer.strings(),
+                request.filterId_,
+                request.generation_);
+            result.layer_->adoptSourceInfo(sourceLayer);
+            result.layer_->setError(sourceLayer.error());
+            result.layer_->setErrorCode(sourceLayer.errorCode());
+            result.layer_->addDependency(MapPartitionKey(sourceLayer), result.sourceFeatureCount_);
+        }
+        return result;
+    }
+
     SourceEvaluation evaluation(
         request,
         sourceLayer,

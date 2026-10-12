@@ -61,7 +61,8 @@ struct Service::Impl
         Cache::Ptr cache,
         bool useDataSourceConfig,
         std::optional<std::chrono::milliseconds> defaultTtl,
-        size_t workerCount);
+        size_t workerCount,
+        std::chrono::milliseconds errorTileTtl);
     /** Stop source construction before draining and joining homogeneous workers. */
     ~Impl();
 

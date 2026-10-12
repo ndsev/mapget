@@ -87,10 +87,20 @@ sources:
     ttl: 60  # Override default TTL, one minute for this datasource.
 mapget:
   serve:
-    ttl: 86400 # Default TTL: One day (60s/m * 60m/h * 12h/d)
+    ttl: 86400 # Default TTL: One day.
+    error-tile-ttl: 5 # Maximum lifetime of failed tiles; must be positive.
 ```
 
 **Note:** Any TTL default value is only applied if the datasource itself has not already set a TTL directly for the tile.
+
+Failed tile values use a separate upper bound: `mapget.serve.error-tile-ttl`
+(CLI: `--error-tile-ttl`), in whole seconds, default `5`. Zero and negative values
+are rejected; failures must not inherit an infinite successful-tile lifetime.
+A shorter positive tile-specific TTL is preserved. Error tiles and their derived
+filter outputs use ordinary cache expiry, not a separate request retry loop.
+This startup setting does not change successful empty tiles or a datasource's
+own raw negative cache. C++ embedders use `HttpServiceConfig::errorTileTtl` or
+the final `Service` constructor argument; Python uses `Service(error_tile_ttl_ms=5000)`.
 
 <!-- --8<-- [end:ttl] -->
 

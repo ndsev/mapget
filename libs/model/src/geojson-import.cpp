@@ -1322,12 +1322,6 @@ void importGeoJson(
         if (errorJson.contains("code")) {
             tile.setErrorCode(errorJson.at("code").get<int>());
         }
-        if (errorJson.contains("retryAfterMs")) {
-            auto const& delay = errorJson.at("retryAfterMs");
-            if (!delay.is_number_integer() || delay.get<int64_t>() <= 0 || !tile.error())
-                raiseImport("retryAfterMs requires an error message and positive integer milliseconds.");
-            tile.setErrorRetryAfter(std::chrono::milliseconds(delay.get<int64_t>()));
-        }
     }
 
     std::vector<DeferredAttributeValidity> deferredValidities;

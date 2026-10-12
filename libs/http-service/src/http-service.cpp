@@ -12,7 +12,12 @@ namespace mapget
 {
 
 HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
-    : Service(std::move(cache), config.watchConfig, config.defaultTtl, config.workerCount),
+    : Service(
+          std::move(cache),
+          config.watchConfig,
+          config.defaultTtl,
+          config.workerCount,
+          config.errorTileTtl),
       impl_(std::make_unique<Impl>(*this, config))
 {
 }

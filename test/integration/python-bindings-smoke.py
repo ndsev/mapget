@@ -36,6 +36,13 @@ def main() -> int:
     assert hasattr(mapget, "TileSubsetLayer")
     assert mapget.TileId is PackedTileId
     assert mapget.PackedTileId is PackedTileId
+    for invalid_ttl in (0, -1):
+        try:
+            mapget.Service(worker_count=1, error_tile_ttl_ms=invalid_ttl)
+        except RuntimeError as error:
+            assert "Error tile TTL must be greater than zero" in str(error)
+        else:
+            raise AssertionError("Service accepted a nonpositive error tile TTL")
     parsed_key = mapget.MapTileKey("Features:Map:WayLayer:65536")
     assert isinstance(parsed_key.tile_id, PackedTileId)
     assert parsed_key.tile_id.value == 65536
@@ -64,13 +71,8 @@ def main() -> int:
         tile.set_warnings([])
         assert tile.warnings() == []
         tile.add_warning("nonfatal duplicate fixture")
-        assert tile.error_retry_after_ms() is None
         tile.set_error("temporary outage")
-        tile.set_error_retry_after_ms(5000)
-        assert tile.error_retry_after_ms() == 5000
-        # Replacing an error must clear its former retry policy.
         tile.set_error("permanent conversion error")
-        assert tile.error_retry_after_ms() is None
         tile.set_error(None)
         assert tile.legal_info() is None
         tile.set_legal_info("Source copyright and terms")
@@ -278,6 +280,7 @@ def main() -> int:
         assert object_tile["features"][0]["id"] == f"Road.{object_id}.1"
 
         source_tile = _get_json(f"{base_url}/tile?layer=RawLayer&tileId=65536&responseType=json")
+        assert source_tile.pop("timestamp") > 0
         assert source_tile == {
             "type": "SourceData", "mapId": "Map", "mapgetLayerId": "RawLayer",
             "partition": {"kind": "tile", "id": 65536},

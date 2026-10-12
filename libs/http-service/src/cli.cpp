@@ -592,6 +592,7 @@ struct ServeCommand
     std::string webapp_;
     std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
+    int64_t errorTileTtlSeconds_ = Service::DEFAULT_ERROR_TILE_TTL.count();
     size_t workerCount_ = Service::defaultWorkerCount();
     uint64_t memoryTrimPeriodSeconds_ =
         static_cast<uint64_t>(HttpServiceConfig{}.memoryTrimPeriod.count());
@@ -668,6 +669,12 @@ struct ServeCommand
             ->default_val(ttlSeconds_);
         serveCmd
             ->add_option(
+                "--error-tile-ttl",
+                errorTileTtlSeconds_,
+                "Maximum TTL for failed tiles in seconds (must be positive).")
+            ->default_val(errorTileTtlSeconds_);
+        serveCmd
+            ->add_option(
                 "--worker-count",
                 workerCount_,
                 "Maximum number of tile-loading and derived-evaluation jobs executing across the "
@@ -732,6 +739,13 @@ struct ServeCommand
         }
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
+        }
+        if (errorTileTtlSeconds_ <= 0 ||
+            errorTileTtlSeconds_ >
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+                    .count())
+        {
+            raise("Error tile TTL must be positive and fit a millisecond duration.");
         }
         if (workerCount_ == 0) {
             raise("Worker count must be greater than zero.");
@@ -800,6 +814,7 @@ struct ServeCommand
         httpConfig.watchConfig = config && *config;
         httpConfig.defaultTtl = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::seconds(ttlSeconds_));
+        httpConfig.errorTileTtl = std::chrono::seconds(errorTileTtlSeconds_);
         httpConfig.workerCount = workerCount_;
         httpConfig.memoryTrimPeriod = std::chrono::seconds(memoryTrimPeriodSeconds_);
         httpConfig.cacheResetEnabled = allowCacheReset_;

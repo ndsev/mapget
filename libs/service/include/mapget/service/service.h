@@ -493,6 +493,9 @@ public:
      */
     [[nodiscard]] static size_t defaultWorkerCount() noexcept;
 
+    /** Default upper bound for failed tile lifetimes, independent of successful tile TTLs. */
+    static constexpr auto DEFAULT_ERROR_TILE_TTL = std::chrono::seconds{5};
+
     /**
      * Construct a service with a shared Cache instance. Note: The Cache must not
      * be null. For a simple default cache implementation, you can use the
@@ -504,12 +507,15 @@ public:
      *  overridden by datasource or tile-specific TTL.
      * @param workerCount Maximum number of source-tile jobs that may load and
      *  process attached consumers concurrently across the whole service.
+     * @param errorTileTtl Positive upper bound for error-tile lifetimes. A shorter
+     *  positive tile-specific TTL takes precedence; successful tiles are unaffected.
      */
     explicit Service(
         Cache::Ptr cache = std::make_shared<MemCache>(),
         bool useDataSourceConfig = false,
         std::optional<std::chrono::milliseconds> defaultTtl = std::chrono::milliseconds{0},
-        size_t workerCount = defaultWorkerCount());
+        size_t workerCount = defaultWorkerCount(),
+        std::chrono::milliseconds errorTileTtl = DEFAULT_ERROR_TILE_TTL);
 
     /** Destructor. Stops the global worker pool and datasource construction threads. */
     ~Service();

@@ -928,7 +928,9 @@ TEST_CASE(
     std::filesystem::remove(cachePath);
 }
 
-TEST_CASE("Fatal tiles are uncached while warning diagnostics survive cache and service JSON", "[Cache][warnings]")
+TEST_CASE(
+    "Failed tiles expire normally while warning diagnostics survive cache and service JSON",
+    "[Cache][warnings]")
 {
     auto path = createTempCachePath("diagnostics-cache-");
     std::shared_ptr<Cache> cache;
@@ -939,11 +941,19 @@ TEST_CASE("Fatal tiles are uncached while warning diagnostics survive cache and 
     auto tile = std::make_shared<PartitionFeatureLayer>(TileId::fromTileXY(0, 0, 1), "diagnostics", "Map", info, strings);
     auto source = createTestDataSourceInfo("diagnostics", "Map", info);
     tile->setError("503");
+    tile->setTtl(std::chrono::seconds(5));
     cache->putTileLayer(tile);
-    REQUIRE_FALSE(cache->getTileLayer(tile->id(), source).tile);
-    tile->setTtl(std::chrono::milliseconds(0));
+    auto failed = cache->getTileLayer(tile->id(), source);
+    REQUIRE(failed.tile);
+    REQUIRE(failed.tile->error() == tile->error());
+    tile->setTimestamp(std::chrono::system_clock::now() - std::chrono::seconds(6));
     cache->putTileLayer(tile);
-    REQUIRE_FALSE(cache->getTileLayer(tile->id(), source).tile);
+    auto expired = cache->getTileLayer(tile->id(), source);
+    REQUIRE_FALSE(expired.tile);
+    REQUIRE(
+        expired.expiredAt ==
+        std::chrono::time_point_cast<std::chrono::microseconds>(tile->timestamp() + *tile->ttl()));
+    tile->setTimestamp(std::chrono::system_clock::now());
     tile->setError(std::nullopt);
     tile->addWarning("duplicate feature id");
     cache->putTileLayer(tile);
@@ -951,22 +961,19 @@ TEST_CASE("Fatal tiles are uncached while warning diagnostics survive cache and 
     REQUIRE(restored);
     REQUIRE(restored->warnings() == tile->warnings());
     REQUIRE_FALSE(restored->error());
-    // A fatal blob already in storage must also be evicted instead of reused.
-    tile->setError("previously cached outage");
-    TileLayerStream::StringPoolOffsetMap offsets;
-    TileLayerStream::Writer writer([&](std::string frame, auto type) {
-        if (type == TileLayerStream::MessageType::PartitionFeatureLayer)
-            cache->putTileLayerBlob(tile->id(), frame);
-    }, offsets);
-    writer.write(tile);
-    REQUIRE_FALSE(cache->getTileLayer(tile->id(), source).tile);
-    REQUIRE_FALSE(cache->getTileLayerBlob(tile->id()));
     auto metadataInfo = createMetadataSourceDataLayerInfo();
     PartitionSourceDataLayer metadata(TileId{}, "diagnostics", "Map", metadataInfo, strings);
     metadata.addWarning("partial metadata");
+    metadata.setTtl(std::chrono::seconds(5));
     REQUIRE(metadata.toJson().is_array());
     REQUIRE(metadata.toServiceJson()["data"] == metadata.toJson());
     REQUIRE(metadata.toServiceJson()["warnings"] == metadata.warnings());
+    REQUIRE(metadata.toServiceJson()["ttl"] == 5000);
+    REQUIRE(
+        metadata.toServiceJson()["timestamp"] ==
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            metadata.timestamp().time_since_epoch())
+            .count());
     cache.reset();
     std::filesystem::remove(path);
 }

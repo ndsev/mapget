@@ -750,10 +750,10 @@ include `Cache-Control: private, no-store`.
 
 <!-- --8<-- [end:config-endpoints] -->
 
-## Nonfatal tile warnings and retry hints
+## Tile diagnostics and expiry
 
 Binary tile headers and JSONL responses preserve nonfatal `warnings: string[]` independently of `error`. A tile with warnings and no error is usable. Feature-restricted responses, addon enrichment and filtered outputs preserve relevant warnings, including warnings from dependencies that yielded no matching entries. Nonlocal filter warnings identify their source partition. Source-data service JSON uses a `SourceData` envelope with the raw roots under `data`; the in-process source-data `toJson()` API remains an array.
 
-Transient fatal errors can carry a positive `error.retryAfterMs` in tile JSON. Filter failure statuses expose the equivalent top-level `retryAfterMs`. Retry only still-demanded, unfinished outputs after that delay; retained successful outputs need not be refreshed. Stateless requests terminate with their diagnostics. The server does not keep them open through an outage.
+Fatal tile values are cached for at most `mapget.serve.error-tile-ttl` seconds (default five), using ordinary `timestamp` and `ttl` metadata. Service JSON envelopes expose both too (`timestamp` in Unix microseconds, `ttl` in milliseconds). Filtered outputs propagate their dependencies' errors and earliest expiry; healthy outputs still complete normally. Consumers renew only still-retained, expired values. A failed tile must not suppress unrelated new viewport coverage. Invalid filter definitions and request-level failures remain request errors, not expiring tile values. Stateless requests terminate with their diagnostics; the server does not keep them open through an outage.
 
-Catalog snapshots and source-change deltas expose a `retrying` boolean. It stays true while a failed constructor is waiting or attempting recovery, then clears on success or terminal failure. The lifecycle status remains `failed` until ready. Older producers may omit this field. A producer may explicitly classify a service failure with `info.serviceError`; filter failures propagate this as `serviceError` and identify the originating `errorSourceMapId`, including dependency failures. Consumers must not infer service failure or retry eligibility from numeric error codes or message text.
+Catalog snapshots and source-change deltas expose a `retrying` boolean for datasource **initialization**. It stays true while a failed constructor is waiting or attempting recovery, then clears on success or terminal failure. The lifecycle status remains `failed` until ready. Constructor retry policy and browser transport reconnection are independent of runtime tile expiry.

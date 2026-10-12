@@ -263,17 +263,11 @@ PartitionLayer::PartitionLayer(
         s.value4b(*errorCode_);
     }
 
-    s.container(warnings_, std::numeric_limits<uint32_t>::max(), [](auto& serializer, auto& warning) {
-        serializer.text1b(warning, std::numeric_limits<uint32_t>::max());
-    });
-    bool hasRetryAfter = false;
-    s.value1b(hasRetryAfter);
-    if (hasRetryAfter) {
-        int64_t delay = 0;
-        s.value8b(delay);
-        setErrorRetryAfter(milliseconds(delay));
-    }
-
+    s.container(
+        warnings_,
+        std::numeric_limits<uint32_t>::max(),
+        [](auto& serializer, auto& warning)
+        { serializer.text1b(warning, std::numeric_limits<uint32_t>::max()); });
     bool hasLegalInfo = false;
     s.value1b(hasLegalInfo);
     if (hasLegalInfo) {
@@ -371,7 +365,6 @@ void PartitionLayer::setLayerInfo(const std::shared_ptr<LayerInfo>& info)
 void PartitionLayer::setError(const std::optional<std::string>& err)
 {
     error_ = err;
-    errorRetryAfter_.reset();
 }
 
 void PartitionLayer::addWarning(std::string warning)
@@ -385,13 +378,6 @@ void PartitionLayer::setWarnings(std::vector<std::string> warnings)
     warnings_.clear();
     for (auto& warning : warnings)
         addWarning(std::move(warning));
-}
-
-void PartitionLayer::setErrorRetryAfter(std::optional<std::chrono::milliseconds> delay)
-{
-    if (delay && (delay->count() <= 0 || !error_))
-        throw std::invalid_argument("A retry delay requires a fatal error and positive milliseconds.");
-    errorRetryAfter_ = delay;
 }
 
 std::optional<int> PartitionLayer::errorCode() const
@@ -463,12 +449,11 @@ tl::expected<void, simfil::Error> PartitionLayer::write(std::ostream& outputStre
     s.value1b(errorCode_.has_value());
     if (errorCode_)
         s.value4b(*errorCode_);
-    s.container(warnings_, std::numeric_limits<uint32_t>::max(), [](auto& serializer, auto& warning) {
-        serializer.text1b(warning, std::numeric_limits<uint32_t>::max());
-    });
-    s.value1b(errorRetryAfter_.has_value());
-    if (errorRetryAfter_)
-        s.value8b(errorRetryAfter_->count());
+    s.container(
+        warnings_,
+        std::numeric_limits<uint32_t>::max(),
+        [](auto& serializer, auto& warning)
+        { serializer.text1b(warning, std::numeric_limits<uint32_t>::max()); });
     s.value1b(legalInfo_.has_value());
     if (legalInfo_.has_value()) {
         s.text1b(legalInfo_.value(), std::numeric_limits<uint32_t>::max());
@@ -494,8 +479,8 @@ void PartitionLayer::addDiagnosticsToJson(nlohmann::json& result) const
     if (error_ || errorCode_) {
         auto& error = result["error"] = nlohmann::json::object();
         if (error_) error["message"] = *error_;
-        if (errorCode_) error["code"] = *errorCode_;
-        if (errorRetryAfter_) error["retryAfterMs"] = errorRetryAfter_->count();
+        if (errorCode_)
+            error["code"] = *errorCode_;
     }
 }
 
@@ -508,6 +493,13 @@ nlohmann::json PartitionLayer::toServiceJson() const
                   {"data", std::move(result)}};
     }
     addDiagnosticsToJson(result);
+    // Service envelopes expose the same lifetime as binary headers, including
+    // subset/source-data responses whose model JSON has no header fields.
+    result["timestamp"] =
+        std::chrono::duration_cast<std::chrono::microseconds>(timestamp_.time_since_epoch())
+            .count();
+    if (ttl_)
+        result["ttl"] = ttl_->count();
     return result;
 }
 

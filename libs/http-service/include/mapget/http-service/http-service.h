@@ -28,6 +28,8 @@ struct HttpServiceConfig
 {
     bool watchConfig = false;
     std::chrono::milliseconds defaultTtl{0};
+    /** Positive upper bound for failed tile lifetimes; does not affect successful tiles. */
+    std::chrono::milliseconds errorTileTtl = Service::DEFAULT_ERROR_TILE_TTL;
     /** Maximum number of jobs executing across the homogeneous service worker pool. */
     size_t workerCount = Service::defaultWorkerCount();
     /** Enable POST /cache/reset. Disabled by default. */

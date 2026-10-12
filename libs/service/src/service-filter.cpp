@@ -113,6 +113,8 @@ void FilterRequestExecution::SourceTileContribution::addMemoryUsage(MemoryUsageB
     const
 {
     usage.add("warnings", stringVectorMemoryUsage(warnings_));
+    if (error_)
+        usage.add("error", stringMemoryUsage(*error_));
     usage.add("point-group-members", vectorMemoryUsage(pointGroupMembers_));
     for (auto const& member : pointGroupMembers_) {
         if (member.geometryName_) {
@@ -829,9 +831,7 @@ void FilterRequestExecution::finishIfComplete()
     request->setStatus(finalStatus);
 }
 
-void FilterRequestExecution::fail(simfil::Error const& error,
-                                  std::optional<std::chrono::milliseconds> retryAfter,
-                                  PartitionLayer const* failedLayer)
+void FilterRequestExecution::fail(simfil::Error const& error)
 {
     if (request->isCancelled()) {
         return;
@@ -852,12 +852,6 @@ void FilterRequestExecution::fail(simfil::Error const& error,
         error.message);
     auto status = makeFilterStatusJson(*request, "Failed");
     status["error"] = error.message;
-    if (retryAfter) status["retryAfterMs"] = retryAfter->count();
-    if (failedLayer) {
-        status["errorSourceMapId"] = failedLayer->id().mapId_;
-        auto const& info = failedLayer->info();
-        status["serviceError"] = info.is_object() && info.contains("serviceError") && info["serviceError"] == true;
-    }
     request->notifyProgress(status);
     abortChildRequests();
     request->setStatus(RequestStatus::Aborted);
@@ -892,7 +886,7 @@ void FilterRequestExecution::collect(PartitionFeatureLayer::Ptr layer)
             // second delivery is an internal scheduler violation.
             duplicate = true;
         }
-        else if (!layer->error()) {
+        else {
             receivedSourceTiles[sourceIndex] = true;
             ++loadedSourceTiles;
             ++activeEvaluations;
@@ -905,16 +899,6 @@ void FilterRequestExecution::collect(PartitionFeatureLayer::Ptr layer)
         });
         return;
     }
-    if (auto error = layer->error()) {
-        // Remote sources can report failure in a successfully transported tile.
-        // Do not turn that failure into a successful, empty filter result.
-        fail(simfil::Error{
-            simfil::Error::RuntimeError,
-            fmt::format("Filter source tile {} failed: {}", layer->id().toString(), *error),
-        }, layer->errorRetryAfter(), layer.get());
-        return;
-    }
-
     // The TileLoadJob has released its datasource permit before invoking this
     // callback. Keep the source model on this worker through evaluation so
     // loaded tiles never accumulate in a second scheduler queue.
@@ -1195,6 +1179,8 @@ FilterRequestExecution::commitSource(
                         }} :
                     std::nullopt,
                 source.warnings(),
+                source.error(),
+                source.errorCode(),
             });
             --output.missingContributions_;
             if (output.missingContributions_ == 0) {
@@ -1266,6 +1252,8 @@ tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContr
             }} :
             std::nullopt,
         targetLayer.warnings(),
+        targetLayer.error(),
+        targetLayer.errorCode(),
     };
 
     output.dynamicContributions_.erase(targetKey);
@@ -1346,6 +1334,17 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
                 fmt::format("Could not load relation target tile {}.", targetKey.toString()));
             for (auto* output : outputs) {
                 markRelationTargetUnavailableInOutput(*output, targetKey, message);
+            }
+            continue;
+        }
+
+        if (targetLayer->error()) {
+            // A failed dependency expires only its consumers, not the entire viewport.
+            for (auto* output : outputs) {
+                auto added = addRelationTargetContribution(*output, targetKey, *targetLayer);
+                if (!added)
+                    return tl::unexpected(added.error());
+                markRelationTargetUnavailableInOutput(*output, targetKey, *targetLayer->error());
             }
             continue;
         }
@@ -1781,17 +1780,6 @@ void FilterRequestExecution::collectRelationTarget(
         return;
     }
 
-    if (layer->error()) {
-        {
-            std::lock_guard lock(mutex);
-            auto found = relationTargetTiles.find(targetKey);
-            if (terminal || found == relationTargetTiles.end() || found->second.terminal_) return;
-        }
-        fail(simfil::Error{simfil::Error::RuntimeError,
-             fmt::format("Relation target {} failed: {}", targetKey.toString(), *layer->error())},
-             layer->errorRetryAfter(), layer.get());
-        return;
-    }
     std::vector<RelationReadyOutput> relationReady;
     std::optional<simfil::Error> error;
     {
@@ -2007,16 +1995,29 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
     std::vector<FeatureLayerRelationDescriptor> relationDescriptors;
     simfil::Diagnostics diagnostics;
 
-    auto appendWarnings = [&](SourceTileContribution const& contribution) {
+    auto appendDiagnostics = [&](SourceTileContribution const& contribution)
+    {
         auto const& key = contribution.dependency_.sourceTileKey_;
         bool const local = key.mapId_ == ready.layer_->mapId() &&
             key.layerId_ == ready.layer_->layerInfo()->layerId_ &&
             key.partitionId_ == ready.layer_->partitionId();
+        if (contribution.error_) {
+            auto message = local ?
+                *contribution.error_ :
+                fmt::format("{}: {}", key.toString(), *contribution.error_);
+            if (auto previous = ready.layer_->error())
+                message = *previous + "\n" + message;
+            ready.layer_->setError(message);
+            ready.layer_->setErrorCode(contribution.errorCode_);
+        }
         for (auto const& warning : contribution.warnings_)
             ready.layer_->addWarning(local ? warning : fmt::format("{}: {}", key.toString(), warning));
     };
+    // Rebuild diagnostics from all dependencies, including halo and relation tiles.
+    ready.layer_->setError(std::nullopt);
+    ready.layer_->setErrorCode(std::nullopt);
     for (auto& contribution : ready.contributions_) {
-        appendWarnings(contribution);
+        appendDiagnostics(contribution);
         ready.considerLifetime(contribution.lifetime_);
         dependencies.push_back(std::move(contribution.dependency_));
         members.insert(
@@ -2037,7 +2038,7 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
         }
     }
     for (auto& [_, contribution] : ready.dynamicContributions_) {
-        appendWarnings(contribution);
+        appendDiagnostics(contribution);
         ready.considerLifetime(contribution.lifetime_);
         dependencies.push_back(std::move(contribution.dependency_));
         ready.addIssues(std::move(contribution.issues_));
