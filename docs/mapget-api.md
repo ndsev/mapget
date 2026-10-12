@@ -186,6 +186,10 @@ know the catalog entry.
 
 By default the endpoint waits for the current datasource reload. Use
 `?blocking=false` to receive initializing and failed catalog placeholders.
+Unchanged ready sources remain ready during a reload and retain their
+`stringPoolId`; only new or replaced instances need initialization. A catalog
+revision change does not itself imply a dictionary change. Clients must still
+reset dictionary-dependent data when a source's actual `stringPoolId` changes.
 Catalog entries include:
 
 - `status`: `initializing`, `ready`, or `failed`;

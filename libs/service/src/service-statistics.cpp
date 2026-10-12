@@ -352,6 +352,10 @@ nlohmann::json Service::Impl::memoryStatistics()
         catalog.add("config-status-message", stringMemoryUsage(sourceConfigStatusMessage_));
         catalog.add("construction-threads", vectorMemoryUsage(dataSourceConstructionThreads_));
         catalog.add("config-datasource-handles", vectorMemoryUsage(dataSourcesFromConfig_));
+        catalog.add("config-fingerprints", vectorMemoryUsage(dataSourceConfigFingerprints_));
+        for (auto const& fingerprint : dataSourceConfigFingerprints_) {
+            catalog.add("config-fingerprints", stringMemoryUsage(fingerprint));
+        }
         auto const addOnCount = std::ranges::count_if(
             registeredSources,
             [](auto const& source) { return source->info->isAddOn_; });
