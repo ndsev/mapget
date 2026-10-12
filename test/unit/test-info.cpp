@@ -569,15 +569,38 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
     schema->addFieldSchema(numLanes, "normalLanes", number);
     schema->setAttributeMetadata(attribute,
         LayerSchema::AttributePathOwner{"Link", "Guidance", "NUM_LANES", attribute}, "NumLanesAttribute");
+
+    SECTION("Direct schema graph") {}
+    SECTION("Canonical transport with a large shared conditions graph")
+    {
+        // These unrelated paths previously consumed the wildcard enumeration
+        // budget before reaching the attribute's actual value. Keep this fixture
+        // synthetic while exercising the same direct-schema transport as producers.
+        auto condition = schema->addSchema(Kind::Int, "ConditionValue");
+        for (auto depth = 0; depth < 15; ++depth) {
+            auto parent = schema->addSchema(Kind::Object, "Condition" + std::to_string(depth));
+            schema->addFieldSchema(parent, "left", condition);
+            schema->addFieldSchema(parent, "right", condition);
+            condition = parent;
+        }
+        schema->addFieldSchema(attribute, "conditions", condition);
+        schema->finalize();
+        schema = LayerSchema::fromJsonSchema(schema->toJsonSchema());
+        REQUIRE(schema->featureSchema("Link") == feature);
+    }
     schema->finalize();
 
-    auto normalized = schema->normalizeSearchQuery("**.numLanes.normalLanes", LayerSchema::SearchQueryRequestedScope::Auto);
-    REQUIRE(normalized);
-    REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
-    REQUIRE(normalized->attributeScopes_.size() == 1);
-    REQUIRE(normalized->attributeScopes_.front().attributeName_ == "NUM_LANES");
-    REQUIRE(normalized->normalizedQuery_.find("numLanes.normalLanes") != std::string::npos);
-    REQUIRE(normalized->normalizedQuery_.find("Guidance") != std::string::npos);
+    for (auto query : {"**.normalLanes", "**.numLanes.normalLanes"}) {
+        CAPTURE(query);
+        auto normalized =
+            schema->normalizeSearchQuery(query, LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(normalized);
+        REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+        REQUIRE(normalized->attributeScopes_.size() == 1);
+        REQUIRE(normalized->attributeScopes_.front().attributeName_ == "NUM_LANES");
+        REQUIRE(normalized->normalizedQuery_.find("numLanes.normalLanes") != std::string::npos);
+        REQUIRE(normalized->normalizedQuery_.find("Guidance") != std::string::npos);
+    }
 
     // Explicit feature scope must not turn one feature result into several attributes.
     auto featureScoped = schema->normalizeSearchQuery("**.numLanes.normalLanes", LayerSchema::SearchQueryRequestedScope::Feature);
