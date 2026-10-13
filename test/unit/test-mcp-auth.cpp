@@ -123,6 +123,7 @@ TEST_CASE("MCP CLI settings are individual typed options", "[mcp-auth][mcp-actio
     CHECK_THROWS_AS(app.parse("--mcp automatic"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp 1"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp-config old.json"), CLI::ParseError);
+    CHECK_THROWS_AS(app.parse("--mcp-browser-max-lifetime-seconds 3600"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp-sessions not-an-integer"), CLI::ParseError);
 }
 
@@ -297,7 +298,6 @@ TEST_CASE("MCP security configuration and public hints fail closed", "[mcp-auth]
              [](auto& c) { c.clockSkewSeconds = 3600; },
              [](auto& c) { c.trustedProxyAddresses = {"*"}; },
              [](auto& c) { c.expiryHeader = c.subjectHeader; },
-             [](auto& c) { c.maxBrowserLifetimeSeconds = 0; },
              [](auto& c) { c.requiredScopes = {"viewer\"bad"}; },
              [](auto& c) { c.readClaim = "not-a-pointer"; },
              [](auto& c) { c.jwksFile = "keys.json"; },

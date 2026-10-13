@@ -132,12 +132,8 @@ void McpConfig::addOptions(CLI::App& serve)
     option(
         "--mcp-browser-permissions-header",
         permissionsHeader,
-        "Trusted proxy header carrying viewer-read, viewer-control, config-read, config-write, or diagnostics words.");
-    option(
-        "--mcp-browser-max-lifetime-seconds",
-        maxBrowserLifetimeSeconds,
-        "Maximum retained browser authority (1..86400 seconds).")
-        ->default_val(maxBrowserLifetimeSeconds);
+        "Trusted proxy header carrying viewer-read, viewer-control, config-read, config-write, or "
+        "diagnostics words.");
     serve
         .add_option_function<int64_t>(
             "--mcp-timeout-ms",
@@ -345,8 +341,6 @@ void McpConfig::validate() const
             throw std::invalid_argument(
                 "Browser identity header names must be distinct lowercase HTTP tokens.");
     }
-    if (maxBrowserLifetimeSeconds < 1 || maxBrowserLifetimeSeconds > 86400)
-        throw std::invalid_argument("Browser MCP lifetime must be between one second and one day.");
 }
 
 }  // namespace mapget

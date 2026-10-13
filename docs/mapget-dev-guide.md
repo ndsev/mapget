@@ -644,7 +644,17 @@ ordinary tile sockets. Each admitted call retains its immutable catalog for
 result validation. Existing deadlines and uncertain mutation slots survive the
 swap; the browser retires new admission without cancelling accepted work.
 
-Caller lifetime and browser execution lifetime differ. Timeout/cancellation ends
+The relay binds the verified browser owner and initial permissions to the physical
+WebSocket, not to the lifetime of the handshake's credentials. Attachment requires
+valid credentials; later registration, discovery and calls do not recheck that
+old token's expiry. Each MCP caller is independently authenticated and must match
+the connection's owner. Its expiry still caps calls and late result delivery.
+Only disconnect/shutdown removes the connection binding; catalog changes can
+retire its advertised actions without changing ownership. See the
+[MCP security contract](mapget-mcp.md#hosted-authentication) for the accepted browser-session
+revocation tradeoff.
+
+Caller lifetime and browser execution lifetime also differ. Timeout/cancellation ends
 the HTTP waiter and sends a best-effort cancel, but a dispatched mutation may
 still be executing. A 2025 MCP transport disconnect only drops the HTTP waiter,
 not the browser action; the MCP guide describes the revision-specific semantics.

@@ -19,15 +19,16 @@ import uuid
 class ViewerConnection:
     """A minimal real WebSocket peer; application behavior remains explicitly controlled by tests."""
 
-    def __init__(self, port, endpoint="/interactive"):
+    def __init__(self, port, endpoint="/interactive", headers=None):
         self.socket = socket.create_connection(("127.0.0.1", port), timeout=6)
         self.buffer = b""
         key = base64.b64encode(os.urandom(16)).decode()
-        self.socket.sendall((
-            f"GET {endpoint} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
-            f"Origin: http://127.0.0.1:{port}\r\nUpgrade: websocket\r\n"
-            f"Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n\r\n").encode())
+        handshake = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}",
+                     "Upgrade": "websocket", "Connection": "Upgrade",
+                     "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": key}
+        handshake.update(headers or {})
+        self.socket.sendall((f"GET {endpoint} HTTP/1.1\r\n" + "".join(
+            f"{name}: {value}\r\n" for name, value in handshake.items()) + "\r\n").encode())
         while b"\r\n\r\n" not in self.buffer:
             self.buffer += self.socket.recv(4096)
         headers, self.buffer = self.buffer.split(b"\r\n\r\n", 1)
@@ -910,6 +911,42 @@ class NativeMcpConfigTest(unittest.TestCase):
         # Browser headers never authorize the bearer endpoint.
         self.assertEqual(self.http("/mcp", headers, "POST", body)[0], 401)
 
+    def test_viewer_registration_outlives_handshake_credentials(self):
+        """A live authenticated socket survives expiry; new handshakes and HTTP calls do not."""
+        self.oauth_settings()
+        self.start()
+        expiry = int(time.time()) + 3
+        headers = {"Origin": "https://viewer.example", "test-issuer": "https://issuer.example/realm",
+                   "test-subject": "browser-user", "test-expiry": str(expiry),
+                   "test-permissions": "viewer-read viewer-control"}
+        viewer = ViewerConnection(self.port, headers=headers)
+        self.addCleanup(viewer.close)
+        catalog = json.loads(self.catalog.read_text(encoding="utf-8"))
+        registration = {"type": "mapget.actions.register", "version": 1,
+                        "catalogId": catalog["catalogId"], "label": "Long-lived browser",
+                        "actions": [action["name"] for action in catalog["actions"]]}
+        viewer.send(registration)
+        self.assertEqual(viewer.receive()["type"], "mapget.actions.registered")
+        # Cross the actual proxy credential expiry and at least one control-loop sweep.
+        time.sleep(max(0, expiry - time.time()) + 1.1)
+        viewer.send(dict(registration, type="mapget.actions.update"))
+        renewed = viewer.receive()
+        self.assertEqual(renewed["type"], "mapget.actions.updated")
+        self.assertEqual(renewed["clientId"], viewer.client_id)
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        http_headers = dict(headers, **{"Content-Type": "application/json",
+                                       "Accept": "application/json, text/event-stream",
+                                       "MCP-Protocol-Version": "2025-11-25"})
+        self.assertEqual(self.http("/mcp/browser", http_headers, "POST", body)[0], 403)
+        # Ordinary tile transport is still available, but stale credentials cannot bind a new tab.
+        other = ViewerConnection(self.port, headers=headers)
+        self.addCleanup(other.close)
+        self.assertNotEqual(other.client_id, viewer.client_id)
+        other.send(registration)
+        denied = other.receive()
+        self.assertEqual(denied["type"], "mapget.actions.error")
+        self.assertEqual(denied["error"]["code"], "not_available")
+
     def test_oauth_resource_and_scope_override(self):
         """CLI scopes replace YAML scopes in public resource discovery and bearer challenges."""
         self.oauth_settings()
@@ -925,6 +962,7 @@ class NativeMcpConfigTest(unittest.TestCase):
     def test_invalid_startup_configuration_fails_closed(self):
         """Misspellings, removed switches, public local listeners and invalid limits fail startup."""
         for overrides in [("--mcp", "automatic"), ("--mcp-config", "old.json"), ("--host", "0.0.0.0"),
+                          ("--mcp-browser-max-lifetime-seconds", "3600"),
                           ("--mcp-sessions", "0"), ("--mcp-timeout-ms", "-1"), ("--mcp-issuer", "https://issuer.example")]:
             with self.subTest(overrides=overrides):
                 result = subprocess.run(self.command(*overrides), cwd=self.directory, capture_output=True, timeout=10)

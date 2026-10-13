@@ -231,9 +231,7 @@ McpViewerRelay::Principal McpAuthentication::browser(drogon::HttpRequestPtr cons
     if (parsed.ec != std::errc() || parsed.ptr != expires.data() + expires.size() ||
         timestamp <= 0 || timestamp > 4102444800LL || subject.empty() || subject.size() > 1024)
         return {};
-    auto const expiry = std::min(
-        std::chrono::system_clock::time_point(std::chrono::seconds(timestamp)),
-        std::chrono::system_clock::now() + std::chrono::seconds(config_.maxBrowserLifetimeSeconds));
+    auto const expiry = std::chrono::system_clock::time_point(std::chrono::seconds(timestamp));
     return {
         request->getHeader(config_.issuerHeader),
         subject,

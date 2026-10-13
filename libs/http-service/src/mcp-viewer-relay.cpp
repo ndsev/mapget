@@ -107,6 +107,8 @@ bool McpViewerRelay::attach(
         return false;
     }
     Session session;
+    // Credential expiry gates attachment, not the lifetime of this authenticated socket.
+    // Each caller still needs its own valid credentials and matching identity.
     session.principal = std::move(principal);
     session.origin = std::move(origin);
     session.send = std::move(sender);
@@ -117,21 +119,13 @@ void McpViewerRelay::disconnect(std::string const& clientId)
 {
     checkThread();
     auto session = sessions_.extract(clientId);
-    if (!session.empty() && !session.mapped().principal.valid(wallNow_())) {
-        // Retire action authority before notifying the still-connected UI; normal tile traffic
-        // remains available, and synchronous browser replies cannot revive this registration.
-        auto reply =
-            error("not_available", "Viewer authorization expired; reconnect to authenticate.");
-        reply.update({{"type", "mapget.actions.error"}, {"version", 1}, {"operation", "register"}});
-        send(session.mapped().send, reply);
-    }
     std::vector<std::string> abandoned;
     for (auto const& [id, call] : calls_) {
         if (call.clientId == clientId) {
             abandoned.push_back(id);
         }
     }
-    // Also stop an orphaned mutation after browser-auth expiry/service shutdown.
+    // Also stop an orphaned mutation after disconnect/service shutdown.
     // The connection is removed first so a synchronous reply cannot complete a call.
     if (!session.empty() && !session.mapped().mutationCall.empty() &&
         !calls_.contains(session.mapped().mutationCall))
@@ -216,10 +210,6 @@ bool McpViewerRelay::receive(std::string const& clientId, nlohmann::json const& 
     checkThread();
     auto session = sessions_.find(clientId);
     if (stopped_ || session == sessions_.end()) {
-        return false;
-    }
-    if (!session->second.principal.valid(wallNow_())) {
-        disconnect(clientId);
         return false;
     }
     auto type = message.is_object() && message.contains("type") && message.at("type").is_string() ?
@@ -309,8 +299,7 @@ nlohmann::json McpViewerRelay::sessions(Principal const& caller) const
         return result;
     }
     for (auto const& [id, session] : sessions_) {
-        if (!session.registered || !session.principal.valid(now) ||
-            !session.principal.sameUser(caller)) {
+        if (!session.registered || !session.principal.sameUser(caller)) {
             continue;
         }
         auto actions = nlohmann::json::array();
@@ -362,7 +351,7 @@ std::string McpViewerRelay::invoke(
     auto clientId = arguments.at("clientId").get<std::string>();
     auto found = sessions_.find(clientId);
     if (found == sessions_.end() || !found->second.registered ||
-        !found->second.principal.valid(now) || !found->second.principal.sameUser(caller))
+        !found->second.principal.sameUser(caller))
     {
         // Do not disclose whether another user's UUID is a live session.
         return reject("not_available", "Viewer session is unavailable.");
@@ -411,8 +400,7 @@ std::string McpViewerRelay::invoke(
     auto id = std::to_string(++callSequence_);
     auto budget = std::min(
         limits_.timeout,
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::min(caller.expiresAt, session.principal.expiresAt) - now));
+        std::chrono::duration_cast<std::chrono::milliseconds>(caller.expiresAt - now));
     if (budget.count() <= 0) {
         return reject("not_available", "Viewer session is unavailable.");
     }
@@ -464,7 +452,7 @@ bool McpViewerRelay::acceptResult(std::string const& clientId, nlohmann::json co
     }
     if (!call.caller.valid(wallNow_()) || !session.principal.sameUser(call.caller)) {
         // This message confirms termination, so there is no uncertain mutation to retain.
-        finish(id, error("not_available", "Viewer authorization expired.", true));
+        finish(id, error("not_available", "Caller authorization expired or changed.", true));
         return false;
     }
     if (steadyNow_() >= call.deadline) {
@@ -527,15 +515,7 @@ void McpViewerRelay::cancel(std::string const& callId)
 void McpViewerRelay::expire()
 {
     checkThread();
-    std::vector<std::string> expiredSessions;
-    for (auto const& [id, session] : sessions_) {
-        if (!session.principal.valid(wallNow_())) {
-            expiredSessions.push_back(id);
-        }
-    }
-    for (auto const& id : expiredSessions) {
-        disconnect(id);
-    }
+    // Live connections retain their handshake identity; only caller authority/deadlines expire.
     std::vector<std::string> expiredCalls;
     for (auto const& [id, call] : calls_) {
         if (!call.caller.valid(wallNow_()) || steadyNow_() >= call.deadline) {
