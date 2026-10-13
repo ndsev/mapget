@@ -2,6 +2,10 @@
 
 Mapget keeps recently requested tiles in a cache so that repeated requests can be answered without contacting the underlying datasources again. This guide explains the available cache types, how to configure them and how to inspect cache behaviour.
 
+<!-- mcp:
+title: "Mapget cache types"
+keywords: ["memory cache", "SQLite cache", "persistent cache", "NullCache"]
+-->
 ## Cache types
 
 The `mapget serve` command offers three cache modes via the `--cache-type` option:
@@ -53,6 +57,11 @@ zero means no expiry. An association disappearing does not evict the object.
 Map reset covers object payloads as well as tiles, and fails queued discovery
 work for that map; it cannot interrupt discovery calls already running.
 
+<!-- mcp:
+title: "Reset a map cache"
+keywords: ["cache reset", "reload map", "stale tiles", "clear cache"]
+hint: "Cache reset is distinct from search cancellation or hiding a layer. Use only an available authorized action."
+-->
 ## Resetting one map at runtime
 
 Administrators can opt into the guarded `POST /cache/reset` endpoint with

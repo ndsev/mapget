@@ -199,6 +199,11 @@ void Service::notifyWorkAvailable()
     impl_->scheduler_.notifyWorkAvailable();
 }
 
+bool Service::scheduleTask(std::function<void(bool)> task)
+{
+    return impl_->scheduler_.enqueueTask(std::move(task));
+}
+
 std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clientHeaders)
 {
     return impl_->getDataSourceInfos(clientHeaders);

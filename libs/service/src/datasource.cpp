@@ -57,8 +57,11 @@ PartitionLayer::Ptr DataSource::get(
     const MapPartitionKey& k,
     Cache::Ptr& cache,
     DataSourceInfo const& info,
-    PartitionLayer::LoadStateCallback loadStateCallback)
+    PartitionLayer::LoadStateCallback loadStateCallback,
+    TileCancellationCheck const& isCancelled)
 {
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
     auto layerInfo = info.getLayer(k.layerId_);
     if (!layerInfo)
         throw std::runtime_error("Layer info is null");
@@ -77,7 +80,7 @@ PartitionLayer::Ptr DataSource::get(
         if (loadStateCallback) {
             tileFeatureLayer->setLoadStateCallback(loadStateCallback);
         }
-        fill(tileFeatureLayer);
+        fill(tileFeatureLayer, isCancelled);
         result = tileFeatureLayer;
         break;
     }
@@ -91,7 +94,7 @@ PartitionLayer::Ptr DataSource::get(
         if (loadStateCallback) {
             tileSourceDataLayer->setLoadStateCallback(loadStateCallback);
         }
-        fill(tileSourceDataLayer);
+        fill(tileSourceDataLayer, isCancelled);
         result = tileSourceDataLayer;
         break;
     }
@@ -99,12 +102,33 @@ PartitionLayer::Ptr DataSource::get(
         break;
     }
 
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
+
     // Notify the tile how long it took to fill.
     if (result) {
         auto duration = std::chrono::steady_clock::now() - start;
         result->setInfo("Load+Convert/Total#ms", std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
     }
     return result;
+}
+
+void DataSource::fill(PartitionFeatureLayer::Ptr const& tile, TileCancellationCheck const& isCancelled)
+{
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
+    fill(tile);
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
+}
+
+void DataSource::fill(PartitionSourceDataLayer::Ptr const& tile, TileCancellationCheck const& isCancelled)
+{
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
+    fill(tile);
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
 }
 
 void DataSource::requireAuthHeaderRegexMatchOption(std::string header, std::regex re)

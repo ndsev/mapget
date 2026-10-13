@@ -37,6 +37,8 @@ struct TileLoadState
     std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
     PartitionLayer::LoadState loadStatus = PartitionLayer::LoadState::LoadingQueued;
     uint64_t mapEpoch = 0;
+    /** Monotonic abandonment, latched only under the scheduler mutex. */
+    std::atomic_bool cancelled{false};
 };
 
 /** Snapshot of global pool and queue pressure. */
@@ -47,6 +49,7 @@ struct ServiceSchedulerStatistics
     size_t activeTileRequests = 0;
     size_t queuedTileWorkItems = 0;
     size_t queuedDiscoveryJobs = 0;
+    size_t queuedTasks = 0;
     size_t inFlightTileJobs = 0;
 };
 
@@ -100,6 +103,9 @@ public:
     /** Wake workers so externally gated requests are reconsidered. */
     void notifyWorkAvailable();
 
+    /** Admit bounded non-tile work onto the same workers, without reserving a source permit. */
+    [[nodiscard]] bool enqueueTask(std::function<void(bool)> task);
+
     /** Abort and detach one tile request from queued and in-flight work. */
     void abortRequest(LayerTilesRequest::Ptr const& request);
 
@@ -145,6 +151,10 @@ private:
     std::list<DiscoveryJob> discoveryJobs_;
     bool preferDiscovery_ = true;
 
+    /** Metadata preparation only; loaded tiles are always evaluated inline by their worker. */
+    std::list<std::function<void(bool)>> tasks_;
+    bool preferTask_ = true;
+
     /** One schedulable request/tile selection retained across inline handling. */
     struct Candidate
     {
@@ -188,6 +198,9 @@ private:
         std::vector<LayerTilesRequest::Ptr>& waitingRequests) const;
     /** Remove terminal requests and requests with no unscheduled keys. */
     void removeCompletedRequestsLocked();
+
+    /** Cancel/detach jobs with no live consumers; new requests start fresh jobs. */
+    void cancelUnusedTileJobsLocked();
 
     /** Publish a successful tile only if its map epoch is still current. */
     void

@@ -1269,9 +1269,15 @@ TEST_CASE(
         },
         std::vector<PartitionId>{easternTile});
 
+    // Independent output tiles may complete on different service workers.
+    std::mutex resultsMutex;
     std::vector<PartitionSubsetLayer::Ptr> results;
     request->onFilterResult(
-        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
+            std::lock_guard lock(resultsMutex);
+            results.push_back(std::move(layer));
+        });
     REQUIRE(service.request(request));
     request->wait();
     REQUIRE(
@@ -1329,7 +1335,7 @@ TEST_CASE(
     REQUIRE(group);
     REQUIRE(
         group->values()->toJson() ==
-        nlohmann::json::array({2}));
+        nlohmann::json::array({nlohmann::json::array({2})}));
     REQUIRE(
         group->memberFeatureIds()->size() == 2);
 }

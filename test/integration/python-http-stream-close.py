@@ -144,7 +144,7 @@ class HttpStreamCloseTest(unittest.TestCase):
                     entries = layer["channels"][0]["featureEntries"]
                     self.assertEqual(len(entries), 1)
                     ids.append(entries[0]["featureId"])
-                    self.assertEqual(entries[0]["values"], [self.PAYLOAD])
+                    self.assertEqual(entries[0]["values"], [[self.PAYLOAD]])
             self.assertCountEqual(ids, [f"Way.{tile_id}" for tile_id in tile_ids])
             return
         # VTLV is version (3 uint16), type (uint8), length (uint32), then payload.
@@ -154,7 +154,7 @@ class HttpStreamCloseTest(unittest.TestCase):
         while offset < len(payload):
             self.assertGreaterEqual(len(payload) - offset, header.size)
             major, minor, patch, kind, size = header.unpack_from(payload, offset)
-            self.assertEqual((major, minor), (5, 1))
+            self.assertEqual((major, minor), (5, 3))
             offset += header.size + size
             self.assertLessEqual(offset, len(payload), "Truncated VTLV payload")
             frames.append((kind, size))

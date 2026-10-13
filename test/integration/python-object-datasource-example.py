@@ -96,7 +96,8 @@ def exercise(source, port):
     assert channel["featureFields"] == ["properties.name"]
     assert len(channel["featureEntries"]) == 1
     assert channel["featureEntries"][0]["featureId"] == canonical_id
-    assert channel["featureEntries"][0]["values"] == ["Example road"]
+    # Each projected expression retains its complete result sequence, even for one scalar.
+    assert channel["featureEntries"][0]["values"] == [["Example road"]]
     assert subset["dependencies"] == [{
         "sourceTileKey": f"Features:{source.MAP}:{source.LAYER}:object/{source.OBJECT_ID}",
         "sourceFeatureCount": 1}]

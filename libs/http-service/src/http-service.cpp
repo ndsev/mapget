@@ -1,5 +1,6 @@
 #include "http-service-impl.h"
 
+#include "mcp-server.h"
 #include "tiles-ws-controller.h"
 
 #include <drogon/HttpAppFramework.h>
@@ -19,6 +20,9 @@ HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
 
 HttpService::~HttpService()
 {
+    // Complete MCP callers while HTTP connections still exist, then tear down Drogon.
+    if (impl_->mcp_)
+        impl_->mcp_->stop();
     // Stop Drogon before destroying the executor used by websocket sessions.
     stop();
 }
@@ -30,7 +34,24 @@ bool HttpService::enqueueInteractiveControlTask(std::function<void()> task)
 
 void HttpService::setup(drogon::HttpAppFramework& app)
 {
-    detail::registerTilesWebSocketController(app, *this);
+    detail::registerTilesWebSocketController(app, *this, impl_->mcp_);
+    if (impl_->mcp_) {
+        impl_->mcp_->setup(app);
+    }
+    else {
+        app.registerHandler(
+            "/mcp/info",
+            [](drogon::HttpRequestPtr const&,
+               std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+            {
+                auto response = drogon::HttpResponse::newHttpResponse();
+                response->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                response->setBody(R"({"enabled":false})");
+                response->addHeader("Cache-Control", "no-store");
+                callback(response);
+            },
+            {drogon::Get});
+    }
 
     app.registerHandler(
         "/tiles",

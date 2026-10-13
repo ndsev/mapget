@@ -511,7 +511,7 @@ R"STATUS(</head>
                 <article class="metric-card"><span class="metric-label">Cache</span><strong id="metricCache" class="metric-value">-</strong><span id="metricCacheNote" class="metric-note">Retained tile data</span></article>
                 <article class="metric-card"><span class="metric-label">Active work</span><strong id="metricWork" class="metric-value">-</strong><span id="metricWorkNote" class="metric-note">Workers processing source tiles</span></article>
                 <article class="metric-card"><span class="metric-label">Interactive</span><strong id="metricInteractive" class="metric-value">-</strong><span id="metricInteractiveNote" class="metric-note">Connected sessions</span></article>
-                <article class="metric-card"><span class="metric-label">Allocator free</span><strong id="metricAllocator" class="metric-value">-</strong><span id="metricAllocatorNote" class="metric-note">Reusable arena memory</span></article>
+                <article class="metric-card"><span class="metric-label">Allocator live</span><strong id="metricAllocator" class="metric-value">-</strong><span id="metricAllocatorNote" class="metric-note">Live heap allocations</span></article>
             </div>
 
             <div class="grid-two">
@@ -772,11 +772,25 @@ class StatusHistoryGraph {
                 label: "Allocator live allocations",
                 format: formatBytes,
                 zeroBaseline: false,
-                read: (payload) => payload.memory?.reconciliation?.["allocator-live-bytes"] ?? payload.memory?.allocator?.["in-use-arena-bytes"],
+                read: (payload) => payload.memory?.allocator?.["allocated-bytes"],
+            }],
+            ["allocator-resident", {
+                group: "Memory",
+                label: "jemalloc resident estimate",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.allocator?.["resident-bytes"],
+            }],
+            ["allocator-active", {
+                group: "Memory",
+                label: "jemalloc active pages",
+                format: formatBytes,
+                zeroBaseline: false,
+                read: (payload) => payload.memory?.allocator?.["active-bytes"],
             }],
             ["allocator-free", {
                 group: "Memory",
-                label: "Allocator arena free",
+                label: "glibc arena free",
                 format: formatBytes,
                 zeroBaseline: false,
                 read: (payload) => payload.memory?.allocator?.["free-arena-bytes"],
@@ -1108,7 +1122,7 @@ function renderOverview(payload) {
     setMetric("metricInteractive", "metricInteractiveNote", formatInt(sessions), `${formatInt(interactive["active-connections"] || 0)} connections`);
 
     const allocator = memory.allocator || {};
-    setMetric("metricAllocator", "metricAllocatorNote", formatBytes(allocator["free-arena-bytes"] || 0), `${formatBytes(allocator["in-use-arena-bytes"] || 0)} in use`);
+    setMetric("metricAllocator", "metricAllocatorNote", allocator["allocated-bytes"] === undefined ? "Unavailable" : formatBytes(allocator["allocated-bytes"]), allocator.backend || "Unsupported allocator");
 
     renderDatasourceTable("#overviewDatasourceTable tbody", datasources, false);
     replaceRows("#currentWorkTable tbody", [
@@ -1122,7 +1136,9 @@ function renderOverview(payload) {
     replaceRows("#pressureTable tbody", [
         ["Interactive queue allocation", formatBytes(interactive["pending-controller-allocated-bytes"] || 0)],
         ["REST pending allocation", formatBytes(rest["pending-capacity-bytes"] || 0)],
-        ["Allocator arena free", formatBytes(allocator["free-arena-bytes"] || 0)],
+        allocator.backend === "jemalloc"
+            ? ["jemalloc resident estimate", formatBytes(allocator["resident-bytes"] || 0)]
+            : ["glibc arena free", allocator["free-arena-bytes"] === undefined ? "Unavailable" : formatBytes(allocator["free-arena-bytes"])],
         ["Dropped interactive frames", formatInt(interactive["total-dropped-frames"] || 0)],
     ], [1]);
 }
@@ -1172,10 +1188,13 @@ function renderMemory(memory) {
         if (process["resident-file-bytes"] !== undefined || process["resident-shared-bytes"] !== undefined) appendMemoryRow(body, "File and shared resident pages", "Resident executable, shared-library, file-mapping, and shared-memory pages. These pages are outside normal heap ownership estimates.", reconciliation["file-and-shared-resident-bytes"] || 0);
         if (cgroup["current-bytes"] !== null && cgroup["current-bytes"] !== undefined) appendMemoryRow(body, "Cgroup charged memory", "Memory charged to the containing cgroup. This can include charges not represented by the process RSS figure.", cgroup["current-bytes"], cgroup["peak-bytes"] ?? null);
         if (cgroup["limit-bytes"] !== null && cgroup["limit-bytes"] !== undefined) appendMemoryRow(body, "Cgroup memory limit", "Hard memory limit configured for the containing cgroup. A missing value means no finite cgroup limit was detected.", cgroup["limit-bytes"]);
-        if (allocator["in-use-arena-bytes"] !== undefined) {
-            appendMemoryRow(body, "Allocator live allocations", "glibc arena allocations still in use plus allocator-managed mmap allocations. Allocated pages are not necessarily resident.", reconciliation["allocator-live-bytes"] || allocator["in-use-arena-bytes"]);
-            appendMemoryRow(body, "Allocator arena free", "Arena capacity available for reuse by glibc. This is not all resident and cannot necessarily be returned to the operating system because of fragmentation.", allocator["free-arena-bytes"] || 0);
-        }
+        if (allocator["allocated-bytes"] !== undefined) appendMemoryRow(body, "Allocator live allocations", "Application allocations measured by the active allocator: jemalloc stats.allocated, or glibc in-use arena plus mmap allocations. Not an RSS subtotal; thread caches can delay accounting updates.", allocator["allocated-bytes"]);
+        if (allocator["free-arena-bytes"] !== undefined) appendMemoryRow(body, "glibc arena free", "Arena capacity available for reuse by glibc. This is not all resident and cannot necessarily be returned to the operating system because of fragmentation.", allocator["free-arena-bytes"]);
+        if (allocator["active-bytes"] !== undefined) appendMemoryRow(body, "jemalloc active pages", "Pages backing live allocations, including space lost to page-level fragmentation. Excludes unused dirty pages and allocator metadata. Overlaps allocator live allocations; do not add the rows.", allocator["active-bytes"]);
+        if (allocator["resident-bytes"] !== undefined) appendMemoryRow(body, "jemalloc resident estimate", "Upper estimate for allocator-resident pages: active pages, allocator metadata and unused dirty pages. Not measured process RSS; it can include untouched pages. Background purging reduces unused dirty pages, not live allocations.", allocator["resident-bytes"]);
+        if (allocator["metadata-bytes"] !== undefined) appendMemoryRow(body, "jemalloc metadata", "Memory used by jemalloc's internal bookkeeping. Already included in its resident estimate.", allocator["metadata-bytes"]);
+        if (allocator["mapped-bytes"] !== undefined) appendMemoryRow(body, "jemalloc mapped extents", "Virtual mappings in active allocator extents. Not resident memory and not additive with the other allocator rows.", allocator["mapped-bytes"]);
+        if (allocator["retained-bytes"] !== undefined) appendMemoryRow(body, "jemalloc retained address space", "Virtual address space reserved for reuse, usually decommitted or purged. This is not retained physical memory or a memory leak, and is excluded from mapped extents.", allocator["retained-bytes"]);
         appendMemoryRow(body, "Known ownership estimate", "Sum of mapget, datasource, cache, and transport capacity estimates. It is an allocation estimate, not an RSS subtotal.", memory["known-current-bytes"] || 0);
         appendMemoryRow(body, "Mapget metadata, scheduler, filters", "Capacity-oriented lower bound for metadata snapshots, scheduler containers, active filter models, and mapget bookkeeping.", mapget["allocated-bytes"] || 0);
         appendMemoryRow(body, "Datasource-owned state", "Datasource-provided cooperative estimates of retained state. Estimator coverage and exactness depend on each datasource implementation.", memory["datasource-measured-bytes"] || 0);
@@ -1187,7 +1206,17 @@ function renderMemory(memory) {
     }
 
     const trim = memory["allocator-trim"] || {};
-    replaceRows("#allocatorTrimTable tbody", [
+    const allocator = memory.allocator || {};
+    replaceRows("#allocatorTrimTable tbody", allocator.backend === "jemalloc" ? [
+        ["Allocator", `jemalloc ${allocator.version || ""}`],
+        ["Background purging", allocator["background-thread-enabled"] ? "Enabled" : "Disabled"],
+        ["Background threads", formatInt(allocator["background-thread-count"] || 0)],
+        ["Background runs", formatInt(allocator["background-thread-runs"] || 0)],
+        ["Default dirty page decay", `${formatInt(allocator["dirty-decay-ms"])} ms`],
+        ["Default muzzy page decay", `${formatInt(allocator["muzzy-decay-ms"])} ms`],
+        ["glibc trim worker", "Not used with jemalloc"],
+    ] : [
+        ["Allocator", allocator.backend || "Unavailable"],
         ["Supported", trim.supported === undefined ? "Unavailable" : (trim.supported ? "Yes" : "No")],
         ["Enabled", trim.enabled ? "Yes" : "No"],
         ["Period", `${formatInt(trim["period-seconds"] || 0)} s`],

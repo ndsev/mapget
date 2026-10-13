@@ -59,6 +59,8 @@ public:
          * Payload: UTF-8 JSON bytes (not null-terminated).
          */
         SourceCatalogChange = 8,
+        /** UTF-8 JSON browser-action control, independent of tile request and outbox state. */
+        ActionControl = 9,
         EndOfStream = 128
     };
 
@@ -120,8 +122,14 @@ public:
      *   + Tagged tile/object partition identities in layers and subset dependencies.
      * - Version 5.1:
      *   - Feature ID index entries no longer require sorted wire order.
+     * - Version 5.2:
+     *   - Interactive client IDs are opaque UUIDv4 strings instead of integers.
+     *   + Added the independent ActionControl message for browser action relays.
+     * - Version 5.3:
+     *   + Projection slots contain result sequences and indexed error metadata.
+     *   + Native undefined model values; core model column tags shift accordingly.
      */
-    static constexpr Version CurrentProtocolVersion{5, 1, 0};
+    static constexpr Version CurrentProtocolVersion{5, 3, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

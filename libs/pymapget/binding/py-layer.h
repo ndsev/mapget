@@ -909,6 +909,32 @@ void bindTileLayer(py::module_& m)
             py::arg("format"),
             "Set the source-data address format.")
         .def(
+            "find_source_data",
+            [](PartitionSourceDataLayer const& self,
+               SourceDataAddress address,
+               bool containing,
+               size_t maxNodes,
+               size_t maxMatches)
+            {
+                auto matches = self.findSourceData(address, containing, maxNodes, maxMatches);
+                if (!matches)
+                    throw py::value_error(matches.error().message);
+                std::vector<BoundSourceDataCompound> result;
+                result.reserve(matches->size());
+                for (auto& match : *matches)
+                    result.emplace_back(std::move(match));
+                return result;
+            },
+            py::arg("address"),
+            py::arg("containing") = false,
+            py::arg("max_nodes") = 100000,
+            py::arg("max_matches") = 1000,
+            "Resolve an absolute native source address. Exact matching supports opaque addresses; "
+            "containing=True returns every smallest enclosing bit range. Presentation scopes do "
+            "not "
+            "change lookup coordinates. Raises ValueError for unsupported containment or exceeded "
+            "traversal/match budgets, rather than returning an incomplete ambiguity result.")
+        .def(
             "to_json",
             [](PartitionSourceDataLayer& self) { return self.toJson().dump(); },
             "Convert this source-data layer to JSON.");

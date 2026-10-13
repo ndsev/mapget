@@ -102,7 +102,10 @@ void TileLoadJob::run() noexcept
         scheduler_.releaseSourcePermit(source_);
         permitHeld = false;
     };
+    TileCancellationCheck isCancelled = [state = state_] { return state->cancelled.load(); };
     try {
+        if (isCancelled())
+            throw TileLoadCancelled();
         if (state_->cacheExpiredAt) {
             source_->source->dataSource->onCacheExpired(state_->tileKey, *state_->cacheExpiredAt);
         }
@@ -116,7 +119,7 @@ void TileLoadJob::run() noexcept
             state_->tileKey,
             scheduler_.cache_,
             *source_->source->info,
-            std::move(notifyWaitingRequests));
+            std::move(notifyWaitingRequests), isCancelled);
         if (!layer) {
             raise("DataSource::get() returned null.");
         }
@@ -129,7 +132,7 @@ void TileLoadJob::run() noexcept
                 *source_->source,
                 scheduler_.dataSources_,
                 scheduler_.cache_,
-                scheduler_.defaultTtl_);
+                scheduler_.defaultTtl_, isCancelled);
         }
 
         // The worker continues with cache publication and every attached
@@ -137,6 +140,10 @@ void TileLoadJob::run() noexcept
         // consume the datasource's backend-concurrency budget.
         releasePermit();
         scheduler_.completeTileJob(*state_, layer, true);
+    }
+    catch (TileLoadCancelled const&) {
+        releasePermit();
+        scheduler_.failTileJob(*state_);
     }
     catch (std::exception const& error) {
         releasePermit();
@@ -155,14 +162,17 @@ void loadAddOnTiles(
     RegisteredDataSource const& baseSource,
     DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,
-    std::optional<std::chrono::milliseconds> const& defaultTtl)
+    std::optional<std::chrono::milliseconds> const& defaultTtl,
+    TileCancellationCheck const& isCancelled)
 {
     for (auto const& addOn : dataSources.addOnSources()) {
         if (addOn->info->mapId_ != baseTile->mapId()) {
             continue;
         }
 
-        auto loaded = addOn->dataSource->get(baseTile->id(), cache, *addOn->info);
+        if (isCancelled && isCancelled())
+            throw TileLoadCancelled();
+        auto loaded = addOn->dataSource->get(baseTile->id(), cache, *addOn->info, {}, isCancelled);
         if (!loaded) {
             log().warn("Add-on datasource returned null for {}.", baseTile->id().toString());
             continue;

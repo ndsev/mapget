@@ -15,8 +15,10 @@
 #include <drogon/HttpResponse.h>
 #include <drogon/HttpTypes.h>
 #include <drogon/WebSocketConnection.h>
+#include <drogon/utils/Utilities.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -30,6 +32,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -76,8 +79,7 @@ TilesWsMetrics gTilesWsMetrics;
 std::mutex gTrackedSessionsMutex;
 std::vector<std::weak_ptr<class TilesWsSession>> gTrackedSessions;
 std::mutex gSessionRegistryMutex;
-std::unordered_map<int64_t, std::weak_ptr<class TilesWsSession>> gSessionRegistry;
-std::atomic<int64_t> gNextClientId{1};
+std::unordered_map<std::string, std::weak_ptr<class TilesWsSession>> gSessionRegistry;
 
 std::string_view catalogStatusToString(DataSourceCatalogStatus status)
 {
@@ -161,7 +163,14 @@ public:
         try {
             {
                 std::lock_guard lock(gSessionRegistryMutex);
-                gSessionRegistry.erase(clientId_);
+                auto const found = gSessionRegistry.find(clientId_);
+                auto const self = weak_from_this();
+                // A rejected UUID collision must not erase the existing connection's entry.
+                if (found != gSessionRegistry.end() && !found->second.owner_before(self) &&
+                    !self.owner_before(found->second))
+                {
+                    gSessionRegistry.erase(found);
+                }
             }
             gTilesWsMetrics.activeSessions.fetch_sub(1, std::memory_order_relaxed);
             // Best-effort cleanup: abort any in-flight requests if the session is destroyed.
@@ -215,10 +224,37 @@ public:
         };
     }
 
-    /** Return numeric client id used by `/interactive/payload` pull requests. */
-    [[nodiscard]] int64_t clientId() const
+    /** Return the same opaque connection UUID used by payload pulls and action routing. */
+    [[nodiscard]] std::string const& clientId() const { return clientId_; }
+
+    /** Publish connection identity even when the client has not requested any tiles. */
+    void queueRequestContextMessage()
     {
-        return clientId_;
+        sendControlMessage(
+            TileLayerStream::MessageType::RequestContext,
+            buildRequestContextPayload());
+    }
+
+    /** Accept only the canonical lowercase UUIDv4 form emitted by this server. */
+    [[nodiscard]] static bool isValidClientId(std::string_view value)
+    {
+        if (value.size() != 36 || value[14] != '4' ||
+            std::string_view("89ab").find(value[19]) == std::string_view::npos)
+        {
+            return false;
+        }
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (i == 8 || i == 13 || i == 18 || i == 23) {
+                if (value[i] != '-') {
+                    return false;
+                }
+            }
+            else if (!((value[i] >= '0' && value[i] <= '9') ||
+                       (value[i] >= 'a' && value[i] <= 'f'))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Return current number of blocked `/interactive/payload` long-poll requests. */
@@ -1967,12 +2003,6 @@ private:
         sendControlMessage(TileLayerStream::MessageType::Status, buildStatusPayload(std::move(message)));
     }
 
-    /** Send a request-context frame so the client can track the active request id + client id. */
-    void queueRequestContextMessage()
-    {
-        sendControlMessage(TileLayerStream::MessageType::RequestContext, buildRequestContextPayload());
-    }
-
     /** Send a datasource-catalog invalidation frame for this interactive session. */
     void queueSourceCatalogChangeMessage(DataSourceCatalogChange const& change)
     {
@@ -2108,9 +2138,31 @@ private:
         return payload.dump();
     }
 
+    /** Generate an unguessable UUID; never substitute a predictable ID if entropy fails. */
+    static std::string createClientId()
+    {
+        std::array<uint8_t, 16> bytes{};
+        if (!drogon::utils::secureRandomBytes(bytes.data(), bytes.size())) {
+            throw std::runtime_error("Cannot obtain secure randomness for an interactive session.");
+        }
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        constexpr std::string_view hex = "0123456789abcdef";
+        std::string result;
+        result.reserve(36);
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            if (i == 4 || i == 6 || i == 8 || i == 10) {
+                result += '-';
+            }
+            result += hex[bytes[i] >> 4];
+            result += hex[bytes[i] & 0x0f];
+        }
+        return result;
+    }
+
     HttpService& service_;
     std::weak_ptr<drogon::WebSocketConnection> conn_;
-    int64_t clientId_ = gNextClientId.fetch_add(1, std::memory_order_relaxed);
+    const std::string clientId_ = createClientId();
     uint64_t requestId_ = 0;
     uint64_t nextRequestId_ = 1;
 
@@ -2156,7 +2208,7 @@ namespace
 {
 
 /** Look up a live session by client id and prune expired registry entries. */
-[[nodiscard]] std::shared_ptr<TilesWsSession> findSessionByClientId(int64_t clientId)
+[[nodiscard]] std::shared_ptr<TilesWsSession> findSessionByClientId(std::string const& clientId)
 {
     std::lock_guard lock(gSessionRegistryMutex);
     auto it = gSessionRegistry.find(clientId);
@@ -2199,11 +2251,12 @@ void handleTilesNextRequest(
 {
     gTilesWsMetrics.totalPullRequests.fetch_add(1, std::memory_order_relaxed);
 
-    const auto clientId = parseClampedInt64Parameter(req, "clientId", 0, 0, std::numeric_limits<int64_t>::max());
-    if (clientId <= 0) {
+    const auto clientId = req->getParameter("clientId");
+    if (!TilesWsSession::isValidClientId(clientId)) {
         // The pull endpoint cannot infer a session without the websocket-provided id.
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k400BadRequest);
+        resp->addHeader("Cache-Control", "no-store");
         resp->setContentTypeCode(drogon::CT_TEXT_PLAIN);
         resp->setBody("Missing or invalid clientId parameter.");
         callback(resp);
@@ -2216,6 +2269,7 @@ void handleTilesNextRequest(
         gTilesWsMetrics.totalPullSessionMisses.fetch_add(1, std::memory_order_relaxed);
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k410Gone);
+        resp->addHeader("Cache-Control", "no-store");
         callback(resp);
         return;
     }
@@ -2239,6 +2293,8 @@ void handleTilesNextRequest(
         static_cast<size_t>(maxBytes),
         [callback = std::move(callback), enableGzip](TilesWsSession::PullFrameResult result) mutable {
             auto resp = drogon::HttpResponse::newHttpResponse();
+            // Until owner checks are introduced, the UUID is a capability to drain this data.
+            resp->addHeader("Cache-Control", "no-store");
             switch (result.status) {
             case TilesWsSession::PullFrameResult::Status::Frame:
                 resp->setStatusCode(drogon::k200OK);
@@ -2307,21 +2363,27 @@ void tilesWsRegisterForMetrics(const std::shared_ptr<TilesWsSession>& session)
 /** Add one session to the client-id registry used by `/interactive/payload`. */
 void tilesWsRegisterSession(const std::shared_ptr<TilesWsSession>& session)
 {
-    std::lock_guard lock(gSessionRegistryMutex);
-    gSessionRegistry[session->clientId()] = session;
+    {
+        std::lock_guard lock(gSessionRegistryMutex);
+        // Never replace another connection, even if secure UUID generation collides.
+        if (!gSessionRegistry.try_emplace(session->clientId(), session).second) {
+            throw std::runtime_error("Interactive session UUID is already registered.");
+        }
+    }
+    session->queueRequestContextMessage();
 }
 
 /** Remove one session from the client-id registry after websocket close. */
-void tilesWsUnregisterSession(int64_t clientId)
+void tilesWsUnregisterSession(std::string const& clientId)
 {
     std::lock_guard lock(gSessionRegistryMutex);
     gSessionRegistry.erase(clientId);
 }
 
-/** Return the numeric id assigned to one session, or zero for a missing session. */
-int64_t tilesWsSessionClientId(const std::shared_ptr<TilesWsSession>& session)
+/** Return the connection UUID, or an empty string for a missing session. */
+std::string tilesWsSessionClientId(const std::shared_ptr<TilesWsSession>& session)
 {
-    return session ? session->clientId() : 0;
+    return session ? session->clientId() : std::string{};
 }
 
 /** Apply a reconnect/resume string-pool offset patch to one session. */

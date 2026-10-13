@@ -69,9 +69,6 @@ struct FilterMemoryTracker
 /** Collect OS-owned process totals used to reconcile subsystem lower bounds. */
 [[nodiscard]] nlohmann::json processMemoryStatistics();
 
-/** Collect allocator counters when the platform exposes them. */
-[[nodiscard]] nlohmann::json allocatorMemoryStatistics();
-
 /** Measure cheap catalog descriptor fields; std::regex implementation state is opaque. */
 [[nodiscard]] simfil::MemoryUsage dataSourceDescriptorMemoryUsage(
     DataSourceDescriptor const& descriptor);

@@ -13,6 +13,24 @@ add_test(
     "$<TARGET_FILE:mapget>")
 set_tests_properties(test-cli-bind-before-datasources PROPERTIES LABELS integration)
 
+add_test(
+  NAME test-native-mcp
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/test-native-mcp.py"
+    "$<TARGET_FILE:mapget>")
+set_tests_properties(test-native-mcp PROPERTIES LABELS integration TIMEOUT 120)
+
+add_test(NAME test-mcp-help-packaging
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test-mcp-help-packaging.py"
+    "${CMAKE_CURRENT_LIST_DIR}/../..")
+set_tests_properties(test-mcp-help-packaging PROPERTIES LABELS integration TIMEOUT 60)
+
+add_test(
+  NAME test-location-wof
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test-location-wof.py" "$<TARGET_FILE:mapget>" "${plazs_SOURCE_DIR}/tests/data/places.sqlite")
+set_tests_properties(test-location-wof PROPERTIES LABELS integration TIMEOUT 120)
+
 if (EXISTS "${MAPGET_NDSMATH_PYTHON_DIR}/pyproject.toml")
   set(MAPGET_INSTALL_NDSMATH_PYTHON -f "python -m pip install ${MAPGET_NDSMATH_PYTHON_DIR}")
 else()
@@ -33,6 +51,12 @@ add_wheel_test(test-python-bindings-smoke
   COMMANDS
     ${MAPGET_INSTALL_NDSMATH_PYTHON}
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-bindings-smoke.py")
+
+add_wheel_test(test-python-mcp-help-smoke
+  WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    -f "python ${CMAKE_CURRENT_LIST_DIR}/python-mcp-help-smoke.py")
+set_tests_properties(test-python-mcp-help-smoke PROPERTIES TIMEOUT 120)
 
 add_wheel_test(test-python-object-datasource-example
   WORKING_DIRECTORY
