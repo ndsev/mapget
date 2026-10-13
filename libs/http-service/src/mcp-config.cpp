@@ -114,6 +114,10 @@ void McpConfig::addOptions(CLI::App& serve)
         "Verified claim pointer granting global diagnostics.");
     option("--mcp-diagnostics-value", diagnosticsValue, "Required diagnostics claim membership.");
     option(
+        "--mcp-datasource-headers",
+        datasourceHeaders,
+        "Fixed lowercase header=value grants for authenticated OAuth native datasource access.");
+    option(
         "--mcp-datasource-header-claims",
         datasourceHeaderClaims,
         "Trusted lowercase header=/claim mappings for native datasource authorization.");
@@ -252,8 +256,9 @@ void McpConfig::validate() const
             !controlClaim.empty() || !controlValue.empty() || !trustedProxyAddresses.empty() ||
             !configReadClaim.empty() || !configReadValue.empty() || !configWriteClaim.empty() ||
             !configWriteValue.empty() || !diagnosticsClaim.empty() || !diagnosticsValue.empty() ||
-            !datasourceHeaderClaims.empty() || !issuerHeader.empty() || !subjectHeader.empty() ||
-            !expiryHeader.empty() || !permissionsHeader.empty())
+            !datasourceHeaders.empty() || !datasourceHeaderClaims.empty() ||
+            !issuerHeader.empty() || !subjectHeader.empty() || !expiryHeader.empty() ||
+            !permissionsHeader.empty())
             throw std::invalid_argument("Local MCP must not contain OAuth settings.");
         // Local mode is not a fallback for failed OAuth or a reverse-proxy deployment.
         for (auto const* values : {&allowedHosts, &allowedOrigins}) {
@@ -324,8 +329,24 @@ void McpConfig::validate() const
     }
     std::set<std::string> headers;
     static std::regex const headerPattern("^[a-z][a-z0-9-]{0,99}$");
-    if (datasourceHeaderClaims.size() > 16)
+    if (datasourceHeaders.size() + datasourceHeaderClaims.size() > 16)
         throw std::invalid_argument("At most sixteen MCP datasource header mappings are allowed.");
+    for (auto const& mapping : datasourceHeaders) {
+        auto separator = mapping.find('=');
+        auto name = mapping.substr(0, separator);
+        if (separator == std::string::npos || !std::regex_match(name, headerPattern) ||
+            !headers.insert(name).second || separator + 1 == mapping.size())
+            throw std::invalid_argument("Expected unique lowercase header=value mappings.");
+        auto value = mapping.substr(separator + 1);
+        if (value.size() > 4096 ||
+            std::any_of(
+                value.begin(),
+                value.end(),
+                [](unsigned char c) { return c < 0x20 || c == 0x7f; }))
+            throw std::invalid_argument(
+                "Static MCP datasource header values must fit 4096 bytes without control "
+                "characters.");
+    }
     for (auto const& mapping : datasourceHeaderClaims) {
         auto separator = mapping.find('=');
         auto name = mapping.substr(0, separator);

@@ -232,15 +232,15 @@ McpViewerRelay::Principal McpAuthentication::browser(drogon::HttpRequestPtr cons
         timestamp <= 0 || timestamp > 4102444800LL || subject.empty() || subject.size() > 1024)
         return {};
     auto const expiry = std::chrono::system_clock::time_point(std::chrono::seconds(timestamp));
-    return {
-        request->getHeader(config_.issuerHeader),
-        subject,
-        expiry,
-        containsWord(request->getHeader(config_.permissionsHeader), "viewer-read"),
-        containsWord(request->getHeader(config_.permissionsHeader), "viewer-control"),
-        containsWord(request->getHeader(config_.permissionsHeader), "config-read"),
-        containsWord(request->getHeader(config_.permissionsHeader), "config-write"),
-        containsWord(request->getHeader(config_.permissionsHeader), "diagnostics")};
+    return withDatasourceHeaders(
+        {request->getHeader(config_.issuerHeader),
+         subject,
+         expiry,
+         containsWord(request->getHeader(config_.permissionsHeader), "viewer-read"),
+         containsWord(request->getHeader(config_.permissionsHeader), "viewer-control"),
+         containsWord(request->getHeader(config_.permissionsHeader), "config-read"),
+         containsWord(request->getHeader(config_.permissionsHeader), "config-write"),
+         containsWord(request->getHeader(config_.permissionsHeader), "diagnostics")});
 }
 
 bool McpAuthentication::permission(
@@ -290,6 +290,19 @@ McpViewerRelay::Principal McpAuthentication::principal(nlohmann::json const& cla
         result.datasourceHeaders.emplace(mapping.substr(0, separator), std::move(value));
     }
     return result;
+}
+
+McpViewerRelay::Principal
+McpAuthentication::withDatasourceHeaders(McpViewerRelay::Principal principal) const
+{
+    if (!principal.valid(std::chrono::system_clock::now()))
+        return {};
+    for (auto const& mapping : config_.datasourceHeaders) {
+        auto separator = mapping.find('=');
+        principal.datasourceHeaders
+            .emplace(mapping.substr(0, separator), mapping.substr(separator + 1));
+    }
+    return principal;
 }
 
 bool McpAuthentication::needsKeys(std::string const& token) const
@@ -344,7 +357,9 @@ McpAuthentication::bearer(std::string const& token, bool& insufficient) const
         }
         insufficient |= !result.read && !result.control && !result.configRead &&
             !result.configWrite && !result.diagnostics;
-        return insufficient ? McpViewerRelay::Principal{} : result;
+        return insufficient ?
+            McpViewerRelay::Principal{} :
+            withDatasourceHeaders(std::move(result));
     }
     catch (...) {
         return {};

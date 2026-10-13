@@ -74,6 +74,10 @@ private:
     /** Extract a bounded subject/expiry and mapped permissions only after signature verification.
      */
     [[nodiscard]] McpViewerRelay::Principal principal(nlohmann::json const& claims) const;
+
+    /** Attach operator grants only to valid authority; native tools still check read permission. */
+    [[nodiscard]] McpViewerRelay::Principal
+    withDatasourceHeaders(McpViewerRelay::Principal principal) const;
 };
 
 }  // namespace mapget::detail

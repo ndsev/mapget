@@ -750,10 +750,11 @@ class NativeMcpConfigTest(unittest.TestCase):
             self.port = listener.getsockname()[1]
         self.settings = {"host": "127.0.0.1", "port": self.port, "no-location": True,
                          "worker-count": 2, "mcp": "local", "mcp-catalog": "catalog.json"}
+        self.sources = []
 
     def command(self, *overrides):
         """Use actual YAML mappings with scalar and list option values, not a second config parser."""
-        self.config_path.write_text("sources: []\nmapget:\n  serve:\n" + "".join(
+        self.config_path.write_text(f"sources: {json.dumps(self.sources)}\nmapget:\n  serve:\n" + "".join(
             f"    {key}: {json.dumps(value)}\n" for key, value in self.settings.items()), encoding="utf-8")
         return [str(MAPGET_BINARY), "--config", str(self.config_path), "serve", *overrides]
 
@@ -910,6 +911,76 @@ class NativeMcpConfigTest(unittest.TestCase):
         self.assertEqual(self.http("/mcp/browser", dict(headers, **{"test-expiry": "1"}), "POST", body)[0], 403)
         # Browser headers never authorize the bearer endpoint.
         self.assertEqual(self.http("/mcp", headers, "POST", body)[0], 401)
+
+    def test_webmcp_static_datasource_grant(self):
+        """An operator grant selects only its gated source, never caller headers or tool authority."""
+        self.oauth_settings()
+        self.settings["mcp-datasource-headers"] = ["x-supplier=shared"]
+        self.sources = [{"type": "GridDataSource", "mapId": name,
+                         "auth-header": {"X-Supplier": f"^{gate}$"}, "layers": [
+                             {"name": "Road", "featureType": "DevSrc-Road", "geometry": {"type": "line"}},
+                             {"name": "Intersections", "featureType": "DevSrc-Intersection",
+                              "geometry": {"type": "point"}}]}
+                        for name, gate in [("Shared", "shared"), ("Other", "other")]]
+        self.start()
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2025-11-25", "Origin": "https://viewer.example",
+                   "test-issuer": "https://issuer.example/realm", "test-subject": "browser-user",
+                   "test-expiry": str(int(time.time()) + 600), "test-permissions": "viewer-read",
+                   "X-Supplier": "other"}
+
+        def call(name, arguments=None, permissions="viewer-read"):
+            """Read one bounded native call through authenticated browser HTTP and finite SSE."""
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": name, "arguments": arguments or {}}})
+            status, payload = self.http("/mcp/browser", dict(headers, **{"test-permissions": permissions}),
+                                        "POST", body)
+            self.assertEqual(status, 200, payload)
+            if isinstance(payload, str):
+                payload = json.loads(next(line[6:] for line in payload.splitlines() if line.startswith("data: ")))
+            return payload
+
+        # Ordinary routes still authorize their own request headers, without the static MCP grant.
+        self.assertEqual(self.http("/sources")[1], [])
+        self.assertEqual({s["mapId"] for s in self.http("/sources", {"X-Supplier": "other"})[1]}, {"Other"})
+        reply = call("mapget_list_sources")
+        self.assertFalse(reply["result"].get("isError", False), reply)
+        self.assertEqual({s["mapId"] for s in reply["result"]["structuredContent"]["items"]}, {"Shared"})
+        converted = call("mapget_convert_tile_id", {"longitude": 11.5, "latitude": 48.1, "level": 13})
+        tile_id = converted["result"]["structuredContent"]["items"][0]["tileId"]
+        selection = {"mapId": "Shared", "layerId": "Road",
+                     "partitions": [{"kind": "tile", "id": tile_id}], "query": "id", "limit": 1}
+        reply = call("mapget_extract_features", selection)
+        self.assertFalse(reply["result"].get("isError", False), reply)
+        self.assertEqual(len(reply["result"]["structuredContent"]["items"]), 1, reply)
+        reply = call("mapget_extract_features", dict(selection, mapId="Other"))
+        self.assertTrue(reply["result"]["isError"], reply)
+        for name in ["mapget_list_sources", "mapget_extract_features", "mapget_get_config", "mapget_get_diagnostics"]:
+            args = selection if name == "mapget_extract_features" else {}
+            denied = call(name, args, "viewer-control")["result"]
+            self.assertTrue(denied["isError"], denied)
+            self.assertEqual(denied["structuredContent"]["error"]["code"], "not_available")
+
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        for changes in [{"test-expiry": "1"}, {"test-issuer": "https://attacker.example"},
+                        {"test-subject": ""}, {"test-permissions": ""}, {"Origin": "https://attacker.example"}]:
+            self.assertEqual(self.http("/mcp/browser", dict(headers, **changes), "POST", body)[0], 403)
+        self.assertEqual(self.http("/mcp", headers, "POST", body)[0], 401)
+        self.assertNotIn("mapget", self.http("/config")[1])
+
+    def test_webmcp_static_grant_rejects_untrusted_proxy(self):
+        """Forwarded addresses and browser headers never replace the actual trusted socket peer."""
+        self.oauth_settings()
+        self.settings["mcp-trusted-proxy-addresses"] = ["127.0.0.2"]
+        self.settings["mcp-datasource-headers"] = ["x-supplier=shared"]
+        self.start()
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2025-11-25", "Origin": "https://viewer.example",
+                   "test-issuer": "https://issuer.example/realm", "test-subject": "browser-user",
+                   "test-expiry": str(int(time.time()) + 600), "test-permissions": "viewer-read",
+                   "X-Supplier": "shared", "X-Forwarded-For": "127.0.0.2"}
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        self.assertEqual(self.http("/mcp/browser", headers, "POST", body)[0], 403)
 
     def test_viewer_registration_outlives_handshake_credentials(self):
         """A live authenticated socket survives expiry; new handshakes and HTTP calls do not."""

@@ -1,9 +1,11 @@
+#include "../../libs/http-service/src/mcp-auth.h"
 #include "../../libs/http-service/src/mcp-native-tools.h"
 #include "mapget/http-service/cli.h"
 #include "mapget/model/layerschema.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/service/locate.h"
 #include "mapget/service/memcache.h"
+#include "mcp-test-issuer.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -1107,6 +1109,45 @@ TEST_CASE("Native feature source links can be reused without frontend conversion
         REQUIRE(result["items"].size() == 2);
         CHECK(result["items"][0]["values"] == NativeJson::array({3}));
     }
+}
+
+TEST_CASE(
+    "Native static datasource grants retain source gates and independent read permission",
+    "[mcp-native][mcp-auth]")
+{
+    NativeFixture fixture;
+    fixture.source->requireAuthHeaderRegexMatchOption("x-supplier", std::regex("^shared$"));
+    test::McpTestIssuer issuer;
+    auto settings = test::McpTestIssuer::configuration();
+    auto grant = GENERATE(std::string{}, std::string{"other"}, std::string{"shared"});
+    if (!grant.empty())
+        settings.datasourceHeaders = {"x-supplier=" + grant};
+    detail::McpAuthentication auth(settings);
+    auth.installKeys(issuer.jwks);
+    bool insufficient = false;
+    fixture.principal = auth.bearer(issuer.token(), insufficient);
+    REQUIRE(fixture.principal.valid(std::chrono::system_clock::now()));
+    auto catalog = fixture.call("mapget_list_sources")["result"]["items"];
+    auto result = fixture.call("mapget_extract_features", NativeFixture::selection());
+    if (grant == "shared") {
+        CHECK(catalog.size() == 1);
+        REQUIRE(result.contains("result"));
+        CHECK(result["result"]["items"].size() == 1);
+    }
+    else {
+        CHECK(catalog.empty());
+        CHECK(result.contains("error"));
+        CHECK(fixture.source->fills == 0);
+    }
+    auto claims = test::McpTestIssuer::claims();
+    claims["access"]["roles"] = {"control"};
+    fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+    REQUIRE(fixture.principal.control);
+    CHECK_FALSE(fixture.principal.read);
+    CHECK(fixture.call("mapget_list_sources").contains("error"));
+    CHECK(fixture.call("mapget_extract_features", NativeFixture::selection()).contains("error"));
+    CHECK(fixture.call("mapget_get_config").contains("error"));
+    CHECK(fixture.call("mapget_get_diagnostics").contains("error"));
 }
 
 TEST_CASE(

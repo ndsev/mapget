@@ -64,6 +64,108 @@ TEST_CASE(
     CHECK_FALSE(restricted.control);
 }
 
+TEST_CASE(
+    "MCP static datasource grants never authenticate or grant tool permissions",
+    "[mcp-auth][mcp-native]")
+{
+    McpTestIssuer issuer;
+    auto settings = McpTestIssuer::configuration();
+    McpAuthentication defaults(settings);
+    defaults.installKeys(issuer.jwks);
+    bool insufficient = false;
+    CHECK(defaults.bearer(issuer.token(), insufficient).datasourceHeaders.empty());
+
+    settings.datasourceHeaders = {"x-supplier=shared"};
+    settings.datasourceHeaderClaims = {"x-user=/email"};
+    McpAuthentication auth(settings);
+    auth.installKeys(issuer.jwks);
+    auto claims = McpTestIssuer::claims();
+    claims["email"] = "member@example.test";
+    claims["x-supplier"] = "other";
+    auto reader = auth.bearer(issuer.token(claims), insufficient);
+    REQUIRE(reader.valid(std::chrono::system_clock::now()));
+    CHECK_FALSE(insufficient);
+    CHECK(reader.datasourceHeaders.size() == 2);
+    CHECK(reader.datasourceHeaders.at("x-supplier") == "shared");
+    CHECK(reader.datasourceHeaders.at("x-user") == "member@example.test");
+    CHECK_FALSE(reader.configRead);
+    CHECK_FALSE(reader.configWrite);
+    CHECK_FALSE(reader.diagnostics);
+    CHECK(auth.info("test").dump().find("x-supplier") == std::string::npos);
+
+    claims["access"]["roles"] = {"control"};
+    auto controller = auth.bearer(issuer.token(claims), insufficient);
+    REQUIRE(controller.valid(std::chrono::system_clock::now()));
+    CHECK_FALSE(controller.read);
+    CHECK(controller.control);
+    CHECK(controller.datasourceHeaders.at("x-supplier") == "shared");
+
+    for (auto const& patch : json::array(
+             {{{"iss", "https://other.example/realm"}},
+              {{"aud", "https://other.example/mcp"}},
+              {{"exp", 1}},
+              {{"sub", ""}},
+              {{"scope", "other"}},
+              {{"access", {{"roles", json::array()}}}}}))
+    {
+        auto invalid = McpTestIssuer::claims();
+        invalid.update(patch);
+        auto denied = auth.bearer(issuer.token(invalid), insufficient);
+        CHECK_FALSE(denied.valid(std::chrono::system_clock::now()));
+        CHECK(denied.datasourceHeaders.empty());
+    }
+    McpTestIssuer otherIssuer;
+    CHECK(auth.bearer(otherIssuer.token(), insufficient).datasourceHeaders.empty());
+}
+
+TEST_CASE(
+    "MCP datasource grants have bounded values and unambiguous header ownership",
+    "[mcp-auth][mcp-native]")
+{
+    auto settings = McpTestIssuer::configuration();
+    for (auto const& mapping : std::vector<std::string>{
+             "x-supplier",
+             "=shared",
+             "x-supplier=",
+             "X-Supplier=shared",
+             "x supplier=shared",
+             "x:supplier=shared",
+             "x-supplier=bad\rvalue",
+             "x-supplier=bad\nvalue",
+             "x-supplier=bad\tvalue",
+             std::string("x-supplier=bad\0value", 20),
+             "x-supplier=bad\x7fvalue",
+             std::string(101, 'x') + "=shared",
+             "x-supplier=" + std::string(4097, 'x')})
+    {
+        settings.datasourceHeaders = {mapping};
+        CHECK_THROWS(settings.validate());
+    }
+    settings.datasourceHeaders = {
+        "x-supplier=" + std::string(4096, 'x'),
+        "x-extra=value=with=equals"};
+    CHECK_NOTHROW(settings.validate());
+    settings.datasourceHeaders = {"x-supplier=shared", "x-supplier=other"};
+    CHECK_THROWS(settings.validate());
+    settings.datasourceHeaders = {"x-supplier=shared"};
+    settings.datasourceHeaderClaims = {"x-supplier=/supplier"};
+    CHECK_THROWS(settings.validate());
+    settings.datasourceHeaderClaims = {"x-user=/email"};
+    CHECK_NOTHROW(settings.validate());
+    settings.datasourceHeaders.clear();
+    for (size_t i = 0; i < 15; ++i)
+        settings.datasourceHeaders.push_back("x-grant-" + std::to_string(i) + "=shared");
+    CHECK_NOTHROW(settings.validate());
+    settings.datasourceHeaders.push_back("x-grant-15=shared");
+    CHECK_THROWS(settings.validate());
+
+    mapget::McpConfig local;
+    local.mode = mapget::McpConfig::Mode::Local;
+    local.resolveDefaults("127.0.0.1", 8099, "/viewer");
+    local.datasourceHeaders = {"x-supplier=shared"};
+    CHECK_THROWS(local.validate());
+}
+
 TEST_CASE("MCP local defaults use trusted startup inputs", "[mcp-auth][mcp-actions]")
 {
     using mapget::McpConfig;
@@ -120,6 +222,13 @@ TEST_CASE("MCP CLI settings are individual typed options", "[mcp-auth][mcp-actio
     CHECK(config.catalogPath == "web-mcp-actions.json");
     CHECK(config.helpDocs == std::vector<std::filesystem::path>{"docs", "extra.md"});
     CHECK(app.get_option("--mcp")->results() == std::vector<std::string>{"local"});
+    app.parse(
+        "--mcp oauth --mcp-datasource-headers x-supplier=shared x-extra=static "
+        "--mcp-datasource-header-claims x-user=/email");
+    CHECK(
+        config.datasourceHeaders ==
+        std::vector<std::string>{"x-supplier=shared", "x-extra=static"});
+    CHECK(config.datasourceHeaderClaims == std::vector<std::string>{"x-user=/email"});
     CHECK_THROWS_AS(app.parse("--mcp automatic"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp 1"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp-config old.json"), CLI::ParseError);
