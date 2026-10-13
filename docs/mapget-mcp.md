@@ -202,10 +202,25 @@ names `viewer-read`, `viewer-control`, `config-read`, `config-write`, and/or
 are independent of viewer control. These verified headers also authorize `/mcp/browser`.
 Mapget trusts them only from an exact configured socket-peer IP and the
 configured issuer. Email is never an ownership key. Browser authority ends at
-the earlier of the verified expiry and `mcp-browser-max-lifetime-seconds` after connection.
-The server notifies the tab that action registration is unavailable when that
-authority expires, without closing the normal tile WebSocket. Reconnecting
-obtains fresh authority and a new viewer UUID.
+the WebSocket's closure, not at the expiry of its handshake credentials. Those
+credentials must be valid when attaching the connection; its verified owner
+and initial permission ceiling then remain fixed for that connection's lifetime.
+Registration/update messages cannot change either. No periodic authorization
+renewal, tile-stream reconnect, or new viewer UUID is needed as tokens expire.
+
+Every agent MCP request still requires independently valid credentials and the
+appropriate permissions, and can target only the same `(issuer, subject)`.
+Action deadlines remain capped by the caller's credential expiry. `/mcp/browser`
+also rechecks the proxy identity, expiry and permissions on every HTTP request;
+an existing WebSocket does not authorize an expired browser HTTP request.
+
+This deliberately does not invalidate an open viewer connection when its browser
+SSO session expires or is revoked elsewhere. It remains targetable by the same
+user with valid MCP credentials until the socket closes. There is no automatic
+logout/revocation notification from the proxy; deployments requiring immediate
+invalidation must provide that separately. Revoked MCP permissions can remain
+usable until already-issued caller tokens expire. Closing/reloading the viewer
+ends the old binding; a new connection must authenticate again.
 
 Do not expose the backend directly to untrusted callers in a topology where
 they can impersonate an allowed proxy peer. Do not rely on `X-Forwarded-For`
@@ -251,10 +266,9 @@ occurrences; YAML lists use the usual sequence syntax.
 | `mcp-trusted-proxy-addresses` | None | Exact socket-peer IPs permitted to supply browser identity |
 | `mcp-browser-issuer-header` | None | Lowercase header name carrying verified issuer |
 | `mcp-browser-subject-header` | None | Lowercase header name carrying verified subject |
-| `mcp-browser-expiry-header` | None | Lowercase header name carrying verified expiry in Unix seconds |
+| `mcp-browser-expiry-header` | None | Verified credential expiry in Unix seconds, checked at WebSocket attachment and on each `/mcp/browser` HTTP request |
 | `mcp-browser-permissions-header` | None | Lowercase header name carrying mapped permission words |
-| `mcp-browser-max-lifetime-seconds` | `3600` | Cap on retained browser authority, 1..86400 seconds |
-| `mcp-timeout-ms` | `30000` | Call deadline, additionally capped by caller/browser authority |
+| `mcp-timeout-ms` | `30000` | Call deadline, additionally capped by the caller's credential expiry |
 | `mcp-invocation-bytes` | `65536` | Complete invoke or registration envelope |
 | `mcp-result-bytes` | `262144` | Browser result envelope/native serialized tool-result budget |
 | `mcp-calls-per-session` | `4` | Outstanding calls per viewer tab |

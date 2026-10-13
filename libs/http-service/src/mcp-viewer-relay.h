@@ -27,7 +27,8 @@ public:
     {
         std::string issuer;   // Subjects are only unique within their issuing authority.
         std::string subject;  // Stable ownership key; email is not an identity.
-        std::chrono::system_clock::time_point expiresAt;  // Caps long-lived browser/call authority.
+        // Checked when attaching a browser; caps every caller's request and action lifetime.
+        std::chrono::system_clock::time_point expiresAt;
         bool read = false;     // Viewer reads are independent from control/config/data permissions.
         bool control = false;  // Allows mutations but does not imply other privileges.
         bool configRead = false;
@@ -63,7 +64,7 @@ public:
     /** Retire old registrations without closing sockets or changing admitted calls' validators. */
     void replaceCatalog(std::shared_ptr<McpActionCatalog const> catalog);
 
-    /** Attach a verified live connection; duplicate UUIDs never replace an existing owner. */
+    /** Bind a currently valid identity until disconnect; duplicate UUIDs never replace an owner. */
     [[nodiscard]] bool
     attach(std::string clientId, Principal principal, std::string origin, Send send);
 
@@ -79,7 +80,7 @@ public:
     /** Check the versioned client-control envelope without applying defaults/coercions. */
     [[nodiscard]] static bool acceptsMessage(nlohmann::json const& message);
 
-    /** List only the caller's compatible, unexpired tabs, independent of frontend origin. */
+    /** List only the valid caller's compatible live tabs, independent of frontend origin. */
     [[nodiscard]] nlohmann::json sessions(Principal const& caller) const;
 
     /** Admit a call or immediately complete with an error; return its opaque cancellation handle.
@@ -90,16 +91,18 @@ public:
     /** Cancel an already admitted call on HTTP disconnect or explicit client cancellation. */
     void cancel(std::string const& callId);
 
-    /** Enforce monotonic deadlines and authentication expiry from the control-loop timer. */
+    /** Enforce monotonic deadlines and caller credential expiry from the control-loop timer. */
     void expire();
 
     /** Stop admission and release callbacks before the owning event loop is destroyed. */
     void shutdown();
 
 private:
-    /** One connection owns its auth snapshot, capabilities, and uncertain mutation slot. */
+    /** One live connection owns its verified identity, capabilities, and uncertain mutation slot.
+     */
     struct Session
     {
+        // Immutable handshake identity/permission ceiling; expiry was checked at attachment only.
         Principal principal;
         std::string origin;
         std::string label;

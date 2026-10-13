@@ -477,7 +477,7 @@ TEST_CASE("MCP abandoned mutations still count toward cross-tab admission limits
 }
 
 TEST_CASE(
-    "MCP relay registration cannot reset a mutation or extend browser authority",
+    "MCP relay registration cannot reset a mutation or replace verified ownership",
     "[mcp-actions]")
 {
     mapget::McpConfig::Limits limits;
@@ -497,11 +497,19 @@ TEST_CASE(
     update["expiresAt"] = "2099-01-01";
     CHECK_FALSE(test.relay.receive(test.first, update));
     test.wall += std::chrono::seconds(3);
-    CHECK_FALSE(test.relay.receive(test.first, test.registration()));
+    test.steady += std::chrono::seconds(3);
+    test.relay.expire();
+    REQUIRE(test.relay.receive(test.first, test.registration()));
+    CHECK(test.relay.sessions(test.principal()).at(0).at("mutationBusy") == true);
+    CHECK(test.invoke(test.first, true).empty());
+    CHECK(test.replies.back().at("error").at("code") == "busy");
+    CHECK_FALSE(test.attach(test.second, test.principal()));
+    // Only the physical connection ending releases ownership, not its old credentials expiring.
+    test.relay.disconnect(test.first);
     CHECK(test.relay.sessions(test.principal()).empty());
     CHECK(test.replies.back().at("error").at("code") == "disconnected");
     CHECK(test.messages[test.first].back().at("type") == "mapget.actions.cancel");
-    // A different, freshly authenticated connection is independent of the expired UUID.
+    // A different, freshly authenticated connection is independent of the disconnected UUID.
     test.open(test.second);
     CHECK_FALSE(test.reply(test.second, id, true));
     CHECK_FALSE(test.invoke(test.second, true).empty());
@@ -565,66 +573,94 @@ TEST_CASE("MCP terminal replies after the deadline cannot beat the expiry sweep"
     CHECK_FALSE(test.invoke(test.first, true).empty());
 }
 
-TEST_CASE("MCP browser authorization expiry explicitly retires UI registration", "[mcp-actions]")
+TEST_CASE("MCP viewer ownership lasts for the connection, not its handshake token", "[mcp-actions]")
 {
     ViewerRelayTest test;
-    test.open(test.first);
-    std::string mutation;
-    bool incoming = false;
-    SECTION("An idle tab is notified by the expiry sweep") {}
-    SECTION("An incoming registration cannot extend its authority")
+    auto handshake = test.principal();
+    REQUIRE(test.attach(test.first, handshake));
+    SECTION("An idle registered tab survives")
     {
-        incoming = true;
+        REQUIRE(test.relay.receive(test.first, test.registration()));
     }
-    SECTION("A live mutation is cancelled after registration is retired")
-    {
-        mutation = test.invoke(test.first, true);
-        REQUIRE_FALSE(mutation.empty());
-    }
+    SECTION("Registration can follow a delayed browser startup") {}
     test.messages[test.first].clear();
-    test.onSend = [&](Json const& message)
-    {
-        CHECK_FALSE(test.relay.attached(test.first));
-        if (message.at("type") == "mapget.actions.error" && !mutation.empty()) {
-            CHECK_FALSE(test.reply(test.first, mutation, true));
-        }
-    };
-    test.wall += std::chrono::minutes(6);
-    if (incoming) {
-        CHECK_FALSE(test.relay.receive(test.first, test.registration()));
-    }
-    else {
-        test.relay.expire();
-    }
-    auto const messages = test.messages[test.first];
-    REQUIRE_FALSE(messages.empty());
-    CHECK(messages.front().at("type") == "mapget.actions.error");
-    CHECK(messages.front().at("operation") == "register");
-    CHECK(messages.front().at("error").at("code") == "not_available");
-    CHECK(test.relay.sessions(test.principal()).empty());
-    if (!mutation.empty()) {
-        REQUIRE(messages.size() == 2);
-        CHECK(messages.back().at("type") == "mapget.actions.cancel");
-        REQUIRE(test.replies.size() == 1);
-        CHECK(test.replies.front().at("error").at("code") == "disconnected");
-    }
+    test.wall += std::chrono::hours(48);
+    test.steady += std::chrono::hours(48);
     test.relay.expire();
-    CHECK(test.messages[test.first] == messages);
-    test.onSend = {};
-    test.open(test.second);
-    CHECK(test.relay.sessions(test.principal()).size() == 1);
+    test.relay.expire();
+    REQUIRE(test.relay.attached(test.first));
+    CHECK(test.messages[test.first].empty());
+    REQUIRE(test.relay.receive(test.first, test.registration()));
+    auto sessions = test.relay.sessions(test.principal());
+    REQUIRE(sessions.size() == 1);
+    CHECK(sessions.at(0).at("clientId") == test.first);
+    CHECK(test.relay.sessions(handshake).empty());
+    CHECK_FALSE(test.attach(test.second, handshake));
+    CHECK_FALSE(test.attach(test.first, test.principal("bob")));
+    CHECK(test.invoke(test.first, false, "bob").empty());
+    auto id = test.invoke(test.first);
+    REQUIRE_FALSE(id.empty());
+    CHECK(test.reply(test.first, id));
+    id = test.invoke(test.first, true);
+    REQUIRE_FALSE(id.empty());
+    CHECK(test.reply(test.first, id, true));
 }
 
-TEST_CASE("MCP authorization expiry and disconnect prevent sensitive late results", "[mcp-actions]")
+TEST_CASE("MCP in-flight calls outlive browser handshake credentials", "[mcp-actions]")
+{
+    ViewerRelayTest test;
+    auto handshake = test.principal();
+    handshake.expiresAt = test.wall + std::chrono::seconds(2);
+    REQUIRE(test.attach(test.first, handshake));
+    REQUIRE(test.relay.receive(test.first, test.registration()));
+    bool mutation = false;
+    SECTION("Read") {}
+    SECTION("Mutation")
+    {
+        mutation = true;
+    }
+    auto id = test.invoke(test.first, mutation);
+    REQUIRE_FALSE(id.empty());
+    CHECK(test.messages[test.first].back().at("timeoutMs") == 30000);
+    auto messageCount = test.messages[test.first].size();
+    test.wall += std::chrono::seconds(3);
+    test.steady += std::chrono::seconds(3);
+    test.relay.expire();
+    CHECK(test.messages[test.first].size() == messageCount);
+    CHECK(test.replies.empty());
+    REQUIRE(test.reply(test.first, id, mutation));
+    REQUIRE(test.replies.size() == 1);
+    CHECK(test.replies.front().contains("result"));
+}
+
+TEST_CASE("MCP live connections retain their initial browser permission ceiling", "[mcp-actions]")
+{
+    ViewerRelayTest test;
+    auto handshake = test.principal();
+    handshake.control = false;
+    REQUIRE(test.attach(test.first, handshake));
+    REQUIRE(test.relay.receive(test.first, test.registration()));
+    test.wall += std::chrono::hours(48);
+    test.steady += std::chrono::hours(48);
+    test.relay.expire();
+    REQUIRE(test.relay.receive(test.first, test.registration()));
+    auto sessions = test.relay.sessions(test.principal());
+    REQUIRE(sessions.size() == 1);
+    CHECK(
+        sessions.at(0).at("actions") ==
+        Json::array({"viewer_describe_app_state", "viewer_get_app_state"}));
+    CHECK(test.invoke(test.first, true).empty());
+    CHECK(test.replies.back().at("error").at("code") == "not_available");
+    auto id = test.invoke(test.first);
+    REQUIRE_FALSE(id.empty());
+    CHECK(test.reply(test.first, id));
+}
+
+TEST_CASE("MCP disconnect and shutdown prevent sensitive late results", "[mcp-actions]")
 {
     ViewerRelayTest test;
     test.open(test.first);
     auto id = test.invoke(test.first, true);
-    SECTION("Browser connection expiry")
-    {
-        test.wall += std::chrono::minutes(6);
-        test.relay.expire();
-    }
     SECTION("Socket disconnected")
     {
         test.relay.disconnect(test.first);
@@ -664,6 +700,45 @@ TEST_CASE(
     CHECK(test.replies.back().at("error").at("code") == "not_available");
     CHECK_FALSE(test.invoke(test.first).empty());
     CHECK(test.messages[test.first].back().at("timeoutMs") == 60000);
+}
+
+TEST_CASE("MCP caller expiry preserves the connection and uncertain mutation", "[mcp-actions]")
+{
+    ViewerRelayTest test;
+    test.open(test.first);
+    auto caller = test.principal();
+    caller.expiresAt = test.wall + std::chrono::seconds(2);
+    auto id = test.relay.invoke(
+        caller,
+        "viewer_set_app_state",
+        test.arguments("viewer_set_app_state", test.first),
+        [&](Json reply) { test.replies.push_back(std::move(reply)); });
+    REQUIRE_FALSE(id.empty());
+    CHECK(test.messages[test.first].back().at("timeoutMs") == 2000);
+    test.wall += std::chrono::seconds(3);
+    test.steady += std::chrono::seconds(3);
+    test.relay.expire();
+    REQUIRE(test.replies.size() == 1);
+    CHECK(test.replies.back().at("error").at("code") == "timeout");
+    CHECK(test.replies.back().at("error").at("outcome") == "unknown");
+    CHECK_FALSE(test.replies.back().contains("result"));
+    CHECK(test.relay.attached(test.first));
+    CHECK(test.relay.sessions(test.principal()).at(0).at("mutationBusy") == true);
+    CHECK(test.relay.sessions(caller).empty());
+    CHECK(test.relay
+              .invoke(
+                  caller,
+                  "viewer_get_app_state",
+                  test.arguments("viewer_get_app_state", test.first),
+                  [&](Json reply) { test.replies.push_back(std::move(reply)); })
+              .empty());
+    CHECK(test.replies.back().at("error").at("code") == "not_available");
+    CHECK(test.invoke(test.first, true).empty());
+    CHECK(test.replies.back().at("error").at("code") == "busy");
+    auto replyCount = test.replies.size();
+    CHECK_FALSE(test.reply(test.first, id, true));
+    CHECK(test.replies.size() == replyCount);
+    CHECK_FALSE(test.invoke(test.first, true).empty());
 }
 
 TEST_CASE(

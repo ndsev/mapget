@@ -74,7 +74,6 @@ struct McpConfig
     std::string subjectHeader;
     std::string expiryHeader;
     std::string permissionsHeader;
-    int maxBrowserLifetimeSeconds = 3600;
 
     /** Bind individual CLI11 options; this object must outlive parsing/callbacks on serve. */
     void addOptions(CLI::App& serve);
