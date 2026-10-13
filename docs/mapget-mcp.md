@@ -262,7 +262,8 @@ occurrences; YAML lists use the usual sequence syntax.
 | `mcp-config-read-claim`, `mcp-config-read-value` | None | Independent verified permission for masked configuration reads |
 | `mcp-config-write-claim`, `mcp-config-write-value` | None | Independent verified permission for configuration writes |
 | `mcp-diagnostics-claim`, `mcp-diagnostics-value` | None | Independent verified permission for global server diagnostics |
-| `mcp-datasource-header-claims` | Empty | At most 16 `lowercase-header=/claim/pointer` mappings into datasource authorization, from verified scalar JWT claims only |
+| `mcp-datasource-headers` | Empty | Fixed `lowercase-header=value` datasource grants for every authenticated OAuth bearer/browser principal; native reads still require read permission |
+| `mcp-datasource-header-claims` | Empty | `lowercase-header=/claim/pointer` mappings into datasource authorization, from verified scalar JWT claims only; at most 16 headers combined with static grants |
 | `mcp-trusted-proxy-addresses` | None | Exact socket-peer IPs permitted to supply browser identity |
 | `mcp-browser-issuer-header` | None | Lowercase header name carrying verified issuer |
 | `mcp-browser-subject-header` | None | Lowercase header name carrying verified subject |
@@ -422,6 +423,22 @@ proxy/caller headers are not forwarded to datasource authorization. Layer/partit
 is authorized again after catalog selection. `sourceId` disambiguates authorized sources
 sharing a map/layer; it does not bypass ACLs. Source-reference targets are authorized
 independently. Never return the JWT itself to the datasource.
+
+For an endpoint whose authorized readers all share the same datasource access,
+configure `mcp-datasource-headers: ["x-supplier=shared"]`. These fixed operator
+grants apply to both verified bearer and trusted-proxy browser principals in OAuth
+mode; they neither authenticate a caller nor grant read, control, config, or
+diagnostics permissions. This is endpoint-wide access, not a per-user entitlement.
+It leaves existing datasource gates and ordinary HTTP/WebSocket authorization
+unchanged. Caller headers and tool arguments cannot override the grants.
+
+Static values must be nonempty, at most 4096 bytes, and contain no control
+characters. Header names must be lowercase letters, digits, or hyphens, starting
+with a letter, and at most 100 characters. Static and claim mappings must have
+unique names across both lists, with at most 16 entries combined; duplicates fail
+startup rather than taking precedence. The settings are private, restart-scoped,
+and empty by default. Use verified claim mappings instead when access differs
+between bearer users.
 
 <!-- mcp:
 title: "Native source and layer discovery"
@@ -1038,8 +1055,9 @@ with a different authentication boundary:
   Viewer control does not grant config/diagnostic authority. Existing server-side
   configuration opt-ins and write gates still apply.
 - Browser authority does not synthesize bearer claim mappings for datasource
-  headers. Sources requiring those mappings remain inaccessible through this
-  endpoint unless a separate supported deployment authentication path grants access.
+  headers. It receives only the explicitly configured `mcp-datasource-headers`
+  static grants, with the same native read-permission checks as the bearer path.
+  Sources requiring other datasource headers remain inaccessible.
 
 Discovery includes only authorized native mapget tools. Calls cannot reach
 `viewer_list_sessions` or any relayed viewer action, even with an explicit

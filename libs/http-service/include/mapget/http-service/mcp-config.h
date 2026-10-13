@@ -65,6 +65,9 @@ struct McpConfig
     bool configWriteEnabled = false;
     /** Explicit operator assertion that this file, not a transformed container copy, is durable. */
     bool directConfigPersistence = false;
+    /** Fixed lowercase header=value grants for authenticated OAuth bearer and browser principals.
+     */
+    std::vector<std::string> datasourceHeaders;
     /** Lowercase header=JSON-pointer mappings, evaluated only on verified JWT scalar claims. */
     std::vector<std::string> datasourceHeaderClaims;
 
