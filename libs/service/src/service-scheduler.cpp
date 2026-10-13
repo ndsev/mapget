@@ -14,11 +14,13 @@ ServiceScheduler::ServiceScheduler(
     Cache::Ptr cache,
     std::optional<std::chrono::milliseconds> defaultTtl,
     size_t workerCount,
-    std::chrono::milliseconds errorTileTtl)
+    std::chrono::milliseconds errorTileTtl,
+    std::chrono::milliseconds emptyTileTtl)
     : dataSources_(dataSources),
       cache_(std::move(cache)),
       defaultTtl_(defaultTtl),
-      errorTileTtl_(errorTileTtl)
+      errorTileTtl_(errorTileTtl),
+      emptyTileTtl_(emptyTileTtl)
 {
     if (!cache_) {
         raise("Cache must not be null!");
@@ -28,6 +30,9 @@ ServiceScheduler::ServiceScheduler(
     }
     if (errorTileTtl_.count() <= 0) {
         raise("Error tile TTL must be greater than zero.");
+    }
+    if (emptyTileTtl_.count() <= 0) {
+        raise("Empty tile TTL must be greater than zero.");
     }
 
     workers_.reserve(workerCount);

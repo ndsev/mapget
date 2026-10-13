@@ -78,7 +78,8 @@ public:
         Cache::Ptr cache,
         std::optional<std::chrono::milliseconds> defaultTtl,
         size_t workerCount,
-        std::chrono::milliseconds errorTileTtl);
+        std::chrono::milliseconds errorTileTtl,
+        std::chrono::milliseconds emptyTileTtl);
     /** Stop and join workers before releasing scheduler-owned state. */
     ~ServiceScheduler() noexcept;
 
@@ -209,6 +210,7 @@ private:
     Cache::Ptr cache_;
     std::optional<std::chrono::milliseconds> defaultTtl_;
     const std::chrono::milliseconds errorTileTtl_;
+    const std::chrono::milliseconds emptyTileTtl_;
 
     mutable std::mutex mutex_;
     std::condition_variable jobsAvailable_;

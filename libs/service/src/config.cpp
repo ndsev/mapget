@@ -23,8 +23,12 @@ nlohmann::json ttlSchema()
     return {
         {"type", "integer"},
         {"title", "TTL (seconds)"},
-        {"description", "Time-to-live for cached tiles produced by this datasource. 0 = infinite."}
-    };
+        {"minimum", 0},
+        {"description",
+         "Fallback lifetime in seconds for successful nonempty tiles/objects. "
+         "0 = infinite; omitted = mapget.serve.ttl. Explicit payload TTLs win. "
+         "Errors and empty source layers instead use mapget.serve.error-tile-ttl "
+         "and mapget.serve.empty-tile-ttl."}};
 }
 
 nlohmann::json authHeaderSchema()

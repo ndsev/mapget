@@ -17,7 +17,8 @@ HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
           config.watchConfig,
           config.defaultTtl,
           config.workerCount,
-          config.errorTileTtl),
+          config.errorTileTtl,
+          config.emptyTileTtl),
       impl_(std::make_unique<Impl>(*this, config))
 {
 }

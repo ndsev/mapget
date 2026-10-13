@@ -25,11 +25,12 @@ void bindHttpService(py::module_& m)
     )pbdoc")
         .def(
             py::init(
-                [](size_t workerCount, int64_t errorTileTtlMs)
+                [](size_t workerCount, int64_t errorTileTtlMs, int64_t emptyTileTtlMs)
                 {
                     HttpServiceConfig config;
                     config.workerCount = workerCount;
                     config.errorTileTtl = std::chrono::milliseconds(errorTileTtlMs);
+                    config.emptyTileTtl = std::chrono::milliseconds(emptyTileTtlMs);
                     return std::make_unique<HttpService>(
                         std::make_shared<mapget::MemCache>(),
                         config);
@@ -38,6 +39,10 @@ void bindHttpService(py::module_& m)
             py::arg("error_tile_ttl_ms") =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     mapget::Service::DEFAULT_ERROR_TILE_TTL)
+                    .count(),
+            py::arg("empty_tile_ttl_ms") =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    mapget::Service::DEFAULT_EMPTY_TILE_TTL)
                     .count(),
             R"pbdoc(
                 Construct a service with an in-memory cache and a global worker cap.
@@ -48,6 +53,13 @@ void bindHttpService(py::module_& m)
 
                 ``error_tile_ttl_ms`` caps failed tile lifetimes (default 5000 ms)
                 and must be positive. Shorter positive tile-specific TTLs win.
+
+                ``empty_tile_ttl_ms`` similarly caps successful source layers with
+                no roots (default 5000 ms, positive). Both limits cover tile and
+                object payloads, override datasource/service TTL defaults, and
+                use ordinary cache expiry. Errors use the error limit even when
+                empty. Empty filter/inspection results inherit source lifetimes;
+                they do not receive this limit unless a source was itself empty.
             )pbdoc")
         .def(
             "add_remote_datasource",

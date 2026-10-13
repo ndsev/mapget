@@ -153,11 +153,13 @@ TEST_CASE("Mapget Config", "[MapgetConfig]")
     }
 }
 
-TEST_CASE("CLI rejects invalid error tile TTLs before startup", "[MapgetConfig][TTL]")
+TEST_CASE("CLI rejects invalid error and empty tile TTLs before startup", "[MapgetConfig][TTL]")
 {
-    for (auto const* value : {"0", "-1", "9223372036854776"}) {
-        CAPTURE(value);
-        REQUIRE(mapget::runFromCommandLine({"serve", "--error-tile-ttl", value}) == 1);
+    for (auto const* option : {"--error-tile-ttl", "--empty-tile-ttl"}) {
+        for (auto const* value : {"0", "-1", "9223372036854776"}) {
+            CAPTURE(option, value);
+            REQUIRE(mapget::runFromCommandLine({"serve", option, value}) == 1);
+        }
     }
 }
 

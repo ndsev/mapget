@@ -1320,7 +1320,8 @@ TEST_CASE(
     REQUIRE(westernResult->timestamp() == expectedTimestamp);
     REQUIRE(westernResult->ttl() == std::chrono::milliseconds{1250});
     REQUIRE(easternResult->timestamp() == expectedTimestamp);
-    REQUIRE(easternResult->ttl() == std::chrono::seconds{10});
+    // Empty halo sources are capped below their explicit ten-second lifetime.
+    REQUIRE(easternResult->ttl() == Service::DEFAULT_EMPTY_TILE_TTL);
     REQUIRE(
         westernResult->at(0)->groupEntryCount() ==
         0);
@@ -2013,7 +2014,7 @@ TEST_CASE("Service rejects nonpositive error tile TTLs", "[Service][failure][TTL
 }
 
 TEST_CASE(
-    "A failed point-group halo expires only its dependent output",
+    "A failed point-group halo limits only its dependent output",
     "[feature-layer-filter][Service][point-group][failure][TTL]")
 {
     auto const western = TileId::fromTileXY(10, 4, 4);
@@ -2026,7 +2027,13 @@ TEST_CASE(
         Point{longitude, latitude, 0},
         Point{longitude, latitude, 0});
     auto cache = std::make_shared<MemCache>(64);
-    Service service(cache, false);
+    Service service(
+        cache,
+        false,
+        std::chrono::milliseconds{0},
+        1,
+        std::chrono::seconds{5},
+        std::chrono::seconds{11});
     service.add(source);
     auto info = source->info();
     auto failed = std::make_shared<PartitionFeatureLayer>(
@@ -2071,7 +2078,8 @@ TEST_CASE(
     REQUIRE(results.at(western)->timestamp() == failed->timestamp());
     REQUIRE(results.at(western)->ttl() == failed->ttl());
     REQUIRE_FALSE(results.at(eastern)->error());
-    REQUIRE_FALSE(results.at(eastern)->ttl());
+    // Healthy output depends on empty halo tiles, not on the western error.
+    REQUIRE(results.at(eastern)->ttl() == std::chrono::seconds{11});
 }
 
 TEST_CASE(

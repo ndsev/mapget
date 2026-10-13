@@ -62,7 +62,8 @@ struct Service::Impl
         bool useDataSourceConfig,
         std::optional<std::chrono::milliseconds> defaultTtl,
         size_t workerCount,
-        std::chrono::milliseconds errorTileTtl);
+        std::chrono::milliseconds errorTileTtl,
+        std::chrono::milliseconds emptyTileTtl);
     /** Stop source construction before draining and joining homogeneous workers. */
     ~Impl();
 

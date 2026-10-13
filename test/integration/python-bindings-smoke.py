@@ -36,13 +36,14 @@ def main() -> int:
     assert hasattr(mapget, "TileSubsetLayer")
     assert mapget.TileId is PackedTileId
     assert mapget.PackedTileId is PackedTileId
-    for invalid_ttl in (0, -1):
-        try:
-            mapget.Service(worker_count=1, error_tile_ttl_ms=invalid_ttl)
-        except RuntimeError as error:
-            assert "Error tile TTL must be greater than zero" in str(error)
-        else:
-            raise AssertionError("Service accepted a nonpositive error tile TTL")
+    for keyword, label in (("error_tile_ttl_ms", "Error"), ("empty_tile_ttl_ms", "Empty")):
+        for invalid_ttl in (0, -1):
+            try:
+                mapget.Service(worker_count=1, **{keyword: invalid_ttl})
+            except RuntimeError as error:
+                assert f"{label} tile TTL must be greater than zero" in str(error)
+            else:
+                raise AssertionError(f"Service accepted a nonpositive {keyword}")
     parsed_key = mapget.MapTileKey("Features:Map:WayLayer:65536")
     assert isinstance(parsed_key.tile_id, PackedTileId)
     assert parsed_key.tile_id.value == 65536

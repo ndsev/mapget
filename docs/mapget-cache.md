@@ -32,6 +32,17 @@ the on-disk database.
 
 Cache hits and misses are decided per tile: if a tile for the requested map, layer and tile ID exists in the cache, the service returns it immediately; otherwise the corresponding datasource is asked to produce the tile and the result is inserted into the cache.
 
+## Freshness versus retention
+
+`mapget.serve.ttl` (`--ttl`, default `0`, no expiry) and `sources[].ttl`
+control successful nonempty payload freshness. Separate positive caps,
+`mapget.serve.error-tile-ttl` and `mapget.serve.empty-tile-ttl` (both default
+`5` seconds, with matching CLI options), prevent errors and missing data from
+staying cached forever. A shorter explicit payload TTL is preserved. See
+[Tile TTL](mapget-config.md#tile-ttl) for precedence, units, validation and reload
+semantics. These limits do not change the cache's byte/count capacity policy or
+add a background refetch loop.
+
 ## Object partition caching
 
 The same cache stores complete object partitions. The key is
@@ -47,9 +58,10 @@ reuse complete source objects, not cached subsets.
 
 Discovery associations are not stored in this cache and discovery calls are
 not coalesced. Their response `timestamp`/`ttlMs` tells the client when to
-refresh associations, independently of payload freshness. Payload TTL
+refresh associations, independently of payload freshness. Successful nonempty payload TTL
 precedence remains partition-specific, then datasource, then service default;
-zero means no expiry. An association disappearing does not evict the object.
+zero means no expiry. Empty and error object payloads use the same finite caps
+as tiles. An association disappearing does not evict the object.
 Map reset covers object payloads as well as tiles, and fails queued discovery
 work for that map; it cannot interrupt discovery calls already running.
 

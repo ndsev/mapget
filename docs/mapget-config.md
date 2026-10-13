@@ -74,33 +74,64 @@ With this configuration the datasource is only visible to clients that send an `
 
 <!-- --8<-- [start:ttl] -->
 
-Mapget provides a time-to-live (TTL) option, which can be set via the YAML config
-or as a `--ttl` command line option. Time-to-live controls the time period for which the cached tile is valid.
-Note: The `ttl` value is always indicated in seconds, and 0 means `infinite` (no cache expiry).
+TTL controls how long a converted source payload remains valid, measured from
+its production `timestamp`. The same settings apply to tile and object payloads,
+and to feature and SourceData layers.
 
-Individual datasource entries can override this with a `ttl` field in the corresponding YAML node, also expressed in seconds:
+| YAML key | CLI option | Default | Allowed values (whole seconds) | Applies to |
+| --- | --- | --- | --- | --- |
+| `mapget.serve.ttl` | `--ttl` | `0` | Nonnegative; `0` means no expiry | Fallback for successful nonempty source payloads |
+| `sources[].ttl` | None | Inherit `mapget.serve.ttl` | Nonnegative; `0` means no expiry | Per-datasource override of the nonempty fallback |
+| `mapget.serve.error-tile-ttl` | `--error-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a payload carrying a fatal error |
+| `mapget.serve.empty-tile-ttl` | `--empty-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a successful source layer with no root nodes (no features or SourceData roots) |
 
 ```yaml
+mapget:
+  serve:
+    ttl: 86400        # Nonempty fallback: one day; 0 disables expiry.
+    error-tile-ttl: 5 # Retry failed payloads after at most five seconds.
+    empty-tile-ttl: 5 # Recheck missing/empty payloads after at most five seconds.
 sources:
   - type: GeoJsonFolder
     folder: /maps/my-geojson-tiles
-    ttl: 60  # Override default TTL, one minute for this datasource.
-mapget:
-  serve:
-    ttl: 86400 # Default TTL: One day.
-    error-tile-ttl: 5 # Maximum lifetime of failed tiles; must be positive.
+    ttl: 60          # Nonempty fallback for this datasource: one minute.
 ```
 
-**Note:** Any TTL default value is only applied if the datasource itself has not already set a TTL directly for the tile.
+**Precedence:** Nonempty success uses the explicit payload TTL, then the
+datasource `ttl`, then the service `ttl`. Errors instead use `error-tile-ttl`;
+empty successes use `empty-tile-ttl`. Each limit preserves a shorter positive
+**explicit payload TTL**, but replaces missing, zero, negative or longer payload
+TTLs. Neither limit inherits the ordinary datasource/service fallback. An empty
+payload with an error uses the error limit, not the empty limit. Both limits
+reject zero and negative configuration values: absence and failures must not be
+cached indefinitely merely because ordinary successful data is static.
 
-Failed tile values use a separate upper bound: `mapget.serve.error-tile-ttl`
-(CLI: `--error-tile-ttl`), in whole seconds, default `5`. Zero and negative values
-are rejected; failures must not inherit an infinite successful-tile lifetime.
-A shorter positive tile-specific TTL is preserved. Error tiles and their derived
-filter outputs use ordinary cache expiry, not a separate request retry loop.
-This startup setting does not change successful empty tiles or a datasource's
-own raw negative cache. C++ embedders use `HttpServiceConfig::errorTileTtl` or
-the final `Service` constructor argument; Python uses `Service(error_tile_ttl_ms=5000)`.
+Emptiness is determined **before filtering**, not from the number of matches in
+a search or inspection response. Such responses inherit the source lifetime.
+Add-on source layers follow the same rules; their composed result inherits the
+earliest contributor expiry, including an empty contributor that may gain data
+later. Filter outputs likewise inherit the earliest dependency expiry.
+
+All three `mapget.serve` settings are startup-only; restart to change them. CLI
+options override YAML values. Per-datasource `ttl` follows datasource config
+reload. These settings affect newly loaded payloads, not already serialized cache
+entries; use `--clear-cache` at startup if old persistent lifetimes must be discarded.
+
+Expiry is ordinary cache freshness, **not a separate request retry loop** or
+periodic background fetch. On a request that encounters an expired cached
+payload, mapget invokes `DataSource::onCacheExpired` before reloading it. A
+browser may request still-visible expired values again. Ordinary FIFO eviction
+and TTL expiry are distinct; only the latter carries an expiry notification.
+Datasource-internal caches remain the datasource's responsibility: LiveSource
+purges its SmartClient partition, including negative entries, on this callback.
+SmartClient's byte-bounded LRU controls retention, not freshness, and has no
+independent negative-cache TTL.
+
+For embedded C++, use `HttpServiceConfig::{defaultTtl,errorTileTtl,emptyTileTtl}`
+or the `Service` constructor's corresponding arguments, in **milliseconds**.
+Python exposes `Service(error_tile_ttl_ms=5000, empty_tile_ttl_ms=5000)`; both
+arguments must be positive. Transport payloads also carry TTLs in milliseconds,
+not the whole seconds used by YAML/CLI configuration.
 
 <!-- --8<-- [end:ttl] -->
 

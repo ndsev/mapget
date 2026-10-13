@@ -166,8 +166,9 @@ public:
     [[nodiscard]] bool isDataSourceAuthorized(AuthHeaders const& clientHeaders) const;
 
     /**
-     * Set a TTL fallback for all tiles produced by this datasource.
-     * A value of 0ms means infinite TTL.
+     * Set a TTL fallback for successful nonempty tile/object payloads.
+     * A value of 0ms means infinite TTL; nullopt inherits the service default.
+     * Explicit payload TTLs win. Error and empty lifetimes use service limits instead.
      */
     void setTtl(std::optional<std::chrono::milliseconds> ttl);
 

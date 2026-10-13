@@ -593,6 +593,7 @@ struct ServeCommand
     std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
     int64_t errorTileTtlSeconds_ = Service::DEFAULT_ERROR_TILE_TTL.count();
+    int64_t emptyTileTtlSeconds_ = Service::DEFAULT_EMPTY_TILE_TTL.count();
     size_t workerCount_ = Service::defaultWorkerCount();
     uint64_t memoryTrimPeriodSeconds_ =
         static_cast<uint64_t>(HttpServiceConfig{}.memoryTrimPeriod.count());
@@ -665,7 +666,7 @@ struct ServeCommand
             ->add_option(
                 "--ttl",
                 ttlSeconds_,
-                "Default TTL for cached tiles in seconds (0 = infinite).")
+                "Default TTL for successful nonempty source tiles in seconds (0 = infinite).")
             ->default_val(ttlSeconds_);
         serveCmd
             ->add_option(
@@ -673,6 +674,12 @@ struct ServeCommand
                 errorTileTtlSeconds_,
                 "Maximum TTL for failed tiles in seconds (must be positive).")
             ->default_val(errorTileTtlSeconds_);
+        serveCmd
+            ->add_option(
+                "--empty-tile-ttl",
+                emptyTileTtlSeconds_,
+                "Maximum TTL for successful empty source tiles in seconds (must be positive).")
+            ->default_val(emptyTileTtlSeconds_);
         serveCmd
             ->add_option(
                 "--worker-count",
@@ -747,6 +754,13 @@ struct ServeCommand
         {
             raise("Error tile TTL must be positive and fit a millisecond duration.");
         }
+        if (emptyTileTtlSeconds_ <= 0 ||
+            emptyTileTtlSeconds_ >
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+                    .count())
+        {
+            raise("Empty tile TTL must be positive and fit a millisecond duration.");
+        }
         if (workerCount_ == 0) {
             raise("Worker count must be greater than zero.");
         }
@@ -815,6 +829,7 @@ struct ServeCommand
         httpConfig.defaultTtl = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::seconds(ttlSeconds_));
         httpConfig.errorTileTtl = std::chrono::seconds(errorTileTtlSeconds_);
+        httpConfig.emptyTileTtl = std::chrono::seconds(emptyTileTtlSeconds_);
         httpConfig.workerCount = workerCount_;
         httpConfig.memoryTrimPeriod = std::chrono::seconds(memoryTrimPeriodSeconds_);
         httpConfig.cacheResetEnabled = allowCacheReset_;

@@ -11,12 +11,25 @@ namespace mapget::detail
 namespace
 {
 
-/** Apply normal TTL precedence to successful tiles. */
-void applyTtlFallback(
+/** Bound empty source lifetimes; otherwise apply ordinary datasource/service defaults. */
+void applySuccessfulTileTtl(
     PartitionLayer& tile,
     DataSource& dataSource,
-    std::optional<std::chrono::milliseconds> const& defaultTtl)
+    std::optional<std::chrono::milliseconds> const& defaultTtl,
+    std::chrono::milliseconds emptyTileTtl)
 {
+    auto const type = tile.layerInfo()->type_;
+    auto const empty = (type == LayerType::Features &&
+                        static_cast<PartitionFeatureLayer&>(tile).numRoots() == 0) ||
+        (type == LayerType::SourceData &&
+         static_cast<PartitionSourceDataLayer&>(tile).numRoots() == 0);
+    if (empty) {
+        // Missing data must be rechecked even when ordinary successful tiles live
+        // indefinitely. Empty subsets are not source layers and never enter here.
+        if (!tile.ttl() || tile.ttl()->count() <= 0 || *tile.ttl() > emptyTileTtl)
+            tile.setTtl(emptyTileTtl);
+        return;
+    }
     if (tile.ttl()) {
         return;
     }
@@ -133,7 +146,11 @@ void TileLoadJob::run() noexcept
                 layer->setTtl(scheduler_.errorTileTtl_);
         }
         else {
-            applyTtlFallback(*layer, *source_->source->dataSource, scheduler_.defaultTtl_);
+            applySuccessfulTileTtl(
+                *layer,
+                *source_->source->dataSource,
+                scheduler_.defaultTtl_,
+                scheduler_.emptyTileTtl_);
         }
 
         if (layer->layerInfo()->type_ == LayerType::Features) {
@@ -142,7 +159,9 @@ void TileLoadJob::run() noexcept
                 *source_->source,
                 scheduler_.dataSources_,
                 scheduler_.cache_,
-                scheduler_.defaultTtl_, isCancelled);
+                scheduler_.defaultTtl_,
+                scheduler_.emptyTileTtl_,
+                isCancelled);
         }
 
         // The worker continues with cache publication and every attached
@@ -173,6 +192,7 @@ void loadAddOnTiles(
     DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,
     std::optional<std::chrono::milliseconds> const& defaultTtl,
+    std::chrono::milliseconds emptyTileTtl,
     TileCancellationCheck const& isCancelled)
 {
     for (auto const& addOn : dataSources.addOnSources()) {
@@ -199,7 +219,9 @@ void loadAddOnTiles(
             continue;
         }
         auto addOnTile = std::static_pointer_cast<PartitionFeatureLayer>(loaded);
-        applyTtlFallback(*addOnTile, *addOn->dataSource, defaultTtl);
+        // Even an empty add-on may gain features later. Its lifetime must reach
+        // the composite rather than disappearing during the merge.
+        applySuccessfulTileTtl(*addOnTile, *addOn->dataSource, defaultTtl, emptyTileTtl);
         includeLifetime(*baseTile, *addOnTile);
 
         for (auto const& warning : addOnTile->warnings())

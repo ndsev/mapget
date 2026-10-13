@@ -256,8 +256,15 @@ Service::Impl::Impl(
     bool useDataSourceConfig,
     std::optional<std::chrono::milliseconds> defaultTtl,
     size_t workerCount,
-    std::chrono::milliseconds errorTileTtl)
-    : scheduler_(dataSources_, std::move(cache), defaultTtl, workerCount, errorTileTtl)
+    std::chrono::milliseconds errorTileTtl,
+    std::chrono::milliseconds emptyTileTtl)
+    : scheduler_(
+          dataSources_,
+          std::move(cache),
+          defaultTtl,
+          workerCount,
+          errorTileTtl,
+          emptyTileTtl)
 {
     if (!useDataSourceConfig) {
         return;
