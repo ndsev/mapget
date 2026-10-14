@@ -1664,9 +1664,10 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
 
                 auto const finalTile = TileId::fromValue(kThirdHttpTileIdValue);
                 REQUIRE(source->waitForStarted({finalTile}, std::chrono::seconds(10)));
-                source->releaseAll();
-
+                // Clear earlier snapshot statuses before the final tile can
+                // complete, so its completion cannot be erased by the reset.
                 wsClient.resetStatus();
+                source->releaseAll();
                 REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
                 REQUIRE(wsClient.error().empty());
                 auto const finalStatus = wsClient.lastStatus();
