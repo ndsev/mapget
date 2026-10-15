@@ -80,6 +80,8 @@ TEST_CASE(
     payload->setSourceDataAddressScope();
     tile->addRoot(structural);
     tile->addRoot(payload);
+    tile->setWarnings({"Partial source metadata: Straße", std::string(4096, 'x')});
+    tile->setError("temporary source-data outage");
 
     REQUIRE_FALSE(structural->isSourceDataAddressScope());
     REQUIRE(payload->isSourceDataAddressScope());
@@ -101,6 +103,9 @@ TEST_CASE(
     reader.read(streamBytes);
 
     REQUIRE(parsed);
+    REQUIRE(parsed->warnings() == tile->warnings());
+    REQUIRE(parsed->error() == tile->error());
+    REQUIRE(parsed->toServiceJson() == tile->toServiceJson());
     auto parsedStructural = parsed->resolve<SourceDataCompoundNode>(simfil::ModelNodeAddress{
         PartitionSourceDataLayer::Compound,
         0});
@@ -374,6 +379,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(deserializedTile->stringPoolId() == tile->stringPoolId());
         REQUIRE(deserializedTile->mapId() == tile->mapId());
         REQUIRE(deserializedTile->layerInfo() == tile->layerInfo());
+        REQUIRE(deserializedTile->warnings() == tile->warnings());
         REQUIRE(deserializedTile->error() == tile->error());
         REQUIRE(deserializedTile->errorCode() == tile->errorCode());
         REQUIRE(deserializedTile->timestamp().time_since_epoch() == tile->timestamp().time_since_epoch());
@@ -562,11 +568,25 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         REQUIRE(json["error"]["code"] == 404);
     }
 
+    SECTION("Warnings retain usable content independently of errors")
+    {
+        tile->addWarning("Duplicate Road.7; retained first record");
+        tile->addWarning("Duplicate Road.7; retained first record");
+        REQUIRE(tile->warnings().size() == 1);
+        REQUIRE_FALSE(tile->error());
+        REQUIRE(tile->toJson()["features"].size() == 2);
+        REQUIRE(tile->toJson()["warnings"] == tile->warnings());
+        tile->setError("temporarily unavailable");
+        tile->setError(std::nullopt);
+        REQUIRE(tile->warnings().size() == 1);
+    }
+
     SECTION("Serialization with errorCode")
     {
         // Set error information
         tile->setError("Connection timeout");
         tile->setErrorCode(504);
+        tile->setWarnings({"duplicate id", "partial enrichment"});
         tile->setTtl(std::chrono::milliseconds(60000));
 
         std::stringstream tileBytes;

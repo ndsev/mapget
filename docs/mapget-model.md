@@ -743,3 +743,15 @@ Simfil objects (including `AttributeLayerList`, which inherits from `simfil::Obj
   "_multimap": true
 }
 ```
+
+## Tile diagnostics (protocol 5.2)
+
+Every `PartitionLayer` carries ordered, deduplicated string warnings through `warnings()`, `addWarning()` and `setWarnings()`. They are nonfatal, may coexist with a fatal error, and survive binary serialization for feature, subset and source-data layers. Warned tiles remain cacheable.
+
+The service caps fatal error tiles using `mapget.serve.error-tile-ttl` (default five seconds), preserving shorter positive producer TTLs. Error tiles are cached and expire through the normal `timestamp + ttl` path, including datasource expiry notification. They never inherit an infinite successful-tile lifetime. Successful source layers with no roots use `mapget.serve.empty-tile-ttl` (also default five seconds), preserving shorter positive explicit TTLs instead of inheriting the ordinary nonempty fallback. Errors take precedence over emptiness; empty filter results merely inherit their source lifetimes. There is no separate runtime retry field or backoff. Filter outputs preserve errors and the earliest dependency expiry, including failed halo/relation tiles, without aborting unrelated outputs.
+
+Feature and subset JSON include `warnings` when nonempty and `error` when set. Strict feature JSON import validates diagnostics. `PartitionSourceDataLayer::toJson()` remains the raw root array; `toServiceJson()` wraps it in `{type: "SourceData", partition, mapId, mapgetLayerId, data, timestamp, ttl?, warnings?, error?}`. All service JSON envelopes expose `timestamp` in Unix microseconds and optional `ttl` in milliseconds. Python exposes `warnings`, `add_warning`, `set_warnings`, and `to_service_json` alongside ordinary tile TTL methods.
+
+`PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
+
+Binary readers and writers must both use protocol 5.2. The added warnings list changes the common layer header; error and empty-tile expiry reuse the existing timestamp and TTL fields. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.

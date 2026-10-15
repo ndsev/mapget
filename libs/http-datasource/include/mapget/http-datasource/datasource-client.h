@@ -51,7 +51,8 @@ public:
     get(MapPartitionKey const& k,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        PartitionLayer::LoadStateCallback loadStateCallback = {}) override;
+        PartitionLayer::LoadStateCallback loadStateCallback = {},
+        TileCancellationCheck const& isCancelled = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
     /** Forward spatial discovery without fetching object payloads. */
@@ -103,7 +104,8 @@ public:
     get(MapPartitionKey const& k,
         Cache::Ptr& cache,
         DataSourceInfo const& info,
-        PartitionLayer::LoadStateCallback loadStateCallback = {}) override;
+        PartitionLayer::LoadStateCallback loadStateCallback = {},
+        TileCancellationCheck const& isCancelled = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
     /** Forward spatial discovery without fetching object payloads. */

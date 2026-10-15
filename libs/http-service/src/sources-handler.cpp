@@ -62,6 +62,7 @@ nlohmann::json sourceCatalogEntryToJson(DataSourceCatalogEntry const& entry)
     result["type"] = entry.descriptor.type;
     result["status"] = std::string(catalogStatusToString(entry.status));
     result["statusMessage"] = entry.statusMessage;
+    result["retrying"] = entry.retrying;
     if (entry.progress) {
         result["progress"] = *entry.progress;
     }

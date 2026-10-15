@@ -77,6 +77,9 @@ private:
         std::map<std::string, simfil::Trace> traces_;
         simfil::Diagnostics diagnostics_;
         std::optional<Lifetime> lifetime_;
+        std::vector<std::string> warnings_;
+        std::optional<std::string> error_;
+        std::optional<int> errorCode_;
 
         /** Add request-orchestration allocations owned by this contribution. */
         void addMemoryUsage(MemoryUsageBreakdown& usage) const;

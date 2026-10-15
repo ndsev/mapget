@@ -659,9 +659,16 @@ explicitly owned mapget state as distinct measurement domains:
   estimate;
 - `cache` and `transport` account loaded string pools, serialized tile blobs,
   SQLite-owned state, and queued REST/interactive response buffers;
+- `allocator` identifies the active `backend` and provides `allocated-bytes`
+  for live heap allocations. With jemalloc, `active-bytes` covers pages backing
+  allocations, `resident-bytes` estimates allocator residency, and
+  `metadata-bytes` describes internal bookkeeping. `mapped-bytes` and
+  `retained-bytes` describe virtual address space, not physical RSS;
 - `allocator-trim` reports whether periodic glibc heap trimming is supported
   and enabled, its period, attempt/success counters, and the most recent
-  duration and free-arena samples;
+  duration and free-arena samples. It is disabled with jemalloc, whose
+  `allocator` object instead reports `background-thread-enabled`, worker
+  count/runs and configured dirty/muzzy page decay in milliseconds;
 - `reconciliation` contains diagnostic differences between allocator-live
   bytes, anonymous RSS, file/shared RSS, and known ownership estimates.
 
@@ -670,6 +677,13 @@ measurements. They must not be added directly to RSS rows. The reconciliation
 residuals can indicate allocator fragmentation, thread stacks, opaque mappings,
 or missing ownership instrumentation, but they do not identify leaks by
 themselves.
+
+Allocator statistics are sampled on demand. jemalloc's statistics epoch is
+refreshed, but sampling does not purge memory or flush worker thread caches.
+Its resident estimate is not measured process RSS; retained virtual address
+space is normally purged or decommitted. Allocator rows overlap and must not
+be added together. An unsupported allocator yields `allocator: null` and no
+allocator-based reconciliation, rather than counters from an inactive glibc heap.
 
 ## `/cache/reset`
 
@@ -735,3 +749,11 @@ Because capabilities can vary with request headers, `GET /config` responses
 include `Cache-Control: private, no-store`.
 
 <!-- --8<-- [end:config-endpoints] -->
+
+## Tile diagnostics and expiry
+
+Binary tile headers and JSONL responses preserve nonfatal `warnings: string[]` independently of `error`. A tile with warnings and no error is usable. Feature-restricted responses, addon enrichment and filtered outputs preserve relevant warnings, including warnings from dependencies that yielded no matching entries. Nonlocal filter warnings identify their source partition. Source-data service JSON uses a `SourceData` envelope with the raw roots under `data`; the in-process source-data `toJson()` API remains an array.
+
+Fatal tile values are cached for at most `mapget.serve.error-tile-ttl` seconds (default five), using ordinary `timestamp` and `ttl` metadata. Service JSON envelopes expose both too (`timestamp` in Unix microseconds, `ttl` in milliseconds). Filtered outputs propagate their dependencies' errors and earliest expiry; healthy outputs still complete normally. Successful empty source tile/object payloads are similarly bounded by `mapget.serve.empty-tile-ttl` (default five seconds). Empty filter/inspection matches inherit their source lifetimes rather than receiving this cap independently. Consumers renew only still-retained, expired values. A failed tile must not suppress unrelated new viewport coverage. Invalid filter definitions and request-level failures remain request errors, not expiring tile values. Stateless requests terminate with their diagnostics; the server does not keep them open through an outage.
+
+Catalog snapshots and source-change deltas expose a `retrying` boolean for datasource **initialization**. It stays true while a failed constructor is waiting or attempting recovery, then clears on success or terminal failure. The lifecycle status remains `failed` until ready. Constructor retry policy and browser transport reconnection are independent of runtime tile expiry.

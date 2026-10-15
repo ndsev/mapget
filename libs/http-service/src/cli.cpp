@@ -592,6 +592,8 @@ struct ServeCommand
     std::string webapp_;
     std::vector<std::string> staticMounts_;
     int64_t ttlSeconds_ = 0;
+    int64_t errorTileTtlSeconds_ = Service::DEFAULT_ERROR_TILE_TTL.count();
+    int64_t emptyTileTtlSeconds_ = Service::DEFAULT_EMPTY_TILE_TTL.count();
     size_t workerCount_ = Service::defaultWorkerCount();
     uint64_t memoryTrimPeriodSeconds_ =
         static_cast<uint64_t>(HttpServiceConfig{}.memoryTrimPeriod.count());
@@ -664,8 +666,20 @@ struct ServeCommand
             ->add_option(
                 "--ttl",
                 ttlSeconds_,
-                "Default TTL for cached tiles in seconds (0 = infinite).")
+                "Default TTL for successful nonempty source tiles in seconds (0 = infinite).")
             ->default_val(ttlSeconds_);
+        serveCmd
+            ->add_option(
+                "--error-tile-ttl",
+                errorTileTtlSeconds_,
+                "Maximum TTL for failed tiles in seconds (must be positive).")
+            ->default_val(errorTileTtlSeconds_);
+        serveCmd
+            ->add_option(
+                "--empty-tile-ttl",
+                emptyTileTtlSeconds_,
+                "Maximum TTL for successful empty source tiles in seconds (must be positive).")
+            ->default_val(emptyTileTtlSeconds_);
         serveCmd
             ->add_option(
                 "--worker-count",
@@ -704,7 +718,8 @@ struct ServeCommand
                 "--memory-trim-period-seconds",
                 memoryTrimPeriodSeconds_,
                 "Seconds between periodic allocator trims which return unused heap pages to the OS "
-                "(0=disabled). Only effective with glibc on Linux.")
+                "(0=disabled). Only effective with glibc on Linux; jemalloc uses background "
+                "purging.")
             ->default_val(memoryTrimPeriodSeconds_);
         serveCmd->add_option(
             "--location-db",
@@ -731,6 +746,20 @@ struct ServeCommand
         }
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
+        }
+        if (errorTileTtlSeconds_ <= 0 ||
+            errorTileTtlSeconds_ >
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+                    .count())
+        {
+            raise("Error tile TTL must be positive and fit a millisecond duration.");
+        }
+        if (emptyTileTtlSeconds_ <= 0 ||
+            emptyTileTtlSeconds_ >
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+                    .count())
+        {
+            raise("Empty tile TTL must be positive and fit a millisecond duration.");
         }
         if (workerCount_ == 0) {
             raise("Worker count must be greater than zero.");
@@ -799,6 +828,8 @@ struct ServeCommand
         httpConfig.watchConfig = config && *config;
         httpConfig.defaultTtl = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::seconds(ttlSeconds_));
+        httpConfig.errorTileTtl = std::chrono::seconds(errorTileTtlSeconds_);
+        httpConfig.emptyTileTtl = std::chrono::seconds(emptyTileTtlSeconds_);
         httpConfig.workerCount = workerCount_;
         httpConfig.memoryTrimPeriod = std::chrono::seconds(memoryTrimPeriodSeconds_);
         httpConfig.cacheResetEnabled = allowCacheReset_;
@@ -808,20 +839,6 @@ struct ServeCommand
         httpConfig.locationResultMaxLimit = static_cast<uint32_t>(locationMaxLimit_);
         if (!locationDbPath_.empty()) {
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
-        }
-
-        if (memoryTrimPeriodSeconds_ > 0) {
-#if defined(__linux__) && defined(__GLIBC__)
-            log().info("Periodic allocator trim: every {} seconds", memoryTrimPeriodSeconds_);
-#else
-            log().warn(
-                "Periodic allocator trim set to {} seconds, but trimming is only supported with "
-                "glibc on Linux. Setting will be ignored.",
-                memoryTrimPeriodSeconds_);
-#endif
-        }
-        else {
-            log().info("Periodic allocator trimming disabled");
         }
 
         // HttpService will subscribe to DataSourceConfigService.
@@ -953,7 +970,7 @@ struct FetchCommand
         auto fn = [this](auto const& tile)
         {
             if (!mute_)
-                std::cout << tile->toJson().dump() << std::endl;
+                std::cout << tile->toServiceJson().dump() << std::endl;
             if (tile->error())
                 raise(fmt::format("Tile {}: {}", tile->id().toString(), *tile->error()));
         };

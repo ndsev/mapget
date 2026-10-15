@@ -1,4 +1,5 @@
 #include "mapget/model/stream.h"
+#include "mapget/service/detail/allocator-memory.h"
 #include "service-impl.h"
 #include "service-memory.h"
 

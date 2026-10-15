@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/sourcedata.h"
 #include "mapget/service/memcache.h"
 #include "mapget/service/service.h"
 #include "nlohmann/json.hpp"
@@ -105,6 +108,63 @@ class TestLayerTilesRequest : public LayerTilesRequest
 public:
     using LayerTilesRequest::LayerTilesRequest;
     using LayerTilesRequest::toJson;
+};
+
+/** Controlled empty source covering tile/object payloads, raw data and add-on composition. */
+class EmptyTtlDataSource : public TestTtlDataSource
+{
+public:
+    LayerType layerType = LayerType::Features;
+    PartitionKind partitionKind = PartitionKind::Tile;
+    std::optional<std::chrono::milliseconds> producerTtl;
+    bool empty = true;
+    bool failed = false;
+    bool addOn = false;
+    std::atomic_int fills = 0;
+    std::vector<MapPartitionKey> expiredKeys;
+
+    /** Reuse the feature definition but select the requested payload kind and source role. */
+    DataSourceInfo info() override
+    {
+        auto result = TestTtlDataSource::info();
+        result.isAddOn_ = addOn;
+        result.stringPoolId_ = addOn ? "EmptyAddOnPool" : "EmptyTtlPool";
+        auto layer = std::make_shared<LayerInfo>(*result.layers_.at("WayLayer"));
+        layer->type_ = layerType;
+        layer->partitionKind_ = partitionKind;
+        if (partitionKind == PartitionKind::Object)
+            layer->tileAssociationLevel_ = 13;
+        result.layers_["WayLayer"] = std::move(layer);
+        return result;
+    }
+
+    /** Emit no features until the test simulates data becoming available. */
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
+    {
+        ++fills;
+        tile->setTtl(producerTtl);
+        if (failed)
+            tile->setError("synthetic failure");
+        else if (!empty)
+            TestTtlDataSource::fill(tile);
+    }
+
+    /** Emit a genuine source-data root only when the test makes data available. */
+    void fill(PartitionSourceDataLayer::Ptr const& tile) override
+    {
+        ++fills;
+        tile->setTtl(producerTtl);
+        if (failed)
+            tile->setError("synthetic failure");
+        else if (!empty)
+            tile->addRoot(tile->newCompound(0));
+    }
+
+    /** Record the normal expiry notification used by adapters to invalidate raw caches. */
+    void onCacheExpired(MapPartitionKey const& key, std::chrono::system_clock::time_point) override
+    {
+        expiredKeys.push_back(key);
+    }
 };
 
 class MutableInfoDataSource : public DataSource
@@ -393,6 +453,94 @@ TEST_CASE("Service rejects an empty homogeneous worker pool", "[Service][concurr
     REQUIRE_THROWS_AS(Service(std::make_shared<MemCache>(1), false, 0ms, 0), std::runtime_error);
 }
 
+/** Deterministic cancellation probe: keep the first fill alive while replacements run. */
+class CancellableTestDataSource : public TestTtlDataSource
+{
+public:
+    /** Allow two jobs so a replacement can finish before an abandoned job unwinds. */
+    DataSourceInfo info() override
+    {
+        auto result = TestTtlDataSource::info();
+        result.maxParallelJobs_ = 2;
+        return result;
+    }
+    /** Observe cancellation, but deliberately postpone unwinding to exercise late completion. */
+    void fill(PartitionFeatureLayer::Ptr const& tile, TileCancellationCheck const& cancelled) override
+    {
+        if (++started_ == 1) {
+            entered_.set_value();
+            while (!release_) {
+                if (cancelled())
+                    observedCancellation_ = true;
+                std::this_thread::sleep_for(1ms);
+            }
+            if (cancelled()) {
+                observedCancellation_ = true;
+                exited_.set_value();
+                throw TileLoadCancelled();
+            }
+        }
+        TestTtlDataSource::fill(tile);
+    }
+    std::promise<void> entered_;
+    std::promise<void> exited_;
+    std::atomic_bool release_{false};
+    std::atomic_bool observedCancellation_{false};
+    std::atomic_size_t started_{0};
+};
+
+TEST_CASE("Shared tile cancellation follows all consumers and does not poison replacements", "[Service][cancellation]")
+{
+    auto cache = std::make_shared<MemCache>(32);
+    auto source = std::make_shared<CancellableTestDataSource>();
+    Service service(cache, false, 0ms, 2);
+    service.add(source);
+    auto makeRequest = [] {
+        return std::make_shared<LayerTilesRequest>("Tropico", "WayLayer",
+            std::vector<PartitionId>{TileId::fromValue(kTtlTileIdValue)});
+    };
+    auto first = makeRequest();
+    REQUIRE(service.request({first}));
+    auto started = source->entered_.get_future().wait_for(2s) == std::future_status::ready;
+
+    SECTION("One abort does not cancel a coalesced consumer, even with closed admission") {
+        auto second = makeRequest();
+        second->setWorkAdmissionGate(std::make_shared<std::atomic_bool>(false));
+        auto accepted = service.request({second});
+        service.abort(first);
+        source->release_ = true;
+        second->wait();
+        REQUIRE(started);
+        REQUIRE(accepted);
+        REQUIRE_FALSE(source->observedCancellation_);
+        REQUIRE(second->getStatus() == RequestStatus::Success);
+        REQUIRE(source->started_ == 1);
+    }
+    SECTION("Last-consumer abort and retainOutputs both detach abandoned jobs") {
+        bool retain = false;
+        SECTION("abort") { service.abort(first); }
+        SECTION("retain nothing") { retain = true; service.retainOutputs(first, {}); }
+        auto replacement = makeRequest();
+        auto accepted = service.request({replacement});
+        replacement->wait();
+        source->release_ = true;
+        auto exited = source->exited_.get_future().wait_for(2s) == std::future_status::ready;
+        // The late old failure must neither remove the new tile nor cache a cancellation error.
+        auto cached = makeRequest();
+        auto cachedAccepted = service.request({cached});
+        cached->wait();
+        INFO(retain);
+        REQUIRE(started);
+        REQUIRE(accepted);
+        REQUIRE(exited);
+        REQUIRE(source->observedCancellation_);
+        REQUIRE(cachedAccepted);
+        REQUIRE(replacement->getStatus() == RequestStatus::Success);
+        REQUIRE(cached->getStatus() == RequestStatus::Success);
+        REQUIRE(source->started_ == 2);
+    }
+}
+
 TEST_CASE("Service shutdown contains request callback exceptions", "[Service][concurrency]")
 {
     auto probe = std::make_shared<GlobalConcurrencyProbe>();
@@ -432,7 +580,8 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
     SECTION("Global TTL default applied when datasource TTL is not set")
     {
         const auto globalTtl = 10ms;
-        Service service(cache, false, globalTtl);
+        // A separate error cap must not change the successful-tile fallback.
+        Service service(cache, false, globalTtl, 1, 7s);
         auto ds = std::make_shared<TestTtlDataSource>();
         service.add(ds);
 
@@ -512,6 +661,158 @@ TEST_CASE("Service TTL behavior", "[Service][TTL]")
         REQUIRE(tile->ttl().value() == datasourceTtl);
         REQUIRE(ds->fillCount() == 1);
     }
+}
+
+TEST_CASE("Empty source lifetimes are bounded independently of normal defaults", "[Service][TTL]")
+{
+    auto const layerType = GENERATE(LayerType::Features, LayerType::SourceData);
+    auto const partitionKind = GENERATE(PartitionKind::Tile, PartitionKind::Object);
+    auto const ttlMs = GENERATE(-1, 0, 1000, 60000);
+    auto const emptyTtl = std::chrono::milliseconds(GENERATE(250, 5000, 12000));
+    auto source = std::make_shared<EmptyTtlDataSource>();
+    source->layerType = layerType;
+    source->partitionKind = partitionKind;
+    source->producerTtl = ttlMs < 0 ?
+        std::nullopt :
+        std::optional(std::chrono::milliseconds(ttlMs));
+    source->setTtl(1h);
+    Service service(std::make_shared<MemCache>(16), false, 2h, 1, 9s, emptyTtl);
+    service.add(source);
+    auto const partition = partitionKind == PartitionKind::Object ?
+        PartitionId::object(UINT64_MAX) :
+        PartitionId::fromValue(kTtlTileIdValue);
+    auto request =
+        std::make_shared<LayerTilesRequest>("Tropico", "WayLayer", std::vector{partition});
+    PartitionLayer::Ptr result;
+    request->onFeatureLayer([&](auto tile) { result = std::move(tile); });
+    request->onSourceDataLayer([&](auto tile) { result = std::move(tile); });
+    REQUIRE(service.request({request}));
+    request->wait();
+    REQUIRE(result);
+    REQUIRE_FALSE(result->error());
+    REQUIRE(result->partitionId() == partition);
+    REQUIRE(result->ttl() == (ttlMs > 0 ? std::min(*source->producerTtl, emptyTtl) : emptyTtl));
+}
+
+TEST_CASE("Empty cached values recover through ordinary expiry", "[Service][TTL]")
+{
+    auto source = std::make_shared<EmptyTtlDataSource>();
+    source->layerType = GENERATE(LayerType::Features, LayerType::SourceData);
+    auto cache = std::make_shared<MemCache>(16);
+    Service service(cache, false, 60s, 1);
+    service.add(source);
+    auto fetch = [&]
+    {
+        auto request = std::make_shared<LayerTilesRequest>(
+            "Tropico",
+            "WayLayer",
+            std::vector{PartitionId::fromValue(kTtlTileIdValue)});
+        PartitionLayer::Ptr result;
+        request->onFeatureLayer([&](auto tile) { result = std::move(tile); });
+        request->onSourceDataLayer([&](auto tile) { result = std::move(tile); });
+        REQUIRE(service.request({request}));
+        request->wait();
+        REQUIRE(result);
+        return result;
+    };
+    auto first = fetch();
+    REQUIRE(first->ttl() == Service::DEFAULT_EMPTY_TILE_TTL);
+    source->empty = false;
+    REQUIRE(fetch()->timestamp() == first->timestamp());
+    REQUIRE(source->fills == 1);
+    REQUIRE(source->expiredKeys.empty());
+
+    first->setTimestamp(std::chrono::system_clock::now() - 6s);
+    cache->putTileLayer(first);
+    auto recovered = fetch();
+    REQUIRE(recovered->ttl() == 60s);
+    REQUIRE(source->fills == 2);
+    REQUIRE(source->expiredKeys == std::vector{first->id()});
+}
+
+TEST_CASE("Empty errors use the error lifetime rather than the empty lifetime", "[Service][TTL]")
+{
+    auto source = std::make_shared<EmptyTtlDataSource>();
+    source->layerType = GENERATE(LayerType::Features, LayerType::SourceData);
+    source->failed = true;
+    Service service(std::make_shared<MemCache>(16), false, 60s, 1, 7s, 2s);
+    service.add(source);
+    auto request = std::make_shared<LayerTilesRequest>(
+        "Tropico",
+        "WayLayer",
+        std::vector{PartitionId::fromValue(kTtlTileIdValue)});
+    PartitionLayer::Ptr result;
+    request->onFeatureLayer([&](auto tile) { result = std::move(tile); });
+    request->onSourceDataLayer([&](auto tile) { result = std::move(tile); });
+    REQUIRE(service.request({request}));
+    request->wait();
+    REQUIRE(result);
+    REQUIRE(result->error());
+    REQUIRE(result->ttl() == 7s);
+}
+
+TEST_CASE("Empty filter and inspection matches inherit their source lifetime", "[Service][TTL]")
+{
+    Service service(std::make_shared<MemCache>(16), false, 60s, 1, 7s, 2s);
+    auto source = std::make_shared<EmptyTtlDataSource>();
+    source->empty = GENERATE(true, false);
+    service.add(source);
+    auto const expectedTtl = source->empty ? 2s : 60s;
+    auto const partitions = std::vector{PartitionId::fromValue(kTtlTileIdValue)};
+    FeatureLayerFilterRequest filter;
+    filter.filterId_ = "match-none";
+    filter.channels_ = {FeatureLayerFilterChannel{.channelId_ = "none", .entryFilter_ = "false"}};
+    auto filtered =
+        std::make_shared<FeatureLayerFilterTilesRequest>("Tropico", "WayLayer", partitions, filter);
+    PartitionSubsetLayer::Ptr subset;
+    filtered->onFilterResult([&](auto tile) { subset = std::move(tile); });
+    REQUIRE(service.request(filtered));
+    filtered->wait();
+    REQUIRE(subset);
+    REQUIRE(subset->size() == 1);
+    REQUIRE(subset->at(0)->entryCount() == 0);
+    REQUIRE(subset->ttl() == expectedTtl);
+
+    auto inspection = std::make_shared<LayerTilesRequest>("Tropico", "WayLayer", partitions);
+    inspection->featureIdsByTile_[partitions.front()] = {"Way.Area.999"};
+    PartitionFeatureLayer::Ptr tile;
+    inspection->onFeatureLayer([&](auto result) { tile = std::move(result); });
+    REQUIRE(service.request({inspection}));
+    inspection->wait();
+    REQUIRE(tile);
+    REQUIRE(tile->numRoots() == 0);
+    REQUIRE(tile->ttl() == expectedTtl);
+}
+
+TEST_CASE("Empty source contributors limit populated add-on composites", "[Service][TTL][add-on]")
+{
+    auto base = std::make_shared<EmptyTtlDataSource>();
+    auto addOn = std::make_shared<EmptyTtlDataSource>();
+    addOn->addOn = true;
+    base->empty = GENERATE(true, false);
+    addOn->empty = !base->empty;
+    Service service(std::make_shared<MemCache>(16), false, 60s, 1, 7s, 3s);
+    service.add(base);
+    service.add(addOn);
+    auto request = std::make_shared<LayerTilesRequest>(
+        "Tropico",
+        "WayLayer",
+        std::vector{PartitionId::fromValue(kTtlTileIdValue)});
+    PartitionFeatureLayer::Ptr tile;
+    request->onFeatureLayer([&](auto result) { tile = std::move(result); });
+    REQUIRE(service.request({request}));
+    request->wait();
+    REQUIRE(tile);
+    REQUIRE(tile->numRoots() == 1);
+    REQUIRE(tile->ttl() == 3s);
+}
+
+TEST_CASE("Service rejects nonpositive empty tile TTLs", "[Service][TTL]")
+{
+    auto const emptyTtl = std::chrono::milliseconds(GENERATE(0, -1));
+    REQUIRE_THROWS_WITH(
+        Service(std::make_shared<MemCache>(), false, 0ms, 1, 5s, emptyTtl),
+        "Empty tile TTL must be greater than zero.");
 }
 
 TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service][DataSourceInfo]")

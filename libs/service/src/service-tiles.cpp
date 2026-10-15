@@ -11,11 +11,25 @@ namespace mapget::detail
 namespace
 {
 
-void applyTtlFallback(
+/** Bound empty source lifetimes; otherwise apply ordinary datasource/service defaults. */
+void applySuccessfulTileTtl(
     PartitionLayer& tile,
     DataSource& dataSource,
-    std::optional<std::chrono::milliseconds> const& defaultTtl)
+    std::optional<std::chrono::milliseconds> const& defaultTtl,
+    std::chrono::milliseconds emptyTileTtl)
 {
+    auto const type = tile.layerInfo()->type_;
+    auto const empty = (type == LayerType::Features &&
+                        static_cast<PartitionFeatureLayer&>(tile).numRoots() == 0) ||
+        (type == LayerType::SourceData &&
+         static_cast<PartitionSourceDataLayer&>(tile).numRoots() == 0);
+    if (empty) {
+        // Missing data must be rechecked even when ordinary successful tiles live
+        // indefinitely. Empty subsets are not source layers and never enter here.
+        if (!tile.ttl() || tile.ttl()->count() <= 0 || *tile.ttl() > emptyTileTtl)
+            tile.setTtl(emptyTileTtl);
+        return;
+    }
     if (tile.ttl()) {
         return;
     }
@@ -102,7 +116,10 @@ void TileLoadJob::run() noexcept
         scheduler_.releaseSourcePermit(source_);
         permitHeld = false;
     };
+    TileCancellationCheck isCancelled = [state = state_] { return state->cancelled.load(); };
     try {
+        if (isCancelled())
+            throw TileLoadCancelled();
         if (state_->cacheExpiredAt) {
             source_->source->dataSource->onCacheExpired(state_->tileKey, *state_->cacheExpiredAt);
         }
@@ -116,12 +133,25 @@ void TileLoadJob::run() noexcept
             state_->tileKey,
             scheduler_.cache_,
             *source_->source->info,
-            std::move(notifyWaitingRequests));
+            std::move(notifyWaitingRequests), isCancelled);
         if (!layer) {
             raise("DataSource::get() returned null.");
         }
 
-        applyTtlFallback(*layer, *source_->source->dataSource, scheduler_.defaultTtl_);
+        if (layer->error()) {
+            // Failures expire independently of the successful-tile policy, which
+            // may be infinite. Preserve a shorter positive producer lifetime.
+            if (!layer->ttl() || layer->ttl()->count() <= 0 ||
+                *layer->ttl() > scheduler_.errorTileTtl_)
+                layer->setTtl(scheduler_.errorTileTtl_);
+        }
+        else {
+            applySuccessfulTileTtl(
+                *layer,
+                *source_->source->dataSource,
+                scheduler_.defaultTtl_,
+                scheduler_.emptyTileTtl_);
+        }
 
         if (layer->layerInfo()->type_ == LayerType::Features) {
             loadAddOnTiles(
@@ -129,7 +159,9 @@ void TileLoadJob::run() noexcept
                 *source_->source,
                 scheduler_.dataSources_,
                 scheduler_.cache_,
-                scheduler_.defaultTtl_);
+                scheduler_.defaultTtl_,
+                scheduler_.emptyTileTtl_,
+                isCancelled);
         }
 
         // The worker continues with cache publication and every attached
@@ -137,6 +169,10 @@ void TileLoadJob::run() noexcept
         // consume the datasource's backend-concurrency budget.
         releasePermit();
         scheduler_.completeTileJob(*state_, layer, true);
+    }
+    catch (TileLoadCancelled const&) {
+        releasePermit();
+        scheduler_.failTileJob(*state_);
     }
     catch (std::exception const& error) {
         releasePermit();
@@ -155,14 +191,18 @@ void loadAddOnTiles(
     RegisteredDataSource const& baseSource,
     DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,
-    std::optional<std::chrono::milliseconds> const& defaultTtl)
+    std::optional<std::chrono::milliseconds> const& defaultTtl,
+    std::chrono::milliseconds emptyTileTtl,
+    TileCancellationCheck const& isCancelled)
 {
     for (auto const& addOn : dataSources.addOnSources()) {
         if (addOn->info->mapId_ != baseTile->mapId()) {
             continue;
         }
 
-        auto loaded = addOn->dataSource->get(baseTile->id(), cache, *addOn->info);
+        if (isCancelled && isCancelled())
+            throw TileLoadCancelled();
+        auto loaded = addOn->dataSource->get(baseTile->id(), cache, *addOn->info, {}, isCancelled);
         if (!loaded) {
             log().warn("Add-on datasource returned null for {}.", baseTile->id().toString());
             continue;
@@ -179,8 +219,13 @@ void loadAddOnTiles(
             continue;
         }
         auto addOnTile = std::static_pointer_cast<PartitionFeatureLayer>(loaded);
-        applyTtlFallback(*addOnTile, *addOn->dataSource, defaultTtl);
+        // Even an empty add-on may gain features later. Its lifetime must reach
+        // the composite rather than disappearing during the merge.
+        applySuccessfulTileTtl(*addOnTile, *addOn->dataSource, defaultTtl, emptyTileTtl);
         includeLifetime(*baseTile, *addOnTile);
+
+        for (auto const& warning : addOnTile->warnings())
+            baseTile->addWarning(fmt::format("{}: {}", addOnTile->id().toString(), warning));
 
         // Add-on strings must be cloned into a writable namespace shared by
         // both models; datasource-owned pools remain authoritative and frozen.
@@ -320,6 +365,11 @@ PartitionFeatureLayer::Ptr restrictFeatureLayerForResponse(
         source->layerInfo(),
         source->strings());
     result->setInfo(source->info());
+    result->setTimestamp(source->timestamp());
+    result->setTtl(source->ttl());
+    result->setWarnings(source->warnings());
+    result->setError(source->error());
+    result->setErrorCode(source->errorCode());
     result->setGeometryAnchor(source->geometryAnchor());
     if (auto legalInfo = source->legalInfo()) {
         result->setLegalInfo(*legalInfo);

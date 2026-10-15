@@ -22,8 +22,16 @@ Service::Service(
     Cache::Ptr cache,
     bool useDataSourceConfig,
     std::optional<std::chrono::milliseconds> defaultTtl,
-    size_t workerCount)
-    : impl_(std::make_unique<Impl>(std::move(cache), useDataSourceConfig, defaultTtl, workerCount))
+    size_t workerCount,
+    std::chrono::milliseconds errorTileTtl,
+    std::chrono::milliseconds emptyTileTtl)
+    : impl_(std::make_unique<Impl>(
+          std::move(cache),
+          useDataSourceConfig,
+          defaultTtl,
+          workerCount,
+          errorTileTtl,
+          emptyTileTtl))
 {
 }
 

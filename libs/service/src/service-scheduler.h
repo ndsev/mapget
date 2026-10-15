@@ -37,6 +37,8 @@ struct TileLoadState
     std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
     PartitionLayer::LoadState loadStatus = PartitionLayer::LoadState::LoadingQueued;
     uint64_t mapEpoch = 0;
+    /** Monotonic abandonment, latched only under the scheduler mutex. */
+    std::atomic_bool cancelled{false};
 };
 
 /** Snapshot of global pool and queue pressure. */
@@ -75,7 +77,9 @@ public:
         DataSourceRegistry& dataSources,
         Cache::Ptr cache,
         std::optional<std::chrono::milliseconds> defaultTtl,
-        size_t workerCount);
+        size_t workerCount,
+        std::chrono::milliseconds errorTileTtl,
+        std::chrono::milliseconds emptyTileTtl);
     /** Stop and join workers before releasing scheduler-owned state. */
     ~ServiceScheduler() noexcept;
 
@@ -189,6 +193,9 @@ private:
     /** Remove terminal requests and requests with no unscheduled keys. */
     void removeCompletedRequestsLocked();
 
+    /** Cancel/detach jobs with no live consumers; new requests start fresh jobs. */
+    void cancelUnusedTileJobsLocked();
+
     /** Publish a successful tile only if its map epoch is still current. */
     void
     completeTileJob(TileLoadState const& job, PartitionLayer::Ptr const& layer, bool updateCache);
@@ -202,6 +209,8 @@ private:
     DataSourceRegistry& dataSources_;
     Cache::Ptr cache_;
     std::optional<std::chrono::milliseconds> defaultTtl_;
+    const std::chrono::milliseconds errorTileTtl_;
+    const std::chrono::milliseconds emptyTileTtl_;
 
     mutable std::mutex mutex_;
     std::condition_variable jobsAvailable_;

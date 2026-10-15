@@ -42,6 +42,8 @@ void loadAddOnTiles(
     RegisteredDataSource const& baseSource,
     DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,
-    std::optional<std::chrono::milliseconds> const& defaultTtl);
+    std::optional<std::chrono::milliseconds> const& defaultTtl,
+    std::chrono::milliseconds emptyTileTtl,
+    TileCancellationCheck const& isCancelled = {});
 
 }  // namespace mapget::detail

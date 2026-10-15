@@ -897,6 +897,20 @@ TEST_CASE(
     "SQLiteCache clears an incompatible persisted protocol",
     "[Cache][SQLiteCache][protocol]")
 {
+    auto incompatibleVersion = TileLayerStream::CurrentProtocolVersion;
+    SECTION("Different major version")
+    {
+        ++incompatibleVersion.major_;
+    }
+    SECTION("Previous minor version")
+    {
+        --incompatibleVersion.minor_;
+    }
+    SECTION("Next minor version")
+    {
+        ++incompatibleVersion.minor_;
+    }
+
     auto const cachePath =
         createTempCachePath(
             "sqlite-incompatible-protocol-");
@@ -909,9 +923,7 @@ TEST_CASE(
             true);
         cache->putStringPoolBlob(
             stringPoolId,
-            createSerializedStringPoolMessage(
-                stringPoolId,
-                Version{2, 0, 0}));
+            createSerializedStringPoolMessage(stringPoolId, incompatibleVersion));
     }
 
     std::shared_ptr<SQLiteCache> reopened;
@@ -926,4 +938,54 @@ TEST_CASE(
             stringPoolId));
     reopened.reset();
     std::filesystem::remove(cachePath);
+}
+
+TEST_CASE(
+    "Failed tiles expire normally while warning diagnostics survive cache and service JSON",
+    "[Cache][warnings]")
+{
+    auto path = createTempCachePath("diagnostics-cache-");
+    std::shared_ptr<Cache> cache;
+    SECTION("Memory cache") { cache = std::make_shared<MemCache>(); }
+    SECTION("Persistent cache") { cache = std::make_shared<SQLiteCache>(8, path.string(), true); }
+    auto info = createTestLayerInfo();
+    auto strings = std::make_shared<StringPool>("diagnostics");
+    auto tile = std::make_shared<PartitionFeatureLayer>(TileId::fromTileXY(0, 0, 1), "diagnostics", "Map", info, strings);
+    auto source = createTestDataSourceInfo("diagnostics", "Map", info);
+    tile->setError("503");
+    tile->setTtl(std::chrono::seconds(5));
+    cache->putTileLayer(tile);
+    auto failed = cache->getTileLayer(tile->id(), source);
+    REQUIRE(failed.tile);
+    REQUIRE(failed.tile->error() == tile->error());
+    tile->setTimestamp(std::chrono::system_clock::now() - std::chrono::seconds(6));
+    cache->putTileLayer(tile);
+    auto expired = cache->getTileLayer(tile->id(), source);
+    REQUIRE_FALSE(expired.tile);
+    REQUIRE(
+        expired.expiredAt ==
+        std::chrono::time_point_cast<std::chrono::microseconds>(tile->timestamp() + *tile->ttl()));
+    tile->setTimestamp(std::chrono::system_clock::now());
+    tile->setError(std::nullopt);
+    tile->addWarning("duplicate feature id");
+    cache->putTileLayer(tile);
+    auto restored = cache->getTileLayer(tile->id(), source).tile;
+    REQUIRE(restored);
+    REQUIRE(restored->warnings() == tile->warnings());
+    REQUIRE_FALSE(restored->error());
+    auto metadataInfo = createMetadataSourceDataLayerInfo();
+    PartitionSourceDataLayer metadata(TileId{}, "diagnostics", "Map", metadataInfo, strings);
+    metadata.addWarning("partial metadata");
+    metadata.setTtl(std::chrono::seconds(5));
+    REQUIRE(metadata.toJson().is_array());
+    REQUIRE(metadata.toServiceJson()["data"] == metadata.toJson());
+    REQUIRE(metadata.toServiceJson()["warnings"] == metadata.warnings());
+    REQUIRE(metadata.toServiceJson()["ttl"] == 5000);
+    REQUIRE(
+        metadata.toServiceJson()["timestamp"] ==
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            metadata.timestamp().time_since_epoch())
+            .count());
+    cache.reset();
+    std::filesystem::remove(path);
 }

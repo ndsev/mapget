@@ -27,7 +27,12 @@ namespace mapget
 struct HttpServiceConfig
 {
     bool watchConfig = false;
+    /** Successful nonempty payload fallback, after tile/datasource TTLs; zero means no expiry. */
     std::chrono::milliseconds defaultTtl{0};
+    /** Positive upper bound for failed tile lifetimes; does not affect successful tiles. */
+    std::chrono::milliseconds errorTileTtl = Service::DEFAULT_ERROR_TILE_TTL;
+    /** Positive upper bound for successful empty source tile/object lifetimes. */
+    std::chrono::milliseconds emptyTileTtl = Service::DEFAULT_EMPTY_TILE_TTL;
     /** Maximum number of jobs executing across the homogeneous service worker pool. */
     size_t workerCount = Service::defaultWorkerCount();
     /** Enable POST /cache/reset. Disabled by default. */
@@ -42,10 +47,11 @@ struct HttpServiceConfig
     uint32_t locationResultMaxLimit = 50;
 
     /**
-     * Period between allocator trims which return unused heap pages to the OS.
+     * Period between glibc allocator trims which return unused heap pages to the OS.
      *
      * A periodic worker covers datasource initialization and interactive traffic,
      * neither of which necessarily completes a REST response. Zero disables it.
+     * Ignored when jemalloc is active: its own background workers handle purging.
      */
 #if defined(__linux__) && defined(__GLIBC__)
     std::chrono::seconds memoryTrimPeriod{10};

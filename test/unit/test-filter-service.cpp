@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
@@ -186,17 +187,20 @@ class ErrorReportingFilterDataSource : public FilterDataSource
 {
 public:
     /** Preserve the normal filter fixture's metadata with a separate string pool. */
-    ErrorReportingFilterDataSource() : FilterDataSource("ErrorReportingFilterPool") {}
+    explicit ErrorReportingFilterDataSource(
+        std::optional<std::chrono::milliseconds> errorTtl = std::nullopt)
+        : FilterDataSource("ErrorReportingFilterPool"), errorTtl_(errorTtl)
+    {
+    }
 
     /** Report a source error in the tile payload, as remote datasources do. */
     void fill(TileFeatureLayer::Ptr const& tile) override
     {
-        tile->setTimestamp(std::chrono::system_clock::now() - std::chrono::seconds(1));
-        tile->setTtl(std::chrono::milliseconds(1));
-        if (recovered_) {
+        if (recovered_ || tile->tileId() != firstTile()) {
             FilterDataSource::fill(tile);
         }
         else {
+            tile->setTtl(errorTtl_);
             tile->setError("synthetic recoverable tile error");
         }
     }
@@ -205,6 +209,7 @@ public:
     void recover() { recovered_ = true; }
 
 private:
+    std::optional<std::chrono::milliseconds> errorTtl_;
     std::atomic_bool recovered_ = false;
 };
 
@@ -549,17 +554,15 @@ public:
     RelationDataSource(
         TileId first,
         TileId second,
-        std::optional<TileId> failingTile =
-            std::nullopt,
-        std::optional<TileId> limitingLifetimeTile =
-            std::nullopt)
-        : info_(
-              filterDataSourceInfo(
-                  "RelationServicePool")),
+        std::optional<TileId> failingTile = std::nullopt,
+        std::optional<TileId> limitingLifetimeTile = std::nullopt,
+        bool reportFailure = false)
+        : info_(filterDataSourceInfo("RelationServicePool")),
           first_(first),
           second_(second),
           failingTile_(failingTile),
-          limitingLifetimeTile_(limitingLifetimeTile)
+          limitingLifetimeTile_(limitingLifetimeTile),
+          reportFailure_(reportFailure)
     {}
 
     DataSourceInfo info() override
@@ -586,6 +589,10 @@ public:
         if (failingTile_ &&
             tile->tileId() == *failingTile_)
         {
+            if (reportFailure_) {
+                tile->setError("synthetic relation target failure");
+                return;
+            }
             throw std::runtime_error(
                 "synthetic relation target failure");
         }
@@ -694,6 +701,7 @@ private:
     TileId second_;
     std::optional<TileId> failingTile_;
     std::optional<TileId> limitingLifetimeTile_;
+    bool reportFailure_;
     mutable std::mutex mutex_;
     std::vector<PartitionId> requestedTiles_;
     std::atomic_size_t locateCalls_ = 0;
@@ -1312,7 +1320,8 @@ TEST_CASE(
     REQUIRE(westernResult->timestamp() == expectedTimestamp);
     REQUIRE(westernResult->ttl() == std::chrono::milliseconds{1250});
     REQUIRE(easternResult->timestamp() == expectedTimestamp);
-    REQUIRE(easternResult->ttl() == std::chrono::seconds{10});
+    // Empty halo sources are capped below their explicit ten-second lifetime.
+    REQUIRE(easternResult->ttl() == Service::DEFAULT_EMPTY_TILE_TTL);
     REQUIRE(
         westernResult->at(0)->groupEntryCount() ==
         0);
@@ -1554,6 +1563,7 @@ TEST_CASE(
     "Unavailable relation target tiles produce local issues instead of aborting the filter",
     "[feature-layer-filter][Service][relation][failure]")
 {
+    auto const reportFailure = GENERATE(false, true);
     auto const westernTile =
         TileId::fromTileXY(10, 5, 4);
     auto const easternTile =
@@ -1561,11 +1571,8 @@ TEST_CASE(
     Service service(
         std::make_shared<MemCache>(32),
         false);
-    auto dataSource =
-        std::make_shared<RelationDataSource>(
-            westernTile,
-            easternTile,
-            easternTile);
+    auto dataSource = std::make_shared<
+        RelationDataSource>(westernTile, easternTile, easternTile, std::nullopt, reportFailure);
     service.add(dataSource);
 
     auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
@@ -1606,14 +1613,22 @@ TEST_CASE(
     REQUIRE(
         results.front()->at(0)
             ->relationEntryCount() == 0);
-    REQUIRE(
-        std::ranges::any_of(
-            results.front()->issues(),
-            [](FilterIssue const& issue) {
-                return issue.message_.find(
-                    "Could not load relation target tile") !=
-                    std::string::npos;
-            }));
+    REQUIRE(std::ranges::any_of(
+        results.front()->issues(),
+        [&](FilterIssue const& issue)
+        {
+            return issue.message_.find(
+                       reportFailure ? "synthetic relation target failure" :
+                                       "Could not load relation target tile") != std::string::npos;
+        }));
+    if (reportFailure) {
+        REQUIRE(results.front()->error());
+        REQUIRE(
+            results.front()->error()->find("synthetic relation target failure") !=
+            std::string::npos);
+        REQUIRE(results.front()->ttl() == std::chrono::seconds(5));
+        REQUIRE(results.front()->dependencies().size() == 2);
+    }
 }
 
 TEST_CASE(
@@ -1903,45 +1918,168 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Reported source tile errors fail filters and allow recovery after expiry",
-    "[feature-layer-filter][Service][failure]")
+    "Failed filter outputs expire independently and recover through the tile cache",
+    "[feature-layer-filter][Service][failure][TTL]")
 {
-    Service service(std::make_shared<MemCache>(32), false);
+    auto cache = std::make_shared<MemCache>(32);
+    Service service(cache, false);
     auto source = std::make_shared<ErrorReportingFilterDataSource>();
     service.add(source);
 
-    for (bool recovered : {false, true}) {
-        if (recovered) {
-            source->recover();
-        }
+    auto requestOutputs = [&]
+    {
         auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
             "FilterMap",
             "Road",
-            std::vector<TileId>{firstTile()},
+            std::vector<TileId>{firstTile(), secondTile()},
             filterDefinition());
-        std::vector<nlohmann::json> statuses;
-        std::vector<TileSubsetLayer::Ptr> results;
-        request->onStatus([&](nlohmann::json const& status) { statuses.push_back(status); });
+        std::mutex mutex;
+        std::map<PartitionId, TileSubsetLayer::Ptr> results;
         request->onFilterResult(
-            [&](TileSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+            [&](TileSubsetLayer::Ptr layer)
+            {
+                std::lock_guard lock(mutex);
+                results.emplace(layer->partitionId(), std::move(layer));
+            });
         REQUIRE(service.request(request));
         request->wait();
-        REQUIRE_FALSE(statuses.empty());
-        if (recovered) {
-            REQUIRE(request->getStatus() == RequestStatus::Success);
-            REQUIRE(statuses.back()["state"] == "Success");
-            REQUIRE(results.size() == 1);
-            REQUIRE(results.front()->localSourceFeatureCount() == 1);
-        }
-        else {
-            REQUIRE(request->getStatus() == RequestStatus::Aborted);
-            REQUIRE(statuses.back()["state"] == "Failed");
-            REQUIRE(
-                statuses.back()["error"].get<std::string>().find(
-                    "synthetic recoverable tile error") != std::string::npos);
-            REQUIRE(results.empty());
-        }
-    }
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(results.size() == 2);
+        return results;
+    };
+    auto results = requestOutputs();
+    auto bad = results.at(firstTile());
+    REQUIRE(bad->error() == "synthetic recoverable tile error");
+    REQUIRE(bad->ttl() == std::chrono::seconds(5));
+    REQUIRE(bad->toServiceJson()["ttl"] == 5000);
+    REQUIRE(bad->toServiceJson()["error"]["message"] == *bad->error());
+    REQUIRE_FALSE(results.at(secondTile())->error());
+    REQUIRE(results.at(secondTile())->localSourceFeatureCount() == 1);
+
+    // Inspection restrictions preserve the same failed value and expiry.
+    auto inspection = std::make_shared<
+        LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
+    inspection->featureIdsByTile_[firstTile()] = {
+        "Road." + std::to_string(firstTile().value()) + ".42"};
+    PartitionFeatureLayer::Ptr inspectionTile;
+    inspection->onFeatureLayer(
+        [&](PartitionFeatureLayer::Ptr layer) { inspectionTile = std::move(layer); });
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{inspection}));
+    inspection->wait();
+    REQUIRE(inspectionTile);
+    REQUIRE(inspectionTile->error() == bad->error());
+    REQUIRE(inspectionTile->timestamp() == bad->timestamp());
+    REQUIRE(inspectionTile->ttl() == bad->ttl());
+
+    source->recover();
+    REQUIRE(requestOutputs().at(firstTile())->error());  // No hammering during its TTL.
+    auto cached = cache->getTileLayer(bad->id(), source->info()).tile;
+    REQUIRE(cached);
+    cached->setTimestamp(std::chrono::system_clock::now() - std::chrono::seconds(6));
+    cache->putTileLayer(cached);
+    auto recovered = requestOutputs().at(firstTile());
+    REQUIRE_FALSE(recovered->error());
+    REQUIRE(recovered->localSourceFeatureCount() == 1);
+    REQUIRE_FALSE(recovered->ttl());
+}
+
+TEST_CASE(
+    "Service bounds error lifetimes while preserving shorter producer TTLs",
+    "[feature-layer-filter][Service][failure][TTL]")
+{
+    auto const ttlMs = GENERATE(-1, 0, 1000, 60000);
+    auto const errorTtl = std::chrono::milliseconds(GENERATE(250, 5000, 12000));
+    auto const ttl = ttlMs < 0 ? std::nullopt : std::optional(std::chrono::milliseconds(ttlMs));
+    auto source = std::make_shared<ErrorReportingFilterDataSource>(ttl);
+    source->setTtl(std::chrono::hours(1));
+    Service service(std::make_shared<MemCache>(32), false, std::chrono::hours(2), 1, errorTtl);
+    service.add(source);
+    auto request = std::make_shared<
+        LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
+    PartitionFeatureLayer::Ptr tile;
+    request->onFeatureLayer([&](PartitionFeatureLayer::Ptr layer) { tile = std::move(layer); });
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{request}));
+    request->wait();
+    REQUIRE(tile);
+    REQUIRE(tile->error());
+    REQUIRE(tile->ttl() == (ttlMs > 0 ? std::min(*ttl, errorTtl) : errorTtl));
+}
+
+TEST_CASE("Service rejects nonpositive error tile TTLs", "[Service][failure][TTL]")
+{
+    auto const errorTtl = std::chrono::milliseconds(GENERATE(0, -1));
+    REQUIRE_THROWS_WITH(
+        Service(std::make_shared<MemCache>(), false, std::chrono::milliseconds{0}, 1, errorTtl),
+        "Error tile TTL must be greater than zero.");
+}
+
+TEST_CASE(
+    "A failed point-group halo limits only its dependent output",
+    "[feature-layer-filter][Service][point-group][failure][TTL]")
+{
+    auto const western = TileId::fromTileXY(10, 4, 4);
+    auto const eastern = western.eastNeighbour();
+    auto const failedHalo = western.neighbour(-1, 0);
+    auto const [longitude, latitude] = western.centerWgs84();
+    auto source = std::make_shared<PointGroupDataSource>(
+        western,
+        eastern,
+        Point{longitude, latitude, 0},
+        Point{longitude, latitude, 0});
+    auto cache = std::make_shared<MemCache>(64);
+    Service service(
+        cache,
+        false,
+        std::chrono::milliseconds{0},
+        1,
+        std::chrono::seconds{5},
+        std::chrono::seconds{11});
+    service.add(source);
+    auto info = source->info();
+    auto failed = std::make_shared<PartitionFeatureLayer>(
+        failedHalo,
+        info.stringPoolId_,
+        info.mapId_,
+        info.getLayer("Road"),
+        cache->getStringPool(info.stringPoolId_));
+    failed->setError("halo unavailable");
+    failed->setTtl(std::chrono::seconds(5));
+    cache->putTileLayer(failed);
+
+    auto definition = filterDefinition();
+    definition.channels_.resize(1);
+    definition.channels_.front().featureFields_.clear();
+    definition.channels_.front().entryFilter_.reset();
+    definition.channels_.front().geometryName_ = "merge";
+    definition.channels_.front().group_ = FeatureLayerPointGridGroup{
+        .origin_ = {longitude - 1.0, latitude - 1.0, -5.0},
+        .cellSize_ = {2.0, 2.0, 10.0}};
+    definition.channels_.front().geometryTypes_ = uint32_t{1}
+        << static_cast<uint8_t>(GeomType::Points);
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{western, eastern},
+        definition);
+    std::map<PartitionId, PartitionSubsetLayer::Ptr> results;
+    std::mutex mutex;
+    request->onFilterResult(
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
+            std::lock_guard lock(mutex);
+            results.emplace(layer->partitionId(), std::move(layer));
+        });
+    REQUIRE(service.request(request));
+    request->wait();
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(results.size() == 2);
+    REQUIRE(results.at(western)->error());
+    REQUIRE(results.at(western)->error()->find("halo unavailable") != std::string::npos);
+    REQUIRE(results.at(western)->timestamp() == failed->timestamp());
+    REQUIRE(results.at(western)->ttl() == failed->ttl());
+    REQUIRE_FALSE(results.at(eastern)->error());
+    // Healthy output depends on empty halo tiles, not on the western error.
+    REQUIRE(results.at(eastern)->ttl() == std::chrono::seconds{11});
 }
 
 TEST_CASE(
@@ -2277,4 +2415,31 @@ TEST_CASE(
     REQUIRE(result.status_ == RequestStatus::Success);
     REQUIRE_FALSE(result.response_);
     REQUIRE(source->attachmentCalls() == 1);
+}
+
+TEST_CASE("Filter outputs preserve warnings even when no features match", "[feature-layer-filter][warnings]")
+{
+    class WarnedSource : public FilterDataSource {
+        void fill(TileFeatureLayer::Ptr const& tile) override {
+            FilterDataSource::fill(tile);
+            tile->addWarning("duplicate Road.42");
+        }
+    };
+    Service service(std::make_shared<MemCache>(32), false);
+    service.add(std::make_shared<WarnedSource>());
+    auto filter = filterDefinition();
+    for (auto& channel : filter.channels_) channel.featureFilter_ = "false";
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>("FilterMap", "Road",
+        std::vector<TileId>{firstTile()}, filter);
+    TileSubsetLayer::Ptr output;
+    request->onFilterResult([&](auto layer) { output = std::move(layer); });
+    REQUIRE(service.request(request));
+    request->wait();
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(output);
+    REQUIRE_FALSE(output->error());
+    for (size_t i = 0; i < output->size(); ++i)
+        REQUIRE(output->at(i)->entryCount() == 0);
+    REQUIRE(output->warnings() == std::vector<std::string>{"duplicate Road.42"});
+    REQUIRE(output->toJson()["warnings"] == output->warnings());
 }

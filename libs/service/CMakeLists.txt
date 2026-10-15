@@ -11,6 +11,7 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/config.h
   include/mapget/service/detail/allocator-memory.h
 
+  src/allocator-memory.cpp
   src/object-discovery.cpp
   src/service-discovery.cpp
   src/service.cpp
@@ -52,6 +53,7 @@ target_link_libraries(mapget-service
     SQLite::SQLite3
     nlohmann_json_schema_validator
   PRIVATE
+    ${CMAKE_DL_LIBS}
     picosha2)
 
 if (WIN32)

@@ -74,23 +74,64 @@ With this configuration the datasource is only visible to clients that send an `
 
 <!-- --8<-- [start:ttl] -->
 
-Mapget provides a time-to-live (TTL) option, which can be set via the YAML config
-or as a `--ttl` command line option. Time-to-live controls the time period for which the cached tile is valid.
-Note: The `ttl` value is always indicated in seconds, and 0 means `infinite` (no cache expiry).
+TTL controls how long a converted source payload remains valid, measured from
+its production `timestamp`. The same settings apply to tile and object payloads,
+and to feature and SourceData layers.
 
-Individual datasource entries can override this with a `ttl` field in the corresponding YAML node, also expressed in seconds:
+| YAML key | CLI option | Default | Allowed values (whole seconds) | Applies to |
+| --- | --- | --- | --- | --- |
+| `mapget.serve.ttl` | `--ttl` | `0` | Nonnegative; `0` means no expiry | Fallback for successful nonempty source payloads |
+| `sources[].ttl` | None | Inherit `mapget.serve.ttl` | Nonnegative; `0` means no expiry | Per-datasource override of the nonempty fallback |
+| `mapget.serve.error-tile-ttl` | `--error-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a payload carrying a fatal error |
+| `mapget.serve.empty-tile-ttl` | `--empty-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a successful source layer with no root nodes (no features or SourceData roots) |
 
 ```yaml
+mapget:
+  serve:
+    ttl: 86400        # Nonempty fallback: one day; 0 disables expiry.
+    error-tile-ttl: 5 # Retry failed payloads after at most five seconds.
+    empty-tile-ttl: 5 # Recheck missing/empty payloads after at most five seconds.
 sources:
   - type: GeoJsonFolder
     folder: /maps/my-geojson-tiles
-    ttl: 60  # Override default TTL, one minute for this datasource.
-mapget:
-  serve:
-    ttl: 86400 # Default TTL: One day (60s/m * 60m/h * 12h/d)
+    ttl: 60          # Nonempty fallback for this datasource: one minute.
 ```
 
-**Note:** Any TTL default value is only applied if the datasource itself has not already set a TTL directly for the tile.
+**Precedence:** Nonempty success uses the explicit payload TTL, then the
+datasource `ttl`, then the service `ttl`. Errors instead use `error-tile-ttl`;
+empty successes use `empty-tile-ttl`. Each limit preserves a shorter positive
+**explicit payload TTL**, but replaces missing, zero, negative or longer payload
+TTLs. Neither limit inherits the ordinary datasource/service fallback. An empty
+payload with an error uses the error limit, not the empty limit. Both limits
+reject zero and negative configuration values: absence and failures must not be
+cached indefinitely merely because ordinary successful data is static.
+
+Emptiness is determined **before filtering**, not from the number of matches in
+a search or inspection response. Such responses inherit the source lifetime.
+Add-on source layers follow the same rules; their composed result inherits the
+earliest contributor expiry, including an empty contributor that may gain data
+later. Filter outputs likewise inherit the earliest dependency expiry.
+
+All three `mapget.serve` settings are startup-only; restart to change them. CLI
+options override YAML values. Per-datasource `ttl` follows datasource config
+reload. These settings affect newly loaded payloads, not already serialized cache
+entries; use `--clear-cache` at startup if old persistent lifetimes must be discarded.
+
+Expiry is ordinary cache freshness, **not a separate request retry loop** or
+periodic background fetch. On a request that encounters an expired cached
+payload, mapget invokes `DataSource::onCacheExpired` before reloading it. A
+browser may request still-visible expired values again. Ordinary FIFO eviction
+and TTL expiry are distinct; only the latter carries an expiry notification.
+Datasource-internal caches remain the datasource's responsibility: LiveSource
+purges its SmartClient partition, including negative entries, on this callback.
+SmartClient's byte-bounded LRU controls retention, not freshness, and has no
+independent negative-cache TTL.
+
+For embedded C++, use `HttpServiceConfig::{defaultTtl,errorTileTtl,emptyTileTtl}`
+or the `Service` constructor's corresponding arguments, in **milliseconds**.
+Python exposes `Service(error_tile_ttl_ms=5000, empty_tile_ttl_ms=5000)`; both
+arguments must be positive. Transport payloads also carry TTLs in milliseconds,
+not the whole seconds used by YAML/CLI configuration.
 
 <!-- --8<-- [end:ttl] -->
 
@@ -462,7 +503,7 @@ mapget:
     webapp: /srv/my-ui          # --webapp, one application document root
     static-mount:               # --static-mount, additional static aliases
       - /assets:/srv/assets
-    memory-trim-period-seconds: 10    # --memory-trim-period-seconds (0 disables)
+    memory-trim-period-seconds: 10    # glibc fallback only; ignored with jemalloc
 
 http-settings: ...
 sources: ...
@@ -482,11 +523,27 @@ as `cache-max-tiles * 512 KiB`. The default `1024` tile limit therefore retains
 at most `512 MiB` of serialized tile payloads. Index and allocator overhead are
 reported separately and are not part of that payload budget.
 
-On Linux with glibc, mapget trims unused allocator pages from a dedicated
-maintenance thread every 10 seconds by default. Set
-`memory-trim-period-seconds` to `0` to disable it. Other platforms do not
-currently use an allocator-maintenance implementation in mapget, so the
-default there is disabled.
+Native Linux server executables use jemalloc by default, including MapViewer.
+Its background workers purge unused pages even when traffic has stopped. The
+bundled allocator enables `background_thread:true` with a default dirty-page
+decay setting of 10 seconds. This is gradual reclamation, not a deadline or a hard RSS limit:
+live allocations, partially occupied pages and thread caches can still hold
+memory. It does not change datasource cache budgets.
+
+Set jemalloc options through `MALLOC_CONF` **before starting the process**,
+for example `MALLOC_CONF=dirty_decay_ms:5000,muzzy_decay_ms:0 mapget serve`.
+`background_thread:false` disables its background workers. These options are
+allocator startup settings, not hot-reloaded YAML/CLI settings. See the
+[jemalloc manual](https://jemalloc.net/jemalloc.3.html) for their tradeoffs.
+`/status-data` identifies the active allocator and reports background-worker
+state. `memory-trim-period-seconds` has no effect on jemalloc.
+
+Python imports do not replace the interpreter's allocator. Without jemalloc
+(including builds with `MAPGET_WITH_JEMALLOC=OFF`), Linux/glibc servers retain
+the dedicated `malloc_trim` maintenance worker, every 10 seconds by default.
+`memory-trim-period-seconds: 0` disables that fallback. Other allocators and
+platforms do not run the glibc trim worker. A process that deliberately preloads
+jemalloc before startup is detected and reported as jemalloc, not glibc.
 
 Cache reset is disabled by default. Enabling it without at least one valid
 `cache-reset-auth-header` entry fails startup. Each entry is split at the first

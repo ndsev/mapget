@@ -2100,6 +2100,7 @@ private:
                 {"type", update.descriptor.type},
                 {"status", std::string(catalogStatusToString(update.status))},
                 {"statusMessage", update.statusMessage},
+                {"retrying", update.retrying},
                 {"addOn", update.descriptor.addOn},
                 {"progress", update.progress ? nlohmann::json(*update.progress) : nlohmann::json(nullptr)},
             });

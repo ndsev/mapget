@@ -61,7 +61,9 @@ struct Service::Impl
         Cache::Ptr cache,
         bool useDataSourceConfig,
         std::optional<std::chrono::milliseconds> defaultTtl,
-        size_t workerCount);
+        size_t workerCount,
+        std::chrono::milliseconds errorTileTtl,
+        std::chrono::milliseconds emptyTileTtl);
     /** Stop source construction before draining and joining homogeneous workers. */
     ~Impl();
 
@@ -149,7 +151,7 @@ struct Service::Impl
     updateCatalogProgress(uint64_t generation, uint32_t configIndex, std::optional<float> progress);
     /** Mark one current-generation catalog row failed and preserve diagnostics. */
     void
-    markCatalogConstructionFailed(uint64_t generation, uint32_t configIndex, std::string message);
+    markCatalogConstructionFailed(uint64_t generation, uint32_t configIndex, std::string message, bool retrying = false);
     /** Atomically register a constructed source and attach it to its current catalog row. */
     bool markCatalogConstructionReady(
         uint64_t generation,

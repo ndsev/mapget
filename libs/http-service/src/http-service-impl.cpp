@@ -44,11 +44,22 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
         }
     }
 
-#if defined(__linux__) && defined(__GLIBC__)
-    if (config_.memoryTrimPeriod > std::chrono::seconds::zero()) {
+    auto const allocator = detail::allocatorMemoryStatistics();
+    if (allocator.is_object() && allocator.value("backend", "") == "jemalloc") {
+        log().info(
+            "Allocator: jemalloc {}, background purging {}",
+            allocator.value("version", "unknown"),
+            allocator.value("background-thread-enabled", false) ? "enabled" : "disabled");
+    }
+    // jemalloc owns its own background purge workers. malloc_trim would only
+    // inspect glibc's unused secondary heap, not the process's actual allocations.
+    if (detail::allocatorTrimSupported() && config_.memoryTrimPeriod > std::chrono::seconds::zero())
+    {
+        log().info(
+            "Periodic glibc allocator trim: every {} seconds",
+            config_.memoryTrimPeriod.count());
         memoryTrimThread_ = std::thread([this] { runMemoryTrimLoop(); });
     }
-#endif
 
     interactiveControlThreads_.reserve(INTERACTIVE_CONTROL_THREAD_COUNT);
     for (size_t index = 0; index < INTERACTIVE_CONTROL_THREAD_COUNT; ++index) {
@@ -144,19 +155,17 @@ void HttpService::Impl::runMemoryTrimLoop()
         // malloc_trim may walk every arena. Keep it off the Drogon event loop and
         // outside our wait mutex so destruction only waits for the active trim.
         lock.unlock();
-        auto const before = detail::allocatorMemorySnapshot();
+        auto const before = detail::allocatorMemoryStatistics();
         auto const started = std::chrono::steady_clock::now();
         memoryTrimAttempts_.fetch_add(1, std::memory_order_relaxed);
         auto const released = malloc_trim(0) != 0;
         auto const elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started);
-        auto const after = detail::allocatorMemorySnapshot();
-        memoryTrimLastFreeArenaBefore_.store(
-            before ? before->freeArenaBytes : 0,
-            std::memory_order_relaxed);
-        memoryTrimLastFreeArenaAfter_.store(
-            after ? after->freeArenaBytes : 0,
-            std::memory_order_relaxed);
+        auto const after = detail::allocatorMemoryStatistics();
+        memoryTrimLastFreeArenaBefore_
+            .store(before.value("free-arena-bytes", uint64_t{0}), std::memory_order_relaxed);
+        memoryTrimLastFreeArenaAfter_
+            .store(after.value("free-arena-bytes", uint64_t{0}), std::memory_order_relaxed);
         memoryTrimLastDurationMicros_.store(
             static_cast<uint64_t>(elapsed.count()),
             std::memory_order_relaxed);
@@ -178,11 +187,7 @@ nlohmann::json HttpService::Impl::memoryTrimStatistics() const
         {"last-free-arena-before-bytes", memoryTrimLastFreeArenaBefore_.load(std::memory_order_relaxed)},
         {"last-free-arena-after-bytes", memoryTrimLastFreeArenaAfter_.load(std::memory_order_relaxed)},
     };
-#if defined(__linux__) && defined(__GLIBC__)
-    result["supported"] = true;
-#else
-    result["supported"] = false;
-#endif
+    result["supported"] = detail::allocatorTrimSupported();
     result["enabled"] = result["supported"].get<bool>() &&
         config_.memoryTrimPeriod > std::chrono::seconds::zero();
     return result;

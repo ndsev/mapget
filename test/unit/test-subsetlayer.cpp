@@ -105,6 +105,7 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
     source->setTimestamp(
         std::chrono::system_clock::time_point{1'725'000'000s});
     source->setTtl(4500ms);
+    source->addWarning("Duplicate Road.1; retained first record");
     source->setLegalInfo("Source copyright and terms: https://example.org/terms");
 
     auto subset = std::make_shared<
@@ -328,6 +329,7 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
     REQUIRE(parsed->generation() == subset->generation());
     REQUIRE(parsed->timestamp() == source->timestamp());
     REQUIRE(parsed->ttl() == source->ttl());
+    REQUIRE(parsed->warnings() == source->warnings());
     REQUIRE(parsed->legalInfo() == source->legalInfo());
     REQUIRE(parsed->toJson() == subset->toJson());
     REQUIRE(parsed->at(2)->scope() == Scope::Relation);
