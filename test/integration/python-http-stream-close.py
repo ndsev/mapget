@@ -53,8 +53,11 @@ class HttpStreamCloseTest(unittest.TestCase):
             try:
                 connection.request("GET", "/sources")
                 sources = json.loads(connection.getresponse().read())
-                if any(item.get("mapId") == "StreamRegression" for item in sources):
-                    return
+                for source in sources:
+                    if source.get("mapId") == "StreamRegression":
+                        version = source["protocolVersion"]
+                        self.protocol_version = (version["major"], version["minor"])
+                        return
             except (OSError, http.client.HTTPException):
                 pass
             finally:
@@ -154,7 +157,8 @@ class HttpStreamCloseTest(unittest.TestCase):
         while offset < len(payload):
             self.assertGreaterEqual(len(payload) - offset, header.size)
             major, minor, patch, kind, size = header.unpack_from(payload, offset)
-            self.assertEqual((major, minor), (5, 5))
+            # Match the advertised protocol, rather than pinning this framing test to a release.
+            self.assertEqual((major, minor), self.protocol_version)
             offset += header.size + size
             self.assertLessEqual(offset, len(payload), "Truncated VTLV payload")
             frames.append((kind, size))
