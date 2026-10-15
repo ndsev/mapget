@@ -744,7 +744,7 @@ Simfil objects (including `AttributeLayerList`, which inherits from `simfil::Obj
 }
 ```
 
-## Tile diagnostics (protocol 5.5)
+## Tile diagnostics (protocol 5.2)
 
 Every `PartitionLayer` carries ordered, deduplicated string warnings through `warnings()`, `addWarning()` and `setWarnings()`. They are nonfatal, may coexist with a fatal error, and survive binary serialization for feature, subset and source-data layers. Warned tiles remain cacheable.
 
@@ -754,4 +754,4 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use protocol 5.5. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.
+Binary readers and writers must both use protocol 5.2. The added warnings list changes the common layer header; error and empty-tile expiry reuse the existing timestamp and TTL fields. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.

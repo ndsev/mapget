@@ -120,12 +120,10 @@ public:
      *   + Tagged tile/object partition identities in layers and subset dependencies.
      * - Version 5.1:
      *   - Feature ID index entries no longer require sorted wire order.
-     * - Versions 5.2 and 5.3 are reserved for the 2026.5 development line.
-     * - Version 5.5: Remove per-error retry delays; failed tiles use ordinary TTLs.
-     * - Version 5.4:
-     *   + Common ordered warnings and optional positive error retry delay.
+     * - Version 5.2:
+     *   + Common ordered warnings on partition layers.
      */
-    static constexpr Version CurrentProtocolVersion{5, 5, 0};
+    static constexpr Version CurrentProtocolVersion{5, 2, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

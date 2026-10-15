@@ -897,6 +897,20 @@ TEST_CASE(
     "SQLiteCache clears an incompatible persisted protocol",
     "[Cache][SQLiteCache][protocol]")
 {
+    auto incompatibleVersion = TileLayerStream::CurrentProtocolVersion;
+    SECTION("Different major version")
+    {
+        ++incompatibleVersion.major_;
+    }
+    SECTION("Previous minor version")
+    {
+        --incompatibleVersion.minor_;
+    }
+    SECTION("Next minor version")
+    {
+        ++incompatibleVersion.minor_;
+    }
+
     auto const cachePath =
         createTempCachePath(
             "sqlite-incompatible-protocol-");
@@ -909,9 +923,7 @@ TEST_CASE(
             true);
         cache->putStringPoolBlob(
             stringPoolId,
-            createSerializedStringPoolMessage(
-                stringPoolId,
-                Version{2, 0, 0}));
+            createSerializedStringPoolMessage(stringPoolId, incompatibleVersion));
     }
 
     std::shared_ptr<SQLiteCache> reopened;
