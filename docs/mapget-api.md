@@ -582,7 +582,7 @@ Server control messages are binary VTLV frames:
 - `ActionControl` (type 9): UTF-8 JSON for the separately versioned browser-action
   relay. This control type is not a tile request or a tile payload.
 
-Since protocol 5.2, `clientId` is a cryptographically random, canonical lowercase
+Since protocol 5.3, `clientId` is a cryptographically random, canonical lowercase
 UUIDv4 string. It stays unchanged for the lifetime of its WebSocket connection;
 reconnect creates a new ID. The server announces it in an initial `RequestContext`
 with `requestId: 0`, without waiting for a tile request. Treat it as opaque

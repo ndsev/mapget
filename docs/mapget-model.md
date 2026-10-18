@@ -873,4 +873,4 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use protocol 5.2. The added warnings list changes the common layer header; error and empty-tile expiry reuse the existing timestamp and TTL fields. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.
+Binary readers and writers must both use the current protocol 5.4, which combines the released 5.2 warning header with the independently developed 5.3 action/projection format. Error and empty-tile expiry reuse the existing timestamp and TTL fields. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.

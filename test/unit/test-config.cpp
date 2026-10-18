@@ -1045,6 +1045,11 @@ TEST_CASE("Transient datasource construction retries preserve catalog identity a
         // A new outage's wait must be cancelled by config removal.
         available = false;
         configs.loadConfig(config.string());
+        REQUIRE(service.sourceCatalog().sources[0].status == DataSourceCatalogStatus::Ready);
+        // Unchanged ready sources survive reload, so change the constructor inputs
+        // to start a fresh attempt before checking cancellation of its retry wait.
+        { std::ofstream out(config); out << "sources:\n  - type: RetrySource\n    mapId: RetryMapAgain\n"; }
+        configs.loadConfig(config.string());
         waitForCondition([&] { return service.sourceCatalog().sources[0].status == DataSourceCatalogStatus::Failed; });
         { std::ofstream out(config); out << "sources: []\n"; }
         configs.loadConfig(config.string());

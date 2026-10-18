@@ -129,8 +129,11 @@ public:
      *   + Added the independent ActionControl message for browser action relays.
      *   + Projection slots contain result sequences and indexed error metadata.
      *   + Native undefined model values; core model column tags shift accordingly.
+     * - Version 5.4:
+     *   + Combined the released 5.2 warning header with the 5.3 action/projection
+     *     format, which previously evolved without that header on the release branch.
      */
-    static constexpr Version CurrentProtocolVersion{5, 3, 0};
+    static constexpr Version CurrentProtocolVersion{5, 4, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
