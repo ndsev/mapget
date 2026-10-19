@@ -852,3 +852,71 @@ Binary tile headers and JSONL responses preserve nonfatal `warnings: string[]` i
 Fatal tile values are cached for at most `mapget.serve.error-tile-ttl` seconds (default five), using ordinary `timestamp` and `ttl` metadata. Service JSON envelopes expose both too (`timestamp` in Unix microseconds, `ttl` in milliseconds). Filtered outputs propagate their dependencies' errors and earliest expiry; healthy outputs still complete normally. Successful empty source tile/object payloads are similarly bounded by `mapget.serve.empty-tile-ttl` (default five seconds). Empty filter/inspection matches inherit their source lifetimes rather than receiving this cap independently. Consumers renew only still-retained, expired values. A failed tile must not suppress unrelated new viewport coverage. Invalid filter definitions and request-level failures remain request errors, not expiring tile values. Stateless requests terminate with their diagnostics; the server does not keep them open through an outage.
 
 Catalog snapshots and source-change deltas expose a `retrying` boolean for datasource **initialization**. It stays true while a failed constructor is waiting or attempting recovery, then clears on success or terminal failure. The lifecycle status remains `failed` until ready. Constructor retry policy and browser transport reconnection are independent of runtime tile expiry.
+
+
+### Explicit point-cloud visualization channels
+
+Layer metadata may publish optional `defaultVisible: false` for alternative
+representations which should start hidden. Clients retain saved user visibility
+in preference to this default; omission preserves their existing defaults.
+
+A feature-scope, point-only filter channel may set `pointCloudMaxPoints` to an
+integer from 0 to 1048576. A positive value selects stable first-point spatial
+representatives before subset geometry allocation. The quota is shared among
+that channel's candidate features; a source partition also caps the sum across
+sampled channels at 1048576. Feature membership and projected expressions are
+evaluated on the source model before selection. Grouping and relation channels
+cannot use this option.
+
+Omitting the field preserves ordinary filtering. Zero explicitly requests exact
+backend geometry. The field participates in subscription identity, so changing
+it starts a new filter generation. When a positive-quota channel materializes
+candidate features, result info includes `PointCloud/SourceRecords`,
+`PointCloud/DeliveredRecords` and `PointCloud/Representation`. Counts include
+repeated channel instances. This visualization option does not change the
+canonical feature model or make an explicitly approximate source layer exact.
+
+### Deferred incoming inspection
+
+`POST /filter` supports `relation.traversal: "incoming"` for relation families explicitly
+marked by the provider's feature-model schema. It is an inspection operation: regular
+outgoing relation filters retain their existing behavior. Interactive incoming traversal
+is rejected.
+
+```json
+{
+  "channels": [{"channelId": "incoming", "scope": "relation", "relation": {"traversal": "incoming"}}],
+  "requests": [{"mapId": "Map", "layerId": "RoadSurface", "partitions": [{"kind": "tile", "id": 545379780}],
+    "roots": [{"partition": {"kind": "tile", "id": 545379780}, "featureId": "RoadSurface.545379780.101"}]}]
+}
+```
+
+The envelope contains one layer request, with at most 16 exact roots and 16 partitions.
+The service discovers authorized providers in the same map and **same tagged partition**,
+including configured composite contributions. It uses schema declarations to restrict
+both provider layers and relation names. Secondary IDs may use the normal locate selectors
+against the already loaded target snapshot; this never schedules another partition load.
+Recursion, two-way merging, filters, projections, geometry selection and point grouping
+are unsupported in this mode.
+
+The response sends ordinary feature snapshots, then typed incoming manifests, terminal
+filter status, and EndOfStream. Binary protocol 5.5 adds message type **10** for the manifest;
+JSONL sends the same manifest object as a line. Its `type` is `mapget.incoming.relations`
+and `version` is `1`. Each manifest identifies `target`, `featureId`, required `snapshots`,
+and `relations` containing the original `source` partition key, source `featureId`,
+`relationIndex`, `name`, and resolved `targetFeatureId`. Relations remain source-owned.
+`complete`, `issues`, and optional `expiresAtMs` distinguish complete, partial and expiring
+results. A successful empty result applies only to the declared deferred families.
+Missing metadata does not opt a provider in; a target with no eligible provider is unsupported.
+
+Limits are 64 provider/snapshot keys, 4096 associations per target, 64 MiB retained models,
+and 64 MiB snapshot output. Limiting source snapshots yields a consistent partial result;
+an unavailable or oversized selected target fails the request. Catalog replacement invalidates
+the response. Clients must require every promised snapshot, validate exact target ownership,
+and observe successful termination before publishing the section. Cancellation aborts child
+requests through the existing scheduler.
+
+Native clients receive snapshots with `onFeatureSnapshot` and manifests with
+`onIncomingRelations`; `FeatureInspectionView` validates and retains the bundle.
+Python clients can call `Client.incoming_relations(map_id, layer_id, partition, feature_id)`.
+The result exposes `target()`, `incoming()` and `collection()`.

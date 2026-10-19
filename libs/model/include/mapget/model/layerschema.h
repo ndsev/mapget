@@ -33,6 +33,26 @@ namespace mapget
 class LayerSchema
 {
 public:
+    /** Source-owned relation family and its explicit target-side inspection policy. */
+    struct RelationDeclaration
+    {
+        std::string ownerType_;
+        std::string name_;
+        std::vector<std::string> targetTypes_;
+        bool incoming_ = false;
+        /** Producer confirms complete conversion coverage for this declared family. */
+        bool complete_ = false;
+
+        /** Match only an explicitly opted-in target and stored relation family. */
+        [[nodiscard]] bool permitsIncoming(std::string_view owner, std::string_view name,
+                                          std::string_view target) const;
+    };
+
+    /** Read producer relation contracts without treating referenced types as feature owners. */
+    [[nodiscard]] std::vector<RelationDeclaration> relationDeclarations() const;
+    /** Distinguish an explicitly empty relation index from absent producer metadata. */
+    [[nodiscard]] bool hasRelationDeclarations() const;
+
     using Composition = simfil::Schema::Composition;
     static constexpr auto FeatureKind = simfil::Schema::makeKind(
         StringPool::SchemaFeatureStr,

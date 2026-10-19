@@ -2532,6 +2532,44 @@ LayerSchema::LayerSchema()
 {
 }
 
+bool LayerSchema::RelationDeclaration::permitsIncoming(
+    std::string_view owner, std::string_view name, std::string_view target) const
+{
+    return incoming_ && ownerType_ == owner && name_ == name &&
+        std::ranges::find(targetTypes_, target) != targetTypes_.end();
+}
+
+std::vector<LayerSchema::RelationDeclaration> LayerSchema::relationDeclarations() const
+{
+    std::vector<RelationDeclaration> result;
+    for (auto const& domain : impl_->schemas_) {
+        auto const* metadata = mapgetMetadata(domain.annotations_);
+        if (!metadata || !metadata->contains("relationDeclarations")) continue;
+        auto const& declarations = metadata->at("relationDeclarations");
+        if (!declarations.is_array()) continue;
+        for (auto const& declaration : declarations) {
+            // Unknown or ordinary declarations never opt a family into discovery.
+            auto owner = declaration.value("ownerType", std::string{});
+            auto name = declaration.value("name", std::string{});
+            auto targets = declaration.value("targetTypes", std::vector<std::string>{});
+            if (owner.empty() || name.empty() || targets.empty()) continue;
+            result.push_back({std::move(owner), std::move(name), std::move(targets),
+                              declaration.value("incoming", false),
+                              declaration.value("coverage", std::string{}) == "complete"});
+        }
+    }
+    return result;
+}
+
+bool LayerSchema::hasRelationDeclarations() const
+{
+    return std::ranges::any_of(impl_->schemas_, [](auto const& domain) {
+        auto const* metadata = mapgetMetadata(domain.annotations_);
+        return metadata && metadata->contains("relationDeclarations") &&
+               metadata->at("relationDeclarations").is_array();
+    });
+}
+
 LayerSchema::LayerSchema(nlohmann::json schema)
     : transportJsonSchema_(std::move(schema)),
       impl_(std::make_shared<Impl>())

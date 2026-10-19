@@ -90,7 +90,7 @@ class ViewerConnection:
                 raise EOFError("Viewer received a close frame")
             assert opcode == 2
             major, minor, patch, message_type, length = struct.unpack_from("<HHHBI", payload)
-            assert (major, minor) == (5, 4)
+            assert (major, minor) == (5, 5)
             assert len(payload) == 11 + length
             if message_type == kind:
                 return json.loads(payload[11:])

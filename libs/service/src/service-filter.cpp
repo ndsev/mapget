@@ -6,6 +6,7 @@
 #include "mapget/service/locate.h"
 #include "service-impl.h"
 #include "service-memory.h"
+#include "service-incoming.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2462,6 +2463,16 @@ void FeatureLayerFilterTilesRequest::notifyProgress(nlohmann::json const& status
     }
 }
 
+void FeatureLayerFilterTilesRequest::notifyFeatureSnapshot(PartitionFeatureLayer::Ptr const& layer)
+{
+    if (!isCancelled() && !isDone() && onFeatureSnapshot_) onFeatureSnapshot_(layer);
+}
+
+void FeatureLayerFilterTilesRequest::notifyIncomingRelations(IncomingRelationCollection const& collection)
+{
+    if (!isCancelled() && !isDone() && onIncomingRelations_) onIncomingRelations_(collection);
+}
+
 void FeatureLayerFilterTilesRequest::setStatus(RequestStatus s)
 {
     auto expected = RequestStatus::Open;
@@ -2661,6 +2672,12 @@ bool detail::FilterRequestExecution::start(
     auto exactRootsPrepared = prepareExactRoots(request, hasStoredRelations);
     if (!exactRootsPrepared) {
         return rejectStart(request, exactRootsPrepared.error().message);
+    }
+
+    if (std::ranges::any_of(request->filter_.channels_, [](auto const& channel) {
+            return channel.relation_ && channel.relation_->incoming_;
+        })) {
+        return IncomingRequestExecution::start(service, request, clientHeaders);
     }
 
     auto prioritySourceMembership = request->priorityPartitionIds_;

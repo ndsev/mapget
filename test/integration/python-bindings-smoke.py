@@ -31,6 +31,15 @@ def _post_json(url: str, body: dict):
 
 
 def main() -> int:
+    assert hasattr(mapget, "FeatureInspectionView")
+    assert hasattr(mapget.Client, "incoming_relations")
+    incoming = mapget.IncomingRelationCollection.from_json(json.dumps({
+        "type": "mapget.incoming.relations", "version": 1,
+        "target": "Features:Map:WayLayer:65536", "featureId": "Way.1",
+        "complete": True, "issues": [], "snapshots": ["Features:Map:WayLayer:65536"], "relations": []
+    }))
+    assert incoming.complete and incoming.feature_id == "Way.1"
+    assert incoming.to_dict()["relations"] == []
     assert hasattr(mapget, "FilterRequest")
     assert hasattr(mapget, "FilterChannel")
     assert hasattr(mapget, "TileSubsetLayer")
@@ -62,6 +71,7 @@ def main() -> int:
     point = mapget.Point
     cache_expired_calls: list[tuple[str, int]] = []
     requested_tiles: list[int] = []
+    retained_incoming_rows: list[dict] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
         assert tile.warnings() == []
@@ -163,6 +173,18 @@ def main() -> int:
         target = tile.new_feature_id("Way", [("wayId", 2)])
         relation = feature.add_relation("next", target)
         relation.source_validity().new_complete()
+
+        tile.new_feature("Way", [("wayId", 2)])
+        key = "Features:Map:WayLayer:65536"
+        collection = mapget.IncomingRelationCollection.from_json(json.dumps({
+            "type": "mapget.incoming.relations", "version": 1,
+            "target": key, "featureId": "Way.2", "complete": True, "issues": [],
+            "snapshots": [key], "relations": [{"source": key, "featureId": "Way.1",
+                "relationIndex": 0, "name": "next", "targetFeatureId": "Way.2"}]
+        }))
+        view = mapget.FeatureInspectionView(collection, [tile])
+        assert view.collection().complete
+        retained_incoming_rows.extend(view.incoming())
 
         source_refs = tile.new_source_data_references(
             [("RawLayer", "primary", mapget.SourceDataAddress(10, 20))]
@@ -272,6 +294,10 @@ def main() -> int:
             == "attribute-point-sequence"
         )
         assert feature["_sourceData"][0]["qualifier"] == "primary"
+        assert len(retained_incoming_rows) == 1
+        assert retained_incoming_rows[0]["ordinal"] == 0
+        assert retained_incoming_rows[0]["relation"].name() == "next"
+        assert retained_incoming_rows[0]["source"].id().to_string() == "Way.1"
 
         discovery = _post_json(f"{base_url}/objects/discover", {
             "layerId": "ObjectRoad", "tileId": PackedTileId.from_tile_xy(0, 0, 13).value})

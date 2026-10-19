@@ -133,6 +133,7 @@ bool TileLayerStream::Reader::continueReading()
          nextValueType_ == MessageType::RequestContext ||
          nextValueType_ == MessageType::SourceCatalogChange ||
          nextValueType_ == MessageType::ActionControl ||
+         nextValueType_ == MessageType::IncomingRelations ||
          nextValueType_ == MessageType::EndOfStream))
     {
         onControlMessage_(
@@ -306,6 +307,11 @@ void TileLayerStream::Writer::sendStatus(std::string statusJson)
 void TileLayerStream::Writer::sendEndOfStream()
 {
     sendMessage("", MessageType::EndOfStream);
+}
+
+void TileLayerStream::Writer::sendIncomingRelations(IncomingRelationCollection const& collection)
+{
+    sendMessage(collection.toJson().dump(), MessageType::IncomingRelations);
 }
 
 std::shared_ptr<StringPool> TileLayerStream::StringPoolCache::getStringPool(const std::string_view& stringPoolId)

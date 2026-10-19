@@ -1016,3 +1016,52 @@ TEST_CASE(
     REQUIRE(sourceResult->layer_);
     REQUIRE(sourceResult->relationDescriptors_.empty());
 }
+
+TEST_CASE("Explicit point-cloud filtering shares an object quota and preserves exact input", "[pointcloud][filter]")
+{
+    auto source = makePointGroupSource(TileId::fromTileXY(1, 0, 1), 42, Point{11, 48, 0});
+    auto feature = source->at(0);
+    for (int cluster = 0; cluster < 2; ++cluster) {
+        auto geometry = source->newGeometry(GeomType::Points, 100, true);
+        geometry->setName("merge");
+        for (int i = 0; i < 100; ++i) geometry->append({11, 48, double(cluster * 100 + i)});
+        feature->addGeometry(geometry);
+    }
+    auto const original = source->toJson();
+    FeatureLayerFilterRequest request;
+    request.filterId_ = "point-cloud-test";
+    FeatureLayerFilterChannel channel;
+    channel.channelId_ = "cloud";
+    channel.scope_ = FeatureLayerFilterScope::Feature;
+    channel.geometryTypes_ = 1U << static_cast<uint8_t>(GeomType::Points);
+    channel.pointCloudMaxPoints_ = 8;
+    request.channels_.push_back(channel);
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    REQUIRE(*result);
+    size_t delivered = 0;
+    (*result)->at(0)->forEachFeatureEntry([&](auto const& entry) {
+        entry->geometry()->forEachGeometry([&](auto const& geometry) {
+            REQUIRE(geometry->name() == "merge");
+            delivered += geometry->numPoints();
+            return true;
+        });
+        return true;
+    });
+    REQUIRE(delivered > 0);
+    REQUIRE(delivered <= 8);
+    REQUIRE((*result)->info()["PointCloud/SourceRecords"] == 201);
+    REQUIRE((*result)->info()["PointCloud/DeliveredRecords"] == delivered);
+    REQUIRE(source->toJson() == original);
+    request.channels_[0].pointCloudMaxPoints_ = 0;
+    result = request.filter(*source);
+    REQUIRE(result);
+    delivered = 0;
+    (*result)->at(0)->forEachFeatureEntry([&](auto const& entry) {
+        entry->geometry()->forEachGeometry([&](auto const& geometry) {
+            delivered += geometry->numPoints(); return true;
+        });
+        return true;
+    });
+    REQUIRE(delivered == 201);
+}

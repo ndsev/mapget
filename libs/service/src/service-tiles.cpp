@@ -205,6 +205,8 @@ void loadAddOnTiles(
         auto loaded = addOn->dataSource->get(baseTile->id(), cache, *addOn->info, {}, isCancelled);
         if (!loaded) {
             log().warn("Add-on datasource returned null for {}.", baseTile->id().toString());
+            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
+                baseTile->addWarning("An advertised add-on provider returned no tile.");
             continue;
         }
         if (loaded->error()) {
@@ -212,10 +214,14 @@ void loadAddOnTiles(
                 "Error while fetching add-on tile {}: {}",
                 baseTile->id().toString(),
                 *loaded->error());
+            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
+                baseTile->addWarning(fmt::format("Add-on provider failed: {}", *loaded->error()));
             continue;
         }
         if (loaded->layerInfo()->type_ != LayerType::Features) {
             log().warn("Add-on tile {} is not a feature layer.", baseTile->id().toString());
+            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
+                baseTile->addWarning("An advertised add-on provider returned an incompatible layer.");
             continue;
         }
         auto addOnTile = std::static_pointer_cast<PartitionFeatureLayer>(loaded);
@@ -358,35 +364,7 @@ PartitionFeatureLayer::Ptr restrictFeatureLayerForResponse(
     PartitionFeatureLayer::Ptr const& source,
     std::span<std::string const> featureIds)
 {
-    auto result = std::make_shared<PartitionFeatureLayer>(
-        source->partitionId(),
-        source->stringPoolId(),
-        source->mapId(),
-        source->layerInfo(),
-        source->strings());
-    result->setInfo(source->info());
-    result->setTimestamp(source->timestamp());
-    result->setTtl(source->ttl());
-    result->setWarnings(source->warnings());
-    result->setError(source->error());
-    result->setErrorCode(source->errorCode());
-    result->setGeometryAnchor(source->geometryAnchor());
-    if (auto legalInfo = source->legalInfo()) {
-        result->setLegalInfo(*legalInfo);
-    }
-    result->setGlbAttachmentName(source->glbAttachmentName());
-
-    PartitionFeatureLayer::CloneCache cloneCache;
-    for (auto const& canonicalId : featureIds) {
-        auto feature = source->find(canonicalId);
-        if (!feature) {
-            continue;
-        }
-        auto featureId = feature->id();
-        result
-            ->clone(cloneCache, source, *feature, featureId->typeId(), featureId->keyValuePairs());
-    }
-    return result;
+    return cloneInspectionFeatures(source, featureIds);
 }
 
 }  // namespace

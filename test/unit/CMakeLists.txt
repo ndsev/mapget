@@ -11,6 +11,8 @@ add_executable(test.mapget
   test-mcp-help.cpp
   test-feature-id-index.cpp
   test-model-geometry.cpp
+  test-pointcloud-sampler.cpp
+  test-incoming-relations.cpp
   test-filter-service.cpp
   test-subsetlayer.cpp
   test-featurelayer-filter.cpp

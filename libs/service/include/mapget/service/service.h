@@ -4,6 +4,7 @@
 #include "config.h"
 #include "datasource.h"
 #include "mapget/model/featurelayer-filter.h"
+#include "mapget/model/incoming-relations.h"
 #include "mapget/model/layer.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "memcache.h"
@@ -28,6 +29,7 @@ namespace detail
 {
 class AttachmentRequestExecution;
 class FilterRequestExecution;
+class IncomingRequestExecution;
 class LocateRequestExecution;
 class ServiceScheduler;
 class TileLoadJob;
@@ -330,6 +332,7 @@ class FeatureLayerFilterTilesRequest
     friend class Service;
     friend class HttpClient;
     friend class detail::FilterRequestExecution;
+    friend class detail::IncomingRequestExecution;
     friend class detail::ServiceScheduler;
 
 public:
@@ -415,6 +418,20 @@ public:
         return *this;
     }
 
+    /** Receive one immutable snapshot declared by an incoming inspection manifest. */
+    template <class Fun> FeatureLayerFilterTilesRequest& onFeatureSnapshot(Fun&& callback)
+    {
+        onFeatureSnapshot_ = std::forward<Fun>(callback);
+        return *this;
+    }
+
+    /** Receive the backend-assigned incoming collection after its snapshot frames. */
+    template <class Fun> FeatureLayerFilterTilesRequest& onIncomingRelations(Fun&& callback)
+    {
+        onIncomingRelations_ = std::forward<Fun>(callback);
+        return *this;
+    }
+
     /** Callback for JSON status/progress updates. */
     template <class Fun>
     FeatureLayerFilterTilesRequest& onStatus(Fun&& callback)
@@ -428,6 +445,10 @@ public:
 
 protected:
     virtual void notifyResult(PartitionSubsetLayer::Ptr);
+    /** Deliver incoming payloads while the request is active. */
+    void notifyFeatureSnapshot(PartitionFeatureLayer::Ptr const&);
+    /** Deliver a typed incoming manifest while the request is active. */
+    void notifyIncomingRelations(IncomingRelationCollection const&);
     void notifyProgress(nlohmann::json const& status);
     void setStatus(RequestStatus s);
     void notifyStatus();
@@ -442,6 +463,8 @@ private:
     [[nodiscard]] bool acceptsOutputTile(PartitionId tileId) const;
 
     std::function<void(PartitionSubsetLayer::Ptr)> onFilterResult_;
+    std::function<void(PartitionFeatureLayer::Ptr const&)> onFeatureSnapshot_;
+    std::function<void(IncomingRelationCollection const&)> onIncomingRelations_;
     std::function<void(nlohmann::json const&)> onStatus_;
     std::shared_ptr<std::atomic_bool const> workAdmissionGate_;
     mutable std::mutex outputMembershipMutex_;
@@ -743,6 +766,7 @@ private:
     std::unique_ptr<Impl> impl_;
 
     friend class detail::FilterRequestExecution;
+    friend class detail::IncomingRequestExecution;
     friend class detail::LocateRequestExecution;
 };
 

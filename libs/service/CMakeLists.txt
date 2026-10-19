@@ -19,6 +19,8 @@ set(MAPGET_SERVICE_SOURCES
   src/service-datasources.cpp
   src/service-filter.h
   src/service-filter.cpp
+  src/service-incoming.h
+  src/service-incoming.cpp
   src/service-impl.h
   src/service-locate.h
   src/service-locate.cpp

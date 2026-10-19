@@ -11,6 +11,18 @@
 
 using namespace mapget;
 
+TEST_CASE("Layer visibility defaults are optional and preserve false", "[DataSourceInfo][pointcloud]")
+{
+    LayerInfo layer;
+    layer.layerId_ = "Preview";
+    CHECK_FALSE(layer.toJson().contains("defaultVisible"));
+    layer.defaultVisible_ = false;
+    auto parsed = LayerInfo::fromJson(layer.toJson());
+    REQUIRE(parsed->defaultVisible_.has_value());
+    CHECK_FALSE(*parsed->defaultVisible_);
+    CHECK_FALSE(parsed->toJson()["defaultVisible"].get<bool>());
+}
+
 namespace
 {
 

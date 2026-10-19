@@ -430,6 +430,7 @@ Feature::ComplexData& PartitionFeatureLayer::ensureFeatureComplexData(uint32_t f
     auto& addr = impl_->complexFeatureDataRefs_.at(featureIndex);
     if (!addr) {
         auto const complexIndex = static_cast<uint32_t>(impl_->complexFeatureData_.size());
+        simfil::ModelNodeAddress::checkIndex(impl_->complexFeatureData_.size());
         impl_->complexFeatureData_.emplace_back(Feature::ComplexData{});
         addr = simfil::ModelNodeAddress{ColumnId::FeatureComplexData, complexIndex};
     }
@@ -629,6 +630,7 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
         raise(res.error().message);
 
     auto featureIndex = impl_->features_.size();
+    simfil::ModelNodeAddress::checkIndex(impl_->features_.size());
     impl_->features_.emplace_back(Feature::BasicData{
         Feature::TypeId{*res},
         idPartValues,
@@ -683,6 +685,7 @@ model_ptr<FeatureId> PartitionFeatureLayer::newFeatureId(
         // Local references omit the redundant map payload so legacy JSON stays compact.
         externalMapIdStringId = *storedMapId;
     }
+    simfil::ModelNodeAddress::checkIndex(featureIds_.size());
     featureIds_.emplace_back(FeatureId::Data{
         false,
         idCompositionIndex,
@@ -704,6 +707,7 @@ PartitionFeatureLayer::newRelation(const std::string_view& name, const model_ptr
     auto nameStringId = strings()->emplace(name);
     if (!nameStringId)
         raise(nameStringId.error().message);
+    simfil::ModelNodeAddress::checkIndex(impl_->relations_.size());
     impl_->relations_.emplace_back(Relation::Data{
         .name_ = *nameStringId,
         .targetFeatureId_ = target->addr()
@@ -765,6 +769,7 @@ model_ptr<AttrPointSequence> PartitionFeatureLayer::newAttrPointSequence(
     }
 
     auto const sequenceIndex = static_cast<uint32_t>(impl_->attrPointSequences_.size());
+    simfil::ModelNodeAddress::checkIndex(impl_->attrPointSequences_.size());
     impl_->attrPointSequences_.emplace_back(AttrPointSequence::Data{
         .featureId_ = feature->id()->addr(),
         .geometry_ = geometry->addr(),
@@ -860,6 +865,7 @@ model_ptr<AttrPoint> PartitionFeatureLayer::appendAttrPoint(
 
     auto const anchor = geometryAnchor();
     auto const pointIndex = static_cast<uint32_t>(impl_->attrPoints_.size());
+    simfil::ModelNodeAddress::checkIndex(impl_->attrPoints_.size());
     impl_->attrPoints_.emplace_back(AttrPoint::Data{
         .index_ = logicalIndex,
         .point_ = glm::fvec3{
@@ -896,6 +902,7 @@ model_ptr<Attribute> PartitionFeatureLayer::newAttribute(
     auto nameStringId = strings()->emplace(name);
     if (!nameStringId)
         raise(nameStringId.error().message);
+    simfil::ModelNodeAddress::checkIndex(impl_->attributes_.size());
     impl_->attributes_.emplace_back(Attribute::Data{
         {Null, 0},
         objectMemberStorage().new_array(initialCapacity, fixedSize),
@@ -912,6 +919,7 @@ model_ptr<AttributeLayer>
 PartitionFeatureLayer::newAttributeLayer(size_t initialCapacity, bool fixedSize)
 {
     auto layerIndex = impl_->attrLayers_.size();
+    simfil::ModelNodeAddress::checkIndex(impl_->attrLayers_.size());
     impl_->attrLayers_.emplace_back(objectMemberStorage().new_array(initialCapacity, fixedSize));
     return AttributeLayer(
         impl_->attrLayers_.back(),
@@ -924,6 +932,7 @@ model_ptr<AttributeLayerList>
 PartitionFeatureLayer::newAttributeLayers(size_t initialCapacity, bool fixedSize)
 {
     auto listIndex = impl_->attrLayerLists_.size();
+    simfil::ModelNodeAddress::checkIndex(impl_->attrLayerLists_.size());
     impl_->attrLayerLists_.emplace_back(objectMemberStorage().new_array(initialCapacity, fixedSize));
     return AttributeLayerList(
         impl_->attrLayerLists_.back(),
@@ -1003,6 +1012,7 @@ model_ptr<Geometry> PartitionFeatureLayer::newGeometryView(
     if (base->geomType() == GeomType::AABB || base->geomType() == GeomType::GltfNodeIndex) {
         raise("Geometry views cannot reference AABB or GltfNodeIndex geometries.");
     }
+    simfil::ModelNodeAddress::checkIndex(geomViews_.size());
     geomViews_.emplace_back(geomType, offset, size, base->addr());
     return Geometry(
         &geomViews_.back(),
@@ -1028,6 +1038,7 @@ model_ptr<SourceDataReferenceCollection> PartitionFeatureLayer::newSourceDataRef
 
 model_ptr<Validity> PartitionFeatureLayer::newValidity()
 {
+    simfil::ModelNodeAddress::checkIndex(impl_->validities_.size());
     impl_->validities_.emplace_back();
     return Validity(
         &impl_->validities_.back(),
@@ -1063,6 +1074,7 @@ ModelNodeAddress PartitionFeatureLayer::materializeSimpleValidity(
         raise("Simple validity owner slot no longer points at the expected simple validity.");
     }
 
+    simfil::ModelNodeAddress::checkIndex(impl_->validities_.size());
     impl_->validities_.emplace_back();
     auto upgradedAddress = ModelNodeAddress{
         ColumnId::Validities,
@@ -2720,9 +2732,13 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
             host = find(sourceFeatureId->typeId(), sourceFeatureId->keyValuePairs());
         }
         if (!host) {
-            raiseFmt(
-                "Cannot clone AttrPointSequence before host feature '{}' exists.",
-                sourceFeatureId->toString());
+            // Restricted inspection snapshots still need the sequence's geometry host.
+            // Materialize only its identity here; the geometry and sequence follow below.
+            // A later explicit host clone fills its attributes without duplicating geometry.
+            auto parts = sourceFeatureId->keyValuePairs();
+            if (auto prefix = getIdPrefix(); prefix && parts.size() >= prefix->size())
+                parts.erase(parts.begin(), parts.begin() + prefix->size());
+            host = newFeature(sourceFeatureId->typeId(), parts);
         }
         bool geometryAttached = false;
         if (auto geometries = host->geomOrNull()) {

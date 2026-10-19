@@ -1,3 +1,4 @@
+#include "mapget/model/pointcloud-geometry.h"
 #include "featurelayer-filter.h"
 
 #include <algorithm>
@@ -218,6 +219,10 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
     auto const layerInfo = sourceLayer.layerInfo();
     auto const canValidateTypes = layerInfo && !layerInfo->featureTypes_.empty();
     for (auto const& channel : channels_) {
+        if (channel.relation_ && channel.relation_->incoming_) {
+            return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
+                "Incoming inspection requires service-backed exact roots through POST /filter."});
+        }
         if (channel.channelId_.empty()) {
             return tl::unexpected(simfil::Error{
                 simfil::Error::InvalidArguments,
@@ -229,6 +234,12 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
                 simfil::Error::InvalidArguments,
                 fmt::format("Duplicate filter channelId '{}'.", channel.channelId_),
             });
+        }
+        if (channel.pointCloudMaxPoints_ &&
+            (*channel.pointCloudMaxPoints_ > 1048576 || channel.scope_ != FeatureLayerFilterScope::Feature ||
+             channel.group_ || channel.relation_ || channel.geometryTypes_ != (1U << static_cast<unsigned>(GeomType::Points)))) {
+            return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
+                "Point-cloud sampling requires a feature-only point channel and a quota in 0..1048576."});
         }
         if (channel.geometryName_ && channel.geometryName_->empty()) {
             return tl::unexpected(simfil::Error{
@@ -1248,6 +1259,41 @@ static model_ptr<GeometryCollection> copyGeometryCollection(
     return copied;
 }
 
+/** Sample one object's geometries together, before allocating subset point storage. */
+static model_ptr<GeometryCollection> copyPointCloudGeometry(
+    PartitionSubsetLayer& target, model_ptr<GeometryCollection> const& source,
+    std::optional<std::string> const& name, size_t quota)
+{
+    auto selected = PointCloudGeometrySample::build(source, quota, name);
+    auto info = target.info();
+    target.setInfo("PointCloud/SourceRecords", info.value<uint64_t>("PointCloud/SourceRecords", 0) + selected.sourceCount);
+    target.setInfo("PointCloud/DeliveredRecords", info.value<uint64_t>("PointCloud/DeliveredRecords", 0) + selected.records.size());
+    target.setInfo("PointCloud/Representation", "visualization/first-point-grid-v1");
+    size_t geometryCount = 0;
+    uint32_t previousAddress = 0;
+    for (auto const& record : selected.records) {
+        if (!geometryCount || record.geometryAddress != previousAddress) ++geometryCount;
+        previousAddress = record.geometryAddress;
+    }
+    auto copied = target.newGeometryCollection(std::max<size_t>(1, geometryCount), false);
+    if (!source) return copied;
+    size_t cursor = 0;
+    source->forEachGeometry([&](auto const& geometry) {
+        size_t const first = cursor;
+        while (cursor < selected.records.size() &&
+               selected.records[cursor].geometryAddress == geometry->addr().value_)
+            ++cursor;
+        if (cursor != first) {
+            auto points = target.newGeometry(GeomType::Points, cursor - first, true);
+            points->setName(geometry->name());
+            for (size_t index = first; index < cursor; ++index) points->append(selected.records[index].point);
+            copied->addGeometry(points);
+        }
+        return true;
+    });
+    return copied;
+}
+
 /** Materialize a computed self-contained geometry using channel selectors. */
 static model_ptr<GeometryCollection> copySelfContainedGeometry(
     PartitionSubsetLayer& target,
@@ -1375,16 +1421,24 @@ void FeatureLayerFilterRequest::SourceEvaluation::materializeChannel(
         return;
     }
 
+    size_t quota = channel.definition_.pointCloudMaxPoints_.value_or(0);
+    auto const cloudChannels = std::count_if(channels_.begin(), channels_.end(), [](auto const& item) {
+        return item.definition_.pointCloudMaxPoints_.value_or(0) > 0;
+    });
+    if (quota) quota = std::min<size_t>(quota, 1048576 / std::max<size_t>(1, cloudChannels));
+    size_t remainingFeatures = channel.featureCandidates_.size();
     for (auto& candidate : channel.featureCandidates_) {
+        auto const featureQuota = remainingFeatures ? quota / remainingFeatures-- : 0;
+        quota -= featureQuota;
         auto values = candidate.featureValues_.materialize(*resultLayer_,
             channel.definition_.channelId_, channel.definition_.featureFields_, Scope::Feature, issues_);
         channel.output_->newFeatureEntry(
             copyFeatureId(candidate.feature_->id(), featureIds),
-            copyGeometryCollection(
-                *resultLayer_,
-                candidate.feature_->geomOrNull(),
-                channel.definition_.geometryTypes_,
-                channel.definition_.geometryName_),
+            channel.definition_.pointCloudMaxPoints_.value_or(0) ?
+                copyPointCloudGeometry(*resultLayer_, candidate.feature_->geomOrNull(),
+                    channel.definition_.geometryName_, featureQuota) :
+                copyGeometryCollection(*resultLayer_, candidate.feature_->geomOrNull(),
+                    channel.definition_.geometryTypes_, channel.definition_.geometryName_),
             values,
             candidate.featureValues_.errors_);
     }

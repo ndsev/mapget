@@ -88,6 +88,8 @@ struct FeatureLayerStoredRelationOptions
     std::optional<std::string> relationNamePattern_;
     bool recursive_ = false;
     bool mergeTwoway_ = false;
+    /** Incoming inspection is a bounded same-partition service operation. */
+    bool incoming_ = false;
 
     bool operator==(FeatureLayerStoredRelationOptions const&) const = default;
 };
@@ -117,6 +119,10 @@ struct FeatureLayerFilterChannel
 
     /** Nullopt selects all geometry names; a value selects that exact name. */
     std::optional<std::string> geometryName_;
+
+    /** Explicit visualization-only point-cloud sampling. Zero requests exact delivery.
+     * The quota is shared across the channel's features in each source partition. */
+    std::optional<uint32_t> pointCloudMaxPoints_;
 
     /** Present only for the feature-only point-grid grouping channel. */
     std::optional<FeatureLayerPointGridGroup> group_;

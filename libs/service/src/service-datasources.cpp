@@ -81,6 +81,7 @@ std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
     result->version_ = info.version_;
     result->partitionKind_ = info.partitionKind_;
     result->tileAssociationLevel_ = info.tileAssociationLevel_;
+    result->defaultVisible_ = info.defaultVisible_;
     result->featureModelSchema_ = info.featureModelSchema_ ?
         info.featureModelSchema_->detachedCopy() :
         nullptr;

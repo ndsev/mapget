@@ -873,4 +873,24 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use the current protocol 5.4, which combines the released 5.2 warning header with the independently developed 5.3 action/projection format. Error and empty-tile expiry reuse the existing timestamp and TTL fields. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.
+Binary readers and writers must both use the current protocol 5.5, which retains the 5.4 feature layout and adds incoming inspection manifest frames. Error and empty-tile expiry reuse the existing timestamp and TTL fields. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.
+
+### Incoming inspection ownership
+
+A layer schema can publish `x-mapget.relationDeclarations` on a schema node. Each declaration
+contains `ownerType`, stored relation `name`, `targetTypes`, explicit `incoming` eligibility,
+and `coverage` (`"complete"` or unknown). `LayerSchema::relationDeclarations()` is the typed
+accessor; annotations survive JSON Schema import/export and detached catalog copies.
+Referenced feature types are not inferred to be features owned by the provider layer.
+An absent declaration never enables reverse inspection. Conventional relations use
+`incoming: false`; uncertain conversion coverage produces a partial result.
+Layer metadata also publishes `incomingRelationTargetTypes`, a compact capability projection
+computed from these declarations. It lets schema-free inspection parsers decide whether to
+request incoming context. The service still validates full family declarations for discovery.
+
+`IncomingRelationCollection` identifies backend-associated source relation ordinals and
+supporting snapshots. `FeatureInspectionView` retains the selected target and each original
+source model, validates their map/partition and association identities, and exposes source
+handles. It does not append inverse relations to the target or change normal feature JSON,
+SIMFIL queries, filtering, styles or GeoJSON export. Restricted snapshot cloning also retains
+attribute-point sequence geometry hosts when the host feature was not selected explicitly.

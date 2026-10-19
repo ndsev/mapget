@@ -21,6 +21,8 @@
 #include "mapget/service/service.h"
 #include "../../libs/http-service/src/tiles-request-json.h"
 
+
+
 using namespace mapget;
 
 namespace
@@ -2448,4 +2450,23 @@ TEST_CASE("Filter outputs preserve warnings even when no features match", "[feat
         REQUIRE(output->at(i)->entryCount() == 0);
     REQUIRE(output->warnings() == std::vector<std::string>{"duplicate Road.42"});
     REQUIRE(output->toJson()["warnings"] == output->warnings());
+}
+
+TEST_CASE("Point-cloud channel quotas survive canonical filter JSON", "[pointcloud][filter]")
+{
+    for (uint32_t quota : {0U, 262144U, 1048576U}) {
+        nlohmann::json input = {
+            {"filterId", "cloud"}, {"generation", 1},
+            {"channels", {{{"channelId", "points"}, {"scope", "feature"},
+                           {"geometryTypes", uint32_t{1} << static_cast<uint8_t>(mapget::GeomType::Points)},
+                           {"pointCloudMaxPoints", quota}}}}
+        };
+        auto request = mapget::detail::parseRestFilterEnvelopeJson(input);
+        REQUIRE(request.channels_.at(0).pointCloudMaxPoints_ == quota);
+        REQUIRE(mapget::detail::filterRequestToJson(request)["channels"][0]["pointCloudMaxPoints"] == quota);
+        input["channels"][0]["pointCloudMaxPoints"] = 1048577;
+        REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));
+        input["channels"][0]["pointCloudMaxPoints"] = -1;
+        REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));
+    }
 }

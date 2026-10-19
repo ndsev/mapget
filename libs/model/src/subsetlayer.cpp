@@ -168,21 +168,23 @@ void readWriteDiagnostics(S& serializer, simfil::Diagnostics& data)
 }
 
 template<typename S>
-void readWriteDependencyWire(S& serializer, DependencyWire& dependency)
+void readWriteDependencyWire(S& serializer, DependencyWire& dependency,
+                             size_t maxTextBytes = std::numeric_limits<uint32_t>::max())
 {
     serializer.text1b(
         dependency.sourceTileKey_,
-        std::numeric_limits<uint32_t>::max());
+        maxTextBytes);
     serializer.value4b(dependency.sourceFeatureCount_);
 }
 
 template<typename S>
-void readWriteIssueWire(S& serializer, IssueWire& issue)
+void readWriteIssueWire(S& serializer, IssueWire& issue,
+                        size_t maxTextBytes = std::numeric_limits<uint32_t>::max())
 {
-    serializer.text1b(issue.channelId_, std::numeric_limits<uint32_t>::max());
-    serializer.text1b(issue.expression_, std::numeric_limits<uint32_t>::max());
+    serializer.text1b(issue.channelId_, maxTextBytes);
+    serializer.text1b(issue.expression_, maxTextBytes);
     serializer.value1b(issue.scope_);
-    serializer.text1b(issue.message_, std::numeric_limits<uint32_t>::max());
+    serializer.text1b(issue.message_, maxTextBytes);
     serializer.value8b(issue.occurrenceCount_);
 }
 
@@ -1385,7 +1387,7 @@ FilterIdentity PartitionSubsetLayer::readFilterIdentity(
         input.begin() + static_cast<std::ptrdiff_t>(offset),
         input.end()));
     FilterIdentity result;
-    serializer.text1b(result.filterId_, std::numeric_limits<uint32_t>::max());
+    serializer.text1b(result.filterId_, input.size());
     serializer.value8b(result.generation_);
     if (serializer.adapter().error() != bitsery::ReaderError::NoError) {
         raise("Failed to read PartitionSubsetLayer identity.");
@@ -1424,16 +1426,16 @@ TileSubsetLayerMetadata PartitionSubsetLayer::readMetadata(
     std::vector<DependencyWire> dependencyWire;
     serializer.container(
         dependencyWire,
-        std::numeric_limits<uint32_t>::max(),
-        [](auto& nested, DependencyWire& dependency) {
-            readWriteDependencyWire(nested, dependency);
+        input.size() / 5,
+        [&](auto& nested, DependencyWire& dependency) {
+            readWriteDependencyWire(nested, dependency, input.size());
         });
     std::vector<IssueWire> issueWire;
     serializer.container(
         issueWire,
-        std::numeric_limits<uint32_t>::max(),
-        [](auto& nested, IssueWire& issue) {
-            readWriteIssueWire(nested, issue);
+        input.size() / 12,
+        [&](auto& nested, IssueWire& issue) {
+            readWriteIssueWire(nested, issue, input.size());
         });
     bool hasGlbAttachmentName = false;
     serializer.value1b(hasGlbAttachmentName);
@@ -1441,7 +1443,7 @@ TileSubsetLayerMetadata PartitionSubsetLayer::readMetadata(
         std::string glbAttachmentName;
         serializer.text1b(
             glbAttachmentName,
-            std::numeric_limits<uint32_t>::max());
+            input.size());
         result.glbAttachmentName_ = std::move(glbAttachmentName);
     }
 

@@ -2,6 +2,7 @@
 
 #include "layer.h"
 #include "stringpool.h"
+#include "incoming-relations.h"
 
 #include <map>
 #include <span>
@@ -61,6 +62,8 @@ public:
         SourceCatalogChange = 8,
         /** UTF-8 JSON browser-action control, independent of tile request and outbox state. */
         ActionControl = 9,
+        /** Typed JSON incoming-relation manifest, accompanied by feature snapshot frames. */
+        IncomingRelations = 10,
         EndOfStream = 128
     };
 
@@ -132,8 +135,10 @@ public:
      * - Version 5.4:
      *   + Combined the released 5.2 warning header with the 5.3 action/projection
      *     format, which previously evolved without that header on the release branch.
+     * - Version 5.5:
+     *   + Added typed incoming-relation manifests with ordinary feature snapshots.
      */
-    static constexpr Version CurrentProtocolVersion{5, 4, 0};
+    static constexpr Version CurrentProtocolVersion{5, 5, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -224,6 +229,9 @@ public:
 
         /** Send a JSON status message through the binary stream. */
         void sendStatus(std::string statusJson);
+
+        /** Send a backend-associated incoming inspection manifest. */
+        void sendIncomingRelations(IncomingRelationCollection const& collection);
 
         /** Send an EndOfStream message. */
         void sendEndOfStream();
