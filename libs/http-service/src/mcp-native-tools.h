@@ -32,7 +32,7 @@ public:
     [[nodiscard]] nlohmann::json tools(Principal const& principal) const;
     /** Match a native name, including disabled tools so calls cannot fall through to a browser. */
     [[nodiscard]] bool contains(std::string_view name) const;
-    /** Validate arguments against the same compiled schema advertised by tools/list. */
+    /** Validate the authoritative argument contract; discovery preserves its constraints. */
     [[nodiscard]] bool acceptsArguments(
         std::string_view name,
         nlohmann::json const& arguments,

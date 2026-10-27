@@ -116,9 +116,14 @@ bool McpNativeTools::permitted(std::string_view name, Principal const& principal
 Json McpNativeTools::tools(Principal const& principal) const
 {
     auto result = Json::array();
-    for (auto const& [name, action] : actions_)
-        if (permitted(name, principal))
-            result.push_back(action.tool);
+    for (auto const& [name, action] : actions_) {
+        if (permitted(name, principal)) {
+            auto tool = action.tool;
+            tool["inputSchema"] =
+                McpActionCatalog::clientInputSchema(std::move(tool["inputSchema"]));
+            result.push_back(std::move(tool));
+        }
+    }
     return result;
 }
 

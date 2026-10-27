@@ -51,6 +51,8 @@ def validate_response(message, protocol, method):
     if "result" in message and method == "tools/list":
         # The protocol's Tool schema intentionally treats these as JSON schemas, not instances.
         for tool in message["result"]["tools"]:
+            # Claude Code filters these out before the model sees any tools, despite valid MCP.
+            assert not {"allOf", "anyOf", "oneOf"} & tool["inputSchema"].keys(), tool["name"]
             for key in ("inputSchema", "outputSchema"):
                 if key in tool:
                     validator_for(tool[key]).check_schema(tool[key])

@@ -201,20 +201,65 @@ TEST_CASE(
     auto cases = fixture("fixtures.json");
     for (auto const& tool : catalog.tools(true, true)) {
         auto name = tool.at("name").get<std::string>();
+        for (auto const* keyword : {"allOf", "anyOf", "oneOf"})
+            CHECK_FALSE(tool.at("inputSchema").contains(keyword));
         nlohmann::json_schema::json_validator validator(tool.at("inputSchema"));
         for (auto const& entry : cases.at("actions")) {
-            if (entry.at("action") != name || !entry.at("valid").get<bool>()) {
+            // A routing field is invalid in application fixtures but required on the wire.
+            if (entry.at("action") != name || entry.at("arguments").contains("clientId")) {
                 continue;
             }
             INFO(entry.at("name"));
             auto args = entry.at("arguments");
             CHECK_THROWS(validator.validate(args));
             args["clientId"] = "b3e68f32-3b51-472d-8cab-14b597f7de91";
-            CHECK_NOTHROW(validator.validate(args));
+            nlohmann::json_schema::basic_error_handler errors;
+            validator.validate(args, errors);
+            CHECK(!errors == entry.at("valid").get<bool>());
             CHECK_FALSE(catalog.acceptsArguments(name, args));
             args["clientId"] = 1;
             CHECK_THROWS(validator.validate(args));
         }
+    }
+}
+
+TEST_CASE("MCP client schemas retain composed rules and local references", "[mcp-actions]")
+{
+    auto schema = Json::parse(R"json({
+      "type":"object", "additionalProperties":false,
+      "properties":{
+        "count":{}, "name":{"type":"string"},
+        "mirror":{"$ref":"#/allOf/0/properties/count"},
+        "literal":{"const":{"$ref":"#/allOf/0"}, "default":{"$ref":"#/allOf/0"}}
+      },
+      "definitions":{"count":{"type":"integer","minimum":0}},
+      "allOf":[{"properties":{"count":{"$ref":"#/definitions/count"}}}],
+      "anyOf":[{"required":["count"]},{"required":["name"]}],
+      "oneOf":[{"required":["count"]},{"required":["name"]}],
+      "if":{"required":["count"]}, "then":{"required":["mirror"]},
+      "else":{"properties":{"name":{"minLength":2}}},
+      "not":{"properties":{"name":{"const":"forbidden"}},"required":["name"]}
+    })json");
+    auto published = McpActionCatalog::clientInputSchema(schema);
+    for (auto const* keyword : {"allOf", "anyOf", "oneOf"})
+        CHECK_FALSE(published.contains(keyword));
+    CHECK(published["properties"]["mirror"]["$ref"] == "#/then/allOf/0/properties/count");
+    CHECK(published["properties"]["literal"] == schema["properties"]["literal"]);
+    CHECK(published["definitions"] == schema["definitions"]);
+    CHECK(McpActionCatalog::clientInputSchema(published) == published);
+    nlohmann::json_schema::json_validator original(schema), advertised(published);
+    for (auto const& value : Json::parse(R"json([
+        {"count":1,"mirror":2}, {"count":1}, {"count":-1,"mirror":2},
+        {"count":1,"mirror":-1}, {"name":"ok"}, {"name":"x"}, {"name":"forbidden"},
+        {"count":1,"mirror":2,"name":"ok"}, {}, {"unknown":1},
+        {"name":"ok","literal":{"$ref":"#/allOf/0"}}
+    ])json"))
+    {
+        INFO(value.dump());
+        nlohmann::json_schema::basic_error_handler before, after;
+        original.validate(value, before);
+        advertised.validate(value, after);
+        CHECK(!before == !after);
     }
 }
 

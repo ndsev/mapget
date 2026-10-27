@@ -277,6 +277,25 @@ TEST_CASE(
             fixture.tools->acceptsResult(tool["name"].get<std::string>(), NativeJson::array()));
         CHECK(tool["inputSchema"]["type"] == "object");
         CHECK(tool["outputSchema"]["type"] == "object");
+        for (auto const* keyword : {"allOf", "anyOf", "oneOf"})
+            CHECK_FALSE(tool["inputSchema"].contains(keyword));
+        nlohmann::json_schema::json_validator advertised(tool["inputSchema"]);
+        for (auto const& args : NativeJson::parse(R"json([
+            {}, {"mapId":"Native","layerId":"Road"},
+            {"mapId":"Native","layerId":"Road","partitions":[{"kind":"tile","id":131073}]},
+            {"mapId":"Native","layerId":"Road","featureType":"Road","schemaId":1},
+            {"mapId":"Native","layerId":"Road","query":"_","find":"speed"},
+            {"mapId":"Native","partition":{"kind":"tile","id":131073},
+             "reference":{"layerId":"Raw","address":"1"}},
+            {"cursor":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"cursor":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mapId":"Native"}
+        ])json"))
+        {
+            nlohmann::json_schema::basic_error_handler errors;
+            advertised.validate(args, errors);
+            CHECK(
+                !errors == fixture.tools->acceptsArguments(tool["name"].get<std::string>(), args));
+        }
     }
     CHECK(fixture.call("mapget_get_config").contains("error"));
     auto missingSelection =

@@ -574,6 +574,65 @@ void McpActionCatalog::compileSchema(
     validator.set_root_schema(schema);
 }
 
+nlohmann::json McpActionCatalog::clientInputSchema(nlohmann::json schema)
+{
+    if (!schema.contains("allOf") && !schema.contains("anyOf") && !schema.contains("oneOf"))
+        return schema;
+
+    // Claude rejects top-level combinators even though MCP permits them. An unconditional
+    // then applies the identical assertions to the same object, not to a wrapper argument.
+    // Move an existing conditional as a unit so its if/then/else association is unchanged.
+    auto assertions = nlohmann::json::object();
+    std::set<std::string_view> moved;
+    for (auto const* keyword : {"allOf", "anyOf", "oneOf", "if", "then", "else"}) {
+        if (schema.contains(keyword)) {
+            moved.emplace(keyword);
+            assertions[keyword] = std::move(schema[keyword]);
+            schema.erase(keyword);
+        }
+    }
+    schema["if"] = true;
+    schema["then"] = std::move(assertions);
+
+    // Only visit schema positions: a literal/default object containing "$ref" is user data.
+    // References into moved root assertions must follow them; definitions remain at the root.
+    auto relocate = [&](auto&& self, nlohmann::json& node) -> void
+    {
+        if (!node.is_object())
+            return;
+        if (node.contains("$ref")) {
+            auto& ref = node["$ref"].get_ref<std::string&>();
+            for (auto const keyword : moved) {
+                auto prefix = "#/" + std::string(keyword);
+                if (ref == prefix || ref.starts_with(prefix + "/")) {
+                    ref.insert(2, "then/");
+                    break;
+                }
+            }
+        }
+        for (auto& [keyword, value] : node.items()) {
+            if (keyword == "properties" || keyword == "patternProperties" ||
+                keyword == "definitions" || keyword == "dependencies" || keyword == "allOf" ||
+                keyword == "anyOf" || keyword == "oneOf" ||
+                (keyword == "items" && value.is_array()))
+            {
+                for (auto& child : value)
+                    self(self, child);
+            }
+            else if (
+                keyword == "items" || keyword == "additionalItems" ||
+                keyword == "additionalProperties" || keyword == "contains" ||
+                keyword == "propertyNames" || keyword == "not" || keyword == "if" ||
+                keyword == "then" || keyword == "else")
+            {
+                self(self, value);
+            }
+        }
+    };
+    relocate(relocate, schema);
+    return schema;
+}
+
 std::string const& McpActionCatalog::id() const
 {
     return id_;
@@ -613,7 +672,7 @@ nlohmann::json McpActionCatalog::tools(bool allowRead, bool allowControl) const
         result.push_back(
             {{"name", name},
              {"description", action.definition.at("description")},
-             {"inputSchema", std::move(input)},
+             {"inputSchema", clientInputSchema(std::move(input))},
              {"outputSchema",
               name == "viewer_screenshot" ?
                   action.definition.at("outputSchema").at("properties").at("metadata") :

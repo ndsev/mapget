@@ -51,6 +51,12 @@ public:
     static void
     compileSchema(nlohmann::json_schema::json_validator& validator, nlohmann::json const& schema);
 
+    /**
+     * Keep an object root acceptable to stricter MCP hosts without discarding cross-field rules.
+     * Group root combinators under an always-applied conditional and preserve local references.
+     */
+    [[nodiscard]] static nlohmann::json clientInputSchema(nlohmann::json schema);
+
     /** Validate with bounded field-level guidance; never echo caller values or unknown keys. */
     static bool validateArguments(
         nlohmann::json_schema::json_validator const& validator,

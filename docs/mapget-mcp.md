@@ -351,6 +351,15 @@ The zero TTL prevents an MCP client's response cache from hiding those changes;
 private scope prevents reuse across authorization contexts. `/mcp/browser`
 uses the same policy. Legacy 2025 replies do not gain 2026-only fields.
 
+Some MCP hosts impose additional model-provider restrictions on otherwise valid
+JSON Schema. Claude Code 2.1.299, for example, excludes tools with root-level
+`allOf`, `anyOf` or `oneOf`. For discovery, mapget groups these assertions under
+an unconditional `if: true` / `then`, retaining the same argument object and
+all cross-field validation rules. Existing conditionals move together, and local
+references into relocated assertions are updated. Properties, required fields
+and closure remain at the root. Neither the trusted catalog nor the authoritative
+validators are weakened, and nested combinations are not flattened or discarded.
+
 No revision creates an MCP protocol session or returns `MCP-Session-Id`.
 The viewer `clientId` must not be used as such a header. No GET event stream,
 replay streams, protocol tasks, prompts, or resources are advertised. Feature extraction
@@ -433,6 +442,13 @@ deployment test. Consumer acceptance additionally requires the matching viewer
 catalog/build, real browser actions, and the deployment's OAuth client flow.
 Passing the official SDK is not a substitute for checking model-visible tools
 in the particular Claude/Codex release used by a customer.
+
+A manual Claude Code 2.1.299 check uses an isolated local configuration: CLI
+connection/discovery plus the Agent SDK control channel's `mcp_status` inventory
+against the built erdblick catalog, without sending a model prompt or using an
+account token. This catches tools being filtered out by the host after successful
+MCP discovery. Hosted OAuth and real browser action execution remain separate
+deployment acceptance checks.
 
 ## Native Tools
 
