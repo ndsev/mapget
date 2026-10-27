@@ -422,7 +422,30 @@ McpServer::rpcError(nlohmann::json id, int code, std::string message, nlohmann::
     nlohmann::json error{{"code", code}, {"message", std::move(message)}};
     if (!data.is_null())
         error["data"] = std::move(data);
-    return {{"jsonrpc", "2.0"}, {"id", std::move(id)}, {"error", std::move(error)}};
+    nlohmann::json response{{"jsonrpc", "2.0"}, {"error", std::move(error)}};
+    // MCP error responses omit an unknown request ID; null is not a valid MCP RequestId.
+    if (!id.is_null())
+        response["id"] = std::move(id);
+    return response;
+}
+
+nlohmann::json
+McpServer::rpcResult(nlohmann::json id, nlohmann::json body, bool modern, std::string_view method)
+{
+    if (modern) {
+        body["resultType"] = "complete";
+        body["_meta"]["io.modelcontextprotocol/serverInfo"] = {
+            {"name", "mapget"},
+            {"version", MAPGET_MCP_VERSION}};
+        if (method == "server/discover" || method == "tools/list") {
+            // Both implemented cacheable operations require explicit protocol hints. Discovery
+            // is caller-dependent and hot-reloadable; HTTP no-store alone does not prevent an
+            // MCP client's own cache from retaining a stale or differently authorized catalog.
+            body["ttlMs"] = 0;
+            body["cacheScope"] = "private";
+        }
+    }
+    return {{"jsonrpc", "2.0"}, {"id", std::move(id)}, {"result", std::move(body)}};
 }
 
 nlohmann::json McpServer::toolResult(nlohmann::json reply, std::string_view action)
@@ -455,7 +478,6 @@ nlohmann::json McpServer::toolResult(nlohmann::json reply, std::string_view acti
     }
     content.push_back({{"type", "text"}, {"text", body.dump()}});
     return {
-        {"resultType", "complete"},
         {"isError", failed},
         {"structuredContent", std::move(body)},
         {"content", std::move(content)}};
@@ -531,9 +553,11 @@ void McpServer::dispatch(
     };
     auto result = [&](nlohmann::json body)
     {
-        if (!modern)
-            body.erase("resultType");
-        reply(jsonResponse({{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(body)}}));
+        reply(jsonResponse(rpcResult(
+            id,
+            std::move(body),
+            modern,
+            message["method"].get_ref<std::string const&>())));
     };
     try {
         auto const method = message.at("method").get<std::string>();
@@ -562,20 +586,37 @@ void McpServer::dispatch(
         if (modern) {
             auto const& meta = params.at("_meta");
             if (!meta.is_object() ||
-                meta.value("io.modelcontextprotocol/protocolVersion", "") != version ||
+                !meta.at("io.modelcontextprotocol/protocolVersion").is_string() ||
+                !meta.at("io.modelcontextprotocol/clientCapabilities").is_object())
+            {
+                error(-32602, "Invalid MCP request metadata");
+                return;
+            }
+            if (meta["io.modelcontextprotocol/protocolVersion"] != version ||
                 request->getHeader("mcp-method") != method)
             {
                 error(-32020, "MCP request metadata/header mismatch");
                 return;
             }
-            auto const& client = meta.at("io.modelcontextprotocol/clientInfo");
-            if (!client.is_object() || !client.at("name").is_string() ||
-                !client.at("version").is_string() ||
-                !meta.at("io.modelcontextprotocol/clientCapabilities").is_object())
-            {
-                error(-32600, "Invalid MCP client metadata");
-                return;
+            // Client identity is recommended, not required; capability and version metadata are
+            // mandatory even when a host deliberately omits its product name.
+            if (meta.contains("io.modelcontextprotocol/clientInfo")) {
+                auto const& client = meta.at("io.modelcontextprotocol/clientInfo");
+                if (!client.is_object() || !client.at("name").is_string() ||
+                    !client.at("version").is_string()) {
+                    error(-32602, "Invalid MCP client metadata");
+                    return;
+                }
             }
+        }
+        else if (
+            params.contains("_meta") && params["_meta"].is_object() &&
+            params["_meta"].contains("io.modelcontextprotocol/protocolVersion") &&
+            params["_meta"]["io.modelcontextprotocol/protocolVersion"] != version)
+        {
+            // A legacy header must not bypass validation of a modern body at this boundary.
+            error(-32020, "MCP request metadata/header mismatch");
+            return;
         }
         if (id.is_null()) {
             if (!modern && method == "notifications/initialized") {
@@ -603,13 +644,9 @@ void McpServer::dispatch(
         }
         if (modern && method == "server/discover") {
             result(
-                {{"resultType", "complete"},
-                 {"instructions", serverInstructions},
-                 {"supportedVersions", {protocol}},
-                 {"capabilities", {{"tools", nlohmann::json::object()}}},
-                 {"_meta",
-                  {{"io.modelcontextprotocol/serverInfo",
-                    {{"name", "mapget"}, {"version", MAPGET_MCP_VERSION}}}}}});
+                {{"instructions", serverInstructions},
+                 {"supportedVersions", {protocol, initializeProtocol, previousInitializeProtocol}},
+                 {"capabilities", {{"tools", nlohmann::json::object()}}}});
             return;
         }
         if (method == "tools/list" || method == "tools/call")
@@ -620,7 +657,7 @@ void McpServer::dispatch(
                 return;
             }
             if (browser) {
-                result({{"resultType", "complete"}, {"tools", native_->tools(principal)}});
+                result({{"tools", native_->tools(principal)}});
                 return;
             }
             auto tools = catalog_->tools(principal.read, principal.control);
@@ -641,7 +678,7 @@ void McpServer::dispatch(
                     {{"sessions", {{"type", "array"}, {"items", {{"type", "object"}}}}}}},
                    {"required", {"sessions"}}}},
                  {"annotations", {{"readOnlyHint", true}}}});
-            result({{"resultType", "complete"}, {"tools", std::move(tools)}});
+            result({{"tools", std::move(tools)}});
             return;
         }
         if (method != "tools/call") {
@@ -650,10 +687,15 @@ void McpServer::dispatch(
         }
         auto const action = params.at("name").get<std::string>();
         auto headerName = request->getHeader("mcp-name");
-        if (headerName.starts_with("=?base64?") && headerName.ends_with("?=")) {
-            headerName = drogon::utils::base64Decode(headerName.substr(9, headerName.size() - 11));
+        if (modern && headerName.starts_with("=?base64?") && headerName.ends_with("?=")) {
+            auto encoded = headerName.substr(9, headerName.size() - 11);
+            headerName = drogon::utils::base64Decode(encoded);
+            if (drogon::utils::base64Encode(headerName) != encoded) {
+                error(-32020, "Invalid MCP tool name header encoding");
+                return;
+            }
         }
-        if (modern && headerName != action) {
+        if (modern && (request->getHeader("mcp-name").empty() || headerName != action)) {
             error(-32020, "MCP tool name/header mismatch");
             return;
         }
@@ -671,7 +713,10 @@ void McpServer::dispatch(
         }
         if (action == "viewer_list_sessions") {
             if (!arguments.empty()) {
-                error(-32602, "viewer_list_sessions takes no arguments.");
+                result(toolResult(
+                    {{"error",
+                      {{"code", "invalid_arguments"},
+                       {"message", "viewer_list_sessions takes no arguments."}}}}));
                 return;
             }
             result(toolResult({{"result", {{"sessions", relay_->sessions(principal)}}}}));
@@ -692,7 +737,9 @@ void McpServer::dispatch(
             return;
         }
         if (!native && (!arguments.contains("clientId") || !arguments["clientId"].is_string())) {
-            error(-32602, "A clientId UUID is required.");
+            result(toolResult(
+                {{"error",
+                  {{"code", "invalid_arguments"}, {"message", "A clientId UUID is required."}}}}));
             return;
         }
         auto applicationArguments = arguments;
@@ -701,11 +748,13 @@ void McpServer::dispatch(
         if (native ? !native_->acceptsArguments(action, arguments, &issues) :
                      !catalog_->acceptsArguments(action, applicationArguments, &issues))
         {
-            error(
-                -32602,
-                "Invalid tool arguments; see field-level issues.",
-                drogon::k400BadRequest,
-                {{"issues", std::move(issues)}});
+            // A known tool's input errors belong to the tool result so agents can correct the
+            // call. Malformed protocol parameters and unknown tool names remain JSON-RPC errors.
+            result(toolResult(
+                {{"error",
+                  {{"code", "invalid_arguments"},
+                   {"message", "Invalid tool arguments; see field-level issues."},
+                   {"issues", std::move(issues)}}}}));
             return;
         }
         if (responses_.size() >= limits_.pendingCalls) {
@@ -796,11 +845,12 @@ void McpServer::completeResponse(uint64_t id, nlohmann::json reply)
     if (response.empty() || !response.mapped().stream)
         return;
     auto& state = response.mapped();
-    auto result = toolResult(std::move(reply), state.action);
-    if (!state.modern)
-        result.erase("resultType");
     auto body =
-        nlohmann::json{{"jsonrpc", "2.0"}, {"id", state.rpcId}, {"result", std::move(result)}}
+        rpcResult(
+            state.rpcId,
+            toolResult(std::move(reply), state.action),
+            state.modern,
+            "tools/call")
             .dump();
     // Image data appears once, but metadata is present in both structured and text content.
     // Enforce the complete outgoing envelope too, rather than only the incoming browser frame.
@@ -810,10 +860,7 @@ void McpServer::completeResponse(uint64_t id, nlohmann::json reply)
               {{"code", "result_too_large"},
                {"message",
                 "Screenshot exceeds the MCP result budget; request smaller dimensions."}}}});
-        if (!state.modern)
-            error.erase("resultType");
-        body = nlohmann::json{{"jsonrpc", "2.0"}, {"id", state.rpcId}, {"result", std::move(error)}}
-                   .dump();
+        body = rpcResult(state.rpcId, std::move(error), state.modern, "tools/call").dump();
     }
     state.stream->send("event: message\ndata: " + body + "\n\n");
     state.stream->close();

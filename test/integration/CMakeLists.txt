@@ -21,13 +21,13 @@ add_test(
     "$<TARGET_FILE:mapget>")
 set_tests_properties(test-cli-tile-ttl PROPERTIES LABELS integration TIMEOUT 120)
 
-add_test(
-  NAME test-native-mcp
-  COMMAND
-    "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_LIST_DIR}/test-native-mcp.py"
-    "$<TARGET_FILE:mapget>")
-set_tests_properties(test-native-mcp PROPERTIES LABELS integration TIMEOUT 120)
+# Reuse the isolated Python test environment; MCP dependencies are never installed in our wheel.
+add_wheel_test(test-native-mcp
+  WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS
+    -f "python -m pip install -r ${CMAKE_CURRENT_LIST_DIR}/mcp-requirements.txt"
+    -f "python ${CMAKE_CURRENT_LIST_DIR}/test-native-mcp.py $<TARGET_FILE:mapget>")
+set_tests_properties(test-native-mcp PROPERTIES LABELS integration TIMEOUT 240)
 
 add_test(NAME test-mcp-help-packaging
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test-mcp-help-packaging.py"

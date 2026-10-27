@@ -126,6 +126,10 @@ private:
     [[nodiscard]] static nlohmann::json
     rpcError(nlohmann::json id, int code, std::string message, nlohmann::json data = nullptr);
 
+    /** Apply revision-specific metadata and cache policy to both JSON and SSE successes. */
+    [[nodiscard]] static nlohmann::json
+    rpcResult(nlohmann::json id, nlohmann::json body, bool modern, std::string_view method);
+
     /** Frame application results; screenshots carry image bytes outside structured/text content. */
     [[nodiscard]] static nlohmann::json
     toolResult(nlohmann::json reply, std::string_view action = {});

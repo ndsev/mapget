@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise the native MCP HTTP/interactive boundary without Python bindings or an external IdP."""
+"""Validate native MCP against official schemas, the official SDK and real HTTP/WS peers."""
 
+import asyncio
 import base64
 import http.client
 import json
@@ -14,6 +15,45 @@ import tempfile
 import time
 import unittest
 import uuid
+
+from jsonschema import ValidationError
+from jsonschema.validators import validator_for
+from mcp import Client
+
+
+PROTOCOL_SCHEMAS = {
+    version: json.loads((Path(__file__).parent / "data/mcp" / f"{version}.json").read_text(encoding="utf-8"))
+    for version in ("2025-06-18", "2025-11-25", "2026-07-28")
+}
+
+
+def validate_response(message, protocol, method):
+    """Check unmodified upstream envelopes AND concrete results; generic Result is too permissive."""
+    if method == "initialize" and "result" in message:
+        protocol = message["result"]["protocolVersion"]
+    if protocol not in PROTOCOL_SCHEMAS:
+        # Unsupported-version errors still follow the server's current error contract.
+        protocol = "2026-07-28"
+    schema = PROTOCOL_SCHEMAS[protocol]
+    definitions = "definitions" if protocol == "2025-06-18" else "$defs"
+    if protocol == "2025-06-18":
+        envelope = "JSONRPCError" if "error" in message else "JSONRPCResponse"
+    else:
+        envelope = "JSONRPCErrorResponse" if "error" in message else "JSONRPCResultResponse"
+    checks = [(message, envelope)]
+    if "result" in message:
+        checks.append((message["result"], {
+            "initialize": "InitializeResult", "server/discover": "DiscoverResult",
+            "tools/list": "ListToolsResult", "tools/call": "CallToolResult", "ping": "EmptyResult",
+        }[method]))
+    for value, name in checks:
+        validator_for(schema)({**schema, "$ref": f"#/{definitions}/{name}"}).validate(value)
+    if "result" in message and method == "tools/list":
+        # The protocol's Tool schema intentionally treats these as JSON schemas, not instances.
+        for tool in message["result"]["tools"]:
+            for key in ("inputSchema", "outputSchema"):
+                if key in tool:
+                    validator_for(tool[key]).check_schema(tool[key])
 
 
 class ViewerConnection:
@@ -176,7 +216,15 @@ class NativeMcpTest(unittest.TestCase):
         payload = response.read()
         connection.close()
         self.assertEqual(response.getheader("Cache-Control"), "no-store")
-        return response.status, json.loads(payload) if payload else None
+        parsed = json.loads(payload) if payload else None
+        if isinstance(parsed, dict) and parsed.get("jsonrpc") == "2.0":
+            try:
+                message = json.loads(body)
+            except ValueError:
+                message = {}
+            validate_response(parsed, (headers or {}).get("MCP-Protocol-Version", "2026-07-28"),
+                              message.get("method") if isinstance(message, dict) else None)
+        return response.status, parsed
 
     def begin_rpc(self, method, params=None, headers=None, protocol="2026-07-28", request_id=1):
         """Start either supported MCP lifecycle; callers may defer reading its SSE result."""
@@ -198,16 +246,20 @@ class NativeMcpTest(unittest.TestCase):
         if request_id is not None:
             message["id"] = request_id
         connection.request("POST", "/mcp", json.dumps(message), defaults)
-        return connection, connection.getresponse()
+        response = connection.getresponse()
+        response.mcp_context = (protocol, method)
+        return connection, response
 
-    def rpc_result(self, response):
-        """Require one terminal JSON-RPC response, not just successful HTTP/SSE headers."""
+    def rpc_result(self, response, protocol="2026-07-28", method="tools/call"):
+        """Validate the actual terminal JSON/SSE message against its revision's official schema."""
         payload = response.read().decode()
         if response.getheader("Content-Type").startswith("text/event-stream"):
             messages = [line[6:] for line in payload.splitlines() if line.startswith("data: ")]
             self.assertEqual(len(messages), 1)
             payload = messages[0]
-        return json.loads(payload)
+        message = json.loads(payload)
+        validate_response(message, *getattr(response, "mcp_context", (protocol, method)))
+        return message
 
     def call(self, action, arguments):
         """Read a native/immediately rejected tool call without a browser-side result."""
@@ -248,10 +300,13 @@ class NativeMcpTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             result = self.rpc_result(response)["result"]
             self.assertEqual(result["resultType"], "complete")
+            self.assertEqual(result["ttlMs"], 0)
+            self.assertEqual(result["cacheScope"], "private")
+            self.assertEqual(result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "mapget")
             if method == "tools/list":
                 self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 13)
             else:
-                self.assertEqual(result["supportedVersions"], ["2026-07-28"])
+                self.assertEqual(result["supportedVersions"], ["2026-07-28", "2025-11-25", "2025-06-18"])
         self.assertEqual(self.call("viewer_list_sessions", {})["structuredContent"], {"sessions": []})
         for headers, code in (({"Mcp-Method": "tools/call"}, -32020),
                               ({"MCP-Protocol-Version": "2024-11-05"}, -32022)):
@@ -262,6 +317,150 @@ class NativeMcpTest(unittest.TestCase):
                         {"X-Forwarded-For": "127.0.0.1"}):
             self.assertEqual(self.http("GET", "/mcp/info", headers=headers)[0], 403)
         self.assertEqual(self.http("GET", "/mcp")[0], 405)
+
+    def test_official_schema_rejects_missing_cache_hints(self):
+        """Prove our regression guard rejects the original defect, not just our preferred shape."""
+        for method in ("server/discover", "tools/list"):
+            _, response = self.begin_rpc(method)
+            message = self.rpc_result(response)
+            for key, values in (("ttlMs", [None, -1, 0.5, "0", True]),
+                                ("cacheScope", [None, "shared", 1])):
+                for value in values:
+                    with self.subTest(method=method, key=key, value=value):
+                        broken = json.loads(json.dumps(message))
+                        if value is None:
+                            del broken["result"][key]
+                        else:
+                            broken["result"][key] = value
+                        with self.assertRaises(ValidationError):
+                            validate_response(broken, "2026-07-28", method)
+
+    def test_official_sdk_discovery_calls_and_cache_refresh(self):
+        """Exercise the real client decoder/cache in modern, automatic and legacy modes."""
+        original = self.catalog_path.read_bytes()
+
+        async def exercise(mode):
+            async with Client(f"http://127.0.0.1:{self.port}/mcp", mode=mode, read_timeout_seconds=6) as client:
+                self.assertEqual(client.protocol_version, "2025-11-25" if mode == "legacy" else "2026-07-28")
+                listing = await client.list_tools()
+                names = [tool.name for tool in listing.tools]
+                self.assertIn("viewer_set_app_state", names)
+                self.assertIn("mapget_convert_tile_id", names)
+                self.assertEqual(len(names), len(set(names)))
+                if mode != "legacy":
+                    self.assertEqual(listing.ttl_ms, 0)
+                    self.assertEqual(listing.cache_scope, "private")
+                converted = await client.call_tool("mapget_convert_tile_id", {"tileId": 131073})
+                self.assertFalse(converted.is_error)
+                self.assertEqual(converted.structured_content["items"][0]["tileId"], 131073)
+                invalid = await client.call_tool("mapget_convert_tile_id", {"tileId": "not-a-tile"})
+                self.assertTrue(invalid.is_error)
+                self.assertEqual(invalid.structured_content["error"]["code"], "invalid_arguments")
+                # No forced refresh: the server's cache hints must keep SDK discovery live.
+                changed = json.loads(original)
+                changed["catalogId"] = "sha256:" + "a" * 64
+                changed["actions"][0]["description"] = "Changed while the SDK remains connected"
+                self.catalog_path.write_text(json.dumps(changed), encoding="utf-8")
+                refreshed = await client.list_tools()
+                self.assertEqual(next(t.description for t in refreshed.tools if t.name == changed["actions"][0]["name"]),
+                                 changed["actions"][0]["description"])
+        for mode in ("auto", "2026-07-28", "legacy"):
+            with self.subTest(mode=mode):
+                self.catalog_path.write_bytes(original)
+                asyncio.run(exercise(mode))
+
+    def test_modern_metadata_and_header_contract(self):
+        """Require version/capabilities, allow omitted clientInfo and keep headers/body aligned."""
+        meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}}
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"}
+        message = {"jsonrpc": "2.0", "id": "metadata", "method": "tools/list", "params": {"_meta": meta}}
+        for endpoint in ("/mcp", "/mcp/browser"):
+            status, reply = self.http("POST", endpoint, json.dumps(message),
+                                      dict(headers, Origin=f"http://127.0.0.1:{self.port}"))
+            self.assertEqual(status, 200)
+            self.assertEqual(reply["result"]["ttlMs"], 0)
+            self.assertEqual(reply["result"]["cacheScope"], "private")
+        for invalid in (None, {}, {key: value for key, value in meta.items() if "Capabilities" not in key},
+                        {**meta, "io.modelcontextprotocol/clientInfo": None},
+                        {**meta, "io.modelcontextprotocol/clientCapabilities": []}):
+            with self.subTest(meta=invalid):
+                message["params"]["_meta"] = invalid
+                status, reply = self.http("POST", "/mcp", json.dumps(message), headers)
+                self.assertEqual(status, 400)
+                self.assertEqual(reply["error"]["code"], -32602)
+        message["params"]["_meta"] = meta
+        for key, value in (("MCP-Protocol-Version", ""), ("Mcp-Method", ""),
+                           ("Mcp-Method", "tools/call"), ("MCP-Protocol-Version", "2025-11-25")):
+            with self.subTest(header=key, value=value):
+                status, reply = self.http("POST", "/mcp", json.dumps(message), {**headers, key: value})
+                self.assertEqual(status, 400)
+                self.assertEqual(reply["error"]["code"], -32020)
+        _, response = self.begin_rpc("tools/list", headers={"MCP-Protocol-Version": "2099-01-01"})
+        reply = self.rpc_result(response)
+        self.assertEqual(response.status, 400)
+        self.assertEqual(reply["error"]["code"], -32022)
+        self.assertEqual(reply["error"]["data"]["requested"], "2099-01-01")
+        self.assertEqual(reply["error"]["data"]["supported"], list(reversed(PROTOCOL_SCHEMAS)))
+
+    def test_modern_malformed_messages_and_unsupported_methods(self):
+        """No null error IDs, phantom capabilities or false success for unimplemented methods."""
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"}
+        for body, code in (("{", -32700), ("[]", -32600), ("{}", -32600),
+                           ('{"jsonrpc":"2.0","method":"tools/list","id":null}', -32600)):
+            status, reply = self.http("POST", "/mcp", body, headers)
+            self.assertEqual(status, 400)
+            self.assertNotIn("id", reply)
+            self.assertEqual(reply["error"]["code"], code)
+        _, response = self.begin_rpc("notifications/cancelled", {"requestId": 1}, request_id=None)
+        self.assertEqual(response.status, 400)
+        self.assertNotIn("id", self.rpc_result(response))
+        for method in ("prompts/list", "resources/list", "resources/templates/list",
+                       "resources/read", "subscriptions/listen", "unknown"):
+            _, response = self.begin_rpc(method)
+            self.assertEqual(response.status, 404)
+            self.assertEqual(self.rpc_result(response)["error"]["code"], -32601)
+
+    def test_tool_errors_and_name_headers(self):
+        """Separate protocol errors from known-tool failures; decode sentinel headers exactly."""
+        params = {"name": "viewer_list_sessions", "arguments": {}}
+        encoded = base64.b64encode(params["name"].encode()).decode()
+        _, response = self.begin_rpc("tools/call", params, headers={"Mcp-Name": f"=?base64?{encoded}?="})
+        self.assertEqual(response.status, 200)
+        self.assertFalse(self.rpc_result(response)["result"]["isError"])
+        for name in ("", "other_tool", f"=?base64?{encoded}!?="):
+            _, response = self.begin_rpc("tools/call", params, headers={"Mcp-Name": name})
+            self.assertEqual(response.status, 400)
+            self.assertEqual(self.rpc_result(response)["error"]["code"], -32020)
+        _, response = self.begin_rpc("tools/call", {"name": ""})
+        self.assertEqual(response.status, 400)
+        self.assertEqual(self.rpc_result(response)["error"]["code"], -32020)
+        for protocol in PROTOCOL_SCHEMAS:
+            for name, arguments in (("viewer_list_sessions", {"extra": True}),
+                                    ("mapget_convert_tile_id", {"tileId": "wrong"}),
+                                    ("viewer_get_app_state", {})):
+                _, response = self.begin_rpc("tools/call", {"name": name, "arguments": arguments}, protocol=protocol)
+                self.assertEqual(response.status, 200)
+                result = self.rpc_result(response)["result"]
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"]["error"]["code"], "invalid_arguments")
+                self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+            for params in ({"name": "unknown"}, {"name": "viewer_list_sessions", "arguments": []}):
+                _, response = self.begin_rpc("tools/call", params, protocol=protocol)
+                self.assertEqual(response.status, 400)
+                self.assertEqual(self.rpc_result(response)["error"]["code"], -32602)
+
+    def test_initialize_never_negotiates_modern_lifecycle(self):
+        """Initialize-era hosts get a supported handshake revision, not an incompatible echo."""
+        for requested in ("2026-07-28", "2099-01-01"):
+            _, response = self.begin_rpc("initialize", {
+                "protocolVersion": requested, "capabilities": {},
+                "clientInfo": {"name": "legacy-host", "version": "1"}},
+                protocol="2025-11-25", headers={"MCP-Protocol-Version": ""})
+            self.assertEqual(response.status, 200)
+            self.assertEqual(self.rpc_result(response)["result"]["protocolVersion"], "2025-11-25")
 
     def test_catalog_reload_without_restart(self):
         """A rebuild changes discovery/registration on the same process and interactive socket."""
@@ -363,7 +562,7 @@ class NativeMcpTest(unittest.TestCase):
         connection.request("POST", "/mcp/browser", json.dumps(message), headers)
         response = connection.getresponse()
         self.assertEqual(response.status, 200)
-        self.assertFalse(self.rpc_result(response)["result"]["isError"])
+        self.assertFalse(self.rpc_result(response, protocol="2025-11-25")["result"]["isError"])
         for origin in [None, "https://attacker.example", "null"]:
             bad_headers = dict(headers)
             if origin is None: del bad_headers["Origin"]
@@ -441,7 +640,8 @@ class NativeMcpTest(unittest.TestCase):
         """Help follows native read/schema/budget contracts rather than a separate protocol."""
         _, response = self.begin_rpc("tools/call", {"name": "mapget_docs", "arguments": {
             "query": "arrays", "title": "Arrays"}})
-        self.assertIn("error", self.rpc_result(response))
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self.rpc_result(response)["result"]["isError"])
         partial = self.call("mapget_docs", {"query": "arrays", "maxWork": 1})["structuredContent"]
         self.assertFalse(partial["complete"])
         self.assertEqual(partial["reason"], "work_limit")
@@ -543,7 +743,8 @@ class NativeMcpTest(unittest.TestCase):
     def test_native_rejects_browser_routing_and_identity_fields(self):
         """Reject extra routing/identity inputs rather than treating them as browser actions."""
         _, response = self.begin_rpc("tools/call", {"name": "mapget_list_sources", "arguments": {"clientId": str(uuid.uuid4())}})
-        self.assertEqual(self.rpc_result(response)["error"]["code"], -32602)
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self.rpc_result(response)["result"]["isError"])
         self.assertEqual(self.http("GET", "/.well-known/oauth-protected-resource/mcp")[0], 404)
 
     def test_screenshot_image_content(self):
@@ -667,6 +868,8 @@ class NativeMcpTest(unittest.TestCase):
             _, response = self.begin_rpc("tools/list", protocol=protocol)
             tools = self.rpc_result(response)["result"]
             self.assertNotIn("resultType", tools)
+            self.assertNotIn("ttlMs", tools)
+            self.assertNotIn("cacheScope", tools)
             self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 13)
             _, response = self.begin_rpc("tools/call", {
                 "name": "viewer_set_app_state", "arguments": self.arguments(viewer, "viewer_set_app_state")},
@@ -789,7 +992,13 @@ class NativeMcpConfigTest(unittest.TestCase):
             connection.request(method, path, body, headers or {})
             response = connection.getresponse()
             data = response.read().decode()
-            return response.status, json.loads(data) if "json" in response.getheader("Content-Type", "") else data
+            parsed = json.loads(data) if "json" in response.getheader("Content-Type", "") else data
+            if path.startswith("/mcp") and method == "POST" and response.status == 200:
+                rpc = parsed
+                if isinstance(rpc, str):
+                    rpc = json.loads(next(line[6:] for line in data.splitlines() if line.startswith("data: ")))
+                validate_response(rpc, headers["MCP-Protocol-Version"], json.loads(body)["method"])
+            return response.status, parsed
         finally:
             connection.close()
 
@@ -904,6 +1113,20 @@ class NativeMcpConfigTest(unittest.TestCase):
         names = {tool["name"] for tool in reply["result"]["tools"]}
         self.assertIn("mapget_get_diagnostics", names)
         self.assertNotIn("mapget_list_sources", names)
+        # Modern discovery must stay private across callers with different permissions.
+        meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}}
+        modern_body = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"_meta": meta}})
+        for authority, present, absent in ((headers, "mapget_list_sources", "mapget_get_diagnostics"),
+                                           (admin, "mapget_get_diagnostics", "mapget_list_sources")):
+            modern_headers = dict(authority, **{"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"})
+            status, reply = self.http("/mcp/browser", modern_headers, "POST", modern_body)
+            self.assertEqual(status, 200)
+            self.assertEqual(reply["result"]["ttlMs"], 0)
+            self.assertEqual(reply["result"]["cacheScope"], "private")
+            names = {tool["name"] for tool in reply["result"]["tools"]}
+            self.assertIn(present, names)
+            self.assertNotIn(absent, names)
         for missing in ["Origin", "test-issuer", "test-subject", "test-expiry", "test-permissions"]:
             denied = dict(headers)
             del denied[missing]

@@ -337,8 +337,19 @@ The endpoint supports these distinct wire contracts over the same POST URL:
   `notifications/initialized`, `ping`, `tools/list`, and `tools/call`.
   Subsequent POSTs include the negotiated `MCP-Protocol-Version` header.
 - `2026-07-28`: stateless `server/discover`, `tools/list`, and `tools/call`;
-  version/client metadata lives in `params._meta`. Required `Mcp-Method`,
-  `Mcp-Name` for tool calls, and protocol headers must match the body.
+  version and client-capability metadata are required in `params._meta`;
+  client implementation identity is optional. Required `Mcp-Method`,
+  `Mcp-Name` for tool calls (including its Base64 sentinel encoding), and
+  protocol headers must match the body. Discovery lists all supported revisions.
+
+Both implemented cacheable operations, `server/discover` and `tools/list`,
+return `ttlMs: 0` and `cacheScope: "private"` in 2026 results. These fields
+are required by the [MCP caching contract](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching),
+independently of HTTP caching headers. Tool availability depends on caller
+permissions, and the trusted catalog can change without restarting the server.
+The zero TTL prevents an MCP client's response cache from hiding those changes;
+private scope prevents reuse across authorization contexts. `/mcp/browser`
+uses the same policy. Legacy 2025 replies do not gain 2026-only fields.
 
 No revision creates an MCP protocol session or returns `MCP-Session-Id`.
 The viewer `clientId` must not be used as such a header. No GET event stream,
@@ -352,8 +363,12 @@ Clients accept both JSON and SSE. Immediate results may use JSON; a browser
 call returns one terminal JSON-RPC response on its POST's SSE stream and then
 closes it. `structuredContent` carries the application result and `content`
 also contains its JSON text. Application failures use `isError: true` rather
-than pretending to be successful state. The `resultType` field is emitted
-only for the 2026 revision.
+than pretending to be successful state. This includes invalid arguments to a
+known tool, with field-level validation issues where available. Unknown tools
+and malformed protocol parameters remain JSON-RPC errors. Errors without a
+known request ID omit `id`, rather than emitting `id: null`. Modern successes
+include `resultType: "complete"` and server implementation metadata in `_meta`;
+neither is added to 2025 results.
 
 Cancellation is intentionally revision-specific. In 2026, closing the SSE
 caller requests browser cancellation. In 2025, connection loss only releases
@@ -374,18 +389,50 @@ not change the existing UUID-capability policy of `/interactive/payload`.
 Native catalog/relay/auth tests use `[mcp-actions]` in `test.mapget`. OAuth
 tests generate disposable RSA keys and test actual signatures and claims,
 not hardcoded accepted tokens. `test-native-mcp` runs a separate native CLI
-and real HTTP/WebSocket connections using only Python's standard library. It also
-checks CLI/YAML overrides, config-relative paths, private configuration and the
-default catalog filename:
+and real HTTP/WebSocket connections. It validates captured JSON-RPC envelopes,
+method-specific results and tool schemas against pinned, unmodified official
+schemas for all three revisions in `test/integration/data/mcp`. Negative
+controls remove or corrupt caching hints to prove that the guard catches this
+class of regression.
+
+The test also uses the official Python MCP SDK (pinned in
+`test/integration/mcp-requirements.txt`) for automatic discovery, explicit
+2026 operation, legacy initialization, SSE tool results, argument failures and
+catalog hot reload with the client's normal cache enabled. CTest installs these
+test-only dependencies in its isolated wheel-test environment; they are not
+mapget package dependencies. CLI/YAML overrides, config-relative paths, private
+configuration and the default catalog filename remain covered:
 
 ```sh
 build/bin/test.mapget '[mcp-actions]'
 ctest --test-dir build -R '^test-native-mcp$' --output-on-failure
 ```
 
+To run the script directly, install `test/integration/mcp-requirements.txt`
+in a development virtual environment, then run
+`python test/integration/test-native-mcp.py build/bin/mapget`.
+
+The upstream `@modelcontextprotocol/conformance@0.2.0-alpha.12` probes have
+also been exercised on the native endpoint:
+
+| Revision | Covered checks |
+| --- | --- |
+| 2025-06-18, 2025-11-25 | Initialization, tool inventory and ping |
+| 2026-07-28 | Stateless metadata/discovery, version negotiation, tool inventory, caching hints, mirrored headers and DNS-rebinding protection |
+
+This is **not an unqualified pass of the entire upstream suite**. Its caching
+scenario also calls prompts/resources despite those capabilities being absent;
+mapget correctly returns method-not-found. Several stateless checks require
+the suite's diagnostic tools (`test_missing_capability`,
+`test_streaming_elicitation`, `test_logging_tool`), which mapget does not expose.
+Do not add phantom capabilities or production test tools merely to satisfy those
+fixtures. Keep those limitations visible when reporting conformance results.
+
 The transport test is not a real frontend, identity-provider login, or hosted
 deployment test. Consumer acceptance additionally requires the matching viewer
 catalog/build, real browser actions, and the deployment's OAuth client flow.
+Passing the official SDK is not a substitute for checking model-visible tools
+in the particular Claude/Codex release used by a customer.
 
 ## Native Tools
 
@@ -1022,7 +1069,8 @@ implemented transport revision. Browser catalogs retain their schema-portability
 cross-language fixtures. Native `items` payloads currently remain open in the common output
 schema. This is **not yet full MCP/client conformance**.
 
-- [ ] Pin official protocol schemas for each supported revision and validate every emitted tool/list, success and error envelope against them.
+- [x] Pin official protocol schemas for each supported revision and validate captured tool/list, success and error envelopes against them.
+- [x] Exercise the pinned official Python SDK's discovery, legacy negotiation, calls, error decoding and normal cache/hot-reload behavior against the native server.
 - [x] Meta-validate native and installed viewer input/output schemas against the supported Draft-07 dialect at startup; reject unsupported keywords and references.
 - [ ] Define per-action output item schemas for stable metadata, conversion, config, diagnostics and extraction envelopes; retain open/tagged query values and test actual outputs against those definitions.
 - [ ] Expand dialect/portability fixtures across every emitted combinator, closed/conditional root, recursive definition and vector schema in the production frontend catalog.

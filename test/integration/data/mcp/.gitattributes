@@ -1,0 +1,2 @@
+# Preserve upstream schema bytes, including their final blank line, for checksum verification.
+*.json text eol=lf whitespace=-blank-at-eof
